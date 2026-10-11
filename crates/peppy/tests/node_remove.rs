@@ -1,39 +1,27 @@
 use config::node::Toolchain;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
-use peppy::context::AppContext;
-use peppy::test_support::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::LogCapture;
 use peppylib::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::common::{stack_graph, test_node_target};
+use super::common::{
+    emulate_startup_services, node_add_command, setup, stack_graph, test_node_target,
+};
 
 #[test]
 fn node_remove_command_succeeds() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
+    let (rt, serve, node_ctx, node_dir) = setup();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
         "core_node_name should not be empty"
     );
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_node";
     let node_tag = "v1";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -59,26 +47,9 @@ fn node_remove_command_succeeds() {
 
     peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect("node add command should succeed");
 
     // Assert there is one node + the core node in the node stack after add
     let messenger_handle = node_ctx
@@ -125,28 +96,26 @@ fn node_remove_command_succeeds() {
     );
 }
 
-#[test]
-fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+/// What a test reads back after removing a node with a running instance: the
+/// logs the commands wrote and the node graph the daemon reports afterwards.
+struct RunningNodeRemoval {
+    logs: String,
+    graph: core_node_api::SerializedNodeGraph,
+}
+
+/// Adds `node_name` with a running instance `instance_id`, executes `remove`
+/// on it, and waits until the daemon asks that instance to shut down.
+fn remove_running_node(
+    node_name: &str,
+    instance_id: &str,
+    remove: NodeCommands,
+) -> RunningNodeRemoval {
+    let (rt, serve, node_ctx, node_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
         "core_node_name should not be empty"
-    );
-
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
-    let node_name = "test_remove_running_node";
-    let node_tag = "v1";
-    let instance_id = "test_remove_running_instance";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
     );
 
     let log_capture = LogCapture::new();
@@ -171,32 +140,22 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         peppy_json5_path.display()
     );
 
-    // Override the launch command to avoid spawning a real node process.
-    // Health/shutdown services are provided in-process via the mock messenger.
-    // The instance must still be running when `Remove` reaches it — the test
-    // waits on a shutdown request that is only ever sent for a live instance —
-    // so tie its lifetime to the test rather than to a fixed 4s.
+    // Override the launch command to avoid spawning a real node process; the
+    // ready, health and shutdown services run in-process on the mock
+    // messenger. The instance must still be running when the remove reaches
+    // it (the shutdown request awaited below is only ever sent for a live
+    // instance), so its lifetime is tied to this function rather than to a
+    // fixed 4s.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
-    // Start in-process node services for health/shutdown so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node ready service should start");
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        node_name,
+        instance_id,
+    ));
     let (_node_shutdown_handle, node_shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
@@ -206,8 +165,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         ))
         .expect("node shutdown service should start");
 
-    // Use Add with start=true to add and start in a single command execution
-    // (avoids cross-runtime issues when using separate Add and Start commands)
+    // A chained run (`run: true`) adds and starts the node in one command.
     NodeCommand {
         command: NodeCommands::Add {
             clock: None,
@@ -229,27 +187,38 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     .execute(&node_ctx)
     .expect("node add+start command should succeed");
 
-    NodeCommand {
-        command: NodeCommands::Remove {
-            node_ref: (node_name.to_string(), node_tag.to_string()),
-            stop_instances: false,
-            force: true,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node remove command should succeed");
+    NodeCommand { command: remove }
+        .execute(&node_ctx)
+        .expect("node remove command should succeed");
 
     rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), node_shutdown_rx).await })
         .expect("shutdown request should arrive")
         .expect("shutdown signal should be delivered");
 
-    // Node should be removed from the stack.
+    let logs = log_capture.logs();
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
-
     let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
+    RunningNodeRemoval { logs, graph }
+}
 
+#[test]
+fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
+    let node_name = "test_remove_running_node";
+    let node_tag = "v1";
+    let removal = remove_running_node(
+        node_name,
+        "test_remove_running_instance",
+        NodeCommands::Remove {
+            node_ref: (node_name.to_string(), node_tag.to_string()),
+            stop_instances: false,
+            force: true,
+        },
+    );
+
+    // Node should be removed from the stack.
+    let graph = removal.graph;
     assert!(
         !graph
             .nodes
@@ -262,135 +231,26 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
 #[test]
 fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
-    let core_node_name = serve.core_node_name().to_string();
-    assert!(
-        !core_node_name.is_empty(),
-        "core_node_name should not be empty"
-    );
-
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_remove_stop_instances_node";
     let node_tag = "v1";
-    let instance_id = "test_remove_stop_instances_instance";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-
-    let log_capture = LogCapture::new();
-    let _guard = log_capture.install();
-
-    NodeCommand {
-        command: NodeCommands::Init {
-            node_name: NodeName::new(node_name).expect("valid node name"),
-            to_dir: None,
-            toolchain: Toolchain::Cargo,
-            with_container: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node init command should succeed");
-
-    let node_path = node_dir.path().join(node_name);
-    let peppy_json5_path = node_path.join("peppy.json5");
-    assert!(
-        peppy_json5_path.exists(),
-        "peppy.json5 should exist at {}",
-        peppy_json5_path.display()
-    );
-
-    // The instance must still be running when `Remove { stop_instances: true }`
-    // reaches it — the test waits on a shutdown request that is only ever sent
-    // for a live instance — so tie its lifetime to the test, not to a fixed 4s.
-    let instances = peppy::test_support::InstanceLifetime::new();
-    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
-
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node ready service should start");
-
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node health service should start");
-
-    let (_node_shutdown_handle, node_shutdown_rx) = rt
-        .block_on(listen_for_shutdown(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node shutdown service should start");
-
-    // Use Add with start=true to add and start in a single command execution
-    // (avoids cross-runtime issues when using separate Add and Start commands)
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: true,
-            args: Vec::new(),
-            instance_id: Some(instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add+start command should succeed");
-
-    NodeCommand {
-        command: NodeCommands::Remove {
+    let removal = remove_running_node(
+        node_name,
+        "test_remove_stop_instances_instance",
+        NodeCommands::Remove {
             node_ref: (node_name.to_string(), node_tag.to_string()),
             stop_instances: true,
             force: false,
         },
-    }
-    .execute(&node_ctx)
-    .expect("node remove command should succeed");
+    );
 
-    rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), node_shutdown_rx).await })
-        .expect("shutdown request should arrive")
-        .expect("shutdown signal should be delivered");
-
-    let logs = log_capture.logs();
+    let logs = removal.logs;
     assert!(
         logs.contains(&format!("Removed node '{node_name}:{node_tag}'")),
         "logs should contain success message for removing node. Logs:\n{}",
         logs
     );
 
-    let messenger_handle = node_ctx
-        .messenger_handle()
-        .expect("messenger handle should be available");
-
-    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
-
+    let graph = removal.graph;
     assert!(
         !graph
             .nodes

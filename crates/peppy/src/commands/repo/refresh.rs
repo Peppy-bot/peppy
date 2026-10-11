@@ -5,6 +5,7 @@ use core_node_api::encoding::{
 };
 use tracing::{info, warn};
 
+use super::identity_label;
 use crate::commands::action_poll::poll_action_to_completion;
 use crate::commands::node::TimeoutConfig;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
@@ -128,19 +129,40 @@ fn format_refresh_line(feedback: &RepoRefreshFeedback) -> String {
             source_type,
             path,
             ..
-        } if item_tag.is_empty() => {
-            format!("Found {} {} ({}, {})", kind, item_name, source_type, path)
-        }
+        } => format!(
+            "Found {kind} {} ({source_type}, {path})",
+            identity_label(item_name, item_tag)
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_node_api::encoding::{RepoItemKind, RepoSourceKind};
+
+    fn discovered(kind: RepoItemKind, item_name: &str, item_tag: &str) -> RepoRefreshFeedback {
         RepoRefreshFeedback::Discovered {
             kind,
-            item_name,
-            item_tag,
-            source_type,
-            path,
-            ..
-        } => format!(
-            "Found {} {}:{} ({}, {})",
-            kind, item_name, item_tag, source_type, path
-        ),
+            item_name: item_name.to_owned(),
+            item_tag: item_tag.to_owned(),
+            source_type: RepoSourceKind::Git,
+            path: "items/peppy.json5".to_owned(),
+            sha256: "a".repeat(64),
+        }
+    }
+
+    /// A tagged item reads as `name:tag`; a launcher has no tag, so it reads
+    /// as its bare name rather than with a dangling `:`.
+    #[test]
+    fn format_refresh_line_omits_the_tag_of_an_untagged_item() {
+        assert_eq!(
+            format_refresh_line(&discovered(RepoItemKind::Node, "uvc_camera", "v1")),
+            "Found node uvc_camera:v1 (git, items/peppy.json5)"
+        );
+        assert_eq!(
+            format_refresh_line(&discovered(RepoItemKind::Launcher, "camera_boot", "")),
+            "Found launcher camera_boot (git, items/peppy.json5)"
+        );
     }
 }

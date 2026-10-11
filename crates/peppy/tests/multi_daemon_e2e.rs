@@ -266,56 +266,6 @@ fn write_router_pin(path: &Path, connect_endpoints: Vec<String>) {
     std::fs::write(path, config).expect("write pinned zenohd config");
 }
 
-fn executable_on_path(name: &str) -> PathBuf {
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|directory| directory.join(name))
-        .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| panic!("{name} must be installed on the Docker test host"))
-}
-
-/// Locates the bundled zenohd built by pmi's `build_zenoh` feature. Cargo puts
-/// it under this profile's `build/pmi-*/out` directory; a neighboring binary,
-/// an explicit environment override, and PATH remain useful for packaged runs.
-fn bundled_zenohd_binary() -> PathBuf {
-    let current_exe = std::env::current_exe().expect("resolve current test executable");
-    if let Some(directory) = current_exe.parent() {
-        let candidate = directory.join("zenohd");
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-
-    if let Some(candidate) = std::env::var_os("ZENOHD_BINARY_PATH").map(PathBuf::from)
-        && candidate.is_file()
-    {
-        return candidate;
-    }
-
-    let mut built_candidates = current_exe
-        .parent()
-        .and_then(Path::parent)
-        .map(|profile| profile.join("build"))
-        .and_then(|build| std::fs::read_dir(build).ok())
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("pmi-"))
-        .map(|entry| entry.path().join("out/zenohd"))
-        .filter(|candidate| candidate.is_file())
-        .collect::<Vec<_>>();
-    built_candidates.sort_by_key(|candidate| {
-        candidate
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(UNIX_EPOCH)
-    });
-    built_candidates
-        .pop()
-        .unwrap_or_else(|| executable_on_path("zenohd"))
-}
-
 /// The Ubuntu release the e2e image is based on.
 ///
 /// Matching the runner keeps a host-built binary from targeting a newer glibc
@@ -813,6 +763,12 @@ impl Daemon {
         self.peppy(&cmd).await
     }
 
+    /// This daemon's `stack list --json` report; `operation` names the step in
+    /// a failure.
+    async fn stack_list_json(&self, operation: &str) -> String {
+        require_success(self.peppy(&["stack", "list", "--json"]).await, operation)
+    }
+
     async fn wait_for_stack(&self, predicate: impl Fn(&str) -> bool) -> String {
         let started = Instant::now();
         let mut last = String::new();
@@ -830,6 +786,19 @@ impl Daemon {
             "timed out waiting for stack list in {}; last output:\n{last}\ncontainer logs:\n{logs}",
             self.name
         );
+    }
+
+    /// Waits until this daemon's listing holds every one of `instances`, and
+    /// returns that listing.
+    async fn wait_until_holding(&self, instances: &[&str]) -> String {
+        self.wait_for_stack(|text| instances.iter().all(|id| holds_instance(text, id)))
+            .await
+    }
+
+    /// Waits until this daemon's listing holds none of `instances`.
+    async fn wait_until_holding_none(&self, instances: &[&str]) {
+        self.wait_for_stack(|text| instances.iter().all(|id| !holds_instance(text, id)))
+            .await;
     }
 
     /// The exit code of this container's daemon once it has exited, and
@@ -960,8 +929,7 @@ impl Daemon {
 
     /// Blocks until this daemon answers a request at all.
     ///
-    /// `stack list` is the cheapest thing every daemon serves, and it is
-    /// already how the restart test waits for a new generation to come up.
+    /// `stack list` is the cheapest request every daemon serves.
     async fn wait_until_serving(&self) {
         self.wait_for_stack(|_| true).await;
     }
@@ -1242,7 +1210,10 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
     let image = e2e_image().await;
 
     let peppy_binary = Path::new(env!("CARGO_BIN_EXE_peppy"));
-    let zenohd_binary = bundled_zenohd_binary();
+    let zenohd_binary = PathBuf::from(
+        pmi::ZenohdFacade::resolved_zenohd_binary()
+            .expect("the multi_daemon_e2e feature builds zenohd through pmi's build_zenoh"),
+    );
     let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
         .expect("the test-built daemon should have a host Apptainer installation");
     let fixture = FixtureRepository::create();
@@ -1252,14 +1223,7 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
         apptainer_dir: &apptainer_dir,
         fixture: &fixture,
     };
-    let suffix = format!(
-        "{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_millis()
-    );
+    let suffix = unique_container_suffix();
 
     let router_pins = tempfile::tempdir().expect("create pinned router config directory");
     let router_a_pin = router_pins.path().join("router-a.json5");
@@ -1566,7 +1530,7 @@ const PEER_RUN_FAILURE_LAUNCHER: &str = r#"{
 }
 "#;
 
-/// The ticket-shaped fleet: a launch spanning the simulator machine and two
+/// The three-machine fleet: a launch spanning the simulator machine and two
 /// more. The launcher declares one clock domain and names the scripted source
 /// its publisher, which is what assigns that instance the domain; every
 /// machine, the coordinator included, runs a probe bound to it. One more probe
@@ -1764,8 +1728,7 @@ impl Daemon {
 
     /// Polls `instance_id`'s log until it holds `marker`, returning the log.
     ///
-    /// Polling every 250 ms under the same `TIMEOUT` as every other wait here
-    /// keeps the wait independent of how fast the host is.
+    /// Polls every 250 ms, up to the suite's `TIMEOUT`.
     async fn find_node_log(&self, instance_id: &str, marker: &str) -> Option<String> {
         let started = Instant::now();
         while started.elapsed() < TIMEOUT {
@@ -1896,6 +1859,20 @@ fn assert_holds_exactly(stack: &str, daemon: &str, expected: &[&str], forbidden:
     }
 }
 
+/// The part of a container name that sets one test run apart from every other
+/// run on the same engine: the test process id and the current time in
+/// milliseconds.
+fn unique_container_suffix() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_millis()
+    )
+}
+
 /// What every set of daemon containers stands on: the built image, the shared
 /// host router, the fixture repository, and the launcher mount. One per test;
 /// every daemon of that test borrows from it, and it is held for their
@@ -1930,14 +1907,7 @@ impl Substrate {
         let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
             .expect("the test-built daemon should have a host Apptainer installation");
         let fixture = FixtureRepository::create();
-        let suffix = format!(
-            "{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_millis()
-        );
+        let suffix = unique_container_suffix();
 
         // Every launcher these tests drive, in one mountable directory: the
         // file the guide documents, plus the probe launchers beside it.
@@ -2276,29 +2246,20 @@ async fn a_relaunch_reuses_the_cached_container_build() {
         .wait_for_node_log("probe_cam_inst", "[uvc_camera] Emitted frame")
         .await;
 
-    let build_logs = format!("{CONTAINER_PEPPY_HOME}/logs/build/uvc_camera_python_mock_v1_*.log");
-    let oldest = require_success(
-        federation
-            .robot
-            .exec(vec![
-                "/bin/sh",
-                "-c",
-                &format!("ls {build_logs} | sort | head -n 1 | xargs cat"),
-            ])
-            .await,
-        "reading the first build log",
-    );
-    let newest = require_success(
-        federation
-            .robot
-            .exec(vec![
-                "/bin/sh",
-                "-c",
-                &format!("ls {build_logs} | sort | tail -n 1 | xargs cat"),
-            ])
-            .await,
-        "reading the second build log",
-    );
+    let oldest = build_log(
+        &federation.robot,
+        "uvc_camera_python_mock",
+        "v1",
+        BuildLogEnd::Oldest,
+    )
+    .await;
+    let newest = build_log(
+        &federation.robot,
+        "uvc_camera_python_mock",
+        "v1",
+        BuildLogEnd::Newest,
+    )
+    .await;
     assert!(
         oldest.contains("Starting build..."),
         "the first launch ran apptainer build:\n{oldest}"
@@ -2434,14 +2395,8 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
     // every machine's section, so proving an instance is NOT on a daemon takes
     // that daemon's own slice. Wait for the fan-out to settle, then ask each
     // daemon about itself.
-    federation
-        .robot
-        .wait_for_stack(|text| ROBOT_INSTANCES.iter().all(|id| holds_instance(text, id)))
-        .await;
-    federation
-        .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
-        .await;
+    federation.robot.wait_until_holding(&ROBOT_INSTANCES).await;
+    federation.cloud.wait_until_holding(&CLOUD_INSTANCES).await;
 
     let robot_stack = federation
         .robot
@@ -2504,9 +2459,7 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
         (&federation.robot, ROBOT_INSTANCES.as_slice()),
         (&federation.cloud, CLOUD_INSTANCES.as_slice()),
     ] {
-        daemon
-            .wait_for_stack(|text| instances.iter().all(|id| !holds_instance(text, id)))
-            .await;
+        daemon.wait_until_holding_none(instances).await;
     }
 }
 
@@ -2539,12 +2492,8 @@ impl Federation {
             "the federated launch must succeed:\n{}",
             launch.text
         );
-        self.robot
-            .wait_for_stack(|text| ROBOT_INSTANCES.iter().all(|id| holds_instance(text, id)))
-            .await;
-        self.cloud
-            .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
-            .await;
+        self.robot.wait_until_holding(&ROBOT_INSTANCES).await;
+        self.cloud.wait_until_holding(&CLOUD_INSTANCES).await;
         self.cloud
             .wait_for_node_log("planner_inst", "first frame received across the boundary")
             .await;
@@ -2730,38 +2679,28 @@ async fn a_finished_launch_releases_its_participants_so_the_next_one_can_run() {
         second.text
     );
 
-    federation
-        .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
-        .await;
+    federation.cloud.wait_until_holding(&CLOUD_INSTANCES).await;
 }
 
-/// The case the rejected ownership model could not serve: a coordinator that
-/// restarted has no memory of who took part, and must find its own launch again
-/// by asking the federation.
+/// A coordinator that restarted has no memory of who took part, and must find
+/// its own launch again by asking the federation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them() {
     let federation = start_federation("peppy-fed-restart").await;
 
     let launch = federation.launch_split().await;
     assert!(launch.success(), "launch must succeed:\n{}", launch.text);
-    federation
-        .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
-        .await;
+    federation.cloud.wait_until_holding(&CLOUD_INSTANCES).await;
 
     // Restart the coordinator's daemon. Everything it knew in RAM is gone.
     federation.robot.restart().await;
     // Wait for the new generation to answer before asking it anything: an
     // untargeted `stack list` needs the coordinator's own daemon up to fan out
     // at all.
-    federation.robot.wait_for_stack(|_| true).await;
+    federation.robot.wait_until_serving().await;
 
     // The peer still holds its slice, and that slice still names the launch.
-    let cloud_stack = federation
-        .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| holds_instance(text, id)))
-        .await;
+    let cloud_stack = federation.cloud.wait_until_holding(&CLOUD_INSTANCES).await;
     assert!(
         !cloud_stack.is_empty(),
         "the peer's slice must survive a coordinator restart"
@@ -2781,7 +2720,7 @@ async fn a_restarted_coordinator_rediscovers_its_participants_and_can_reset_them
 
     federation
         .cloud
-        .wait_for_stack(|text| CLOUD_INSTANCES.iter().all(|id| !holds_instance(text, id)))
+        .wait_until_holding_none(&CLOUD_INSTANCES)
         .await;
 }
 
@@ -2954,38 +2893,37 @@ fn assert_scripted_history(
 ) {
     let mut previous = None;
     for (sample, value) in samples {
-        match value {
-            Some(value) => {
-                let tick = value / SCRIPTED_TICK_STEP_NS;
-                assert!(
-                    value % SCRIPTED_TICK_STEP_NS == 0 && (1..=SCRIPTED_TICK_COUNT).contains(&tick),
-                    "{}'s `{probe_instance}` served {value}, which no scripted tick ever was; \
-                     its machine is keeping its own time",
-                    daemon.name
-                );
-                if let Some(previous) = previous {
-                    assert!(
-                        *value >= previous,
-                        "{}'s `{probe_instance}` regressed from {previous} to {value} (sample \
-                         {sample}); a stale tick overtook the ramp",
-                        daemon.name
-                    );
-                }
-                previous = Some(*value);
-                if *sample > capped_after {
-                    assert_eq!(
-                        *value, SCRIPTED_FINAL_NS,
-                        "{}'s `{probe_instance}` moved after the ramp topped out (sample \
-                         {sample}); a capped source must hold every machine",
-                        daemon.name
-                    );
-                }
-            }
-            None => assert!(
+        let Some(value) = value else {
+            assert!(
                 previous.is_none(),
                 "{}'s `{probe_instance}` went unready after serving ticks (sample {sample})",
                 daemon.name
-            ),
+            );
+            continue;
+        };
+        let tick = value / SCRIPTED_TICK_STEP_NS;
+        assert!(
+            value % SCRIPTED_TICK_STEP_NS == 0 && (1..=SCRIPTED_TICK_COUNT).contains(&tick),
+            "{}'s `{probe_instance}` served {value}, which no scripted tick ever was; \
+             its machine is keeping its own time",
+            daemon.name
+        );
+        if let Some(previous) = previous {
+            assert!(
+                *value >= previous,
+                "{}'s `{probe_instance}` regressed from {previous} to {value} (sample \
+                 {sample}); a stale tick overtook the ramp",
+                daemon.name
+            );
+        }
+        previous = Some(*value);
+        if *sample > capped_after {
+            assert_eq!(
+                *value, SCRIPTED_FINAL_NS,
+                "{}'s `{probe_instance}` moved after the ramp topped out (sample \
+                 {sample}); a capped source must hold every machine",
+                daemon.name
+            );
         }
     }
 }
@@ -3151,16 +3089,16 @@ async fn launch_fleet_clock(fleet: &Fleet) -> String {
     launch.text
 }
 
-/// The ticket's testable shape, positive path: a launch spanning the simulator
-/// machine and two more. One scripted source on the coordinator supplies the
-/// domain a probe on each machine binds, and a fourth probe beside them binds
-/// none, so one daemon carries the domain and wall time at once. Every bound
-/// machine serves nothing but scripted instants, never regressing, reaches the
-/// same final instant, and holds there once the ramp tops out; then the source
-/// is stopped outright and, with no tick arriving at all, every bound machine
-/// still holds the same instant rather than drifting anywhere. Exact values,
-/// not cross-container timestamp comparison, which the header of this file
-/// rules out for good reason.
+/// The positive path: a launch spanning the simulator machine and two more. One
+/// scripted source on the coordinator supplies the domain a probe on each
+/// machine binds, and a fourth probe beside them binds none, so one daemon
+/// carries the domain and wall time at once. Every bound machine serves nothing
+/// but scripted instants, never regressing, reaches the same final instant, and
+/// holds there once the ramp tops out; then the source is stopped outright and,
+/// with no tick arriving at all, every bound machine still holds the same
+/// instant rather than drifting anywhere. Exact values, not a comparison of
+/// timestamps across containers, which would not be deterministic (see
+/// [`assert_starts_before`]).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fleet_of_three_machines_shares_one_scripted_clock_and_holds_its_cap() {
     let fleet = start_fleet("peppy-fleet-clock").await;
@@ -3243,7 +3181,7 @@ async fn a_fleet_of_three_machines_shares_one_scripted_clock_and_holds_its_cap()
     // The cap above held under a source still republishing its final instant.
     // Now make the loss real: stop the source, and with no tick arriving at
     // all every bound machine must keep the very same instant. Frozen, never
-    // drifting back to wall time: today's single-robot staleness behavior,
+    // drifting back to wall time: the single-robot staleness behavior,
     // fleet-wide.
     let stopped = fleet
         .coordinator
@@ -3458,9 +3396,21 @@ fn instance_dir(instance: &str) -> String {
     format!("{CONTAINER_PEPPY_HOME}/instances/{instance}")
 }
 
-/// The newest build log `node:tag` left on `daemon`, which is where a reuse
-/// is recorded whatever the CLI showed.
-async fn newest_build_log(daemon: &Daemon, node: &str, tag: &str) -> String {
+/// Which of the build logs a node left on a daemon to read, in the sort
+/// order of their names.
+#[derive(Clone, Copy)]
+enum BuildLogEnd {
+    Oldest,
+    Newest,
+}
+
+/// The oldest or newest build log `node:tag` left on `daemon`. The build log
+/// records whether a build ran or reused an image, whatever the CLI showed.
+async fn build_log(daemon: &Daemon, node: &str, tag: &str, end: BuildLogEnd) -> String {
+    let (select_end, end_name) = match end {
+        BuildLogEnd::Oldest => ("head -n 1", "oldest"),
+        BuildLogEnd::Newest => ("tail -n 1", "newest"),
+    };
     require_success(
         daemon
             .exec(vec![
@@ -3468,11 +3418,11 @@ async fn newest_build_log(daemon: &Daemon, node: &str, tag: &str) -> String {
                 "-c",
                 &format!(
                     "ls {CONTAINER_PEPPY_HOME}/logs/build/{node}_{tag}_*.log \
-                     | sort | tail -n 1 | xargs cat"
+                     | sort | {select_end} | xargs cat"
                 ),
             ])
             .await,
-        &format!("reading the newest {node}:{tag} build log"),
+        &format!("reading the {end_name} {node}:{tag} build log"),
     )
 }
 
@@ -3515,10 +3465,10 @@ async fn a_federated_build_builds_each_node_where_the_launch_places_it() {
         build.text
     );
 
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "listing the built federation",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("listing the built federation")
+        .await;
     assert_eq!(
         slice_nodes(&listed, &federation.robot_core_node),
         BTreeMap::from([(
@@ -3561,10 +3511,11 @@ async fn a_federated_build_builds_each_node_where_the_launch_places_it() {
         "the launch must start the built stack:\n{}",
         launch.text
     );
-    let newest_peer_build_log = newest_build_log(
+    let newest_peer_build_log = build_log(
         &federation.cloud,
         "uvc_camera_video_reconstruction_python",
         "v1",
+        BuildLogEnd::Newest,
     )
     .await;
     assert!(
@@ -3629,10 +3580,10 @@ async fn a_peer_build_that_fails_fails_the_build_and_clears_its_slice() {
         build.text
     );
 
-    let listed = require_success(
-        federation.cloud.peppy(&["stack", "list", "--json"]).await,
-        "listing the peer after the failed build",
-    );
+    let listed = federation
+        .cloud
+        .stack_list_json("listing the peer after the failed build")
+        .await;
     assert!(
         slice_nodes(&listed, &federation.cloud_core_node).is_empty(),
         "the peer's slice is cleared:\n{listed}"
@@ -3672,10 +3623,7 @@ async fn local_runs_the_whole_topology_on_one_daemon() {
         .chain(CLOUD_INSTANCES.iter())
         .copied()
         .collect();
-    federation
-        .robot
-        .wait_for_stack(|text| all_instances.iter().all(|id| holds_instance(text, id)))
-        .await;
+    federation.robot.wait_until_holding(&all_instances).await;
     let robot_stack = federation
         .robot
         .stack_list(Some(&federation.robot_core_node))
@@ -3866,10 +3814,10 @@ async fn copies_join_and_remove_with_an_offline_neighbor() {
         "{}",
         removed.text
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the copy on the offline host leaves the record",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the copy on the offline host leaves the record")
+        .await;
     let coordinator = coordinator_section(&listed, &federation.robot_core_node);
     assert!(copy_names(&coordinator).is_empty(), "{listed}");
     let instances: Vec<_> = coordinator["stack"]["nodes"]
@@ -3902,10 +3850,12 @@ async fn a_join_refused_by_a_machine_with_its_own_stack_leaves_that_stack_alone(
     );
     let own_launch =
         |listed: &str| coordinator_section(listed, &federation.cloud_core_node)["launch"].clone();
-    let before = own_launch(&require_success(
-        federation.cloud.peppy(&["stack", "list", "--json"]).await,
-        "cloud's launch before the refused join",
-    ));
+    let before = own_launch(
+        &federation
+            .cloud
+            .stack_list_json("cloud's launch before the refused join")
+            .await,
+    );
     assert_eq!(before["coordinator_core_node"], federation.cloud_core_node);
     require_success(
         federation
@@ -3935,10 +3885,12 @@ async fn a_join_refused_by_a_machine_with_its_own_stack_leaves_that_stack_alone(
         "{}",
         refused.text
     );
-    let after = own_launch(&require_success(
-        federation.cloud.peppy(&["stack", "list", "--json"]).await,
-        "cloud's launch after the refused join",
-    ));
+    let after = own_launch(
+        &federation
+            .cloud
+            .stack_list_json("cloud's launch after the refused join")
+            .await,
+    );
     assert_eq!(
         after, before,
         "the refused join must leave cloud's launch as it was"
@@ -4002,10 +3954,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
         !remote.contains("uvc_camera_python_mock"),
         "the peer keeps no node the failed join added:\n{remote}"
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata",
-    );
+    let listed = federation.robot.stack_list_json("copy metadata").await;
     assert!(!listed.contains("\"failed\""), "{listed}");
     clear_planted_instance_dir(&federation.cloud, "failed_cam_inst").await;
     require_success(
@@ -4073,10 +4022,7 @@ async fn a_join_whose_peer_work_outlives_its_deadline_leaves_nothing_on_the_peer
         !remote.contains("uvc_camera_python_mock"),
         "the peer keeps no node the expired join added:\n{remote}"
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata",
-    );
+    let listed = federation.robot.stack_list_json("copy metadata").await;
     assert!(
         copy_names(&coordinator_section(&listed, &federation.robot_core_node)).is_empty(),
         "{listed}"
@@ -4239,10 +4185,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
             .await,
         "rejoin remote bravo",
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata",
-    );
+    let listed = federation.robot.stack_list_json("copy metadata").await;
     assert_eq!(
         copy_names(&coordinator_section(&listed, &federation.robot_core_node)),
         ["alpha", "bravo", "charlie"]
@@ -4821,8 +4764,8 @@ fn set_watch_launcher() -> String {
     )
 }
 
-/// How many times `marker` appears in `instance_id`'s log on `daemon`, polled
-/// until it reaches `count`.
+/// Polls `instance_id`'s log on `daemon` until `marker` appears at least
+/// `count` times.
 async fn wait_for_log_count(daemon: &Daemon, instance_id: &str, marker: &str, count: usize) {
     let started = Instant::now();
     while started.elapsed() < TIMEOUT {
@@ -5057,10 +5000,10 @@ async fn copies_exchange_topics_services_and_actions_only_within_themselves() {
     let mut retired: Vec<String> = Vec::new();
     exercise_gated_round(&federation, &mut stations, LAUNCHED_STATION, &retired).await;
 
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata before the removal",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("copy metadata before the removal")
+        .await;
     let before = copy_instances(&coordinator_section(&listed, &federation.robot_core_node));
     require_success(
         federation
@@ -5069,10 +5012,10 @@ async fn copies_exchange_topics_services_and_actions_only_within_themselves() {
             .await,
         "remove the copy the test rejoins",
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata after the removal",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("copy metadata after the removal")
+        .await;
     assert!(
         !copy_names(&coordinator_section(&listed, &federation.robot_core_node))
             .contains(&REJOINED_STATION.to_owned()),
@@ -5086,10 +5029,10 @@ async fn copies_exchange_topics_services_and_actions_only_within_themselves() {
     retired.push(rejoining.label());
     rejoining.rejoined();
     join_station(&federation, rejoining).await;
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "copy metadata after the rejoin",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("copy metadata after the rejoin")
+        .await;
     let after = copy_instances(&coordinator_section(&listed, &federation.robot_core_node));
     for station in stations.iter().filter(|s| s.name != REJOINED_STATION) {
         let copy = station.name;
@@ -5370,12 +5313,11 @@ async fn wait_for_more_hearings(daemon: &Daemon, instance_id: &str, value: f64, 
     panic!("{instance_id} heard no state carrying {value:?} after its neighbour left");
 }
 
-/// FRAMEWORK-220 across machines: a `zero_or_more` follower slot starts
-/// empty on the coordinator, three leaders pair into it one at a time, two
-/// of them from the second daemon, the hub lists them in join order and
-/// each leader hears only the states answered to it, removing the second
-/// leaves the other two paired and streaming, and rejoining under the same
-/// name pairs once.
+/// Across machines: a `zero_or_more` follower slot starts empty on the
+/// coordinator, three leaders pair into it one at a time, two of them from the
+/// second daemon, the hub lists them in join order and each leader hears only
+/// the states answered to it, removing the second leaves the other two paired
+/// and streaming, and rejoining under the same name pairs once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
     let federation = start_federation("peppy-pairing-fleet").await;
@@ -5441,12 +5383,13 @@ async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
             .wait_for_node_log(&instance, &format!("heard positions=[{value:?}, "))
             .await;
         for (other, other_value, _) in leaders {
-            if other != name {
-                assert!(
-                    !log.contains(&format!("heard positions=[{other_value:?}, ")),
-                    "{instance} heard {other}'s states:\n{log}"
-                );
+            if other == name {
+                continue;
             }
+            assert!(
+                !log.contains(&format!("heard positions=[{other_value:?}, ")),
+                "{instance} heard {other}'s states:\n{log}"
+            );
         }
     }
 
@@ -5574,10 +5517,10 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
             recorded_bindings(&coordinator_section(listed, cloud), PEER_GATE, "commander"),
         )
     };
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the gates before any copy",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the gates before any copy")
+        .await;
     assert_eq!(gates(&listed), (Vec::new(), Vec::new()), "{listed}");
 
     require_delivered(
@@ -5594,10 +5537,7 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
             .await,
         "join a station on the coordinator",
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the grown gates",
-    );
+    let listed = federation.robot.stack_list_json("the grown gates").await;
     let grown = vec![
         format!("alpha_commander_inst@{cloud} [copy alpha/commander_inst]"),
         format!("bravo_commander_inst@{robot} [copy bravo/commander_inst]"),
@@ -5623,10 +5563,7 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
         federation.robot.peppy(&["stack", "remove", "alpha"]).await,
         "remove the peer's station",
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the shrunken gates",
-    );
+    let listed = federation.robot.stack_list_json("the shrunken gates").await;
     let shrunk = vec![format!(
         "bravo_commander_inst@{robot} [copy bravo/commander_inst]"
     )];
@@ -5639,23 +5576,22 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
             .await,
         "reset the federation",
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the reset coordinator",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the reset coordinator")
+        .await;
     assert!(
         copy_names(&coordinator_section(&listed, robot)).is_empty(),
         "{listed}"
     );
 }
 
-/// FRAMEWORK-221 with real nodes on two machines: a consuming instance on the
-/// coordinator and an observing instance on the peer both start with empty
-/// `zero_or_more` slots; two copies join, one of them on the peer, and both
-/// instances read the copies' members in join order and receive their
-/// emissions tagged with the member that sent them; removing one copy leaves
-/// the other; rejoining under the same name appears once, at the end, and is
-/// heard again.
+/// With real nodes on two machines: a consuming instance on the coordinator and
+/// an observing instance on the peer both start with empty `zero_or_more`
+/// slots; two copies join, one of them on the peer, and both instances read the
+/// copies' members in join order and receive their emissions tagged with the
+/// member that sent them; removing one copy leaves the other; rejoining under
+/// the same name appears once, at the end, and is heard again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     let federation = start_federation("peppy-set-watch").await;
@@ -5789,9 +5725,7 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
         "reset the federation",
     );
     for (daemon, instance) in [(consumer, "consumer_inst"), (observer, "observer_inst")] {
-        daemon
-            .wait_for_stack(|text| !holds_instance(text, instance))
-            .await;
+        daemon.wait_until_holding_none(&[instance]).await;
     }
 }
 
@@ -5836,10 +5770,10 @@ async fn a_join_growing_a_set_whose_instance_is_gone_is_refused_and_changes_noth
         refused.text
     );
 
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the coordinator after the refused join",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the coordinator after the refused join")
+        .await;
     let coordinator = coordinator_section(&listed, robot);
     assert!(copy_names(&coordinator).is_empty(), "{listed}");
     assert!(
@@ -5897,10 +5831,10 @@ async fn a_set_on_an_offline_machine_refuses_a_join_and_stays_on_removal() {
         "{}",
         refused.text
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the coordinator after the refused join",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the coordinator after the refused join")
+        .await;
     let coordinator = coordinator_section(&listed, robot);
     assert_eq!(copy_names(&coordinator), ["alpha"], "{listed}");
     assert_eq!(
@@ -5921,10 +5855,10 @@ async fn a_set_on_an_offline_machine_refuses_a_join_and_stays_on_removal() {
         "{}",
         removed.text
     );
-    let listed = require_success(
-        federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "the coordinator after the removal",
-    );
+    let listed = federation
+        .robot
+        .stack_list_json("the coordinator after the removal")
+        .await;
     let coordinator = coordinator_section(&listed, robot);
     assert!(copy_names(&coordinator).is_empty(), "{listed}");
     assert!(

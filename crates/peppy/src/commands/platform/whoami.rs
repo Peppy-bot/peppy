@@ -27,46 +27,42 @@ impl Command for WhoamiCommand {
         let session = PlatformSession::resolve(self.peppy_dirs, self.api_url.as_deref())?;
         let env_name = profile::build_env_name();
 
-        match session.api() {
-            Ok(mut api) => {
-                let principal = api.get_me()?;
-                // Read after the resolution of the credential, which refreshes
-                // and persists a token that is about to expire.
-                let expires_at = session.cached_session().map(|pc| pc.expires_at);
-                if self.json {
-                    print_json(env_name, &session.api_url, &principal, expires_at);
-                } else {
-                    print_human(env_name, &session.api_url, &principal, expires_at);
-                }
-                Ok(())
+        let Some(mut api) = session.signed_in_api()? else {
+            if self.json {
+                let doc = serde_json::json!({
+                    "authenticated": false,
+                    "profile": env_name,
+                    "api_url": session.api_url,
+                });
+                println!("{doc}");
+            } else {
+                println!("Not authenticated ({env_name}). Run `peppy platform login`.");
             }
-            Err(crate::error::Error::AuthEngine(auth::AuthError::NotAuthenticated)) => {
-                if self.json {
-                    let doc = serde_json::json!({
-                        "authenticated": false,
-                        "profile": env_name,
-                        "api_url": session.api_url,
-                    });
-                    println!("{doc}");
-                } else {
-                    println!("Not authenticated ({env_name}). Run `peppy platform login`.");
-                }
-                Ok(())
-            }
-            Err(e) => Err(e),
+            return Ok(());
+        };
+        let principal = api.get_me()?;
+        // Read after the resolution of the credential, which refreshes and
+        // persists a token that is about to expire.
+        let expires_at = session.cached_session().map(|pc| pc.expires_at);
+        let now = storage::now_unix();
+        if self.json {
+            print_json(env_name, &session.api_url, &principal, expires_at, now);
+        } else {
+            print_human(env_name, &session.api_url, &principal, expires_at, now);
         }
+        Ok(())
     }
 }
 
-fn token_is_valid(expires_at: Option<i64>) -> bool {
+fn token_is_valid(expires_at: Option<i64>, now: i64) -> bool {
     // A display heuristic for `whoami` output; the authoritative expiry check
     // (with a 30s skew) lives in `ProfileCreds::is_expired` and is used by the
     // resolver to decide when to refresh. A token may read as "valid" here for
     // up to 30s after the resolver would already consider it expired.
-    expires_at.is_none_or(|exp| storage::now_unix() < exp)
+    expires_at.is_none_or(|exp| now < exp)
 }
 
-fn print_human(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<i64>) {
+fn print_human(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<i64>, now: i64) {
     println!("Logged in as {} ({env_name})", p.display_name());
     println!("  subject : {}", p.sub);
     if let Some(kind) = &p.kind {
@@ -79,7 +75,7 @@ fn print_human(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<
         println!("  region  : {region}");
     }
     println!("  backend : {api_url}");
-    let token = if token_is_valid(expires_at) {
+    let token = if token_is_valid(expires_at, now) {
         "valid"
     } else {
         "expired"
@@ -87,7 +83,7 @@ fn print_human(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<
     println!("  token   : {token}");
 }
 
-fn print_json(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<i64>) {
+fn print_json(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<i64>, now: i64) {
     let doc = serde_json::json!({
         "authenticated": true,
         "profile": env_name,
@@ -100,7 +96,7 @@ fn print_json(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<i
             "region": p.region,
         },
         "token": {
-            "valid": token_is_valid(expires_at),
+            "valid": token_is_valid(expires_at, now),
             "expires_at": expires_at,
         },
     });
@@ -111,10 +107,13 @@ fn print_json(env_name: &str, api_url: &str, p: &Principal, expires_at: Option<i
 mod tests {
     use super::*;
 
+    /// A fixed instant, so the verdict does not depend on the host clock.
+    const NOW: i64 = 1_000_000;
+
     #[test]
     fn token_validity_follows_the_expiry() {
-        assert!(token_is_valid(None));
-        assert!(token_is_valid(Some(storage::now_unix() + 60)));
-        assert!(!token_is_valid(Some(storage::now_unix() - 60)));
+        assert!(token_is_valid(None, NOW));
+        assert!(token_is_valid(Some(NOW + 60), NOW));
+        assert!(!token_is_valid(Some(NOW - 60), NOW));
     }
 }

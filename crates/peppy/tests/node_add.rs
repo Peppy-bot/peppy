@@ -5,46 +5,31 @@ use peppy::commands::Command;
 use peppy::commands::node::{
     AddNodeParams, NodeCommand, NodeCommands, NodeName, TimeoutConfig, add_node,
 };
-use peppy::context::AppContext;
-use peppy::test_support::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::LogCapture;
 use peppylib::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::common::{stack_graph, test_node_target};
+use super::common::{
+    assert_instance_count, emulate_startup_services, node_add_command, node_run_command,
+    serve_app_context, setup, stack_graph, test_node_target,
+};
 
 #[test]
 fn node_add_command_succeeds() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
+    let (rt, serve, node_ctx, node_dir) = setup();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
         "core_node_name should not be empty"
     );
 
-    // Create a temp directory for the node
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_node";
 
-    // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-
-    // Set up logging
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // First, create a node using the init command
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
@@ -56,7 +41,6 @@ fn node_add_command_succeeds() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    // Get the path to the node directory
     let node_path = node_dir.path().join(node_name);
     let peppy_json5_path = node_path.join("peppy.json5");
     assert!(
@@ -67,29 +51,10 @@ fn node_add_command_succeeds() {
 
     peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
-    // Now add the node to the node stack
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect("node add command should succeed");
 
-    // Verify the logs contain success message
     let logs = log_capture.logs();
     assert!(
         logs.contains(&format!("Added node {}:", node_name)),
@@ -97,52 +62,33 @@ fn node_add_command_succeeds() {
         logs
     );
 
-    // Regression: a first-time `node add` runs a `NodeInfoRequest` preflight
-    // to check for existing instances before overwriting. When the node
-    // isn't in the stack (the happy-path case here), that lookup used to
-    // surface as a daemon-side ERROR log from `run_handler` even though the
-    // CLI intentionally swallows the rejection. Assert that no such spurious
-    // service-handler error is emitted during a clean add.
+    // A first-time `node add` runs a `NodeInfoRequest` preflight to look for
+    // existing instances before it overwrites. The node is not in the stack
+    // here, so the daemon answers `NotInStack`, and a clean add emits no
+    // service-handler error log.
     assert!(
         !logs.contains("service handler returned error"),
         "first-time node add should not emit a service-handler error log. Logs:\n{}",
         logs
     );
 
-    // Query the node stack to verify the node was added
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
-
     // Verify the node is in the graph with 0 instances (since run=false)
-    let added_node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        added_node.instance_count(),
+    rt.block_on(assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         0,
-        "graph should show 0 instances for the added node. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+        "for the added node",
+    ));
 }
 
 #[test]
 fn node_add_command_with_run_arg_succeeds() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    // Mock messaging is sufficient: we run in-process node services for health/ready.
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
@@ -150,22 +96,12 @@ fn node_add_command_with_run_arg_succeeds() {
         "core_node_name should not be empty"
     );
 
-    // Create a temp directory for the node
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_run_node";
     let instance_id = "test_add_run_instance";
 
-    // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-
-    // Set up logging
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // First, create a node using the init command
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
@@ -177,7 +113,6 @@ fn node_add_command_with_run_arg_succeeds() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    // Get the path to the node directory
     let node_path = node_dir.path().join(node_name);
     let peppy_json5_path = node_path.join("peppy.json5");
     assert!(
@@ -193,22 +128,12 @@ fn node_add_command_with_run_arg_succeeds() {
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node ready service should start");
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        node_name,
+        instance_id,
+    ));
 
     // Add the node to the node stack with run=true to also start an instance
     NodeCommand {
@@ -232,7 +157,6 @@ fn node_add_command_with_run_arg_succeeds() {
     .execute(&node_ctx)
     .expect("node add command with run should succeed");
 
-    // Verify the logs contain success messages for both add and start
     let logs = log_capture.logs();
     assert!(
         logs.contains(&format!("Added node {}:", node_name)),
@@ -245,58 +169,31 @@ fn node_add_command_with_run_arg_succeeds() {
         logs
     );
 
-    // Query the node stack to verify the node was added with an instance
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
-
     // Verify the node is in the graph with 1 instance (since run=true)
-    let added_node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        added_node.instance_count(),
+    rt.block_on(assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         1,
-        "graph should show 1 instance for the added node. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+        "for the added node",
+    ));
 }
 
 #[test]
 fn node_add_after_failed_sync_succeeds() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    // Mock messaging is sufficient: we run in-process node services for health/ready.
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
+    let (rt, serve, node_ctx, node_dir) = setup();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
         "core_node_name should not be empty"
     );
 
-    // Create a temp directory for the node
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_sync_then_add_node";
 
-    // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-
-    // Set up logging
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
@@ -312,7 +209,6 @@ fn node_add_after_failed_sync_succeeds() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    // Get the path to the node directory
     let node_path = node_dir.path().join(node_name);
     let peppy_dir = node_path.join(PEPPY_OUTPUT_DIR);
     let git_hash_path = peppy_dir.join("git.hash");
@@ -325,36 +221,14 @@ fn node_add_after_failed_sync_succeeds() {
     );
     std::fs::write(&git_hash_path, "wrong-hash\n").expect("failed to write wrong git hash");
 
-    // Disable build_cmd to avoid build step
     let peppy_json5_path = node_path.join("peppy.json5");
     peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     // 3. Run `node add .` on that node, it'll fail due to git hash mismatch
-    let add_result = NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx);
-
-    assert!(
-        add_result.is_err(),
-        "node add should fail due to git hash mismatch"
-    );
-    let error_message = add_result.unwrap_err().to_string();
+    let error_message = node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect_err("node add should fail due to git hash mismatch")
+        .to_string();
     assert!(
         error_message.contains("git hash mismatch"),
         "error should mention git hash mismatch, got: {}",
@@ -363,10 +237,7 @@ fn node_add_after_failed_sync_succeeds() {
 
     // 4. Run `node sync` on that node to update the `.peppy/git.hash` of the node
     // Create a context for the node directory (sync runs from within the node dir)
-    let sync_ctx = Arc::new(
-        AppContext::with_messenger(&node_path, Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let sync_ctx = serve_app_context(&serve, &node_path);
 
     NodeCommand {
         command: NodeCommands::Sync {
@@ -378,28 +249,10 @@ fn node_add_after_failed_sync_succeeds() {
     .expect("node sync command should succeed");
 
     // 5. Run `node add .` again. This time it should succeed
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed after sync");
+    node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect("node add command should succeed after sync");
 
-    // Verify the logs contain success message
     let logs = log_capture.logs();
     assert!(
         logs.contains(&format!("Added node {}:", node_name)),
@@ -407,25 +260,17 @@ fn node_add_after_failed_sync_succeeds() {
         logs
     );
 
-    // Query the node stack to verify the node was added
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
-
-    // Verify the node is in the graph
-    let added_node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        added_node.instance_count(),
+    rt.block_on(assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         0,
-        "graph should show 0 instances for the added node"
-    );
+        "for the added node",
+    ));
 }
 
 /// When adding a node that already exists with running instances:
@@ -435,12 +280,7 @@ fn node_add_after_failed_sync_succeeds() {
 /// This test verifies the `force: true` path where existing instances are shut down automatically.
 #[test]
 fn node_add_same_node_shutdown_existing_instances() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    // Mock messaging is sufficient: we run in-process node services for health/ready.
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
@@ -448,22 +288,12 @@ fn node_add_same_node_shutdown_existing_instances() {
         "core_node_name should not be empty"
     );
 
-    // Create a temp directory for the node
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_shutdown_node";
     let instance_id = "test_shutdown_instance";
 
-    // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-
-    // Set up logging
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // First, create a node using the init command
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
@@ -475,7 +305,6 @@ fn node_add_same_node_shutdown_existing_instances() {
     .execute(&node_ctx)
     .expect("node init command should succeed");
 
-    // Get the path to the node directory
     let node_path = node_dir.path().join(node_name);
     let peppy_json5_path = node_path.join("peppy.json5");
     assert!(
@@ -485,29 +314,19 @@ fn node_add_same_node_shutdown_existing_instances() {
     );
 
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
-    // The instance this spawns is the premise of the test — it has to still be
-    // running when the second `add` re-adds the node — so its lifetime is tied
+    // The instance this spawns is the premise of the test: it has to still be
+    // running when the second `add` re-adds the node, so its lifetime is tied
     // to the test rather than to a fixed `sleep`.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node ready service should start");
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        node_name,
+        instance_id,
+    ));
     let (_node_shutdown_handle, shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
@@ -524,7 +343,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         drop(instances);
     });
 
-    // Step 1: Add the node with start=true to create an instance
+    // Step 1: Add the node with `run: true` to create an instance
     NodeCommand {
         command: NodeCommands::Add {
             clock: None,
@@ -607,7 +426,6 @@ fn node_add_same_node_shutdown_existing_instances() {
         "should have 0 instances after re-add with force (instance should be stopped)"
     );
 
-    // Verify the logs show the node was added successfully
     let logs = log_capture.logs();
     assert!(
         logs.contains(&format!("Added node {}:", node_name)),
@@ -617,26 +435,16 @@ fn node_add_same_node_shutdown_existing_instances() {
 }
 #[test]
 fn node_add_same_node_different_sources_show_overwrite_prompt() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_overwrite_git_source";
     let instance_id = "test_overwrite_git_instance";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // Init the node
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(node_name).expect("valid node name"),
@@ -659,29 +467,18 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     // This instance is the premise: the confirmation path under test only
     // engages because `fetch_node_info` finds a RUNNING instance to warn
     // about. It has to survive the git repo construction between the two
-    // adds, so tie it to the test instead of a fixed `sleep` —
-    // otherwise a loaded machine turns this into a silent no-op that
-    // confirms nothing.
+    // adds, so tie it to the test instead of a fixed `sleep`; otherwise a
+    // loaded machine turns this into a silent no-op that confirms nothing.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node ready service should start");
-    let _node_health_handle = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        ))
-        .expect("node health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        node_name,
+        instance_id,
+    ));
     let (_node_shutdown_handle, shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
@@ -698,7 +495,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         drop(instances);
     });
 
-    // Step 1: Add the node from local filesystem with start=true
+    // Step 1: Add the node from the local filesystem with `run: true`
     NodeCommand {
         command: NodeCommands::Add {
             clock: None,
@@ -816,20 +613,10 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
 
 #[test]
 fn node_add_with_sync_flag_refreshes_stale_git_hash() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
+    let (rt, serve, node_ctx, node_dir) = setup();
     let core_node_name = serve.core_node_name().to_string();
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_sync_flag_node";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -858,34 +645,12 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     std::fs::write(&git_hash_path, "wrong-hash\n").expect("failed to write wrong git hash");
 
     // 3. `node add` without `--sync` should fail with a git hash mismatch
-    let add_result = NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx);
+    let error_message = node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect_err("node add without --sync should fail on stale git.hash")
+        .to_string();
     assert!(
-        add_result.is_err(),
-        "node add without --sync should fail on stale git.hash"
-    );
-    assert!(
-        add_result
-            .unwrap_err()
-            .to_string()
-            .contains("git hash mismatch"),
+        error_message.contains("git hash mismatch"),
         "error should mention git hash mismatch"
     );
 
@@ -960,21 +725,11 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
 /// daemon round-trip is attempted.
 #[test]
 fn node_add_with_sync_flag_rejects_remote_source() {
-    // No daemon / runtime setup needed; the error fires during local arg
-    // validation before any async work. We still need a minimal AppContext.
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
+    // The error fires during local argument validation, before any request
+    // reaches the daemon; the emulated daemon only backs the AppContext.
+    let (_rt, _serve, node_ctx, _node_dir) = setup();
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-
-    let result = NodeCommand {
+    let err = NodeCommand {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
@@ -992,13 +747,9 @@ fn node_add_with_sync_flag_rejects_remote_source() {
             force: false,
         },
     }
-    .execute(&node_ctx);
-
-    assert!(
-        result.is_err(),
-        "node add --sync with remote source should fail"
-    );
-    let err = result.unwrap_err().to_string();
+    .execute(&node_ctx)
+    .expect_err("node add --sync with remote source should fail")
+    .to_string();
     assert!(
         err.contains("--sync is only valid for local node sources"),
         "error should mention local-source restriction, got: {}",
@@ -1008,17 +759,12 @@ fn node_add_with_sync_flag_rejects_remote_source() {
 
 // ─── `node add --run` shares binding validation with `node run` ────────────
 //
-// These tests pin down the contract introduced when fixing the
-// `peppy node add -sbr` bypass: chaining a run from `node add` must go
-// through the same launcher binding rules as a standalone `peppy node run`.
-// Before the fix, `add -r` constructed the launch with an empty
-// `slot_bindings` map and skipped `validate_bindings`, so a consumer with
-// pinned `depends_on` would silently spawn unbound, exactly the
-// regression spec'd at the top of this file.
+// A run chained from `node add` goes through the same launcher binding rules
+// as a standalone `peppy node run`, so a consumer with pinned `depends_on`
+// cannot spawn unbound.
 
 /// Writes a consumer manifest declaring `depends_on.nodes` pinned to
-/// `(producer_name, "v1")`. Mirrors the helper in `tests/node_run.rs`;
-/// duplicated here so this file has no cross-module test dependency.
+/// `(producer_name, "v1")`.
 fn write_consumer_with_pinned_depends_on(
     work_dir: &std::path::Path,
     consumer_name: &str,
@@ -1065,26 +811,14 @@ fn write_consumer_with_pinned_depends_on(
 /// `peppy node add . -sbr` (sync + build + run) runs the chained spawn
 /// through the same binding validation as `node run`: a `--link` whose
 /// KEY names no declared slot MUST fail before any spawn side-effect.
-/// Before the fix the chained-run path called `run_instance_async`
-/// directly, bypassing validation entirely; the fix routes both `node
-/// run` and `node add -r` through `validate_and_run_instance`, so the
-/// same error fires for both.
+/// Both `node run` and `node add -r` go through
+/// `validate_and_run_instance`, so the same error fires for both.
 #[test]
 fn node_add_with_run_rejects_unknown_binding_slot() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
+    let (_rt, _serve, node_ctx, work_dir) = setup();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_add_r_unbound_producer";
     let consumer_name = "test_add_r_unbound_consumer";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1111,26 +845,9 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
         &producer_path.join("peppy.json5"),
         &instances.sentinel(),
     );
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(producer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer node add should succeed");
+    node_add_command(&producer_path)
+        .execute(&node_ctx)
+        .expect("producer node add should succeed");
 
     // Consumer with a single declared link_id. A `--link` on a key that
     // names no declared slot must be rejected by the chained run.
@@ -1194,23 +911,14 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
 /// must launch cleanly.
 #[test]
 fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, work_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_add_r_bound_producer";
     let consumer_name = "test_add_r_bound_consumer";
     let producer_instance_id = "cam_a";
     let consumer_instance_id = "consumer_inst";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1229,72 +937,30 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
     let producer_path = work_dir.path().join(producer_name);
     // `cam_a` has to still be in the stack when the consumer's
     // `add -r --link wrist_left@cam_a` is validated, several CLI round-trips
-    // later. a fixed `sleep 4` would make that a race
-    // against the machine's load, so gate the instance on the test's own
-    // lifetime instead of on a duration.
+    // later. A fixed `sleep 4` would make that a race against the machine's
+    // load, so gate the instance on the test's own lifetime instead of on a
+    // duration.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(
         &producer_path.join("peppy.json5"),
         &instances.sentinel(),
     );
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(producer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer node add should succeed");
+    node_add_command(&producer_path)
+        .execute(&node_ctx)
+        .expect("producer node add should succeed");
 
     // Spawn an instance of the producer so the binding's VALUE resolves
     // to a real running instance_id.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _producer_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            producer_instance_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer ready service should start");
-    let _producer_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            producer_instance_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer health service should start");
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(producer_instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer run should succeed");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_instance_id,
+    ));
+    node_run_command(producer_instance_id, producer_name, Vec::new(), Vec::new())
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
 
     let consumer_dir = write_consumer_with_pinned_depends_on(
         work_dir.path(),
@@ -1304,25 +970,14 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
         &instances,
     );
 
-    let _consumer_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            consumer_instance_id,
-            test_node_target(consumer_name),
-        ))
-        .expect("consumer ready service should start");
-    let _consumer_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            consumer_instance_id,
-            test_node_target(consumer_name),
-        ))
-        .expect("consumer health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        consumer_name,
+        consumer_instance_id,
+    ));
 
-    // `node add -r --link wrist_left@cam_a`, exactly the invocation the
-    // reproducer at the top of this file wanted to work.
+    // `node add -r --link wrist_left@cam_a`.
     NodeCommand {
         command: NodeCommands::Add {
             clock: None,
@@ -1357,19 +1012,14 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
 /// `--link KEY@VALUE` on `node add -r` where KEY is NOT in the consumer's
 /// `depends_on` is a dead-binding. The launcher's `validate_bindings`
 /// flags it on `node run`; chaining the run from `node add` must surface
-/// the same rejection (same code path now). Catches the symmetric
-/// regression: not only "missing binding is detected", but also "a bogus
-/// binding KEY is detected" through the chained-run path.
+/// the same rejection. This covers the bogus-KEY side of binding validation
+/// on the chained-run path, next to the missing-binding side.
 #[test]
 fn node_add_with_run_rejects_dead_binding_key() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, work_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_add_r_deadkey_producer";
     let consumer_name = "test_add_r_deadkey_consumer";
     let producer_instance_id = "cam_a";
@@ -1379,11 +1029,6 @@ fn node_add_with_run_rejects_dead_binding_key() {
     // would also fire on the producer start above and produce a false
     // failure.
     let consumer_instance_id = "deadkey_consumer_inst";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1407,62 +1052,20 @@ fn node_add_with_run_rejects_dead_binding_key() {
         &producer_path.join("peppy.json5"),
         &instances.sentinel(),
     );
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(producer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer node add should succeed");
+    node_add_command(&producer_path)
+        .execute(&node_ctx)
+        .expect("producer node add should succeed");
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _producer_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            producer_instance_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer ready service should start");
-    let _producer_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            producer_instance_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer health service should start");
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(producer_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(producer_instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer run should succeed");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_instance_id,
+    ));
+    node_run_command(producer_instance_id, producer_name, Vec::new(), Vec::new())
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
 
     let consumer_dir = write_consumer_with_pinned_depends_on(
         work_dir.path(),
@@ -1516,14 +1119,10 @@ fn node_add_with_run_rejects_dead_binding_key() {
 /// are not its concern.
 #[test]
 fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, work_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let producer_name = "test_add_r_noff_producer";
     let bystander_name = "test_add_r_noff_bystander";
     let new_consumer_name = "test_add_r_noff_new_consumer";
@@ -1531,11 +1130,6 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     let producer_right_id = "cam_right";
     let bystander_instance_id = "bystander_inst";
     let new_consumer_instance_id = "new_consumer_inst";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1555,88 +1149,36 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     // Both producer instances must still be in the stack at the final
     // `add -r` below, which binds `only_pin` to `cam_left`. That is several
     // CLI round-trips away (the bystander's whole add+build+run, plus this
-    // consumer's), so a fixed `sleep 4` made the test a
-    // race: once the machine is loaded enough for that stretch to take >4s,
-    // the producers exit, the daemon reaps them, and the binding fails with
-    // `unknown instance_id cam_left`. Tie their lifetime to the test instead.
+    // consumer's), so their lifetime is tied to the test rather than to a
+    // fixed `sleep` that a loaded machine outlasts: the producers would exit,
+    // the daemon would reap them, and the binding would fail with
+    // `unknown instance_id cam_left`.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(
         &producer_path.join("peppy.json5"),
         &instances.sentinel(),
     );
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(producer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("producer node add should succeed");
+    node_add_command(&producer_path)
+        .execute(&node_ctx)
+        .expect("producer node add should succeed");
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _producer_left_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            producer_left_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer-left ready service should start");
-    let _producer_left_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            producer_left_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer-left health service should start");
-    let _producer_right_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            producer_right_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer-right ready service should start");
-    let _producer_right_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            producer_right_id,
-            test_node_target(producer_name),
-        ))
-        .expect("producer-right health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_left_id,
+    ));
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        producer_name,
+        producer_right_id,
+    ));
     for instance_id in [producer_left_id, producer_right_id] {
-        NodeCommand {
-            command: NodeCommands::Run {
-                clock: None,
-                publish_clock: None,
-                node_ref: None,
-                node_name: Some(producer_name.to_string()),
-                tag: Some("v1".to_string()),
-                args: Vec::new(),
-                instance_id: Some(instance_id.to_string()),
-                links: Vec::new(),
-                vacant_links: Vec::new(),
-                idle_timeout: 60,
-                max_timeout: 3600,
-                build: false,
-            },
-        }
-        .execute(&node_ctx)
-        .expect("producer run should succeed");
+        node_run_command(instance_id, producer_name, Vec::new(), Vec::new())
+            .execute(&node_ctx)
+            .expect("producer run should succeed");
     }
 
     // Stand up + run the bystander consumer with both pins bound.
@@ -1647,22 +1189,12 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         &["wrist_left", "wrist_right"],
         &instances,
     );
-    let _bystander_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            bystander_instance_id,
-            test_node_target(bystander_name),
-        ))
-        .expect("bystander ready service should start");
-    let _bystander_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            bystander_instance_id,
-            test_node_target(bystander_name),
-        ))
-        .expect("bystander health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        bystander_name,
+        bystander_instance_id,
+    ));
     NodeCommand {
         command: NodeCommands::Add {
             clock: None,
@@ -1697,22 +1229,12 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         &["only_pin"],
         &instances,
     );
-    let _new_consumer_ready = rt
-        .block_on(listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            new_consumer_instance_id,
-            test_node_target(new_consumer_name),
-        ))
-        .expect("new-consumer ready service should start");
-    let _new_consumer_health = rt
-        .block_on(listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            new_consumer_instance_id,
-            test_node_target(new_consumer_name),
-        ))
-        .expect("new-consumer health service should start");
+    rt.block_on(emulate_startup_services(
+        &node_messenger,
+        &core_node_name,
+        new_consumer_name,
+        new_consumer_instance_id,
+    ));
 
     let result = NodeCommand {
         command: NodeCommands::Add {
@@ -1756,29 +1278,17 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     );
 }
 
-/// Regression: `peppy node add --build --force` must forward `--force` to the
-/// chained build. With a build already in flight for the node, the chained
-/// build supersedes it (the daemon cancels the old task with "build cancelled
-/// by --force") instead of being rejected with "action already in progress".
-/// Pins the fix for the chained `build_node_async` call hardcoding
-/// `force: false` in `add_node_async`.
+/// `peppy node add --build --force` must forward `--force` to the chained
+/// build. With a build already in flight for the node, the chained build
+/// supersedes it (the daemon cancels the old task with "build cancelled by
+/// --force") instead of being rejected with "action already in progress".
 #[test]
 fn node_add_build_force_supersedes_inflight_build() {
-    // Use a runtime for async setup; NodeCommand::execute creates its own runtime internally
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
+    let (rt, serve, node_ctx, node_dir) = setup();
     let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
-    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
     let node_name = "test_add_force_build_node";
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -1883,7 +1393,7 @@ fn node_add_build_force_supersedes_inflight_build() {
     // build must finish instantly once it supersedes the blocked one.
     peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
-    // The user's repro: `node add --build --force` while a build is in flight.
+    // `node add --build --force` while a build is in flight.
     NodeCommand {
         command: NodeCommands::Add {
             clock: None,
@@ -1957,22 +1467,12 @@ fn write_run_only_node(
 /// carries no closure).
 #[test]
 fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
+    let (rt, serve, node_ctx, work_dir) = setup();
     let core_node_name = serve.core_node_name().to_string();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let recorder_name = "optadd_recorder";
     let consumer_name = "optadd_consumer";
     let git_hash = super::common::read_daemon_git_hash(serve.daemon_state_path());
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
 
     let recorder_dir = write_run_only_node(
         work_dir.path(),
@@ -2003,11 +1503,9 @@ fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
         Some(r#"{ services: { consumes: [{ link_id: "rec", name: "finish_session" }] } }"#),
     );
 
-    super::common::node_add_command(&consumer_dir)
-        .execute(&node_ctx)
-        .expect(
-            "adding a consumer whose optional dependency lives only in the repo cache should succeed",
-        );
+    node_add_command(&consumer_dir).execute(&node_ctx).expect(
+        "adding a consumer whose optional dependency lives only in the repo cache should succeed",
+    );
 
     let messenger_handle = node_ctx
         .messenger_handle()
@@ -2031,20 +1529,10 @@ fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
 /// missing and failing later in the build.
 #[test]
 fn node_add_refuses_optional_dependency_resolvable_nowhere() {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
+    let (_rt, serve, node_ctx, work_dir) = setup();
 
-    let work_dir = tempfile::tempdir().expect("failed to create work dir");
     let consumer_name = "nowhere_dep_consumer";
     let git_hash = super::common::read_daemon_git_hash(serve.daemon_state_path());
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
 
     let consumer_dir = write_run_only_node(
         work_dir.path(),
@@ -2056,7 +1544,7 @@ fn node_add_refuses_optional_dependency_resolvable_nowhere() {
         Some(r#"{ services: { consumes: [{ link_id: "rec", name: "finish_session" }] } }"#),
     );
 
-    let err = super::common::node_add_command(&consumer_dir)
+    let err = node_add_command(&consumer_dir)
         .execute(&node_ctx)
         .expect_err("a dependency resolvable nowhere must refuse the add");
     let msg = err.to_string();

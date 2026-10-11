@@ -116,13 +116,13 @@ fn keep_alive_script_for(sentinel: &Path) -> String {
 /// rather than by a duration, and clears `build_cmd`, so the test never spawns
 /// a real binary.
 ///
-/// This replaces the `sleep 4` these tests used to use, which silently made
-/// "the rest of the test finishes within 4 seconds" a precondition. A test that
-/// spawns an instance and then keeps referring to it — a producer named by a
-/// later `--link`, say — passed on an idle machine and failed under load with
-/// `unknown instance_id`, because the daemon reaped the exited process out of
-/// the stack mid-test. Bounding on a sentinel removes the wall-clock
-/// dependency: the instance is alive whenever the test still wants it to be.
+/// A keep-alive bounded by a duration makes "the rest of the test finishes
+/// within that duration" a precondition: a test that spawns an instance and
+/// then keeps referring to it (a producer named by a later `--link`, say)
+/// passes on an idle machine and fails under load with `unknown instance_id`,
+/// because the daemon reaps the exited process out of the stack mid-test.
+/// Bounding on a sentinel removes the wall-clock dependency: the instance is
+/// alive whenever the test still wants it to be.
 ///
 /// Point `sentinel` at a path inside a `TempDir` the test owns. Dropping that
 /// `TempDir` at the end of the test ends the process within one poll interval,
@@ -130,7 +130,7 @@ fn keep_alive_script_for(sentinel: &Path) -> String {
 ///
 /// Neither exit condition is a duration, so there is no window to outgrow:
 ///
-/// 1. the sentinel exists — the normal path, ending at `TempDir` drop; and
+/// 1. the sentinel exists: the normal path, ending at `TempDir` drop; and
 /// 2. the process that spawned it (the test binary, which hosts the daemon)
 ///    is still alive. `$PPID` is captured up front rather than read in the
 ///    loop, because a hard-killed test binary reparents this process to init
@@ -233,13 +233,16 @@ enum MessengerInstance {
     Zenoh(ZenohdInstance),
 }
 
+/// The core node name of an emulated daemon that a test does not name.
+const DEFAULT_CORE_NODE_NAME: &str = "test-core-node";
+
 pub struct ServeCommandEmulation {
     /// The daemon's data root. Owned when the emulation created it, borrowed
     /// when a test supplied one so that a later emulation can reopen it.
     root: PathBuf,
     _temp_dir: Option<TempDir>,
     _instance: Option<MessengerInstance>,
-    _core_node_task: JoinHandle<core_node::Result<()>>,
+    core_node_task: JoinHandle<core_node::Result<()>>,
     shutdown_token: tokio_util::sync::CancellationToken,
     shared_messenger: Arc<TokioMutex<Messenger>>,
     daemon_state_path: PathBuf,
@@ -248,7 +251,7 @@ pub struct ServeCommandEmulation {
 
 impl ServeCommandEmulation {
     pub async fn with_mock() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        Self::with_mock_named("test-core-node").await
+        Self::with_mock_named(DEFAULT_CORE_NODE_NAME).await
     }
 
     /// Starts a named daemon on a fresh mock router.
@@ -269,7 +272,7 @@ impl ServeCommandEmulation {
     /// one left behind. The caller owns `root`; two emulations may use it in
     /// sequence, never at once.
     pub async fn with_mock_in(root: &Path) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        Self::with_mock_named_in("test-core-node", root.to_path_buf(), None).await
+        Self::with_mock_named_in(DEFAULT_CORE_NODE_NAME, root.to_path_buf(), None).await
     }
 
     async fn with_mock_named_in(
@@ -321,9 +324,11 @@ impl ServeCommandEmulation {
         // `SessionScope::Namespace(local)`; zenoh sessions interoperate only when
         // their namespaces are equal, so a namespace-free router would leave
         // `node_init` (and every other core-node service) unreachable from the
-        // CLI. The other arguments mirror `start_router_ephemeral`'s defaults.
+        // CLI. The router listens on the host `setup` records in the daemon
+        // state for the CLI to dial. The other arguments mirror
+        // `start_router_ephemeral`'s defaults.
         let mut instance = ZenohAdapter::start_router_ephemeral_in_mode(
-            "127.0.0.1",
+            config::consts::DEFAULT_MESSAGING_HOST,
             None,
             true,
             pmi::SubscriberBufferSizes::default(),
@@ -338,7 +343,7 @@ impl ServeCommandEmulation {
             Arc::new(TokioMutex::new(messenger)),
             port,
             Some(MessengerInstance::Zenoh(instance)),
-            "test-core-node",
+            DEFAULT_CORE_NODE_NAME,
             temp_dir.path().to_path_buf(),
             Some(temp_dir),
         )
@@ -429,7 +434,7 @@ impl ServeCommandEmulation {
             root,
             _temp_dir: owned,
             _instance: instance,
-            _core_node_task: core_node_task,
+            core_node_task,
             shutdown_token,
             shared_messenger,
             daemon_state_path,
@@ -457,6 +462,6 @@ impl ServeCommandEmulation {
 impl Drop for ServeCommandEmulation {
     fn drop(&mut self) {
         self.shutdown_token.cancel();
-        self._core_node_task.abort();
+        self.core_node_task.abort();
     }
 }

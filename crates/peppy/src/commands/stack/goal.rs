@@ -111,13 +111,7 @@ struct GoalOutput {
 
 impl GoalOutput {
     fn show(&mut self, feedback: &LaunchFeedback) {
-        let step_changed = self
-            .step
-            .as_ref()
-            .map(|s| std::mem::discriminant(s) != std::mem::discriminant(&feedback.step))
-            .unwrap_or(true);
-
-        if step_changed {
+        if self.step != Some(feedback.step) {
             self.clear();
             self.scrolling = None;
             self.step = Some(feedback.step);
@@ -324,5 +318,24 @@ mod tests {
             line,
             "reactive_policy:v1@cn-robot-7 [FAILED]: /tmp/.peppy/logs/build/reactive_policy_v1.log"
         );
+    }
+
+    /// A change of step ends the scrolling output of the step before it; the
+    /// add, build and run steps write into one, the launcher step does not.
+    #[test]
+    fn show_resets_the_scrolling_output_on_a_step_change() {
+        let mut output = GoalOutput::default();
+        let steps = [
+            (LaunchFeedbackStep::LauncherStep, false),
+            (LaunchFeedbackStep::AddingNode, true),
+            (LaunchFeedbackStep::AddingNode, true),
+            (LaunchFeedbackStep::BuildingNode, true),
+            (LaunchFeedbackStep::LauncherStep, false),
+        ];
+        for (step, has_scrolling_output) in steps {
+            output.show(&LaunchFeedback::stdout("line", step));
+            assert_eq!(output.scrolling.is_some(), has_scrolling_output, "{step:?}");
+            assert_eq!(output.step, Some(step));
+        }
     }
 }

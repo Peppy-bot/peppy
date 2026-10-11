@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use super::common::SERVE_INITIALIZED;
 use daemon::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
 use peppy::commands::Command;
@@ -37,7 +38,7 @@ fn serve_command() {
     let shutdown_thread = thread::spawn(move || {
         wait_for_log(
             || log_for_shutdown.logs(),
-            "Serve command initialized!",
+            SERVE_INITIALIZED,
             Duration::from_secs(30),
         );
         shutdown_token_clone.cancel();
@@ -71,15 +72,15 @@ fn serve_command() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains("Serve command initialized!"),
+        logs.contains(SERVE_INITIALIZED),
         "serve command should log initialization message. Logs:\n{}",
         logs
     );
     // This test drives shutdown via the injected external cancellation token
     // (not an OS signal), so the coordinator takes the external-shutdown arm.
-    // The OS-signal arm logs "Shutdown signal received" instead; asserting that
-    // here made the test pass only when a sibling test's process-wide SIGINT
-    // happened to race in first.
+    // The OS-signal arm logs "Shutdown signal received" instead, and only a
+    // process-wide SIGINT from a sibling test can reach it here, so the test
+    // asserts the external arm.
     assert!(
         logs.contains("External shutdown requested"),
         "serve command should log external shutdown reception. Logs:\n{}",

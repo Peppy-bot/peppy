@@ -92,17 +92,34 @@ pub fn spawn_daemon_with_env(
         Box::new(child.stderr.take().expect("piped stderr")) as Box<dyn std::io::Read + Send>,
     ] {
         let logs_writer = Arc::clone(&logs);
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            while reader.read_line(&mut line).unwrap_or(0) > 0 {
-                logs_writer.lock().unwrap().push_str(&line);
-                line.clear();
-            }
-        });
+        std::thread::spawn(move || drain_lines_into(stream, &logs_writer));
     }
 
     (DaemonGuard(child), logs)
+}
+
+/// Appends every line `stream` yields to `logs` until the stream ends. The
+/// line is read as bytes and decoded lossily, because `read_line` fails on a
+/// line that is not UTF-8.
+fn drain_lines_into(stream: impl std::io::Read, logs: &Mutex<String>) {
+    let mut reader = BufReader::new(stream);
+    let mut line = Vec::new();
+    while reader.read_until(b'\n', &mut line).unwrap_or(0) > 0 {
+        logs.lock()
+            .unwrap()
+            .push_str(&String::from_utf8_lossy(&line));
+        line.clear();
+    }
+}
+
+/// A line that is not UTF-8 (a child of the daemon may print one) does not
+/// end the drain: a drain that stopped would leave the pipe to fill and the
+/// daemon to block on its next log write.
+#[test]
+fn the_drain_reads_past_a_line_that_is_not_utf8() {
+    let logs = Mutex::new(String::new());
+    drain_lines_into(std::io::Cursor::new(b"first\n\xff\nlast\n".to_vec()), &logs);
+    assert_eq!(*logs.lock().unwrap(), "first\n\u{fffd}\nlast\n");
 }
 
 /// The line a daemon prints once its serve loop is up.
@@ -205,6 +222,37 @@ pub async fn stack_graph(
     serde_json::from_str(&response.graph_json).expect("graph_json should parse")
 }
 
+/// Asserts that `stack list` shows `expected` instances of `node_name` at the
+/// standard test tag. `moment` names the point of the test ("before run",
+/// "after stop") in the failure.
+pub async fn assert_instance_count(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    expected: usize,
+    moment: &str,
+) {
+    let graph = stack_graph(messenger, core_node_name).await;
+    let node = graph
+        .find_node(node_name, TEST_NODE_TAG)
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the added node. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node.instance_count(),
+        expected,
+        "graph should show {expected} instance(s) {moment}. Got: {:?}",
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.label(), n.instance_count()))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// One `stack list` answer from `core_node_name`.
 async fn stack_list(
     messenger: &MessengerHandle,
@@ -228,17 +276,20 @@ pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
 
+/// Parses a `--core-node` target. Panics on an invalid name; tests use
+/// known-good values only.
+pub fn test_core_node_name(name: &str) -> config::runtime::CoreNodeName {
+    config::runtime::CoreNodeName::parse(name).expect("test core node name")
+}
+
 pub fn read_daemon_git_hash(daemon_state_path: &std::path::Path) -> String {
-    let contents =
-        std::fs::read_to_string(daemon_state_path).expect("daemon state file should be readable");
-    let value: serde_json::Value =
-        serde_json5::from_str(&contents).expect("daemon state should parse as JSON5");
-    value
-        .get("git_hash")
-        .and_then(|v| v.as_str())
-        .filter(|git_hash| !git_hash.is_empty())
-        .expect("daemon state should include a non-empty git_hash")
-        .to_string()
+    let state = daemon::state::DaemonState::read_from(daemon_state_path)
+        .expect("daemon state should read and parse");
+    assert!(
+        !state.git_hash.is_empty(),
+        "daemon state should include a non-empty git_hash"
+    );
+    state.git_hash
 }
 
 /// The on-disk layout the daemon expects of a staged node, written once: the
@@ -276,6 +327,28 @@ pub fn run_cmd_json5(run_cmd: &[impl AsRef<str>]) -> String {
         .join(", ")
 }
 
+/// Writes the smallest manifest a test node runs from: a name, a tag and an
+/// explicit `run_cmd` (so the daemon's build phase is skipped), the
+/// [`write_node_config_for_helper`] manifest without any optional block.
+pub fn write_minimal_node_config(
+    nodes_directory: &std::path::Path,
+    node_name: &str,
+    node_tag: &str,
+    git_hash: &str,
+    run_cmd: &[impl AsRef<str>],
+) -> std::path::PathBuf {
+    write_node_config_for_helper(
+        nodes_directory,
+        node_name,
+        node_tag,
+        git_hash,
+        run_cmd,
+        None,
+        None,
+        None,
+    )
+}
+
 /// Writes a minimal peppy.json5 with an explicit `run_cmd` (so the daemon's
 /// build phase is skipped), optional `depends_on` / `implements` manifest
 /// blocks, and an optional top-level `interfaces` block, staged via
@@ -286,7 +359,7 @@ pub fn write_node_config_for_helper(
     node_name: &str,
     node_tag: &str,
     git_hash: &str,
-    run_cmd: &[String],
+    run_cmd: &[impl AsRef<str>],
     depends_on_json5: Option<&str>,
     implements_json5: Option<&str>,
     interfaces_json5: Option<&str>,
@@ -315,6 +388,24 @@ pub fn write_node_config_for_helper(
         }}"#
     );
     install_node_manifest(nodes_directory, node_name, git_hash, &body)
+}
+
+/// Writes `dir/peppy.json5`, the smallest node manifest a repository indexes:
+/// no interfaces, and `true` as its build and run commands.
+pub fn write_indexable_node(dir: &std::path::Path, name: &str, tag: &str) {
+    std::fs::create_dir_all(dir).expect("create node dir");
+    std::fs::write(
+        dir.join(config::consts::NODE_CONFIG_FILE),
+        format!(
+            r#"{{
+  peppy_schema: "node/v1",
+  manifest: {{ name: "{name}", tag: "{tag}" }},
+  interfaces: {{}},
+  execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
+}}"#
+        ),
+    )
+    .expect("write peppy.json5");
 }
 
 /// Registers node directories in the daemon's node cache (`cache/nodes.json5`)
@@ -440,27 +531,10 @@ pub fn node_add_command(source: &std::path::Path) -> peppy::commands::node::Node
 /// Writes a node config and adds/builds it without running an instance.
 pub fn add_built_node(ctx: &Arc<AppContext>, dir: &std::path::Path, config: &str) {
     use peppy::commands::Command;
-    std::fs::write(dir.join("peppy.json5"), config).expect("write node config");
-    peppy::commands::node::NodeCommand {
-        command: peppy::commands::node::NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(dir.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(ctx)
-    .expect("node add should succeed");
+    std::fs::write(dir.join(config::consts::NODE_CONFIG_FILE), config).expect("write node config");
+    node_add_command(dir)
+        .execute(ctx)
+        .expect("node add should succeed");
 }
 
 /// Builds the standard `node run` command used by pairing/observer e2e tests.
@@ -521,8 +595,31 @@ pub async fn emulate_startup_services(
     .expect("health service should start");
 }
 
+/// Starts the services an emulated test instance exposes when the test ends
+/// the instance's process itself: the [`emulate_startup_services`] pair, which
+/// a launch polls before it counts the instance started, and a shutdown
+/// service that answers the daemon's cooperative stop request without ending
+/// the process. The services run until the test ends: their task handles
+/// detach on drop.
+pub async fn emulate_node_services(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+) {
+    emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
+    let (_shutdown, _) = peppylib::services::shutdown::listen_for_shutdown(
+        messenger,
+        core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("shutdown service should start");
+}
+
 /// Installs the shutdown service an emulated instance owes, wired to actually
-/// end the process — the daemon's cooperative request is answered *and* the
+/// end the process: the daemon's cooperative request is answered *and* the
 /// `run_cmd` is killed, so the stop completes at once.
 ///
 /// Without this a stopped instance answers nothing and the daemon falls back to
@@ -541,7 +638,7 @@ pub async fn emulate_cooperative_shutdown(
     instance_id: &str,
     pidfile: std::path::PathBuf,
 ) {
-    let (handle, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
+    let (_shutdown, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
         messenger,
         core_node_name,
         instance_id,
@@ -550,8 +647,6 @@ pub async fn emulate_cooperative_shutdown(
     .await
     .expect("shutdown service should start");
     tokio::spawn(async move {
-        // Held for the task's life so the service outlives the run it guards.
-        let _handle = handle;
         if shutdown_rx.await.is_err() {
             return;
         }
@@ -595,7 +690,7 @@ pub fn pairing_node_config(
             peppy_schema: "node/v1",
             manifest: {{
                 name: "{name}",
-                tag: "v1",
+                tag: "{TEST_NODE_TAG}",
                 depends_on: {{
                     pairings: [
                         {{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}", cardinality: "{cardinality}" }}
@@ -635,15 +730,7 @@ pub async fn emulate_pairing_node_services(
     link_id: &str,
     cardinality: config::node::Cardinality,
 ) -> tokio::sync::watch::Receiver<peppylib::messaging::PeerSetState> {
-    emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
-    let (_shutdown, _) = peppylib::services::shutdown::listen_for_shutdown(
-        messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("shutdown service should start");
+    emulate_node_services(messenger, core_node_name, node_name, instance_id).await;
 
     serve_peer_update(
         messenger,
@@ -805,10 +892,45 @@ pub fn seed_pairing_repo(
     seed_docs_repo(serve, ctx, repo_dir);
 }
 
-/// The general form of [`seed_pairing_repo`]: publishes whatever pairing and
-/// contract documents the caller already wrote into `repo_dir`, points the
-/// daemon at it as its single fs repo, and refreshes so every doc lands in the
-/// daemon's caches.
+/// `repo add SOURCE [--ref REF]` at the default priority and id.
+pub fn add_repo(
+    ctx: &Arc<AppContext>,
+    source: &str,
+    git_ref: Option<&str>,
+) -> peppy::error::Result<()> {
+    use peppy::commands::Command;
+    peppy::commands::repo::RepoCommand {
+        command: peppy::commands::repo::RepoCommands::Add {
+            source: source.to_string(),
+            git_ref: git_ref
+                .map(|name| core_node_api::encoding::GitRepoRef::Named(name.to_string())),
+            top: false,
+            id: None,
+        },
+    }
+    .execute(ctx)
+}
+
+/// Points the emulated daemon at `repo_dirs` as its fs repositories, with ids
+/// from 1 in the given order: the `repositories.json5` that `repo refresh`
+/// reads.
+pub fn write_fs_repositories(serve: &ServeCommandEmulation, repo_dirs: &[&std::path::Path]) {
+    let conf_dir = daemon_config::consts::PeppyDirs::new(serve.temp_dir()).conf_dir();
+    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
+    let entries: Vec<serde_json::Value> = repo_dirs
+        .iter()
+        .zip(1..)
+        .map(|(repo_dir, id)| {
+            serde_json::json!({ "id": id, "type": "fs", "path": repo_dir.to_string_lossy() })
+        })
+        .collect();
+    let repos_content = serde_json::to_string_pretty(&entries).expect("serialize repos");
+    std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+}
+
+/// The general form of [`seed_pairing_repo`]: publishes whatever documents
+/// the caller already wrote into `repo_dir`, points the daemon at it as its
+/// single fs repo, and refreshes so every doc lands in the daemon's caches.
 pub fn seed_docs_repo(
     serve: &ServeCommandEmulation,
     ctx: &Arc<AppContext>,
@@ -816,19 +938,25 @@ pub fn seed_docs_repo(
 ) {
     use peppy::commands::Command;
     publish_repo_index(repo_dir);
-    let conf_dir = serve.temp_dir().join("conf");
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
-        { "id": 1, "type": "fs", "path": repo_dir.to_string_lossy() }
-    ]))
-    .expect("serialize repos");
-    std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+    write_fs_repositories(serve, &[repo_dir]);
 
     peppy::commands::repo::RepoCommand {
         command: peppy::commands::repo::RepoCommands::Refresh { strict: false },
     }
     .execute(ctx)
     .expect("repo refresh should discover the seeded documents");
+}
+
+/// A CLI context rooted at `root_dir` and wired to the emulated daemon: its
+/// messenger and its state file.
+pub fn serve_app_context(
+    serve: &ServeCommandEmulation,
+    root_dir: impl AsRef<std::path::Path>,
+) -> Arc<AppContext> {
+    Arc::new(
+        AppContext::with_messenger(root_dir, serve.messenger())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    )
 }
 
 pub fn setup() -> (
@@ -842,9 +970,6 @@ pub fn setup() -> (
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let work_dir = tempfile::tempdir().expect("failed to create temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
     (rt, serve, ctx, work_dir)
 }

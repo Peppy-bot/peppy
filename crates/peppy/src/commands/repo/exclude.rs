@@ -1,17 +1,14 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use core_node_api::encoding::{GitRepoRef, RepoExcludeRequest, RepoSource};
 use tracing::{info, warn};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::commands::repo::add::parse_repo_source;
-use crate::commands::repo::repo_source_label;
+use crate::commands::repo::{REQUEST_TIMEOUT, repo_source_label};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use peppylib::core_node::transport::poll;
-
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) fn exclude_repo(
     ctx: &Arc<AppContext>,

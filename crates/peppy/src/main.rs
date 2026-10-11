@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use config::runtime::CoreNodeName;
 use tracing::{error, warn};
 
 use daemon_config::consts::{AppEnv, PEPPY_VERSION, PeppyDirs, RootLifetime};
@@ -27,19 +28,17 @@ struct Cli {
     /// router and federation carry the traffic), and a remote daemon must
     /// use the same project namespace.
     #[arg(long = "core-node", global = true, value_name = "NAME", value_parser = parse_core_node_target)]
-    core_node: Option<String>,
+    core_node: Option<CoreNodeName>,
 }
 
-/// Validates a `--core-node` value at the CLI boundary through the same shared
-/// validator `service serve` and `peppy_config.json5` use, so a malformed
+/// Parses a `--core-node` value at the CLI boundary into the [`CoreNodeName`]
+/// that `service serve` and `peppy_config.json5` also use, so a malformed
 /// target fails here with a clap error instead of becoming an unreachable
 /// `target_core_node` deep in a request. `self` is refused here too: it means
 /// "the daemon this command targets", which is what omitting the flag already
 /// says.
-fn parse_core_node_target(value: &str) -> Result<String, String> {
-    config::runtime::CoreNodeName::new(value)
-        .map(|name| name.into_string())
-        .map_err(|reason| reason.to_string())
+fn parse_core_node_target(value: &str) -> Result<CoreNodeName, String> {
+    CoreNodeName::parse(value).map_err(|reason| reason.to_string())
 }
 
 #[derive(Subcommand)]
@@ -93,7 +92,6 @@ enum Commands {
 }
 
 fn main() {
-    // Set app env based on build profile (release = Prod, debug = Dev)
     let env = if cfg!(debug_assertions) {
         AppEnv::Dev
     } else {
@@ -175,7 +173,10 @@ mod tests {
         // subcommand, the way users type it.
         let cli = Cli::try_parse_from(["peppy", "stack", "list", "--core-node", "robot-7"])
             .expect("global --core-node should parse after the subcommand");
-        assert_eq!(cli.core_node.as_deref(), Some("robot-7"));
+        assert_eq!(
+            cli.core_node.as_ref().map(CoreNodeName::as_str),
+            Some("robot-7")
+        );
         assert!(matches!(
             cli.command,
             Commands::Stack {
@@ -188,7 +189,10 @@ mod tests {
     fn core_node_flag_parses_before_the_subcommand() {
         let cli = Cli::try_parse_from(["peppy", "--core-node", "robot-7", "info"])
             .expect("--core-node should parse at the root position too");
-        assert_eq!(cli.core_node.as_deref(), Some("robot-7"));
+        assert_eq!(
+            cli.core_node.as_ref().map(CoreNodeName::as_str),
+            Some("robot-7")
+        );
         assert!(matches!(cli.command, Commands::Info {}));
     }
 
@@ -519,9 +523,10 @@ mod tests {
         }
     }
 
-    /// A malformed `--core-node` must be rejected at parse time — the same
-    /// `Name` rules `service serve --core-node-name` enforces — rather than
-    /// silently becoming an unreachable request target.
+    /// A malformed `--core-node` is rejected at parse time by the
+    /// [`CoreNodeName`] rules that `service serve --core-node-name` and
+    /// `peppy_config.json5` share, rather than becoming an unreachable request
+    /// target.
     #[test]
     fn core_node_flag_rejects_invalid_names() {
         let long = "x".repeat(config::runtime::MAX_CORE_NODE_NAME_LEN + 1);
@@ -531,6 +536,19 @@ mod tests {
                 "--core-node {bad:?} should be rejected"
             );
         }
+    }
+
+    /// `self` means "the daemon this command targets", which omitting the
+    /// flag already says, so `--core-node self` is refused as reserved.
+    #[test]
+    fn core_node_flag_rejects_the_reserved_self_name() {
+        let error = Cli::try_parse_from(["peppy", "stack", "list", "--core-node", "self"])
+            .err()
+            .expect("--core-node self should be rejected");
+        assert!(
+            error.to_string().contains("is reserved"),
+            "the refusal names the reserved word, got: {error}"
+        );
     }
 
     /// Every spelling of the group parses, and a subcommand or a flag the

@@ -257,17 +257,11 @@ fn live_instance_count(core_node: &str, live: Vec<pmi::CoreNodePresence>) -> usi
         .len()
 }
 
+/// Orders the daemon's own Root node first, then every node and edge by its
+/// `name:tag` label. The keys are cached because `label` allocates.
 fn sort_graph(nodes: &mut [SerializedNode], edges: &mut [SerializedEdge]) {
-    nodes.sort_by(|a, b| {
-        let a_is_daemon = a.stage == NodeStage::Root;
-        let b_is_daemon = b.stage == NodeStage::Root;
-        match (a_is_daemon, b_is_daemon) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.label().cmp(&b.label()),
-        }
-    });
-    edges.sort_by_key(|edge| (edge.from.label(), edge.to.label()));
+    nodes.sort_by_cached_key(|node| (node.stage != NodeStage::Root, node.label()));
+    edges.sort_by_cached_key(|edge| (edge.from.label(), edge.to.label()));
 }
 
 /// Pure multi-core-node formatter for `peppy stack list`. Each distinct name
@@ -294,96 +288,9 @@ fn format_stack_list(
             section.host_name
         );
         let mut body = String::new();
-        if section.live_claimants > 1 {
-            let _ = match &section.instance_id {
-                Some(instance_id) => writeln!(
-                    body,
-                    "warning: {} live daemons currently claim this name; answered by instance {}",
-                    section.live_claimants, instance_id
-                ),
-                None => writeln!(
-                    body,
-                    "warning: {} live daemons currently claim this name",
-                    section.live_claimants
-                ),
-            };
-            let _ = writeln!(body);
-        }
-
-        // Launch ownership before the tables: which launch produced this
-        // slice, and which launch is holding the machine right now. The
-        // reservation line is what tells an operator WHERE a refused launch
-        // is wedged and the exact command that clears it.
-        let mut owned = false;
-        if let Some(launch) = &section.launch {
-            let _ = writeln!(
-                body,
-                "Slice of launch {} (coordinator: {})",
-                launch.launch_id, launch.coordinator_core_node
-            );
-            owned = true;
-        }
-        if let Some(reservation) = &section.reservation {
-            let _ = writeln!(
-                body,
-                "Reserved for launch {} driven by {}; clear with `peppy stack reset \
-                 --core-node {}`",
-                reservation.launch_id, reservation.coordinator_core_node, section.core_node
-            );
-            owned = true;
-        }
-        if owned {
-            let _ = writeln!(body);
-        }
-
-        for copy in &section.copies {
-            let selection = if copy.selections.is_empty() {
-                String::new()
-            } else {
-                format!(": {}", copy.selections.join(", "))
-            };
-            let _ = writeln!(
-                body,
-                "Copy {} of {} on {}{selection}",
-                copy.name, copy.option, copy.core_node
-            );
-            let _ = writeln!(
-                body,
-                "  Instances: {}",
-                copy.instance_ids
-                    .iter()
-                    .map(config::runtime::Name::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            // One row per slot the copy adds to, however many members it put
-            // there: a camera rig fills three slots of one panel.
-            let by_slot = core_node_api::encoding::slots_in_first_added_order(&copy.set_members);
-            if !by_slot.is_empty() {
-                let _ = writeln!(body, "  Set members:");
-            }
-            for ((instance_id, link_id), targets) in by_slot {
-                let _ = writeln!(
-                    body,
-                    "    {instance_id}.links.{link_id} → {}",
-                    targets.join(", ")
-                );
-            }
-        }
-        if let Some(change) = &section.copy_change {
-            let moves = match change.action {
-                CopyAction::Join => "joins",
-                CopyAction::Remove => "leaves",
-            };
-            let _ = writeln!(
-                body,
-                "Copy {} of {} {moves} the stack now",
-                change.name, change.option
-            );
-        }
-        if !section.copies.is_empty() || section.copy_change.is_some() {
-            let _ = writeln!(body);
-        }
+        write_claimant_warning(&mut body, section);
+        write_launch_ownership(&mut body, section);
+        write_copies(&mut body, section);
         match &section.outcome {
             Ok((nodes, edges)) => {
                 body.push_str(&format_stack_body(nodes, edges, colorize, inner_width));
@@ -396,6 +303,113 @@ fn format_stack_list(
         render_section_panel(&mut out, &header, &body, max_width);
     }
     out
+}
+
+/// The warning of a name that more than one live daemon claims, naming the
+/// instance that answered when the section knows it.
+fn write_claimant_warning(body: &mut String, section: &StackSection) {
+    use std::fmt::Write as _;
+
+    if section.live_claimants <= 1 {
+        return;
+    }
+    let _ = match &section.instance_id {
+        Some(instance_id) => writeln!(
+            body,
+            "warning: {} live daemons currently claim this name; answered by instance {}",
+            section.live_claimants, instance_id
+        ),
+        None => writeln!(
+            body,
+            "warning: {} live daemons currently claim this name",
+            section.live_claimants
+        ),
+    };
+    let _ = writeln!(body);
+}
+
+/// Launch ownership, written before the tables: which launch produced this
+/// slice, and which launch is holding the machine right now. The
+/// reservation line is what tells an operator WHERE a refused launch is
+/// wedged and the exact command that clears it.
+fn write_launch_ownership(body: &mut String, section: &StackSection) {
+    use std::fmt::Write as _;
+
+    if let Some(launch) = &section.launch {
+        let _ = writeln!(
+            body,
+            "Slice of launch {} (coordinator: {})",
+            launch.launch_id, launch.coordinator_core_node
+        );
+    }
+    if let Some(reservation) = &section.reservation {
+        let _ = writeln!(
+            body,
+            "Reserved for launch {} driven by {}; clear with `peppy stack reset \
+             --core-node {}`",
+            reservation.launch_id, reservation.coordinator_core_node, section.core_node
+        );
+    }
+    if section.launch.is_some() || section.reservation.is_some() {
+        let _ = writeln!(body);
+    }
+}
+
+/// The copies joined onto the slice: each copy's option, machine and
+/// selections, its instances, and the set members it adds; then the join or
+/// the removal of a copy that holds the stack now.
+fn write_copies(body: &mut String, section: &StackSection) {
+    use std::fmt::Write as _;
+
+    if section.copies.is_empty() && section.copy_change.is_none() {
+        return;
+    }
+    for copy in &section.copies {
+        let selection = if copy.selections.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", copy.selections.join(", "))
+        };
+        let _ = writeln!(
+            body,
+            "Copy {} of {} on {}{selection}",
+            copy.name, copy.option, copy.core_node
+        );
+        let _ = writeln!(
+            body,
+            "  Instances: {}",
+            copy.instance_ids
+                .iter()
+                .map(config::runtime::Name::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        // One row per slot the copy adds to, however many members it put
+        // there: a camera rig fills three slots of one panel.
+        let by_slot = core_node_api::encoding::slots_in_first_added_order(&copy.set_members);
+        if !by_slot.is_empty() {
+            let _ = writeln!(body, "  Set members:");
+        }
+        for ((instance_id, link_id), targets) in by_slot {
+            let _ = writeln!(
+                body,
+                "    {instance_id}.links.{link_id} → {}",
+                targets.join(", ")
+            );
+        }
+    }
+    if let Some(change) = &section.copy_change {
+        let moves = match change.action {
+            CopyAction::Join => "joins",
+            CopyAction::Remove => "leaves",
+        };
+        let _ = writeln!(
+            body,
+            "Copy {} of {} {moves} the stack now",
+            change.name, change.option
+        );
+    }
+    let _ = writeln!(body);
 }
 
 /// Encloses one core node's complete report in a panel. Nested table borders
@@ -472,8 +486,8 @@ fn format_stack_body(
     }
 
     // Per-instance bindings. A distinct view from the node table above, but it
-    // rides the same `graph_json` payload (each instance now carries its
-    // resolved slot bindings) so there is no extra wire round-trip.
+    // rides the same `graph_json` payload (each instance carries its resolved
+    // slot bindings) so there is no extra wire round-trip.
     let _ = writeln!(out, "Instance bindings");
     let _ = writeln!(out);
     let binding_nodes: Vec<&SerializedNode> =
@@ -552,8 +566,7 @@ use crate::commands::colors::{
 };
 use crate::commands::table::{col_width, render_table, wrap};
 
-/// Column headers kept in one place so widths stay consistent between the
-/// separator and data rows.
+/// Headers for the nodes table, one row per node.
 const HEADERS: [&str; 4] = ["NODE", "STAGE", "INSTANCES", "PATH"];
 
 fn render_nodes_table(
@@ -893,9 +906,9 @@ fn format_instances_compact(node: &SerializedNode) -> String {
     let finished = count(InstanceState::Finished);
     let failed = count(InstanceState::Failed);
 
-    // The common, unambiguous cases keep their original compact phrasing; any
-    // mix (including terminal instances) falls through to an explicit
-    // per-state breakdown so no instance is silently dropped from the count.
+    // The common, unambiguous cases use a compact phrasing; any mix
+    // (including terminal instances) falls through to an explicit per-state
+    // breakdown so no instance is silently dropped from the count.
     match (running, starting, finished, failed) {
         (r, 0, 0, 0) => format!("{r} running"),
         (0, s, 0, 0) => format!("{s} starting"),
@@ -925,11 +938,7 @@ fn format_instances_compact(node: &SerializedNode) -> String {
 /// locator; otherwise fall back to the source config path. The home directory
 /// is collapsed to `~` to keep the column narrow.
 fn display_path(node: &SerializedNode) -> String {
-    let path = node
-        .artifact_path
-        .clone()
-        .unwrap_or_else(|| node.config_path.clone());
-    shorten_home(&path)
+    shorten_home(node.artifact_path.as_deref().unwrap_or(&node.config_path))
 }
 
 /// Collapses a leading home-directory prefix to `~`, matching shell display.
@@ -971,6 +980,20 @@ mod tests {
     use core_node_api::{NodeStage, SerializedInstance};
     use unicode_width::UnicodeWidthStr;
 
+    /// A healthy instance on the default clock with no slot bindings,
+    /// pairing slots or endpoints; a test overrides the fields it exercises.
+    fn instance(id: &str, state: InstanceState) -> SerializedInstance {
+        SerializedInstance {
+            clock: Default::default(),
+            instance_id: id.to_string(),
+            state,
+            healthy: true,
+            slot_bindings: std::collections::BTreeMap::new(),
+            pairing_slots: std::collections::BTreeMap::new(),
+            endpoints: Vec::new(),
+        }
+    }
+
     fn node(
         name: &str,
         tag: &str,
@@ -986,15 +1009,7 @@ mod tests {
             stage,
             instances: instances
                 .into_iter()
-                .map(|(id, state)| SerializedInstance {
-                    clock: Default::default(),
-                    instance_id: id.to_string(),
-                    state,
-                    healthy: true,
-                    slot_bindings: std::collections::BTreeMap::new(),
-                    pairing_slots: std::collections::BTreeMap::new(),
-                    endpoints: Vec::new(),
-                })
+                .map(|(id, state)| instance(id, state))
                 .collect(),
         }
     }
@@ -1014,12 +1029,7 @@ mod tests {
                 ),
                 ProducerRef::new("core-a", "sim_1"),
             ),
-            instance_id: instance_id.to_string(),
-            state: InstanceState::Running,
-            healthy: true,
-            slot_bindings: std::collections::BTreeMap::new(),
-            pairing_slots: std::collections::BTreeMap::new(),
-            endpoints: Vec::new(),
+            ..instance(instance_id, InstanceState::Running)
         };
         let listing = |instances: Vec<SerializedInstance>| {
             format_stack_body(
@@ -1169,19 +1179,9 @@ mod tests {
     /// exercising the bindings table. Always `Ready`/`v1`.
     fn binding_node(name: &str, instances: Vec<InstanceSpec<'_>>) -> SerializedNode {
         SerializedNode {
-            name: name.to_string(),
-            tag: "v1".to_string(),
-            core_node: "core-a".to_string(),
-            config_path: format!("/tmp/{}.json5", name),
-            artifact_path: None,
-            stage: NodeStage::Ready,
             instances: instances
                 .into_iter()
                 .map(|(id, state, binds)| SerializedInstance {
-                    clock: Default::default(),
-                    instance_id: id.to_string(),
-                    state,
-                    healthy: true,
                     slot_bindings: binds
                         .into_iter()
                         .map(|(slot, producers)| {
@@ -1192,10 +1192,10 @@ mod tests {
                             )
                         })
                         .collect(),
-                    pairing_slots: std::collections::BTreeMap::new(),
-                    endpoints: Vec::new(),
+                    ..instance(id, state)
                 })
                 .collect(),
+            ..node(name, "v1", NodeStage::Ready, Vec::new())
         }
     }
 
@@ -1741,6 +1741,46 @@ mod tests {
         );
     }
 
+    /// The daemon's own Root node leads the table, and every other node and
+    /// edge follows in the byte order of its `name:tag` label, so `a-b:v1`
+    /// sorts before `a:v1` (`-` is below `:`).
+    #[test]
+    fn sort_graph_puts_the_root_first_then_orders_by_label() {
+        let short = node("a", "v1", NodeStage::Ready, vec![]);
+        let dashed = node("a-b", "v1", NodeStage::Ready, vec![]);
+        let root = node("z", "v1", NodeStage::Root, vec![]);
+        let edge = |from: &SerializedNode, to: &SerializedNode| SerializedEdge {
+            from: from.clone(),
+            to: to.clone(),
+            via_contract: None,
+        };
+        let mut nodes = vec![short.clone(), dashed.clone(), root.clone()];
+        let mut edges = vec![
+            edge(&short, &root),
+            edge(&root, &short),
+            edge(&dashed, &root),
+            edge(&dashed, &short),
+        ];
+
+        sort_graph(&mut nodes, &mut edges);
+
+        let node_labels: Vec<String> = nodes.iter().map(SerializedNode::label).collect();
+        assert_eq!(node_labels, ["z:v1", "a-b:v1", "a:v1"]);
+        let edge_labels: Vec<(String, String)> = edges
+            .iter()
+            .map(|edge| (edge.from.label(), edge.to.label()))
+            .collect();
+        assert_eq!(
+            edge_labels,
+            [
+                ("a-b:v1".to_string(), "a:v1".to_string()),
+                ("a-b:v1".to_string(), "z:v1".to_string()),
+                ("a:v1".to_string(), "z:v1".to_string()),
+                ("z:v1".to_string(), "a:v1".to_string()),
+            ]
+        );
+    }
+
     #[test]
     fn contract_implementation_edge_renders_annotation() {
         let consumer = node("brain", "v1", NodeStage::Ready, vec![]);
@@ -1846,35 +1886,17 @@ mod tests {
 
     #[test]
     fn bindings_table_renders_health_column() {
-        // A node with one healthy and one unhealthy instance, built directly so
-        // both `SerializedInstance::healthy` values are exercised.
+        // A node with one healthy and one unhealthy instance, so both
+        // `SerializedInstance::healthy` values are exercised.
         let nodes = vec![SerializedNode {
-            name: "arm".to_string(),
-            tag: "v1".to_string(),
-            core_node: "core-a".to_string(),
-            config_path: "/tmp/arm.json5".to_string(),
-            artifact_path: None,
-            stage: NodeStage::Ready,
             instances: vec![
+                instance("healthy-1", InstanceState::Running),
                 SerializedInstance {
-                    clock: Default::default(),
-                    instance_id: "healthy-1".to_string(),
-                    state: InstanceState::Running,
-                    healthy: true,
-                    slot_bindings: std::collections::BTreeMap::new(),
-                    pairing_slots: std::collections::BTreeMap::new(),
-                    endpoints: Vec::new(),
-                },
-                SerializedInstance {
-                    clock: Default::default(),
-                    instance_id: "down-1".to_string(),
-                    state: InstanceState::Running,
                     healthy: false,
-                    slot_bindings: std::collections::BTreeMap::new(),
-                    pairing_slots: std::collections::BTreeMap::new(),
-                    endpoints: Vec::new(),
+                    ..instance("down-1", InstanceState::Running)
                 },
             ],
+            ..node("arm", "v1", NodeStage::Ready, Vec::new())
         }];
         let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
@@ -1985,6 +2007,21 @@ mod tests {
         );
     }
 
+    /// A slot of the `arm_link:v1` pairing playing `role`.
+    fn arm_link_slot(
+        role: &str,
+        cardinality: config::node::Cardinality,
+        peers: Vec<config::runtime::PairedPeer>,
+    ) -> core_node_api::SerializedPairingSlot {
+        core_node_api::SerializedPairingSlot {
+            pairing_name: "arm_link".to_string(),
+            pairing_tag: "v1".to_string(),
+            role: role.to_string(),
+            cardinality,
+            peers,
+        }
+    }
+
     #[test]
     fn pairings_table_renders_paired_and_unpaired_rows() {
         let mut arm = node(
@@ -1995,17 +2032,15 @@ mod tests {
         );
         arm.instances[0].pairing_slots.insert(
             "controller".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "arm".to_string(),
-                cardinality: config::node::Cardinality::One,
-                peers: vec![config::runtime::PairedPeer {
+            arm_link_slot(
+                "arm",
+                config::node::Cardinality::One,
+                vec![config::runtime::PairedPeer {
                     peer: ProducerRef::new("core_a", "ctrl_1"),
                     peer_link_id: "arm".to_string(),
                     copy: None,
                 }],
-            },
+            ),
         );
         let mut ctrl = node(
             "arm_controller",
@@ -2015,13 +2050,7 @@ mod tests {
         );
         ctrl.instances[0].pairing_slots.insert(
             "arm".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "controller".to_string(),
-                cardinality: config::node::Cardinality::One,
-                peers: Vec::new(),
-            },
+            arm_link_slot("controller", config::node::Cardinality::One, Vec::new()),
         );
 
         let out = format_stack_body(&[arm, ctrl], &[], false, None);
@@ -2058,13 +2087,11 @@ mod tests {
         );
         engine.instances[0].pairing_slots.insert(
             "limbs".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "arm".to_string(),
-                cardinality: config::node::Cardinality::ZeroOrMore,
-                peers: vec![peer("ctrl_1"), peer("ctrl_2"), peer("ctrl_3")],
-            },
+            arm_link_slot(
+                "arm",
+                config::node::Cardinality::ZeroOrMore,
+                vec![peer("ctrl_1"), peer("ctrl_2"), peer("ctrl_3")],
+            ),
         );
 
         let out = format_stack_body(&[engine], &[], false, None);
@@ -2095,23 +2122,11 @@ mod tests {
         );
         engine.instances[0].pairing_slots.insert(
             "limbs".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "arm".to_string(),
-                cardinality: config::node::Cardinality::ZeroOrMore,
-                peers: Vec::new(),
-            },
+            arm_link_slot("arm", config::node::Cardinality::ZeroOrMore, Vec::new()),
         );
         engine.instances[0].pairing_slots.insert(
             "governor".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "arm".to_string(),
-                cardinality: config::node::Cardinality::One,
-                peers: Vec::new(),
-            },
+            arm_link_slot("arm", config::node::Cardinality::One, Vec::new()),
         );
         let mut robot = node(
             "backbone",
@@ -2121,17 +2136,15 @@ mod tests {
         );
         robot.instances[0].pairing_slots.insert(
             "engine".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "controller".to_string(),
-                cardinality: config::node::Cardinality::One,
-                peers: vec![config::runtime::PairedPeer {
+            arm_link_slot(
+                "controller",
+                config::node::Cardinality::One,
+                vec![config::runtime::PairedPeer {
                     peer: ProducerRef::new("core_a", "engine_1"),
                     peer_link_id: "limbs".to_string(),
                     copy: Some(config::runtime::Name::new("alpha").expect("a name")),
                 }],
-            },
+            ),
         );
 
         let out = format_stack_body(&[engine, robot], &[], false, None);
@@ -2303,6 +2316,20 @@ mod tests {
         assert_eq!(shorten_home_with("/etc/passwd", "/"), "/etc/passwd");
         // A trailing slash on the resolved home is tolerated.
         assert_eq!(shorten_home_with("/home/user/x", "/home/user/"), "~/x");
+    }
+
+    /// A built node is located by its artifact, a node that is not built by
+    /// its config file.
+    #[test]
+    fn display_path_prefers_the_artifact_over_the_config_path() {
+        let unbuilt = node("arm", "v1", NodeStage::Ready, vec![]);
+        assert_eq!(display_path(&unbuilt), shorten_home("/tmp/arm.json5"));
+
+        let built = SerializedNode {
+            artifact_path: Some("/opt/artifacts/arm.sif".to_string()),
+            ..unbuilt
+        };
+        assert_eq!(display_path(&built), shorten_home("/opt/artifacts/arm.sif"));
     }
 
     #[test]

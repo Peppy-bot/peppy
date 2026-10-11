@@ -77,7 +77,7 @@ pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<Pat
         program_path,
         working_dir,
         service_dir_override.is_none(),
-    )?;
+    );
 
     if let Some(dir) = service_dir_override {
         return write_service_definition(kind, &dir, &ctx);
@@ -102,8 +102,8 @@ fn make_install_context(
     program: PathBuf,
     working_dir: PathBuf,
     autostart: bool,
-) -> Result<ServiceInstallCtx> {
-    Ok(ServiceInstallCtx {
+) -> ServiceInstallCtx {
+    ServiceInstallCtx {
         label,
         program,
         args: vec![OsString::from("service"), OsString::from("serve")],
@@ -124,19 +124,18 @@ fn make_install_context(
         // 0.11): systemd `Restart=on-failure`, launchd `KeepAlive { SuccessfulExit
         // = false }`. A clean stop therefore stays stopped.
         //
-        // FOLLOW-UP: systemd's default `StartLimitBurst` could give up after a few
-        // rapid `exit(RESTART_EXIT_CODE)` fallbacks; the in-process flap backstop
-        // already caps that, but `StartLimitIntervalSec=0` would also disable the
-        // unit-side limit. The `service_manager` 0.11 generic API does not expose
-        // it (its own TODO maps `reset_after_secs` -> `StartLimitIntervalSec`), so
-        // it would require overriding `ServiceInstallCtx.contents` with a fully
-        // rendered unit; deferred until flapping is actually observed.
+        // The unit keeps systemd's default start rate limit (`StartLimitBurst`),
+        // so a burst of rapid `exit(RESTART_EXIT_CODE)` fallbacks can make
+        // systemd stop restarting it. The in-process flap backstop caps those
+        // fallbacks. The `service_manager` 0.11 generic API does not expose
+        // `StartLimitIntervalSec`; setting it needs a fully rendered unit in
+        // `ServiceInstallCtx.contents`.
         restart_policy: RestartPolicy::OnFailure {
             delay_secs: Some(5),
             max_retries: None,
             reset_after_secs: None,
         },
-    })
+    }
 }
 
 /// Builds the environment the installed service runs under.
@@ -161,8 +160,9 @@ fn service_environment(
     // `~/.peppy` while a caller that set PEPPY_HOME (CI per-run isolation or a
     // custom install prefix) reads daemon state from the override path; the two
     // never find each other and the install's readiness probe times out. Empty
-    // is treated as unset, matching `daemon_config::consts::peppy_root_dir`.
-    if let Some(home) = peppy_home.filter(|value| !value.is_empty()) {
+    // is treated as unset by `non_empty_env_path`, the helper through which
+    // `daemon_config::consts::peppy_root` reads the same variable.
+    if let Some(home) = daemon_config::consts::non_empty_env_path(peppy_home) {
         environment.push((
             config::consts::PEPPY_HOME_ENV.to_string(),
             home.to_string_lossy().into_owned(),
@@ -207,14 +207,6 @@ fn write_launchd_service(target_dir: &Path, ctx: &ServiceInstallCtx) -> Result<P
 }
 
 fn default_service_path(
-    kind: ServiceManagerKind,
-    level: ServiceLevel,
-    label: &ServiceLabel,
-) -> Result<PathBuf> {
-    default_service_path_with_level(kind, level, label)
-}
-
-fn default_service_path_with_level(
     kind: ServiceManagerKind,
     level: ServiceLevel,
     label: &ServiceLabel,

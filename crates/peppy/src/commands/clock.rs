@@ -1,6 +1,6 @@
 //! `peppy clock list`: the clock domains this federation is running.
 
-pub mod list;
+mod list;
 
 use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};

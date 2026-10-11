@@ -18,7 +18,9 @@ use peppy::context::AppContext;
 use peppy::test_support::{CACHED_BUILD_REUSE_PREFIX, ServeCommandEmulation, override_build_cmd};
 use tempfile::TempDir;
 
-use super::common::{build_count, build_logs_for, built_artifacts_for, counting_build_cmd};
+use super::common::{
+    build_count, build_logs_for, built_artifacts_for, counting_build_cmd, serve_app_context,
+};
 
 const NODE_TAG: &str = "v1";
 
@@ -110,10 +112,7 @@ impl CountedNode {
 }
 
 fn app_context(serve: &ServeCommandEmulation) -> Arc<AppContext> {
-    Arc::new(
-        AppContext::with_messenger(serve.temp_dir(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    )
+    serve_app_context(serve, serve.temp_dir())
 }
 
 fn reused(log: &str) -> bool {

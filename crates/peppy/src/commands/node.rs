@@ -29,10 +29,8 @@ pub use init::NodeInitBuilder;
 #[cfg(feature = "test-support")]
 pub use run::run_instance_async;
 pub use types::NodeName;
-// Internal helper: `launch` reaches it through the `node::` path; no test or
-// `main.rs` consumer, so it stays off the public surface. (`BuildNodeParams`
-// and `build_node` are used only here via the `builder::` path, so they need no
-// re-export at all.)
+// `stack launch` and `stack join` reach it through the `node::` path; nothing
+// outside the crate uses it.
 pub(crate) use env::caller_env_overrides;
 
 use core_node_api::encoding::DEFAULT_IDLE_TIMEOUT_SECS;
@@ -151,11 +149,10 @@ pub(crate) fn parse_key_at_target(
 
 /// Parses a `--vacant-link SLOT=<why>` argument: a slot the node's manifest
 /// declares `cardinality: "zero_or_one"`, left unresolved at launch on purpose,
-/// plus
-/// the reason the operator gives for it. Splits on the first `=` via
-/// [`parse_key_value_arg`], so a
-/// reason may itself contain `=`; SLOT is validated as a wire segment and the
-/// reason is parsed into a [`VacantReason`] here, once, at the flag boundary.
+/// plus the reason the operator gives for it. Splits on the first `=` via
+/// [`parse_key_value_arg`], so a reason may itself contain `=`; SLOT is
+/// validated as a wire segment and the reason is parsed into a
+/// [`VacantReason`] here, once, at the flag boundary.
 fn parse_vacant_link(raw: &str) -> Result<(String, VacantReason), String> {
     let (link_id, reason) = parse_key_value_arg(raw)
         .map_err(|_| format!("invalid --vacant-link value '{raw}': expected SLOT=<why>"))?;
@@ -293,7 +290,7 @@ pub enum NodeCommands {
         #[arg(long, value_name = "DOMAIN", value_parser = run::parse_clock_domain_name, requires = "run")]
         publish_clock: Option<Name>,
         /// Link a `link_id` from this node's `depends_on` to a target:
-        /// `KEY@TARGET`. One flag for every link kind — a producer binding
+        /// `KEY@TARGET`. One flag for every link kind: a producer binding
         /// (TARGET is a producer `instance_id`), a pairing (TARGET is a peer
         /// `instance_id[/peer_link_id]`), or an observer source (TARGET is a
         /// source `instance_id[/source_link_id]`). Repeatable across slots
@@ -497,7 +494,7 @@ impl Command for NodeCommand {
                     NodeInitBuilder::new(ctx, node_name, toolchain, with_container);
 
                 if let Some(dir) = to_dir {
-                    node_init_builder = node_init_builder.to_dir(dir);
+                    node_init_builder = node_init_builder.with_dir(dir);
                 }
 
                 node_init_builder.build()
@@ -612,18 +609,20 @@ impl Command for NodeCommand {
                 };
                 run::run_node(
                     ctx,
-                    node_name,
-                    tag,
-                    args,
-                    instance_id,
-                    run::ClockChoice {
-                        clock,
-                        publish_clock,
+                    run::RunNodeParams {
+                        node_name,
+                        tag,
+                        args,
+                        instance_id,
+                        clock: run::ClockChoice {
+                            clock,
+                            publish_clock,
+                        },
+                        links: merge_link_flags(&links, &vacant_links)
+                            .map_err(CommandError::ExecutionFailed)?,
+                        timeouts,
+                        build,
                     },
-                    merge_link_flags(&links, &vacant_links)
-                        .map_err(CommandError::ExecutionFailed)?,
-                    timeouts,
-                    build,
                 )
             }
             NodeCommands::Stop { instance_id } => {
@@ -666,13 +665,20 @@ mod tests {
         command: NodeCommands,
     }
 
+    fn try_parse(subcommand: &str, args: &[&str]) -> Result<TestCli, clap::Error> {
+        TestCli::try_parse_from(
+            ["peppy", subcommand]
+                .into_iter()
+                .chain(args.iter().copied()),
+        )
+    }
+
+    fn parse(subcommand: &str, args: &[&str]) -> NodeCommands {
+        try_parse(subcommand, args).expect("should parse").command
+    }
+
     fn parse_add(args: &[&str]) -> (bool, bool, bool) {
-        let full: Vec<&str> = std::iter::once("peppy")
-            .chain(std::iter::once("add"))
-            .chain(args.iter().copied())
-            .collect();
-        let cli = TestCli::try_parse_from(full).expect("should parse");
-        match cli.command {
+        match parse("add", args) {
             NodeCommands::Add {
                 sync, build, run, ..
             } => (sync, build, run),
@@ -681,76 +687,35 @@ mod tests {
     }
 
     fn parse_run(args: &[&str]) -> bool {
-        let full: Vec<&str> = std::iter::once("peppy")
-            .chain(std::iter::once("run"))
-            .chain(args.iter().copied())
-            .collect();
-        let cli = TestCli::try_parse_from(full).expect("should parse");
-        match cli.command {
+        match parse("run", args) {
             NodeCommands::Run { build, .. } => build,
             _ => panic!("expected Run variant"),
         }
     }
 
     fn parse_run_instance_id(args: &[&str]) -> Option<String> {
-        let full: Vec<&str> = std::iter::once("peppy")
-            .chain(std::iter::once("run"))
-            .chain(args.iter().copied())
-            .collect();
-        let cli = TestCli::try_parse_from(full).expect("should parse");
-        match cli.command {
+        match parse("run", args) {
             NodeCommands::Run { instance_id, .. } => instance_id,
             _ => panic!("expected Run variant"),
         }
     }
 
     fn parse_run_links(args: &[&str]) -> Vec<(String, String)> {
-        let full: Vec<&str> = std::iter::once("peppy")
-            .chain(std::iter::once("run"))
-            .chain(args.iter().copied())
-            .collect();
-        let cli = TestCli::try_parse_from(full).expect("should parse");
-        match cli.command {
+        match parse("run", args) {
             NodeCommands::Run { links, .. } => links,
             _ => panic!("expected Run variant"),
         }
     }
 
-    fn try_parse_run(args: &[&str]) -> Result<TestCli, clap::Error> {
-        let full: Vec<&str> = std::iter::once("peppy")
-            .chain(std::iter::once("run"))
-            .chain(args.iter().copied())
-            .collect();
-        TestCli::try_parse_from(full)
-    }
-
-    fn try_parse_add(args: &[&str]) -> Result<TestCli, clap::Error> {
-        let full: Vec<&str> = std::iter::once("peppy")
-            .chain(std::iter::once("add"))
-            .chain(args.iter().copied())
-            .collect();
-        TestCli::try_parse_from(full)
-    }
-
     fn parse_add_links(args: &[&str]) -> Vec<(String, String)> {
-        let full: Vec<&str> = std::iter::once("peppy")
-            .chain(std::iter::once("add"))
-            .chain(args.iter().copied())
-            .collect();
-        let cli = TestCli::try_parse_from(full).expect("should parse");
-        match cli.command {
+        match parse("add", args) {
             NodeCommands::Add { links, .. } => links,
             _ => panic!("expected Add variant"),
         }
     }
 
     fn parse_subcommand_force(subcommand: &str, args: &[&str]) -> bool {
-        let full: Vec<&str> = std::iter::once("peppy")
-            .chain(std::iter::once(subcommand))
-            .chain(args.iter().copied())
-            .collect();
-        let cli = TestCli::try_parse_from(full).expect("should parse");
-        match cli.command {
+        match parse(subcommand, args) {
             NodeCommands::Add { force, .. }
             | NodeCommands::Build { force, .. }
             | NodeCommands::Remove { force, .. } => force,
@@ -844,9 +809,7 @@ mod tests {
     fn run_bi_short_bundle_sets_build_and_instance_id() {
         // `-bi <id>` ≡ `-b -i <id>`: clap treats `-bi` as a bundled short-flag
         // run with `i` consuming the next positional as its value.
-        let full: Vec<&str> = vec!["peppy", "run", "foo:v1", "-bi", "my-inst"];
-        let cli = TestCli::try_parse_from(full).expect("should parse");
-        match cli.command {
+        match parse("run", &["foo:v1", "-bi", "my-inst"]) {
             NodeCommands::Run {
                 build, instance_id, ..
             } => {
@@ -915,7 +878,7 @@ mod tests {
 
     #[test]
     fn link_missing_at_separator_rejected() {
-        let err = try_parse_run(&["foo:v1", "--link", "noseparator"])
+        let err = try_parse("run", &["foo:v1", "--link", "noseparator"])
             .err()
             .expect("missing @ should be rejected");
         let msg = err.to_string();
@@ -924,7 +887,7 @@ mod tests {
 
     #[test]
     fn link_reserved_sentinel_key_rejected() {
-        let err = try_parse_run(&["foo:v1", "--link", "_@cam_a"])
+        let err = try_parse("run", &["foo:v1", "--link", "_@cam_a"])
             .err()
             .expect("`_` should be rejected");
         let msg = err.to_string();
@@ -956,13 +919,11 @@ mod tests {
         assert_eq!(comma, expected);
     }
 
-    /// `-sbr` plus `--link` is the bug-replication shape from the report:
-    /// the previous CLI accepted `add . -sbr` and ran an instance with no
-    /// bindings. Now `--link` must parse on that same invocation so the
-    /// user can supply them in one shot.
+    /// `-sbr` plus `--link` parses in one invocation, so the user supplies the
+    /// bindings of the chained run in one shot.
     #[test]
     fn add_sbr_with_link_parses() {
-        let cli = try_parse_add(&[".", "-sbr", "--link", "feed@cam_a"])
+        let cli = try_parse("add", &[".", "-sbr", "--link", "feed@cam_a"])
             .expect("`add . -sbr --link feed@cam_a` should parse");
         match cli.command {
             NodeCommands::Add {
@@ -979,62 +940,34 @@ mod tests {
         }
     }
 
-    /// Core fix: `--link` without `--run` is meaningless (nothing to apply
-    /// the bindings to), so clap rejects it at parse time.
+    /// The run-only arguments of `node add` need `--run`: `requires = "run"`
+    /// rejects them at parse time instead of silently dropping them.
     #[test]
-    fn add_link_without_run_rejected_at_parse_time() {
-        let err = try_parse_add(&[".", "--link", "feed@cam_a"])
-            .err()
-            .expect("--link without --run must be a parse error");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("--run") || msg.contains("<RUN>"),
-            "error should name the missing --run flag: {msg}"
-        );
-    }
-
-    /// Same enforcement when sync+build are present but `--run` isn't:
-    /// `-sb` is "stop at built", and `--link` doesn't belong there either.
-    #[test]
-    fn add_sb_with_link_rejected_at_parse_time() {
-        let err = try_parse_add(&[".", "-sb", "--link", "feed@cam_a"])
-            .err()
-            .expect("`-sb --link` (no `r`) must error");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("--run") || msg.contains("<RUN>"),
-            "error should name the missing --run flag: {msg}"
-        );
-    }
-
-    /// Positional `key=value` arguments are runtime overrides, so they only
-    /// make sense when chaining a run. `requires = "run"` rejects bare
-    /// `add . frequency=30` instead of silently ignoring the value.
-    #[test]
-    fn add_positional_args_without_run_rejected_at_parse_time() {
-        let err = try_parse_add(&[".", "frequency=30"])
-            .err()
-            .expect("trailing key=value without --run must be a parse error");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("--run") || msg.contains("<RUN>"),
-            "error should name the missing --run flag: {msg}"
-        );
-    }
-
-    /// `--instance-id` only matters when there's a spawn. Without `--run`
-    /// the instance is never created, so the flag is rejected at parse time
-    /// rather than being silently dropped on the floor.
-    #[test]
-    fn add_instance_id_without_run_rejected_at_parse_time() {
-        let err = try_parse_add(&[".", "--instance-id", "my-inst"])
-            .err()
-            .expect("--instance-id without --run must be a parse error");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("--run") || msg.contains("<RUN>"),
-            "error should name the missing --run flag: {msg}"
-        );
+    fn add_run_only_arguments_without_run_are_rejected_at_parse_time() {
+        let cases: [&[&str]; 4] = [
+            // `--link` has nothing to apply its bindings to without a run.
+            &[".", "--link", "feed@cam_a"],
+            // `-sb` is "stop at built", and `--link` does not belong there
+            // either.
+            &[".", "-sb", "--link", "feed@cam_a"],
+            // Positional `key=value` arguments are runtime overrides, so they
+            // only make sense when chaining a run.
+            &[".", "frequency=30"],
+            // `--instance-id` only matters when there is a spawn, and without
+            // `--run` the instance is never created.
+            &[".", "--instance-id", "my-inst"],
+        ];
+        for args in cases {
+            let invocation = args.join(" ");
+            let Err(err) = try_parse("add", args) else {
+                panic!("`add {invocation}` without --run must be a parse error");
+            };
+            let msg = err.to_string();
+            assert!(
+                msg.contains("--run") || msg.contains("<RUN>"),
+                "`add {invocation}`: error should name the missing --run flag: {msg}"
+            );
+        }
     }
 
     /// Sanity: a plain `add` with neither run-only flag must keep parsing:
@@ -1042,7 +975,7 @@ mod tests {
     /// present.
     #[test]
     fn add_without_any_run_only_args_still_parses() {
-        let cli = try_parse_add(&["."]).expect("plain `add .` should parse");
+        let cli = try_parse("add", &["."]).expect("plain `add .` should parse");
         match cli.command {
             NodeCommands::Add {
                 run,
@@ -1066,7 +999,7 @@ mod tests {
     /// keys that `run` rejects.
     #[test]
     fn add_bind_reserved_sentinel_key_rejected() {
-        let err = try_parse_add(&[".", "-r", "--link", "_@cam_a"])
+        let err = try_parse("add", &[".", "-r", "--link", "_@cam_a"])
             .err()
             .expect("`_@…` must be rejected on `add` too");
         let msg = err.to_string();
@@ -1076,7 +1009,7 @@ mod tests {
     /// And the missing-`@` rejection.
     #[test]
     fn add_bind_missing_at_separator_rejected() {
-        let err = try_parse_add(&[".", "-r", "--link", "noseparator"])
+        let err = try_parse("add", &[".", "-r", "--link", "noseparator"])
             .err()
             .expect("missing `@` must be rejected on `add` too");
         let msg = err.to_string();
@@ -1147,15 +1080,18 @@ mod tests {
 
     #[test]
     fn run_accepts_repeated_link_and_vacant_link_flags() {
-        let cli = try_parse_run(&[
-            "commander:v1",
-            "--link",
-            "left@arm_1",
-            "--link",
-            "right@arm_2/controller",
-            "--vacant-link",
-            "gripper=bench rig: no gripper, and a comma, in the reason",
-        ])
+        let cli = try_parse(
+            "run",
+            &[
+                "commander:v1",
+                "--link",
+                "left@arm_1",
+                "--link",
+                "right@arm_2/controller",
+                "--vacant-link",
+                "gripper=bench rig: no gripper, and a comma, in the reason",
+            ],
+        )
         .expect("link flags should parse");
         match cli.command {
             NodeCommands::Run {
@@ -1288,11 +1224,11 @@ mod tests {
     /// `node add` is a parse error.
     #[test]
     fn add_link_requires_run() {
-        let err = try_parse_add(&[".", "--link", "arm@arm_1"])
+        let err = try_parse("add", &[".", "--link", "arm@arm_1"])
             .err()
             .expect("--link without --run must be rejected");
         assert!(err.to_string().contains("--run"), "msg: {err}");
-        let err = try_parse_add(&[".", "--vacant-link", "arm=no arm here"])
+        let err = try_parse("add", &[".", "--vacant-link", "arm=no arm here"])
             .err()
             .expect("--vacant-link without --run must be rejected");
         assert!(err.to_string().contains("--run"), "msg: {err}");

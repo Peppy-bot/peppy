@@ -5,13 +5,13 @@ use std::time::Duration;
 
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
-use peppy::context::AppContext;
 use peppylib::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
-use super::common::{stack_graph, test_node_target};
+use super::common::{
+    assert_instance_count, emulate_startup_services, node_add_command, node_run_command,
+    serve_app_context, test_node_target,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_stop_command_succeeds() {
@@ -32,10 +32,7 @@ async fn node_stop_command_succeeds() {
     let instance_id = "test_stop_instance";
 
     // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
     // Set up logging
     let log_capture = LogCapture::new();
@@ -65,33 +62,16 @@ async fn node_stop_command_succeeds() {
     // Override the launch command to avoid spawning a real node process.
     // Health/shutdown services are provided in-process via the mock messenger.
     // The instance has to survive the run, the `instance_count() == 1` check
-    // and the stop, so its lifetime is the test's, not a fixed 4s. The
-    // keep-alive is still just as non-cooperative as the old bare `sleep`, so
-    // the SIGKILL-on-signal modelling below is unaffected.
+    // and the stop, so its lifetime is the test's. The keep-alive ignores the
+    // cooperative shutdown request, so the SIGKILL-on-signal modelling below
+    // is what ends it.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     // Add the node to the node stack (without running)
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_path)
+        .execute(&node_ctx)
+        .expect("node add command should succeed");
 
     let messenger_handle = node_ctx
         .messenger_handle()
@@ -99,22 +79,7 @@ async fn node_stop_command_succeeds() {
 
     // Start in-process node services for health/shutdown so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
 
     let (_node_shutdown_handle, node_shutdown_rx) = listen_for_shutdown(
         &node_messenger,
@@ -126,70 +91,29 @@ async fn node_stop_command_succeeds() {
     .expect("node shutdown service should start");
 
     // Verify the node was added with 0 instances
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
+    assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         0,
-        "graph should show 0 instances before run. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+        "before run",
+    )
+    .await;
 
     // Now run the node using the run command with a deterministic instance id
-    NodeCommand {
-        command: NodeCommands::Run {
-            clock: None,
-            publish_clock: None,
-            node_ref: None,
-            node_name: Some(node_name.to_string()),
-            tag: Some("v1".to_string()),
-            args: Vec::new(),
-            instance_id: Some(instance_id.to_string()),
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-
-            idle_timeout: 60,
-            max_timeout: 3600,
-            build: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node run command should succeed");
+    node_run_command(instance_id, node_name, Vec::new(), Vec::new())
+        .execute(&node_ctx)
+        .expect("node run command should succeed");
 
     // Verify the node now has 1 instance
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
-        1,
-        "graph should show 1 instance after run. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+    assert_instance_count(messenger_handle, &core_node_name, node_name, 1, "after run").await;
 
     // Model a node that actually stops when asked: capture the run pid (logged
     // by the run command) and SIGKILL the process when the cooperative shutdown
     // signal arrives. node_stop then observes the process exit within the grace
     // period: a genuine graceful stop, not a force-kill. (The overridden
-    // `run_cmd` is a bare `sleep`, which would otherwise ignore the signal and
-    // be force-killed once the grace period elapsed.)
+    // `run_cmd` is a keep-alive loop that ignores the signal, so without this
+    // kill the daemon force-kills it once the grace period elapses.)
     let node_pid = {
         let logs = log_capture.logs();
         let marker = format!("Started node instance '{instance_id}' (pid: ");
@@ -232,23 +156,14 @@ async fn node_stop_command_succeeds() {
         .expect("kill task should not panic");
 
     // Verify the node now has 0 instances again
-    let graph = stack_graph(messenger_handle, &core_node_name).await;
-    let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
-        panic!(
-            "graph should contain the added node. Got: {:?}",
-            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
-        )
-    });
-    assert_eq!(
-        node.instance_count(),
+    assert_instance_count(
+        messenger_handle,
+        &core_node_name,
+        node_name,
         0,
-        "graph should show 0 instances after stop. Got: {:?}",
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.label(), n.instance_count()))
-            .collect::<Vec<_>>()
-    );
+        "after stop",
+    )
+    .await;
 
     // Verify the logs contain success message
     let logs = log_capture.logs();

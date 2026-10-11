@@ -170,6 +170,17 @@ impl PlatformSession {
         Ok(PlatformApi::new(&self.http, &self.api_url, credential))
     }
 
+    /// The platform API as [`Self::api`] builds it, or `None` when there is
+    /// no session to sign it with. Any other failure stays an error, so a
+    /// session that cannot be read is never mistaken for the absence of one.
+    pub(crate) fn signed_in_api(&self) -> Result<Option<PlatformApi>> {
+        match self.api() {
+            Ok(api) => Ok(Some(api)),
+            Err(Error::AuthEngine(auth::AuthError::NotAuthenticated)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// This machine's enrollment, `None` when it is not enrolled. A present
     /// enrollment that cannot be read is an error that names `peppy platform
     /// enroll`.
@@ -382,11 +393,10 @@ pub(crate) fn poke_federation_and_report(
 ) -> Result<()> {
     let socket = daemon_control::federation_control_socket_path(dirs);
     let read_timeout = daemon_control::POKE_READ_TIMEOUT;
-    let spinner = crate::terminal::spinner("Waiting for the daemon to apply the enrollment");
-    let outcome = daemon_control::poke_refederate(&socket, read_timeout);
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
-    }
+    let outcome =
+        crate::terminal::while_spinning("Waiting for the daemon to apply the enrollment", || {
+            daemon_control::poke_refederate(&socket, read_timeout)
+        });
     if matches!(outcome, PokeOutcome::Restarting) {
         return await_restart(dirs, &socket, read_timeout, &action);
     }
@@ -403,10 +413,11 @@ fn report(outcome: PokeOutcome, action: &FederationPokeAction) -> Result<()> {
     }
 }
 
-/// Polls until the daemon is back under the identity the enrollment now
-/// prescribes, then reports the settled federation outcome. Detects a
-/// concurrent enrollment change (a second enroll/unenroll mid-restart) and a
-/// never-recovers timeout. Bounded by [`RESTART_POLL_DEADLINE`].
+/// Polls, under a spinner, until the daemon is back under the identity the
+/// enrollment now prescribes, then reports the settled federation outcome.
+/// Detects a concurrent enrollment change (a second enroll/unenroll
+/// mid-restart) and a never-recovers timeout. Bounded by
+/// [`RESTART_POLL_DEADLINE`].
 fn await_restart(
     dirs: &PeppyDirs,
     socket: &std::path::Path,
@@ -414,11 +425,23 @@ fn await_restart(
     action: &FederationPokeAction,
 ) -> Result<()> {
     let expected = FederationIdentity::on_disk(dirs)?;
+    crate::terminal::while_spinning(
+        "Waiting for the daemon to restart under the new identity",
+        || poll_until_back_under(&expected, dirs, socket, read_timeout, action),
+    )
+}
+
+/// The polling loop of [`await_restart`], which runs under its spinner.
+fn poll_until_back_under(
+    expected: &FederationIdentity,
+    dirs: &PeppyDirs,
+    socket: &std::path::Path,
+    read_timeout: Duration,
+    action: &FederationPokeAction,
+) -> Result<()> {
     let subcommand = action.subcommand();
-    let spinner =
-        crate::terminal::spinner("Waiting for the daemon to restart under the new identity");
     let deadline = Instant::now() + RESTART_POLL_DEADLINE;
-    let result = loop {
+    loop {
         if Instant::now() >= deadline {
             break Err(Error::Auth(format!(
                 "the daemon did not come back under namespace `{}` within the timeout; \
@@ -430,7 +453,7 @@ fn await_restart(
 
         // A concurrent enroll/unenroll rewrote the enrollment mid-restart, so the
         // daemon will not come back under what we wrote.
-        if FederationIdentity::on_disk(dirs)? != expected {
+        if FederationIdentity::on_disk(dirs)? != *expected {
             break Err(Error::Auth(format!(
                 "the enrollment changed during the restart; re-run `peppy platform {subcommand}`"
             )));
@@ -442,7 +465,7 @@ fn await_restart(
         // value.
         let back = matches!(
             DaemonState::read_from(&DaemonState::state_file_in(dirs.root())),
-            Ok(state) if state.runs_under(&expected)
+            Ok(state) if state.runs_under(expected)
         );
         if !back {
             continue;
@@ -461,11 +484,7 @@ fn await_restart(
             }
             other => break report(other, action),
         }
-    };
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
     }
-    result
 }
 
 /// Strict reporting for an enroll poke: a verified link and an operator-pinned
@@ -752,8 +771,8 @@ impl Command for PlatformCommand {
 #[cfg(test)]
 mod tests {
     use super::{
-        federation_is_managed, read_daemon_state, report_enroll, report_unenroll,
-        stack_has_user_nodes,
+        FederationPokeAction, await_restart, federation_is_managed, read_daemon_state,
+        report_enroll, report_unenroll, stack_has_user_nodes,
     };
     use core_node_api::{
         InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
@@ -765,6 +784,9 @@ mod tests {
         ExternalZenohConfig, ManagedZenohConfig, PeppyConfig, ZenohConfig,
     };
     use std::collections::BTreeMap;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::time::Duration;
 
     fn managed_config() -> PeppyConfig {
         PeppyConfig {
@@ -850,6 +872,48 @@ mod tests {
         assert!(
             federation_is_managed(read_daemon_state(&dirs).as_ref(), &managed_config()),
             "a dead daemon's state must not override the disk config"
+        );
+    }
+
+    /// Once the daemon state shows the daemon back under the identity the
+    /// enrollment prescribes, the restart wait pokes the control socket again
+    /// and reports what that poke settles on.
+    #[test]
+    fn a_restart_wait_reports_the_poke_of_the_daemon_that_came_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dirs = PeppyDirs::new(dir.path());
+        write_running_state(&dirs, None);
+        let socket = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket).expect("bind stub control socket");
+        let stub_daemon = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept the poke");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().expect("clone the stream"))
+                .read_line(&mut request)
+                .expect("read the poke");
+            stream
+                .write_all(b"{\"status\":\"error\",\"message\":\"boom\"}\n")
+                .expect("write the reply");
+            request
+        });
+
+        let error = await_restart(
+            &dirs,
+            &socket,
+            Duration::from_secs(30),
+            &FederationPokeAction::Enroll,
+        )
+        .expect_err("the settled poke is a daemon error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("the daemon could not apply the enrollment: boom"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            stub_daemon.join().expect("stub daemon").trim(),
+            "refederate"
         );
     }
 

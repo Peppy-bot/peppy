@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
-use peppy::context::AppContext;
 use peppy::test_support::{InstanceLifetime, ServeCommandEmulation};
 use peppylib::MessengerHandle;
 use peppylib::messaging::PeerSetState;
@@ -26,6 +25,7 @@ use tokio::sync::watch;
 use super::common::{
     add_built_node, emulate_cooperative_shutdown, emulate_pairing_instance,
     emulate_startup_services, node_run_command, pairing_node_config, seed_pairing_repo,
+    serve_app_context,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -38,10 +38,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
     let work_dir = tempfile::tempdir().expect("temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
 
     // Both instances must stay in the stack across the whole
     // establish/stop/repair/exclusivity/remove sequence below.
@@ -275,9 +272,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     // `node remove --stop-instances` must dissolve the removed node's pairs
     // and live-notify each surviving peer Unpaired, exactly as `node stop`
     // does. Removing arm_controller tears down its paired instance ctrl_3, so
-    // arm_1's slot must go Unpaired. Before the remove path threaded the
-    // PairingCoordinator, this notification never happened and the arm kept
-    // pinning a dead peer.
+    // arm_1's slot must go Unpaired.
     NodeCommand {
         command: NodeCommands::Remove {
             node_ref: ("arm_controller".to_string(), "v1".to_string()),
@@ -318,10 +313,7 @@ async fn a_multi_slot_holds_one_pair_per_peer_across_stops_and_reruns() {
     let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
     let work_dir = tempfile::tempdir().expect("temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
     let instances = InstanceLifetime::new();
     let pid_dir = tempfile::tempdir().expect("temp pid dir");
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
@@ -512,10 +504,7 @@ async fn a_run_pairs_every_link_its_multi_slot_names() {
     let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
     let work_dir = tempfile::tempdir().expect("temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
     let instances = InstanceLifetime::new();
     let pid_dir = tempfile::tempdir().expect("temp pid dir");
     let repo_dir = tempfile::tempdir().expect("temp repo dir");

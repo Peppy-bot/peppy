@@ -289,11 +289,10 @@ fn run_device_flow(
         }
     }
 
-    let spinner = crate::terminal::spinner("Waiting for you to approve in the browser…");
-    let result = device::poll(http, &endpoints.token_endpoint, client_id, &da);
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
-    }
+    let result =
+        crate::terminal::while_spinning("Waiting for you to approve in the browser…", || {
+            device::poll(http, &endpoints.token_endpoint, client_id, &da)
+        });
     Ok(result?)
 }
 

@@ -1,5 +1,4 @@
-use super::common::setup;
-use core_node_api::encoding::GitRepoRef;
+use super::common::{add_repo, setup};
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 
@@ -7,15 +6,7 @@ use peppy::commands::repo::{RepoCommand, RepoCommands};
 fn repo_add_git_url_succeeds() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
-    let result = RepoCommand {
-        command: RepoCommands::Add {
-            source: "https://github.com/org/repo.git".to_string(),
-            git_ref: None,
-            top: false,
-            id: None,
-        },
-    }
-    .execute(&ctx);
+    let result = add_repo(&ctx, "https://github.com/org/repo.git", None);
 
     assert!(
         result.is_ok(),
@@ -28,15 +19,7 @@ fn repo_add_git_url_succeeds() {
 fn repo_add_with_git_ref_succeeds() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
-    let result = RepoCommand {
-        command: RepoCommands::Add {
-            source: "https://github.com/org/repo.git".to_string(),
-            git_ref: Some(GitRepoRef::Named("v1.0.0".to_string())),
-            top: false,
-            id: None,
-        },
-    }
-    .execute(&ctx);
+    let result = add_repo(&ctx, "https://github.com/org/repo.git", Some("v1.0.0"));
 
     assert!(
         result.is_ok(),
@@ -49,20 +32,11 @@ fn repo_add_with_git_ref_succeeds() {
 fn repo_add_fs_path_succeeds() {
     let (_rt, _serve, ctx, work_dir) = setup();
 
-    let result = RepoCommand {
-        command: RepoCommands::Add {
-            source: work_dir
-                .path()
-                .join("my-local-repo")
-                .to_str()
-                .unwrap()
-                .to_string(),
-            git_ref: None,
-            top: false,
-            id: None,
-        },
-    }
-    .execute(&ctx);
+    let result = add_repo(
+        &ctx,
+        work_dir.path().join("my-local-repo").to_str().unwrap(),
+        None,
+    );
 
     assert!(
         result.is_ok(),
@@ -78,15 +52,7 @@ fn repo_add_fs_path_succeeds() {
 fn repo_add_refuses_a_url_that_is_not_a_git_clone_url() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
-    let result = RepoCommand {
-        command: RepoCommands::Add {
-            source: "https://example.com/packages".to_string(),
-            git_ref: None,
-            top: false,
-            id: None,
-        },
-    }
-    .execute(&ctx);
+    let result = add_repo(&ctx, "https://example.com/packages", None);
 
     let msg = result
         .expect_err("a bare http URL is not a repository")
@@ -102,30 +68,13 @@ fn repo_add_refuses_a_url_that_is_not_a_git_clone_url() {
 fn repo_add_duplicate_fails() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
-    let source = "https://github.com/org/repo.git".to_string();
+    let source = "https://github.com/org/repo.git";
 
     // First add should succeed
-    RepoCommand {
-        command: RepoCommands::Add {
-            source: source.clone(),
-            git_ref: None,
-            top: false,
-            id: None,
-        },
-    }
-    .execute(&ctx)
-    .expect("first repo add should succeed");
+    add_repo(&ctx, source, None).expect("first repo add should succeed");
 
     // Second add of same URL should fail
-    let result = RepoCommand {
-        command: RepoCommands::Add {
-            source,
-            git_ref: None,
-            top: false,
-            id: None,
-        },
-    }
-    .execute(&ctx);
+    let result = add_repo(&ctx, source, None);
 
     let err = result.expect_err("duplicate repo add should fail");
     let msg = err.to_string();
@@ -139,20 +88,11 @@ fn repo_add_duplicate_fails() {
 fn repo_add_fs_path_with_ref_fails() {
     let (_rt, _serve, ctx, work_dir) = setup();
 
-    let result = RepoCommand {
-        command: RepoCommands::Add {
-            source: work_dir
-                .path()
-                .join("my-local-repo")
-                .to_str()
-                .unwrap()
-                .to_string(),
-            git_ref: Some(GitRepoRef::Named("main".to_string())),
-            top: false,
-            id: None,
-        },
-    }
-    .execute(&ctx);
+    let result = add_repo(
+        &ctx,
+        work_dir.path().join("my-local-repo").to_str().unwrap(),
+        Some("main"),
+    );
 
     let err = result.expect_err("fs path with --ref should fail");
     let msg = err.to_string();
@@ -167,16 +107,7 @@ fn repo_add_top_assigns_id_below_current_min() {
     let (_rt, serve, ctx, _work_dir) = setup();
 
     // First add: empty file, lands at the default floor (1000).
-    RepoCommand {
-        command: RepoCommands::Add {
-            source: "https://example.com/first.git".to_string(),
-            git_ref: None,
-            top: false,
-            id: None,
-        },
-    }
-    .execute(&ctx)
-    .expect("first add should succeed");
+    add_repo(&ctx, "https://example.com/first.git", None).expect("first add should succeed");
 
     // Second add with --top should land below the current min.
     RepoCommand {
@@ -219,7 +150,7 @@ fn repo_add_explicit_id_assigns_given_id() {
     let (_rt, serve, ctx, _work_dir) = setup();
 
     // An explicit id from the reserved >= 2000 band lands verbatim, not at
-    // the next free slot — organization setups rely on that stability.
+    // the next free slot. Organization setups rely on that stability.
     RepoCommand {
         command: RepoCommands::Add {
             source: "/tmp/private-hub".to_string(),
@@ -268,15 +199,7 @@ fn repo_add_https_url_with_ref_treated_as_git() {
     // should be treated as a git clone URL rather than rejected.
     let (_rt, _serve, ctx, _work_dir) = setup();
 
-    let result = RepoCommand {
-        command: RepoCommands::Add {
-            source: "https://github.com/org/repo".to_string(),
-            git_ref: Some(GitRepoRef::Named("main".to_string())),
-            top: false,
-            id: None,
-        },
-    }
-    .execute(&ctx);
+    let result = add_repo(&ctx, "https://github.com/org/repo", Some("main"));
 
     assert!(
         result.is_ok(),

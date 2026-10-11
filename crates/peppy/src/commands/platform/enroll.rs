@@ -118,11 +118,10 @@ pub(crate) fn enroll_machine(
         project_label(&project.name, &project.id, &workspace.name)
     );
     let identity = csr::generate_peer_identity(&name)?;
-    let spinner = crate::terminal::spinner("Waiting for the platform to sign the certificate");
-    let answer = api.enroll_peer(&workspace.id, &project.id, &identity.csr_pem);
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
-    }
+    let answer =
+        crate::terminal::while_spinning("Waiting for the platform to sign the certificate", || {
+            api.enroll_peer(&workspace.id, &project.id, &identity.csr_pem)
+        });
     let enrolled = answer.map_err(|error| explain_refusal(api, target, error))?;
     let bundle = EnrollmentBundle {
         peer_key_pem: identity.private_key_pem,

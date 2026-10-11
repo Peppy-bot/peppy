@@ -1,4 +1,4 @@
-use daemon_config::env::{is_forbidden_env_name, is_safe_env_value, is_valid_env_name};
+use daemon_config::env::check_env_var;
 
 /// Env vars that are meaningless or misleading when forwarded to a spawned node
 /// because the node runs somewhere the caller's paths do not describe: a
@@ -7,7 +7,7 @@ use daemon_config::env::{is_forbidden_env_name, is_safe_env_value, is_valid_env_
 ///
 /// The temp-dir trio is the second kind. A node that asks for scratch space
 /// resolves it from these, and the caller's value names a host path the
-/// container cannot write — on macOS `TMPDIR` is always `/var/folders/…`,
+/// container cannot write: on macOS `TMPDIR` is always `/var/folders/…`,
 /// which inside the guest exists at most as the read-only parent of a
 /// bind-mounted peppy root, so the node dies with `EROFS` the first time it
 /// wants a temp file. Dropping them lets resolution fall back to the
@@ -50,10 +50,7 @@ const CALLER_ONLY_ENV_KEYS: [&str; 7] = [
 /// rules but fails loudly, while the file is being parsed.
 fn should_forward_env(key: &str, value: &str) -> bool {
     let normalized = key.trim().to_ascii_uppercase();
-    is_valid_env_name(key)
-        && is_safe_env_value(value)
-        && !is_forbidden_env_name(key)
-        && !CALLER_ONLY_ENV_KEYS.contains(&normalized.as_str())
+    check_env_var(key, value).is_ok() && !CALLER_ONLY_ENV_KEYS.contains(&normalized.as_str())
 }
 
 /// Collects environment variables from the caller's environment to pass to the daemon.
@@ -79,9 +76,9 @@ mod tests {
     /// it is `/var/folders/…`, which the guest cannot write, so forwarding it
     /// kills any node that asks for scratch space (this is how
     /// `openarm_backbone` died: `tempfile::tempdir()` for its collision
-    /// meshes, `EROFS`). Both filters accept the value — valid identifier,
-    /// value is only alphanumerics, `/` and `_` — so it has to be excluded by
-    /// name.
+    /// meshes, `EROFS`). Both filters accept the value (a valid identifier,
+    /// and a value of only alphanumerics, `/` and `_`), so it has to be
+    /// excluded by name.
     #[test]
     fn drops_caller_temp_dir_vars() {
         for key in ["TMPDIR", "TEMP", "TMP"] {

@@ -1,4 +1,4 @@
-use super::common::CALLER_INSTANCE_ID;
+use super::common::{CALLER_INSTANCE_ID, setup};
 use core_node_api::NodeStage;
 use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppy::commands::Command;
@@ -6,7 +6,6 @@ use peppy::commands::node::{NodeCommand, NodeCommands, TimeoutConfig};
 use peppy::context::AppContext;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,11 +15,33 @@ const DEFAULTS: TimeoutConfig = TimeoutConfig {
     max_secs: 3600,
 };
 
-fn write_peppy_json5(dir: &std::path::Path, content: &str) {
-    let peppy_json5_path = dir.join("peppy.json5");
-    let mut file = std::fs::File::create(&peppy_json5_path).expect("create peppy.json5");
-    file.write_all(content.as_bytes())
-        .expect("write peppy.json5");
+/// Writes `peppy_json5` into a fresh directory and adds that node to the stack
+/// without building it. The directory is returned so the caller keeps it for
+/// as long as the daemon may read the node's source.
+fn add_unbuilt_node(ctx: &Arc<AppContext>, peppy_json5: &str) -> tempfile::TempDir {
+    let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
+    std::fs::write(node_dir.path().join("peppy.json5"), peppy_json5).expect("write peppy.json5");
+    NodeCommand {
+        command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
+            source: Some(node_dir.path().display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: false,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            links: Vec::new(),
+            vacant_links: Vec::new(),
+            idle_timeout: DEFAULTS.idle_secs,
+            max_timeout: DEFAULTS.max_secs,
+            force: true,
+        },
+    }
+    .execute(ctx)
+    .expect("node add command should succeed");
+    node_dir
 }
 
 /// Spins up a serve emulation, adds the node described by `peppy_json5` to the
@@ -46,22 +67,11 @@ fn add_node_to_stack(peppy_json5: &str) -> AddedNode {
 /// for tests where the main node declares `depends_on`; the stack rejects
 /// adds whose declared dependencies aren't already present.
 fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
-    let core_node_name = serve.core_node_name().to_string();
-
-    // A separate working directory for AppContext so it doesn't clobber any
-    // node's `peppy.json5`; the CLI treats `.` as the working dir, not the
+    // The context gets a working directory of its own so it doesn't clobber
+    // any node's `peppy.json5`; the CLI treats `.` as the working dir, not the
     // node source.
-    let work_dir = tempfile::tempdir().expect("failed to create temp work dir");
-
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let (rt, serve, node_ctx, work_dir) = setup();
+    let core_node_name = serve.core_node_name().to_string();
 
     // Capture tracing output so the `info!()` line from the Add command stays
     // out of the test output unless the test explicitly asserts on it.
@@ -72,54 +82,9 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
     // daemon can resolve any lazy paths stashed in its NodeEntity copies.
     let mut dep_dirs: Vec<tempfile::TempDir> = Vec::with_capacity(dependencies.len());
     for dep_peppy_json5 in dependencies {
-        let dep_dir = tempfile::tempdir().expect("failed to create temp dep dir");
-        write_peppy_json5(dep_dir.path(), dep_peppy_json5);
-        NodeCommand {
-            command: NodeCommands::Add {
-                clock: None,
-                publish_clock: None,
-                source: Some(dep_dir.path().display().to_string()),
-                git_ref: None,
-                sync: false,
-                build: false,
-                run: false,
-                args: Vec::new(),
-                instance_id: None,
-                links: Vec::new(),
-                vacant_links: Vec::new(),
-                idle_timeout: DEFAULTS.idle_secs,
-                max_timeout: DEFAULTS.max_secs,
-                force: true,
-            },
-        }
-        .execute(&node_ctx)
-        .expect("dependency node add should succeed");
-        dep_dirs.push(dep_dir);
+        dep_dirs.push(add_unbuilt_node(&node_ctx, dep_peppy_json5));
     }
-
-    let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
-    write_peppy_json5(node_dir.path(), peppy_json5);
-
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_dir.path().display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: false,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: DEFAULTS.idle_secs,
-            max_timeout: DEFAULTS.max_secs,
-            force: true,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node add command should succeed");
+    let node_dir = add_unbuilt_node(&node_ctx, peppy_json5);
 
     AddedNode {
         rt,
@@ -154,8 +119,8 @@ fn fetch_info(
         ))
         .expect("node_info request should succeed");
     match response {
-        core_node_api::encoding::NodeInfoResponse::Found(info) => *info,
-        core_node_api::encoding::NodeInfoResponse::NotInStack => panic!(
+        NodeInfoResponse::Found(info) => *info,
+        NodeInfoResponse::NotInStack => panic!(
             "node_info unexpectedly reported `{}:{}` as not in the stack",
             node_name, node_tag
         ),
@@ -388,14 +353,12 @@ fn node_info_no_dependencies_when_no_consumes() {
         no_consumed_topics && no_consumed_services && no_consumed_actions,
         "standalone node should have no dependencies"
     );
-    let _ = added;
 }
 
 /// Asking for a node that was never added returns a *successful*
-/// `NodeInfoResponse::NotInStack`. Prior to the response-shape change,
-/// the daemon answered with `InvalidServiceRequest`, a protocol error
-/// that produced a spurious ERROR log on every first-time `peppy node
-/// add` because the preflight check passes through this same path.
+/// `NodeInfoResponse::NotInStack`, not a protocol error: the preflight of
+/// every first-time `peppy node add` asks this question, so an error answer
+/// would log a spurious ERROR.
 #[test]
 fn node_info_returns_not_in_stack_when_node_not_in_stack() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
@@ -407,9 +370,8 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
 
     let caller_handle = peppylib::MessengerHandle::from_shared(shared_messenger);
 
-    // Also capture daemon-side logs so we can assert that no
-    // service-handler ERROR is emitted for the negative lookup; the
-    // original regression pollution came from this path.
+    // Capture daemon-side logs to assert that the negative lookup emits no
+    // service-handler ERROR.
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 

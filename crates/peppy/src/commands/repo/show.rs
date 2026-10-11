@@ -149,13 +149,7 @@ fn report_block(
         &PAIRING_HEADERS,
         &report.participants,
         |hit| &hit.node,
-        |hit| {
-            vec![
-                hit.role.clone(),
-                slot_cell(&hit.link_id, Some(hit.cardinality.as_str()), colorize),
-                pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
-            ]
-        },
+        |hit| participant_cells(hit, colorize),
         colorize,
         max_width,
     ));
@@ -174,6 +168,8 @@ fn report_block(
         colorize,
         max_width,
     ));
+    // Judged on the usage sections alone: an identity published as both a
+    // node and a contract still says the contract half is unused.
     let usable_by_nodes = items
         .iter()
         .any(|item| matches!(item.kind, RepoItemKind::Contract | RepoItemKind::Pairing));
@@ -184,8 +180,6 @@ fn report_block(
         ));
     }
     out.push_str(&sections);
-    // Judged on the usage sections alone: an identity published as both a
-    // node and a contract still says the contract half is unused.
     for slot in &report.pairing_slots {
         out.push_str(&peer_section(slot, colorize, max_width));
     }
@@ -199,9 +193,10 @@ fn report_block(
 ///
 /// A slot no indexed node can pair with says so on one line, because that
 /// is the answer, and on a slot whose cardinality has a floor of one it is
-/// the answer that no indexed node completes a launch of this one. Being listed here is a match of pairing and role, which is
-/// what pairing requires and all the caches record; whether a stack of the
-/// two is one worth running is a launcher's business.
+/// the answer that no indexed node completes a launch of this one. Being
+/// listed here is a match of pairing and role, which is what pairing
+/// requires and all the caches record; whether a stack of the two is one
+/// worth running is a launcher's business.
 fn peer_section(slot: &SlotPeers, colorize: bool, max_width: Option<usize>) -> String {
     let label = format!(
         "Slot {} ({} as {}, {})",
@@ -222,16 +217,20 @@ fn peer_section(slot: &SlotPeers, colorize: bool, max_width: Option<usize>) -> S
         &PAIRING_HEADERS,
         &slot.peers,
         |hit| &hit.node,
-        |hit| {
-            vec![
-                hit.role.clone(),
-                slot_cell(&hit.link_id, Some(hit.cardinality.as_str()), colorize),
-                pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
-            ]
-        },
+        |hit| participant_cells(hit, colorize),
         colorize,
         max_width,
     )
+}
+
+/// The ROLE, SLOT and PIN cells of one participant slot, shared by the
+/// pairing's own report and a node's slot peers so the two read alike.
+fn participant_cells(hit: &Participant, colorize: bool) -> Vec<String> {
+    vec![
+        hit.role.clone(),
+        slot_cell(&hit.link_id, Some(hit.cardinality.as_str()), colorize),
+        pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
+    ]
 }
 
 /// Where one matching document is stored: the copy a plain reference
@@ -308,14 +307,7 @@ fn section<T>(
         if nodes.len() == 1 { "" } else { "s" }
     );
 
-    let mut start = 0;
-    while start < hits.len() {
-        let repo_id = node_of(&hits[start]).repo_id;
-        let end = hits[start..]
-            .iter()
-            .position(|hit| node_of(hit).repo_id != repo_id)
-            .map_or(hits.len(), |offset| start + offset);
-        let group = &hits[start..end];
+    for group in hits.chunk_by(|a, b| node_of(a).repo_id == node_of(b).repo_id) {
         out.push_str(&format!("  {}:\n", node_of(&group[0]).repo_label));
         let rows: Vec<Vec<String>> = group
             .iter()
@@ -345,7 +337,6 @@ fn section<T>(
             max_width.map(|width| width.saturating_sub(INDENT.len())),
         );
         out.push_str(&indented(&table));
-        start = end;
     }
     out
 }
@@ -493,8 +484,7 @@ mod tests {
     use super::super::search::fixtures::*;
     use super::*;
     use config::node::Cardinality;
-    use core_node::{Consumer, Implementer, Observer, Participant, PublishedDoc};
-    use daemon_config::repository::ManifestFingerprint;
+    use core_node::{Consumer, Implementer, Observer, Participant};
 
     fn shown(reports: Vec<SearchReport>, matches: Vec<MatchedItem>) -> ShowOutcome {
         ShowOutcome {
@@ -615,12 +605,7 @@ mod tests {
                 RepoItemKind::Node,
                 "sim_rgb_camera",
                 "v1",
-                PublishedDoc {
-                    repo_id: 1000,
-                    repo_label: HUB.to_owned(),
-                    path: "sim_rgb_camera/peppy.json5".to_owned(),
-                    sha256: ManifestFingerprint::parse(&sha('b')).unwrap(),
-                },
+                published(1000, HUB, "sim_rgb_camera/peppy.json5", 'b'),
             )],
         )
     }
@@ -731,6 +716,66 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(text, expected);
+    }
+
+    /// The rows of one section group by repository in the order the report
+    /// lists them, each group a table of its own under the repository's
+    /// label, and the title counts the nodes of every group.
+    #[test]
+    fn human_output_groups_a_sections_rows_by_repository() {
+        let private = |name: &str, path: &str| IndexedNode {
+            repo_id: 1003,
+            repo_label: "/home/user/private-hub".to_owned(),
+            ..node(name, path)
+        };
+        let implementer = |node: IndexedNode| Implementer {
+            node,
+            link_id: "camera".to_owned(),
+            sha256: None,
+            pin: PinStatus::Unpinned,
+        };
+        let report = SearchReport {
+            implementers: vec![
+                implementer(node("uvc_camera_linux", "uvc_camera/linux/peppy.json5")),
+                implementer(node("realsense_d4xx", "realsense_d4xx/peppy.json5")),
+                implementer(private("lab_camera", "lab_camera/peppy.json5")),
+            ],
+            ..empty_report()
+        };
+        let outcome = shown(
+            vec![report],
+            vec![matched(
+                RepoItemKind::Contract,
+                "rgb_camera",
+                "v1",
+                contract(),
+            )],
+        );
+
+        let text = render_human(&query("rgb_camera:v1"), &outcome, false, None);
+
+        let expected = [
+            "rgb_camera:v1",
+            "  contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+            "",
+            "Implemented by 3 indexed nodes",
+            "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
+            "    ┌──────────────────┬─────┬────────┬──────────┬──────────────────────────────┐",
+            "    │ NODE             │ TAG │ SLOT   │ PIN      │ PATH                         │",
+            "    ├──────────────────┼─────┼────────┼──────────┼──────────────────────────────┤",
+            "    │ uvc_camera_linux │ v1  │ camera │ unpinned │ uvc_camera/linux/peppy.json5 │",
+            "    │ realsense_d4xx   │ v1  │ camera │ unpinned │ realsense_d4xx/peppy.json5   │",
+            "    └──────────────────┴─────┴────────┴──────────┴──────────────────────────────┘",
+            "  /home/user/private-hub:",
+            "    ┌────────────┬─────┬────────┬──────────┬────────────────────────┐",
+            "    │ NODE       │ TAG │ SLOT   │ PIN      │ PATH                   │",
+            "    ├────────────┼─────┼────────┼──────────┼────────────────────────┤",
+            "    │ lab_camera │ v1  │ camera │ unpinned │ lab_camera/peppy.json5 │",
+            "    └────────────┴─────┴────────┴──────────┴────────────────────────┘",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(text, expected, "\n{text}");
     }
 
     /// Under a width limit the widest columns give way first, ties
@@ -915,12 +960,7 @@ mod tests {
     /// contract and as a pairing, and a pair nobody uses says so once.
     #[test]
     fn human_output_names_both_published_documents() {
-        let pairing = PublishedDoc {
-            repo_id: 1002,
-            repo_label: CONTRACTS.to_owned(),
-            path: "pairings/rgb_camera.json5".to_owned(),
-            sha256: ManifestFingerprint::parse(&sha('d')).unwrap(),
-        };
+        let pairing = published(1002, CONTRACTS, "pairings/rgb_camera.json5", 'd');
         let outcome = shown(
             vec![empty_report()],
             vec![
@@ -962,12 +1002,7 @@ mod tests {
                 RepoItemKind::Launcher,
                 "openarm_boot",
                 "",
-                PublishedDoc {
-                    repo_id: 1001,
-                    repo_label: LAUNCHERS.to_owned(),
-                    path: "openarm_boot.json5".to_owned(),
-                    sha256: ManifestFingerprint::parse(&sha('e')).unwrap(),
-                },
+                published(1001, LAUNCHERS, "openarm_boot.json5", 'e'),
             )],
         );
 
@@ -993,12 +1028,7 @@ mod tests {
             RepoItemKind::Pairing,
             "sim_rgb_camera_link",
             "v1",
-            PublishedDoc {
-                repo_id: 1002,
-                repo_label: CONTRACTS.to_owned(),
-                path: "cameras/sim_rgb_camera_link.json5".to_owned(),
-                sha256: ManifestFingerprint::parse(&sha('d')).unwrap(),
-            },
+            published(1002, CONTRACTS, "cameras/sim_rgb_camera_link.json5", 'd'),
         );
         pairing.exact = false;
         let outcome = shown(

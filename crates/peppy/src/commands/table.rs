@@ -32,20 +32,12 @@ pub(super) fn col_width(s: &str) -> usize {
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
-            skip_csi(&mut chars);
+            take_csi(&mut chars);
         } else {
             width += UnicodeWidthChar::width(c).unwrap_or(0);
         }
     }
     width
-}
-
-/// Advances past a CSI escape sequence whose leading `\x1b` has already been
-/// consumed. Shared by [`col_width`] (which measures around the codes) and
-/// the tests' `strip_ansi` (which drops them) so the two never disagree on
-/// what an escape sequence is.
-pub(super) fn skip_csi(chars: &mut std::str::Chars<'_>) {
-    take_csi(chars);
 }
 
 /// Drops ANSI SGR escape sequences so a colored render can be compared
@@ -58,7 +50,7 @@ pub(super) fn strip_ansi(s: &str) -> String {
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
-            skip_csi(&mut chars);
+            take_csi(&mut chars);
         } else {
             out.push(c);
         }
@@ -67,23 +59,25 @@ pub(super) fn strip_ansi(s: &str) -> String {
 }
 
 /// Consumes a CSI escape sequence whose leading `\x1b` has already been
-/// taken, returning the consumed characters: an optional `[` introducer,
-/// then bytes up to and including a final byte in `@`..=`~`. The `[` itself
+/// taken, returning the consumed text: an optional `[` introducer, then
+/// bytes up to and including a final byte in `@`..=`~`. The `[` itself
 /// falls in that range, so it must be taken first or the scan would stop
-/// one char too early.
-fn take_csi(chars: &mut std::str::Chars<'_>) -> String {
-    let mut seq = String::new();
+/// one char too early. Shared by [`col_width`] (which measures around the
+/// codes), [`wrap`] (which carries them across line breaks) and the tests'
+/// `strip_ansi` (which drops them) so they never disagree on what an escape
+/// sequence is. The result borrows the input, so measuring a colored cell
+/// allocates nothing per escape sequence.
+fn take_csi<'a>(chars: &mut std::str::Chars<'a>) -> &'a str {
+    let rest = chars.as_str();
     if chars.clone().next() == Some('[') {
-        seq.push('[');
         chars.next();
     }
     for f in chars.by_ref() {
-        seq.push(f);
         if ('@'..='~').contains(&f) {
             break;
         }
     }
-    seq
+    &rest[..rest.len() - chars.as_str().len()]
 }
 
 /// Tracks the SGR span state [`wrap`] carries across line breaks: a reset

@@ -1,12 +1,11 @@
 //! End-to-end observer flow over an in-process daemon (mock messaging),
 //! exercised through the SAME `node run` CLI path a user drives, NOT the
-//! launcher. It proves two things the launcher path already had but the lone
-//! `node run` path did not:
+//! launcher. It proves two things:
 //!
 //! 1. `node run --link <observer>@<source>` carries the resolved observation on
 //!    the goal, so the daemon registers it and delivers the source pin the
 //!    moment the observer commits to Running, exactly as a `stack launch`
-//!    observer is served. Without it the observer booted validated but silent.
+//!    observer is served. An observer without it boots validated but silent.
 //! 2. Stopping OR removing the source runs the single teardown seam, so the
 //!    observer is live-notified its source went down (`source_live = false`,
 //!    pin retained), identically to how a paired peer is notified. Every
@@ -23,29 +22,31 @@ use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::AppContext;
-use peppy::test_support::ServeCommandEmulation;
+use peppy::test_support::{InstanceLifetime, ServeCommandEmulation};
 use peppylib::MessengerHandle;
 use peppylib::messaging::{ObservationState, ObservedMemberState};
 use peppylib::services::observation_update::listen_for_observation_update;
 use tokio::sync::watch;
 
-use peppy::test_support::InstanceLifetime;
-
 use super::common::{
-    add_built_node, emulate_cooperative_shutdown, emulate_startup_services, node_run_command,
-    pairing_node_config, seed_pairing_repo, test_node_target,
+    add_built_node, emulate_cooperative_shutdown, emulate_pairing_instance,
+    emulate_startup_services, node_run_command, observer_slot_channels, pairing_node_config,
+    seed_pairing_repo, serve_app_context, test_node_target,
 };
 
 /// An observer manifest named `name`, running `run_cmd` (a json5 array): it
-/// watches the `arm` role of `arm_link/v1` through observer slot `watch`,
-/// consuming the topic that role emits, and emits nothing. The slot is
-/// `zero_or_one`, the node's own statement that it runs fine observing nothing,
-/// which is what lets a deployment write the slot vacant.
+/// watches the `arm` role of `arm_link/v1` through observer slot `watch` of the
+/// given `cardinality`, consuming the topic that role emits, and emits nothing.
 ///
 /// Parameterized because a test that inspects what the spawned process received
-/// needs its own node name and its own `run_cmd`, and nothing else about the
-/// manifest changes.
-fn observer_config_named(name: &str, run_cmd: &str) -> String {
+/// needs its own node name and its own `run_cmd`, and a fleet observer needs a
+/// set-valued slot, and nothing else about the manifest changes.
+fn observer_config_named(
+    name: &str,
+    cardinality: config::node::Cardinality,
+    run_cmd: &str,
+) -> String {
+    let cardinality = cardinality.as_str();
     format!(
         r#"{{
         peppy_schema: "node/v1",
@@ -54,7 +55,7 @@ fn observer_config_named(name: &str, run_cmd: &str) -> String {
             tag: "v1",
             depends_on: {{
                 pairing_observers: [
-                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "zero_or_one" }}
+                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "{cardinality}" }}
                 ]
             }}
         }},
@@ -69,35 +70,25 @@ fn observer_config_named(name: &str, run_cmd: &str) -> String {
 }
 
 /// The plain observer every test but the boot-config probe uses: keeps alive
-/// and does nothing else.
+/// and does nothing else. Its slot is `zero_or_one`, the node's own statement
+/// that it runs fine observing nothing, which is what lets a deployment write
+/// the slot vacant.
 fn observer_config(instances: &InstanceLifetime) -> String {
-    observer_config_named("recorder", &instances.keep_alive_run_cmd())
+    observer_config_named(
+        "recorder",
+        config::node::Cardinality::ZeroOrOne,
+        &instances.keep_alive_run_cmd(),
+    )
 }
 
 /// A fleet observer: watches the same `arm` role through ONE `one_or_more`
 /// slot, so `--link` repetition accumulates its member set instead of being a
 /// hard error.
 fn fleet_observer_config(instances: &InstanceLifetime) -> String {
-    let run_cmd = instances.keep_alive_run_cmd();
-    format!(
-        r#"{{
-        peppy_schema: "node/v1",
-        manifest: {{
-            name: "fleet_recorder",
-            tag: "v1",
-            depends_on: {{
-                pairing_observers: [
-                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "one_or_more" }}
-                ]
-            }}
-        }},
-        interfaces: {{
-            topics: {{
-                consumes: [{{ link_id: "watch", name: "joint_states" }}]
-            }}
-        }},
-        execution: {{ language: "rust", run_cmd: {run_cmd} }}
-    }}"#
+    observer_config_named(
+        "fleet_recorder",
+        config::node::Cardinality::OneOrMore,
+        &instances.keep_alive_run_cmd(),
     )
 }
 
@@ -149,7 +140,7 @@ async fn emulate_observer_services(
     observer_link_id: &str,
 ) -> watch::Receiver<ObservationState> {
     emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
-    let (slots, mut receivers) = super::common::observer_slot_channels(&[observer_link_id]);
+    let (slots, mut receivers) = observer_slot_channels(&[observer_link_id]);
     let rx = receivers
         .remove(observer_link_id)
         .expect("one watch per observer slot");
@@ -165,9 +156,10 @@ async fn emulate_observer_services(
     rx
 }
 
-/// The slot's sole member. Most of these tests drive a `cardinality: "one"`
-/// slot, whose state is either empty (undelivered) or exactly one member; any
-/// other size would be the version-skew shape the node runtime refuses.
+/// The slot's sole member. Most of these tests drive a scalar (`zero_or_one`)
+/// observer slot, whose state is either empty (undelivered) or exactly one
+/// member; any other size would be the version-skew shape the node runtime
+/// refuses.
 fn sole_member(state: &ObservationState, context: &str) -> ObservedMemberState {
     match state.members.as_slice() {
         [sole] => sole.clone(),
@@ -181,7 +173,7 @@ fn sole_member(state: &ObservationState, context: &str) -> ObservedMemberState {
 struct Fixture {
     // Instances outlive their own spawn in every test here (an observer links
     // to an already-running source), so their lifetime is the fixture's.
-    _instances: InstanceLifetime,
+    instances: InstanceLifetime,
     // Where the source's `run_cmd` records its pid, so a stop can be answered
     // by actually ending the process instead of waiting out the daemon's
     // force-kill deadline.
@@ -206,10 +198,7 @@ async fn setup() -> Fixture {
     let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
     let work_dir = tempfile::tempdir().expect("temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
 
     // Pairing doc into the daemon's repo cache, then both nodes.
     let instances = InstanceLifetime::new();
@@ -227,7 +216,7 @@ async fn setup() -> Fixture {
     add_built_node(&ctx, observer_dir.path(), &observer_config(&instances));
 
     Fixture {
-        _instances: instances,
+        instances,
         source_pidfile,
         _ctrl_dir: ctrl_dir,
         _serve: serve,
@@ -241,20 +230,11 @@ async fn setup() -> Fixture {
     }
 }
 
-/// Brings `arm_1` up as a Running source, its participant slot declared vacant
-/// so it boots standalone. Every observer test needs a live source before the
-/// observer, so the pin (or seed) it reads has a real incarnation to name.
-async fn run_source(fx: &Fixture) {
-    emulate_cooperative_source(
-        &fx.messenger,
-        &fx.core_node_name,
-        "robot_arm",
-        "arm_1",
-        fx.source_pidfile.clone(),
-    )
-    .await;
+/// The `node run` that starts `robot_arm` as `instance_id` with its participant
+/// slot `controller` declared vacant, so it boots standalone.
+fn vacant_source_run_command(instance_id: &str) -> NodeCommand {
     node_run_command(
-        "arm_1",
+        instance_id,
         "robot_arm",
         Vec::new(),
         vec![(
@@ -262,14 +242,30 @@ async fn run_source(fx: &Fixture) {
             "test rig: this slot has no peer".to_string(),
         )],
     )
-    .execute(&fx.ctx)
-    .expect("source run (participant slot vacant) should succeed");
+}
+
+/// Brings `instance_id` up as a Running source, its participant slot declared
+/// vacant so it boots standalone. Every observer test needs a live source
+/// before the observer, so the pin (or seed) it reads has a real incarnation to
+/// name.
+async fn run_source(fx: &Fixture, instance_id: &str) {
+    emulate_cooperative_source(
+        &fx.messenger,
+        &fx.core_node_name,
+        "robot_arm",
+        instance_id,
+        fx.source_pidfile.clone(),
+    )
+    .await;
+    vacant_source_run_command(instance_id)
+        .execute(&fx.ctx)
+        .expect("source run (participant slot vacant) should succeed");
 }
 
 /// Runs the source then the observer with `--link watch@arm_1`, and returns the
 /// observer's state watch already advanced past the initial live delivery.
 async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationState> {
-    run_source(fx).await;
+    run_source(fx, "arm_1").await;
 
     let mut obs_rx = emulate_observer_services(
         &fx.messenger,
@@ -288,8 +284,8 @@ async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationSt
     .execute(&fx.ctx)
     .expect("observer run with --link should succeed");
 
-    // FIX #1: the lone `node run` observer received its source pin live, at a
-    // bumped incarnation generation, exactly as a launcher observer would.
+    // The `node run` observer receives its source pin live, at a bumped
+    // incarnation generation, exactly as a launcher observer does.
     let state = obs_rx.borrow_and_update().clone();
     let member = sole_member(&state, "rec_1's observer slot after node run");
     assert_eq!(member.source.producer.instance_id, "arm_1");
@@ -318,6 +314,7 @@ fn config_dumping_observer_config(dump: &Path, instances: &InstanceLifetime) -> 
     let keep_alive = instances.keep_alive_script();
     observer_config_named(
         "probe_recorder",
+        config::node::Cardinality::ZeroOrOne,
         &format!(
             r#"["sh", "-c", "cp \"$PEPPY_RUNTIME_CONFIG\" '{dump}.part' && mv '{dump}.part' '{dump}'; {keep_alive}"]"#,
             dump = dump.display()
@@ -326,19 +323,19 @@ fn config_dumping_observer_config(dump: &Path, instances: &InstanceLifetime) -> 
 }
 
 /// The spawn-time membership seed. A node's setup runs strictly before the
-/// on-Running delivery the FIX #1 tests assert, so the boot config itself
-/// must carry each observer slot's planned member set: it is what lets a
-/// node discover the robot's shape during setup instead of settle-polling a
-/// live set it cannot distinguish from "bound to nothing". The seed's
-/// stamping matches the live delivery's (same source pin, a real generation,
-/// liveness at spawn), so the first `observation_update` replaces it without
-/// redeclaring anything.
+/// on-Running delivery that `run_source_then_observer` asserts, so the boot
+/// config itself must carry each observer slot's planned member set: it is
+/// what lets a node discover the robot's shape during setup instead of
+/// settle-polling a live set it cannot distinguish from "bound to nothing".
+/// The seed's stamping matches the live delivery's (same source pin, a real
+/// generation, liveness at spawn), so the first `observation_update` replaces
+/// it without redeclaring anything.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn observer_boot_config_seeds_membership_at_spawn() {
     let fx = setup().await;
 
     // A live source first, so the seed has a real incarnation to stamp.
-    run_source(&fx).await;
+    run_source(&fx, "arm_1").await;
 
     let dump_dir = tempfile::tempdir().expect("dump dir");
     let dump = dump_dir.path().join("boot_config.json5");
@@ -346,7 +343,7 @@ async fn observer_boot_config_seeds_membership_at_spawn() {
     add_built_node(
         &fx.ctx,
         probe_dir.path(),
-        &config_dumping_observer_config(&dump, &fx._instances),
+        &config_dumping_observer_config(&dump, &fx.instances),
     );
     emulate_observer_services(
         &fx.messenger,
@@ -400,8 +397,8 @@ async fn observer_boot_config_seeds_membership_at_spawn() {
     );
 }
 
-/// Fix #1 (delivery on the CLI path) + fix #2 (a `node stop` of the source runs
-/// the teardown seam and live-notifies the observer).
+/// Delivery on the CLI path, and a `node stop` of the source running the
+/// teardown seam that live-notifies the observer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_observer_receives_source_pin_and_stop_notifies() {
     let fx = setup().await;
@@ -435,8 +432,8 @@ async fn node_run_observer_receives_source_pin_and_stop_notifies() {
 
     let mut obs_rx = run_source_then_observer(&fx).await;
 
-    // FIX #2: stopping the source runs the same teardown seam a paired peer's
-    // death runs, live-notifying the observer that its source went down. The pin
+    // Stopping the source runs the same teardown seam a paired peer's death
+    // runs, live-notifying the observer that its source went down. The pin
     // is retained (the observer keeps its subscription declared), only
     // `source_live` flips false.
     NodeCommand {
@@ -472,31 +469,13 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
     add_built_node(
         &fx.ctx,
         fleet_dir.path(),
-        &fleet_observer_config(&fx._instances),
+        &fleet_observer_config(&fx.instances),
     );
 
     // Both sources are instances of the same node, started in sequence, so each
     // spawn rewrites the shared pidfile and a stop always kills the live one.
     for instance_id in ["arm_1", "arm_2"] {
-        emulate_cooperative_source(
-            &fx.messenger,
-            &fx.core_node_name,
-            "robot_arm",
-            instance_id,
-            fx.source_pidfile.clone(),
-        )
-        .await;
-        node_run_command(
-            instance_id,
-            "robot_arm",
-            Vec::new(),
-            vec![(
-                "controller".to_string(),
-                "test rig: this slot has no peer".to_string(),
-            )],
-        )
-        .execute(&fx.ctx)
-        .expect("source run (participant slot vacant) should succeed");
+        run_source(&fx, instance_id).await;
     }
 
     let mut obs_rx = emulate_observer_services(
@@ -569,17 +548,9 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
 
     // Restarting it bumps only its own incarnation generation.
     let arm_1_generation = state.members[1].source_generation;
-    node_run_command(
-        "arm_2",
-        "robot_arm",
-        Vec::new(),
-        vec![(
-            "controller".to_string(),
-            "test rig: this slot has no peer".to_string(),
-        )],
-    )
-    .execute(&fx.ctx)
-    .expect("source re-run should succeed");
+    vacant_source_run_command("arm_2")
+        .execute(&fx.ctx)
+        .expect("source re-run should succeed");
 
     let state = obs_rx.borrow_and_update().clone();
     assert_eq!(instance_ids(&state), ["arm_2", "arm_1"]);
@@ -598,7 +569,7 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
     );
 }
 
-/// Fix #2 on the remove path: `node remove --stop-instances` of the source tears
+/// On the remove path: `node remove --stop-instances` of the source tears
 /// down its observed instance through the same seam, so a running observer is
 /// live-notified its source went down, exactly as `node stop` does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -628,7 +599,7 @@ async fn node_remove_source_notifies_running_observer() {
     );
 }
 
-/// Fix #2 on the whole-stack teardown path: `service reset` mass-stops every
+/// On the whole-stack teardown path: `service reset` mass-stops every
 /// instance (bypassing the per-instance seam, since mark_stopping makes the exit
 /// watchers bail), so it must clear the observation registry the same way
 /// `node_stack.reset()` clears the pairing registry. If it did not, the source's
@@ -650,10 +621,7 @@ async fn service_reset_clears_the_observation_registry() {
     let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
     let work_dir = tempfile::tempdir().expect("temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
@@ -677,21 +645,13 @@ async fn service_reset_clears_the_observation_registry() {
         arm_pidfile.clone(),
     )
     .await;
-    node_run_command(
-        "arm_1",
-        "robot_arm",
-        Vec::new(),
-        vec![(
-            "controller".to_string(),
-            "test rig: this slot has no peer".to_string(),
-        )],
-    )
-    .execute(&ctx)
-    .expect("source run should succeed");
+    vacant_source_run_command("arm_1")
+        .execute(&ctx)
+        .expect("source run should succeed");
 
     // Reset: mass teardown (the source's shutdown service kills its process, so
-    // this returns promptly) + node_stack.reset() (clears pairing) + the fix
-    // under test (observation.clear()).
+    // this returns promptly) + node_stack.reset() (clears pairing) + the
+    // observation registry clear under test (observation.clear()).
     StackCommand {
         command: StackCommands::Reset { federated: false },
     }
@@ -702,17 +662,9 @@ async fn service_reset_clears_the_observation_registry() {
     // source with the SAME id. It is not stopped again, so its kill hook never
     // fires. Its ready/health services from phase 1 still answer.
     add_built_node(&ctx, arm_dir.path(), &arm_config);
-    node_run_command(
-        "arm_1",
-        "robot_arm",
-        Vec::new(),
-        vec![(
-            "controller".to_string(),
-            "test rig: this slot has no peer".to_string(),
-        )],
-    )
-    .execute(&ctx)
-    .expect("source re-run after reset should succeed");
+    vacant_source_run_command("arm_1")
+        .execute(&ctx)
+        .expect("source re-run after reset should succeed");
 
     // A fresh observer links to the re-run source and reads its generation. Had
     // reset left the registry stale, arm_1 would resume at generation 2; a
@@ -747,9 +699,6 @@ async fn service_reset_clears_the_observation_registry() {
 /// end that holds no pair is refused with the fix.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_observer_naming_a_pairs_other_end_is_pinned_to_it() {
-    use super::common::{emulate_pairing_instance, pairing_node_config};
-    use peppy::test_support::InstanceLifetime;
-
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -757,10 +706,7 @@ async fn an_observer_naming_a_pairs_other_end_is_pinned_to_it() {
     let core_node_name = serve.core_node_name().to_string();
     let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let work_dir = tempfile::tempdir().expect("temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, work_dir.path());
     let instances = InstanceLifetime::new();
     let pid_dir = tempfile::tempdir().expect("temp pid dir");
     let repo_dir = tempfile::tempdir().expect("temp repo dir");

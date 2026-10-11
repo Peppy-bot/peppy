@@ -48,7 +48,7 @@ impl Gathered {
     }
 }
 
-pub fn list_clocks(ctx: &Arc<AppContext>, json: bool) -> Result<()> {
+pub(super) fn list_clocks(ctx: &Arc<AppContext>, json: bool) -> Result<()> {
     let gathered = crate::commands::block_on(gather(ctx))?;
     if json {
         println!("{}", render_json(&gathered));

@@ -49,7 +49,7 @@ pub(crate) fn selection_report(session: &PlatformSession, selection: &PlatformSe
         );
     };
     let mut out = format!("Selected {project}.\n");
-    let enrollment = auth::enrollment::load(&session.dirs).ok().flatten();
+    let enrollment = session.enrollment().ok().flatten();
     if let Some(note) = enrollment_note(selection, enrollment.as_ref().map(|e| &e.document)) {
         out.push_str(&note);
         out.push('\n');
@@ -99,9 +99,10 @@ pub(crate) fn workspace_json(selection: Option<&PlatformSelection>) -> serde_jso
 /// The selected project with its workspace as JSON, `null` when no project is
 /// selected.
 pub(crate) fn project_json(selection: Option<&PlatformSelection>) -> serde_json::Value {
-    let Some((selection, project)) =
-        selection.and_then(|selection| Some((selection, selection.project.as_ref()?)))
-    else {
+    let Some(selection) = selection else {
+        return serde_json::Value::Null;
+    };
+    let Some(project) = &selection.project else {
         return serde_json::Value::Null;
     };
     serde_json::json!({
@@ -147,6 +148,51 @@ mod tests {
             None,
             "with no selected project there is no project to differ from"
         );
+    }
+
+    /// The report names the selected project and adds the note only when
+    /// this machine is enrolled in another project. An enrollment that
+    /// cannot be read adds no note. A workspace alone names the command that
+    /// selects a project.
+    #[test]
+    fn the_report_names_the_selection_and_notes_a_different_enrollment() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let session = PlatformSession::resolve(
+            Some(daemon_config::consts::PeppyDirs::new(dir.path())),
+            Some("http://127.0.0.1:9"),
+        )
+        .expect("session");
+        let selected = "Selected project Field (p-2) in workspace Robotics lab.\n";
+
+        assert_eq!(selection_report(&session, &selection()), selected);
+        assert_eq!(
+            selection_report(&session, &workspace_only()),
+            "Selected workspace Robotics lab (ws-2). No project is selected: \
+             `peppy platform project use` selects one.\n"
+        );
+
+        auth::test_support::write_enrollment(&session.dirs, enrolled_in("p-2"));
+        assert_eq!(selection_report(&session, &selection()), selected);
+
+        auth::test_support::write_enrollment(&session.dirs, enrolled_in("p-1"));
+        assert_eq!(
+            selection_report(&session, &selection()),
+            format!(
+                "{selected}This machine is enrolled in project p-1. The selection does not move \
+                 it. To move it: `peppy platform enroll --replace`\n"
+            )
+        );
+
+        std::fs::write(
+            session.dirs.peer_dir().join("enrollment.json5"),
+            "not an enrollment",
+        )
+        .expect("overwrite the enrollment");
+        assert!(
+            session.enrollment().is_err(),
+            "the enrollment is unreadable"
+        );
+        assert_eq!(selection_report(&session, &selection()), selected);
     }
 
     #[test]

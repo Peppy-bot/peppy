@@ -14,6 +14,7 @@ pub use search::search_rendered;
 pub use show::show_rendered;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Subcommand;
 use core_node_api::encoding::{GitRepoRef, RepoSource};
@@ -22,6 +23,10 @@ use std::path::PathBuf;
 
 use super::Command;
 use crate::{context::AppContext, error::Result};
+
+/// How long the daemon has to answer one repository request of `repo add`,
+/// `repo exclude`, `repo remove` or `repo list`.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Human-readable label for a repository source as this binary reads it
 /// (used in CLI output).
@@ -34,6 +39,15 @@ pub(super) fn repo_source_label(source: &RepoSource) -> String {
 /// `@{peppy-release}`.
 fn parse_git_ref(raw: &str) -> std::result::Result<GitRepoRef, String> {
     GitRepoRef::parse(raw).map_err(|e| e.to_string())
+}
+
+/// An item identity as the repo commands print it: `name:tag`, or the bare
+/// name for untagged kinds (launchers).
+fn identity_label(name: &str, tag: &str) -> String {
+    if tag.is_empty() {
+        return name.to_owned();
+    }
+    format!("{name}:{tag}")
 }
 
 #[derive(Subcommand)]
@@ -143,7 +157,7 @@ pub enum RepoCommands {
         /// - Local path: `/path/to/directory`
         /// - Git URL: `https://github.com/org/repo.git`
         /// - Git URL with ref: `https://github.com/org/repo.git --ref <branch, tag, commit, or @{peppy-release}>`
-        /// - Plain URL: `https://example.com/packages`
+        /// - Git URL without `.git`, with ref: `https://github.com/org/repo --ref main`
         source: String,
         /// Git ref to track (git sources only): a branch, a tag, a commit,
         /// or `@{peppy-release}`, which reads the tag
@@ -159,8 +173,8 @@ pub enum RepoCommands {
         /// free one. Take ids from the reserved band >= 2000: peppy's
         /// bundled defaults (see its `assets/default_repositories.json5`)
         /// stay below 2000, so a pinned id can never collide with a default
-        /// a future peppy release ships — which would silently skip that
-        /// default, since defaults are only appended for ids not taken.
+        /// a future peppy release ships. Such a collision would silently skip
+        /// that default, since defaults are only appended for ids not taken.
         #[arg(long, conflicts_with = "top")]
         id: Option<u64>,
     },
@@ -177,7 +191,7 @@ pub enum RepoCommands {
         /// - Local path: `/path/to/directory`
         /// - Git URL: `https://github.com/org/repo.git`
         /// - Git URL with ref: `https://github.com/org/repo.git --ref <branch, tag, commit, or @{peppy-release}>`
-        /// - Plain URL: `https://example.com/packages`
+        /// - Git URL without `.git`, with ref: `https://github.com/org/repo --ref main`
         source: String,
         /// Git ref of the repository to exclude (git sources only), as it is
         /// written in `repositories.json5`: a branch, a tag, a commit, or
@@ -194,7 +208,7 @@ pub struct RepoCommand {
 impl Command for RepoCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         match self.command {
-            RepoCommands::Init => init::repo_init(ctx),
+            RepoCommands::Init => init::repo_init(),
             RepoCommands::Index {
                 path,
                 check,
@@ -236,31 +250,21 @@ mod tests {
         command: RepoCommands,
     }
 
-    fn add_ref(git_ref: &str) -> std::result::Result<Option<GitRepoRef>, clap::Error> {
+    /// The `--ref` that `repo <subcommand>` parses from its command line.
+    fn parsed_ref(
+        subcommand: &str,
+        git_ref: &str,
+    ) -> std::result::Result<Option<GitRepoRef>, clap::Error> {
         RepoCli::try_parse_from([
             "repo",
-            "add",
+            subcommand,
             "https://github.com/org/repo.git",
             "--ref",
             git_ref,
         ])
         .map(|cli| match cli.command {
-            RepoCommands::Add { git_ref, .. } => git_ref,
-            _ => unreachable!("`repo add` parses into `Add`"),
-        })
-    }
-
-    fn exclude_ref(git_ref: &str) -> std::result::Result<Option<GitRepoRef>, clap::Error> {
-        RepoCli::try_parse_from([
-            "repo",
-            "exclude",
-            "https://github.com/org/repo.git",
-            "--ref",
-            git_ref,
-        ])
-        .map(|cli| match cli.command {
-            RepoCommands::Exclude { git_ref, .. } => git_ref,
-            _ => unreachable!("`repo exclude` parses into `Exclude`"),
+            RepoCommands::Add { git_ref, .. } | RepoCommands::Exclude { git_ref, .. } => git_ref,
+            _ => unreachable!("`repo {subcommand}` parses into a command that takes `--ref`"),
         })
     }
 
@@ -268,7 +272,7 @@ mod tests {
     /// parses into, for `repo add` and `repo exclude` alike.
     #[test]
     fn ref_on_the_command_line_parses_as_in_the_file() {
-        for parse in [add_ref, exclude_ref] {
+        for subcommand in ["add", "exclude"] {
             for raw in [
                 "@{peppy-release}",
                 "peppy-release/v0.31.2",
@@ -276,7 +280,7 @@ mod tests {
                 "main",
             ] {
                 assert_eq!(
-                    parse(raw).expect(raw),
+                    parsed_ref(subcommand, raw).expect(raw),
                     Some(GitRepoRef::parse(raw).expect(raw)),
                     "{raw}"
                 );
@@ -286,14 +290,14 @@ mod tests {
 
     #[test]
     fn ref_on_the_command_line_is_refused_as_in_the_file() {
-        for parse in [add_ref, exclude_ref] {
+        for subcommand in ["add", "exclude"] {
             for raw in [
                 "@{Peppy-Release}",
                 "@{peppy-releases}",
                 "@{upstream}",
                 "main@{1}",
             ] {
-                let error = parse(raw).expect_err(raw).to_string();
+                let error = parsed_ref(subcommand, raw).expect_err(raw).to_string();
                 let refusal = GitRepoRef::parse(raw).expect_err(raw).to_string();
                 assert!(error.contains(&refusal), "{raw}: {error}");
             }

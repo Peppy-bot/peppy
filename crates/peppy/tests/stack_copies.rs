@@ -24,6 +24,30 @@ fn launch_joins(copies: &[&str]) -> Vec<LaunchJoin> {
         .collect()
 }
 
+/// The `(option, name)` of each launch-time join, in the order given.
+fn join_pairs(joins: &[LaunchJoin]) -> Vec<(&str, &str)> {
+    joins
+        .iter()
+        .map(|join| (join.option.as_str(), join.name.as_str()))
+        .collect()
+}
+
+/// The `(source name, instance id)` of every instance the flat plan deploys,
+/// in deployment order, then instance order.
+fn deployed_instances(flat: &serde_json::Value) -> Vec<(String, String)> {
+    let mut instances = Vec::new();
+    for deployment in flat["deployments"].as_array().unwrap() {
+        let source = deployment["source"]["name"].as_str().unwrap();
+        for instance in deployment["instances"].as_array().unwrap() {
+            instances.push((
+                source.to_owned(),
+                instance["instance_id"].as_str().unwrap().to_owned(),
+            ));
+        }
+    }
+    instances
+}
+
 #[test]
 fn stack_join_cli_names_the_copy_and_accepts_placement_overrides_and_timeouts() {
     let cli = StackCli::try_parse_from([
@@ -288,24 +312,7 @@ fn resolve_composes_launch_joins_in_order_over_what_the_last_one_left() {
     );
     let flat: serde_json::Value = serde_json5::from_str(&document).unwrap();
     assert_eq!(flat["core_nodes"], serde_json::json!(["alpha", "bravo"]));
-    let sources: Vec<(String, String)> = flat["deployments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .flat_map(|deployment| {
-            let source = deployment["source"]["name"].as_str().unwrap().to_owned();
-            deployment["instances"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(move |instance| {
-                    (
-                        source.clone(),
-                        instance["instance_id"].as_str().unwrap().to_owned(),
-                    )
-                })
-        })
-        .collect();
+    let sources = deployed_instances(&flat);
     for member in [
         ("arm".to_owned(), "alpha_arm_inst".to_owned()),
         ("arm".to_owned(), "bravo_arm_inst".to_owned()),
@@ -437,11 +444,7 @@ fn a_launch_time_join_names_an_option_and_a_copy() {
         unreachable!()
     };
     assert_eq!(
-        joins
-            .joins
-            .iter()
-            .map(|join| (join.option.as_str(), join.name.as_str()))
-            .collect::<Vec<_>>(),
+        join_pairs(&joins.joins),
         [("openarm_sim", "alpha"), ("so101_sim", "charlie")]
     );
     assert_eq!(with.words, ["alpha.xr_commander"]);
@@ -459,11 +462,7 @@ fn a_launch_time_join_names_an_option_and_a_copy() {
         unreachable!()
     };
     assert_eq!(
-        joins
-            .joins
-            .iter()
-            .map(|join| (join.option.as_str(), join.name.as_str()))
-            .collect::<Vec<_>>(),
+        join_pairs(&joins.joins),
         [("openarm_sim", "alpha"), ("so101_sim", "bravo")]
     );
     assert_eq!(with.words, ["bravo.xr_commander"]);
@@ -492,11 +491,7 @@ fn a_launch_time_join_takes_several_copies_in_one_word() {
         unreachable!()
     };
     assert_eq!(
-        joins
-            .joins
-            .iter()
-            .map(|join| (join.option.as_str(), join.name.as_str()))
-            .collect::<Vec<_>>(),
+        join_pairs(&joins.joins),
         [
             ("openarm_sim", "alpha"),
             ("so101_sim", "charlie"),
@@ -564,24 +559,7 @@ fn resolve_starts_the_copies_a_launch_time_join_names_from_the_options_entry() {
     );
     let flat: serde_json::Value = serde_json5::from_str(&document).unwrap();
     assert_eq!(flat["core_nodes"], serde_json::json!(["alpha", "bravo"]));
-    let sources: Vec<(String, String)> = flat["deployments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .flat_map(|deployment| {
-            let source = deployment["source"]["name"].as_str().unwrap().to_owned();
-            deployment["instances"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(move |instance| {
-                    (
-                        source.clone(),
-                        instance["instance_id"].as_str().unwrap().to_owned(),
-                    )
-                })
-        })
-        .collect();
+    let sources = deployed_instances(&flat);
     assert!(
         sources.contains(&("headset".into(), "alpha_commander_inst".into())),
         "{sources:?}"

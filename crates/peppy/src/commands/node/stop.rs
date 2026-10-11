@@ -49,8 +49,7 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
     //
     // Sized from the *local* daemon's `shutdown_grace_secs`: `DaemonState`
     // only records the local generation, so a `--core-node` stop borrows the
-    // local grace as its estimate of the remote daemon's. (Optional follow-up:
-    // pre-fetch the remote grace via the `info` service.)
+    // local grace as its estimate of the remote daemon's.
     let request_timeout = stop_request_timeout(conn.shutdown_grace_secs);
 
     // The service root (`to_target`) and the discovery scope both name the
@@ -113,9 +112,9 @@ mod tests {
         // every accepted grace, with the messaging margin as the headroom. The
         // daemon's deadline > node-bounded-exit link is pinned separately in
         // core-node's `shutdown_grace_margin` test; together they give the full
-        // CLI > daemon-deadline > node-exit chain. Reverting the CLI formula to
-        // the old `grace + reap + margin` (dropping force_kill_deadline) would
-        // fail this for any grace where the join + finalize terms matter.
+        // CLI > daemon-deadline > node-exit chain. A formula without the
+        // force-kill deadline fails this for any grace where the join and
+        // finalize terms matter.
         for grace_secs in 1..=600 {
             let daemon_worst_case = core_node::force_kill_deadline(Duration::from_secs(grace_secs))
                 + core_node::TEARDOWN_REAP_BUDGET;

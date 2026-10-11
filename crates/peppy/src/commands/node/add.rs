@@ -2,7 +2,7 @@ use config::node::NodeConfigParser;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
-    NodeInfoResponse, NodeSource,
+    NodeInfoResponse, NodeInstanceInfo, NodeSource,
 };
 use daemon_config::launcher::LinkValue;
 use std::collections::BTreeMap;
@@ -148,7 +148,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     //   directly; no parsing needed. (Validated at parse time by
     //   `NodeSource::resolve_ref`.)
     //
-    // `Git`/`Http` root sources still skip the preflight since we'd need to
+    // `Git`/`Http` root sources skip the preflight since we'd need to
     // fetch them to read the manifest; the daemon's add action stops
     // existing instances transparently in that path. `Pinned` and
     // `Exposures` skip it for a different reason: `parse_node_source` never
@@ -285,9 +285,9 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 /// the daemon whether that entity is currently in the stack. Returns
 /// `Some((name, tag, active_instance_ids))` only when the node exists in the
 /// stack AND has at least one active instance (`Starting` or `Running`);
-/// exactly the case that needs a user confirmation before overwrite. Both
-/// states count as active because the daemon tears down every tracked
-/// instance when it overwrites a node, regardless of lifecycle state.
+/// exactly the case that needs a user confirmation before overwrite. An
+/// exited (`Finished`/`Failed`) instance does not count: the daemon clears it
+/// on overwrite and has nothing to stop.
 ///
 /// Returns `None` when:
 /// - The local config can't be parsed (the add action itself will surface a
@@ -312,7 +312,7 @@ async fn fetch_active_instances_for_local_source(
 
 /// Queries the daemon for the `(name, tag)` entity in the stack and returns
 /// its active (`running`/`starting`) instance ids when present. Used by the
-/// `RepoNode` preflight, which already has `(name, tag)` in hand, and by
+/// `ResolveRef` preflight, which already has `(name, tag)` in hand, and by
 /// the `Fs` wrapper above after it reads them from `peppy.json5`.
 async fn fetch_active_instances_for_name_tag(
     conn: &DaemonConnection<'_>,
@@ -334,24 +334,28 @@ async fn fetch_active_instances_for_name_tag(
     })?;
 
     // `NotInStack` is a normal first-time-add case; there is nothing to
-    // confirm. The daemon no longer reports this as an error, so we match
-    // on the response variant directly instead of sniffing error strings.
+    // confirm.
     let info = match response {
         NodeInfoResponse::NotInStack => return Ok(None),
         NodeInfoResponse::Found(info) => info,
     };
 
-    let active: Vec<String> = info
-        .instances
-        .iter()
-        .map(|inst| inst.instance_id.clone())
-        .collect();
+    let active = active_instance_ids(&info.instances);
 
     if active.is_empty() {
         Ok(None)
     } else {
         Ok(Some((node_name, node_tag, active)))
     }
+}
+
+/// The ids of the instances that are still live (`Starting` or `Running`).
+fn active_instance_ids(instances: &[NodeInstanceInfo]) -> Vec<String> {
+    instances
+        .iter()
+        .filter(|instance| !instance.state.is_terminal())
+        .map(|instance| instance.instance_id.clone())
+        .collect()
 }
 
 fn confirm_overwrite(
@@ -380,96 +384,8 @@ fn confirm_overwrite(
 
 #[cfg(test)]
 mod tests {
-    use super::super::source::parse_git_repo_url_and_path;
     use super::*;
-
-    #[test]
-    fn parses_git_repo_url_and_repo_path_from_https_url() {
-        let (repo_url, repo_path) =
-            parse_git_repo_url_and_path("https://github.com/Peppy-bot/nodes-hub.git/uvc_camera")
-                .expect("should parse git source");
-
-        assert_eq!(
-            repo_url.to_bstring().to_string(),
-            "https://github.com/Peppy-bot/nodes-hub.git"
-        );
-        assert_eq!(repo_path, "uvc_camera");
-    }
-
-    #[test]
-    fn parses_http_source_for_tar_zst_url() {
-        let source = parse_node_source("https://example.com/fake_uvc_camera.tar.zst", None)
-            .expect("should parse http source");
-
-        match &source {
-            NodeSource::Http { url, .. } => {
-                assert_eq!(url.as_str(), "https://example.com/fake_uvc_camera.tar.zst");
-            }
-            other => panic!("expected http source, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_git_source_with_ref() {
-        let source = parse_node_source(
-            "https://github.com/Peppy-bot/nodes-hub.git/uvc_camera",
-            Some("v0.1.0".to_string()),
-        )
-        .expect("should parse git source");
-
-        match &source {
-            NodeSource::Git {
-                repo_url,
-                repo_path,
-                repo_ref,
-            } => {
-                assert_eq!(
-                    repo_url.to_bstring().to_string(),
-                    "https://github.com/Peppy-bot/nodes-hub.git"
-                );
-                assert_eq!(repo_path, "uvc_camera");
-                assert_eq!(repo_ref.as_deref(), Some("v0.1.0"));
-            }
-            other => panic!("expected git source, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_git_source_without_ref() {
-        let source = parse_node_source(
-            "https://github.com/Peppy-bot/nodes-hub.git/uvc_camera",
-            None,
-        )
-        .expect("should parse git source");
-
-        match &source {
-            NodeSource::Git { repo_ref, .. } => {
-                assert!(repo_ref.is_none());
-            }
-            other => panic!("expected git source, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn rejects_ref_for_http_archive() {
-        let err = parse_node_source(
-            "https://example.com/fake_uvc_camera.tar.zst",
-            Some("v0.1.0".to_string()),
-        )
-        .expect_err("should reject --ref for http archive");
-
-        assert!(err.to_string().contains("--ref"));
-    }
-
-    #[test]
-    fn rejects_ref_for_local_source() {
-        // Note: This test will fail to canonicalize the path since it doesn't exist,
-        // but it still validates that --ref is rejected for local sources
-        let err = parse_node_source("some/local/path", Some("v0.1.0".to_string()))
-            .expect_err("should reject --ref for local sources");
-
-        assert!(err.to_string().contains("--ref"));
-    }
+    use core_node_api::InstanceState;
 
     #[test]
     fn validate_git_ref_rejects_empty() {
@@ -491,5 +407,32 @@ mod tests {
         let result = validate_git_ref(None).expect("should accept None");
 
         assert!(result.is_none());
+    }
+
+    fn instance_in_state(instance_id: &str, state: InstanceState) -> NodeInstanceInfo {
+        NodeInstanceInfo {
+            clock: Default::default(),
+            instance_id: instance_id.to_string(),
+            state,
+            healthy: true,
+            slot_bindings: BTreeMap::new(),
+            pairing_slots: BTreeMap::new(),
+            endpoints: Vec::new(),
+        }
+    }
+
+    /// An exited instance has nothing left to stop, and the daemon clears it
+    /// on overwrite without a refusal, so only the live instances need the
+    /// overwrite confirmation.
+    #[test]
+    fn active_instance_ids_skip_exited_instances() {
+        let instances = [
+            instance_in_state("a", InstanceState::Running),
+            instance_in_state("b", InstanceState::Starting),
+            instance_in_state("c", InstanceState::Finished),
+            instance_in_state("d", InstanceState::Failed),
+        ];
+
+        assert_eq!(active_instance_ids(&instances), ["a", "b"]);
     }
 }

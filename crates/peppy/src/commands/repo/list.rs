@@ -1,16 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use core_node_api::encoding::{RepoListNodeEntry, RepoListRepoEntry, RepoListRequest};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::commands::colors::{ORANGE, RED, paint};
+use crate::commands::repo::REQUEST_TIMEOUT;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use peppylib::core_node::transport::poll;
-
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) fn list_repos(ctx: &Arc<AppContext>) -> Result<()> {
     crate::commands::block_on(list_repos_async(ctx))

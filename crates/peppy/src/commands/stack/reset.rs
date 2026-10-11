@@ -1,9 +1,5 @@
 //! `peppy stack reset`: tear the node stack down to an empty state.
 //!
-//! Replaces `peppy service reset`. The daemon service was already called
-//! `stack_reset`; only the CLI verb was misfiled under `service`, where it read
-//! as something that restarts the daemon.
-//!
 //! The federated mode is where "participants are discovered, not remembered"
 //! pays off. Nothing here reads a coordinator's memory of who took part: it
 //! asks the federation which daemons hold a slice of the launch, using the same
@@ -155,6 +151,17 @@ struct DaemonHoldings {
     reservation: Option<LaunchIdentity>,
 }
 
+impl DaemonHoldings {
+    /// Whether the launch identity of the slice or of the reservation passes
+    /// `names_launch`.
+    fn holds_any(&self, names_launch: impl Fn(&LaunchIdentity) -> bool) -> bool {
+        self.slice
+            .iter()
+            .chain(self.reservation.iter())
+            .any(names_launch)
+    }
+}
+
 /// Every live core node's self-reported holdings.
 ///
 /// A daemon that cannot be reached is deliberately NOT dropped silently: it
@@ -219,20 +226,10 @@ fn federated_targets(
     holdings: &[DaemonHoldings],
 ) -> BTreeSet<String> {
     let held_by_launch = |daemon: &DaemonHoldings, launch_id: &str| {
-        let names_it = |identity: &Option<LaunchIdentity>| {
-            identity
-                .as_ref()
-                .is_some_and(|identity| identity.launch_id == launch_id)
-        };
-        names_it(&daemon.slice) || names_it(&daemon.reservation)
+        daemon.holds_any(|identity| identity.launch_id == launch_id)
     };
     let held_for_coordinator = |daemon: &DaemonHoldings| {
-        let names_it = |identity: &Option<LaunchIdentity>| {
-            identity
-                .as_ref()
-                .is_some_and(|identity| identity.coordinator_core_node == target_core_node)
-        };
-        names_it(&daemon.slice) || names_it(&daemon.reservation)
+        daemon.holds_any(|identity| identity.coordinator_core_node == target_core_node)
     };
 
     holdings
@@ -321,8 +318,8 @@ mod tests {
 
     /// A restarted or already-reset coordinator has no slice left to name a
     /// launch, so rediscovery keys on its NAME: every machine whose slice or
-    /// reservation names it as coordinator is swept. This is the state the
-    /// old slice-keyed discovery could not recover from.
+    /// reservation names it as coordinator is swept. A discovery keyed on the
+    /// slice alone cannot recover from this state.
     #[test]
     fn a_coordinator_with_no_slice_still_finds_every_machine_its_launches_hold() {
         let holdings = [

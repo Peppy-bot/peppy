@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use config::node::{NodeConfig, NodeConfigParser};
-use core_node::ExposureDocumentsError;
+use core_node::{ExposureDocumentsError, NodeCacheEntry};
 use core_node_api::encoding::{LaunchJoin, LauncherOrigin};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
@@ -227,93 +227,9 @@ fn check_link_plan(
     let mut unavailable: Vec<String> = Vec::new();
     let mut manifests: Vec<CheckedManifest> = Vec::new();
     for (index, deployment) in flat.deployments.iter().enumerate() {
-        let (name, tag) = match &deployment.source {
-            DeploymentSource::Node { name, tag } => (name.as_str(), tag.as_str()),
-            DeploymentSource::Exposures { exposures } => {
-                // The built-in server's manifest is derived from the
-                // exposures and their contracts, through the same caches
-                // and the same derivation a launch uses.
-                match core_node::resolve_exposure_plan(
-                    dirs,
-                    exposures,
-                    &crate::commands::report_as_info,
-                ) {
-                    Ok(plan) => {
-                        manifests.push(CheckedManifest {
-                            name: plan.name.as_str().to_owned(),
-                            tag: plan.tag,
-                            index,
-                            config: plan.config,
-                            addressing: plan.addressing,
-                        });
-                    }
-                    Err(e) => unavailable.push(format!("{} ({e})", deployment.source.label())),
-                }
-                continue;
-            }
-        };
-        let id = format!("{name}:{tag}");
-        let entry = match core_node::lookup(&entries, name, tag) {
-            Ok(Some(entry)) => entry,
-            Ok(None) => {
-                unavailable.push(format!("{id} (not in the nodes cache)"));
-                continue;
-            }
-            Err(ambiguity) => {
-                unavailable.push(format!("{id} ({ambiguity})"));
-                continue;
-            }
-        };
-        let manifest_path = match &entry.origin {
-            EntryOrigin::Fs { path } => path.clone(),
-            EntryOrigin::Git {
-                repo_url,
-                commit,
-                path,
-                ..
-            } => {
-                // Read out of the checkout the caches already hold: `repo
-                // refresh` clones every repository it indexes and hands that
-                // clone to the checkout cache, so the tree behind an entry it
-                // wrote is on this machine. A commit nothing has materialized
-                // is named instead of fetched, because this command never
-                // reaches the network.
-                match core_node::materialized_checkout(dirs, repo_url, commit) {
-                    Some(checkout) => checkout.join(path.as_path()),
-                    None => {
-                        unavailable.push(format!(
-                            "{id} (no checkout of {commit} on this machine; run `peppy repo refresh`)"
-                        ));
-                        continue;
-                    }
-                }
-            }
-        };
-        match NodeConfigParser::from_path(&manifest_path) {
-            // The cache's label and the file's own declaration must agree:
-            // a stale entry whose path now holds another node's manifest
-            // would otherwise have the plan judged against that node's slot
-            // declarations under this one's name.
-            Ok(config) if config.manifest.name.as_str() == name && config.manifest.tag == tag => {
-                manifests.push(CheckedManifest {
-                    name: name.to_string(),
-                    tag: tag.to_string(),
-                    index,
-                    config,
-                    addressing: MemberAddressing::WholeSet,
-                });
-            }
-            Ok(config) => {
-                unavailable.push(format!(
-                    "{id} (the manifest at {} declares `{}:{}`)",
-                    manifest_path.display(),
-                    config.manifest.name.as_str(),
-                    config.manifest.tag,
-                ));
-            }
-            Err(e) => {
-                unavailable.push(format!("{id} ({e})"));
-            }
+        match checked_manifest(dirs, &entries, index, deployment) {
+            Ok(manifest) => manifests.push(manifest),
+            Err(reason) => unavailable.push(reason),
         }
     }
     // The clock rules read no manifest, so they hold whether or not the
@@ -415,4 +331,81 @@ fn check_link_plan(
         "the flat launcher breaks link rules a launch would reject:{}",
         daemon_config::format_bulleted(&rendered)
     )))
+}
+
+/// The manifest of the deployment at `index` in the flat launcher, as
+/// [`check_link_plan`] judges it, or the report entry that names the
+/// deployment and says why its manifest is not readable on this machine.
+fn checked_manifest(
+    dirs: &PeppyDirs,
+    entries: &[NodeCacheEntry],
+    index: usize,
+    deployment: &Deployment,
+) -> std::result::Result<CheckedManifest, String> {
+    let (name, tag) = match &deployment.source {
+        DeploymentSource::Node { name, tag } => (name.as_str(), tag.as_str()),
+        DeploymentSource::Exposures { exposures } => {
+            // The built-in server's manifest is derived from the exposures
+            // and their contracts, through the same caches and the same
+            // derivation a launch uses.
+            let plan =
+                core_node::resolve_exposure_plan(dirs, exposures, &crate::commands::report_as_info)
+                    .map_err(|e| format!("{} ({e})", deployment.source.label()))?;
+            return Ok(CheckedManifest {
+                name: plan.name.as_str().to_owned(),
+                tag: plan.tag,
+                index,
+                config: plan.config,
+                addressing: plan.addressing,
+            });
+        }
+    };
+    let id = format!("{name}:{tag}");
+    let entry = match core_node::lookup(entries, name, tag) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => return Err(format!("{id} (not in the nodes cache)")),
+        Err(ambiguity) => return Err(format!("{id} ({ambiguity})")),
+    };
+    let manifest_path = match &entry.origin {
+        EntryOrigin::Fs { path } => path.clone(),
+        EntryOrigin::Git {
+            repo_url,
+            commit,
+            path,
+            ..
+        } => {
+            // Read out of the checkout the caches already hold: `repo
+            // refresh` clones every repository it indexes and hands that
+            // clone to the checkout cache, so the tree behind an entry it
+            // wrote is on this machine. A commit nothing has materialized
+            // is named instead of fetched, because this command never
+            // reaches the network.
+            let Some(checkout) = core_node::materialized_checkout(dirs, repo_url, commit) else {
+                return Err(format!(
+                    "{id} (no checkout of {commit} on this machine; run `peppy repo refresh`)"
+                ));
+            };
+            checkout.join(path.as_path())
+        }
+    };
+    let config = NodeConfigParser::from_path(&manifest_path).map_err(|e| format!("{id} ({e})"))?;
+    // The cache's label and the file's own declaration must agree: a stale
+    // entry whose path now holds another node's manifest would otherwise
+    // have the plan judged against that node's slot declarations under this
+    // one's name.
+    if config.manifest.name.as_str() != name || config.manifest.tag != tag {
+        return Err(format!(
+            "{id} (the manifest at {} declares `{}:{}`)",
+            manifest_path.display(),
+            config.manifest.name.as_str(),
+            config.manifest.tag,
+        ));
+    }
+    Ok(CheckedManifest {
+        name: name.to_string(),
+        tag: tag.to_string(),
+        index,
+        config,
+        addressing: MemberAddressing::WholeSet,
+    })
 }

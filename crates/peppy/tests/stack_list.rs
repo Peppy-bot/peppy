@@ -14,11 +14,12 @@ use peppy::commands::node::{
     NodeCommand, NodeCommands, NodeName, TimeoutConfig, run_instance_async,
 };
 use peppy::context::AppContext;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::{CoreNodePresenceMessenger, MessengerHandle};
 
-use super::common::test_node_target;
+use super::common::{
+    emulate_startup_services, node_add_command, serve_app_context, test_core_node_name,
+    test_node_target,
+};
 
 fn make_consumer_depend_on_provider(
     provider_peppy_json5: &Path,
@@ -91,54 +92,23 @@ fn make_consumer_depend_on_provider(
 }
 
 fn add_ready_node(ctx: &Arc<AppContext>, source: &Path) {
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(source.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(ctx)
-    .expect("node add should succeed");
+    node_add_command(source)
+        .execute(ctx)
+        .expect("node add should succeed");
 }
 
-/// Installs the ready/health listeners a running instance is expected to
-/// serve. The returned task handles detach on drop, so discarding them keeps
-/// the services listening for the rest of the test (the same pattern
-/// `node_pair.rs` uses).
-async fn install_node_services(
-    messenger: &MessengerHandle,
-    core_node: &str,
-    node_name: &str,
-    instance_id: &str,
-) {
-    listen_for_node_ready(
-        messenger,
-        core_node,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node ready service should start");
-    listen_for_node_health(
-        messenger,
-        core_node,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
+/// The entry of the daemon named `core_node_name` in a `stack list --json`
+/// document.
+fn core_node_entry(json_output: &str, core_node_name: &str) -> serde_json::Value {
+    let doc: serde_json::Value =
+        serde_json::from_str(json_output).expect("the output is one JSON document");
+    doc["core_nodes"]
+        .as_array()
+        .expect("core_nodes is a list")
+        .iter()
+        .find(|entry| entry["core_node"] == core_node_name)
+        .expect("this daemon's entry is present")
+        .clone()
 }
 
 /// A node's row parsed from the rendered stack inventory table.
@@ -172,34 +142,26 @@ fn node_inventory_row(output: &str, label: &str) -> InventoryRow {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_list_command_succeeds() {
+async fn stack_list_command_succeeds() {
     // Mock messaging is sufficient for listing and dependency graph tests (no spawned node process).
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
         "core_node_name should not be empty"
     );
 
-    // Create a temp directory for the nodes
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for nodes");
     let provider_name = "test_list_provider";
     let consumer_name = "test_list_consumer";
 
-    // Create AppContext pointing to the temp directory
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
 
-    // Set up logging
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // Create both nodes using the init command
     NodeCommand {
         command: NodeCommands::Init {
             node_name: NodeName::new(provider_name).expect("valid node name"),
@@ -241,49 +203,14 @@ async fn node_list_command_succeeds() {
     // Make the consumer depend on the provider by subscribing to a topic exposed by the provider.
     make_consumer_depend_on_provider(&provider_peppy_json5, &consumer_peppy_json5, provider_name);
 
-    // Add the provider
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(provider_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("provider node add command should succeed");
+    node_add_command(&provider_path)
+        .execute(&node_ctx)
+        .expect("provider node add command should succeed");
 
-    // Add the consumer, it depends on the provider
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(consumer_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("consumer node add command should succeed");
+    // The consumer goes in second: it depends on the provider.
+    node_add_command(&consumer_path)
+        .execute(&node_ctx)
+        .expect("consumer node add command should succeed");
 
     // Run the list command via the testable collecting variant so we can
     // assert on the exact text the CLI would print without capturing stdout.
@@ -343,15 +270,7 @@ async fn node_list_command_succeeds() {
         "{:?}",
         json_report.failed_names
     );
-    let doc: serde_json::Value =
-        serde_json::from_str(&json_report.output).expect("the output is one JSON document");
-    let entry = doc["core_nodes"]
-        .as_array()
-        .expect("core_nodes is a list")
-        .iter()
-        .find(|entry| entry["core_node"] == core_node_name.as_str())
-        .expect("this daemon's entry is present")
-        .clone();
+    let entry = core_node_entry(&json_report.output, &core_node_name);
     assert!(entry["error"].is_null(), "{entry}");
     let nodes = entry["stack"]["nodes"]
         .as_array()
@@ -373,10 +292,6 @@ async fn node_list_command_succeeds() {
         "the dependency edge is reported: {}",
         entry["stack"]["edges"]
     );
-
-    // Silence unused variable when LogCapture is only constructed for
-    // log-side effects in sibling tests.
-    let _ = log_capture;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -397,14 +312,8 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     let consumer_name = "remote-consumer";
     let provider_instance = "provider-instance";
     let consumer_instance = "consumer-instance";
-    let local_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(local.daemon_state_path()),
-    );
-    let remote_ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(remote.daemon_state_path()),
-    );
+    let local_ctx = serve_app_context(&local, work_dir.path());
+    let remote_ctx = serve_app_context(&remote, work_dir.path());
 
     for node_name in [provider_name, consumer_name] {
         NodeCommand {
@@ -425,10 +334,11 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         &consumer_path.join("peppy.json5"),
         provider_name,
     );
-    // Both instances have to be alive at the `list_nodes_collecting` below —
-    // the assertions read the cross-daemon binding row off the rendered
-    // output — and the provider is spawned a full round-trip before the
-    // consumer. A fixed 4s lifetime would race the rest of the test.
+    // Both instances have to be alive at the `list_nodes_collecting` below,
+    // whose rendered output the assertions read the cross-daemon binding row
+    // from, and the provider is spawned a full round-trip before the
+    // consumer. So each instance lives as long as `instances`, not a fixed
+    // time that would race the rest of the test.
     let instances = peppy::test_support::InstanceLifetime::new();
     peppy::test_support::override_run_cmd_while(
         &provider_path.join("peppy.json5"),
@@ -444,7 +354,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     add_ready_node(&remote_ctx, &consumer_path);
 
     let messenger_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    install_node_services(
+    emulate_startup_services(
         &messenger_handle,
         "z-local",
         provider_name,
@@ -472,7 +382,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     .await
     .expect("local producer should start");
 
-    install_node_services(
+    emulate_startup_services(
         &messenger_handle,
         "a-remote",
         consumer_name,
@@ -502,10 +412,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     .await
     .expect("remote consumer should start");
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(local.temp_dir(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(local.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&local, local.temp_dir());
     let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
         .expect("multi-daemon stack list should succeed");
@@ -553,7 +460,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
     let targeted_ctx = Arc::new(
         AppContext::with_messenger(local.temp_dir(), shared_messenger)
             .with_daemon_state_file(local.daemon_state_path())
-            .with_core_node_override(Some("a-remote".to_string())),
+            .with_core_node_override(Some(test_core_node_name("a-remote"))),
     );
     let targeted_report = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false, None)
         .await
@@ -582,10 +489,7 @@ async fn stack_list_warns_when_multiple_live_tokens_claim_one_name() {
         CoreNodePresenceMessenger::declare(&handle, "claimed-core", "foreign-instance")
             .await
             .expect("foreign presence should be declared");
-    let ctx = Arc::new(
-        AppContext::with_messenger(daemon.temp_dir(), shared_messenger)
-            .with_daemon_state_file(daemon.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&daemon, daemon.temp_dir());
 
     let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
@@ -605,7 +509,7 @@ async fn stack_list_warns_when_multiple_live_tokens_claim_one_name() {
     let targeted_ctx = Arc::new(
         AppContext::with_messenger(daemon.temp_dir(), daemon.messenger())
             .with_daemon_state_file(daemon.daemon_state_path())
-            .with_core_node_override(Some("claimed-core".to_string())),
+            .with_core_node_override(Some(test_core_node_name("claimed-core"))),
     );
     let targeted = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false, None)
         .await
@@ -631,10 +535,7 @@ async fn stack_list_keeps_healthy_sections_when_an_enumerated_daemon_cannot_answ
     let _stale_claim = CoreNodePresenceMessenger::declare(&handle, "gone-core", "gone-instance")
         .await
         .expect("stale presence should be declared");
-    let ctx = Arc::new(
-        AppContext::with_messenger(daemon.temp_dir(), shared_messenger)
-            .with_daemon_state_file(daemon.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&daemon, daemon.temp_dir());
 
     let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
@@ -676,10 +577,7 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for nodes");
     let node_name = "listed_page_node";
     let instance_id = "listed_page_instance";
-    let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let node_ctx = serve_app_context(&serve, node_dir.path());
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
@@ -715,7 +613,7 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
     add_ready_node(&node_ctx, &node_path);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    install_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
+    emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
     let _endpoints = peppylib::services::endpoints::listen_for_node_endpoints(
         &node_messenger,
         &core_node_name,
@@ -800,15 +698,7 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
     let json_report = peppy::commands::stack::list_nodes_json_collecting(&node_ctx)
         .await
         .expect("stack list --json should succeed");
-    let doc: serde_json::Value =
-        serde_json::from_str(&json_report.output).expect("the output is one JSON document");
-    let entry = doc["core_nodes"]
-        .as_array()
-        .expect("core_nodes is a list")
-        .iter()
-        .find(|entry| entry["core_node"] == core_node_name.as_str())
-        .expect("this daemon's entry is present")
-        .clone();
+    let entry = core_node_entry(&json_report.output, &core_node_name);
     let node = entry["stack"]["nodes"]
         .as_array()
         .expect("the stack carries its nodes")
@@ -837,5 +727,4 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
         "{}",
         node["instances"][0]
     );
-    let _ = log_capture;
 }

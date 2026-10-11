@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
@@ -28,10 +28,11 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
-/// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
-/// Matches `node info`'s request timeout; this is a metadata lookup,
-/// not a long-running action, so it must fail fast if the daemon is down
-/// rather than waiting out `timeouts.max_secs` (which can be 1 hour).
+/// Timeout for each metadata request (node info, stack list, clock list) that a
+/// run makes before it starts the instance. Matches `node info`'s request
+/// timeout; a metadata lookup is not a long-running action, so it must fail
+/// fast if the daemon is down rather than waiting out `timeouts.max_secs`
+/// (which can be 1 hour).
 const NODE_INFO_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Interval between `NodeInfoRequest` polls while waiting for an in-flight
@@ -119,7 +120,10 @@ async fn wait_for_build_to_finish(
         node_name, tag
     );
 
-    let deadline = Instant::now() + Duration::from_secs(timeouts.max_secs);
+    let deadline = crate::commands::action_poll::deadline_after(
+        Instant::now(),
+        Duration::from_secs(timeouts.max_secs),
+    );
 
     loop {
         let response = poll(
@@ -177,68 +181,43 @@ async fn wait_for_build_to_finish(
 /// - Integer strings -> Int
 /// - Float strings -> Float
 /// - Everything else -> String
-pub fn args_to_node_arguments(args: &[(String, String)]) -> BTreeMap<String, AnyType> {
+fn args_to_node_arguments(args: &[(String, String)]) -> BTreeMap<String, AnyType> {
     let mut result: BTreeMap<String, AnyType> = BTreeMap::new();
 
     for (key, value) in args {
-        let parsed_value = parse_value(value);
-        insert_nested_value(&mut result, key, parsed_value);
+        let path: Vec<&str> = key.split('.').collect();
+        insert_at_path(&mut result, &path, parse_value(value));
     }
 
     result
 }
 
-/// Inserts a value at a dot-separated path into a nested BTreeMap structure.
-/// For example, path "device.physical" with value "foo" creates:
-/// {"device": {"physical": "foo"}}
-fn insert_nested_value(
-    root: &mut std::collections::BTreeMap<String, AnyType>,
-    path: &str,
-    value: AnyType,
-) {
-    let parts: Vec<&str> = path.split('.').collect();
-
-    if parts.len() == 1 {
-        // Simple key, insert directly
-        root.insert(path.to_string(), value);
+/// Inserts a value at a dot-separated path, given as its parts, into a nested
+/// BTreeMap structure. For example, the parts `["device", "physical"]` with
+/// value "foo" create: {"device": {"physical": "foo"}}
+fn insert_at_path(current: &mut BTreeMap<String, AnyType>, path: &[&str], value: AnyType) {
+    let Some((key, rest)) = path.split_first() else {
         return;
-    }
+    };
 
-    // For nested paths, we need to navigate/create the path
-    insert_at_path(root, &parts, value);
-}
-
-/// Recursively inserts a value at the given path parts.
-fn insert_at_path(
-    current: &mut std::collections::BTreeMap<String, AnyType>,
-    parts: &[&str],
-    value: AnyType,
-) {
-    if parts.is_empty() {
-        return;
-    }
-
-    let key = parts[0].to_string();
-
-    if parts.len() == 1 {
-        // Last part - insert the actual value
-        current.insert(key, value);
+    if rest.is_empty() {
+        current.insert((*key).to_owned(), value);
         return;
     }
 
     // Intermediate part - ensure an Object exists at this key
     let entry = current
-        .entry(key)
-        .or_insert_with(|| AnyType::Object(std::collections::BTreeMap::new()));
+        .entry((*key).to_owned())
+        .or_insert_with(|| AnyType::Object(BTreeMap::new()));
 
     // If the entry isn't an object, make it one
     if !matches!(entry, AnyType::Object(_)) {
-        *entry = AnyType::Object(std::collections::BTreeMap::new());
+        *entry = AnyType::Object(BTreeMap::new());
     }
 
     // Navigate into the object and recurse
     if let AnyType::Object(obj) = entry {
-        insert_at_path(obj, &parts[1..], value);
+        insert_at_path(obj, rest, value);
     }
 }
 
@@ -491,7 +470,6 @@ pub(super) async fn resolve_clock_choice(
 /// coordinator. Carrying observations on the goal is what makes a lone
 /// `node run` observer receive its source pin exactly like a launcher would;
 /// without it the observer would boot validated but silent.
-#[derive(Default)]
 struct PreflightPlan {
     slot_bindings: config::runtime::SlotBindings,
     requested_pairs: BTreeMap<String, Vec<PairTarget>>,
@@ -520,9 +498,11 @@ struct PreflightPlan {
 ///   target's real `depends_on` + `implements`. This is the only item
 ///   whose bindings are validated and materialized.
 ///
-/// Returns `Ok(None)` on transient transport failures so the call site
-/// can swallow them and continue; an unreachable daemon should fail
-/// the actual `node_run` invocation, not the pre-flight.
+/// A failed `stack_list` request, a failed `node_info` request for a
+/// node of the snapshot, and every rule violation are returned as
+/// errors. The direct `node_info` lookup of a target that is not in the
+/// snapshot is best effort: when it fails, the target is validated with
+/// no `depends_on` and no `implements`.
 async fn validate_links_against_stack(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -531,7 +511,7 @@ async fn validate_links_against_stack(
     target_instance_id: &str,
     links: &BTreeMap<String, LinkValue>,
     clock: &ClockBinding,
-) -> Result<Option<PreflightPlan>> {
+) -> Result<PreflightPlan> {
     let stack_response = poll(
         &StackListRequest::new(),
         messenger,
@@ -840,7 +820,7 @@ async fn validate_links_against_stack(
     }
     let requested_observations = ObservationTargets::slots_from_plan(observation_members);
 
-    Ok(Some(PreflightPlan {
+    Ok(PreflightPlan {
         slot_bindings: validated
             .slot_bindings
             .remove(target_instance_id)
@@ -848,7 +828,7 @@ async fn validate_links_against_stack(
         requested_pairs,
         vacant_pairs,
         requested_observations,
-    }))
+    })
 }
 
 /// Validate the supplied `--link` entries against the running stack, resolve
@@ -877,12 +857,7 @@ pub async fn validate_and_run_instance(
 ) -> Result<String> {
     let prelaunch_instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
 
-    // A `None` plan means the preflight could not reach the daemon. We cannot
-    // classify links without the target's manifest, so nothing is pre-resolved
-    // and the goal carries no pairs. In practice this path is inert: a daemon
-    // unreachable at preflight also fails the `node_run` goal send below, so
-    // the user sees a clear transport error rather than a bad boot.
-    let plan = match validate_links_against_stack(
+    let plan = validate_links_against_stack(
         messenger,
         core_node_name,
         node_name,
@@ -891,16 +866,7 @@ pub async fn validate_and_run_instance(
         links,
         &clock,
     )
-    .await
-    {
-        Ok(Some(plan)) => plan,
-        Ok(None) => PreflightPlan::default(),
-        Err(e @ Error::ExecutionFailed(_)) => return Err(e),
-        Err(e) => {
-            debug!("skipping link validation for {}:{}: {}", node_name, tag, e);
-            PreflightPlan::default()
-        }
-    };
+    .await?;
 
     run_instance_async(
         messenger,
@@ -920,14 +886,14 @@ pub async fn validate_and_run_instance(
 }
 
 /// Spawn a node instance with already-resolved `slot_bindings`. Callers must
-/// have validated `binds` via [`validate_and_run_instance`] first; invoking
-/// this directly bypasses every binding rule and exists only as the lower
-/// half of the validate-then-spawn split.
+/// have validated `slot_bindings` via [`validate_and_run_instance`] first;
+/// invoking this directly bypasses every binding rule and exists only as the
+/// lower half of the validate-then-spawn split.
 ///
 /// `core_node_name` plays both roles (caller identity and goal target) because
 /// this path routes to the local daemon only; the entry points enforce that via
-/// `reject_remote_target_for_local_routing`. Nothing on the goal is host-local
-/// any more, so the restriction is about routing rather than about the payload.
+/// `reject_remote_target_for_local_routing`. Nothing on the goal is host-local,
+/// so the restriction is about routing rather than about the payload.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
@@ -960,11 +926,8 @@ pub async fn run_instance_async(
     // A PLAN, not a config. The CLI says WHAT to start; the daemon owns the
     // node's runtime identity and assembles the rest from its own state.
     //
-    // This is what removes `node run`'s local-only restriction: the CLI used to
-    // bake its own session's messaging endpoint and core node into the config
-    // it shipped, so aiming the command at another daemon produced a node bound
-    // to the wrong machine. With nothing host-local on the goal there is
-    // nothing left to get wrong.
+    // Nothing host-local rides on the goal: the daemon that runs the instance
+    // supplies its own messaging endpoint and core node.
     let instance_plan = config::runtime::NodeInstancePlan {
         arguments,
         clock,
@@ -1028,20 +991,24 @@ pub async fn run_instance_async(
     Ok(instance_id)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn run_node(
-    ctx: &Arc<AppContext>,
-    node_name: String,
-    tag: String,
-    args: Vec<(String, String)>,
-    instance_id: Option<String>,
-    clock: ClockChoice,
-    links: BTreeMap<String, LinkValue>,
-    timeouts: TimeoutConfig,
-    build: bool,
-) -> Result<()> {
-    crate::commands::block_on(run_node_async(
-        ctx,
+/// The flags of `peppy node run`, as `run_node` receives them.
+pub struct RunNodeParams {
+    pub node_name: String,
+    pub tag: String,
+    pub args: Vec<(String, String)>,
+    pub instance_id: Option<String>,
+    pub clock: ClockChoice,
+    pub links: BTreeMap<String, LinkValue>,
+    pub timeouts: TimeoutConfig,
+    pub build: bool,
+}
+
+pub fn run_node(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<()> {
+    crate::commands::block_on(run_node_async(ctx, params))
+}
+
+async fn run_node_async(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<()> {
+    let RunNodeParams {
         node_name,
         tag,
         args,
@@ -1050,21 +1017,7 @@ pub fn run_node(
         links,
         timeouts,
         build,
-    ))
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_node_async(
-    ctx: &Arc<AppContext>,
-    node_name: String,
-    tag: String,
-    args: Vec<(String, String)>,
-    instance_id: Option<String>,
-    clock: ClockChoice,
-    links: BTreeMap<String, LinkValue>,
-    timeouts: TimeoutConfig,
-    build: bool,
-) -> Result<()> {
+    } = params;
     let conn = ctx.connect_to_daemon().await?;
 
     // Every step below addresses `conn.core_node_name`, this machine's daemon,
@@ -1300,11 +1253,8 @@ mod tests {
 
     #[test]
     fn classify_stage_building_waits_does_not_rebuild() {
-        // Regression: previously stage "Building" fell through to the
-        // "build" branch, and the daemon rejected the second build goal
-        // with "action already in progress" / "cannot build". The CLI now
-        // waits for the in-flight build instead of trying to start a new
-        // one.
+        // `Building` waits for the in-flight build: the daemon rejects a
+        // second build goal with "action already in progress".
         assert_eq!(
             classify_stage(NodeStage::Building, "n", "t").expect("Building should classify"),
             BuildDecision::Wait

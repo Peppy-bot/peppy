@@ -1,8 +1,7 @@
-use super::common::{ARM_LINK_PAIRING, publish_repo_index, setup};
+use super::common::{ARM_LINK_PAIRING, seed_docs_repo, setup};
 use config::consts::NODE_CONFIG_FILE;
 use daemon_config::consts::PeppyDirs;
-use peppy::commands::Command;
-use peppy::commands::repo::{RepoCommand, RepoCommands, search_rendered, show_rendered};
+use peppy::commands::repo::{search_rendered, show_rendered};
 use std::path::{Path, PathBuf};
 
 const RGB_CAMERA_CONTRACT: &str = r#"{
@@ -125,24 +124,7 @@ fn seeded(
         r#"{ topics: { consumes: [{ link_id: "watch", name: "joint_commands" }] } }"#,
     );
     write_node(&repo_dir.join("plain"), "plain", "", "{}");
-    publish_repo_index(&repo_dir);
-
-    let conf_dir = peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(
-        conf_dir.join("repositories.json5"),
-        serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo_dir.to_string_lossy() }
-        ]))
-        .expect("serialize repos"),
-    )
-    .expect("write repos file");
-
-    RepoCommand {
-        command: RepoCommands::Refresh { strict: false },
-    }
-    .execute(ctx)
-    .expect("repo refresh should succeed");
+    seed_docs_repo(serve, ctx, &repo_dir);
 
     (peppy_dirs, repo_dir, contract_sha)
 }

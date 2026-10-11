@@ -806,60 +806,55 @@ fn stage_provider(
     node_dir
 }
 
-/// Rewrites a staged manifest so its build fails at once, for launches
-/// expected to refuse before any node runs.
-fn refuse_build(node_dir: &Path) {
+/// Reads the staged manifest of `node_dir`, applies `edit` to it, and writes
+/// it back.
+fn rewrite_manifest(node_dir: &Path, edit: impl FnOnce(&mut config::node::NodeConfig)) {
     let manifest_path = node_dir.join(NODE_CONFIG_FILE);
     let source = fs::read_to_string(&manifest_path).expect("staged manifest exists");
     let mut node_config: config::node::NodeConfig =
         serde_json5::from_str(&source).expect("staged manifest parses");
-    node_config.execution.build_cmd = Some(vec!["false".to_string()]);
-    node_config.execution.run_cmd = Some(vec!["true".to_string()]);
+    edit(&mut node_config);
     fs::write(
         &manifest_path,
         serde_json5::to_string(&node_config).expect("staged manifest serializes"),
     )
     .expect("rewrite staged manifest");
+}
+
+/// Rewrites a staged manifest so its build fails at once, for launches
+/// expected to refuse before any node runs.
+fn refuse_build(node_dir: &Path) {
+    rewrite_manifest(node_dir, |node_config| {
+        node_config.execution.build_cmd = Some(vec!["false".to_string()]);
+        node_config.execution.run_cmd = Some(vec!["true".to_string()]);
+    });
 }
 
 /// Rewrites a staged manifest so its process starts, says why it fails on
 /// stderr, and exits before it is ready, with no build step.
 fn fail_at_start(node_dir: &Path) {
-    let manifest_path = node_dir.join(NODE_CONFIG_FILE);
-    let source = fs::read_to_string(&manifest_path).expect("staged manifest exists");
-    let mut node_config: config::node::NodeConfig =
-        serde_json5::from_str(&source).expect("staged manifest parses");
-    node_config.execution.build_cmd = None;
-    node_config.execution.run_cmd = Some(
-        [
-            "sh",
-            "-c",
-            "echo 'the recorder finds no camera' >&2; exit 3",
-        ]
-        .map(str::to_owned)
-        .to_vec(),
-    );
-    fs::write(
-        &manifest_path,
-        serde_json5::to_string(&node_config).expect("staged manifest serializes"),
-    )
-    .expect("rewrite staged manifest");
+    rewrite_manifest(node_dir, |node_config| {
+        node_config.execution.build_cmd = None;
+        node_config.execution.run_cmd = Some(
+            [
+                "sh",
+                "-c",
+                "echo 'the recorder finds no camera' >&2; exit 3",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+        );
+    });
 }
 
 /// Rewrites a staged manifest for the pre-built binary: no build step, the
 /// absolute binary path as `run_cmd`.
 fn point_manifest_at_binary(node_dir: &Path, binary: &Path) {
-    let manifest_path = node_dir.join(NODE_CONFIG_FILE);
-    let source = fs::read_to_string(&manifest_path).expect("staged manifest exists");
-    let mut node_config: config::node::NodeConfig =
-        serde_json5::from_str(&source).expect("staged manifest parses");
-    node_config.execution.build_cmd = None;
-    node_config.execution.run_cmd = Some(vec![binary.to_str().expect("utf-8 path").to_string()]);
-    fs::write(
-        &manifest_path,
-        serde_json5::to_string(&node_config).expect("staged manifest serializes"),
-    )
-    .expect("rewrite staged manifest");
+    rewrite_manifest(node_dir, |node_config| {
+        node_config.execution.build_cmd = None;
+        node_config.execution.run_cmd =
+            Some(vec![binary.to_str().expect("utf-8 path").to_string()]);
+    });
 }
 
 /// A launched stack: the emulated daemon, its CLI context, and the hub it
@@ -889,10 +884,7 @@ impl Stack {
             .await
             .expect("zenoh serve emulation starts");
         let nodes_dir = tempfile::tempdir().expect("temp nodes dir");
-        let ctx = Arc::new(
-            AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
-                .with_daemon_state_file(serve.daemon_state_path()),
-        );
+        let ctx = super::common::serve_app_context(&serve, nodes_dir.path());
         let peppy_dirs = PeppyDirs::new(serve.temp_dir());
 
         // The daemon runs the built-in server from the installed `peppy`;
@@ -1024,10 +1016,7 @@ impl Stack {
 
     /// The refusal a join of `option` named `name` gives.
     fn join_error(&self, option: &str, name: &str) -> String {
-        match self.try_join(option, name) {
-            Ok(()) => panic!("the join must be refused\n{}", self.run_logs()),
-            Err(error) => error.to_string(),
-        }
+        self.refusal("join", self.try_join(option, name))
     }
 
     fn try_join(&self, option: &str, name: &str) -> Result<(), peppy::error::Error> {
@@ -1061,17 +1050,26 @@ impl Stack {
             .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", self.run_logs()));
     }
 
+    /// Launches a whole launcher document, which succeeds.
+    fn launch_launcher_or_panic(&self, launcher: &str) {
+        self.launch_launcher(launcher, Vec::new())
+            .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", self.run_logs()));
+    }
+
     fn launch_error(&self, deployments: &str) -> String {
-        match self.launch(deployments) {
-            Ok(()) => panic!("the launch must be refused\n{}", self.run_logs()),
-            Err(error) => error.to_string(),
-        }
+        self.refusal("launch", self.launch(deployments))
     }
 
     /// The refusal a whole launcher document gives.
     fn launch_launcher_error(&self, launcher: &str) -> String {
-        match self.launch_launcher(launcher, Vec::new()) {
-            Ok(()) => panic!("the launch must be refused\n{}", self.run_logs()),
+        self.refusal("launch", self.launch_launcher(launcher, Vec::new()))
+    }
+
+    /// The text of the error a refused `what` ended with. A `what` that
+    /// succeeds fails the test with the run logs.
+    fn refusal(&self, what: &str, outcome: Result<(), peppy::error::Error>) -> String {
+        match outcome {
+            Ok(()) => panic!("the {what} must be refused\n{}", self.run_logs()),
             Err(error) => error.to_string(),
         }
     }
@@ -1131,7 +1129,7 @@ impl Stack {
 
     /// The run logs of every instance, for readable panics.
     fn run_logs(&self) -> String {
-        let dir = self.serve.temp_dir().join("logs/run");
+        let dir = self.peppy_dirs.logs_dir_run();
         let mut logs = String::new();
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
@@ -2576,12 +2574,7 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
 
     // --- No robot yet: the endpoint is up with an empty fleet, and a call
     // naming a robot says how one is added.
-    stack
-        .launch_launcher(
-            &fleet_launcher(port, "camera_robot", &["cam"], ""),
-            Vec::new(),
-        )
-        .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", stack.run_logs()));
+    stack.launch_launcher_or_panic(&fleet_launcher(port, "camera_robot", &["cam"], ""));
     wait_for_port(port, || stack.run_logs()).await;
     let listing = stack.stack_list().await;
     assert!(
@@ -2905,12 +2898,12 @@ async fn a_join_filling_a_once_per_robot_target_twice_is_refused() {
     let stack = Stack::boot(true).await;
     let port = ephemeral_port();
     write_robot_fragment(&stack, "two_camera_robot", TWO_CAMERA_ROBOT_FRAGMENT);
-    stack
-        .launch_launcher(
-            &fleet_launcher(port, "two_camera_robot", &["left_cam", "right_cam"], ""),
-            Vec::new(),
-        )
-        .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", stack.run_logs()));
+    stack.launch_launcher_or_panic(&fleet_launcher(
+        port,
+        "two_camera_robot",
+        &["left_cam", "right_cam"],
+        "",
+    ));
     wait_for_port(port, || stack.run_logs()).await;
     let client = connect(&endpoint(port, "/fleet_cameras/v1/mcp")).await;
     let (robots, _) = listed_robots(&client, "alpha").await;
@@ -3150,9 +3143,7 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
     write_robot_fragment(&stack, "broken_robot", BROKEN_ROBOT_FRAGMENT);
     write_robot_fragment(&stack, "camera_robot", CAMERA_ROBOT_FRAGMENT);
     let port = ephemeral_port();
-    stack
-        .launch_launcher(&framework_launcher(port), Vec::new())
-        .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", stack.run_logs()));
+    stack.launch_launcher_or_panic(&framework_launcher(port));
     wait_for_port(port, || stack.run_logs()).await;
     let (client, mut progress) =
         connect_recording_progress(&endpoint(port, "/framework_controls/v1/mcp")).await;

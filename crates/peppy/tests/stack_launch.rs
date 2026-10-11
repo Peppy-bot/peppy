@@ -1,5 +1,4 @@
 use config::node::Toolchain;
-use peppy::commands::repo::{RepoCommand, RepoCommands};
 use peppy::test_support::{
     CACHED_BUILD_REUSE_PREFIX, InstanceLifetime, LogCapture, ServeCommandEmulation,
     override_build_cmd, override_run_cmd, override_run_cmd_silent,
@@ -16,15 +15,14 @@ use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{LauncherArgs, StackCommand, StackCommands, StackTimeouts, WithWords};
 use peppy::context::AppContext;
 use peppylib::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 use super::common::{
     build_count, build_logs_for, built_artifacts_for, counting_build_cmd,
-    emulate_cooperative_shutdown, emulate_pairing_node_services, emulate_startup_services,
-    install_node_manifest, read_daemon_git_hash, register_repo_caches, run_cmd_json5, stack_graph,
-    test_node_target, write_node_config_for_helper,
+    emulate_cooperative_shutdown, emulate_node_services, emulate_pairing_node_services,
+    emulate_startup_services, install_node_manifest, node_add_command, read_daemon_git_hash,
+    register_repo_caches, serve_app_context, stack_graph, test_node_target,
+    write_minimal_node_config, write_node_config_for_helper,
 };
 
 /// The budgets these tests launch and build under: idle windows generous
@@ -53,32 +51,79 @@ fn launcher_args(launcher_config_path: PathBuf, max_timeout_secs: Option<u64>) -
     }
 }
 
-fn write_node_config(
-    nodes_directory: &Path,
-    node_name: &str,
-    node_tag: &str,
-    git_hash: &str,
-    run_cmd: &[&str],
-) -> PathBuf {
-    let run_cmd_json5 = run_cmd_json5(run_cmd);
-    install_node_manifest(
-        nodes_directory,
-        node_name,
-        git_hash,
-        &format!(
-            r#"{{
-                peppy_schema: "node/v1",
-                manifest: {{
-                    name: "{node_name}",
-                    tag: "{node_tag}",
-                }},
-                execution: {{
-                    language: "rust",
-                    run_cmd: [{run_cmd_json5}]
-                }}
-            }}"#
+/// The `run_cmd` of an emulated node that snapshots the boot config the
+/// daemon handed it (the file `PEPPY_RUNTIME_CONFIG` names) to `dump`, then
+/// keeps alive until `instances` drops.
+fn runtime_config_dumping_run_cmd(dump: &Path, instances: &InstanceLifetime) -> Vec<String> {
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            dump.display(),
+            instances.keep_alive_script(),
         ),
-    )
+    ]
+}
+
+/// Polls the snapshots of [`runtime_config_dumping_run_cmd`] until each of
+/// them parses, for at most 5 s. The node's `sh` copies its boot config
+/// concurrently with the test, and a plain `cp` can expose a partial file, so
+/// a dump that does not parse yet counts as not written. A dump still missing
+/// at the deadline stays `None`, so a caller can stop its instances before it
+/// fails on it through [`expect_runtime_config`].
+async fn read_runtime_config_dumps<const N: usize>(
+    dumps: [&Path; N],
+) -> [Option<config::runtime::RuntimeConfig>; N] {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut configs: [Option<config::runtime::RuntimeConfig>; N] = std::array::from_fn(|_| None);
+    while Instant::now() < deadline {
+        for (dump, config) in dumps.iter().zip(configs.iter_mut()) {
+            if config.is_none()
+                && let Ok(content) = fs::read_to_string(dump)
+                && let Ok(parsed) =
+                    serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+            {
+                *config = Some(parsed);
+            }
+        }
+        if configs.iter().all(Option::is_some) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    configs
+}
+
+/// The boot config [`read_runtime_config_dumps`] read from the dump at `path`,
+/// or a panic that names the node by `label` when it never appeared or parsed.
+fn expect_runtime_config(
+    dump: Option<config::runtime::RuntimeConfig>,
+    label: &str,
+    path: &Path,
+) -> config::runtime::RuntimeConfig {
+    dump.unwrap_or_else(|| {
+        panic!(
+            "{label} runtime config dump never appeared / parsed at {}",
+            path.display()
+        )
+    })
+}
+
+/// Ends a test's instances once nothing reads them any more. Dropping
+/// `instances` first ends every keep-alive, so each Stop finds an
+/// already-exited process instead of waiting out the daemon's force-kill
+/// grace. A failed Stop is ignored: this is teardown.
+fn end_instances(instances: InstanceLifetime, ctx: &Arc<AppContext>, instance_ids: &[&str]) {
+    drop(instances);
+    for instance_id in instance_ids {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(ctx);
+    }
 }
 
 /// Stages a checked-in hub fixture node into a temp nodes directory, ready for
@@ -132,7 +177,7 @@ fn stage_hub_docs(repo_dir: &Path, pairings: &[&str], contracts: &[&str]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_launch_command_succeed() {
+async fn stack_launch_command_succeeds() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -148,7 +193,7 @@ async fn node_launch_command_succeed() {
     let node_b_name = "launch_succeed_node_b";
     let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let node_a_path = write_node_config(
+    let node_a_path = write_minimal_node_config(
         nodes_dir.path(),
         node_a_name,
         node_tag,
@@ -156,34 +201,14 @@ async fn node_launch_command_succeed() {
         &["sh", "-c", "exit 0"],
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_a_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_a_path)
+        .execute(&ctx)
+        .expect("node add command should succeed");
 
     NodeCommand {
         command: NodeCommands::Init {
@@ -221,22 +246,7 @@ async fn node_launch_command_succeed() {
 
     let instance_id = "node_b_instance";
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let _node_ready_handle = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_b_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_b_name),
-    )
-    .await
-    .expect("node health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, node_b_name, instance_id).await;
     let (_node_shutdown_handle, node_shutdown_rx) = listen_for_shutdown(
         &node_messenger,
         &core_node_name,
@@ -256,7 +266,6 @@ async fn node_launch_command_succeed() {
     });
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
-    let node_b_path = nodes_dir.path().join(node_b_name);
     let launcher_json5 = format!(
         r#"{{
             peppy_schema: "launcher/v1",
@@ -317,7 +326,6 @@ async fn node_launch_command_succeed() {
             .collect::<Vec<_>>()
     );
 
-    // TODO we shouldn't need to stop the instances manually. If the core node stops, all child instances pid should stop too
     NodeCommand {
         command: NodeCommands::Stop {
             instance_id: instance_id.to_string(),
@@ -347,11 +355,10 @@ async fn node_launch_command_succeed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_stack() {
+async fn stack_launch_fails_when_a_node_never_becomes_healthy_and_clears_the_stack() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
@@ -363,14 +370,14 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
     let node_b_name = "launch_node_b";
     let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let node_a_path = write_node_config(
+    let node_a_path = write_minimal_node_config(
         nodes_dir.path(),
         node_a_name,
         node_tag,
         &git_hash,
         &["sh", "-c", "exit 0"],
     );
-    let node_b_path = write_node_config(
+    let node_b_path = write_minimal_node_config(
         nodes_dir.path(),
         node_b_name,
         node_tag,
@@ -378,34 +385,14 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
         &["sh", "-c", "exit 0"],
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_a_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_a_path)
+        .execute(&ctx)
+        .expect("node add command should succeed");
 
     let messenger_handle = ctx
         .messenger_handle()
@@ -449,10 +436,10 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
 
     let graph = stack_graph(messenger_handle, &core_node_name).await;
 
-    // New contract: a launch replaces the whole stack, tearing it down at the
-    // clear step, so a failed launch leaves a clean stack with only the root
-    // core node. node_a is not rolled back; it is torn down along with the
-    // partial new stack. This mirrors the core-node-internal contract test
+    // A launch replaces the whole stack, tearing it down at the clear step,
+    // so a failed launch leaves a clean stack with only the root core node.
+    // node_a is not rolled back; it is torn down along with the partial new
+    // stack. This mirrors the core-node-internal contract test
     // listen_for_launch_configuration_fails_when_one_node_never_becomes_healthy_and_clears_stack.
     assert!(
         !graph
@@ -480,10 +467,8 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
     );
 }
 
-/// Common setup for the timeout-firing tests. Returns the launcher path and the temp node
-/// peppy.json5, with node_b initialized via `node init` so the caller can `override_*_cmd`
-/// before launch. The error message bubbles up via the returned `Result` from
-/// `StackCommand::execute`, so we don't need a `LogCapture` here.
+/// The daemon, the context and the `node init`-scaffolded node_b that the
+/// timeout and build-failure tests launch.
 struct TimeoutTestHarness {
     ctx: Arc<AppContext>,
     node_b_name: &'static str,
@@ -497,21 +482,21 @@ struct TimeoutTestHarness {
     _nodes_dir: tempfile::TempDir,
 }
 
+/// Scaffolds node_b with `node init` and writes a launcher that deploys one
+/// instance of it, so the caller can `override_*_cmd` before the launch. A
+/// failure reaches the caller through the `Result` of `StackCommand::execute`,
+/// so the setup installs no `LogCapture`.
 async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     // Keep an owned copy of the path for building the config below; the `TempDir`
     // guard itself is moved into the harness (see `_nodes_dir`) so the directory
     // is reclaimed when the test ends instead of leaking across runs.
     let nodes_dir_path = nodes_dir.path().to_path_buf();
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(&nodes_dir_path, Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, &nodes_dir_path);
 
     NodeCommand {
         command: NodeCommands::Init {
@@ -564,7 +549,7 @@ impl TimeoutTestHarness {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
+async fn stack_launch_fails_when_the_build_idle_timeout_is_hit() {
     let harness = setup_timeout_test("build_idle_node_b").await;
 
     override_build_cmd(
@@ -576,17 +561,11 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
     let started = Instant::now();
     let result = StackCommand {
         command: StackCommands::Launch(LauncherArgs {
-            rebuild: false,
-            placement: Default::default(),
-            with: Default::default(),
-            joins: Default::default(),
-            launcher_config_path: harness.launcher_path.clone(),
             timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
                 node_build_idle_timeout_secs: 1,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: None,
+                ..timeouts(None)
             },
+            ..launcher_args(harness.launcher_path.clone(), None)
         }),
     }
     .execute(&harness.ctx);
@@ -610,7 +589,7 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
+async fn stack_launch_fails_when_the_run_idle_timeout_is_hit() {
     let harness = setup_timeout_test("run_idle_node_b").await;
 
     // Silent run command that never produces output and never becomes ready.
@@ -620,17 +599,11 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
     let started = Instant::now();
     let result = StackCommand {
         command: StackCommands::Launch(LauncherArgs {
-            rebuild: false,
-            placement: Default::default(),
-            with: Default::default(),
-            joins: Default::default(),
-            launcher_config_path: harness.launcher_path.clone(),
             timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
                 node_run_idle_timeout_secs: 1,
-                max_timeout_secs: None,
+                ..timeouts(None)
             },
+            ..launcher_args(harness.launcher_path.clone(), None)
         }),
     }
     .execute(&harness.ctx);
@@ -654,7 +627,7 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_launch_fails_when_max_timeout_is_hit() {
+async fn stack_launch_fails_when_the_max_timeout_is_hit() {
     let harness = setup_timeout_test("max_timeout_node_b").await;
 
     // Continuous output for ~10s so idle never fires, but `max_timeout_secs=2` does.
@@ -693,16 +666,12 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
     );
 }
 
-/// Regression for the launcher's `bindings` field actually wiring
-/// producer `link_ids` at launch time. The dummy `sh` run_cmd dumps the
-/// `RuntimeConfig` it received from the daemon (via the
-/// `PEPPY_RUNTIME_CONFIG` env var, which points at a JSON5 file) to a
-/// known location; the test then parses that dump and asserts the
-/// producer's `link_ids` vec was populated from the consumer's binding.
-/// Without the fix the vec stays empty (defaulted to `_` later by the
-/// runtime), so this is the boundary that surfaces the silent-loss bug.
+/// The launcher's `links` entry reaches the consumer's runtime config as a
+/// slot binding stamped with the daemon's core node, and the producer carries
+/// no slot binding. Each dummy `sh` run_cmd copies the file that
+/// `PEPPY_RUNTIME_CONFIG` names to a dump the test parses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stack_launch_populates_link_ids_from_launcher_bindings() {
+async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
     // Instances must stay in the stack until the assertions below have read
     // them; a fixed `sleep` would make that a race against machine load.
     let instances = peppy::test_support::InstanceLifetime::new();
@@ -728,18 +697,9 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     let link_id = "main";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    // Each instance's run_cmd snapshots its own `PEPPY_RUNTIME_CONFIG`
-    // file to the test-owned dump location, then sleeps long enough that
-    // the test process has time to read the snapshot before issuing Stop.
-    let producer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            producer_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    // Each instance's run_cmd snapshots its own boot config to a test-owned
+    // dump location and keeps alive until the test has read it.
+    let producer_run_cmd = runtime_config_dumping_run_cmd(&producer_dump, &instances);
     let producer_path = write_node_config_for_helper(
         nodes_dir.path(),
         producer_name,
@@ -751,15 +711,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         None,
     );
 
-    let consumer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            consumer_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let consumer_run_cmd = runtime_config_dumping_run_cmd(&consumer_dump, &instances);
     let consumer_depends_on = format!(
         r#"{{ nodes: [{{ name: "{producer_name}", tag: "{node_tag}", link_id: "{link_id}" }}] }}"#
     );
@@ -774,65 +726,18 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // The dummy `sh` subprocess does not expose `node_ready`/`node_health`/
     // `shutdown`, so impersonate them from the test process for each
-    // instance the launcher will spawn. The daemon's `wait_for_ready_signal`
-    // queries via Zenoh with a wildcard `link_id`, so the queryables
-    // declared here (with default link_ids) still match.
+    // instance the launcher will spawn.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let _ready_producer = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        producer_instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("producer ready service should start");
-    let _health_producer = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        producer_instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("producer health service should start");
-    let (_shutdown_producer, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        producer_instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("producer shutdown service should start");
-    let _ready_consumer = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer ready service should start");
-    let _health_consumer = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer health service should start");
-    let (_shutdown_consumer, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer shutdown service should start");
+    for (node_name, instance_id) in [
+        (producer_name, producer_instance_id),
+        (consumer_name, consumer_instance_id),
+    ] {
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
+    }
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -868,51 +773,21 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     .execute(&ctx)
     .expect("launch command should succeed");
 
-    // The `sh` wrappers copy the runtime config before sleeping. Poll
-    // BOTH dumps before stopping anything: stopping the consumer before
-    // its dump has flushed would race with the negative-case assertion
-    // below.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut producer_config: Option<config::runtime::RuntimeConfig> = None;
-    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if producer_config.is_none()
-            && let Ok(content) = fs::read_to_string(&producer_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            producer_config = Some(cfg);
-        }
-        if consumer_config.is_none()
-            && let Ok(content) = fs::read_to_string(&consumer_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            consumer_config = Some(cfg);
-        }
-        if producer_config.is_some() && consumer_config.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // The `sh` wrappers copy the runtime config before keeping alive until
+    // the test drops `instances`. Poll BOTH dumps before stopping anything:
+    // stopping the consumer before its dump has flushed would race with the
+    // negative-case assertion below.
+    let [producer_config, consumer_config] =
+        read_runtime_config_dumps([&producer_dump, &consumer_dump]).await;
 
-    // The dumps are captured, so nothing below needs these instances. Ending
-    // the keep-alive first lets each Stop observe an already-exited process
-    // instead of waiting out the daemon's force-kill grace.
-    drop(instances);
-    for instance_id in [consumer_instance_id, producer_instance_id] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    // The dumps are captured, so nothing below needs these instances.
+    end_instances(
+        instances,
+        &ctx,
+        &[consumer_instance_id, producer_instance_id],
+    );
 
-    let producer_config = producer_config.unwrap_or_else(|| {
-        panic!(
-            "producer runtime config dump never appeared / parsed at {}",
-            producer_dump.display()
-        )
-    });
+    let producer_config = expect_runtime_config(producer_config, "producer", &producer_dump);
     assert_eq!(
         producer_config.node_instance.instance_id.as_str(),
         producer_instance_id,
@@ -922,12 +797,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         "producers do not declare slot_bindings; the binding lives on the consumer",
     );
 
-    let consumer_config = consumer_config.unwrap_or_else(|| {
-        panic!(
-            "consumer runtime config dump never appeared / parsed at {}",
-            consumer_dump.display()
-        )
-    });
+    let consumer_config = expect_runtime_config(consumer_config, "consumer", &consumer_dump);
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
         Some(&config::runtime::BoundProducers::from(
@@ -967,11 +837,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
     let link_id = "cameras";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    let producer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        instances.keep_alive_script(),
-    ];
+    let producer_run_cmd = instances.keep_alive_argv();
     let producer_path = write_node_config_for_helper(
         nodes_dir.path(),
         producer_name,
@@ -983,15 +849,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
         None,
     );
 
-    let consumer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            consumer_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let consumer_run_cmd = runtime_config_dumping_run_cmd(&consumer_dump, &instances);
     let consumer_depends_on = format!(
         r#"{{ nodes: [{{ name: "{producer_name}", tag: "{node_tag}", link_id: "{link_id}", cardinality: "one_or_more" }}] }}"#
     );
@@ -1006,45 +864,17 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // Impersonate the framework services the dummy `sh` subprocesses do
     // not expose, for all three spawned instances.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let mut service_guards = Vec::new();
     for (node_name, instance_id) in [
         (producer_name, front_instance_id),
         (producer_name, rear_instance_id),
         (consumer_name, consumer_instance_id),
     ] {
-        let ready = listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("ready service should start");
-        let health = listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("health service should start");
-        let (shutdown, _) = listen_for_shutdown(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("shutdown service should start");
-        service_guards.push((ready, health, shutdown));
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
     }
 
     // The binding array deliberately lists `rear` before `front` so the
@@ -1087,37 +917,16 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
     .execute(&ctx)
     .expect("launch command should succeed");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if let Ok(content) = fs::read_to_string(&consumer_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            consumer_config = Some(cfg);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let [consumer_config] = read_runtime_config_dumps([&consumer_dump]).await;
 
-    // The dumps are captured, so nothing below needs these instances. Ending
-    // the keep-alive first lets each Stop observe an already-exited process
-    // instead of waiting out the daemon's force-kill grace three times over.
-    drop(instances);
-    for instance_id in [consumer_instance_id, front_instance_id, rear_instance_id] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    // The dumps are captured, so nothing below needs these instances.
+    end_instances(
+        instances,
+        &ctx,
+        &[consumer_instance_id, front_instance_id, rear_instance_id],
+    );
 
-    let consumer_config = consumer_config.unwrap_or_else(|| {
-        panic!(
-            "consumer runtime config dump never appeared / parsed at {}",
-            consumer_dump.display()
-        )
-    });
+    let consumer_config = expect_runtime_config(consumer_config, "consumer", &consumer_dump);
     let expected = config::runtime::BoundProducers::try_from(vec![
         config::runtime::ProducerRef::new(&core_node_name, rear_instance_id),
         config::runtime::ProducerRef::new(&core_node_name, front_instance_id),
@@ -1136,8 +945,6 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
 /// validation, before any node is added, built, or spawned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_array_binding_on_a_one_slot() {
-    // Instances must stay in the stack until the assertions below have read
-    // them; a fixed `sleep` would make that a race against machine load.
     let instances = peppy::test_support::InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_mock()
         .await
@@ -1151,11 +958,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
     let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    let run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        instances.keep_alive_script(),
-    ];
+    let run_cmd = instances.keep_alive_argv();
     let producer_path = write_node_config_for_helper(
         nodes_dir.path(),
         producer_name,
@@ -1181,10 +984,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -1237,7 +1037,6 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
@@ -1246,14 +1045,14 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    let camera_path = write_node_config(
+    let camera_path = write_minimal_node_config(
         nodes_dir.path(),
         camera_name,
         node_tag,
         &git_hash,
         &["sh", "-c", "sleep 30"],
     );
-    let lidar_path = write_node_config(
+    let lidar_path = write_minimal_node_config(
         nodes_dir.path(),
         lidar_name,
         node_tag,
@@ -1261,18 +1060,15 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
         &["sh", "-c", "sleep 30"],
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
-    // Two completely separate node types both claiming `shared_inst`
-    // as their instance_id. Under the new spec, this is rejected at
-    // the launcher level: instance_ids must be unique across the
-    // entire stack, not merely within a `(node_name, node_tag)` group.
+    // Two completely separate node types both claiming `shared_inst` as
+    // their instance_id. This is rejected at the launcher level:
+    // instance_ids must be unique across the entire stack, not merely
+    // within a `(node_name, node_tag)` group.
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
         r#"{{
@@ -1412,8 +1208,8 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     let link_id = "rear_camera";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    // Materialize the contract document on disk and register
-    // the containing directory as an fs-type repo. The launcher binding
+    // Materialize the contract document in a repo that `seed_docs_repo`
+    // registers and refreshes once the context exists. The launcher binding
     // validator only inspects `implements` claims, but the daemon's
     // node-add path also resolves the contract document from cache
     // for consumers declaring `depends_on.contracts`; without the
@@ -1426,20 +1222,8 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         contract_name,
         contract_tag,
     );
-    super::common::publish_repo_index(contract_repo_dir.path());
-    let conf_dir = serve.temp_dir().join("conf");
-    fs::create_dir_all(&conf_dir).expect("create conf dir");
-    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
-        { "id": 1, "type": "fs", "path": contract_repo_dir.path().to_string_lossy() }
-    ]))
-    .expect("serialize repos");
-    fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
 
-    let producer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        instances.keep_alive_script(),
-    ];
+    let producer_run_cmd = instances.keep_alive_argv();
     let producer_implements =
         format!(r#"[{{ name: "{contract_name}", tag: "{contract_tag}", link_id: "cam" }}]"#);
     let producer_interfaces = r#"{
@@ -1456,15 +1240,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         Some(producer_interfaces),
     );
 
-    let consumer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            consumer_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let consumer_run_cmd = runtime_config_dumping_run_cmd(&consumer_dump, &instances);
     let consumer_depends_on = format!(
         r#"{{
             nodes: [],
@@ -1486,66 +1262,17 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
-    RepoCommand {
-        command: RepoCommands::Refresh { strict: false },
-    }
-    .execute(&ctx)
-    .expect("repo refresh should populate contract cache");
+    super::common::seed_docs_repo(&serve, &ctx, contract_repo_dir.path());
 
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let _ready_producer = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        producer_instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("producer ready service should start");
-    let _health_producer = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        producer_instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("producer health service should start");
-    let (_shutdown_producer, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        producer_instance_id,
-        test_node_target(producer_name),
-    )
-    .await
-    .expect("producer shutdown service should start");
-    let _ready_consumer = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer ready service should start");
-    let _health_consumer = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer health service should start");
-    let (_shutdown_consumer, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer shutdown service should start");
+    for (node_name, instance_id) in [
+        (producer_name, producer_instance_id),
+        (consumer_name, consumer_instance_id),
+    ] {
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
+    }
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -1583,37 +1310,16 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     .execute(&ctx)
     .expect("launch should succeed with implementing producer");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if let Ok(content) = fs::read_to_string(&consumer_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            consumer_config = Some(cfg);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let [consumer_config] = read_runtime_config_dumps([&consumer_dump]).await;
 
-    // The dumps are captured, so nothing below needs these instances. Ending
-    // the keep-alive first lets each Stop observe an already-exited process
-    // instead of waiting out the daemon's force-kill grace.
-    drop(instances);
-    for instance_id in [consumer_instance_id, producer_instance_id] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    // The dumps are captured, so nothing below needs these instances.
+    end_instances(
+        instances,
+        &ctx,
+        &[consumer_instance_id, producer_instance_id],
+    );
 
-    let consumer_config = consumer_config.unwrap_or_else(|| {
-        panic!(
-            "consumer runtime config dump never appeared / parsed at {}",
-            consumer_dump.display()
-        )
-    });
+    let consumer_config = expect_runtime_config(consumer_config, "consumer", &consumer_dump);
     assert_eq!(
         consumer_config.node_instance.slot_bindings.get(link_id),
         Some(&config::runtime::BoundProducers::from(
@@ -1686,10 +1392,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -1711,8 +1414,6 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
         }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
-    // After any refresh in this test: refresh rewrites nodes.json5, so
-    // registration must come later to survive.
     register_repo_caches(
         serve.temp_dir(),
         &[
@@ -1821,10 +1522,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -1846,8 +1544,6 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
         }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
-    // After any refresh in this test: refresh rewrites nodes.json5, so
-    // registration must come later to survive.
     register_repo_caches(
         serve.temp_dir(),
         &[
@@ -1882,7 +1578,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
 /// address, and the stack must come up regardless of deployment order.
 /// This is the end-to-end counterpart to the unit-level binding
 /// validator tests and the wire-level flow test in
-/// `peppylib/tests/topics.rs`.
+/// `peppy-shared/peppylib-rs/tests/topics.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_binds_contract_slots_in_both_directions() {
     // Instances must stay in the stack until the assertions below have read
@@ -1940,26 +1636,10 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
             max_velocity: "f64"
         }"#,
     );
-    super::common::publish_repo_index(contract_repo_dir.path());
-    let conf_dir = serve.temp_dir().join("conf");
-    fs::create_dir_all(&conf_dir).expect("create conf dir");
-    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
-        { "id": 1, "type": "fs", "path": contract_repo_dir.path().to_string_lossy() }
-    ]))
-    .expect("serialize repos");
-    fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
 
     // arm_controller: emits joint_commands (implements joint_command_source),
     // consumes joint_states through its `arm` slot (bound in the launcher).
-    let controller_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            controller_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let controller_run_cmd = runtime_config_dumping_run_cmd(&controller_dump, &instances);
     let controller_depends_on = format!(
         r#"{{
             nodes: [],
@@ -1990,15 +1670,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     // consumes joint_commands through its `controller` slot, bound back
     // to the controller in the launcher (every declared slot must be
     // bound).
-    let arm_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            arm_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let arm_run_cmd = runtime_config_dumping_run_cmd(&arm_dump, &instances);
     let arm_depends_on = format!(
         r#"{{
             nodes: [],
@@ -2025,72 +1697,23 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
         Some(arm_interfaces),
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
-    RepoCommand {
-        command: RepoCommands::Refresh { strict: false },
-    }
-    .execute(&ctx)
-    .expect("repo refresh should populate contract cache");
+    super::common::seed_docs_repo(&serve, &ctx, contract_repo_dir.path());
 
     // The dummy `sh` subprocesses don't expose ready/health/shutdown, so
     // impersonate them from the test process for both instances (the
     // daemon's launch waits for each instance to report ready).
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let _ready_controller = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        controller_instance_id,
-        test_node_target(controller_name),
-    )
-    .await
-    .expect("controller ready service should start");
-    let _health_controller = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        controller_instance_id,
-        test_node_target(controller_name),
-    )
-    .await
-    .expect("controller health service should start");
-    let (_shutdown_controller, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        controller_instance_id,
-        test_node_target(controller_name),
-    )
-    .await
-    .expect("controller shutdown service should start");
-    let _ready_arm = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        arm_instance_id,
-        test_node_target(arm_name),
-    )
-    .await
-    .expect("arm ready service should start");
-    let _health_arm = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        arm_instance_id,
-        test_node_target(arm_name),
-    )
-    .await
-    .expect("arm health service should start");
-    let (_shutdown_arm, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        arm_instance_id,
-        test_node_target(arm_name),
-    )
-    .await
-    .expect("arm shutdown service should start");
+    for (node_name, instance_id) in [
+        (controller_name, controller_instance_id),
+        (arm_name, arm_instance_id),
+    ] {
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
+    }
 
     // Bind both directions: the controller's slot to the arm and the
-    // arm's slot to the controller — an unbound slot would be rejected
+    // arm's slot to the controller. An unbound slot would be rejected
     // at the validation step.
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = format!(
@@ -2131,48 +1754,15 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     .execute(&ctx)
     .expect("launch should succeed with both contract slots bound");
 
-    // Both `sh` wrappers snapshot their runtime config before sleeping.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut controller_config: Option<config::runtime::RuntimeConfig> = None;
-    let mut arm_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if controller_config.is_none()
-            && let Ok(content) = fs::read_to_string(&controller_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            controller_config = Some(cfg);
-        }
-        if arm_config.is_none()
-            && let Ok(content) = fs::read_to_string(&arm_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            arm_config = Some(cfg);
-        }
-        if controller_config.is_some() && arm_config.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // Both `sh` wrappers snapshot their runtime config before keeping alive.
+    let [controller_config, arm_config] =
+        read_runtime_config_dumps([&controller_dump, &arm_dump]).await;
 
-    // The dumps are captured, so nothing below needs these instances. Ending
-    // the keep-alive first lets each Stop observe an already-exited process
-    // instead of waiting out the daemon's force-kill grace.
-    drop(instances);
-    for instance_id in [controller_instance_id, arm_instance_id] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    // The dumps are captured, so nothing below needs these instances.
+    end_instances(instances, &ctx, &[controller_instance_id, arm_instance_id]);
 
-    let controller_config = controller_config.unwrap_or_else(|| {
-        panic!(
-            "arm_controller runtime config dump never appeared / parsed at {}",
-            controller_dump.display()
-        )
-    });
+    let controller_config =
+        expect_runtime_config(controller_config, "arm_controller", &controller_dump);
     assert_eq!(
         controller_config
             .node_instance
@@ -2185,12 +1775,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
          the bound producer's full wire address",
     );
 
-    let arm_config = arm_config.unwrap_or_else(|| {
-        panic!(
-            "robot_arm runtime config dump never appeared / parsed at {}",
-            arm_dump.display()
-        )
-    });
+    let arm_config = expect_runtime_config(arm_config, "robot_arm", &arm_dump);
     assert_eq!(
         arm_config.node_instance.slot_bindings.get(arm_link_id),
         Some(&config::runtime::BoundProducers::from(
@@ -2220,10 +1805,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
     let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
     let contract_repo_dir = tempfile::tempdir().expect("failed to create temp contract repo");
     let bound_dump = dump_dir.path().join("bound.json5");
@@ -2247,11 +1829,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     );
     super::common::seed_docs_repo(&serve, &ctx, contract_repo_dir.path());
 
-    let producer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        instances.keep_alive_script(),
-    ];
+    let producer_run_cmd = instances.keep_alive_argv();
     let producer_implements =
         format!(r#"[{{ name: "{contract_name}", tag: "{contract_tag}", link_id: "cam_out" }}]"#);
     let producer_interfaces = r#"{
@@ -2303,37 +1881,12 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     // The dummy `sh` subprocesses expose none of the framework services, so
     // impersonate them for all three instances.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let mut service_guards = Vec::new();
     for (node_name, instance_id) in [
         (producer_name, producer_instance_id),
         (consumer_name, bound_instance_id),
         (consumer_name, vacant_instance_id),
     ] {
-        let ready = listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("ready service should start");
-        let health = listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("health service should start");
-        let (shutdown, _) = listen_for_shutdown(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("shutdown service should start");
-        service_guards.push((ready, health, shutdown));
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
     }
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
@@ -2382,43 +1935,16 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     .execute(&ctx)
     .expect("a launch mixing a bound and a vacant zero_or_one slot should succeed");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut bound_config: Option<config::runtime::RuntimeConfig> = None;
-    let mut vacant_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        for (dump, slot) in [
-            (&bound_dump, &mut bound_config),
-            (&vacant_dump, &mut vacant_config),
-        ] {
-            if slot.is_none()
-                && let Ok(content) = fs::read_to_string(dump)
-                && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-            {
-                *slot = Some(cfg);
-            }
-        }
-        if bound_config.is_some() && vacant_config.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let [bound_config, vacant_config] =
+        read_runtime_config_dumps([&bound_dump, &vacant_dump]).await;
 
-    drop(instances);
-    for instance_id in [bound_instance_id, vacant_instance_id, producer_instance_id] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    end_instances(
+        instances,
+        &ctx,
+        &[bound_instance_id, vacant_instance_id, producer_instance_id],
+    );
 
-    let bound_config = bound_config.unwrap_or_else(|| {
-        panic!(
-            "bound instance runtime config dump never appeared / parsed at {}",
-            bound_dump.display()
-        )
-    });
+    let bound_config = expect_runtime_config(bound_config, "bound instance", &bound_dump);
     assert_eq!(
         bound_config.node_instance.slot_bindings.get(link_id),
         Some(&config::runtime::BoundProducers::from(
@@ -2428,12 +1954,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
          wire address",
     );
 
-    let vacant_config = vacant_config.unwrap_or_else(|| {
-        panic!(
-            "vacant instance runtime config dump never appeared / parsed at {}",
-            vacant_dump.display()
-        )
-    });
+    let vacant_config = expect_runtime_config(vacant_config, "vacant instance", &vacant_dump);
     assert_eq!(
         vacant_config.node_instance.slot_bindings.get(link_id),
         Some(&config::runtime::BoundProducers::default()),
@@ -2444,15 +1965,14 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
 }
 
 /// Every declared `depends_on` slot must be bound: a launcher that omits a
-/// binding entry for a declared slot is rejected at the validation step —
-/// before anything is added or spawned — with an error naming the instance
+/// binding entry for a declared slot is rejected at the validation step
+/// (before anything is added or spawned) with an error naming the instance
 /// and the unfulfilled slot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_unbound_slot() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
@@ -2462,7 +1982,7 @@ async fn stack_launch_rejects_unbound_slot() {
     let link_id = "main_cam";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    let producer_path = write_node_config(
+    let producer_path = write_minimal_node_config(
         nodes_dir.path(),
         producer_name,
         node_tag,
@@ -2486,10 +2006,7 @@ async fn stack_launch_rejects_unbound_slot() {
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // The consumer instance carries no `links:` map at all, so its
     // declared `main_cam` slot is unfulfilled.
@@ -2552,11 +2069,11 @@ async fn stack_launch_rejects_unbound_slot() {
     );
 }
 
-/// Launcher `pairings:` establish pairs at launch: the earlier-started
-/// endpoint boots with its slot covered, the later one carries the request,
-/// and both
-/// running instances receive their `peer_update` pins live. The dummy `sh`
-/// nodes expose ready/health/shutdown/peer_update from the test process.
+/// A launcher `links:` entry on a pairing slot establishes the pair at launch:
+/// the earlier-started endpoint boots with its slot covered, the later one
+/// carries the request, and both running instances receive their
+/// `peer_update` pins live. The dummy `sh` nodes expose
+/// ready/health/shutdown/peer_update from the test process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_establishes_launcher_pairings() {
     let serve = ServeCommandEmulation::with_zenoh()
@@ -2565,10 +2082,7 @@ async fn stack_launch_establishes_launcher_pairings() {
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // The arm_link pairing doc must be in the daemon's pairing cache for
     // the launch-time `node add` codegen to resolve `depends_on.pairings`.
@@ -2689,17 +2203,7 @@ async fn stack_launch_establishes_launcher_pairings() {
     assert_eq!(pin.producer.instance_id, "arm_1");
     assert_eq!(pin.peer_link_id, "controller");
 
-    // Assertions are done; ending the keep-alive first lets each Stop observe
-    // an already-exited process instead of waiting out the force-kill deadline.
-    drop(instances);
-    for instance_id in ["ctrl_1", "arm_1"] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    end_instances(instances, &ctx, &["ctrl_1", "arm_1"]);
 }
 
 /// Vacancy is per instance, which is the whole reason it lives in the
@@ -2715,10 +2219,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
@@ -2849,15 +2350,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
         "the controller pairs the instance it named, not its vacant sibling"
     );
 
-    drop(instances);
-    for instance_id in ["ctrl_1", "arm_watched", "arm_governed"] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    end_instances(instances, &ctx, &["ctrl_1", "arm_watched", "arm_governed"]);
 }
 
 /// An observer slot the deployment wrote gets its member set twice over: once
@@ -2865,7 +2358,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
 /// after the instance reaches Running. A recorder observing the `arm` role of
 /// `arm_link/v1` declares three slots: a `one` slot linked to `arm_1`, a
 /// `one_or_more` slot linked to `["arm_2", "arm_1"]`, and a `zero_or_more` slot
-/// the launcher omits entirely — the one slot with nothing to seed and nothing
+/// the launcher omits entirely: the one slot with nothing to seed and nothing
 /// to deliver, asserted empty on both boundaries rather than populated. The
 /// sources are `robot_arm` instances whose own participant slots are declared
 /// vacant, so they boot unpaired but still publish their role's topics.
@@ -2886,31 +2379,21 @@ async fn stack_launch_delivers_observer_member_sets() {
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
     let recorder_dump = dump_dir.path().join("recorder.json5");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    // Keep-alive rather than `sleep 30`: both instances must be live for the
-    // pin assertions, and the teardown below ends them explicitly instead of
-    // leaving the daemon to wait out its force-kill deadline once per instance.
+    // Keep-alive rather than `sleep 30`: every instance must be live for the
+    // member-set assertions, and the teardown below ends them explicitly
+    // instead of leaving the daemon to wait out its force-kill deadline once
+    // per instance.
     let instances = peppy::test_support::InstanceLifetime::new();
     let run_cmd = instances.keep_alive_argv();
     // The recorder copies the boot config the daemon wrote before keeping alive,
     // so the spawn seed survives the live delivery that replaces it in memory.
-    let recorder_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            recorder_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let recorder_run_cmd = runtime_config_dumping_run_cmd(&recorder_dump, &instances);
     // The source plays the `arm` role through its participant slot `controller`,
     // declared optional so a watched-only deployment may write it vacant.
     let arm_path = write_node_config_for_helper(
@@ -2956,62 +2439,18 @@ async fn stack_launch_delivers_observer_member_sets() {
     );
 
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    // Source instance services: ready/health/shutdown, no peer_update (its slot
-    // is vacant, so it is never paired).
-    for (node_name, instance_id) in [("robot_arm", "arm_1"), ("robot_arm", "arm_2")] {
-        let _ready = listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("ready service should start");
-        let _health = listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("health service should start");
-        let (_shutdown, _) = listen_for_shutdown(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("shutdown service should start");
+    // Every instance answers ready/health/shutdown. The sources serve no
+    // peer_update: their slot is vacant, so they are never paired.
+    for (node_name, instance_id) in [
+        ("robot_arm", "arm_1"),
+        ("robot_arm", "arm_2"),
+        ("recorder", "rec_1"),
+    ] {
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
     }
-    // Recorder services, including the `observation_update` endpoint whose watch
-    // observes the delivered source pin.
-    let _rec_ready = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        "rec_1",
-        test_node_target("recorder"),
-    )
-    .await
-    .expect("ready service should start");
-    let _rec_health = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        "rec_1",
-        test_node_target("recorder"),
-    )
-    .await
-    .expect("health service should start");
-    let (_rec_shutdown, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        "rec_1",
-        test_node_target("recorder"),
-    )
-    .await
-    .expect("shutdown service should start");
-    // One watch channel per declared observer slot, exactly as a real node's
-    // processor seeds them.
+    // The recorder's `observation_update` endpoint, whose watches observe the
+    // delivered source pins: one watch channel per declared observer slot,
+    // exactly as a real node's processor seeds them.
     let (obs_slots, obs_receivers) =
         super::common::observer_slot_channels(&["watch", "watched", "spare"]);
     peppylib::services::observation_update::listen_for_observation_update(
@@ -3108,23 +2547,8 @@ async fn stack_launch_delivers_observer_member_sets() {
     // received. A floored slot rejects an empty seed at node construction, so a
     // real observer could not even start unseeded; this asserts what the daemon
     // wrote, which the live delivery above would otherwise mask.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut boot: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if let Ok(content) = fs::read_to_string(&recorder_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            boot = Some(cfg);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let boot = boot.unwrap_or_else(|| {
-        panic!(
-            "recorder runtime config dump never appeared / parsed at {}",
-            recorder_dump.display()
-        )
-    });
+    let [boot] = read_runtime_config_dumps([&recorder_dump]).await;
+    let boot = expect_runtime_config(boot, "recorder", &recorder_dump);
     let seeds = &boot.node_instance.observation_seeds;
 
     let watch_seed = seeds
@@ -3156,17 +2580,7 @@ async fn stack_launch_delivers_observer_member_sets() {
         "a `zero_or_more` slot the launcher omits has nothing to seed: {seeds:?}"
     );
 
-    // Assertions are done; ending the keep-alive first lets each Stop observe
-    // an already-exited process instead of waiting out the force-kill deadline.
-    drop(instances);
-    for instance_id in ["rec_1", "arm_1", "arm_2"] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    end_instances(instances, &ctx, &["rec_1", "arm_1", "arm_2"]);
 }
 
 /// A required pairing slot with neither a `links:` entry (on either
@@ -3179,10 +2593,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
         .expect("failed to create serve emulation");
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let run_cmd = vec!["sleep".to_string(), "5".to_string()];
@@ -3245,13 +2656,9 @@ async fn stack_launch_rejects_a_path_shaped_deployment_source() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let launcher_json5 = r#"{
@@ -3303,10 +2710,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // The pairing and contract documents the fixtures reference.
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
@@ -3323,15 +2727,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     // set can be read back from what the daemon actually assembled.
     let dump_dir = tempfile::tempdir().expect("temp dump dir");
     let commander_dump = dump_dir.path().join("commander.json5");
-    let commander_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            commander_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let commander_run_cmd = runtime_config_dumping_run_cmd(&commander_dump, &instances);
 
     // `lerobot_recorder` is staged but never instantiated: the commander's
     // `recorder` slot is `zero_or_more`, so the deployment binds nothing to it,
@@ -3375,46 +2771,15 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     // Every instance's framework services, impersonated from the test process:
     // the fixtures' run_cmd is a keep-alive shell, not a peppylib node.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let mut service_handles = Vec::new();
     for (node_name, instance_id) in [
         ("openarm_backbone", "backbone_inst"),
         ("lerobot_recorder", "recorder_inst"),
-        ("openarm_joint_leader", "leader_1"),
-        ("openarm_joint_leader", "leader_2"),
-        ("openarm_joint_follower", "follower_1"),
-        ("openarm_joint_follower", "follower_2"),
-        ("openarm_gripper_leader", "grip_leader_1"),
-        ("openarm_gripper_follower", "grip_follower_1"),
         ("openarm_web_commander", "commander_inst"),
     ] {
-        let ready = listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("ready service should start");
-        let health = listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("health service should start");
-        let (shutdown, _) = listen_for_shutdown(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("shutdown service should start");
-        service_handles.push((ready, health, shutdown));
+        emulate_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
     }
-    // The limbs pair with each other, so each carries a `peer_update` endpoint.
-    let mut peer_handles = Vec::new();
+    // The limbs pair with each other, so each also carries a `peer_update`
+    // endpoint.
     for (node_name, instance_id) in [
         ("openarm_joint_leader", "leader_1"),
         ("openarm_joint_leader", "leader_2"),
@@ -3423,19 +2788,15 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         ("openarm_gripper_leader", "grip_leader_1"),
         ("openarm_gripper_follower", "grip_follower_1"),
     ] {
-        let (slots, _rx) =
-            super::common::pairing_slot_channel("limb", config::node::Cardinality::ZeroOrOne);
-        peer_handles.push(
-            peppylib::services::peer_update::listen_for_peer_update(
-                &node_messenger,
-                &core_node_name,
-                instance_id,
-                test_node_target(node_name),
-                slots,
-            )
-            .await
-            .expect("peer_update service should start"),
-        );
+        emulate_pairing_node_services(
+            &node_messenger,
+            &core_node_name,
+            node_name,
+            instance_id,
+            "limb",
+            config::node::Cardinality::ZeroOrOne,
+        )
+        .await;
     }
     // One observation watch per declared observer slot, as a real node's
     // processor seeds them.
@@ -3522,10 +2883,8 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     // The unbound `zero_or_more` producer slot reaches the node as an explicit
     // empty set, so the panel's "is there a recorder?" branch is a set size and
     // never a missing key.
-    let runtime_config: config::runtime::RuntimeConfig = serde_json5::from_str(
-        &fs::read_to_string(&commander_dump).expect("commander runtime config should be dumped"),
-    )
-    .expect("commander runtime config should parse");
+    let [commander_config] = read_runtime_config_dumps([&commander_dump]).await;
+    let runtime_config = expect_runtime_config(commander_config, "commander", &commander_dump);
     let recorder = runtime_config
         .node_instance
         .slot_bindings
@@ -3603,24 +2962,20 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         members[1]
     );
 
-    drop(instances);
-    for instance_id in [
-        "commander_inst",
-        "recorder_inst",
-        "grip_follower_1",
-        "grip_leader_1",
-        "follower_1",
-        "leader_2",
-        "leader_1",
-        "backbone_inst",
-    ] {
-        let _ = NodeCommand {
-            command: NodeCommands::Stop {
-                instance_id: instance_id.to_string(),
-            },
-        }
-        .execute(&ctx);
-    }
+    end_instances(
+        instances,
+        &ctx,
+        &[
+            "commander_inst",
+            "recorder_inst",
+            "grip_follower_1",
+            "grip_leader_1",
+            "follower_1",
+            "leader_2",
+            "leader_1",
+            "backbone_inst",
+        ],
+    );
 }
 
 /// A `zero_or_more` node dependency whose node the launcher does not deploy
@@ -3653,11 +3008,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     // The optional dependency exposes a service the consumer consumes, so the
     // consumer's codegen cannot skip resolving it: absence from the stack must
     // fall through to the repository cache.
-    let recorder_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        instances.keep_alive_script(),
-    ];
+    let recorder_run_cmd = instances.keep_alive_argv();
     let recorder_interfaces = r#"{
         services: {
             exposes: [{
@@ -3677,15 +3028,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
         Some(recorder_interfaces),
     );
 
-    let consumer_run_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
-            consumer_dump.display(),
-            instances.keep_alive_script(),
-        ),
-    ];
+    let consumer_run_cmd = runtime_config_dumping_run_cmd(&consumer_dump, &instances);
     let consumer_depends_on = format!(
         r#"{{ nodes: [{{ name: "{recorder_name}", tag: "{node_tag}", link_id: "{link_id}", cardinality: "zero_or_more" }}] }}"#
     );
@@ -3703,38 +3046,18 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
         Some(&consumer_interfaces),
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // The dummy `sh` consumer does not expose the framework services, so
     // impersonate them from the test process.
     let node_messenger = MessengerHandle::from_shared(serve.messenger());
-    let _ready_consumer = listen_for_node_ready(
+    emulate_node_services(
         &node_messenger,
         &core_node_name,
+        consumer_name,
         consumer_instance_id,
-        test_node_target(consumer_name),
     )
-    .await
-    .expect("consumer ready service should start");
-    let _health_consumer = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer health service should start");
-    let (_shutdown_consumer, _) = listen_for_shutdown(
-        &node_messenger,
-        &core_node_name,
-        consumer_instance_id,
-        test_node_target(consumer_name),
-    )
-    .await
-    .expect("consumer shutdown service should start");
+    .await;
 
     // The launcher deploys only the consumer. The recorder is registered in
     // the repository cache but appears in no deployment and no binding.
@@ -3767,32 +3090,11 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
 
     // The consumer boots with the slot as an explicit empty set, mirroring the
     // in-stack-but-unbound case the commander panel test pins.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
-    while Instant::now() < deadline {
-        if let Ok(content) = fs::read_to_string(&consumer_dump)
-            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
-        {
-            consumer_config = Some(cfg);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let [consumer_config] = read_runtime_config_dumps([&consumer_dump]).await;
 
-    drop(instances);
-    let _ = NodeCommand {
-        command: NodeCommands::Stop {
-            instance_id: consumer_instance_id.to_string(),
-        },
-    }
-    .execute(&ctx);
+    end_instances(instances, &ctx, &[consumer_instance_id]);
 
-    let consumer_config = consumer_config.unwrap_or_else(|| {
-        panic!(
-            "consumer runtime config dump never appeared / parsed at {}",
-            consumer_dump.display()
-        )
-    });
+    let consumer_config = expect_runtime_config(consumer_config, "consumer", &consumer_dump);
     let recorder_slot = consumer_config
         .node_instance
         .slot_bindings
@@ -3847,7 +3149,7 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
     let link_id = "recorder";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
 
-    let recorder_path = write_node_config(
+    let recorder_path = write_minimal_node_config(
         nodes_dir.path(),
         recorder_name,
         node_tag,
@@ -3869,10 +3171,7 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
         None,
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     // Neither a link nor a `{ vacant: ... }` entry for the slot.
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
@@ -3934,7 +3233,7 @@ async fn stack_launch_flattens_a_composed_launcher() {
     let node_tag = "v1";
     let instance_id = "beta_inst";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let node_path = write_node_config(
+    let node_path = write_minimal_node_config(
         nodes_dir.path(),
         node_name,
         node_tag,
@@ -3950,8 +3249,9 @@ async fn stack_launch_flattens_a_composed_launcher() {
     );
     // Model a node that releases its keep-alive when asked to shut down, so
     // the teardown at the end of the test does not wait out a grace period.
-    let (_shutdown_handle, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
-        &MessengerHandle::from_shared(Arc::clone(&shared_messenger)),
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let (_shutdown_handle, shutdown_rx) = listen_for_shutdown(
+        &node_messenger,
         &core_node_name,
         instance_id,
         test_node_target(node_name),
@@ -3963,34 +3263,14 @@ async fn stack_launch_flattens_a_composed_launcher() {
         drop(instances);
     });
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
     register_repo_caches(serve.temp_dir(), &[(node_name, node_tag, &node_path)]);
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let instance_id = "beta_inst";
-    let _node_ready_handle = listen_for_node_ready(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node ready service should start");
-    let _node_health_handle = listen_for_node_health(
-        &node_messenger,
-        &core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("node health service should start");
+    emulate_startup_services(&node_messenger, &core_node_name, node_name, instance_id).await;
 
     let launcher_path = nodes_dir.path().join("composed_launcher.json5");
     let deployment = |instance_id: &str| {
@@ -4085,10 +3365,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         .expect("failed to create serve emulation");
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
     let flat_launcher = nodes_dir.path().join("flat.json5");
     fs::write(
@@ -4283,13 +3560,10 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
     )
     .expect("launcher");
 
-    let (document, report) = peppy::commands::stack::resolve_rendered(
-        &empty_peppy_dirs(),
-        launcher,
-        &["recorder=on".to_owned()],
-        &[],
-    )
-    .expect("resolves");
+    let (dirs, _root) = empty_peppy_root();
+    let (document, report) =
+        peppy::commands::stack::resolve_rendered(&dirs, launcher, &["recorder=on".to_owned()], &[])
+            .expect("resolves");
 
     assert!(
         document.contains("recorder_inst") && document.contains("panel_inst"),
@@ -4355,8 +3629,9 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
     )
     .expect("launcher");
 
+    let (dirs, _root) = empty_peppy_root();
     let err = peppy::commands::stack::resolve_rendered(
-        &empty_peppy_dirs(),
+        &dirs,
         launcher.clone(),
         &["mujoco".to_owned(), "cameras".to_owned()],
         &[],
@@ -4370,13 +3645,9 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
         "the refusal names the guard, the requirement, and the reason: {msg}"
     );
 
-    let (document, _report) = peppy::commands::stack::resolve_rendered(
-        &empty_peppy_dirs(),
-        launcher,
-        &["cameras".to_owned()],
-        &[],
-    )
-    .expect("the legal sibling resolves");
+    let (document, _report) =
+        peppy::commands::stack::resolve_rendered(&dirs, launcher, &["cameras".to_owned()], &[])
+            .expect("the legal sibling resolves");
     assert!(
         document.contains("cam_inst") && document.contains("arm_inst"),
         "the flat document carries the selected options: {document}"
@@ -4390,10 +3661,11 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
 /// A peppy root whose nodes cache holds nothing, for resolve tests that are
 /// about composition rather than the link rules: the check reports itself
 /// skipped instead of reading whatever this machine's real caches hold.
-fn empty_peppy_dirs() -> daemon_config::consts::PeppyDirs {
-    static EMPTY_ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    let dir = EMPTY_ROOT.get_or_init(|| tempfile::tempdir().expect("temp peppy root"));
-    daemon_config::consts::PeppyDirs::new(dir.path())
+/// Returns the dirs and the root, which is removed when the caller drops it.
+fn empty_peppy_root() -> (daemon_config::consts::PeppyDirs, tempfile::TempDir) {
+    let root = tempfile::tempdir().expect("temp peppy root");
+    let dirs = daemon_config::consts::PeppyDirs::new(root.path());
+    (dirs, root)
 }
 
 /// The node every pairing root publishes: one manifest declaring a single
@@ -4543,17 +3815,7 @@ fn peppy_root_with_git_pairing_node()
 fn stack_resolve_fails_a_zero_or_one_pairing_slot_left_uncovered() {
     let (dirs, root) = peppy_root_with_pairing_node();
     let launcher = root.path().join("solo.json5");
-    fs::write(
-        &launcher,
-        r#"{
-            peppy_schema: "launcher/v1",
-            deployments: [
-                { source: { name: "viewer", tag: "v1" },
-                  instances: [{ instance_id: "viewer_inst" }] },
-            ],
-        }"#,
-    )
-    .expect("launcher");
+    fs::write(&launcher, UNCOVERED_VIEWER_LAUNCHER).expect("launcher");
 
     let err = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
         .expect_err("an uncovered zero_or_one pairing slot must not resolve");
@@ -4591,10 +3853,7 @@ fn stack_resolve_accepts_a_vacant_pairing_slot_and_says_it_checked() {
 
     let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
         .expect("a vacant slot is covered");
-    let report_text = report.join(
-        "
-",
-    );
+    let report_text = report.join("\n");
     assert!(
         report_text.contains("link rules hold"),
         "the report confirms the rules ran: {report_text}"
@@ -4625,10 +3884,7 @@ fn stack_resolve_reports_the_check_skipped_when_a_manifest_is_missing() {
 
     let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
         .expect("a cache miss skips the link check");
-    let report_text = report.join(
-        "
-",
-    );
+    let report_text = report.join("\n");
     assert!(
         report_text.contains("link rules not checked")
             && report_text.contains("stranger:v1")
@@ -4660,24 +3916,11 @@ fn stack_resolve_reports_the_check_skipped_on_a_mislabeled_manifest() {
     )
     .expect("replacement manifest");
     let launcher = root.path().join("solo.json5");
-    fs::write(
-        &launcher,
-        r#"{
-            peppy_schema: "launcher/v1",
-            deployments: [
-                { source: { name: "viewer", tag: "v1" },
-                  instances: [{ instance_id: "viewer_inst" }] },
-            ],
-        }"#,
-    )
-    .expect("launcher");
+    fs::write(&launcher, UNCOVERED_VIEWER_LAUNCHER).expect("launcher");
 
     let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
         .expect("a mislabeled manifest skips the link check");
-    let report_text = report.join(
-        "
-",
-    );
+    let report_text = report.join("\n");
     assert!(
         report_text.contains("link rules not checked")
             && report_text.contains("declares `renamed_viewer:v1`"),
@@ -4695,25 +3938,12 @@ fn stack_resolve_reports_the_check_skipped_on_a_mislabeled_manifest() {
 fn stack_resolve_reports_the_check_skipped_on_an_empty_cache() {
     let dir = tempfile::tempdir().expect("temp dir");
     let launcher = dir.path().join("solo.json5");
-    fs::write(
-        &launcher,
-        r#"{
-            peppy_schema: "launcher/v1",
-            deployments: [
-                { source: { name: "viewer", tag: "v1" },
-                  instances: [{ instance_id: "viewer_inst" }] },
-            ],
-        }"#,
-    )
-    .expect("launcher");
+    fs::write(&launcher, UNCOVERED_VIEWER_LAUNCHER).expect("launcher");
 
-    let (_document, report) =
-        peppy::commands::stack::resolve_rendered(&empty_peppy_dirs(), launcher, &[], &[])
-            .expect("an empty cache skips the link check");
-    let report_text = report.join(
-        "
-",
-    );
+    let (dirs, _root) = empty_peppy_root();
+    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &[])
+        .expect("an empty cache skips the link check");
+    let report_text = report.join("\n");
     assert!(
         report_text.contains("link rules not checked") && report_text.contains("repo refresh"),
         "the skip tells the user how to enable the check: {report_text}"
@@ -4811,6 +4041,15 @@ fn stack_resolve_never_reads_a_bare_name_from_the_current_directory() {
 const CACHED_NODE_NAME: &str = "cached_launch_node";
 const CACHED_INSTANCE_ID: &str = "cached_launch_inst";
 
+/// Whether a [`CountedLaunch`] launch or build may reuse the artifact a
+/// previous build of identical sources stored.
+enum BuildCache {
+    /// Reuses a cached artifact when one fits.
+    Reuse,
+    /// Builds again despite a cached artifact, as `--rebuild` does.
+    Rebuild,
+}
+
 /// One Cargo-scaffolded node named by a launcher, whose `build_cmd` counts
 /// its runs and whose instance is a keep-alive the test can end at once.
 /// Every launch goes through the same daemon and the same repo cache entry,
@@ -4840,10 +4079,7 @@ impl CountedLaunch {
         let counter = control.path().join("builds");
         let pidfile = control.path().join("instance.pid");
 
-        let ctx = Arc::new(
-            AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-                .with_daemon_state_file(serve.daemon_state_path()),
-        );
+        let ctx = serve_app_context(&serve, nodes_dir.path());
 
         NodeCommand {
             command: NodeCommands::Init {
@@ -4919,9 +4155,12 @@ impl CountedLaunch {
     }
 
     /// What every `stack launch` and `stack build` of this launcher takes.
-    fn launcher_args(&self, rebuild: bool) -> LauncherArgs {
+    fn launcher_args(&self, build_cache: BuildCache) -> LauncherArgs {
         LauncherArgs {
-            rebuild,
+            rebuild: match build_cache {
+                BuildCache::Reuse => false,
+                BuildCache::Rebuild => true,
+            },
             ..launcher_args(self.launcher_path.clone(), Some(3600))
         }
     }
@@ -4931,9 +4170,9 @@ impl CountedLaunch {
     /// and goes away with it, so each launch installs its own: the next
     /// launch's teardown then ends the instance at once instead of waiting
     /// out the force-kill deadline.
-    async fn launch(&self, rebuild: bool) {
+    async fn launch(&self, build_cache: BuildCache) {
         StackCommand {
-            command: StackCommands::Launch(self.launcher_args(rebuild)),
+            command: StackCommands::Launch(self.launcher_args(build_cache)),
         }
         .execute(&self.ctx)
         .expect("launch command should succeed");
@@ -4948,15 +4187,15 @@ impl CountedLaunch {
     }
 
     /// Builds the launcher's node and starts no instance of it.
-    fn build(&self, rebuild: bool) {
-        self.run_build(self.launcher_args(rebuild));
+    fn build(&self, build_cache: BuildCache) {
+        self.run_build(self.launcher_args(build_cache));
     }
 
     /// Builds `launcher`, whichever launcher that is.
     fn build_launcher(&self, launcher: &Path) {
         self.run_build(LauncherArgs {
             launcher_config_path: launcher.to_path_buf(),
-            ..self.launcher_args(false)
+            ..self.launcher_args(BuildCache::Reuse)
         });
     }
 
@@ -5028,7 +4267,7 @@ impl CountedLaunch {
 async fn stack_launch_twice_reuses_the_cached_build() {
     let launch = CountedLaunch::start().await;
 
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(launch.builds(), 1);
     let artifacts = launch.artifacts();
     assert_eq!(artifacts.len(), 1, "got {artifacts:?}");
@@ -5041,7 +4280,7 @@ async fn stack_launch_twice_reuses_the_cached_build() {
     );
     assert_eq!(launch.instance_count().await, 1);
 
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(
         launch.builds(),
         1,
@@ -5064,12 +4303,12 @@ async fn stack_launch_twice_reuses_the_cached_build() {
 async fn stack_launch_rebuild_flag_builds_again_after_a_hit() {
     let launch = CountedLaunch::start().await;
 
-    launch.launch(false).await;
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(launch.builds(), 1);
     let artifacts = launch.artifacts();
 
-    launch.launch(true).await;
+    launch.launch(BuildCache::Rebuild).await;
     assert_eq!(
         launch.builds(),
         2,
@@ -5102,7 +4341,7 @@ async fn stack_launch_rebuild_flag_builds_again_after_a_hit() {
 async fn stack_build_starts_nothing_and_a_launch_reuses_its_build() {
     let launch = CountedLaunch::start().await;
 
-    launch.build(false);
+    launch.build(BuildCache::Reuse);
     assert_eq!(launch.builds(), 1);
     assert_eq!(launch.artifacts().len(), 1);
     assert_eq!(
@@ -5111,7 +4350,7 @@ async fn stack_build_starts_nothing_and_a_launch_reuses_its_build() {
         "a build leaves the node built in the stack with no instance"
     );
 
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(
         launch.builds(),
         1,
@@ -5134,10 +4373,10 @@ async fn stack_build_starts_nothing_and_a_launch_reuses_its_build() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_build_replaces_the_running_stack() {
     let launch = CountedLaunch::start().await;
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(launch.instance_count().await, 1);
 
-    launch.build(false);
+    launch.build(BuildCache::Reuse);
 
     assert_eq!(
         launch.stack_entry().await,
@@ -5160,11 +4399,11 @@ async fn stack_build_replaces_the_running_stack() {
 async fn stack_build_rebuild_flag_builds_again_after_a_hit() {
     let launch = CountedLaunch::start().await;
 
-    launch.build(false);
-    launch.build(false);
+    launch.build(BuildCache::Reuse);
+    launch.build(BuildCache::Reuse);
     assert_eq!(launch.builds(), 1);
 
-    launch.build(true);
+    launch.build(BuildCache::Rebuild);
     assert_eq!(
         launch.builds(),
         2,
@@ -5184,7 +4423,7 @@ async fn stack_build_rebuild_flag_builds_again_after_a_hit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_join_and_remove_after_a_build_are_refused() {
     let launch = CountedLaunch::start().await;
-    launch.build(false);
+    launch.build(BuildCache::Reuse);
 
     let refusal = join_copy(&launch.ctx)
         .expect_err("a join needs a launched stack")
@@ -5289,8 +4528,9 @@ async fn stack_build_builds_the_nodes_the_selection_runs() {
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let run_cmd = ["sh", "-c", "exit 0"];
     let alpha_path =
-        write_node_config(nodes_dir.path(), "alpha_backend", "v1", &git_hash, &run_cmd);
-    let beta_path = write_node_config(nodes_dir.path(), "beta_backend", "v1", &git_hash, &run_cmd);
+        write_minimal_node_config(nodes_dir.path(), "alpha_backend", "v1", &git_hash, &run_cmd);
+    let beta_path =
+        write_minimal_node_config(nodes_dir.path(), "beta_backend", "v1", &git_hash, &run_cmd);
     register_repo_caches(
         serve.temp_dir(),
         &[
@@ -5322,10 +4562,7 @@ async fn stack_build_builds_the_nodes_the_selection_runs() {
         }"#,
     )
     .expect("launcher config should be writable");
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 
@@ -5388,7 +4625,7 @@ async fn stack_build_builds_the_nodes_the_selection_runs() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_build_of_a_launcher_that_deploys_nothing_builds_nothing() {
     let launch = CountedLaunch::start().await;
-    launch.launch(false).await;
+    launch.launch(BuildCache::Reuse).await;
     assert_eq!(launch.instance_count().await, 1);
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
@@ -5427,10 +4664,9 @@ async fn stack_launch_prints_the_endpoint_blocks_after_the_log_files() {
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
     let instances = InstanceLifetime::new();
     let keep_alive = instances.keep_alive_argv();
-    let keep_alive: Vec<&str> = keep_alive.iter().map(String::as_str).collect();
 
     let page_node = "launch_page_node";
-    let page_path = write_node_config(
+    let page_path = write_minimal_node_config(
         nodes_dir.path(),
         page_node,
         node_tag,
@@ -5446,7 +4682,8 @@ async fn stack_launch_prints_the_endpoint_blocks_after_the_log_files() {
         )],
     );
     let mcp_node = "launch_mcp_node";
-    let mcp_path = write_node_config(nodes_dir.path(), mcp_node, node_tag, &git_hash, &keep_alive);
+    let mcp_path =
+        write_minimal_node_config(nodes_dir.path(), mcp_node, node_tag, &git_hash, &keep_alive);
     peppy::test_support::declare_endpoints(
         &mcp_path.join(NODE_CONFIG_FILE),
         &[(
@@ -5456,10 +4693,7 @@ async fn stack_launch_prints_the_endpoint_blocks_after_the_log_files() {
         )],
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
     let log_capture = LogCapture::new();
     let _guard = log_capture.install();
 

@@ -1,3 +1,4 @@
+use super::common::{serve_app_context, test_core_node_name};
 use std::sync::Arc;
 
 use peppy::commands::Command;
@@ -11,10 +12,7 @@ async fn info_command_succeeds_when_daemon_running() {
         .await
         .expect("failed to start serve emulation");
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(serve.temp_dir(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, serve.temp_dir());
 
     let log_capture = peppy::test_support::LogCapture::new();
     let _guard = log_capture.install();
@@ -22,6 +20,30 @@ async fn info_command_succeeds_when_daemon_running() {
     InfoCommand
         .execute(&ctx)
         .expect("info command should succeed when daemon is running");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn info_command_fails_when_the_target_core_node_does_not_answer() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to start serve emulation");
+
+    // No daemon serves `absent-core`, so the info request gets no reply.
+    let ctx = Arc::new(
+        AppContext::with_messenger(serve.temp_dir(), serve.messenger())
+            .with_daemon_state_file(serve.daemon_state_path())
+            .with_core_node_override(Some(test_core_node_name("absent-core"))),
+    );
+
+    let err = InfoCommand
+        .execute(&ctx)
+        .expect_err("info command should fail when the target does not answer");
+
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("Failed to get daemon info: "),
+        "error message should say the daemon info request failed. Got: {err_msg}"
+    );
 }
 
 #[test]

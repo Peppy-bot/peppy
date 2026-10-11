@@ -25,6 +25,17 @@ impl<E> LevelPrefixFormatter<E> {
     }
 }
 
+/// The tag a compact line opens with for `level`, and the color the tag
+/// takes when the run paints. DEBUG and TRACE lines carry no tag.
+fn level_tag(level: Level) -> Option<(&'static str, &'static str)> {
+    match level {
+        Level::INFO => Some(("[INFO]", "\x1b[32m")),
+        Level::WARN => Some(("[WARNING]", "\x1b[33m")),
+        Level::ERROR => Some(("[ERROR]", "\x1b[31m")),
+        _ => None,
+    }
+}
+
 impl<S, N, E> FormatEvent<S, N> for LevelPrefixFormatter<E>
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
@@ -37,32 +48,12 @@ where
         mut writer: tracing_subscriber::fmt::format::Writer<'_>,
         event: &tracing::Event<'_>,
     ) -> std::fmt::Result {
-        let level = *event.metadata().level();
-
-        // Write colored level prefix for INFO, WARN, ERROR
-        match level {
-            Level::INFO => {
-                if self.colorize {
-                    writer.write_str("\x1b[32m[INFO]\x1b[0m ")?;
-                } else {
-                    writer.write_str("[INFO] ")?;
-                }
+        if let Some((tag, color)) = level_tag(*event.metadata().level()) {
+            if self.colorize {
+                write!(writer, "{color}{tag}\x1b[0m ")?;
+            } else {
+                write!(writer, "{tag} ")?;
             }
-            Level::WARN => {
-                if self.colorize {
-                    writer.write_str("\x1b[33m[WARNING]\x1b[0m ")?;
-                } else {
-                    writer.write_str("[WARNING] ")?;
-                }
-            }
-            Level::ERROR => {
-                if self.colorize {
-                    writer.write_str("\x1b[31m[ERROR]\x1b[0m ")?;
-                } else {
-                    writer.write_str("[ERROR] ")?;
-                }
-            }
-            _ => {}
         }
 
         // `by_ref` hands the inner format the subscriber's own writer, and
@@ -201,13 +192,19 @@ mod tests {
         }
     }
 
+    /// Runs `log` under the subscriber `style` installs over `filter`, and
+    /// returns what it wrote.
+    fn written_by(style: LogStyle, filter: &str, colorize: bool, log: impl FnOnce()) -> String {
+        let capture = Capture::default();
+        let subscriber = subscriber(style, EnvFilter::new(filter), colorize, capture.clone());
+        tracing::subscriber::with_default(subscriber, log);
+        capture.written()
+    }
+
     /// Logs `message` at INFO through the subscriber `style` installs, and
     /// returns what it wrote.
     fn logged(style: LogStyle, colorize: bool, message: &str) -> String {
-        let capture = Capture::default();
-        let subscriber = subscriber(style, EnvFilter::new("info"), colorize, capture.clone());
-        tracing::subscriber::with_default(subscriber, || tracing::info!("{message}"));
-        capture.written()
+        written_by(style, "info", colorize, || tracing::info!("{message}"))
     }
 
     /// A line of the endpoint block a launch prints: the CLI paints the fields
@@ -258,5 +255,32 @@ mod tests {
             logged(LogStyle::Compact, false, "Launch complete"),
             "[INFO] Launch complete\n"
         );
+    }
+
+    /// The compact style tags a warning and an error with their own level, in
+    /// their own color when the run paints, and a debug line with no tag.
+    #[test]
+    fn the_compact_style_tags_each_level_it_names() {
+        let warned = |colorize| {
+            written_by(LogStyle::Compact, "info", colorize, || {
+                tracing::warn!("Disk almost full")
+            })
+        };
+        let failed = |colorize| {
+            written_by(LogStyle::Compact, "info", colorize, || {
+                tracing::error!("Build failed")
+            })
+        };
+        let debugged = |colorize| {
+            written_by(LogStyle::Compact, "debug", colorize, || {
+                tracing::debug!("Resolved 3 nodes")
+            })
+        };
+        assert_eq!(warned(true), "\x1b[33m[WARNING]\x1b[0m Disk almost full\n");
+        assert_eq!(warned(false), "[WARNING] Disk almost full\n");
+        assert_eq!(failed(true), "\x1b[31m[ERROR]\x1b[0m Build failed\n");
+        assert_eq!(failed(false), "[ERROR] Build failed\n");
+        assert_eq!(debugged(true), "Resolved 3 nodes\n");
+        assert_eq!(debugged(false), "Resolved 3 nodes\n");
     }
 }

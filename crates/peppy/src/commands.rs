@@ -14,6 +14,7 @@ pub mod stack;
 mod table;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,7 +44,7 @@ pub(crate) const INCARNATION_LABEL_DIGITS: usize = 8;
 
 /// Single source of truth for the word `stack list` and `node info` print for
 /// an instance's health, so the two commands can never drift apart on it.
-pub(crate) fn health_label(healthy: bool) -> &'static str {
+fn health_label(healthy: bool) -> &'static str {
     if healthy { "healthy" } else { "unhealthy" }
 }
 
@@ -123,13 +124,7 @@ impl DomainLabels {
 /// they are what an operator reads off the block, so they keep the highest
 /// contrast. Coloring is purely additive, the padding is measured on the
 /// plain labels, so a colored block lines up exactly like its plain form.
-pub fn render_endpoints(entries: &[InstanceEndpoints], colorize: bool) -> String {
-    use std::fmt::Write as _;
-
-    use colors::{
-        CORE_NODE_COLOR, ENDPOINT_LABEL_COLOR, HEADING_STYLE, INSTANCE_COLOR, NODE_COLOR, paint,
-    };
-
+fn render_endpoints(entries: &[InstanceEndpoints], colorize: bool) -> String {
     let mut out = String::new();
     let mut ordered: Vec<&InstanceEndpoints> = entries.iter().collect();
     ordered.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
@@ -138,61 +133,94 @@ pub fn render_endpoints(entries: &[InstanceEndpoints], colorize: bool) -> String
         (EndpointKind::Page, "Web pages:"),
         (EndpointKind::Mcp, "MCP endpoints:"),
     ] {
-        let block: Vec<(&InstanceEndpoints, Vec<&InstanceEndpoint>)> = ordered
-            .iter()
-            .map(|entry| {
-                let mut endpoints: Vec<&InstanceEndpoint> = entry
-                    .endpoints
-                    .iter()
-                    .filter(|endpoint| endpoint.kind == kind)
-                    .collect();
-                endpoints.sort_by(|a, b| a.label.cmp(&b.label));
-                (*entry, endpoints)
-            })
-            .filter(|(_, endpoints)| !endpoints.is_empty())
-            .collect();
+        let block = endpoints_of_kind(&ordered, kind);
         if block.is_empty() {
             continue;
         }
-        let label_width = block
-            .iter()
-            .flat_map(|(_, endpoints)| endpoints.iter().map(|endpoint| endpoint.label.len()))
-            .max()
-            .unwrap_or(0);
-        let _ = writeln!(&mut out, "{}", paint(colorize, HEADING_STYLE, heading));
-        for (entry, endpoints) in block {
-            let _ = writeln!(
-                &mut out,
-                "  {} ({}) @{}",
-                paint(colorize, INSTANCE_COLOR, &entry.instance_id),
-                paint(colorize, NODE_COLOR, &entry.node_label),
-                paint(colorize, CORE_NODE_COLOR, &entry.core_node)
-            );
-            for endpoint in endpoints {
-                // The label heads its first URL; the rest sit under it in a
-                // blank column. An endpoint the daemon expanded to no URL at
-                // all contributes no line.
-                for (index, url) in endpoint.urls.iter().enumerate() {
-                    let label = if index == 0 {
-                        endpoint.label.as_str()
-                    } else {
-                        ""
-                    };
-                    // The column is padded on the plain label and the tint
-                    // applied to it alone: padding a painted label would count
-                    // its zero-width escapes as columns and pull the URLs out
-                    // of line.
-                    let padding = " ".repeat(label_width - label.len());
-                    let _ = writeln!(
-                        &mut out,
-                        "    {}{padding}  {url}",
-                        paint(colorize, ENDPOINT_LABEL_COLOR, label)
-                    );
-                }
-            }
-        }
+        write_endpoint_block(&mut out, colorize, heading, &block);
     }
     out
+}
+
+/// The instances of `ordered` that declare at least one endpoint of `kind`,
+/// in their given order, each with its endpoints of that kind in label order.
+fn endpoints_of_kind<'a>(
+    ordered: &[&'a InstanceEndpoints],
+    kind: EndpointKind,
+) -> Vec<(&'a InstanceEndpoints, Vec<&'a InstanceEndpoint>)> {
+    ordered
+        .iter()
+        .map(|entry| {
+            let mut endpoints: Vec<&InstanceEndpoint> = entry
+                .endpoints
+                .iter()
+                .filter(|endpoint| endpoint.kind == kind)
+                .collect();
+            endpoints.sort_by(|a, b| a.label.cmp(&b.label));
+            (*entry, endpoints)
+        })
+        .filter(|(_, endpoints)| !endpoints.is_empty())
+        .collect()
+}
+
+/// Writes one block of [`render_endpoints`]: its heading, then each instance
+/// with its endpoints under it, the label column padded to the longest label
+/// of the block.
+fn write_endpoint_block(
+    out: &mut String,
+    colorize: bool,
+    heading: &str,
+    block: &[(&InstanceEndpoints, Vec<&InstanceEndpoint>)],
+) {
+    use colors::{CORE_NODE_COLOR, HEADING_STYLE, INSTANCE_COLOR, NODE_COLOR, paint};
+
+    let label_width = block
+        .iter()
+        .flat_map(|(_, endpoints)| endpoints.iter().map(|endpoint| endpoint.label.len()))
+        .max()
+        .unwrap_or(0);
+    let _ = writeln!(out, "{}", paint(colorize, HEADING_STYLE, heading));
+    for (entry, endpoints) in block {
+        let _ = writeln!(
+            out,
+            "  {} ({}) @{}",
+            paint(colorize, INSTANCE_COLOR, &entry.instance_id),
+            paint(colorize, NODE_COLOR, &entry.node_label),
+            paint(colorize, CORE_NODE_COLOR, &entry.core_node)
+        );
+        for endpoint in endpoints {
+            write_endpoint_urls(out, colorize, endpoint, label_width);
+        }
+    }
+}
+
+/// Writes the lines of one endpoint. The label heads its first URL; the rest
+/// sit under it in a blank column. An endpoint the daemon expanded to no URL
+/// at all contributes no line.
+fn write_endpoint_urls(
+    out: &mut String,
+    colorize: bool,
+    endpoint: &InstanceEndpoint,
+    label_width: usize,
+) {
+    use colors::{ENDPOINT_LABEL_COLOR, paint};
+
+    for (index, url) in endpoint.urls.iter().enumerate() {
+        let label = if index == 0 {
+            endpoint.label.as_str()
+        } else {
+            ""
+        };
+        // The column is padded on the plain label and the tint applied to it
+        // alone: padding a painted label would count its zero-width escapes
+        // as columns and pull the URLs out of line.
+        let padding = " ".repeat(label_width - label.len());
+        let _ = writeln!(
+            out,
+            "    {}{padding}  {url}",
+            paint(colorize, ENDPOINT_LABEL_COLOR, label)
+        );
+    }
 }
 
 /// The blocks [`render_endpoints`] produces, on the node log, for the
@@ -203,7 +231,7 @@ pub fn render_endpoints(entries: &[InstanceEndpoints], colorize: bool) -> String
 /// block. That one gate is also what tells the log formatter to write a
 /// message's control characters through rather than escape them, so the
 /// tints painted here are the tints an operator sees.
-pub fn log_endpoints(entries: &[InstanceEndpoints]) {
+pub(crate) fn log_endpoints(entries: &[InstanceEndpoints]) {
     for line in render_endpoints(entries, crate::terminal::colors_enabled()).lines() {
         tracing::info!("{line}");
     }
@@ -217,8 +245,8 @@ pub trait Command {
 
 /// Parses the daemon's serialized stack graph from its JSON payload. Single
 /// owner of the parse and its error message so the commands that read the stack
-/// snapshot (stack list, node run, node remove, node runtime-config) cannot
-/// drift on it.
+/// snapshot (stack list, node run, node remove, and the restart prompt of
+/// platform enroll and unenroll) cannot drift on it.
 pub(crate) fn parse_stack_graph(graph_json: &str) -> Result<SerializedNodeGraph> {
     serde_json::from_str(graph_json)
         .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))
@@ -248,10 +276,9 @@ fn reject_remote_target(
 ///
 /// `node run` is the shape: its preflight lookup, its build, and its start all
 /// address `conn.core_node_name`, so accepting an override would report success
-/// against the machine the operator did not name. The goal itself is now
+/// against the machine the operator did not name. The goal itself is
 /// host-independent (the daemon assembles the runtime config from its own
-/// state), so what remains is purely that the routing has not been taught to
-/// follow the override. Refusing is the honest answer until it is.
+/// state); only the routing ignores the override, so the command refuses it.
 pub(crate) fn reject_remote_target_for_local_routing(
     conn: &DaemonConnection<'_>,
     command: &str,
@@ -268,9 +295,8 @@ pub(crate) fn reject_remote_target_for_local_routing(
 /// that the daemon resolves on its own machine (e.g. `node init`'s scaffold
 /// dir, defaulting to the caller's cwd): sent to a remote daemon, the path
 /// would silently be read or created on that machine's filesystem while the
-/// CLI reports success with a local-looking path. Until such requests carry no
-/// caller-local paths, these commands refuse a `--core-node` override naming
-/// anything but the local daemon. Sibling of
+/// CLI reports success with a local-looking path. These commands refuse a
+/// `--core-node` override naming anything but the local daemon. Sibling of
 /// [`reject_remote_target_for_local_routing`].
 pub(crate) fn reject_remote_target_for_local_path(
     conn: &DaemonConnection<'_>,

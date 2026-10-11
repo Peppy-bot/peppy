@@ -1,7 +1,8 @@
-use config::node::TopicRetention;
+use config::node::{Interfaces, TopicRetention};
 use config::{DefaultValue, ParameterSpec, type_token_name};
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,9 +31,9 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to get node info: {}", e)))?;
 
-    // "Not in stack" is now a first-class successful outcome of the lookup
-    // rather than a daemon-side error. Surface it to the user as a clean
-    // failure message without the generic "Failed to get node info:" prefix.
+    // "Not in stack" is a successful outcome of the lookup, not a daemon-side
+    // error. Surface it to the user as a clean failure message without the
+    // generic "Failed to get node info:" prefix.
     let info = match response {
         NodeInfoResponse::NotInStack => {
             return Err(Error::ExecutionFailed(format!(
@@ -63,7 +64,6 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
 }
 
 fn format_node_info(out: &mut String, response: &NodeInfo) {
-    use std::fmt::Write as _;
     let config = &response.config;
     let manifest = &config.manifest;
 
@@ -97,9 +97,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
 
     // Node stack status: the daemon only answers node_info requests for
     // nodes that are in the stack, so we always have a stage + instance list.
-    let _ = writeln!(out);
-    let _ = writeln!(out, "Node Stack Status");
-    let _ = writeln!(out, "{}", "-".repeat(50));
+    write_section_heading(out, "Node Stack Status");
     let _ = writeln!(out, "Stage:     {}", response.stage);
     if response.instances.is_empty() {
         let _ = writeln!(out, "Instances: None tracked");
@@ -137,9 +135,7 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
     let has_add_log = response.add_log_path.is_some();
     let has_run_logs = !response.run_log_paths.is_empty();
     if has_add_log || has_run_logs {
-        let _ = writeln!(out);
-        let _ = writeln!(out, "Logs");
-        let _ = writeln!(out, "{}", "-".repeat(50));
+        write_section_heading(out, "Logs");
         let _ = writeln!(out, "{}:{}", manifest.name.as_str(), manifest.tag);
         if let Some(add_log_path) = response.add_log_path.as_ref() {
             let _ = writeln!(out, "  Add log: {}", add_log_path.display());
@@ -160,209 +156,174 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
         }
     }
 
-    // Dependencies (extracted from consumes interfaces)
-    {
-        let mut dependencies: BTreeSet<&str> = BTreeSet::new();
+    write_dependencies(out, &config.interfaces);
+    write_exposed_interfaces(out, &config.interfaces);
+    write_consumed_interfaces(out, &config.interfaces);
 
-        if let Some(topics) = &config.interfaces.topics
-            && let Some(expected) = &topics.consumes
-        {
-            for topic in expected {
-                dependencies.insert(&topic.link_id);
-            }
-        }
-        if let Some(services) = &config.interfaces.services
-            && let Some(consumed) = &services.consumes
-        {
-            for service in consumed {
-                dependencies.insert(&service.link_id);
-            }
-        }
-        if let Some(actions) = &config.interfaces.actions
-            && let Some(consumed) = &actions.consumes
-        {
-            for action in consumed {
-                if !action.link_id.is_empty() {
-                    dependencies.insert(&action.link_id);
-                }
-            }
-        }
-
-        if !dependencies.is_empty() {
-            let _ = writeln!(out);
-            let _ = writeln!(out, "Dependencies");
-            let _ = writeln!(out, "{}", "-".repeat(50));
-            for dep in &dependencies {
-                let _ = writeln!(out, "  - {}", dep);
-            }
-        }
-    }
-
-    // Exposed Interfaces
-    {
-        let has_content = config
-            .interfaces
-            .topics
-            .as_ref()
-            .and_then(|t| t.emits.as_ref())
-            .is_some_and(|t| !t.is_empty())
-            || config
-                .interfaces
-                .services
-                .as_ref()
-                .and_then(|s| s.exposes.as_ref())
-                .is_some_and(|s| !s.is_empty())
-            || config
-                .interfaces
-                .actions
-                .as_ref()
-                .and_then(|a| a.exposes.as_ref())
-                .is_some_and(|a| !a.is_empty());
-
-        if has_content {
-            let _ = writeln!(out);
-            let _ = writeln!(out, "Exposed Interfaces");
-            let _ = writeln!(out, "{}", "-".repeat(50));
-
-            if let Some(topics) = config
-                .interfaces
-                .topics
-                .as_ref()
-                .and_then(|t| t.emits.as_ref())
-                && !topics.is_empty()
-            {
-                let _ = writeln!(out, "Emitted Topics:");
-                for topic in topics {
-                    match topic.as_native() {
-                        Some(native) => {
-                            let _ = writeln!(
-                                out,
-                                "  - {} (qos: {:?}{})",
-                                native.name,
-                                native.qos_profile,
-                                retention_note(native.retention)
-                            );
-                        }
-                        None => {
-                            let _ =
-                                writeln!(out, "  - {}{}", topic.name(), via_slot(topic.link_id()));
-                        }
-                    }
-                }
-            }
-
-            if let Some(services) = config
-                .interfaces
-                .services
-                .as_ref()
-                .and_then(|s| s.exposes.as_ref())
-                && !services.is_empty()
-            {
-                let _ = writeln!(out, "Services:");
-                for service in services {
-                    let _ = writeln!(out, "  - {}{}", service.name(), via_slot(service.link_id()));
-                }
-            }
-
-            if let Some(actions) = config
-                .interfaces
-                .actions
-                .as_ref()
-                .and_then(|a| a.exposes.as_ref())
-                && !actions.is_empty()
-            {
-                let _ = writeln!(out, "Actions:");
-                for action in actions {
-                    let _ = writeln!(out, "  - {}{}", action.name(), via_slot(action.link_id()));
-                }
-            }
-        }
-    }
-
-    // Consumed Interfaces
-    {
-        let has_content = config
-            .interfaces
-            .topics
-            .as_ref()
-            .and_then(|t| t.consumes.as_ref())
-            .is_some_and(|t| !t.is_empty())
-            || config
-                .interfaces
-                .services
-                .as_ref()
-                .and_then(|s| s.consumes.as_ref())
-                .is_some_and(|s| !s.is_empty())
-            || config
-                .interfaces
-                .actions
-                .as_ref()
-                .and_then(|a| a.consumes.as_ref())
-                .is_some_and(|a| !a.is_empty());
-
-        if has_content {
-            let _ = writeln!(out);
-            let _ = writeln!(out, "Consumed Interfaces");
-            let _ = writeln!(out, "{}", "-".repeat(50));
-
-            if let Some(topics) = config
-                .interfaces
-                .topics
-                .as_ref()
-                .and_then(|t| t.consumes.as_ref())
-                && !topics.is_empty()
-            {
-                let _ = writeln!(out, "Consumed Topics:");
-                for topic in topics {
-                    let _ = writeln!(out, "  - {} (via slot: {})", topic.name, topic.link_id);
-                }
-            }
-
-            if let Some(services) = config
-                .interfaces
-                .services
-                .as_ref()
-                .and_then(|s| s.consumes.as_ref())
-                && !services.is_empty()
-            {
-                let _ = writeln!(out, "Services:");
-                for service in services {
-                    let _ = writeln!(out, "  - {} (via slot: {})", service.name, service.link_id);
-                }
-            }
-
-            if let Some(actions) = config
-                .interfaces
-                .actions
-                .as_ref()
-                .and_then(|a| a.consumes.as_ref())
-                && !actions.is_empty()
-            {
-                let _ = writeln!(out, "Actions:");
-                for action in actions {
-                    let _ = writeln!(out, "  - {} (via slot: {})", action.name, action.link_id);
-                }
-            }
-        }
-    }
-
-    // Integrity
-    let _ = writeln!(out);
-    let _ = writeln!(out, "Integrity");
-    let _ = writeln!(out, "{}", "-".repeat(50));
+    write_section_heading(out, "Integrity");
     let _ = writeln!(out, "Config SHA256: {}", response.config_integrity);
 
     // Parameters
     if !config.execution.parameters.is_empty() {
-        let _ = writeln!(out);
-        let _ = writeln!(out, "Parameters");
-        let _ = writeln!(out, "{}", "-".repeat(50));
+        write_section_heading(out, "Parameters");
         for (key, spec) in &config.execution.parameters {
             write_parameter_spec(out, key, spec, 1);
         }
     }
 
     let _ = writeln!(out);
+}
+
+/// Writes the heading of one section: a blank line, the title and a dashed
+/// rule.
+fn write_section_heading(out: &mut String, title: &str) {
+    let _ = writeln!(out);
+    let _ = writeln!(out, "{title}");
+    let _ = writeln!(out, "{}", "-".repeat(50));
+}
+
+/// The list when the config declares it with at least one entry.
+fn filter_non_empty<T>(list: Option<&[T]>) -> Option<&[T]> {
+    list.filter(|entries| !entries.is_empty())
+}
+
+/// Writes the slots the node consumes through, once each and sorted; the
+/// section is left out when the node consumes nothing.
+fn write_dependencies(out: &mut String, interfaces: &Interfaces) {
+    let mut dependencies: BTreeSet<&str> = BTreeSet::new();
+
+    if let Some(topics) = &interfaces.topics
+        && let Some(expected) = &topics.consumes
+    {
+        for topic in expected {
+            dependencies.insert(&topic.link_id);
+        }
+    }
+    if let Some(services) = &interfaces.services
+        && let Some(consumed) = &services.consumes
+    {
+        for service in consumed {
+            dependencies.insert(&service.link_id);
+        }
+    }
+    if let Some(actions) = &interfaces.actions
+        && let Some(consumed) = &actions.consumes
+    {
+        for action in consumed {
+            if !action.link_id.is_empty() {
+                dependencies.insert(&action.link_id);
+            }
+        }
+    }
+
+    if dependencies.is_empty() {
+        return;
+    }
+    write_section_heading(out, "Dependencies");
+    for dep in &dependencies {
+        let _ = writeln!(out, "  - {}", dep);
+    }
+}
+
+/// Writes the topics the node emits and the services and actions it exposes;
+/// the section is left out when every list is empty.
+fn write_exposed_interfaces(out: &mut String, interfaces: &Interfaces) {
+    let emitted_topics =
+        filter_non_empty(interfaces.topics.as_ref().and_then(|t| t.emits.as_deref()));
+    let services = filter_non_empty(
+        interfaces
+            .services
+            .as_ref()
+            .and_then(|s| s.exposes.as_deref()),
+    );
+    let actions = filter_non_empty(
+        interfaces
+            .actions
+            .as_ref()
+            .and_then(|a| a.exposes.as_deref()),
+    );
+    if emitted_topics.is_none() && services.is_none() && actions.is_none() {
+        return;
+    }
+
+    write_section_heading(out, "Exposed Interfaces");
+    if let Some(topics) = emitted_topics {
+        let _ = writeln!(out, "Emitted Topics:");
+        for topic in topics {
+            match topic.as_native() {
+                Some(native) => {
+                    let _ = writeln!(
+                        out,
+                        "  - {} (qos: {:?}{})",
+                        native.name,
+                        native.qos_profile,
+                        retention_note(native.retention)
+                    );
+                }
+                None => {
+                    let _ = writeln!(out, "  - {}{}", topic.name(), via_slot(topic.link_id()));
+                }
+            }
+        }
+    }
+    if let Some(services) = services {
+        let _ = writeln!(out, "Services:");
+        for service in services {
+            let _ = writeln!(out, "  - {}{}", service.name(), via_slot(service.link_id()));
+        }
+    }
+    if let Some(actions) = actions {
+        let _ = writeln!(out, "Actions:");
+        for action in actions {
+            let _ = writeln!(out, "  - {}{}", action.name(), via_slot(action.link_id()));
+        }
+    }
+}
+
+/// Writes the topics, services and actions the node consumes, each with the
+/// slot it consumes through; the section is left out when every list is empty.
+fn write_consumed_interfaces(out: &mut String, interfaces: &Interfaces) {
+    let topics = filter_non_empty(
+        interfaces
+            .topics
+            .as_ref()
+            .and_then(|t| t.consumes.as_deref()),
+    );
+    let services = filter_non_empty(
+        interfaces
+            .services
+            .as_ref()
+            .and_then(|s| s.consumes.as_deref()),
+    );
+    let actions = filter_non_empty(
+        interfaces
+            .actions
+            .as_ref()
+            .and_then(|a| a.consumes.as_deref()),
+    );
+    if topics.is_none() && services.is_none() && actions.is_none() {
+        return;
+    }
+
+    write_section_heading(out, "Consumed Interfaces");
+    if let Some(topics) = topics {
+        let _ = writeln!(out, "Consumed Topics:");
+        for topic in topics {
+            let _ = writeln!(out, "  - {} (via slot: {})", topic.name, topic.link_id);
+        }
+    }
+    if let Some(services) = services {
+        let _ = writeln!(out, "Services:");
+        for service in services {
+            let _ = writeln!(out, "  - {} (via slot: {})", service.name, service.link_id);
+        }
+    }
+    if let Some(actions) = actions {
+        let _ = writeln!(out, "Actions:");
+        for action in actions {
+            let _ = writeln!(out, "  - {} (via slot: {})", action.name, action.link_id);
+        }
+    }
 }
 
 /// What a native emitted topic's line says of its retention: nothing for a
@@ -386,7 +347,6 @@ fn via_slot(link_id: Option<&str>) -> String {
 /// `$default`; a group shows its name and recurses on its leaves; an array
 /// shows its item type and optional fixed length.
 fn write_parameter_spec(out: &mut String, key: &str, spec: &ParameterSpec, indent: usize) {
-    use std::fmt::Write as _;
     let pad = "  ".repeat(indent);
     match spec {
         ParameterSpec::Primitive { kind, default } => {
@@ -447,14 +407,9 @@ fn format_default_value_inline(d: &DefaultValue) -> String {
         DefaultValue::Bool(b) => b.to_string(),
         // Use serde_json to escape quotes, backslashes, control chars, etc.
         // so the rendered output is a valid quoted string for any input.
-        DefaultValue::String(s) => serde_json::to_string(s).unwrap_or_else(|_| {
-            format!(
-                "\"{}\"",
-                s.replace('\\', "\\\\")
-                    .replace('"', "\\\"")
-                    .replace('\n', "\\n")
-            )
-        }),
+        DefaultValue::String(s) => {
+            serde_json::to_string(s).expect("a string always serializes to JSON")
+        }
         DefaultValue::Int(i) => i.to_string(),
         DefaultValue::UInt(u) => u.to_string(),
         DefaultValue::Float(f) => f.to_string(),
@@ -490,10 +445,7 @@ mod tests {
                 execution: {execution_json5}
             }}"#
         );
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("peppy.json5");
-        std::fs::write(&path, config_json5).expect("write config");
-        let config = NodeConfigParser::from_path(&path).expect("parse config");
+        let config = NodeConfigParser::from_content(&config_json5).expect("parse config");
         NodeInfo {
             config,
             config_integrity: "0".repeat(64),
@@ -540,11 +492,24 @@ mod tests {
         }
     }
 
+    fn format_with_config(config_json5: &str) -> String {
+        let config = NodeConfigParser::from_content(config_json5).expect("parse config");
+        let mut out = String::new();
+        format_node_info(
+            &mut out,
+            &NodeInfo {
+                config,
+                ..sample_response()
+            },
+        );
+        out
+    }
+
     /// A native emitted topic's line states its QoS, and its retention when it
     /// retains.
     #[test]
     fn print_node_info_states_the_retention_of_a_retaining_topic() {
-        let config = NodeConfigParser::from_content(
+        let out = format_with_config(
             r#"{
                 peppy_schema: "node/v1",
                 manifest: { name: "arm", tag: "v1" },
@@ -556,16 +521,6 @@ mod tests {
                 },
                 execution: { language: "rust", run_cmd: ["./bin"] },
             }"#,
-        )
-        .expect("parse config");
-
-        let mut out = String::new();
-        format_node_info(
-            &mut out,
-            &NodeInfo {
-                config,
-                ..sample_response()
-            },
         );
 
         assert!(out.contains("  - joint_state (qos: SensorData)\n"), "{out}");
@@ -788,5 +743,115 @@ mod tests {
             out.contains("  tags: array[string]"),
             "array parameter should render with item type:\n{out}"
         );
+    }
+
+    /// Every interface section lists its non-empty kinds in a fixed order,
+    /// each under its own heading.
+    #[test]
+    fn print_node_info_renders_dependencies_and_interface_sections() {
+        let out = format_with_config(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: {
+                    name: "relay",
+                    tag: "v1",
+                    implements: [{ name: "rgb_camera", tag: "v1", link_id: "camera" }],
+                    depends_on: {
+                        nodes: [
+                            { name: "camera_node", tag: "v1", link_id: "source" },
+                            { name: "config_node", tag: "v1", link_id: "config" },
+                            { name: "nav_node", tag: "v1", link_id: "nav" },
+                        ],
+                    },
+                },
+                interfaces: {
+                    topics: {
+                        emits: [
+                            { name: "joint_state", qos_profile: "sensor_data", message_format: { position: "f64" } },
+                            { link_id: "camera", name: "video_stream" },
+                        ],
+                        consumes: [
+                            { link_id: "source", name: "video_stream" },
+                            { link_id: "source", name: "depth_stream" },
+                        ],
+                    },
+                    services: {
+                        exposes: [{ name: "get_status" }],
+                        consumes: [{ link_id: "config", name: "get_config" }],
+                    },
+                    actions: {
+                        exposes: [{ name: "calibrate" }],
+                        consumes: [{ link_id: "nav", name: "go_to_pose" }],
+                    },
+                },
+                execution: { language: "rust", run_cmd: ["./bin"] },
+            }"#,
+        );
+
+        let rule = "-".repeat(50);
+        let expected = [
+            "",
+            "Dependencies",
+            &rule,
+            "  - config",
+            "  - nav",
+            "  - source",
+            "",
+            "Exposed Interfaces",
+            &rule,
+            "Emitted Topics:",
+            "  - joint_state (qos: SensorData)",
+            "  - video_stream (via implements slot: camera)",
+            "Services:",
+            "  - get_status",
+            "Actions:",
+            "  - calibrate",
+            "",
+            "Consumed Interfaces",
+            &rule,
+            "Consumed Topics:",
+            "  - video_stream (via slot: source)",
+            "  - depth_stream (via slot: source)",
+            "Services:",
+            "  - get_config (via slot: config)",
+            "Actions:",
+            "  - go_to_pose (via slot: nav)",
+            "",
+            "Integrity",
+        ]
+        .join("\n");
+        assert!(out.contains(&format!("\n{expected}\n")), "{out}");
+    }
+
+    /// An interface section with only empty lists is left out, and a kind
+    /// with an empty list gets no line under a section that is shown.
+    #[test]
+    fn print_node_info_omits_empty_interface_lists() {
+        let out = format_with_config(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "quiet", tag: "v1" },
+                interfaces: {
+                    topics: { emits: [], consumes: [] },
+                    services: { exposes: [{ name: "get_status" }], consumes: [] },
+                    actions: { exposes: [], consumes: [] },
+                },
+                execution: { language: "rust", run_cmd: ["./bin"] },
+            }"#,
+        );
+
+        let rule = "-".repeat(50);
+        let expected = [
+            "    - inst-def: /tmp/peppy/logs/run/inst-def.log",
+            "",
+            "Exposed Interfaces",
+            &rule,
+            "Services:",
+            "  - get_status",
+            "",
+            "Integrity",
+        ]
+        .join("\n");
+        assert!(out.contains(&format!("{expected}\n")), "{out}");
     }
 }

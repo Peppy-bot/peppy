@@ -14,7 +14,7 @@ use crate::commands::platform::router::pending_change_lines;
 use crate::commands::platform::selection::{enrollment_note, selection_json};
 use crate::commands::platform::{PlatformSession, date_of, federation_is_managed};
 use crate::context::AppContext;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use auth::client::{PeerStatus, RouterPhase, RouterStatus};
 use auth::enrollment::Enrollment;
 use auth::{CertificateValidity, FederationIdentity, storage};
@@ -47,8 +47,8 @@ enum DaemonReport {
 /// daemon renews with the session of this machine, so it needs the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RenewalMeans {
-    session: bool,
-    daemon_running: bool,
+    has_session: bool,
+    is_daemon_running: bool,
 }
 
 impl RenewalMeans {
@@ -56,8 +56,8 @@ impl RenewalMeans {
         Self {
             // The platform view is `Ok(None)` exactly when there is no session
             // to ask with.
-            session: !matches!(platform, Ok(None)),
-            daemon_running: !matches!(daemon, DaemonReport::NotRunning),
+            has_session: !matches!(platform, Ok(None)),
+            is_daemon_running: !matches!(daemon, DaemonReport::NotRunning),
         }
     }
 
@@ -66,12 +66,12 @@ impl RenewalMeans {
     fn absent(self) -> impl Iterator<Item = (&'static str, &'static str)> {
         [
             (
-                self.session,
+                self.has_session,
                 "no_session",
                 "needs a session: run `peppy platform login`",
             ),
             (
-                self.daemon_running,
+                self.is_daemon_running,
                 "daemon_not_running",
                 "needs the daemon: start it with `peppy service serve`",
             ),
@@ -147,10 +147,8 @@ fn platform_report(
     session: &PlatformSession,
     enrollment: &Enrollment,
 ) -> Result<Option<PlatformReport>> {
-    let mut api = match session.api() {
-        Ok(api) => api,
-        Err(Error::AuthEngine(auth::AuthError::NotAuthenticated)) => return Ok(None),
-        Err(e) => return Err(e),
+    let Some(mut api) = session.signed_in_api()? else {
+        return Ok(None);
     };
     let document = &enrollment.document;
     let router = api.router_status(&document.workspace_id, &document.project_id)?;
@@ -216,123 +214,159 @@ fn human_document(
     platform: &Result<Option<PlatformReport>>,
     now: i64,
 ) -> String {
-    let mut out = String::new();
-    match enrollment {
-        None => {
-            out.push_str("Not enrolled. Run `peppy platform enroll` to join a project router.\n")
-        }
-        Some(enrollment) => {
-            let d = &enrollment.document;
-            out.push_str("Enrollment\n");
-            out.push_str(&format!(
-                "  project   : {} (workspace {})\n",
-                d.project_id, d.workspace_id
-            ));
-            out.push_str(&format!("  peer      : {} ({})\n", d.peer_name, d.peer_id));
-            out.push_str(&format!("  router    : {}\n", d.router.locator()));
-            out.push_str(&format!("  zenoh id  : {}\n", d.zenoh_id));
-            out.push_str(&format!(
-                "  cert      : {}\n",
-                certificate_line(&enrollment.certificate, now)
-            ));
-            let means = RenewalMeans::of(daemon, platform);
-            for (index, line) in renewal_lines(&enrollment.certificate, now, means)
-                .iter()
-                .enumerate()
-            {
-                let label = if index == 0 {
-                    "renewal   :"
-                } else {
-                    "           "
-                };
-                out.push_str(&format!("  {label} {line}\n"));
-            }
-            out.push_str(&format!("  backend   : {}\n", d.api_url));
-            out.push_str(&format!(
-                "  files     : {}\n",
-                session.dirs.peer_dir().display()
-            ));
-        }
+    let mut out = enrollment_section(session, enrollment, daemon, platform, now);
+    out.push_str(&daemon_section(daemon));
+    out.push_str(&selection_section(session, enrollment));
+    if enrollment.is_some() {
+        out.push_str(&platform_section(platform));
     }
-    out.push_str("Daemon\n");
+    out
+}
+
+/// What this machine is enrolled as, with its certificate and its renewal,
+/// or the command that enrolls it.
+fn enrollment_section(
+    session: &PlatformSession,
+    enrollment: Option<&Enrollment>,
+    daemon: &DaemonReport,
+    platform: &Result<Option<PlatformReport>>,
+    now: i64,
+) -> String {
+    let Some(enrollment) = enrollment else {
+        return "Not enrolled. Run `peppy platform enroll` to join a project router.\n".to_string();
+    };
+    let d = &enrollment.document;
+    let mut out = String::from("Enrollment\n");
+    out.push_str(&format!(
+        "  project   : {} (workspace {})\n",
+        d.project_id, d.workspace_id
+    ));
+    out.push_str(&format!("  peer      : {} ({})\n", d.peer_name, d.peer_id));
+    out.push_str(&format!("  router    : {}\n", d.router.locator()));
+    out.push_str(&format!("  zenoh id  : {}\n", d.zenoh_id));
+    out.push_str(&format!(
+        "  cert      : {}\n",
+        certificate_line(&enrollment.certificate, now)
+    ));
+    let means = RenewalMeans::of(daemon, platform);
+    for (index, line) in renewal_lines(&enrollment.certificate, now, means)
+        .iter()
+        .enumerate()
+    {
+        let label = if index == 0 {
+            "renewal   :"
+        } else {
+            "           "
+        };
+        out.push_str(&format!("  {label} {line}\n"));
+    }
+    out.push_str(&format!("  backend   : {}\n", d.api_url));
+    out.push_str(&format!(
+        "  files     : {}\n",
+        session.dirs.peer_dir().display()
+    ));
+    out
+}
+
+/// Whether the daemon runs, and whether it runs under the enrollment: by
+/// its namespace under an operator-run router, by its identity and its link
+/// under a managed one.
+fn daemon_section(daemon: &DaemonReport) -> String {
+    let mut out = String::from("Daemon\n");
     match daemon {
         DaemonReport::NotRunning => out.push_str("  running   : no\n"),
         DaemonReport::External { namespace_matches } => {
+            let namespace = if *namespace_matches {
+                "matches the enrollment"
+            } else {
+                "differs; restart the daemon"
+            };
             out.push_str("  running   : yes (operator-run router; federation is the operator's)\n");
-            out.push_str(&format!(
-                "  namespace : {}\n",
-                if *namespace_matches {
-                    "matches the enrollment"
-                } else {
-                    "differs; restart the daemon"
-                }
-            ));
+            out.push_str(&format!("  namespace : {namespace}\n"));
         }
         DaemonReport::Managed {
             identity_matches,
             link,
         } => {
+            let identity = if *identity_matches {
+                "matches the enrollment"
+            } else {
+                "differs; the daemon is restarting or needs a restart"
+            };
             out.push_str("  running   : yes\n");
-            out.push_str(&format!(
-                "  identity  : {}\n",
-                if *identity_matches {
-                    "matches the enrollment"
-                } else {
-                    "differs; the daemon is restarting or needs a restart"
-                }
-            ));
+            out.push_str(&format!("  identity  : {identity}\n"));
             out.push_str(&format!("  link      : {}\n", link_line(link)));
         }
     }
-    out.push_str("Selection\n");
-    match session.selection() {
-        Ok(None) => out.push_str("  none; run `peppy platform project use` to select a project\n"),
-        Ok(Some(selection)) => {
-            match selection.project_label() {
-                Some(project) => out.push_str(&format!("  {project}\n")),
-                None => out.push_str(&format!(
-                    "  {}; no project is selected\n",
-                    selection.workspace_label()
-                )),
-            }
-            if let Some(note) = enrollment_note(&selection, enrollment.map(|e| &e.document)) {
-                out.push_str(&format!("  {note}\n"));
-            }
+    out
+}
+
+/// The workspace and the project the commands use, with the note of an
+/// enrollment in a different project.
+fn selection_section(session: &PlatformSession, enrollment: Option<&Enrollment>) -> String {
+    let mut out = String::from("Selection\n");
+    let selection = match session.selection() {
+        Ok(Some(selection)) => selection,
+        Ok(None) => {
+            out.push_str("  none; run `peppy platform project use` to select a project\n");
+            return out;
         }
-        Err(e) => out.push_str(&format!("  unavailable: {e}\n")),
+        Err(e) => {
+            out.push_str(&format!("  unavailable: {e}\n"));
+            return out;
+        }
+    };
+    match selection.project_label() {
+        Some(project) => out.push_str(&format!("  {project}\n")),
+        None => out.push_str(&format!(
+            "  {}; no project is selected\n",
+            selection.workspace_label()
+        )),
     }
-    if enrollment.is_some() {
-        out.push_str("Platform\n");
-        match platform {
-            Ok(None) => out.push_str(
+    if let Some(note) = enrollment_note(&selection, enrollment.map(|e| &e.document)) {
+        out.push_str(&format!("  {note}\n"));
+    }
+    out
+}
+
+/// What the platform reports about the router and this peer, or why it
+/// could not be asked.
+fn platform_section(platform: &Result<Option<PlatformReport>>) -> String {
+    let mut out = String::from("Platform\n");
+    let report = match platform {
+        Ok(Some(report)) => report,
+        Ok(None) => {
+            out.push_str(
                 "  not signed in; run `peppy platform login` to see the platform's view\n",
-            ),
-            Ok(Some(report)) => {
-                let address = report
-                    .router
-                    .address
-                    .as_ref()
-                    .map(|address| format!(" at {}:{}", address.host(), address.port()))
-                    .unwrap_or_default();
-                out.push_str(&format!("  router    : {}{address}\n", report.router.phase));
-                if report.router.phase == RouterPhase::Stopped {
-                    out.push_str("              start it with `peppy platform router start`\n");
-                }
-                for line in pending_change_lines(&report.router) {
-                    out.push_str(&format!("  pending   : {line}\n"));
-                }
-                out.push_str(&format!(
-                    "  this peer : {}\n",
-                    report
-                        .peer_status
-                        .as_ref()
-                        .map(peer_status_label)
-                        .unwrap_or("not listed (removed?)")
-                ));
-            }
-            Err(e) => out.push_str(&format!("  unavailable: {e}\n")),
+            );
+            return out;
         }
+        Err(e) => {
+            out.push_str(&format!("  unavailable: {e}\n"));
+            return out;
+        }
+    };
+    let address = report
+        .router
+        .address
+        .as_ref()
+        .map(|address| format!(" at {}:{}", address.host(), address.port()))
+        .unwrap_or_default();
+    out.push_str(&format!("  router    : {}{address}\n", report.router.phase));
+    if report.router.phase == RouterPhase::Stopped {
+        out.push_str("              start it with `peppy platform router start`\n");
     }
+    for line in pending_change_lines(&report.router) {
+        out.push_str(&format!("  pending   : {line}\n"));
+    }
+    out.push_str(&format!(
+        "  this peer : {}\n",
+        report
+            .peer_status
+            .as_ref()
+            .map(peer_status_label)
+            .unwrap_or("not listed (removed?)")
+    ));
     out
 }
 
@@ -429,8 +463,8 @@ mod tests {
     const EXPIRES_AT: i64 = ISSUED_AT + 90 * DAY_SECS;
     const DUE_AT: i64 = ISSUED_AT + 60 * DAY_SECS;
     const ALL_MEANS: RenewalMeans = RenewalMeans {
-        session: true,
-        daemon_running: true,
+        has_session: true,
+        is_daemon_running: true,
     };
 
     /// A certificate issued at [`ISSUED_AT`] for 90 days.
@@ -478,12 +512,12 @@ mod tests {
     fn the_renewal_lines_name_what_the_daemon_needs() {
         let certificate = certificate();
         let no_session = RenewalMeans {
-            session: false,
-            daemon_running: true,
+            has_session: false,
+            is_daemon_running: true,
         };
         let nothing = RenewalMeans {
-            session: false,
-            daemon_running: false,
+            has_session: false,
+            is_daemon_running: false,
         };
 
         let lines = renewal_lines(&certificate, ISSUED_AT, no_session);
@@ -497,5 +531,322 @@ mod tests {
         assert!(lines[2].contains("peppy service serve"), "{lines:?}");
         assert_eq!(nothing.absent_names(), ["no_session", "daemon_not_running"]);
         assert!(ALL_MEANS.absent_names().is_empty());
+    }
+
+    /// A session over `dir` whose platform API no test reaches: every test
+    /// below stops at the credentials file.
+    fn session_in(dir: &tempfile::TempDir) -> PlatformSession {
+        PlatformSession::resolve(Some(PeppyDirs::new(dir.path())), Some("http://127.0.0.1:9"))
+            .expect("session")
+    }
+
+    #[test]
+    fn the_platform_view_is_absent_without_a_session() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let report = platform_report(&session_in(&dir), &auth::test_support::enrollment());
+        assert!(matches!(report, Ok(None)));
+    }
+
+    /// A credentials file that cannot be read is not the absence of a
+    /// session, so the platform view is an error instead of left out.
+    #[test]
+    fn an_unreadable_session_is_an_error_of_the_platform_view() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let session = session_in(&dir);
+        let creds_dir = session.creds_path.parent().expect("credentials dir");
+        std::fs::create_dir_all(creds_dir).expect("mkdir conf");
+        std::fs::write(
+            &session.creds_path,
+            r#"{ session: { api_url: "http://x" } }"#,
+        )
+        .expect("write malformed creds");
+        let report = platform_report(&session, &auth::test_support::enrollment());
+        assert!(report.is_err());
+    }
+
+    /// [`session_in`], signed in as the subject of
+    /// [`auth::test_support::platform_selection`], so a stored selection of
+    /// this backend is the selection of the session.
+    fn signed_in_session(dir: &tempfile::TempDir) -> PlatformSession {
+        let session = session_in(dir);
+        let creds = auth::ProfileCreds {
+            api_url: session.api_url.clone(),
+            issuer: session.api_url.clone(),
+            client_id: "cli-client-id".to_string(),
+            access_token: storage::secret("access".to_string()),
+            refresh_token: storage::secret("refresh".to_string()),
+            expires_at: auth::test_support::EXPIRES_AT,
+            token_type: "Bearer".to_string(),
+            scope: "openid".to_string(),
+            subject: "user-123".to_string(),
+            username: "alice".to_string(),
+        };
+        let credentials = storage::Credentials {
+            session: Some(creds),
+            ..Default::default()
+        };
+        storage::save(&session.creds_path, &credentials).expect("seed creds");
+        session
+    }
+
+    /// Stores `project` in workspace `ws-2` as the selection of
+    /// [`signed_in_session`].
+    fn select(session: &PlatformSession, project: Option<auth::selection::Named>) {
+        let selection = auth::PlatformSelection {
+            api_origin: session.api_origin().expect("api origin"),
+            project,
+            ..auth::test_support::platform_selection()
+        };
+        auth::selection::save(&session.dirs, &selection).expect("save selection");
+    }
+
+    fn router(phase: RouterPhase) -> RouterStatus {
+        RouterStatus {
+            phase,
+            desired_state: String::new(),
+            address: None,
+            pending_changes: false,
+            pending_change_entries: Vec::new(),
+            peers: Vec::new(),
+        }
+    }
+
+    /// A machine that is not enrolled reads one line for it, then the daemon
+    /// and the selection, and no platform section.
+    #[test]
+    fn the_status_of_a_machine_not_enrolled_has_no_platform_section() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let session = session_in(&dir);
+
+        let text = human_document(
+            &session,
+            None,
+            &DaemonReport::NotRunning,
+            &Ok(None),
+            ISSUED_AT,
+        );
+
+        let expected = [
+            "Not enrolled. Run `peppy platform enroll` to join a project router.",
+            "Daemon",
+            "  running   : no",
+            "Selection",
+            "  none; run `peppy platform project use` to select a project",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(text, expected);
+    }
+
+    /// An enrolled machine under an operator-run router, with a platform view
+    /// that had no session to ask with: the enrollment with each renewal line,
+    /// the namespace check, the selected project with the note of a different
+    /// enrollment, and the command that signs in. `human_document` takes the
+    /// platform view as given, so the test signs in only because the session
+    /// reads a stored selection for the signed-in identity alone.
+    #[test]
+    fn the_status_under_an_external_router_reads_the_namespace_and_the_selection() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let session = signed_in_session(&dir);
+        select(&session, auth::test_support::platform_selection().project);
+        let enrollment = auth::test_support::enrollment();
+
+        let text = human_document(
+            &session,
+            Some(&enrollment),
+            &DaemonReport::External {
+                namespace_matches: false,
+            },
+            &Ok(None),
+            ISSUED_AT + DAY_SECS,
+        );
+
+        let expected = [
+            "Enrollment",
+            "  project   : 550e8400-e29b-41d4-a716-446655440000 (workspace ws-1)",
+            "  peer      : robot-7 (peer-1)",
+            "  router    : tls/rtr-p.example:7447",
+            "  zenoh id  : 2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5",
+            "  cert      : expires on 2033-05-18 (in 3471 days)",
+            "  renewal   : automatic, from 2030-03-17",
+            "              needs a session: run `peppy platform login`",
+            "  backend   : https://api.example",
+            &format!("  files     : {}", session.dirs.peer_dir().display()),
+            "Daemon",
+            "  running   : yes (operator-run router; federation is the operator's)",
+            "  namespace : differs; restart the daemon",
+            "Selection",
+            "  project Field (p-2) in workspace Robotics lab",
+            "  This machine is enrolled in project 550e8400-e29b-41d4-a716-446655440000. \
+             The selection does not move it. To move it: `peppy platform enroll --replace`",
+            "Platform",
+            "  not signed in; run `peppy platform login` to see the platform's view",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(text, expected);
+    }
+
+    /// An enrolled machine under a managed router: the identity and the
+    /// link, a workspace selected alone, and the platform's view of a
+    /// stopped router that no longer lists this peer.
+    #[test]
+    fn the_status_under_a_managed_router_reads_the_link_and_the_platform_view() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let session = signed_in_session(&dir);
+        select(&session, None);
+        let enrollment = auth::test_support::enrollment();
+
+        let text = human_document(
+            &session,
+            Some(&enrollment),
+            &DaemonReport::Managed {
+                identity_matches: true,
+                link: PokeOutcome::Pinned,
+            },
+            &Ok(Some(PlatformReport {
+                router: router(RouterPhase::Stopped),
+                peer_status: None,
+            })),
+            ISSUED_AT + DAY_SECS,
+        );
+
+        let expected = [
+            "Enrollment",
+            "  project   : 550e8400-e29b-41d4-a716-446655440000 (workspace ws-1)",
+            "  peer      : robot-7 (peer-1)",
+            "  router    : tls/rtr-p.example:7447",
+            "  zenoh id  : 2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5",
+            "  cert      : expires on 2033-05-18 (in 3471 days)",
+            "  renewal   : automatic, from 2030-03-17",
+            "  backend   : https://api.example",
+            &format!("  files     : {}", session.dirs.peer_dir().display()),
+            "Daemon",
+            "  running   : yes",
+            "  identity  : matches the enrollment",
+            "  link      : operator-pinned ZENOH_CONFIG (not managed)",
+            "Selection",
+            "  workspace Robotics lab (ws-2); no project is selected",
+            "Platform",
+            "  router    : stopped",
+            "              start it with `peppy platform router start`",
+            "  this peer : not listed (removed?)",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(text, expected);
+    }
+
+    /// A running router with its address, a change that waits for a restart
+    /// and this peer's status; an identity that differs; a selection that
+    /// cannot be read.
+    #[test]
+    fn the_status_reads_a_running_router_and_an_unreadable_selection() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let session = signed_in_session(&dir);
+        std::fs::write(
+            session
+                .dirs
+                .conf_dir()
+                .join(daemon_config::consts::PLATFORM_SELECTION_FILE),
+            "not a selection",
+        )
+        .expect("write a malformed selection");
+        let enrollment = auth::test_support::enrollment();
+        let staged_at = chrono::DateTime::from_timestamp(ISSUED_AT, 0).expect("a time");
+        let running = RouterStatus {
+            address: Some(
+                auth::enrollment::RouterEndpoint::parse("rtr-p.example", 7447)
+                    .expect("an endpoint"),
+            ),
+            pending_changes: true,
+            pending_change_entries: vec![auth::client::PendingChange {
+                description: "Peer robot-8 was removed".to_string(),
+                staged_at,
+                deadline: None,
+            }],
+            ..router(RouterPhase::Running)
+        };
+
+        let text = human_document(
+            &session,
+            Some(&enrollment),
+            &DaemonReport::Managed {
+                identity_matches: false,
+                link: PokeOutcome::TimedOut,
+            },
+            &Ok(Some(PlatformReport {
+                router: running,
+                peer_status: Some(PeerStatus::Connected),
+            })),
+            ISSUED_AT + DAY_SECS,
+        );
+
+        let unreadable = session.selection().expect_err("a malformed selection");
+        let expected = [
+            "Enrollment",
+            "  project   : 550e8400-e29b-41d4-a716-446655440000 (workspace ws-1)",
+            "  peer      : robot-7 (peer-1)",
+            "  router    : tls/rtr-p.example:7447",
+            "  zenoh id  : 2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5",
+            "  cert      : expires on 2033-05-18 (in 3471 days)",
+            "  renewal   : automatic, from 2030-03-17",
+            "  backend   : https://api.example",
+            &format!("  files     : {}", session.dirs.peer_dir().display()),
+            "Daemon",
+            "  running   : yes",
+            "  identity  : differs; the daemon is restarting or needs a restart",
+            "  link      : the daemon did not answer within the timeout",
+            "Selection",
+            &format!("  unavailable: {unreadable}"),
+            "Platform",
+            "  router    : running at rtr-p.example:7447",
+            "  pending   : Peer robot-8 was removed (staged 2023-11-14)",
+            "  this peer : connected",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(text, expected);
+    }
+
+    /// A platform view that failed says so in the platform section, and a
+    /// daemon that does not run is what the renewal needs.
+    #[test]
+    fn the_status_reads_a_platform_view_that_failed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let session = session_in(&dir);
+        let enrollment = auth::test_support::enrollment();
+
+        let text = human_document(
+            &session,
+            Some(&enrollment),
+            &DaemonReport::NotRunning,
+            &Err(crate::error::Error::ExecutionFailed(
+                "the router read failed".to_string(),
+            )),
+            ISSUED_AT + DAY_SECS,
+        );
+
+        let expected = [
+            "Enrollment",
+            "  project   : 550e8400-e29b-41d4-a716-446655440000 (workspace ws-1)",
+            "  peer      : robot-7 (peer-1)",
+            "  router    : tls/rtr-p.example:7447",
+            "  zenoh id  : 2f6c1d8e9a0b4c5d6e7f8091a2b3c4d5",
+            "  cert      : expires on 2033-05-18 (in 3471 days)",
+            "  renewal   : automatic, from 2030-03-17",
+            "              needs the daemon: start it with `peppy service serve`",
+            "  backend   : https://api.example",
+            &format!("  files     : {}", session.dirs.peer_dir().display()),
+            "Daemon",
+            "  running   : no",
+            "Selection",
+            "  none; run `peppy platform project use` to select a project",
+            "Platform",
+            "  unavailable: the router read failed",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(text, expected);
     }
 }

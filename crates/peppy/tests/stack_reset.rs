@@ -1,79 +1,17 @@
-use super::common::stack_graph;
+use super::common::{
+    node_add_command, read_daemon_git_hash, serve_app_context, stack_graph,
+    write_minimal_node_config,
+};
 use peppy::test_support::ServeCommandEmulation;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use peppy::commands::Command;
-use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{StackCommand, StackCommands};
-use peppy::context::AppContext;
-
-fn write_node_config(
-    nodes_directory: &Path,
-    node_name: &str,
-    node_tag: &str,
-    git_hash: &str,
-    run_cmd: &[&str],
-) -> PathBuf {
-    let node_dir = nodes_directory.join(node_name);
-    fs::create_dir_all(&node_dir).expect("failed to create node directory");
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    let run_cmd_json5 = run_cmd
-        .iter()
-        .map(|arg| serde_json::to_string(arg).expect("run_cmd arg should serialize"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    fs::write(
-        &node_config_path,
-        r#"{
-                peppy_schema: "node/v1",
-                manifest: {
-                    name: "{node_name}",
-                    tag: "{node_tag}",
-                },
-                execution: {
-                    language: "rust",
-                    run_cmd: [{run_cmd_json5}]
-                }
-            }"#
-        .replace("{node_name}", node_name)
-        .replace("{node_tag}", node_tag)
-        .replace("{run_cmd_json5}", &run_cmd_json5),
-    )
-    .expect("failed to write node config");
-    config::fingerprint::create_codegen_fingerprint(
-        &node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let peppy_output_dir = node_dir.join(PEPPY_OUTPUT_DIR);
-    fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
-    fs::write(peppy_output_dir.join("git.hash"), git_hash).expect("failed to write node git hash");
-    node_dir
-}
-
-fn read_daemon_git_hash(daemon_state_path: &Path) -> String {
-    let contents =
-        fs::read_to_string(daemon_state_path).expect("daemon state file should be readable");
-    let value: serde_json::Value =
-        serde_json5::from_str(&contents).expect("daemon state should parse as JSON5");
-    value
-        .get("git_hash")
-        .and_then(|v| v.as_str())
-        .filter(|git_hash| !git_hash.is_empty())
-        .expect("daemon state should include a non-empty git_hash")
-        .to_string()
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_reset_command_resets_node_stack() {
+async fn stack_reset_command_resets_node_stack() {
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
-    let shared_messenger = serve.messenger();
     let core_node_name = serve.core_node_name().to_string();
     assert!(
         !core_node_name.is_empty(),
@@ -84,7 +22,7 @@ async fn service_reset_command_resets_node_stack() {
     let node_name = "reset_test_node";
     let node_tag = "v1";
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let node_path = write_node_config(
+    let node_path = write_minimal_node_config(
         nodes_dir.path(),
         node_name,
         node_tag,
@@ -92,31 +30,11 @@ async fn service_reset_command_resets_node_stack() {
         &["sh", "-c", "exit 0"],
     );
 
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
+    let ctx = serve_app_context(&serve, nodes_dir.path());
 
-    NodeCommand {
-        command: NodeCommands::Add {
-            clock: None,
-            publish_clock: None,
-            source: Some(node_path.display().to_string()),
-            git_ref: None,
-            sync: false,
-            build: true,
-            run: false,
-            args: Vec::new(),
-            instance_id: None,
-            links: Vec::new(),
-            vacant_links: Vec::new(),
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: false,
-        },
-    }
-    .execute(&ctx)
-    .expect("node add command should succeed");
+    node_add_command(&node_path)
+        .execute(&ctx)
+        .expect("node add command should succeed");
 
     let messenger_handle = ctx
         .messenger_handle()
@@ -137,7 +55,7 @@ async fn service_reset_command_resets_node_stack() {
         command: StackCommands::Reset { federated: false },
     }
     .execute(&ctx)
-    .expect("service reset command should succeed");
+    .expect("stack reset command should succeed");
 
     let graph = stack_graph(messenger_handle, &core_node_name).await;
 

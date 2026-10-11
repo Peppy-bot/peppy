@@ -1,4 +1,4 @@
-use super::common::setup;
+use super::common::{add_repo, setup};
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 use peppy::test_support::ServeCommandEmulation;
@@ -11,17 +11,9 @@ fn find_repo_id(serve: &ServeCommandEmulation, source: &str) -> u64 {
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("failed to parse repositories.json5");
     for entry in &repos {
-        let matches = entry
-            .get("path")
-            .and_then(|v| v.as_str())
-            .map(|p| p == source)
-            .unwrap_or(false)
-            || entry
-                .get("url")
-                .and_then(|v| v.as_str())
-                .map(|u| u == source)
-                .unwrap_or(false);
-        if matches {
+        let field_is_source =
+            |field: &str| entry.get(field).and_then(|value| value.as_str()) == Some(source);
+        if field_is_source("path") || field_is_source("url") {
             return entry
                 .get("id")
                 .and_then(|v| v.as_u64())
@@ -39,16 +31,7 @@ fn repo_remove_after_add_succeeds() {
     let source = source_path.to_str().unwrap();
 
     // First add a repo so there's something to remove
-    RepoCommand {
-        command: RepoCommands::Add {
-            source: source.to_string(),
-            git_ref: None,
-            top: false,
-            id: None,
-        },
-    }
-    .execute(&ctx)
-    .expect("repo add should succeed");
+    add_repo(&ctx, source, None).expect("repo add should succeed");
 
     // Find the actual id assigned to the repo we just added
     let id = find_repo_id(&serve, source);
@@ -88,16 +71,7 @@ fn repo_remove_after_add_git_succeeds() {
     let source = "https://github.com/org/repo.git";
 
     // Add a git repo
-    RepoCommand {
-        command: RepoCommands::Add {
-            source: source.to_string(),
-            git_ref: None,
-            top: false,
-            id: None,
-        },
-    }
-    .execute(&ctx)
-    .expect("repo add git should succeed");
+    add_repo(&ctx, source, None).expect("repo add git should succeed");
 
     // Find the actual id assigned to the repo we just added
     let id = find_repo_id(&serve, source);

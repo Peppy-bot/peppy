@@ -1,10 +1,10 @@
-//! Terminal output utilities for displaying scrolling, fixed-height output regions.
-//!
-//! This module provides a `ScrollingOutput` struct that displays output in a fixed
-//! number of terminal lines, similar to how `docker buildx` displays build progress.
+//! Terminal output of the CLI: the stdout and stderr color gates, the stdout
+//! width that width-fitted output fits to, the spinner every wait shows, and
+//! [`ScrollingOutput`], a fixed-height region that scrolls the newest lines of
+//! a long operation, the way `docker buildx` shows build progress.
 
 use crossterm::{
-    ExecutableCommand,
+    ExecutableCommand, QueueableCommand,
     cursor::{MoveToColumn, MoveUp},
     style::{Attribute, SetAttribute},
     terminal::{Clear, ClearType},
@@ -30,11 +30,14 @@ pub(crate) fn stderr_colors_enabled() -> bool {
 /// when stdout is one, `None` when stdout is piped, so redirected output
 /// keeps every row on one line.
 pub(crate) fn stdout_width() -> Option<usize> {
-    std::io::stdout().is_terminal().then(|| {
-        crossterm::terminal::size()
-            .map(|(width, _)| width as usize)
-            .unwrap_or(80)
-    })
+    std::io::stdout().is_terminal().then(terminal_width)
+}
+
+/// The width of the terminal, or 80 columns when the size cannot be read.
+fn terminal_width() -> usize {
+    crossterm::terminal::size()
+        .map(|(width, _)| width as usize)
+        .unwrap_or(80)
 }
 
 /// Whether the `NO_COLOR` convention asks for plain output: the variable set to
@@ -57,11 +60,9 @@ fn no_color_from_env(value: Option<String>) -> bool {
 /// tick, and `{spinner} {msg}` rendered to stderr.
 ///
 /// Returns `None` when stderr is not a real terminal, so piped/CI output stays
-/// clean (the caller just gets no spinner). The caller is responsible for ending
-/// it with [`indicatif::ProgressBar::finish_and_clear`] once the wait is over.
-pub(crate) fn spinner(
-    message: impl Into<std::borrow::Cow<'static, str>>,
-) -> Option<indicatif::ProgressBar> {
+/// clean (the caller just gets no spinner). [`while_spinning`] ends it with
+/// [`indicatif::ProgressBar::finish_and_clear`] once the wait is over.
+fn spinner(message: &'static str) -> Option<indicatif::ProgressBar> {
     if !std::io::stderr().is_terminal() {
         return None;
     }
@@ -69,6 +70,19 @@ pub(crate) fn spinner(
     pb.set_message(message);
     pb.enable_steady_tick(std::time::Duration::from_millis(120));
     Some(pb)
+}
+
+/// Runs `work` under a [`spinner`] that shows `message`, and clears the
+/// spinner when `work` returns, whatever it returns. The one owner of the
+/// spinner's start and end, so every wait of the CLI shows and removes it the
+/// same way.
+pub(crate) fn while_spinning<T>(message: &'static str, work: impl FnOnce() -> T) -> T {
+    let spinner = spinner(message);
+    let result = work();
+    if let Some(spinner) = spinner {
+        spinner.finish_and_clear();
+    }
+    result
 }
 
 /// A fixed-height scrolling output region for the terminal.
@@ -83,17 +97,14 @@ pub struct ScrollingOutput {
     max_lines: usize,
     /// Number of lines currently rendered on screen.
     rendered_lines: usize,
-    /// Whether we're outputting to a real terminal (enables ANSI codes).
+    /// Whether the region redraws in place: [`colors_enabled`], so stdout is a
+    /// terminal and `NO_COLOR` is unset or empty.
     is_terminal: bool,
-    /// Stdout handle.
     stdout: Stdout,
 }
 
 impl ScrollingOutput {
-    /// Creates a new `ScrollingOutput` with the specified maximum number of lines.
-    ///
-    /// # Arguments
-    /// * `max_lines` - The maximum number of lines to display at once.
+    /// Creates a new `ScrollingOutput` that displays at most `max_lines` lines.
     pub fn new(max_lines: usize) -> Self {
         let stdout = std::io::stdout();
         let is_terminal = colors_enabled();
@@ -109,12 +120,8 @@ impl ScrollingOutput {
 
     /// Adds a line to the output and refreshes the display.
     ///
-    /// If the buffer is full, the oldest line will be removed.
-    ///
-    /// # Arguments
-    /// * `line` - The line to add.
+    /// If the buffer is full, the oldest line is removed.
     pub fn add_line(&mut self, line: &str) {
-        // Trim the line and add it to the buffer
         let line = line.trim_end().to_string();
 
         if self.lines.len() >= self.max_lines {
@@ -125,7 +132,8 @@ impl ScrollingOutput {
         self.render();
     }
 
-    /// Renders the current lines to the terminal.
+    /// Redraws the region, or prints the newest line when stdout cannot be
+    /// redrawn in place.
     fn render(&mut self) {
         if self.is_terminal {
             self.render_terminal();
@@ -136,51 +144,25 @@ impl ScrollingOutput {
 
     /// Renders using terminal escape codes for the scrolling effect.
     fn render_terminal(&mut self) {
-        // Move cursor up to overwrite previous output
-        if self.rendered_lines > 0 {
-            let _ = self.stdout.execute(MoveUp(self.rendered_lines as u16));
-        }
-
-        // Render each line with dim styling
-        for line in &self.lines {
-            let _ = self.stdout.execute(MoveToColumn(0));
-            let _ = self.stdout.execute(Clear(ClearType::CurrentLine));
-            let _ = self.stdout.execute(SetAttribute(Attribute::Dim));
-
-            // Truncate line if it's too long for the terminal
-            let truncated = Self::truncate_line(line);
-            let _ = write!(self.stdout, "{}", truncated);
-
-            let _ = self.stdout.execute(SetAttribute(Attribute::Reset));
-            let _ = writeln!(self.stdout);
-        }
-
-        // Fill remaining lines with blanks if we have fewer lines than max
-        for _ in self.lines.len()..self.max_lines {
-            let _ = self.stdout.execute(MoveToColumn(0));
-            let _ = self.stdout.execute(Clear(ClearType::CurrentLine));
-            let _ = writeln!(self.stdout);
-        }
-
-        let _ = self.stdout.flush();
+        // Leave some margin
+        let max_width = terminal_width().saturating_sub(2);
+        draw_frame(
+            &mut self.stdout.lock(),
+            &self.lines,
+            self.max_lines,
+            self.rendered_lines,
+            max_width,
+        );
         self.rendered_lines = self.max_lines;
     }
 
     /// Renders without escape codes (for non-terminal output).
     fn render_plain(&mut self) {
-        // In non-terminal mode, just print the latest line
+        // Without escapes the region cannot be redrawn, so each line is
+        // printed once, when it arrives.
         if let Some(line) = self.lines.back() {
             println!("{}", line);
         }
-    }
-
-    /// Truncates a line to fit the terminal width, leaving a small margin.
-    fn truncate_line(line: &str) -> &str {
-        let term_width = crossterm::terminal::size()
-            .map(|(w, _)| w as usize)
-            .unwrap_or(80);
-        // Leave some margin
-        Self::truncate_to_width(line, term_width.saturating_sub(2))
     }
 
     /// Truncates `line` to at most `max_width` bytes, never splitting a UTF-8
@@ -206,10 +188,7 @@ impl ScrollingOutput {
             return;
         }
 
-        // Move cursor up to the start of our region
         let _ = self.stdout.execute(MoveUp(self.rendered_lines as u16));
-
-        // Clear all the lines we rendered
         for _ in 0..self.rendered_lines {
             let _ = self.stdout.execute(MoveToColumn(0));
             let _ = self.stdout.execute(Clear(ClearType::CurrentLine));
@@ -223,6 +202,52 @@ impl ScrollingOutput {
         self.rendered_lines = 0;
         self.lines.clear();
     }
+}
+
+/// Draws one frame of a [`ScrollingOutput`] region into `out`: moves up over
+/// the `rendered_lines` rows the previous frame drew, writes each line dimmed
+/// and cut to `max_width` bytes, pads the region to `max_lines` rows, and
+/// flushes.
+///
+/// The escapes are queued rather than executed, which would flush after each
+/// one: on line-buffered stdout a redraw then costs about one write per row,
+/// and the clear of a row reaches the terminal together with its text.
+fn draw_frame(
+    out: &mut impl Write,
+    lines: &VecDeque<String>,
+    max_lines: usize,
+    rendered_lines: usize,
+    max_width: usize,
+) {
+    // Move up to overwrite the previous frame.
+    if rendered_lines > 0 {
+        let _ = out.queue(MoveUp(rendered_lines as u16));
+    }
+
+    for line in lines {
+        let _ = out.queue(MoveToColumn(0));
+        let _ = out.queue(Clear(ClearType::CurrentLine));
+        let _ = out.queue(SetAttribute(Attribute::Dim));
+
+        // A line wider than the terminal wraps onto a second row, which the
+        // move up of the next frame does not count, and the region drifts
+        // down one row.
+        let truncated = ScrollingOutput::truncate_to_width(line, max_width);
+        let _ = write!(out, "{}", truncated);
+
+        let _ = out.queue(SetAttribute(Attribute::Reset));
+        let _ = writeln!(out);
+    }
+
+    // Padding to the full height keeps the region `max_lines` rows tall, so
+    // the next frame moves up by a constant count.
+    for _ in lines.len()..max_lines {
+        let _ = out.queue(MoveToColumn(0));
+        let _ = out.queue(Clear(ClearType::CurrentLine));
+        let _ = writeln!(out);
+    }
+
+    let _ = out.flush();
 }
 
 impl Drop for ScrollingOutput {
@@ -273,6 +298,32 @@ mod tests {
     #[test]
     fn truncate_to_zero_width_is_empty() {
         assert_eq!(ScrollingOutput::truncate_to_width("abc", 0), "");
+    }
+
+    /// The bytes of two frames of a three-row region: the first draws two
+    /// lines and pads the third row, the second moves back up over all three
+    /// rows and cuts the line wider than the region.
+    #[test]
+    fn draw_frame_writes_the_exact_escape_sequence_of_each_frame() {
+        const DIM_ROW: &str = "\x1b[1G\x1b[2K\x1b[2m";
+        const RESET: &str = "\x1b[0m\n";
+        const BLANK_ROW: &str = "\x1b[1G\x1b[2K\n";
+
+        let mut lines = VecDeque::from(["one".to_string(), "two".to_string()]);
+        let mut first = Vec::new();
+        draw_frame(&mut first, &lines, 3, 0, 4);
+        assert_eq!(
+            String::from_utf8(first).expect("utf-8 frame"),
+            format!("{DIM_ROW}one{RESET}{DIM_ROW}two{RESET}{BLANK_ROW}")
+        );
+
+        lines.push_back("three".to_string());
+        let mut second = Vec::new();
+        draw_frame(&mut second, &lines, 3, 3, 4);
+        assert_eq!(
+            String::from_utf8(second).expect("utf-8 frame"),
+            format!("\x1b[3A{DIM_ROW}one{RESET}{DIM_ROW}two{RESET}{DIM_ROW}thre{RESET}")
+        );
     }
 
     #[test]
