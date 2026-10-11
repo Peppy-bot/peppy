@@ -1728,20 +1728,18 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     // unhealthy. With interval=200ms, timeout=100ms and a threshold of three
     // misses the flag flips within ~1s; give it 5 seconds for CI safety. The
     // instance must stay in the stack the whole time, only its health flag flips.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        match started.node_stack.find_by_instance_id(&instance_id) {
-            Some(instance) if !instance.healthy() => break,
-            Some(_) => {}
-            None => {
-                panic!("instance was removed from the stack; it should only be marked unhealthy")
-            }
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("instance was not marked unhealthy within timeout");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    poll_until(
+        Duration::from_secs(5),
+        "instance was not marked unhealthy within timeout",
+        || {
+            let instance = started
+                .node_stack
+                .find_by_instance_id(&instance_id)
+                .expect("instance was removed from the stack; it should only be marked unhealthy");
+            (!instance.healthy()).then_some(())
+        },
+    )
+    .await;
 
     // The unhealthy instance stays tracked, so `stack list` / `node info` keep
     // reporting it instead of it vanishing from the stack.
