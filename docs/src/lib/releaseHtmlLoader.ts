@@ -28,12 +28,19 @@ const atomParser = new XMLParser({
 });
 const atomValidator = new SyntaxValidator({ multipleRoots: false });
 
+// The directory of the release files, relative to the Astro project root.
+const RELEASES_DIR = './src/content/releases/';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function parseElement(value: unknown, elementName: string, filePath: string): XmlElement {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!isRecord(value)) {
     throw new Error(`Expected one <${elementName}> element in ${filePath}`);
   }
 
-  return value as XmlElement;
+  return value;
 }
 
 function readElementText(element: XmlElement, elementName: string, filePath: string): string {
@@ -86,18 +93,17 @@ function releaseBody(contentHtml: string): string {
   return body.trimStart();
 }
 
+// The fast-xml-validator typings declare a failure as `{ err: { code, msg, line,
+// col } }`, but its runtime throws a ValidationError, an Error that carries
+// `line` and `col` itself, so the location is read from either shape.
 function invalidXmlError(filePath: string, failure: unknown): Error {
-  const failureRecord =
-    typeof failure === 'object' && failure !== null ? (failure as Record<string, unknown>) : undefined;
-  const nestedFailure =
-    typeof failureRecord?.err === 'object' && failureRecord.err !== null
-      ? (failureRecord.err as Record<string, unknown>)
-      : failureRecord;
+  const failureRecord = isRecord(failure) ? failure : undefined;
+  const nested = failureRecord?.err;
+  const nestedFailure = isRecord(nested) ? nested : failureRecord;
   const line = typeof nestedFailure?.line === 'number' ? nestedFailure.line : undefined;
   const column = typeof nestedFailure?.col === 'number' ? nestedFailure.col : undefined;
   const location = line === undefined || column === undefined ? '' : ` at line ${line}, column ${column}`;
-  let detail = String(failure);
-  if (failure instanceof Error) detail = failure.message;
+  let detail = errorMessage(failure);
   if (typeof nestedFailure?.msg === 'string') detail = nestedFailure.msg;
 
   return new Error(`Invalid Atom XML in ${filePath}${location}: ${detail}`, {
@@ -188,11 +194,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function releaseHtmlLoader(base = './src/content/releases'): Loader {
+export function releaseHtmlLoader(): Loader {
   return {
     name: 'release-html-loader',
     async load(context) {
-      const baseUrl = new URL(base.endsWith('/') ? base : `${base}/`, context.config.root);
+      const baseUrl = new URL(RELEASES_DIR, context.config.root);
       const basePath = fileURLToPath(baseUrl);
       const releasePaths = [];
 
