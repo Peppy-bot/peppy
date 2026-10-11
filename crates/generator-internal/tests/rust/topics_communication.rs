@@ -92,12 +92,12 @@ async fn run_emitter_and_receiver(
 
     // --- Receiver project
     let receiver_instance_id = RECEIVER_INSTANCE_ID;
-    let temp_dir_proj2 = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
+    let temp_dir_receiver = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let consumed_topic: ConsumedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let user_node_receiver = generate_node_project::<generator::RustGenerator>(
-        &temp_dir_proj2,
+        &temp_dir_receiver,
         &consumer_stub_node_config(UVC_CAMERA_NODE_NAME, "v1", "uvc_camera"),
         |generator| {
             generator
@@ -124,8 +124,8 @@ async fn run_emitter_and_receiver(
         EMITTER_INSTANCE_ID,
     );
     let receiver_runtime_config = crate::helpers::apply_topology(receiver_runtime_config, topology);
-    let user_node_receiver_config_str =
-        save_runtime_config(&receiver_runtime_config, temp_dir_proj2.path());
+    let receiver_runtime_config_str =
+        save_runtime_config(&receiver_runtime_config, temp_dir_receiver.path());
 
     init_cargo_user_node(&user_node_receiver);
     let receiver_main = r#"
@@ -152,13 +152,13 @@ fn main() -> Result<()> {
 
     // --- Emitter project
     let emitter_instance_id = EMITTER_INSTANCE_ID;
-    let temp_dir_proj1 = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
+    let temp_dir_emitter = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let emitted_topic = NativeEmittedTopic {
         retention: scenario.retention(),
         ..serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap()
     };
     let (mut generator, emitter_dir, user_node_emitter, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_proj1, STUB_NODE_CONFIG);
+        init_test_env::<generator::RustGenerator>(&temp_dir_emitter, STUB_NODE_CONFIG);
     let emitter_parameters: config::ParameterSchema =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
     generator.set_parameters(emitter_parameters.clone());
@@ -196,8 +196,8 @@ fn main() -> Result<()> {
     )
     .unwrap();
     let emitter_runtime_config = crate::helpers::apply_topology(emitter_runtime_config, topology);
-    let user_node_emitter_runtime_config_str =
-        save_runtime_config(&emitter_runtime_config, temp_dir_proj1.path());
+    let emitter_runtime_config_str =
+        save_runtime_config(&emitter_runtime_config, temp_dir_emitter.path());
 
     init_cargo_user_node(&user_node_emitter);
     let live_emitter_main = r#"
@@ -258,16 +258,13 @@ fn main() -> Result<()> {
     let spawn_receiver = || {
         spawn_cargo_run(
             &user_node_receiver,
-            &[(RUNTIME_CONFIG_VAR_NAME, &user_node_receiver_config_str)],
+            &[(RUNTIME_CONFIG_VAR_NAME, &receiver_runtime_config_str)],
         )
     };
     let spawn_emitter = || {
         spawn_cargo_run(
             &user_node_emitter,
-            &[(
-                RUNTIME_CONFIG_VAR_NAME,
-                &user_node_emitter_runtime_config_str,
-            )],
+            &[(RUNTIME_CONFIG_VAR_NAME, &emitter_runtime_config_str)],
         )
     };
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
@@ -278,7 +275,10 @@ fn main() -> Result<()> {
     // A node's health service is reachable once its setup_fn completed: for
     // the receiver, once it received a frame; for the retaining emitter, once
     // it published its one frame. The late-join receiver starts after that.
-    let live_receiver = matches!(scenario, TopicScenario::LiveStream).then(spawn_receiver);
+    let early_receiver = match scenario {
+        TopicScenario::LiveStream => Some(spawn_receiver()),
+        TopicScenario::RetainingThenLateJoin => None,
+    };
     let mut emitter_child = spawn_emitter();
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -289,7 +289,10 @@ fn main() -> Result<()> {
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    let mut receiver_child = live_receiver.unwrap_or_else(&spawn_receiver);
+    let mut receiver_child = match early_receiver {
+        Some(child) => child,
+        None => spawn_receiver(),
+    };
     wait_for_health_service_reachable_or_exit(
         &ctx,
         RECEIVER_NODE_NAME,
