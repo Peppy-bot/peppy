@@ -2,13 +2,13 @@ use std::path::PathBuf;
 
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node::{ExposureDocumentsError, NodeCacheEntry};
-use core_node_api::encoding::{LaunchJoin, LauncherOrigin};
+use core_node_api::encoding::{CopyReference, LaunchWord, LauncherOrigin};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
     AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, Deployment,
     DeploymentSource, ExternallyCoveredSlots, MemberAddressing, PairingValidationItem,
-    PeppyLauncher, Placements, PreparedLauncher, check_daemon_scopes, resolve_clocks,
-    validate_link_plan,
+    PeppyLauncher, Placements, PreparedLauncher, ScopeCheck, UnitSelection, check_daemon_scopes,
+    resolve_clocks, validate_link_plan,
 };
 use daemon_config::mcp_deployment::DeploymentTargets;
 use daemon_config::repository::EntryOrigin;
@@ -38,6 +38,12 @@ const PREVIEW_CORE_NODE: &str = "cn-preview";
 /// axis, so its launch refuses the scope, whose options no longer run as
 /// copies. The resolution report goes to stderr.
 ///
+/// The report's line of each copy writes the machine after each part a word
+/// places, as the word wrote it: this command reads no daemon, so it prints
+/// `@self` as written, and it shows no machine for a copy the file lists,
+/// which `--place` places at launch. The flat launcher places each copy
+/// whole, on its name's link.
+///
 /// The flat plan is then held to the launch checks of daemon scopes, which
 /// read the exposure documents alone and so run with a cold nodes cache
 /// too, and to the launch-time link rules that need no daemon: slot-key and
@@ -49,8 +55,8 @@ const PREVIEW_CORE_NODE: &str = "cn-preview";
 /// would misreport rules that need both endpoints.
 pub fn resolve(
     launcher_config_path: PathBuf,
-    words: Vec<String>,
-    joins: Vec<LaunchJoin>,
+    words: Vec<LaunchWord>,
+    joins: Vec<CopyReference>,
 ) -> Result<()> {
     let (document, report) =
         resolve_rendered(&PeppyDirs::default(), launcher_config_path, &words, &joins)?;
@@ -69,8 +75,8 @@ pub fn resolve(
 pub fn resolve_rendered(
     dirs: &PeppyDirs,
     launcher_config_path: PathBuf,
-    words: &[String],
-    joins: &[LaunchJoin],
+    words: &[LaunchWord],
+    joins: &[CopyReference],
 ) -> Result<(String, Vec<String>)> {
     let path = match infer_launcher_origin(launcher_config_path)? {
         LauncherOrigin::Fs(path) => path,
@@ -88,7 +94,14 @@ pub fn resolve_rendered(
         .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
     let mut lines = composed.report.render_lines();
     let copies = CopyMembership::of(composed.copies());
-    check_daemon_scope_rules(&prepared, &composed.launcher, &copies, dirs, &mut lines)?;
+    check_daemon_scope_rules(
+        &prepared,
+        &composed.launcher,
+        &composed.selection,
+        &copies,
+        dirs,
+        &mut lines,
+    )?;
     check_link_plan(&composed.launcher, &copies, dirs, &mut lines)?;
 
     let document = json5_pretty::to_string_pretty(&composed.launcher)
@@ -97,9 +110,11 @@ pub fn resolve_rendered(
 }
 
 /// Hold the flat plan to the launch checks of daemon scopes: every scope
-/// parsed into its interface's type and held against the launcher, every
-/// instance that serves a daemon target on the coordinator, and no link to a
-/// daemon target. They read the exposure documents alone, so they run
+/// parsed into its interface's type and held against the launcher and the
+/// stack `selection` resolves (for `stack_copies`, the trial join of every
+/// feature set of every option), every instance that serves a daemon target
+/// on the coordinator, and no link to a daemon target. They read the
+/// exposure documents alone, so they run
 /// whatever the nodes and contracts caches hold. An exposure deployment whose
 /// documents this machine's caches do not hold skips its checks, and the
 /// report names it, so a clean exit is never mistaken for checked scopes; the
@@ -108,6 +123,7 @@ pub fn resolve_rendered(
 fn check_daemon_scope_rules(
     prepared: &PreparedLauncher,
     flat: &PeppyLauncher,
+    selection: &UnitSelection,
     copies: &CopyMembership,
     dirs: &PeppyDirs,
     report: &mut Vec<String>,
@@ -158,6 +174,7 @@ fn check_daemon_scope_rules(
             .iter()
             .map(|(deployment, targets)| (*deployment, targets)),
         copies,
+        ScopeCheck::Launch(selection),
     )
     .map_err(|refusals| {
         Error::ExecutionFailed(format!(

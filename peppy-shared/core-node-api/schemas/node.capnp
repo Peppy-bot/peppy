@@ -69,17 +69,31 @@ struct ChangedCopy {
 }
 
 # One copy on the stack: a named instance of an option of an axis that runs
-# as copies, where it runs, the instances it minted, and how its axes were
-# filled.
+# as copies, the machine of its base, the instances it minted, and how its
+# own axes are filled.
 struct CopyInfo {
     name @0 :Text;
+    # The copy's machine: the machine its name places, which runs its base.
     coreNode @1 :Text;
     instanceIds @2 :List(Text);
-    selections @3 :List(Text);
+    # Each filled own axis of the copy, in the order the copied option
+    # declares its axes.
+    selections @3 :List(AxisSelection);
     option @4 :Text;
     # The members the copy added to stack instances' set slots, in the order it
     # added them.
     setMembers @5 :List(SetMember);
+}
+
+# One filled own axis of a copy: its option, and the machine of the part it
+# selects when that part runs on another machine than the copy's.
+struct AxisSelection {
+    axis @0 :Text;
+    option @1 :Text;
+    coreNode :union {
+        withCopy @2 :Void;
+        named @3 :Text;
+    }
 }
 
 # One member a copy added to a stack instance's set slot.

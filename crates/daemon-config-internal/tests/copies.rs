@@ -1,5 +1,8 @@
-use config::{AnyType, runtime::Name};
-use core_node_api::encoding::{ArgumentOverride, LaunchJoin, SetMember};
+use config::{
+    AnyType,
+    runtime::{CopyName, Name},
+};
+use core_node_api::encoding::{ArgumentOverride, CopyReference, SetMember};
 use daemon_config::launcher::{
     AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CopyRecord, JoinRequest,
     LinkValue, PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, Selection,
@@ -8,7 +11,7 @@ use daemon_config::launcher::{
 use std::path::Path;
 
 mod common;
-use common::{fragment_file, load, words, write};
+use common::{fragment_file, join_words, load, words, write};
 
 /// A fleet: one stack axis holding the engine, one axis running as copies
 /// holding the robot, whose fragments carry the commander axis of their own.
@@ -82,6 +85,10 @@ fn name(value: &str) -> Name {
     Name::try_from(value.to_owned()).unwrap()
 }
 
+fn copy_name(value: &str) -> CopyName {
+    CopyName::new(value).unwrap()
+}
+
 /// The ids the stack runs a copy's instances under.
 fn instance_ids(copy: &CopyRecord) -> Vec<Name> {
     copy.instance_ids().cloned().collect()
@@ -107,11 +114,8 @@ fn instance<'a>(
 }
 
 /// `--join OPTION:NAME` on `stack launch`.
-fn launch_join(option: &str, copy: &str) -> LaunchJoin {
-    LaunchJoin {
-        option: option.to_owned(),
-        name: name(copy),
-    }
+fn launch_join(option: &str, copy: &str) -> CopyReference {
+    format!("{option}:{copy}").parse().unwrap()
 }
 
 /// `peppy stack join OPTION:NAME` onto the running stack (`selection`,
@@ -120,7 +124,7 @@ fn join_with(
     prepared: &PreparedLauncher,
     option: &str,
     copy: &str,
-    join_words: &[&str],
+    words: &[&str],
     arguments: &[&str],
     selection: &UnitSelection,
     existing: &PeppyLauncher,
@@ -131,9 +135,9 @@ fn join_with(
         .collect();
     prepared.join(
         JoinRequest {
-            option,
-            name: &name(copy),
-            words: &words(join_words),
+            option: &name(option),
+            name: &copy_name(copy),
+            words: &join_words(words),
             arguments: &arguments,
         },
         RunningStack {
@@ -241,7 +245,7 @@ fn a_copy_selects_its_options_own_axes_at_join() {
     .unwrap_err();
     assert!(
         matches!(&error, CompositionError::UnknownCopySelection { word, option, menu }
-            if word == "engine" && option == "sim" && menu.contains("commander: `web`, `xr`")),
+            if word.to_string() == "engine" && option == "sim" && menu.contains("commander: `web`, `xr`")),
         "{error}"
     );
 }
@@ -318,7 +322,7 @@ fn copies_are_never_selected_by_a_launch_word() {
     let error = prepared.launch(&words(&["real"]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::RepeatableAxisAtLaunch { word, axis, option }
-            if word == "real" && axis == "robot" && option == "real"),
+            if word.to_string() == "real" && axis == "robot" && option == "real"),
         "{error}"
     );
     assert!(
@@ -328,7 +332,7 @@ fn copies_are_never_selected_by_a_launch_word() {
     let error = prepared.launch(&words(&["xr"]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::CopyAxisAtLaunch { word, axis, parent, option }
-            if word == "xr" && axis == "commander" && option == "xr" && (parent == "real" || parent == "sim")),
+            if word.to_string() == "xr" && axis == "commander" && option == "xr" && (parent == "real" || parent == "sim")),
         "{error}"
     );
 }
@@ -2337,31 +2341,23 @@ fn copy_options_are_distinct_across_copy_axes() {
     );
 }
 
-/// A copy's name is its placement link, so `self` and an overlong name
-/// are refused by name.
+/// A copy's name is its placement link, so a file copy named `self` or with
+/// an overlong name is refused when the launcher is read, naming the copy.
 #[test]
 fn a_copy_name_is_held_to_a_core_node_name() {
-    let prepared = fleet("");
-    let launch = prepared.launch(&words(&["engine"]), &[]).unwrap();
     for name in ["self", &"x".repeat(64)] {
-        let error = join(&prepared, "sim", name, &launch.selection, &launch.launcher).unwrap_err();
+        let document = fleet_document(&format!(
+            r#"{{ robot: "sim", instances: [{{ instance_id: "{name}" }}] }}"#
+        ));
+        let error = PeppyLauncherParser::from_content(&document).unwrap_err();
         assert!(
-            matches!(&error, CompositionError::CopyNameNotPlaceable { copy, .. } if copy == name),
+            error.to_string().contains("give the copy another name")
+                || error
+                    .to_string()
+                    .contains("a copy's name is its placement link"),
             "{name}: {error}"
         );
     }
-    let error = join(
-        &prepared,
-        "sim",
-        "self",
-        &launch.selection,
-        &launch.launcher,
-    )
-    .unwrap_err();
-    assert!(
-        error.to_string().contains("give the copy another name"),
-        "{error}"
-    );
 }
 
 /// A copy's fragments define ids under the copy's name, so an id the stack
@@ -2715,7 +2711,7 @@ fn copy_selection_refusals_name_the_copied_option() {
     let error = prepared.launch(&words(&["robot=nope"]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::RepeatableAxisUnknownOption { word, axis, menu }
-            if word == "robot=nope" && axis == "robot" && menu.contains("real")),
+            if word.to_string() == "robot=nope" && axis == "robot" && menu.contains("real")),
         "{error}"
     );
     assert!(
@@ -2725,7 +2721,7 @@ fn copy_selection_refusals_name_the_copied_option() {
     let error = join_onto_launch(&prepared, "real", "alpha", &["nope"], &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::UnknownCopySelection { word, option, menu }
-            if word == "nope" && option == "real" && menu.contains("commander")),
+            if word.to_string() == "nope" && option == "real" && menu.contains("commander")),
         "{error}"
     );
 }
@@ -3344,14 +3340,14 @@ fn a_launch_word_selects_a_file_copys_own_axis() {
     let error = prepared.launch(&words(&["charlie.xr"]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::ScopedSelectionUnknownCopy { word, copy, copies }
-            if word == "charlie.xr" && copy == "charlie"
+            if word.to_string() == "charlie.xr" && copy == "charlie"
                 && copies.starts_with("the launch starts `alpha`, `bravo`")),
         "{error}"
     );
     let error = prepared.launch(&words(&["alpha.nope"]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::UnknownCopySelection { word, option, .. }
-            if word == "alpha.nope" && option == "real"),
+            if word.to_string() == "alpha.nope" && option == "real"),
         "{error}"
     );
 }
@@ -3491,8 +3487,8 @@ fn a_file_copy_may_leave_two_axes_for_launch_words() {
 }
 
 /// Refusals of copy adjustments and scoped words: conflicting words for one
-/// copy, a guard on a copy axis, a stack instance as target, a word with no
-/// copy before the dot, and settings on a `one` axis entry.
+/// copy, a guard on a copy axis, a stack instance as target, and settings on
+/// a `one` axis entry.
 #[test]
 fn copy_adjustment_and_scoped_word_refusals_name_the_fix() {
     let prepared = fleet(r#"{ robot: "real", instances: [{ instance_id: "alpha" }] }"#);
@@ -3501,17 +3497,6 @@ fn copy_adjustment_and_scoped_word_refusals_name_the_fix() {
         .unwrap_err();
     assert!(
         matches!(&error, CompositionError::ConflictingSelection { .. }),
-        "{error}"
-    );
-    let error = prepared.launch(&words(&[".xr"]), &[]).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::ScopedWordNamesNoCopy { word } if word == ".xr"),
-        "{error}"
-    );
-    let error = prepared.launch(&words(&["alpha."]), &[]).unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::ScopedWordNamesNoOption { word, copy }
-            if word == "alpha." && copy == "alpha"),
         "{error}"
     );
 
@@ -3758,4 +3743,449 @@ fn the_repository_check_accepts_a_copy_that_adds_a_stack_instance_to_a_set() {
     }"#,
     );
     assert!(problems.is_empty(), "{problems:?}");
+}
+
+// -- parts on other machines --------------------------------------------
+
+/// The part machines of a join, as `(axis, machine)` text pairs.
+fn parts(joined: &ComposedJoin) -> Vec<(String, String)> {
+    joined
+        .part_machines()
+        .iter()
+        .map(|(axis, machine)| (axis.to_string(), machine.to_string()))
+        .collect()
+}
+
+/// The own axis that brought each instance of `copy`, by the id the stack
+/// runs it under.
+fn own_axes(copy: &CopyRecord) -> Vec<(String, Option<String>)> {
+    copy.instances
+        .iter()
+        .map(|instance| {
+            (
+                instance.instance_id.to_string(),
+                instance.own_axis.as_ref().map(ToString::to_string),
+            )
+        })
+        .collect()
+}
+
+/// Each instance of a copy records the own axis that brought it, none for
+/// its base; a word with a machine places the part its option brings, and
+/// a word that repeats the option the fragment deploys places that part.
+#[test]
+fn a_placed_word_gives_the_machine_of_the_part_its_option_brings() {
+    let prepared = fleet("");
+    let launch = prepared.launch(&words(&["engine"]), &[]).unwrap();
+    let joined = join_with(
+        &prepared,
+        "sim",
+        "alpha",
+        &["xr@cn-gpu-box"],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
+    assert_eq!(
+        own_axes(&joined.copy),
+        [
+            ("alpha_arm_inst".to_owned(), None),
+            (
+                "alpha_commander_inst".to_owned(),
+                Some("commander".to_owned())
+            ),
+        ]
+    );
+    assert_eq!(
+        parts(&joined),
+        [("commander".to_owned(), "cn-gpu-box".to_owned())]
+    );
+    let part: Vec<&str> = joined
+        .copy
+        .instances_of_own_axis("commander")
+        .map(|instance| instance.instance_id.as_str())
+        .collect();
+    assert_eq!(part, ["alpha_commander_inst"]);
+    assert_eq!(
+        instance(&joined.launcher, "alpha_commander_inst")
+            .core_node
+            .as_deref(),
+        Some("alpha"),
+        "the flat plan places every instance of a copy on its name link"
+    );
+
+    // The fragment deploys `web`: writing it again with a machine places it.
+    let joined = join_with(
+        &prepared,
+        "sim",
+        "bravo",
+        &["web@self"],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
+    assert_eq!(
+        parts(&joined),
+        [("commander".to_owned(), "self".to_owned())]
+    );
+    let commander = joined
+        .copy
+        .selection
+        .entries
+        .iter()
+        .find(|entry| entry.axis == "commander")
+        .and_then(|entry| entry.option.as_deref());
+    assert_eq!(commander, Some("web"));
+
+    // A word with no machine places nothing.
+    let joined = join_with(
+        &prepared,
+        "sim",
+        "charlie",
+        &["xr"],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
+    assert!(joined.part_machines().is_empty());
+}
+
+/// A placed part keeps its links to the base and to the other parts: the
+/// MCP commander of a rigged arm links its arm and the camera of its rig.
+#[test]
+fn a_placed_commander_keeps_its_cross_axis_link() {
+    let prepared = load(&rigged_fleet_document(""));
+    let launch = prepared.launch(&[], &[]).unwrap();
+    let joined = join_with(
+        &prepared,
+        "arm",
+        "alpha",
+        &["mcp@cn-gpu-box", "cameras"],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
+    assert_eq!(
+        parts(&joined),
+        [("commander".to_owned(), "cn-gpu-box".to_owned())]
+    );
+    let commander = instance(&joined.launcher, "alpha_commander_inst");
+    assert_eq!(
+        commander.links["camera"].selection().unwrap().targets(),
+        &["alpha_camera_inst"]
+    );
+    assert_eq!(
+        commander.links["arm"].selection().unwrap().targets(),
+        &["alpha_arm_inst"]
+    );
+    assert_eq!(
+        own_axes(&joined.copy),
+        [
+            ("alpha_arm_inst".to_owned(), None),
+            (
+                "alpha_commander_inst".to_owned(),
+                Some("commander".to_owned())
+            ),
+            ("alpha_camera_inst".to_owned(), Some("rig".to_owned())),
+        ]
+    );
+}
+
+/// A robot whose own axis has an option that brings no instance.
+fn camera_choice_document() -> String {
+    r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "robot", cardinality: "zero_or_more", options: {
+                arm: {
+                    deployments: [
+                        { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+                        { camera_rig: "none" },
+                    ],
+                    components: [
+                        { name: "camera_rig", options: {
+                            none: {},
+                            wrist: { deployments: [
+                                { source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "wrist_inst" }] }
+                            ] },
+                        } },
+                    ],
+                },
+            } },
+        ],
+    }"#
+    .to_owned()
+}
+
+/// A placed word whose option brings no instance places nothing, and is
+/// refused with the fix.
+#[test]
+fn a_placed_word_whose_option_brings_no_instance_is_refused() {
+    let prepared = load(&camera_choice_document());
+    let launch = prepared.launch(&[], &[]).unwrap();
+    let error = join_with(
+        &prepared,
+        "arm",
+        "alpha",
+        &["none@cn-gpu-box"],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::PlacedPartBringsNothing { axis, option, machine, .. }
+            if axis == "camera_rig" && option == "none" && machine == "cn-gpu-box"),
+        "{error}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "`--with none@cn-gpu-box` places a part of copy `alpha` on `cn-gpu-box`, but option \
+         `none` of axis `camera_rig` brings no instance; drop `@cn-gpu-box`"
+    );
+    join_with(
+        &prepared,
+        "arm",
+        "alpha",
+        &["wrist@cn-gpu-box"],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .expect("an option that brings an instance can be placed");
+}
+
+/// Two words on one axis name one machine, as written: no machine and a
+/// machine differ, two machines differ, and `self` differs from any name.
+/// The same word twice is one word.
+#[test]
+fn two_words_on_one_axis_place_it_once() {
+    let prepared = fleet("");
+    let launch = prepared.launch(&words(&["engine"]), &[]).unwrap();
+    for (first, second) in [
+        ("xr", "xr@cn-gpu-box"),
+        ("xr@cn-gpu-box", "xr@cn-desk"),
+        ("commander=xr@self", "xr@cn-desk"),
+    ] {
+        let error = join_with(
+            &prepared,
+            "sim",
+            "alpha",
+            &[first, second],
+            &[],
+            &launch.selection,
+            &launch.launcher,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, CompositionError::PartPlacedTwice { copy, axis, .. }
+                if copy == "alpha" && axis == "commander"),
+            "{first} {second}: {error}"
+        );
+        assert!(
+            error.to_string().starts_with(&format!(
+                "the words `{first}` and `{second}` place axis `commander` of copy `alpha` twice"
+            )),
+            "{error}"
+        );
+    }
+    let error = join_with(
+        &prepared,
+        "sim",
+        "alpha",
+        &["commander=xr@self", "xr@cn-desk"],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .ends_with("(`self` and the coordinator's name are two spellings of one machine)"),
+        "{error}"
+    );
+    let joined = join_with(
+        &prepared,
+        "sim",
+        "alpha",
+        &["xr@cn-gpu-box", "commander=xr@cn-gpu-box"],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .expect("one machine written twice is one placement");
+    assert_eq!(
+        parts(&joined),
+        [("commander".to_owned(), "cn-gpu-box".to_owned())]
+    );
+}
+
+/// At launch, `NAME.word@CORE_NODE` reaches the copy NAME, a `--join` one
+/// and a file one alike, and the report writes the machine after the part.
+#[test]
+fn a_launch_word_places_a_part_of_the_copy_it_names() {
+    let prepared = fleet(r#"{ robot: "real", instances: [{ instance_id: "bravo" }] }"#);
+    let launch = prepared
+        .launch(
+            &words(&[
+                "engine",
+                "alpha.xr@cn-gpu-box",
+                "bravo.commander=web@cn-desk",
+            ]),
+            &[launch_join("sim", "alpha")],
+        )
+        .unwrap();
+    let placed = |copy: &str| -> Vec<(String, String)> {
+        launch
+            .part_machines_of(&copy_name(copy))
+            .iter()
+            .map(|(axis, machine)| (axis.to_string(), machine.to_string()))
+            .collect()
+    };
+    assert_eq!(
+        placed("alpha"),
+        [("commander".to_owned(), "cn-gpu-box".to_owned())]
+    );
+    assert_eq!(
+        placed("bravo"),
+        [("commander".to_owned(), "cn-desk".to_owned())]
+    );
+    let lines = launch.report.selection_lines();
+    assert!(
+        lines.contains(&"copy alpha: robot=sim  commander=xr@cn-gpu-box".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&"copy bravo: robot=real  commander=web@cn-desk".to_owned()),
+        "{lines:?}"
+    );
+
+    let error = prepared
+        .launch(
+            &words(&["engine", "charlie.xr@cn-gpu-box"]),
+            &[launch_join("sim", "alpha")],
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::ScopedSelectionUnknownCopy { copy, .. } if copy == "charlie"),
+        "{error}"
+    );
+    let error = prepared
+        .launch(
+            &words(&["engine", "alpha.nope@cn-gpu-box"]),
+            &[launch_join("sim", "alpha")],
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "`--with alpha.nope@cn-gpu-box` names no option of the axes `sim` declares.\n  - \
+         commander: `web`, `xr`"
+    );
+}
+
+/// A copied option whose instances all come from its parts: every instance
+/// has its own axis, and each runs on the copy's name link in the flat plan.
+#[test]
+fn a_copy_of_parts_alone_keeps_its_name_link() {
+    let prepared = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "robot", cardinality: "zero_or_more", options: {
+                kit: {
+                    deployments: [{ tool: "gripper" }],
+                    components: [
+                        { name: "tool", options: {
+                            gripper: { deployments: [
+                                { source: { name: "gripper", tag: "v1" }, instances: [{ instance_id: "gripper_inst" }] }
+                            ] },
+                        } },
+                    ],
+                },
+            } },
+        ],
+    }"#,
+    );
+    let launch = prepared.launch(&[], &[]).unwrap();
+    let joined = join_with(
+        &prepared,
+        "kit",
+        "alpha",
+        &["gripper@cn-gpu-box"],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
+    assert_eq!(
+        own_axes(&joined.copy),
+        [("alpha_gripper_inst".to_owned(), Some("tool".to_owned()))]
+    );
+    assert_eq!(
+        instance(&joined.launcher, "alpha_gripper_inst")
+            .core_node
+            .as_deref(),
+        Some("alpha")
+    );
+    assert!(
+        joined
+            .launcher
+            .core_nodes
+            .iter()
+            .any(|link| link == "alpha")
+    );
+}
+
+/// A copy's selections, as a listing gives them: each filled own axis in
+/// declaration order, with the machine of its part when the part runs away
+/// from the copy's machine.
+#[test]
+fn a_copys_selections_give_the_machine_of_each_part_that_runs_elsewhere() {
+    let prepared = load(&rigged_fleet_document(""));
+    let launch = prepared.launch(&[], &[]).unwrap();
+    let joined = join_with(
+        &prepared,
+        "arm",
+        "alpha",
+        &["mcp@cn-gpu-box", "cameras"],
+        &[],
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
+    let copy_machine = config::runtime::CoreNodeName::new("cn-jetson-1").unwrap();
+    let gpu_box = config::runtime::CoreNodeName::new("cn-gpu-box").unwrap();
+    let placements = daemon_config::launcher::Placements::new(
+        config::runtime::CoreNodeName::new("cn-desk").unwrap(),
+        [
+            ("alpha_arm_inst".to_owned(), copy_machine.clone()),
+            ("alpha_commander_inst".to_owned(), gpu_box.clone()),
+            ("alpha_camera_inst".to_owned(), copy_machine.clone()),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let selections: Vec<String> = joined
+        .copy
+        .axis_selections(&placements, &copy_machine)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(selections, ["commander=mcp@cn-gpu-box", "rig=cameras"]);
+    let on_gpu_box: Vec<String> = joined
+        .copy
+        .axis_selections(&placements, &gpu_box)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        on_gpu_box,
+        ["commander=mcp", "rig=cameras@cn-jetson-1"],
+        "a part on the copy's machine names no machine"
+    );
 }

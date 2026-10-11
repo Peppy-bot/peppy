@@ -12,7 +12,9 @@ use config::consts::NODE_CONFIG_FILE;
 use core_node_api::NodeStage;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
-use peppy::commands::stack::{LauncherArgs, StackCommand, StackCommands, StackTimeouts, WithWords};
+use peppy::commands::stack::{
+    LaunchWords, LauncherArgs, StackCommand, StackCommands, StackTimeouts,
+};
 use peppy::context::AppContext;
 use peppylib::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
@@ -3316,8 +3318,8 @@ async fn stack_launch_flattens_a_composed_launcher() {
 
     StackCommand {
         command: StackCommands::Launch(LauncherArgs {
-            with: WithWords {
-                words: vec!["beta".to_owned(), "extras=on".to_owned()],
+            with: LaunchWords {
+                words: vec!["beta".parse().unwrap(), "extras=on".parse().unwrap()],
             },
             ..launcher_args(launcher_path, Some(120))
         }),
@@ -3375,8 +3377,8 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
     .expect("flat launcher should be writable");
     let err = StackCommand {
         command: StackCommands::Launch(LauncherArgs {
-            with: WithWords {
-                words: vec!["mujoco".to_owned()],
+            with: LaunchWords {
+                words: vec!["mujoco".parse().unwrap()],
             },
             ..launcher_args(flat_launcher, Some(60))
         }),
@@ -3406,9 +3408,10 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
     .expect("composed launcher should be writable");
 
     let launch_with = |words: Vec<String>, path: PathBuf| {
+        let words = words.iter().map(|word| word.parse().unwrap()).collect();
         StackCommand {
             command: StackCommands::Launch(LauncherArgs {
-                with: WithWords { words },
+                with: LaunchWords { words },
                 ..launcher_args(path, Some(60))
             }),
         }
@@ -3561,9 +3564,13 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
     .expect("launcher");
 
     let (dirs, _root) = empty_peppy_root();
-    let (document, report) =
-        peppy::commands::stack::resolve_rendered(&dirs, launcher, &["recorder=on".to_owned()], &[])
-            .expect("resolves");
+    let (document, report) = peppy::commands::stack::resolve_rendered(
+        &dirs,
+        launcher,
+        &["recorder=on".parse().unwrap()],
+        &[],
+    )
+    .expect("resolves");
 
     assert!(
         document.contains("recorder_inst") && document.contains("panel_inst"),
@@ -3633,7 +3640,7 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
     let err = peppy::commands::stack::resolve_rendered(
         &dirs,
         launcher.clone(),
-        &["mujoco".to_owned(), "cameras".to_owned()],
+        &["mujoco".parse().unwrap(), "cameras".parse().unwrap()],
         &[],
     )
     .expect_err("the refused member must not resolve");
@@ -3645,9 +3652,13 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
         "the refusal names the guard, the requirement, and the reason: {msg}"
     );
 
-    let (document, _report) =
-        peppy::commands::stack::resolve_rendered(&dirs, launcher, &["cameras".to_owned()], &[])
-            .expect("the legal sibling resolves");
+    let (document, _report) = peppy::commands::stack::resolve_rendered(
+        &dirs,
+        launcher,
+        &["cameras".parse().unwrap()],
+        &[],
+    )
+    .expect("the legal sibling resolves");
     assert!(
         document.contains("cam_inst") && document.contains("arm_inst"),
         "the flat document carries the selected options: {document}"
@@ -4435,7 +4446,7 @@ async fn stack_join_and_remove_after_a_build_are_refused() {
 
     let refusal = StackCommand {
         command: StackCommands::Remove {
-            name: config::runtime::Name::new("alpha").expect("valid copy name"),
+            name: config::runtime::CopyName::new("alpha").expect("valid copy name"),
         },
     }
     .execute(&launch.ctx)
@@ -4451,13 +4462,9 @@ async fn stack_join_and_remove_after_a_build_are_refused() {
 fn join_copy(ctx: &Arc<AppContext>) -> peppy::error::Result<()> {
     StackCommand {
         command: StackCommands::Join {
-            copy: core_node_api::encoding::LaunchJoin {
-                option: "arm".to_owned(),
-                name: config::runtime::Name::new("alpha").expect("valid copy name"),
-            },
+            copy: "arm:alpha".parse().expect("a copy reference"),
             with: Default::default(),
             arguments: Vec::new(),
-            place: None,
             timeouts: timeouts(Some(60)),
         },
     }
@@ -4568,8 +4575,8 @@ async fn stack_build_builds_the_nodes_the_selection_runs() {
 
     StackCommand {
         command: StackCommands::Build(LauncherArgs {
-            with: WithWords {
-                words: vec!["beta".to_owned()],
+            with: LaunchWords {
+                words: vec!["beta".parse().unwrap()],
             },
             ..launcher_args(launcher_path, Some(120))
         }),

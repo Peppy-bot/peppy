@@ -7,7 +7,7 @@ use super::ChangeResult;
 use super::action::StackChangeContext;
 use super::launch::watchers::LifecycleWatchers;
 use super::launch::{NodeKey, PlannedDeployment};
-use config::runtime::{CoreNodeName, Name};
+use config::runtime::{CopyName, CoreNodeName};
 use daemon_config::launcher::{
     ClockIncarnations, CopyRecord, PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks,
     UnitSelection,
@@ -32,7 +32,7 @@ pub(crate) struct ActiveLaunch {
     /// after its source's last instance left runs the launch's node, with
     /// its pins.
     pub(super) resolved: Vec<PlannedDeployment>,
-    pub(super) copies: BTreeMap<Name, StackCopy>,
+    pub(super) copies: BTreeMap<CopyName, StackCopy>,
     /// The lifetime minted for each simulated domain this launch declares.
     /// A join reads them so it follows the domains already running instead of
     /// replacing the timelines under their consumers.
@@ -47,11 +47,33 @@ pub(crate) struct ActiveLaunch {
 }
 
 /// One copy on the stack: the record the composer keeps of it, and the
-/// machine its instances run on.
+/// copy's machine, the machine its name places, which runs its base. Where
+/// each of its instances runs is in the launch's placements.
 #[derive(Debug, Clone)]
 pub(super) struct StackCopy {
     pub(super) record: CopyRecord,
     pub(super) core_node: CoreNodeName,
+}
+
+impl StackCopy {
+    /// The copy's filled own axes, each with the machine of its part when
+    /// `placements` run that part away from the copy's machine.
+    pub(super) fn axis_selections(
+        &self,
+        placements: &Placements,
+    ) -> Vec<core_node_api::encoding::AxisSelection> {
+        self.record.axis_selections(placements, &self.core_node)
+    }
+
+    /// The selections as a listing and a join's line print them: the words
+    /// that add the copy again, joined by `,`.
+    pub(super) fn words(&self, placements: &Placements) -> String {
+        self.axis_selections(placements)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 impl ActiveLaunch {
@@ -63,17 +85,7 @@ impl ActiveLaunch {
                 option: copy.record.option.clone(),
                 core_node: copy.core_node.clone(),
                 instance_ids: copy.record.instance_ids().cloned().collect(),
-                selections: copy
-                    .record
-                    .selection
-                    .own_axes(&copy.record.axis)
-                    .filter_map(|entry| {
-                        entry
-                            .option
-                            .as_ref()
-                            .map(|option| format!("{}={option}", entry.axis))
-                    })
-                    .collect(),
+                selections: copy.axis_selections(&self.placements),
                 set_members: copy.record.set_members.clone(),
             })
             .collect()
@@ -120,15 +132,20 @@ impl ActiveLaunch {
     }
 
     /// Records the copies a launch started, each one's instances in the
-    /// order they start.
-    pub(super) fn record_copies(&mut self, copies: Vec<CopyRecord>, ordered: &[NodeKey]) {
+    /// order they start, on the copy's machine `copy_core_nodes` gives it, or
+    /// on the coordinator when it names none.
+    pub(super) fn record_copies(
+        &mut self,
+        copies: Vec<CopyRecord>,
+        ordered: &[NodeKey],
+        copy_core_nodes: &BTreeMap<CopyName, CoreNodeName>,
+    ) {
         for copy in copies {
+            let core_node = copy_core_nodes
+                .get(&copy.name)
+                .cloned()
+                .unwrap_or_else(|| self.placements.coordinator_name().clone());
             let record = copy_in_start_order(copy, &self.planned, ordered);
-            let first = record.instances.first().expect("a copy starts an instance");
-            let core_node = self
-                .placements
-                .core_node_of(first.instance_id.as_str())
-                .clone();
             let name = record.name.clone();
             self.copies.insert(name, StackCopy { record, core_node });
         }
@@ -140,13 +157,13 @@ impl ActiveLaunch {
     }
 
     /// The option of the copy called `name`, when the stack holds one.
-    pub(super) fn copy_option(&self, name: &Name) -> Option<&str> {
+    pub(super) fn copy_option(&self, name: &CopyName) -> Option<&str> {
         self.copies
             .get(name)
             .map(|copy| copy.record.option.as_str())
     }
 
-    pub(super) fn check_name(&self, name: &Name) -> ChangeResult<()> {
+    pub(super) fn check_name(&self, name: &CopyName) -> ChangeResult<()> {
         if self.copies.contains_key(name) {
             return Err(format!("copy `{name}` already exists; choose another name"));
         }
@@ -195,13 +212,14 @@ mod tests {
     /// A copy of `alpha` owning the instances its fragment wrote as
     /// `in_copy`, each minted as composition mints it.
     fn alpha(in_copy: &[&str]) -> CopyRecord {
-        let name = Name::new("alpha").unwrap();
+        let name = CopyName::new("alpha").unwrap();
         CopyRecord {
             instances: in_copy
                 .iter()
                 .map(|id| CopyInstance {
-                    instance_id: config::runtime::instance_id_in_copy(&name, id),
-                    in_copy: Name::new(*id).unwrap(),
+                    instance_id: config::runtime::instance_id_in_copy(name.as_name(), id),
+                    in_copy: config::runtime::Name::new(*id).unwrap(),
+                    own_axis: None,
                 })
                 .collect(),
             name,

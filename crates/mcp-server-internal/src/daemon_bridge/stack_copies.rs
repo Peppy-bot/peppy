@@ -1,15 +1,23 @@
 //! The bridge of `stack_copies:v1`: `list`, `join` and `remove` of the
 //! copies of the running launch, within the scope of a target.
 //!
-//! - `list` answers the scope's options with their descriptions, the copies
-//!   whose option is in the scope, in name order, `max_copies`, and the
-//!   `change` that runs now when it adds or removes a copy of a scoped
-//!   option.
-//! - `join` parses the name as a copy name, takes the bridge's lock, reads
-//!   the copies of the stack, refuses a name a copy has and a stack that
-//!   holds `max_copies` copies of the scope's options, and sends the join of
-//!   the option under the name, with no selection, no argument and no
-//!   environment, placed on the coordinator, under the default budgets.
+//! - `list` answers the scope's options with their descriptions and their
+//!   features, the machines of the federation now (this machine and every
+//!   machine presence lists, read on each call), this machine, the copies
+//!   whose option is in the scope, in name order, each with its machine and
+//!   the features its selections hold with the machine of each, `max_copies`,
+//!   and the `change` that runs now when it adds or removes a copy of a
+//!   scoped option. Each copy has the shape of a `join` goal.
+//! - `join` parses the goal into a typed join first: the name as a copy
+//!   name, the option as a scoped option, each machine as a core node name,
+//!   and each feature as a feature of the option, named once. Then it takes
+//!   the bridge's lock, reads the copies of the stack, refuses a name a copy
+//!   has and a stack that holds `max_copies` copies of the scope's options,
+//!   and sends the join of the option under the name on its machine, with
+//!   the word of each feature on its machine, no argument and no
+//!   environment, under the default budgets. A machine equal to this one
+//!   travels as the coordinator, and a feature on the copy's machine names
+//!   no machine. The daemon refuses a machine that is not live.
 //! - `remove` refuses a name that is not a copy of a scoped option, then
 //!   sends the removal.
 //!
@@ -29,12 +37,14 @@ mod change;
 
 use super::OwnDaemon;
 use change::{Change, JoinLocks, start_change, wait_for_change};
+use config::runtime::{CopyName, CoreNodeName, CoreNodeTarget};
 use core_node_api::encoding::{
-    CopyChange, CopyInfo, STACK_BUSY_REASON, StackJoinGoal, StackRemoveGoal,
+    CopyChange, CopyInfo, CopyReference, STACK_BUSY_REASON, SelectionWord, StackJoinGoal,
+    StackRemoveGoal,
 };
 use daemon_config::daemon_interface::{ScopedOption, StackCopiesScope};
-use daemon_config::launcher::parse_copy_name;
 use peppy_mcp_runtime::{ActionExit, ToolCallError};
+use peppylib::CoreNodePresenceMessenger;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use stack_goal::DEFAULT_BUDGETS;
@@ -90,6 +100,22 @@ pub(crate) struct ScopedStackCopies {
 struct JoinInput {
     name: String,
     option: String,
+    core_node: String,
+    features: Vec<FeatureInput>,
+}
+
+/// One feature of a `join` goal: the feature and the machine of its part.
+#[derive(Deserialize)]
+struct FeatureInput {
+    feature: String,
+    core_node: String,
+}
+
+/// A `join` goal parsed: the copy and the word of each of its features.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TypedJoin {
+    copy: CopyReference,
+    words: Vec<SelectionWord>,
 }
 
 /// The goal of `remove`, as the narrowed schema admits it.
@@ -117,23 +143,49 @@ impl ScopedStackCopies {
     /// admission. The daemon has `deadline`, the tool's own, to answer.
     pub(crate) async fn list(&self, deadline: Duration) -> Result<Value, ToolCallError> {
         drop(self.bridge.admission.lock().await);
-        let listed = stack_goal::list_copies(self.bridge.daemon.route(), deadline)
-            .await
-            .map_err(|error| {
-                ToolCallError::Failed(format!("the daemon did not list the stack: {error}"))
-            })?;
+        let daemon = &self.bridge.daemon;
+        let (listed, machines) = tokio::join!(
+            stack_goal::list_copies(daemon.route(), deadline),
+            CoreNodePresenceMessenger::live_core_node_names(
+                &daemon.messenger,
+                &daemon.core_node,
+                deadline,
+            ),
+        );
+        let listed = listed.map_err(|error| {
+            ToolCallError::Failed(format!("the daemon did not list the stack: {error}"))
+        })?;
+        let machines = live_machines_or_refusal(machines)?;
         let options: Vec<Value> = self
             .scope
             .options()
             .iter()
-            .map(|entry| json!({ "option": entry.option.as_str(), "description": entry.description }))
+            .map(|entry| {
+                let features: Vec<Value> = entry
+                    .features()
+                    .iter()
+                    .map(|feature| {
+                        json!({
+                            "feature": feature.feature().as_str(),
+                            "description": feature.description().as_str(),
+                        })
+                    })
+                    .collect();
+                json!({
+                    "option": entry.option().as_str(),
+                    "description": entry.description().as_str(),
+                    "features": features,
+                })
+            })
             .collect();
         let copies: Vec<Value> = scoped_copies(&self.scope, &listed.copies)
             .into_iter()
-            .map(|copy| json!({ "name": copy.name.as_str(), "option": copy.option }))
+            .map(|copy| listed_copy(&self.scope, copy))
             .collect();
         let mut answer = json!({
             "options": options,
+            "core_nodes": machines,
+            "this_core_node": daemon.core_node,
             "copies": copies,
             "max_copies": self.scope.max_copies().get(),
         });
@@ -156,22 +208,24 @@ impl ScopedStackCopies {
         window: Option<Duration>,
     ) -> Result<Value, ActionExit> {
         let input: JoinInput = parse_input(input)?;
-        let name = parse_copy_name(&input.name).map_err(ActionExit::Failed)?;
-        let option = self.scoped_option(&input.option)?.option.clone();
+        let TypedJoin { copy, words } = self.typed_join(&input).map_err(ActionExit::Failed)?;
         let join = Arc::clone(&self.bridge.joins)
             .try_lock_owned()
             .map_err(|_| ActionExit::Failed(STACK_BUSY_REASON.to_owned()))?;
         let admission = Arc::clone(&self.bridge.admission).lock_owned().await;
         let change = Change::Addition {
-            name: name.clone(),
-            option: option.clone(),
+            name: copy.name.clone(),
+            option: copy.option.clone(),
         };
         let daemon = self.bridge.daemon.clone();
         let scope = Arc::clone(&self.scope);
         let goal = async move {
             let copies = read_copies(&daemon).await?;
-            refuse_join(&scope, &copies, &name)?;
-            Ok(StackJoinGoal::new(name, option.as_str(), DEFAULT_BUDGETS))
+            refuse_join(&scope, &copies, &copy.name)?;
+            Ok(StackJoinGoal {
+                selections: words,
+                ..StackJoinGoal::new(copy, DEFAULT_BUDGETS)
+            })
         };
         let locks = JoinLocks { join, admission };
         let started = start_change(
@@ -192,7 +246,8 @@ impl ScopedStackCopies {
         window: Option<Duration>,
     ) -> Result<Value, ActionExit> {
         let input: RemoveInput = parse_input(input)?;
-        let name = parse_copy_name(&input.name).map_err(ActionExit::Failed)?;
+        let name = CopyName::new(input.name.as_str())
+            .map_err(|error| ActionExit::Failed(error.to_string()))?;
         let change = Change::Removal { name: name.clone() };
         let daemon = self.bridge.daemon.clone();
         let scope = Arc::clone(&self.scope);
@@ -207,17 +262,59 @@ impl ScopedStackCopies {
 
     /// The scoped option `option` names. The narrowed schema admits only
     /// the scope's options.
-    fn scoped_option(&self, option: &str) -> Result<&ScopedOption, ActionExit> {
-        self.scope
-            .options()
-            .iter()
-            .find(|entry| entry.option.as_str() == option)
-            .ok_or_else(|| {
-                ActionExit::Failed(format!(
-                    "`{option}` is not an option of this endpoint; it adds copies of {}",
-                    options_phrase(&self.scope)
-                ))
-            })
+    fn scoped_option(&self, option: &str) -> Result<&ScopedOption, String> {
+        self.scope.option(option).ok_or_else(|| {
+            format!(
+                "`{option}` is not an option of this endpoint; it adds copies of {}",
+                options_phrase(&self.scope)
+            )
+        })
+    }
+
+    /// The `join` goal as the daemon takes it: the copy on its machine, and
+    /// the word of each feature on the machine of its part. A machine equal
+    /// to this one is the coordinator, and a feature on the copy's machine
+    /// names no machine, so its part runs with the copy's base.
+    fn typed_join(&self, input: &JoinInput) -> Result<TypedJoin, String> {
+        let name = CopyName::new(input.name.as_str()).map_err(|error| error.to_string())?;
+        let entry = self.scoped_option(&input.option)?;
+        let this = self.bridge.daemon.core_node.as_str();
+        let machine = |value: &str| {
+            CoreNodeName::new(value).map_err(|error| format!("machine `{value}` {error}"))
+        };
+        let copy_machine = machine(&input.core_node)?;
+        let target_of = |machine: CoreNodeName| {
+            if machine.as_str() == this {
+                CoreNodeTarget::Coordinator
+            } else {
+                CoreNodeTarget::Named(machine)
+            }
+        };
+        let mut words = Vec::with_capacity(input.features.len());
+        let mut named: Vec<&str> = Vec::with_capacity(input.features.len());
+        for item in &input.features {
+            let Some(feature) = entry.feature(&item.feature) else {
+                return Err(unknown_feature(entry, &item.feature));
+            };
+            if named.contains(&item.feature.as_str()) {
+                return Err(format!(
+                    "`features` names feature `{}` twice; name each feature once",
+                    item.feature
+                ));
+            }
+            named.push(item.feature.as_str());
+            let part_machine = machine(&item.core_node)?;
+            let core_node = (part_machine != copy_machine).then(|| target_of(part_machine));
+            words.push(feature.word(core_node));
+        }
+        Ok(TypedJoin {
+            copy: CopyReference {
+                option: entry.option().clone(),
+                name,
+                core_node: target_of(copy_machine),
+            },
+            words,
+        })
     }
 }
 
@@ -238,10 +335,61 @@ async fn read_copies(daemon: &OwnDaemon) -> Result<Vec<CopyInfo>, String> {
 
 /// Whether `option` is an option of the scope.
 fn in_scope(scope: &StackCopiesScope, option: &str) -> bool {
-    scope
-        .options()
+    scope.option(option).is_some()
+}
+
+/// The machines presence read, or the failure of `list` when it could not
+/// read them.
+pub(super) fn live_machines_or_refusal(
+    read: peppylib::PeppyResult<std::collections::BTreeSet<String>>,
+) -> Result<std::collections::BTreeSet<String>, ToolCallError> {
+    read.map_err(|error| {
+        ToolCallError::Failed(format!(
+            "the live machines of the federation could not be read: {error}"
+        ))
+    })
+}
+
+/// The refusal of a feature `feature` that `entry` does not offer, with the
+/// features it offers, or that it offers none.
+fn unknown_feature(entry: &ScopedOption, feature: &str) -> String {
+    let option = entry.option();
+    if entry.features().is_empty() {
+        return format!("`{feature}` is not a feature of option `{option}`, which has no feature");
+    }
+    let features: Vec<&str> = entry
+        .features()
         .iter()
-        .any(|entry| entry.option.as_str() == option)
+        .map(|feature| feature.feature().as_str())
+        .collect();
+    format!(
+        "`{feature}` is not a feature of option `{option}`; its features: {}",
+        and_list(&features)
+    )
+}
+
+/// One copy as `list` gives it, in the shape of a `join` goal: its name, its
+/// option, its machine, and the features of its option its selections hold,
+/// each with the machine of its part, the copy's when the part runs with it.
+fn listed_copy(scope: &StackCopiesScope, copy: &CopyInfo) -> Value {
+    let features: Vec<Value> = scope
+        .option(&copy.option)
+        .map(|entry| entry.features_in(&copy.selections))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|placed| {
+            json!({
+                "feature": placed.feature.feature().as_str(),
+                "core_node": placed.core_node.unwrap_or(&copy.core_node).as_str(),
+            })
+        })
+        .collect();
+    json!({
+        "name": copy.name.as_str(),
+        "option": copy.option,
+        "core_node": copy.core_node.as_str(),
+        "features": features,
+    })
 }
 
 /// The copies of the scope's options, in name order.
@@ -270,7 +418,7 @@ fn change_answer(change: &CopyChange) -> Value {
 fn refuse_join(
     scope: &StackCopiesScope,
     copies: &[CopyInfo],
-    name: &config::runtime::Name,
+    name: &CopyName,
 ) -> Result<(), String> {
     if copies.iter().any(|copy| copy.name == *name) {
         return Err(format!(
@@ -295,7 +443,7 @@ fn refuse_join(
 fn refuse_removal(
     scope: &StackCopiesScope,
     copies: &[CopyInfo],
-    name: &config::runtime::Name,
+    name: &CopyName,
 ) -> Result<(), String> {
     if scoped_copies(scope, copies)
         .iter()
@@ -315,7 +463,7 @@ fn options_phrase(scope: &StackCopiesScope) -> String {
     let options: Vec<&str> = scope
         .options()
         .iter()
-        .map(|entry| entry.option.as_str())
+        .map(|entry| entry.option().as_str())
         .collect();
     let noun = if options.len() == 1 {
         "option"

@@ -13,7 +13,7 @@ use super::{DaemonBridges, DaemonScopes, OwnDaemon};
 use crate::bridges::prepare;
 use crate::serve::ServeError;
 use crate::test_support::{Events, PausedRuntime, ScriptedSurface};
-use config::runtime::{CoreNodeName, Name};
+use config::runtime::{CopyName, CoreNodeName, Name};
 use core_node_api::encoding::{
     CopyAction, CopyChange, CopyInfo, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse,
     LaunchResult, NodeRunLogEntry, STACK_BUSY_REASON, StackJoinGoal, StackListRequest,
@@ -54,12 +54,22 @@ const FRAMEWORK_CONTROLS: &str = include_str!(
     "../../../daemon-config-internal/src/daemon_interface/fixtures/framework_controls.json5"
 );
 
-/// The scope `simulation_mcp` gives its framework endpoint.
+/// The scope `simulation_mcp` gives its framework endpoint: the OpenArm
+/// offers its brain and a recorder, the SO-101 no feature.
 fn simulation_scope() -> Value {
     json!({
         "max_copies": 4,
         "options": [
-            { "option": "openarm_sim", "description": "A simulated OpenArm v2 standing on the floor" },
+            {
+                "option": "openarm_sim",
+                "description": "A simulated OpenArm v2 standing on the floor",
+                "features": [
+                    { "feature": "ai_brain", "axis": "brain", "option": "ai_brain_vla",
+                      "description": "An AI brain that finds items by words" },
+                    { "feature": "recorder", "axis": "recorder", "option": "lerobot_recorder",
+                      "description": "A recorder of episodes" },
+                ],
+            },
             { "option": "so101_sim", "description": "A simulated SO-101 clamped on the edge of a table" },
         ],
     })
@@ -79,6 +89,10 @@ fn scope_of(value: Value) -> StackCopiesScope {
 
 fn name(name: &str) -> Name {
     Name::new(name).expect("a name")
+}
+
+fn copy_name(name: &str) -> CopyName {
+    CopyName::new(name).expect("a copy name")
 }
 
 /// The fake daemon: its session, its stack list, and its two stack
@@ -181,12 +195,21 @@ async fn mesh() -> (Mesh, FakeDaemon) {
 }
 
 /// A copy of `option` on the stack, named `copy_name`.
-fn copy(copy_name: &str, option: &str) -> CopyInfo {
+fn copy(copy: &str, option: &str) -> CopyInfo {
+    copy_on(copy, option, COORDINATOR, &[])
+}
+
+/// A copy of `option` named `copy` on `machine`, its own axes filled by
+/// `selections`, as `stack list` gives them.
+fn copy_on(copy: &str, option: &str, machine: &str, selections: &[&str]) -> CopyInfo {
     CopyInfo {
-        name: name(copy_name),
-        core_node: CoreNodeName::new(COORDINATOR).expect("a core node name"),
-        instance_ids: vec![name(&format!("{copy_name}_arm_inst"))],
-        selections: Vec::new(),
+        name: copy_name(copy),
+        core_node: CoreNodeName::new(machine).expect("a core node name"),
+        instance_ids: vec![name(&format!("{copy}_arm_inst"))],
+        selections: selections
+            .iter()
+            .map(|selection| selection.parse().expect("an axis selection"))
+            .collect(),
         option: option.to_owned(),
         set_members: Vec::new(),
     }
@@ -262,7 +285,7 @@ impl FakeDaemon {
             .expect("the removal reaches the daemon");
         assert_eq!(
             StackRemoveGoal::decode(pending.request_bytes()).expect("the removal decodes"),
-            StackRemoveGoal::new(name(copy_name))
+            StackRemoveGoal::new(self::copy_name(copy_name))
         );
         pending
             .accept(admitted())
@@ -272,10 +295,10 @@ impl FakeDaemon {
 }
 
 /// The change of copy `copy_name` of `option` that `action` makes.
-fn copy_change(action: CopyAction, copy_name: &str, option: &str) -> CopyChange {
+fn copy_change(action: CopyAction, copy: &str, option: &str) -> CopyChange {
     CopyChange {
         action,
-        name: name(copy_name),
+        name: copy_name(copy),
         option: option.to_owned(),
     }
 }
@@ -289,11 +312,16 @@ async fn pending_after_one_poll<F: std::future::Future + Unpin>(future: &mut F) 
     .await
 }
 
-/// The join the bridge sends for `copy_name` of `option`: no selection, no
-/// argument, no environment, placed on the coordinator, under the default
+/// The join the bridge sends for `copy_name` of `option` with no feature: no
+/// word, no argument, no environment, on the coordinator, under the default
 /// budgets.
 fn join_goal(copy_name: &str, option: &str) -> StackJoinGoal {
-    StackJoinGoal::new(name(copy_name), option, DEFAULT_BUDGETS)
+    StackJoinGoal::new(
+        format!("{option}:{copy_name}")
+            .parse()
+            .expect("a copy reference"),
+        DEFAULT_BUDGETS,
+    )
 }
 
 async fn publish(context: &GoalContext, feedback: &LaunchFeedback) {
@@ -333,7 +361,7 @@ fn join_progress() -> Vec<LaunchFeedback> {
 }
 
 fn join_input(copy_name: &str, option: &str) -> Value {
-    json!({ "name": copy_name, "option": option })
+    json!({ "name": copy_name, "option": option, "core_node": COORDINATOR, "features": [] })
 }
 
 /// Joins `copy_name` of `option` through `bridge`, with the progress
@@ -460,12 +488,25 @@ async fn list_answers_the_scope_and_its_copies_in_name_order() {
         listed,
         json!({
             "options": [
-                { "option": "openarm_sim", "description": "A simulated OpenArm v2 standing on the floor" },
-                { "option": "so101_sim", "description": "A simulated SO-101 clamped on the edge of a table" },
+                {
+                    "option": "openarm_sim",
+                    "description": "A simulated OpenArm v2 standing on the floor",
+                    "features": [
+                        { "feature": "ai_brain", "description": "An AI brain that finds items by words" },
+                        { "feature": "recorder", "description": "A recorder of episodes" },
+                    ],
+                },
+                {
+                    "option": "so101_sim",
+                    "description": "A simulated SO-101 clamped on the edge of a table",
+                    "features": [],
+                },
             ],
+            "core_nodes": [COORDINATOR],
+            "this_core_node": COORDINATOR,
             "copies": [
-                { "name": "bravo", "option": "openarm_sim" },
-                { "name": "echo", "option": "so101_sim" },
+                { "name": "bravo", "option": "openarm_sim", "core_node": COORDINATOR, "features": [] },
+                { "name": "echo", "option": "so101_sim", "core_node": COORDINATOR, "features": [] },
             ],
             "max_copies": 4,
         })
@@ -1079,6 +1120,286 @@ async fn a_removal_takes_no_lock_and_a_cancel_stops_its_wait_only() {
     complete(&context, &LaunchResult::success(STACK_LOG)).await;
 }
 
+// --- Features and machines.
+
+/// The join the bridge sends for `goal_input`, admitted and ended, so the
+/// test reads the exact goal the daemon decodes.
+async fn sent_join(
+    bridge: &ScopedStackCopies,
+    daemon: &mut FakeDaemon,
+    goal_input: Value,
+) -> StackJoinGoal {
+    daemon.lists(&[]);
+    let surface = Arc::new(ScriptedSurface::new());
+    let call = {
+        let bridge = bridge.clone();
+        let surface = Arc::clone(&surface);
+        tokio::spawn(async move { bridge.join(&goal_input, &*surface, Some(WINDOW)).await })
+    };
+    let pending = daemon
+        .join
+        .next_goal(READINESS_TIMEOUT)
+        .await
+        .expect("the join reaches the daemon");
+    let goal = StackJoinGoal::decode(pending.request_bytes()).expect("the join decodes");
+    let context = pending
+        .accept(admitted())
+        .await
+        .expect("the daemon admits the join");
+    complete(&context, &LaunchResult::success(STACK_LOG)).await;
+    ended(call).await.expect("the join succeeds");
+    goal
+}
+
+/// The bridge sends the copy on its machine, with the word of each feature:
+/// a machine equal to this one travels as the coordinator, another one by
+/// its name, and a feature on the copy's machine names no machine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_join_sends_the_word_of_each_feature_on_its_machine() {
+    let (mesh, mut daemon) = mesh().await;
+    let bridge = mesh.bridge(simulation_scope());
+    let goal = |copy: &str, words: &[&str]| StackJoinGoal {
+        selections: words.iter().map(|word| word.parse().unwrap()).collect(),
+        ..StackJoinGoal::new(copy.parse().unwrap(), DEFAULT_BUDGETS)
+    };
+    for (input, expected) in [
+        (
+            json!({ "name": "alpha", "option": "openarm_sim", "core_node": COORDINATOR, "features": [] }),
+            goal("openarm_sim:alpha", &[]),
+        ),
+        (
+            json!({ "name": "bravo", "option": "openarm_sim", "core_node": "cn-jetson-1", "features": [] }),
+            goal("openarm_sim:bravo@cn-jetson-1", &[]),
+        ),
+        (
+            json!({ "name": "charlie", "option": "openarm_sim", "core_node": COORDINATOR,
+                    "features": [{ "feature": "ai_brain", "core_node": "cn-gpu-box" }] }),
+            goal("openarm_sim:charlie", &["brain=ai_brain_vla@cn-gpu-box"]),
+        ),
+        (
+            json!({ "name": "delta", "option": "openarm_sim", "core_node": "cn-jetson-1",
+                    "features": [
+                        { "feature": "recorder", "core_node": "cn-jetson-1" },
+                        { "feature": "ai_brain", "core_node": COORDINATOR },
+                    ] }),
+            goal(
+                "openarm_sim:delta@cn-jetson-1",
+                &["recorder=lerobot_recorder", "brain=ai_brain_vla@self"],
+            ),
+        ),
+        (
+            json!({ "name": "echo", "option": "openarm_sim", "core_node": COORDINATOR,
+                    "features": [{ "feature": "ai_brain", "core_node": COORDINATOR }] }),
+            goal("openarm_sim:echo", &["brain=ai_brain_vla"]),
+        ),
+    ] {
+        assert_eq!(
+            sent_join(&bridge, &mut daemon, input.clone()).await,
+            expected,
+            "{input}"
+        );
+    }
+}
+
+/// A feature of another option, and a feature named twice, are refused
+/// before the bridge reads the stack or sends a goal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_feature_outside_the_option_or_named_twice_is_refused_before_the_daemon() {
+    let (mesh, mut daemon) = mesh().await;
+    let bridge = mesh.bridge(simulation_scope());
+    let surface = ScriptedSurface::new();
+    for (input, reason) in [
+        (
+            json!({ "name": "foxtrot", "option": "so101_sim", "core_node": COORDINATOR,
+                    "features": [{ "feature": "ai_brain", "core_node": COORDINATOR }] }),
+            "`ai_brain` is not a feature of option `so101_sim`, which has no feature",
+        ),
+        (
+            json!({ "name": "golf", "option": "openarm_sim", "core_node": COORDINATOR,
+                    "features": [{ "feature": "camera", "core_node": COORDINATOR }] }),
+            "`camera` is not a feature of option `openarm_sim`; its features: ai_brain and \
+             recorder",
+        ),
+        (
+            json!({ "name": "hotel", "option": "openarm_sim", "core_node": COORDINATOR,
+                    "features": [
+                        { "feature": "ai_brain", "core_node": COORDINATOR },
+                        { "feature": "ai_brain", "core_node": "cn-gpu-box" },
+                    ] }),
+            "`features` names feature `ai_brain` twice; name each feature once",
+        ),
+    ] {
+        assert_eq!(
+            bridge.join(&input, &surface, Some(WINDOW)).await,
+            refused(reason),
+            "{input}"
+        );
+    }
+    assert_eq!(daemon.reads(), 0, "no refusal reads the stack");
+    assert!(idle_now(&bridge), "no refusal takes the lock");
+    join_succeeds(&bridge, &mut daemon, "india").await;
+}
+
+/// `list` gives each robot the features its selections hold, in the
+/// scope's order, each with the machine of its part: the robot's machine
+/// when the part runs with it. A part that no listed feature selects, and a
+/// word on a feature's axis that selects another option, give no feature.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn list_gives_each_robot_its_features_and_their_machines() {
+    let (mesh, daemon) = mesh().await;
+    let bridge = mesh.bridge(simulation_scope());
+    daemon.lists(&[
+        copy_on(
+            "delta",
+            "openarm_sim",
+            COORDINATOR,
+            &["brain=ai_brain_vla@cn-gpu-box", "recorder=lerobot_recorder"],
+        ),
+        // A robot the command line added with `--with ai_brain_vla@cn-gpu-box`.
+        copy_on(
+            "echo",
+            "openarm_sim",
+            "cn-jetson-1",
+            &["hardware_version=v2", "brain=ai_brain_vla@cn-gpu-box"],
+        ),
+        copy_on(
+            "golf",
+            "openarm_sim",
+            COORDINATOR,
+            &["camera_rig=cameras_sim@cn-gpu-box", "brain=other_brain"],
+        ),
+    ]);
+    let listed = bridge
+        .list(Duration::from_secs(5))
+        .await
+        .expect("the daemon lists the stack");
+    assert_eq!(
+        listed["copies"],
+        json!([
+            { "name": "delta", "option": "openarm_sim", "core_node": COORDINATOR, "features": [
+                { "feature": "ai_brain", "core_node": "cn-gpu-box" },
+                { "feature": "recorder", "core_node": COORDINATOR },
+            ] },
+            { "name": "echo", "option": "openarm_sim", "core_node": "cn-jetson-1", "features": [
+                { "feature": "ai_brain", "core_node": "cn-gpu-box" },
+            ] },
+            { "name": "golf", "option": "openarm_sim", "core_node": COORDINATOR, "features": [] },
+        ])
+    );
+}
+
+/// `core_nodes` is this machine and every machine presence lists, each
+/// once, in name order, read on every call: a daemon that joins the
+/// federation after a first `list` is in the next one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn list_reads_the_live_machines_on_every_call() {
+    let (mesh, daemon) = mesh().await;
+    let bridge = mesh.bridge(simulation_scope());
+    daemon.lists(&[]);
+    let listed = bridge
+        .list(Duration::from_secs(5))
+        .await
+        .expect("the daemon lists the stack");
+    assert_eq!(listed["core_nodes"], json!([COORDINATOR]));
+    assert_eq!(listed["this_core_node"], json!(COORDINATOR));
+
+    let watch = peppylib::CoreNodePresenceMessenger::watch(&mesh.server, "cn-gpu-box")
+        .await
+        .expect("the server watches the machine");
+    let mut tokens = Vec::new();
+    for generation in ["gen-1", "gen-2"] {
+        tokens.push(
+            peppylib::CoreNodePresenceMessenger::declare(&daemon.session, "cn-gpu-box", generation)
+                .await
+                .expect("the machine declares its presence"),
+        );
+        let event = tokio::time::timeout(READINESS_TIMEOUT, watch.rx.recv_async())
+            .await
+            .expect("the presence arrives")
+            .expect("the watch is open");
+        assert!(
+            matches!(event, peppylib::LivelinessEvent::Alive(_)),
+            "{event:?}"
+        );
+    }
+    tokens.push(
+        peppylib::CoreNodePresenceMessenger::declare(&daemon.session, COORDINATOR, "gen-1")
+            .await
+            .expect("this machine declares its presence"),
+    );
+    let own = peppylib::CoreNodePresenceMessenger::watch(&mesh.server, COORDINATOR)
+        .await
+        .expect("the server watches its own machine");
+    tokio::time::timeout(READINESS_TIMEOUT, own.rx.recv_async())
+        .await
+        .expect("its presence arrives")
+        .expect("the watch is open");
+    daemon.lists(&[]);
+    let listed = bridge
+        .list(Duration::from_secs(5))
+        .await
+        .expect("the daemon lists the stack");
+    assert_eq!(
+        listed["core_nodes"],
+        json!(["cn-coordinator", "cn-gpu-box"]),
+        "a machine two daemons claim, and this machine, are listed once"
+    );
+    drop(tokens);
+}
+
+/// A presence read that fails fails `list`, with what failed.
+#[test]
+fn a_failed_presence_read_fails_the_listing() {
+    let error = super::stack_copies::live_machines_or_refusal(Err(peppylib::PeppyError::Io(
+        std::io::Error::other("the session is closed"),
+    )))
+    .expect_err("the listing fails");
+    assert_eq!(
+        error.to_string(),
+        peppy_mcp_runtime::ToolCallError::Failed(
+            "the live machines of the federation could not be read: the session is closed"
+                .to_owned()
+        )
+        .to_string()
+    );
+}
+
+/// A join the daemon ends with a failure, such as a machine that is not
+/// live, ends with success false and the daemon's reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_join_on_a_machine_that_is_not_live_ends_with_the_daemons_reason() {
+    let (mesh, mut daemon) = mesh().await;
+    let bridge = mesh.bridge(simulation_scope());
+    daemon.lists(&[]);
+    let surface = Arc::new(ScriptedSurface::new());
+    let input =
+        json!({ "name": "kilo", "option": "openarm_sim", "core_node": "cn-gone", "features": [] });
+    let call = {
+        let bridge = bridge.clone();
+        let surface = Arc::clone(&surface);
+        tokio::spawn(async move { bridge.join(&input, &*surface, Some(WINDOW)).await })
+    };
+    let context = daemon
+        .admits_join(&StackJoinGoal::new(
+            "openarm_sim:kilo@cn-gone".parse().unwrap(),
+            DEFAULT_BUDGETS,
+        ))
+        .await;
+    let reason = "these core nodes are not live on the federation: `cn-gone`. Live right now: \
+                  `cn-coordinator`.";
+    complete(&context, &LaunchResult::failure(STACK_LOG, reason)).await;
+    let Ok(answer) = ended(call).await else {
+        panic!("a failed join ends with an answer");
+    };
+    assert_eq!(answer["success"], json!(false));
+    assert!(
+        answer["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(reason)),
+        "{answer}"
+    );
+}
+
 // --- The scopes the server starts with.
 
 fn targets() -> BTreeMap<String, DaemonInterface> {
@@ -1282,18 +1603,33 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
     let (mesh, mut daemon) = mesh().await;
     let endpoint = Endpoint::serve(&mesh).await;
 
+    let goal = |name: &str, option: &str, core_node: &str, features: Value| json!({ "name": name, "option": option, "core_node": core_node, "features": features });
     for (tool, arguments) in [
         (
             "stack.join",
-            json!({ "name": "bravo", "option": "web_commander" }),
+            goal("bravo", "web_commander", COORDINATOR, json!([])),
         ),
         (
             "stack.join",
-            json!({ "name": "self", "option": "so101_sim" }),
+            goal("self", "so101_sim", COORDINATOR, json!([])),
         ),
         (
             "stack.join",
-            json!({ "name": "bad/name", "option": "so101_sim" }),
+            goal("bad/name", "so101_sim", COORDINATOR, json!([])),
+        ),
+        ("stack.join", goal("bravo", "so101_sim", "self", json!([]))),
+        (
+            "stack.join",
+            json!({ "name": "bravo", "option": "so101_sim" }),
+        ),
+        (
+            "stack.join",
+            goal(
+                "bravo",
+                "openarm_sim",
+                COORDINATOR,
+                json!([{ "feature": "camera", "core_node": COORDINATOR }]),
+            ),
         ),
         ("stack.remove", json!({ "name": "self" })),
     ] {
@@ -1305,11 +1641,36 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
     }
     assert_eq!(daemon.reads(), 0, "no refused input reaches the bridge");
 
+    // A feature the scope offers, on an option that does not offer it: the
+    // schema admits it, and the bridge refuses it before the daemon.
+    let answer = endpoint
+        .call(
+            "stack.join",
+            goal(
+                "bravo",
+                "so101_sim",
+                COORDINATOR,
+                json!([{ "feature": "ai_brain", "core_node": COORDINATOR }]),
+            ),
+        )
+        .await;
+    assert_eq!(answer["result"]["isError"], true, "{answer}");
+    assert_eq!(
+        answer["result"]["content"][0]["text"],
+        "the action failed: `ai_brain` is not a feature of option `so101_sim`, which has no \
+         feature"
+    );
+    assert_eq!(
+        daemon.reads(),
+        0,
+        "the bridge refuses a feature before it reads the stack"
+    );
+
     daemon.lists(&[copy("bravo", "so101_sim")]);
     let answer = endpoint
         .call(
             "stack.join",
-            json!({ "name": "bravo", "option": "openarm_sim" }),
+            goal("bravo", "openarm_sim", COORDINATOR, json!([])),
         )
         .await;
     assert_eq!(answer["result"]["isError"], true, "{answer}");
@@ -1318,18 +1679,38 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
         "the action failed: a copy `bravo` is already on the stack; choose another name"
     );
 
-    daemon.lists(&[copy("bravo", "so101_sim")]);
+    daemon.lists(&[copy_on(
+        "bravo",
+        "openarm_sim",
+        "cn-jetson-1",
+        &["brain=ai_brain_vla@cn-gpu-box"],
+    )]);
     let listed = endpoint.call("stack.list", json!({})).await;
+    let copies = &listed["result"]["structuredContent"]["copies"];
     assert_eq!(
-        listed["result"]["structuredContent"]["copies"],
-        json!([{ "name": "bravo", "option": "so101_sim" }]),
+        copies,
+        &json!([{
+            "name": "bravo",
+            "option": "openarm_sim",
+            "core_node": "cn-jetson-1",
+            "features": [{ "feature": "ai_brain", "core_node": "cn-gpu-box" }],
+        }]),
         "{listed}"
+    );
+    // A listed robot is a valid join input: the schema admits it, and the
+    // bridge refuses it only because its name is taken.
+    daemon.lists(&[copy("bravo", "so101_sim")]);
+    let answer = endpoint.call("stack.join", copies[0].clone()).await;
+    assert_eq!(
+        answer["result"]["content"][0]["text"],
+        "the action failed: a copy `bravo` is already on the stack; choose another name",
+        "{answer}"
     );
 
     daemon.lists(&[]);
     let call = endpoint.call(
         "stack.join",
-        json!({ "name": "charlie", "option": "so101_sim" }),
+        goal("charlie", "so101_sim", COORDINATOR, json!([])),
     );
     let daemon_side = async {
         let context = daemon.admits_join(&join_goal("charlie", "so101_sim")).await;
@@ -1355,15 +1736,25 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
             "refused",
             "refused",
             "refused",
+            "refused",
+            "refused",
+            "refused",
+            "failed",
+            "failed",
             "failed",
             "completed"
         ],
         "{recorded:?}"
     );
     assert_eq!(
-        recorded[4].1,
+        recorded[7].1,
+        "the action failed: `ai_brain` is not a feature of option `so101_sim`, which has no \
+         feature"
+    );
+    assert_eq!(
+        recorded[8].1,
         "the action failed: a copy `bravo` is already on the stack; choose another name"
     );
-    assert_eq!(recorded[5].1, "charlie (so101_sim) is on the stack");
+    assert_eq!(recorded[10].1, "charlie (so101_sim) is on the stack");
     endpoint.stop().await;
 }

@@ -163,7 +163,7 @@ fn changed_slot(
 /// which `node` does not declare. It names the node's set slots to use
 /// instead, or the manifest fix when the node declares none.
 fn undeclared_slot_refusal(
-    copy_name: &Name,
+    copy_name: &config::runtime::CopyName,
     field: &str,
     node: &str,
     slot: &str,
@@ -523,13 +523,14 @@ mod tests {
     /// `monitor_inst`.
     fn copy_adding(members: &[(&str, &str)]) -> CopyRecord {
         CopyRecord {
-            name: Name::new("alpha").unwrap(),
+            name: config::runtime::CopyName::new("alpha").unwrap(),
             axis: "robot".into(),
             option: "real".into(),
             selection: UnitSelection::default(),
             instances: vec![CopyInstance {
                 instance_id: Name::new("alpha_arm_inst").unwrap(),
                 in_copy: Name::new("arm_inst").unwrap(),
+                own_axis: None,
             }],
             set_members: members
                 .iter()
@@ -702,14 +703,14 @@ mod tests {
     }
 
     /// A set whose instance runs on a machine the federation does not list is
-    /// refused at join, naming the slot and the machine, and is what a removal
-    /// leaves untouched; a set on a live machine passes both.
+    /// refused at join, naming the slot and the machine; a set on a live
+    /// machine passes.
     #[test]
-    fn a_set_on_a_machine_that_is_not_live_is_refused_at_join_and_set_aside_at_removal() {
-        use super::super::live::{check_hosts_live, split_by_liveness};
+    fn a_set_on_a_machine_that_is_not_live_is_refused_at_join() {
+        use super::super::live::check_hosts_live;
         let placements = placements_with("cn-robot", &[("monitor_inst", "cn-cloud")]);
         let slots = || slots_of(&[("robots", "alpha_arm_inst")], Change::Join).unwrap();
-        let alpha = Name::new("alpha").unwrap();
+        let alpha = config::runtime::CopyName::new("alpha").unwrap();
         let coordinator_alone = BTreeSet::from(["cn-robot".to_string()]);
         let both = BTreeSet::from(["cn-robot".to_string(), "cn-cloud".to_string()]);
 
@@ -720,13 +721,6 @@ mod tests {
             "{refusal}"
         );
         check_hosts_live(&alpha, &slots(), &placements, &both).expect("a live machine passes");
-
-        let (reachable, offline) = split_by_liveness(slots(), &placements, &coordinator_alone);
-        assert!(reachable.is_empty());
-        assert_eq!(offline.len(), 1);
-        let (reachable, offline) = split_by_liveness(slots(), &placements, &both);
-        assert_eq!(reachable.len(), 1);
-        assert!(offline.is_empty());
     }
 
     /// A join grows a set only on an instance its host runs: one starting,

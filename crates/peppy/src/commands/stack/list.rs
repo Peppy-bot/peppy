@@ -357,7 +357,9 @@ fn write_launch_ownership(body: &mut String, section: &StackSection) {
 
 /// The copies joined onto the slice: each copy's option, machine and
 /// selections, its instances, and the set members it adds; then the join or
-/// the removal of a copy that holds the stack now.
+/// the removal of a copy that holds the stack now. The selections are the
+/// words that add the copy again, joined by `,`, each placed part with its
+/// machine, so the text after the colon pastes into `--with`.
 fn write_copies(body: &mut String, section: &StackSection) {
     use std::fmt::Write as _;
 
@@ -368,7 +370,8 @@ fn write_copies(body: &mut String, section: &StackSection) {
         let selection = if copy.selections.is_empty() {
             String::new()
         } else {
-            format!(": {}", copy.selections.join(", "))
+            let words: Vec<String> = copy.selections.iter().map(ToString::to_string).collect();
+            format!(": {}", words.join(","))
         };
         let _ = writeln!(
             body,
@@ -1303,18 +1306,22 @@ mod tests {
     }
 
     #[test]
-    fn copies_are_listed_with_option_host_selection_and_instances() {
+    fn copies_are_listed_with_option_machine_selection_and_instances() {
         let sections = vec![StackSection {
             copies: vec![
                 core_node_api::encoding::CopyInfo {
-                    name: config::runtime::Name::new("alpha").unwrap(),
+                    name: config::runtime::CopyName::new("alpha").unwrap(),
                     option: "openarm_v2".to_string(),
                     core_node: config::runtime::CoreNodeName::new("jetson-1").unwrap(),
                     instance_ids: vec![
                         config::runtime::Name::new("alpha_arm_inst").unwrap(),
                         config::runtime::Name::new("alpha_commander_inst").unwrap(),
+                        config::runtime::Name::new("alpha_brain_inst").unwrap(),
                     ],
-                    selections: vec!["commander=web_commander".to_string()],
+                    selections: vec![
+                        "commander=web_commander".parse().unwrap(),
+                        "brain=ai_brain_vla@cn-gpu-box".parse().unwrap(),
+                    ],
                     set_members: ["alpha_wrist_left", "alpha_chest"]
                         .into_iter()
                         .map(|target| core_node_api::encoding::SetMember {
@@ -1330,7 +1337,7 @@ mod tests {
                         .collect(),
                 },
                 core_node_api::encoding::CopyInfo {
-                    name: config::runtime::Name::new("bravo").unwrap(),
+                    name: config::runtime::CopyName::new("bravo").unwrap(),
                     option: "openarm_v2".to_string(),
                     core_node: config::runtime::CoreNodeName::new("jetson-2").unwrap(),
                     instance_ids: vec![config::runtime::Name::new("bravo_arm_inst").unwrap()],
@@ -1342,13 +1349,27 @@ mod tests {
         }];
         let out = format_stack_list(&sections, false, None);
         assert!(
-            out.contains("Copy alpha of openarm_v2 on jetson-1: commander=web_commander"),
-            "the copy names its option, host and selection:\n{out}"
+            out.contains(
+                "Copy alpha of openarm_v2 on jetson-1: \
+                 commander=web_commander,brain=ai_brain_vla@cn-gpu-box"
+            ),
+            "the copy names its option, machine and selections, as words that paste into \
+             --with:\n{out}"
         );
         assert!(
-            out.contains("Instances: alpha_arm_inst, alpha_commander_inst"),
+            out.contains("Instances: alpha_arm_inst, alpha_commander_inst, alpha_brain_inst"),
             "the copy lists its minted instances:\n{out}"
         );
+        let json: serde_json::Value = serde_json::from_str(&render_stack_json(&sections)).unwrap();
+        assert_eq!(
+            json["core_nodes"][0]["copies"][0]["selections"],
+            serde_json::json!([
+                { "axis": "commander", "option": "web_commander" },
+                { "axis": "brain", "option": "ai_brain_vla", "core_node": "cn-gpu-box" },
+            ]),
+            "a part on another machine names it, a part with the copy names none"
+        );
+        assert_eq!(json["core_nodes"][0]["copies"][0]["core_node"], "jetson-1");
         assert!(
             out.contains("    monitor_inst.links.robots → alpha_arm_inst"),
             "the copy lists the set members it added:\n{out}"
@@ -1368,7 +1389,7 @@ mod tests {
         );
         assert!(
             out.contains("Copy bravo of openarm_v2 on jetson-2") && !out.contains("jetson-2:"),
-            "a copy with no selection of its own ends at its host:\n{out}"
+            "a copy with no selection of its own ends at its machine:\n{out}"
         );
         assert!(!out.contains("the stack now"), "no change runs:\n{out}");
     }
@@ -1388,7 +1409,7 @@ mod tests {
             let section = StackSection {
                 copy_change: Some(CopyChange {
                     action,
-                    name: config::runtime::Name::new("charlie").unwrap(),
+                    name: config::runtime::CopyName::new("charlie").unwrap(),
                     option: "so101_sim".to_string(),
                 }),
                 ..successful_section("cn-coordinator", "robo-a")

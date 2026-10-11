@@ -5,9 +5,10 @@
 use super::super::composition::copy_adjustments_origin;
 use super::super::types::LinkValue;
 use super::copy::CopyRecord;
-use super::select::UnitSelection;
+use super::select::{PartMachines, UnitSelection};
 use config::AnyType;
-use config::runtime::Name;
+use config::runtime::{CopyName, Name};
+use std::collections::BTreeMap;
 
 /// One field an adjustment wrote, with the value it replaced.
 #[derive(Debug, Clone, PartialEq)]
@@ -141,26 +142,37 @@ pub struct CompositionReport {
     /// options they selected.
     pub selection: UnitSelection,
     pub copies: Vec<CopyRecord>,
+    /// The machine of each placed part of each copy, by copy and own axis:
+    /// the parts the words place, which the launch and the join place there.
+    pub part_machines: BTreeMap<CopyName, PartMachines>,
     pub applied: Vec<AppliedAdjustment>,
     pub skipped: Vec<SkippedAdjustment>,
 }
 
 impl CompositionReport {
     /// What was selected, one line for the stack (when the launcher has
-    /// axes of its own) and one per copy: what a launch echoes before
-    /// anything runs.
+    /// axes of its own) and one per copy, each placed part with its machine:
+    /// what a launch echoes before anything runs.
     pub fn selection_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         let echo = self.selection.echo();
         if !echo.is_empty() {
             lines.push(format!("components: {echo}"));
         }
-        lines.extend(
-            self.copies
-                .iter()
-                .map(|copy| format!("copy {}: {}", copy.name, copy.selection.echo())),
-        );
+        lines.extend(self.copies.iter().map(|copy| {
+            format!(
+                "copy {}: {}",
+                copy.name,
+                copy.selection.placed_echo(self.parts_of(&copy.name))
+            )
+        }));
         lines
+    }
+
+    /// The machine of each placed part of the copy `name`, by own axis.
+    pub fn parts_of(&self, name: &CopyName) -> &PartMachines {
+        static NONE: PartMachines = PartMachines::new();
+        self.part_machines.get(name).unwrap_or(&NONE)
     }
 
     /// Every applied adjustment with the value it replaced, then every
@@ -205,9 +217,13 @@ impl CompositionReport {
     pub(super) fn add_copy(
         &mut self,
         copy: CopyRecord,
+        parts: PartMachines,
         applied: Vec<AppliedAdjustment>,
         skipped: Vec<SkippedAdjustment>,
     ) {
+        if !parts.is_empty() {
+            self.part_machines.insert(copy.name.clone(), parts);
+        }
         self.applied.extend(applied.into_iter().map(|mut entry| {
             entry.origin = attributed(&copy, &entry.origin, &entry.target);
             entry
@@ -223,6 +239,7 @@ impl CompositionReport {
     /// already carries, attributed when it was composed.
     pub(super) fn absorb(&mut self, joined: CompositionReport) {
         self.copies.extend(joined.copies);
+        self.part_machines.extend(joined.part_machines);
         self.applied.extend(joined.applied);
         self.skipped.extend(joined.skipped);
     }

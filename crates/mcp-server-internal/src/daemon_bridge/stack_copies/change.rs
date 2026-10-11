@@ -33,7 +33,7 @@
 
 use crate::bridges::{Silence, TaskSurface};
 use crate::daemon_bridge::OwnDaemon;
-use config::runtime::Name;
+use config::runtime::{CopyName, Name};
 use core_node_api::encoding::{LaunchFeedback, LaunchFeedbackStep, LaunchResult};
 use peppy_mcp_runtime::{ActionExit, CancelledGoal};
 use serde_json::{Value, json};
@@ -47,9 +47,9 @@ use tokio::sync::{OwnedMutexGuard, mpsc, oneshot};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Change {
     /// A copy `name` of `option` joins the stack.
-    Addition { name: Name, option: Name },
+    Addition { name: CopyName, option: Name },
     /// Copy `name` leaves the stack.
-    Removal { name: Name },
+    Removal { name: CopyName },
 }
 
 impl Change {
@@ -391,16 +391,20 @@ mod tests {
         Name::new(name).expect("a name")
     }
 
+    fn copy_name(name: &str) -> CopyName {
+        CopyName::new(name).expect("a copy name")
+    }
+
     fn addition() -> Change {
         Change::Addition {
-            name: name("bravo"),
+            name: copy_name("bravo"),
             option: name("so101_sim"),
         }
     }
 
     fn removal() -> Change {
         Change::Removal {
-            name: name("bravo"),
+            name: copy_name("bravo"),
         }
     }
 

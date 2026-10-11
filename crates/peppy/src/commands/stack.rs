@@ -16,8 +16,10 @@ use std::sync::Arc;
 use clap::Subcommand;
 use tracing::info;
 
-use core_node_api::encoding::{LaunchGoal, StackBuildGoal};
-use daemon_config::launcher::parse_copy_name;
+use config::runtime::CopyName;
+use core_node_api::encoding::{
+    CopyReference, LaunchGoal, LaunchWord, SelectionWord, StackBuildGoal,
+};
 use stack_goal::DEFAULT_BUDGETS;
 
 use super::Command;
@@ -45,20 +47,18 @@ pub enum StackCommands {
     /// under the copy.
     Join {
         /// The copy to add: an option of an axis the running launcher runs as
-        /// copies, and the name the copy runs under, which prefixes every
-        /// instance id it creates and is its placement link.
-        #[arg(value_name = "OPTION:NAME", value_parser = parse_copy_reference)]
-        copy: core_node_api::encoding::LaunchJoin,
+        /// copies, the name the copy runs under, which prefixes every
+        /// instance id it creates, and after `@` the machine that runs its
+        /// base, the coordinator when no machine is given (`self` also names
+        /// it).
+        #[arg(value_name = "OPTION:NAME[@CORE_NODE]", value_parser = parse_copy_reference)]
+        copy: CopyReference,
         #[command(flatten)]
-        with: WithWords,
+        with: JoinWords,
         /// Override an argument of one of the copy's instances with a JSON5
         /// value; the instance id is the one written in the option's fragment.
         #[arg(long = "set-arguments", value_name = "INSTANCE.ARGUMENT=JSON5")]
         arguments: Vec<core_node_api::encoding::ArgumentOverride>,
-        /// Run the whole copy on a machine. Defaults to the coordinator,
-        /// which `self` also names.
-        #[arg(long = "place", value_name = "CORE_NODE", value_parser = join::parse_placement)]
-        place: Option<core_node_api::encoding::JoinPlacement>,
         #[command(flatten)]
         timeouts: StackTimeouts,
     },
@@ -71,7 +71,7 @@ pub enum StackCommands {
     Remove {
         /// The copy's name, as listed by `stack list`.
         #[arg(value_parser = parse_copy_name)]
-        name: config::runtime::Name,
+        name: CopyName,
     },
     /// List the nodes in the current node stack
     List {
@@ -93,7 +93,7 @@ pub enum StackCommands {
         #[arg(value_name = "LAUNCHER")]
         launcher_config_path: PathBuf,
         #[command(flatten)]
-        with: WithWords,
+        with: LaunchWords,
         #[command(flatten)]
         joins: LaunchJoins,
     },
@@ -145,7 +145,7 @@ pub struct LauncherArgs {
     #[command(flatten)]
     pub placement: launch::PlacementArgs,
     #[command(flatten)]
-    pub with: WithWords,
+    pub with: LaunchWords,
     #[command(flatten)]
     pub joins: LaunchJoins,
     #[command(flatten)]
@@ -192,82 +192,96 @@ impl StackTimeouts {
     }
 }
 
-/// The copies `--join OPTION:NAME` composes with a launch, shared by
-/// launch, build, and resolve.
+/// The copies `--join OPTION:NAME[@CORE_NODE]` composes with a launch,
+/// shared by launch, build, and resolve.
 #[derive(clap::Args, Default)]
 pub struct LaunchJoins {
     /// A copy of OPTION, one of an axis that runs as copies, named NAME in
-    /// the launch: joined onto the launch as `stack join OPTION:NAME` joins one
-    /// onto the running stack, and started with it by `stack launch`, its
-    /// nodes built with it by `stack build`. Repeatable and comma-separated,
-    /// once per copy, each joined onto the plan the ones before it left;
-    /// `NAME.option` words and `--place NAME@CORE_NODE` address it as they do
-    /// a copy the file lists.
+    /// the launch, its base on CORE_NODE (the coordinator when no machine is
+    /// given, which `self` also names): joined onto the launch as `stack
+    /// join OPTION:NAME@CORE_NODE` joins one onto the running stack, and
+    /// started with it by `stack launch`, its nodes built with it by `stack
+    /// build`. Repeatable and comma-separated, once per copy, each joined
+    /// onto the plan the ones before it left; `NAME.option` words address it
+    /// as they do a copy the file lists.
     #[arg(
         long = "join",
-        value_name = "OPTION:NAME",
+        value_name = "OPTION:NAME[@CORE_NODE]",
         value_delimiter = ',',
         value_parser = parse_copy_reference,
         action = clap::ArgAction::Append
     )]
-    pub joins: Vec<core_node_api::encoding::LaunchJoin>,
+    pub joins: Vec<CopyReference>,
 }
 
-/// The one spelling for "a copy NAME of OPTION": the option before the colon,
-/// the copy's name after it, held to a copy name's grammar. `stack join`
-/// takes it as its positional, and `--join` joins the copy onto a launch.
-fn parse_copy_reference(raw: &str) -> Result<core_node_api::encoding::LaunchJoin, String> {
-    const FORM: &str = "write `OPTION:NAME`, the option of an axis that runs as copies and the \
-                        name the copy runs under";
-    let Some((option, name)) = raw.split_once(':') else {
-        return Err(format!("`{raw}` names no copy: {FORM}"));
-    };
-    let option = option.trim();
-    if option.is_empty() {
-        return Err(format!("`{raw}` names no option before the colon: {FORM}"));
-    }
-    Ok(core_node_api::encoding::LaunchJoin {
-        option: option.to_owned(),
-        name: parse_copy_name(name)?,
-    })
+/// The one spelling for "a copy NAME of OPTION on CORE_NODE": the option
+/// before the colon, the copy's name after it, held to a copy name's
+/// grammar, and after `@` the machine of its base. `stack join` takes it as
+/// its positional, and `--join` joins the copy onto a launch.
+fn parse_copy_reference(raw: &str) -> Result<CopyReference, String> {
+    raw.parse()
+        .map_err(|error: core_node_api::encoding::WordError| error.to_string())
 }
 
-/// The `--with` words, shared by launch, build, join, and resolve.
+/// A copy's name, as `stack remove` takes it.
+fn parse_copy_name(raw: &str) -> Result<CopyName, String> {
+    CopyName::new(raw.trim()).map_err(|error| error.to_string())
+}
+
+/// The `--with` words of `stack join`: each selects an option of the copied
+/// option's own axes.
 #[derive(clap::Args, Default)]
-pub struct WithWords {
+pub struct JoinWords {
+    /// Select one option of the copied option's own axes: `option` or
+    /// `axis=option`. After `@`, the machine that runs the part the option
+    /// brings, `self` naming the coordinator; with no machine the part runs
+    /// with the copy's base. Write an option the launcher entry or the
+    /// fragment selects again with a machine to place its part. Repeatable
+    /// and comma-separated.
+    #[arg(
+        long = "with",
+        value_name = "option|axis=option[@CORE_NODE]",
+        value_delimiter = ',',
+        value_parser = parse_selection_word,
+        action = clap::ArgAction::Append
+    )]
+    pub words: Vec<SelectionWord>,
+}
+
+/// The `--with` words of launch, build and resolve.
+#[derive(clap::Args, Default)]
+pub struct LaunchWords {
     /// Select one option of a `components` axis: `option` or `axis=option`.
-    /// Repeatable and comma-separated. At launch and build the words swap what
-    /// the launcher deploys on its `one` axes and turn `zero_or_one` axes on,
-    /// reaching the axes of the fragments those selections run, and
-    /// `NAME.option` or `NAME.axis=option` selects the own axis of the copy
-    /// NAME the file deploys; at join they select the copied option's own
-    /// axes.
+    /// The words swap what the launcher deploys on its `one` axes and turn
+    /// `zero_or_one` axes on, reaching the axes of the fragments those
+    /// selections run. `NAME.option` or `NAME.axis=option` selects an own
+    /// axis of the copy NAME, one the file lists or one `--join` adds, and
+    /// after `@` the machine that runs the part that option brings, `self`
+    /// naming the coordinator. A stack instance runs where its `core_node`
+    /// link says, so a word of the stack names no machine. Repeatable and
+    /// comma-separated.
     ///
-    /// The words travel to the coordinator verbatim, like `--local`:
+    /// The words travel to the coordinator as written, like `--local`:
     /// only the daemon holds a repository launcher's document, so only
     /// it knows which axes exist.
     #[arg(
         long = "with",
-        value_name = "option|axis=option",
+        value_name = "[NAME.]option|axis=option[@CORE_NODE]",
         value_delimiter = ',',
-        value_parser = parse_with_word,
+        value_parser = parse_launch_word,
         action = clap::ArgAction::Append
     )]
-    pub words: Vec<String>,
+    pub words: Vec<LaunchWord>,
 }
 
-/// One `--with` word: `option` or `axis=option`, never blank. Which axes and
-/// options exist is the coordinator's to say (it holds the document), so the
-/// CLI checks only that the word says something.
-fn parse_with_word(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(format!(
-            "a --with entry is `option`, `axis=option` or, at launch and build, `NAME.option` \
-             or `NAME.axis=option`, never blank (check for a stray comma in {raw:?})"
-        ));
-    }
-    Ok(trimmed.to_owned())
+fn parse_selection_word(raw: &str) -> Result<SelectionWord, String> {
+    raw.parse()
+        .map_err(|error: core_node_api::encoding::WordError| error.to_string())
+}
+
+fn parse_launch_word(raw: &str) -> Result<LaunchWord, String> {
+    raw.parse()
+        .map_err(|error: core_node_api::encoding::WordError| error.to_string())
 }
 
 pub struct StackCommand {
@@ -281,9 +295,8 @@ impl Command for StackCommand {
                 copy,
                 with,
                 arguments,
-                place,
                 timeouts,
-            } => join::join(ctx, copy, with.words, arguments, place, timeouts),
+            } => join::join(ctx, copy, with.words, arguments, timeouts),
             StackCommands::Remove { name } => remove::remove(ctx, name),
             StackCommands::List { json } => list::list_nodes(ctx, json),
             StackCommands::Reset { federated } => reset::reset_stack(ctx, federated),

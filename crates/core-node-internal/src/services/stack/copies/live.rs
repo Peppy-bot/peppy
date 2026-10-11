@@ -2,8 +2,8 @@
 //! nodes a join reuses running unchanged since the launch resolved them, the
 //! instances it depends on live, no instance already answering to a name the
 //! copy brings, and the machines of the sets it changes live on the federation.
-//! A removal takes what it can: this module also splits its slots by whether
-//! their machine is live, and tells the operator which sets stayed behind.
+//! A removal takes what it can: this module also tells the operator which
+//! sets stayed behind on a machine that is not live.
 
 use super::super::action::StackChangeContext;
 use super::super::launch::feedback::publish_warning;
@@ -12,7 +12,7 @@ use super::super::state::ActiveLaunch;
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
 use super::changed_slots::ChangedSlot;
 use super::stack_list_on;
-use config::runtime::Name;
+use config::runtime::CopyName;
 use core_node_api::encoding::LaunchFeedbackStep;
 use daemon_config::launcher::{PeppyLauncher, Placements};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -251,17 +251,16 @@ fn check_required_instances_present(
 
 /// The core nodes live on the federation, this daemon included, asked once per
 /// change and read by every liveness question the change asks: the sets it
-/// grows or shrinks, the copy's own machine, and the machines it reserves. A
-/// stack placed on this machine alone answers from its own name.
+/// grows or shrinks, the machines of the copy, and the machines it reserves.
+/// A stack placed on this machine alone answers from its own name.
 pub(super) async fn live_machines(
     ctx: &StackChangeContext,
     placements: &Placements,
 ) -> ChangeResult<BTreeSet<String>> {
-    let mut live = BTreeSet::from([ctx.bound_core_node.clone()]);
-    if placements.is_federated() {
-        live.extend(federated::live_core_nodes(&ctx.messenger).await?);
+    if !placements.is_federated() {
+        return Ok(BTreeSet::from([ctx.bound_core_node.clone()]));
     }
-    Ok(live)
+    federated::live_core_nodes(ctx).await
 }
 
 /// Whether `slot`'s instance runs on one of the `live` machines, which
@@ -277,7 +276,7 @@ fn runs_on_live_machine(
 /// Refuses a join that would grow a set whose instance runs on a machine that is
 /// not live on the federation, naming the slot and the fix.
 pub(super) fn check_hosts_live(
-    copy: &Name,
+    copy: &CopyName,
     slots: &[ChangedSlot],
     placements: &Placements,
     live: &BTreeSet<String>,
@@ -299,23 +298,11 @@ pub(super) fn check_hosts_live(
     ))
 }
 
-/// Splits `slots` into those whose instance runs on a machine in `live`, and
-/// those whose instance runs on a machine that is not.
-pub(super) fn split_by_liveness(
-    slots: Vec<ChangedSlot>,
-    placements: &Placements,
-    live: &BTreeSet<String>,
-) -> (Vec<ChangedSlot>, Vec<ChangedSlot>) {
-    slots
-        .into_iter()
-        .partition(|slot| runs_on_live_machine(slot, placements, live))
-}
-
 /// Tells the operator which sets a removal left untouched because the machine
 /// holding them is not live, one line per machine.
 pub(super) async fn report_offline_sets(
     ctx: &StackChangeContext,
-    copy: &Name,
+    copy: &CopyName,
     slots: &[ChangedSlot],
     placements: &Placements,
 ) {

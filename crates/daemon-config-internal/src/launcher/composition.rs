@@ -16,10 +16,15 @@
 //! ordinary flat document the rest of the pipeline consumes; this module is
 //! the grammar and the checks that need no I/O and no selection.
 
+use super::compose::COPY_PLACEMENT;
 use super::types::{
     Deployment, EACH_TARGET_ONCE, FrameworkOverrides, LauncherFramework, LinkValue,
 };
-use config::{AnyType, runtime::Name, schema::PeppySchema};
+use config::{
+    AnyType,
+    runtime::{CopyName, Name},
+    schema::PeppySchema,
+};
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer, MapAccess, SeqAccess, Visitor},
@@ -539,7 +544,7 @@ impl OptionDeployment {
 /// `adjustments` write to those instances with the adjustment verbs.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CopyEntry {
-    pub instance_id: Name,
+    pub instance_id: CopyName,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub with: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -565,7 +570,7 @@ impl<'de> Deserialize<'de> for CopyEntry {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Declaration {
-            instance_id: Name,
+            instance_id: CopyName,
             #[serde(default)]
             with: BTreeMap<String, String>,
             #[serde(default)]
@@ -589,9 +594,8 @@ impl<'de> Deserialize<'de> for CopyEntry {
         }
         if raw.core_node.is_some() {
             return Err(de::Error::custom(format!(
-                "copy `{}` declares `core_node`; a copy is placed as a whole with \
-                 `--place {}@CORE_NODE`, its name being its placement link",
-                raw.instance_id, raw.instance_id
+                "copy `{}` declares `core_node`; {COPY_PLACEMENT}",
+                raw.instance_id
             )));
         }
         if raw.links.is_some() {
@@ -2202,7 +2206,25 @@ mod tests {
             r#"[{ robot: "sim", instances: [{ instance_id: "alpha", core_node: "jetson" }] }]"#,
         )
         .expect_err("a copy is placed by name");
-        assert!(error.contains("--place alpha@CORE_NODE"), "got: {error}");
+        assert!(
+            error.contains("copy `alpha` declares `core_node`; a copy runs where it is named"),
+            "got: {error}"
+        );
+        assert!(error.contains("`--place NAME@CORE_NODE`"), "got: {error}");
+        assert!(
+            error.contains("`--with NAME.option@CORE_NODE`"),
+            "got: {error}"
+        );
+        for name in ["self", &"a".repeat(64)] {
+            let error = parse_entries(&format!(
+                r#"[{{ robot: "sim", instances: [{{ instance_id: "{name}" }}] }}]"#
+            ))
+            .expect_err("a copy name is held to a core node name");
+            assert!(
+                error.contains("give the copy another name") || error.contains("placement link"),
+                "{name}: {error}"
+            );
+        }
         let error = parse_entries(
             r#"[{ robot: "sim", instances: [{ instance_id: "alpha", links: { a: "b" } }] }]"#,
         )

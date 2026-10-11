@@ -315,7 +315,9 @@ impl ParticipantSliceBeginResponse {
 }
 
 /// The instances one removal names: at least one, each once, in the order
-/// they are stopped.
+/// they started. The receiver stops them the last first, and skips an id it
+/// no longer holds, so a removal that stopped part of them can be sent
+/// again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemovedInstances(Vec<Name>);
 

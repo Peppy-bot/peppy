@@ -115,20 +115,18 @@ fn partition_reservations<'a>(
     Ok(by_core_node)
 }
 
-/// The core nodes live on the federation right now, read from zenoh presence.
+/// The core nodes live on the federation right now, this daemon included,
+/// read from zenoh presence.
 pub(in crate::services::stack) async fn live_core_nodes(
-    messenger: &MessengerHandle,
+    ctx: &StackChangeContext,
 ) -> std::result::Result<BTreeSet<String>, String> {
-    Ok(CoreNodePresenceMessenger::list_live(
-        messenger,
-        None,
+    CoreNodePresenceMessenger::live_core_node_names(
+        &ctx.messenger,
+        &ctx.bound_core_node,
         CoreNodePresenceMessenger::LIST_TIMEOUT,
     )
     .await
-    .map_err(|e| format!("could not enumerate the federation: {e}"))?
-    .into_iter()
-    .map(|claim| claim.core_node)
-    .collect())
+    .map_err(|e| format!("could not enumerate the federation: {e}"))
 }
 
 /// Refuses any wired core node that is not live on the federation.
@@ -412,7 +410,7 @@ pub(in crate::services::stack) async fn preflight(
     // asked the federation hands its answer in.
     let live = match live {
         Some(live) => live.clone(),
-        None => live_core_nodes(&ctx.messenger).await?,
+        None => live_core_nodes(ctx).await?,
     };
     reject_unreachable_core_nodes(&peers.keys().cloned().collect(), &live)?;
 

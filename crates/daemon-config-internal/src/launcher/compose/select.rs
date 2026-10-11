@@ -6,8 +6,61 @@ use super::super::composition::ComponentAxis;
 use super::super::types::PeppyLauncher;
 use super::error::{CompositionError, UnresolvedCopyAxis};
 use super::load::{LoadedComposition, LoadedOption};
-use core_node_api::encoding::LaunchJoin;
+use config::runtime::{CopyName, CoreNodeTarget, Name};
+use core_node_api::encoding::{
+    AxisSelection, CopyReference, LaunchWord, OptionChoice, SelectionWord,
+};
 use std::collections::BTreeMap;
+use std::fmt;
+
+/// The machine of each placed part of one copy: the own axis that brings
+/// the part, and where its instances run.
+pub type PartMachines = BTreeMap<Name, CoreNodeTarget>;
+
+/// A word as its caller wrote it, for the refusals that quote it: a stack
+/// word of a launch, or a selection word of one copy, written after the
+/// copy's name on a launch and alone on `peppy stack join`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrittenWord {
+    Stack(OptionChoice),
+    Copy {
+        launch_copy: Option<CopyName>,
+        word: SelectionWord,
+    },
+}
+
+impl fmt::Display for WrittenWord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stack(choice) => write!(f, "{choice}"),
+            Self::Copy {
+                launch_copy: Some(copy),
+                word,
+            } => write!(f, "{copy}.{word}"),
+            Self::Copy {
+                launch_copy: None,
+                word,
+            } => write!(f, "{word}"),
+        }
+    }
+}
+
+/// Where the words of one copy are written: on a launch, after the copy's
+/// name, or on `peppy stack join`, alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WordOrigin {
+    Launch,
+    Join,
+}
+
+impl WordOrigin {
+    fn written(self, copy: &CopyName, word: &SelectionWord) -> Box<WrittenWord> {
+        Box::new(WrittenWord::Copy {
+            launch_copy: (self == Self::Launch).then(|| copy.clone()),
+            word: word.clone(),
+        })
+    }
+}
 
 /// How one axis of a resolved selection came to be filled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +133,21 @@ impl UnitSelection {
             .filter(move |entry| entry.axis != parent_axis)
     }
 
+    /// A copy's filled own axes, in the order its option declares them, as
+    /// the selections a listing gives, each with no machine.
+    pub fn axis_selections(&self, parent_axis: &str) -> Vec<AxisSelection> {
+        self.own_axes(parent_axis)
+            .filter_map(|entry| {
+                let option = entry.option.as_ref()?;
+                Some(AxisSelection {
+                    axis: Name::new(entry.axis.as_str()).expect("an axis name is a name"),
+                    option: Name::new(option.as_str()).expect("an option name is a name"),
+                    core_node: None,
+                })
+            })
+            .collect()
+    }
+
     /// The options a copy's selection picks on its option's own axes, as
     /// the copy's `with` map: what recomposes the copy the selection
     /// describes.
@@ -96,14 +164,27 @@ impl UnitSelection {
     /// before anything runs: `simulation=waldo (from file)  commander=xr
     /// recorder=(off)`.
     pub fn echo(&self) -> String {
+        self.placed_echo(&PartMachines::new())
+    }
+
+    /// The echo of a copy's resolution, with the machine of each placed part
+    /// after its axis, as the selection word that places it writes it:
+    /// `robot=openarm_sim  brain=ai_brain_vla@cn-gpu-box`.
+    pub fn placed_echo(&self, parts: &PartMachines) -> String {
         self.entries
             .iter()
-            .map(|entry| match (&entry.option, entry.source) {
-                (Some(option), SelectionSource::Deployed) => {
-                    format!("{}={option} (from file)", entry.axis)
+            .map(|entry| {
+                let placed = parts
+                    .iter()
+                    .find(|(axis, _)| axis.as_str() == entry.axis)
+                    .map_or_else(String::new, |(_, machine)| format!("@{machine}"));
+                match (&entry.option, entry.source) {
+                    (Some(option), SelectionSource::Deployed) => {
+                        format!("{}={option}{placed} (from file)", entry.axis)
+                    }
+                    (Some(option), _) => format!("{}={option}{placed}", entry.axis),
+                    (None, _) => format!("{}=(off)", entry.axis),
                 }
-                (Some(option), _) => format!("{}={option}", entry.axis),
-                (None, _) => format!("{}=(off)", entry.axis),
             })
             .collect::<Vec<_>>()
             .join("  ")
@@ -129,14 +210,6 @@ impl Parent<'_> {
     }
 }
 
-/// One `--with` word, split into the form it was written in.
-fn split_word(word: &str) -> (Option<&str>, &str) {
-    match word.split_once('=') {
-        Some((axis, option)) => (Some(axis), option),
-        None => (None, word),
-    }
-}
-
 /// The axes among `candidates` a word names: by axis name for the
 /// `axis=option` form, by option name for a bare word.
 enum Match<'a> {
@@ -145,12 +218,16 @@ enum Match<'a> {
     Several(Vec<&'a str>),
 }
 
-fn match_word<'a>(word: &str, candidates: impl Iterator<Item = &'a ComponentAxis>) -> Match<'a> {
-    let (axis_name, option) = split_word(word);
-    let held_by: Vec<&ComponentAxis> = match axis_name {
-        Some(axis_name) => candidates.filter(|axis| axis.name == axis_name).collect(),
+fn match_word<'a>(
+    word: &OptionChoice,
+    candidates: impl Iterator<Item = &'a ComponentAxis>,
+) -> Match<'a> {
+    let held_by: Vec<&ComponentAxis> = match &word.axis {
+        Some(axis_name) => candidates
+            .filter(|axis| axis.name == axis_name.as_str())
+            .collect(),
         None => candidates
-            .filter(|axis| axis.options.contains_key(option))
+            .filter(|axis| axis.options.contains_key(word.option.as_str()))
             .collect(),
     };
     match held_by.as_slice() {
@@ -162,48 +239,42 @@ fn match_word<'a>(word: &str, candidates: impl Iterator<Item = &'a ComponentAxis
 
 /// A launch's `--with` words, split by what they name.
 pub(super) struct LaunchWords {
-    /// By file copy: the parts after the copy's name of the words scoping
-    /// that copy's own axes, `NAME.axis=option` or `NAME.option`.
-    pub scoped: BTreeMap<String, Vec<String>>,
+    /// By copy, the file's or a `--join` one: the words of the copy's own
+    /// axes, `NAME.axis=option` or `NAME.option`, each with the machine of
+    /// the part it selects.
+    pub scoped: BTreeMap<CopyName, Vec<SelectionWord>>,
     /// The words naming the launcher's axes.
-    pub stack: Vec<String>,
+    pub stack: Vec<OptionChoice>,
 }
 
-/// Splits a launch's `--with` words into the file copies' and the stack's.
+/// Splits a launch's `--with` words into the copies' and the stack's.
 pub(super) fn split_scoped_words(
     launcher: &PeppyLauncher,
-    words: &[String],
-    joins: &[LaunchJoin],
+    words: &[LaunchWord],
+    joins: &[CopyReference],
 ) -> Result<LaunchWords, CompositionError> {
-    let copies: Vec<&str> = launcher
+    let copies: Vec<&CopyName> = launcher
         .option_deployments
         .iter()
         .flat_map(|entry| &entry.instances)
-        .map(|copy| copy.instance_id.as_str())
-        .chain(joins.iter().map(|join| join.name.as_str()))
+        .map(|copy| &copy.instance_id)
+        .chain(joins.iter().map(|join| &join.name))
         .collect();
-    let mut scoped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut scoped: BTreeMap<CopyName, Vec<SelectionWord>> = BTreeMap::new();
     let mut stack = Vec::new();
     for word in words {
-        let selector = word.split_once('=').map_or(word.as_str(), |(head, _)| head);
-        let Some((copy, tail)) = selector.split_once('.') else {
-            stack.push(word.clone());
-            continue;
+        let (copy, selection) = match word {
+            LaunchWord::Stack(choice) => {
+                stack.push(choice.clone());
+                continue;
+            }
+            LaunchWord::Copy { copy, word } => (copy, word),
         };
-        if copy.is_empty() {
-            return Err(CompositionError::ScopedWordNamesNoCopy { word: word.clone() });
-        }
-        if tail.is_empty() {
-            return Err(CompositionError::ScopedWordNamesNoOption {
-                word: word.clone(),
-                copy: copy.to_owned(),
-            });
-        }
         if !copies.contains(&copy) {
             let join = format!("`peppy stack join OPTION:{copy} --with ...` adds a copy");
             return Err(CompositionError::ScopedSelectionUnknownCopy {
-                word: word.clone(),
-                copy: copy.to_owned(),
+                word: Box::new(word.clone()),
+                copy: copy.to_string(),
                 copies: if launcher.repeatable_axes().next().is_none() {
                     String::from("this launcher declares no axis running as copies")
                 } else if copies.is_empty() {
@@ -215,15 +286,15 @@ pub(super) fn split_scoped_words(
                     format!(
                         "the launch starts {}; a launch word selects a copy's own axis as \
                          `NAME.axis=option` or `NAME.option`, and {join}",
-                        crate::error::format_quoted_list(copies.iter().copied())
+                        crate::error::format_quoted_list(copies.iter())
                     )
                 },
             });
         }
         scoped
-            .entry(copy.to_owned())
+            .entry(copy.clone())
             .or_default()
-            .push(word[copy.len() + 1..].to_owned());
+            .push(selection.clone());
     }
     Ok(LaunchWords { scoped, stack })
 }
@@ -233,15 +304,15 @@ pub(super) fn split_scoped_words(
 pub(super) fn resolve_stack(
     launcher: &PeppyLauncher,
     loaded: &LoadedComposition,
-    words: &[String],
+    words: &[OptionChoice],
 ) -> Result<UnitSelection, CompositionError> {
     // 1. The words that name a launcher axis. A word naming an axis that
     // runs as copies is refused here, before anything else, since the
     // command line cannot name a copy.
-    let mut chosen: BTreeMap<String, String> = BTreeMap::new();
-    let mut deferred: Vec<&str> = Vec::new();
+    let mut chosen = Chosen::default();
+    let mut deferred: Vec<&OptionChoice> = Vec::new();
     for word in words {
-        let (_, option) = split_word(word);
+        let option = word.option.as_str();
         match match_word(word, launcher.components.iter()) {
             Match::Nothing => deferred.push(word),
             Match::One(axis) if axis.cardinality.is_repeatable() => {
@@ -263,9 +334,15 @@ pub(super) fn resolve_stack(
                 if !axis.options.contains_key(option) {
                     return Err(unknown_selection(word, launcher, loaded, &[]));
                 }
-                choose(&mut chosen, &axis.name, option)?;
+                chosen.choose(
+                    &axis.name,
+                    option,
+                    Box::new(WrittenWord::Stack(word.clone())),
+                )?;
             }
-            Match::Several(axes) => return Err(ambiguous(word, &axes)),
+            Match::Several(axes) => {
+                return Err(ambiguous(Box::new(WrittenWord::Stack(word.clone())), &axes));
+            }
         }
     }
 
@@ -275,7 +352,7 @@ pub(super) fn resolve_stack(
     for axis in launcher.stack_axes() {
         entries.push(fill(
             axis,
-            chosen.get(&axis.name),
+            chosen.option_of(&axis.name),
             launcher.deployed_option(&axis.name),
             Owner::Launcher,
         )?);
@@ -283,24 +360,30 @@ pub(super) fn resolve_stack(
 
     // 3. The axes of the selected options, each reachable once.
     let reach = reach_of(launcher, loaded, &entries)?;
-    let mut nested_chosen: BTreeMap<String, String> = BTreeMap::new();
+    let mut nested_chosen = Chosen::default();
     for word in deferred {
-        let (_, option) = split_word(word);
+        let option = word.option.as_str();
         match match_word(word, reach.iter().map(|item| item.axis)) {
             Match::One(axis) if axis.options.contains_key(option) => {
-                choose(&mut nested_chosen, &axis.name, option)?;
+                nested_chosen.choose(
+                    &axis.name,
+                    option,
+                    Box::new(WrittenWord::Stack(word.clone())),
+                )?;
             }
             Match::One(_) | Match::Nothing => {
                 return Err(unknown_selection(word, launcher, loaded, &reach));
             }
-            Match::Several(axes) => return Err(ambiguous(word, &axes)),
+            Match::Several(axes) => {
+                return Err(ambiguous(Box::new(WrittenWord::Stack(word.clone())), &axes));
+            }
         }
     }
     let mut nested = Vec::with_capacity(reach.len());
     for item in &reach {
         nested.push(fill(
             item.axis,
-            nested_chosen.get(&item.axis.name),
+            nested_chosen.option_of(&item.axis.name),
             item.parent
                 .loaded
                 .deployed
@@ -360,22 +443,39 @@ fn reach_of<'a>(
     Ok(reach)
 }
 
-fn choose(
-    chosen: &mut BTreeMap<String, String>,
-    axis: &str,
-    option: &str,
-) -> Result<(), CompositionError> {
-    if let Some(first) = chosen.get(axis)
-        && first != option
-    {
-        return Err(CompositionError::ConflictingSelection {
-            axis: axis.to_owned(),
-            first: first.clone(),
-            second: option.to_owned(),
-        });
+/// The option each axis is chosen with, and the word that chose it.
+#[derive(Default)]
+struct Chosen {
+    by_axis: BTreeMap<String, (String, Box<WrittenWord>)>,
+}
+
+impl Chosen {
+    /// Chooses `option` on `axis` by `word`; a second word that chooses
+    /// another option on the axis is refused.
+    fn choose(
+        &mut self,
+        axis: &str,
+        option: &str,
+        word: Box<WrittenWord>,
+    ) -> Result<(), CompositionError> {
+        if let Some((first_option, first)) = self.by_axis.get(axis)
+            && first_option != option
+        {
+            return Err(CompositionError::ConflictingSelection {
+                axis: axis.to_owned(),
+                first: first.clone(),
+                second: word,
+            });
+        }
+        self.by_axis
+            .entry(axis.to_owned())
+            .or_insert((option.to_owned(), word));
+        Ok(())
     }
-    chosen.insert(axis.to_owned(), option.to_owned());
-    Ok(())
+
+    fn option_of(&self, axis: &str) -> Option<&String> {
+        self.by_axis.get(axis).map(|(option, _)| option)
+    }
 }
 
 /// Who names a copy's selection: the file's `deployments` entry, whose
@@ -460,9 +560,9 @@ fn fill(
     })
 }
 
-fn ambiguous(word: &str, axes: &[&str]) -> CompositionError {
+fn ambiguous(word: Box<WrittenWord>, axes: &[&str]) -> CompositionError {
     CompositionError::AmbiguousSelection {
-        word: word.to_owned(),
+        word,
         axes: crate::error::format_quoted_list(axes),
     }
 }
@@ -472,21 +572,23 @@ fn ambiguous(word: &str, axes: &[&str]) -> CompositionError {
 /// word that names an axis of a copy's option is told where copies are
 /// selected instead.
 fn unknown_selection(
-    word: &str,
+    word: &OptionChoice,
     launcher: &PeppyLauncher,
     loaded: &LoadedComposition,
     reach: &[AxisInReach<'_>],
 ) -> CompositionError {
-    let (axis_name, option) = split_word(word);
+    let option = word.option.as_str();
     for parent_axis in launcher.repeatable_axes() {
         for (option_name, loaded_option) in loaded.options_of(&parent_axis.name) {
-            let holder = loaded_option.axes.iter().find(|axis| match axis_name {
-                Some(axis_name) => axis.name == axis_name && axis.options.contains_key(option),
+            let holder = loaded_option.axes.iter().find(|axis| match &word.axis {
+                Some(axis_name) => {
+                    axis.name == axis_name.as_str() && axis.options.contains_key(option)
+                }
                 None => axis.options.contains_key(option),
             });
             if let Some(axis) = holder {
                 return CompositionError::CopyAxisAtLaunch {
-                    word: word.to_owned(),
+                    word: Box::new(word.clone()),
                     axis: axis.name.clone(),
                     parent: option_name.clone(),
                     option: option.to_owned(),
@@ -497,7 +599,7 @@ fn unknown_selection(
     let mut menu: String = axes_menu(launcher.stack_axes());
     menu.push_str(&axes_menu(reach.iter().map(|item| item.axis)));
     CompositionError::UnknownSelection {
-        word: word.to_owned(),
+        word: word.clone(),
         menu,
     }
 }
@@ -563,22 +665,35 @@ pub(super) fn resolve_copy(
     Ok(UnitSelection { entries })
 }
 
-/// A join's `--with` words as a copy's `with` map: each word names an
-/// option of one of the copied option's own axes.
+/// The words of one copy, resolved over the copied option's own axes: the
+/// option each word chooses, as the copy's `with` map, and the machine of
+/// each part a word places.
+#[derive(Debug, Default)]
+pub(super) struct CopyWords {
+    pub with: BTreeMap<String, String>,
+    pub parts: PartMachines,
+}
+
+/// The words of the copy `copy` over the copied option's own axes: each
+/// word names an option of one of them, and a word with a machine places
+/// the part that option brings. Two words on one axis must choose one
+/// option and name one machine, as written: no machine and `@self` differ,
+/// and so do `@self` and the coordinator's name, which composition cannot
+/// know.
 pub(super) fn copy_words(
     loaded: &LoadedOption,
-    words: &[String],
-) -> Result<BTreeMap<String, String>, CompositionError> {
-    let mut chosen = BTreeMap::new();
+    copy: &CopyName,
+    origin: WordOrigin,
+    words: &[SelectionWord],
+) -> Result<CopyWords, CompositionError> {
+    let mut chosen: BTreeMap<String, &SelectionWord> = BTreeMap::new();
     for word in words {
-        let (_, option) = split_word(word);
-        match match_word(word, loaded.axes.iter()) {
-            Match::One(axis) if axis.options.contains_key(option) => {
-                choose(&mut chosen, &axis.name, option)?;
-            }
+        let option = word.choice.option.as_str();
+        let axis = match match_word(&word.choice, loaded.axes.iter()) {
+            Match::One(axis) if axis.options.contains_key(option) => axis,
             Match::One(_) | Match::Nothing => {
                 return Err(CompositionError::UnknownCopySelection {
-                    word: word.clone(),
+                    word: origin.written(copy, word),
                     option: loaded.name.clone(),
                     menu: if loaded.axes.is_empty() {
                         String::from(" It declares none.")
@@ -587,8 +702,48 @@ pub(super) fn copy_words(
                     },
                 });
             }
-            Match::Several(axes) => return Err(ambiguous(word, &axes)),
+            Match::Several(axes) => return Err(ambiguous(origin.written(copy, word), &axes)),
+        };
+        if let Some(first) = chosen.get(&axis.name) {
+            if first.choice.option != word.choice.option {
+                return Err(CompositionError::ConflictingSelection {
+                    axis: axis.name.clone(),
+                    first: origin.written(copy, first),
+                    second: origin.written(copy, word),
+                });
+            }
+            if first.core_node != word.core_node {
+                return Err(CompositionError::PartPlacedTwice {
+                    copy: copy.to_string(),
+                    axis: axis.name.clone(),
+                    first: origin.written(copy, first),
+                    second: origin.written(copy, word),
+                });
+            }
+            continue;
         }
+        if let Some(machine) = &word.core_node
+            && !loaded.brings_instances(&axis.name, option)
+        {
+            return Err(CompositionError::PlacedPartBringsNothing {
+                copy: copy.to_string(),
+                word: origin.written(copy, word),
+                axis: axis.name.clone(),
+                option: option.to_owned(),
+                machine: machine.to_string(),
+            });
+        }
+        chosen.insert(axis.name.clone(), word);
     }
-    Ok(chosen)
+    let mut resolved = CopyWords::default();
+    for (axis, word) in chosen {
+        if let Some(machine) = &word.core_node {
+            resolved.parts.insert(
+                Name::new(axis.as_str()).expect("an axis name is a name"),
+                machine.clone(),
+            );
+        }
+        resolved.with.insert(axis, word.choice.option.to_string());
+    }
+    Ok(resolved)
 }

@@ -16,20 +16,22 @@ use self::orchestrate::{
     ValidatedPlan, fail_and_clear_stack, teardown_and_reset_stack, validate_and_order_dependencies,
 };
 use self::preflight::preflight_change;
-use self::resolve::{ParsedLaunch, parse_launcher_config, resolve_deployments};
+use self::resolve::{LaunchPlacements, ParsedLaunch, parse_launcher_config, resolve_deployments};
 use self::start::start_node_instances;
 use self::watchers::{LifecycleWatchers, lifecycle_watchers};
 use super::action::{StackAction, StackChangeContext};
 use super::container_mounts::{LocalMounts, hosts_container_nodes, prepare_local_container_mounts};
 use super::state::{ActiveLaunch, StackCopy};
-use config::runtime::{CoreNodeName, Name};
+use config::runtime::{CopyName, CoreNodeName};
 use core_node_api::encoding::LaunchIdentity;
 use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, LaunchGoal, LaunchResult, NodeAddLogEntry,
     NodeBuildLogEntry, NodeRunLogEntry,
 };
-use daemon_config::launcher::{ClockIncarnations, CopyMembership, Deployment, Placements};
-use std::collections::{HashMap, HashSet};
+use daemon_config::launcher::{
+    ClockIncarnations, CopyMembership, Deployment, Placements, ScopeCheck,
+};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Which change the node phases are running for: a whole stack's launch, or
 /// a join adding one copy to it.
@@ -93,8 +95,11 @@ pub(super) struct UnresolvedAdd {
 /// they are, which nodes the join brings to which machines, which machines
 /// held nothing before it, and what its rollback hands back to each machine.
 pub(super) struct JoinScope {
-    pub(super) name: Name,
+    pub(super) name: CopyName,
     pub(super) copy: StackCopy,
+    /// The machines the join found live, this daemon included, which its
+    /// rollback stops the copy on.
+    pub(super) live: BTreeSet<String>,
     /// The copy each instance of the joined plan belongs to, the stack's
     /// copies and this one.
     pub(super) copies: CopyMembership,
@@ -177,19 +182,24 @@ pub(super) struct PlannedDeployment {
 }
 
 /// The launch checks of daemon scopes over a planned stack: every scope
-/// parsed into its interface's type and held against `prepared`, the
-/// launcher the stack was composed from. A launch and each join run them
-/// once the deployments are resolved and before the link rules, which would
-/// read a link to a daemon target as one to an unknown slot.
+/// parsed into its interface's type, and, at a launch, held against
+/// `prepared`, the launcher the stack was composed from, and the stack
+/// selection. A launch and each join run them once the deployments are
+/// resolved and before the link rules, which would read a link to a daemon
+/// target as one to an unknown slot. A join holds each instance to its
+/// rules alone: the launcher and the stack selection of a launch do not
+/// change, so a join cannot change the launch's verdict.
 pub(super) fn check_planned_daemon_scopes(
     prepared: &daemon_config::launcher::PreparedLauncher,
     planned: &[PlannedDeployment],
     copies: &CopyMembership,
+    check: ScopeCheck<'_>,
 ) -> Result<(), String> {
     daemon_config::launcher::check_daemon_scopes(
         prepared,
         planned.iter().map(|item| (&item.deployment, &item.targets)),
         copies,
+        check,
     )
     .map_err(|refusals| refusals.to_string())
 }
@@ -222,7 +232,11 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     let ParsedLaunch {
         prepared,
         composed,
-        placements,
+        placements:
+            LaunchPlacements {
+                placements,
+                copy_core_nodes,
+            },
     } = match parse_launcher_config(&ctx, &goal).await {
         Ok(result) => result,
         Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
@@ -248,7 +262,12 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // Step 2a: The resolution knows which targets are daemon targets, so
     // every scope is parsed into its interface's type here, before anything
     // starts.
-    if let Err(reason) = check_planned_daemon_scopes(&prepared, &planned, &copy_membership) {
+    if let Err(reason) = check_planned_daemon_scopes(
+        &prepared,
+        &planned,
+        &copy_membership,
+        ScopeCheck::Launch(&selection),
+    ) {
         publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
         return LaunchResult::failure(ctx.log.path(), reason);
     }
@@ -430,7 +449,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     )
     .with_clocks(clocks.clone(), incarnations)
     .with_watchers(watchers);
-    active.record_copies(copies, &ordered);
+    active.record_copies(copies, &ordered, &copy_core_nodes);
     let phase = PhaseGoal {
         launch_id: goal.launch_id.clone(),
         rebuild: goal.rebuild,

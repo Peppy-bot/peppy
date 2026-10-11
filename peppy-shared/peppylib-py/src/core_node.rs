@@ -219,6 +219,11 @@ pub struct PyStackList {
 
 #[pymethods]
 impl PyStackList {
+    /// The copies the serving coordinator runs, each a dict with `name`,
+    /// `option`, `core_node` (the copy's machine), `instance_ids`,
+    /// `selections` and `set_members`. Each selection is a dict with `axis`
+    /// and `option`, and `core_node` when the part it selects runs on another
+    /// machine than the copy's.
     #[getter]
     fn copies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         Ok(pythonize(py, &self.inner.copies)?)

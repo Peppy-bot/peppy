@@ -734,7 +734,23 @@ mod exposures {
             .expect("stack.join is a task");
         assert_eq!(
             join["input_schema"]["properties"],
-            serde_json::json!({ "name": { "type": "string" }, "option": { "type": "string" } })
+            serde_json::json!({
+                "name": { "type": "string" },
+                "option": { "type": "string" },
+                "core_node": { "type": "string" },
+                "features": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "feature": { "type": "string" },
+                            "core_node": { "type": "string" },
+                        },
+                        "required": ["feature", "core_node"],
+                        "additionalProperties": false,
+                    },
+                },
+            })
         );
         assert_eq!(join["progress_timeout_ms"], 660000);
     }

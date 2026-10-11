@@ -1,16 +1,19 @@
 // The copies of the running launch: list them, add one, remove one. The
 // peppy daemon that started the MCP server serves this interface, and no
 // node implements it. The scope that the launcher gives the target limits
-// every member to the options it names.
+// every member to the options it names and the features it gives them. A
+// machine is the core node name of a peppy daemon.
 {
   peppy_schema: "contract/v1",
   manifest: { name: "stack_copies", tag: "v1" },
   interfaces: {
     services: [
       {
-        // The options of the scope, the copies of these options on the
-        // stack, in name order, and the addition or removal of a copy of one
-        // of them that runs now.
+        // The options of the scope with their features, the machines of the
+        // federation now, the copies of these options on the stack, in name
+        // order, and the addition or removal of a copy of one of them that
+        // runs now. Each copy is a valid `join` goal, which adds the same
+        // copy on the same machines.
         name: "list",
         response_message_format: {
           options: {
@@ -21,8 +24,25 @@
               option: "string",
               // The one-line description the scope gives the option.
               description: "string",
+              // The features a copy of the option may hold, in the scope's
+              // order; empty when it offers none.
+              features: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  // The feature, the value a `join` feature item takes.
+                  feature: "string",
+                  // The one-line description the scope gives the feature.
+                  description: "string",
+                },
+              },
             },
           },
+          // This machine and every live daemon of the same workspace or
+          // project, each once, in name order, read on every call.
+          core_nodes: { $type: "array", $items: "string" },
+          // The machine of this stack: the coordinator.
+          this_core_node: "string",
           copies: {
             $type: "array",
             $items: {
@@ -31,6 +51,18 @@
               name: "string",
               // The launcher option the copy runs.
               option: "string",
+              // The copy's machine, which runs its base.
+              core_node: "string",
+              // The features of the option the copy holds, in the scope's
+              // order, each with the machine that runs its part.
+              features: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  feature: "string",
+                  core_node: "string",
+                },
+              },
             },
           },
           // The most copies of the scope's options on the stack: `join`
@@ -52,18 +84,34 @@
     ],
     actions: [
       {
-        // Adds a copy of an option, as `peppy stack join OPTION:NAME` does
-        // with no other argument: the option's entry in the launcher decides
-        // the copy's selection. Refused when the option is not in the scope,
-        // when a copy on the stack has the name, when the stack holds
-        // max_copies copies of the scope's options, and while another stack
-        // change or node operation runs on the daemon. A failed join is
-        // undone. A cancel stops the wait and not the join.
+        // Adds a copy of an option on a machine, with the features it
+        // names, each part on its machine, as `peppy stack join
+        // OPTION:NAME@CORE_NODE` does with the `axis=option@CORE_NODE` word
+        // of each feature: the option's entry in the launcher decides the
+        // rest of the copy's selection. Refused when the option is not in
+        // the scope, when a feature is not a feature of the option or is
+        // named twice, when a copy on the stack has the name, when the stack
+        // holds max_copies copies of the scope's options, when a machine is
+        // not live, and while another stack change or node operation runs on
+        // the daemon. A failed join is undone. A cancel stops the wait and
+        // not the join.
         name: "join",
         goal_service: {
           request_message_format: {
             name: "string",
             option: "string",
+            // The copy's machine, which runs its base.
+            core_node: "string",
+            // The features of the copy, each with the machine of its part;
+            // empty for the copy of the launcher's entry.
+            features: {
+              $type: "array",
+              $items: {
+                $type: "object",
+                feature: "string",
+                core_node: "string",
+              },
+            },
           },
         },
         // One message per line of the join's log, in order.
@@ -96,7 +144,7 @@
           },
         },
         // One message per line of the removal's log, in order: one at
-        // least for each instance it stops.
+        // least for each instance it stops, on each machine.
         feedback_topic: {
           qos_profile: "standard",
           message_format: {

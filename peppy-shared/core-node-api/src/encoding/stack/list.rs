@@ -5,22 +5,43 @@ use crate::{Payload, Result};
 
 use crate::encoding::{
     capnp_list_len, decode_message, encode_message, read_core_node_name, read_name, read_name_list,
-    read_text_list, required_text, required_text_list, write_text_list,
+    required_text, write_text_list,
 };
-use config::runtime::{CoreNodeName, Name};
+use config::runtime::{CopyName, CoreNodeName, Name};
+use std::collections::BTreeSet;
+
+use super::words::{AxisSelection, read_axis_selection, read_copy_name, write_axis_selection};
 
 /// One copy on the stack: a named instance of an option of an axis that runs
-/// as copies, where it runs, the instances it minted, the `axis=option` words its
-/// own axes were filled with, and the members it added to stack instances'
+/// as copies, the copy's machine, which runs its base, the instances it
+/// minted, each filled own axis with the machine of the part it selects when
+/// that part runs elsewhere, and the members it added to stack instances'
 /// set slots.
+///
+/// A listed copy is its own recipe: `peppy stack join OPTION:NAME@CORE_NODE
+/// --with SELECTIONS` adds the same copy on the same machines.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CopyInfo {
-    pub name: Name,
+    pub name: CopyName,
     pub core_node: CoreNodeName,
     pub instance_ids: Vec<Name>,
-    pub selections: Vec<String>,
+    pub selections: Vec<AxisSelection>,
     pub option: String,
     pub set_members: Vec<SetMember>,
+}
+
+impl CopyInfo {
+    /// Every machine the copy runs on: the copy's machine and the machine of
+    /// each part that runs elsewhere.
+    pub fn core_nodes(&self) -> BTreeSet<&CoreNodeName> {
+        std::iter::once(&self.core_node)
+            .chain(
+                self.selections
+                    .iter()
+                    .filter_map(|selection| selection.core_node.as_ref()),
+            )
+            .collect()
+    }
 }
 
 /// One member a copy added to a stack instance's set slot: the stack instance,
@@ -38,7 +59,7 @@ pub struct SetMember {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CopyChange {
     pub action: CopyAction,
-    pub name: Name,
+    pub name: CopyName,
     pub option: String,
 }
 
@@ -134,7 +155,7 @@ pub struct StackListResponse {
     /// one whose launch died before populating a slice.
     pub reservation: Option<LaunchIdentity>,
     /// The copies the launch recorded on this daemon, each with the option it
-    /// copies, its host, its selections and its instances.
+    /// copies, its machine, its selections and its instances.
     pub copies: Vec<CopyInfo>,
     /// The cooperative shutdown grace this daemon is configured with, which
     /// a destructive request's budget is derived from. An absent field reads
@@ -225,11 +246,15 @@ impl StackListResponse {
                     )?),
                     &copy.instance_ids,
                 );
-                write_text_list(
-                    wire.reborrow()
-                        .init_selections(capnp_list_len(copy.selections.len(), "selections")?),
-                    &copy.selections,
-                );
+                let mut selections = wire
+                    .reborrow()
+                    .init_selections(capnp_list_len(copy.selections.len(), "selections")?);
+                for (selection_index, selection) in copy.selections.iter().enumerate() {
+                    write_axis_selection(
+                        selections.reborrow().get(selection_index as u32),
+                        selection,
+                    );
+                }
                 let mut set_members =
                     wire.init_set_members(capnp_list_len(copy.set_members.len(), "set_members")?);
                 for (entry_index, set_member) in copy.set_members.iter().enumerate() {
@@ -317,13 +342,17 @@ impl StackListResponse {
 /// any of its set members.
 fn decode_copy(copy: node_capnp::copy_info::Reader<'_>) -> Result<CopyInfo> {
     Ok(CopyInfo {
-        name: read_name(copy.get_name()?.to_str()?, "copies.name")?,
+        name: read_copy_name(copy.get_name()?.to_str()?, "copies.name")?,
         core_node: read_core_node_name(copy.get_core_node()?.to_str()?, "copies.core_node")?,
         instance_ids: read_name_list(copy.get_instance_ids()?, "copies.instance_ids")?,
-        selections: required_text_list(
-            read_text_list(copy.get_selections()?)?,
-            "copies.selections",
-        )?,
+        selections: copy
+            .get_selections()?
+            .iter()
+            .enumerate()
+            .map(|(index, selection)| {
+                read_axis_selection(selection, &format!("copies.selections[{index}]"))
+            })
+            .collect::<Result<_>>()?,
         option: required_text(copy.get_option()?.to_str()?, "copies.option")?,
         set_members: copy
             .get_set_members()?
@@ -359,7 +388,7 @@ fn decode_copy_change(
 ) -> Result<CopyChange> {
     Ok(CopyChange {
         action,
-        name: read_name(copy.get_name()?.to_str()?, "copy_change.name")?,
+        name: read_copy_name(copy.get_name()?.to_str()?, "copy_change.name")?,
         option: required_text(copy.get_option()?.to_str()?, "copy_change.option")?,
     })
 }
@@ -485,14 +514,18 @@ mod tests {
     fn response_preserves_copies_and_requires_their_identity() {
         let mut response = StackListResponse::new("{}", "cn-atlas", "generation_1", "atlas");
         response.copies.push(CopyInfo {
-            name: Name::new("alpha").unwrap(),
+            name: CopyName::new("alpha").unwrap(),
             option: "openarm_v2".into(),
             core_node: CoreNodeName::new("jetson-1").unwrap(),
             instance_ids: vec![
                 Name::new("alpha_backbone_inst").unwrap(),
                 Name::new("alpha_commander_inst").unwrap(),
+                Name::new("alpha_brain_inst").unwrap(),
             ],
-            selections: vec!["commander=xr_commander".into()],
+            selections: vec![
+                "commander=xr_commander".parse().unwrap(),
+                "brain=ai_brain_vla@cn-gpu-box".parse().unwrap(),
+            ],
             set_members: vec![SetMember {
                 instance_id: Name::new("monitor_inst").unwrap(),
                 link_id: "robots".into(),
@@ -503,10 +536,18 @@ mod tests {
             StackListResponse::decode(&response.encode().unwrap()).unwrap(),
             response
         );
-        // A copy that arrives with a blank name, option, or host, or an
-        // instance id that is not a name, is refused at the wire boundary.
+        let machines: Vec<&str> = response.copies[0]
+            .core_nodes()
+            .into_iter()
+            .map(CoreNodeName::as_str)
+            .collect();
+        assert_eq!(machines, ["cn-gpu-box", "jetson-1"]);
+        // A copy that arrives with a blank name, option, or machine, a copy
+        // named `self`, or an instance id that is not a name, is refused at
+        // the wire boundary.
         for (name, option, core_node, instance_id) in [
             ("", "openarm_v2", "jetson-1", "alpha_arm_inst"),
+            ("self", "openarm_v2", "jetson-1", "alpha_arm_inst"),
             ("alpha", "", "jetson-1", "alpha_arm_inst"),
             ("alpha", "openarm_v2", "", "alpha_arm_inst"),
             ("alpha", "openarm_v2", "jetson-1", "bad/id"),
@@ -526,30 +567,36 @@ mod tests {
         }
     }
 
-    /// A set member with a blank or invalid field, or a blank selection word,
-    /// is refused at the wire boundary with the field that carried it.
+    /// A set member with a blank or invalid field, or a selection whose axis
+    /// is not a name or whose machine is `self`, is refused at the wire
+    /// boundary with the field that carried it.
     #[test]
-    fn response_decode_refuses_a_blank_set_member_field_or_selection() {
-        for (selection, (instance_id, link_id, target), expected) in [
+    fn response_decode_refuses_a_bad_set_member_field_or_selection() {
+        for ((axis, machine), (instance_id, link_id, target), expected) in [
             (
-                "commander=xr_commander",
+                ("commander", None),
                 ("bad/id", "robots", "alpha_arm_inst"),
                 "copies.set_members.instance_id",
             ),
             (
-                "commander=xr_commander",
+                ("commander", None),
                 ("monitor_inst", "", "alpha_arm_inst"),
                 "copies.set_members.link_id",
             ),
             (
-                "commander=xr_commander",
+                ("commander", None),
                 ("monitor_inst", "robots", ""),
                 "copies.set_members.target",
             ),
             (
-                "",
+                ("", None),
                 ("monitor_inst", "robots", "alpha_arm_inst"),
-                "copies.selections[0]",
+                "copies.selections[0].axis",
+            ),
+            (
+                ("commander", Some("self")),
+                ("monitor_inst", "robots", "alpha_arm_inst"),
+                "copies.selections[0].core_node.named",
             ),
         ] {
             let mut builder = Builder::new_default();
@@ -561,7 +608,13 @@ mod tests {
             copy.reborrow()
                 .init_instance_ids(1)
                 .set(0, "alpha_arm_inst");
-            copy.reborrow().init_selections(1).set(0, selection);
+            let mut selection = copy.reborrow().init_selections(1).get(0);
+            selection.set_axis(axis);
+            selection.set_option("xr_commander");
+            match machine {
+                Some(machine) => selection.init_core_node().set_named(machine),
+                None => selection.init_core_node().set_with_copy(()),
+            }
             let mut member = copy.init_set_members(1).get(0);
             member.set_instance_id(instance_id);
             member.set_link_id(link_id);
@@ -642,7 +695,7 @@ mod tests {
             let response = StackListResponse::new("{}", "cn-atlas", "gen_1", "atlas")
                 .with_copy_change(CopyChange {
                     action,
-                    name: Name::new("bravo").unwrap(),
+                    name: CopyName::new("bravo").unwrap(),
                     option: "so101_sim".into(),
                 });
             let decoded = StackListResponse::decode(&response.encode().unwrap()).unwrap();

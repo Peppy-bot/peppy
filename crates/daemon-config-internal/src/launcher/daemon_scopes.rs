@@ -9,8 +9,14 @@
 //! once that resolution is done and before anything starts. They read the
 //! flat launcher and the targets of the exposure documents alone, so `peppy
 //! stack resolve` runs them with a cold nodes cache too.
+//!
+//! The launch and `peppy stack resolve` also hold each scope against the
+//! launcher and the stack selection ([`ScopeCheck::Launch`]). A join runs
+//! the rules of each instance alone ([`ScopeCheck::Join`]): the launcher and
+//! the stack selection of a launch do not change, so a join cannot change
+//! that verdict.
 
-use super::compose::{CopyMembership, PreparedLauncher};
+use super::compose::{CopyMembership, PreparedLauncher, UnitSelection};
 use super::types::Deployment;
 use crate::internal::daemon_interface::DaemonInterface;
 use crate::internal::mcp_deployment::DeploymentTargets;
@@ -112,21 +118,34 @@ fn contract_hint(key: &str, contract_target: bool) -> String {
 )]
 pub struct DaemonScopeRefusals(pub Vec<DaemonScopeError>);
 
+/// Which checks a run holds each scope to.
+#[derive(Debug, Clone, Copy)]
+pub enum ScopeCheck<'a> {
+    /// A launch, or `peppy stack resolve`, of the stack this selection
+    /// resolves: the rules of each instance, and each scope against the
+    /// launcher and the stack.
+    Launch(&'a UnitSelection),
+    /// A join: the rules of each instance alone.
+    Join,
+}
+
 /// Checks the daemon scopes of the flat launcher whose deployments
 /// `deployments` lists, each beside the targets its exposures serve (empty
 /// for a node deployment). `prepared` is the launcher the stack was composed
 /// from, which a scope's own checks read (the options of the axes that run
-/// as copies, for `stack_copies`); `copies` tells which instances belong to
-/// a copy. Every refusal is reported at once.
+/// as copies and the copies they compose, for `stack_copies`); `copies`
+/// tells which instances belong to a copy. Every refusal is reported at
+/// once.
 pub fn check_daemon_scopes<'a>(
     prepared: &PreparedLauncher,
     deployments: impl IntoIterator<Item = (&'a Deployment, &'a DeploymentTargets)>,
     copies: &CopyMembership,
+    check: ScopeCheck<'_>,
 ) -> Result<(), DaemonScopeRefusals> {
     let mut refusals = Vec::new();
     for (deployment, targets) in deployments {
         for instance in &deployment.instances {
-            check_instance(prepared, instance, targets, copies, &mut refusals);
+            check_instance(prepared, instance, targets, copies, check, &mut refusals);
         }
     }
     if refusals.is_empty() {
@@ -141,6 +160,7 @@ fn check_instance(
     instance: &super::types::DeploymentInstance,
     targets: &DeploymentTargets,
     copies: &CopyMembership,
+    check: ScopeCheck<'_>,
     refusals: &mut Vec<DaemonScopeError>,
 ) {
     let id = instance.instance_id.as_str();
@@ -198,19 +218,21 @@ fn check_instance(
             daemon_target,
             *interface,
             instance.daemon_scopes.get(daemon_target),
+            check,
             refusals,
         );
     }
 }
 
 /// One daemon target's scope: present, parsed into its interface's type,
-/// and held to the interface's checks against the launcher.
+/// and, at a launch, held to the interface's checks against the launcher.
 fn check_scope(
     prepared: &PreparedLauncher,
     instance: &str,
     daemon_target: &str,
     interface: DaemonInterface,
     scope: Option<&serde_json::Value>,
+    check: ScopeCheck<'_>,
     refusals: &mut Vec<DaemonScopeError>,
 ) {
     let Some(scope) = scope else {
@@ -233,12 +255,18 @@ fn check_scope(
             return;
         }
     };
-    refusals.extend(parsed.check_launch(prepared).into_iter().map(|reason| {
-        DaemonScopeError::ScopeRefusedByLauncher {
-            instance: instance.to_owned(),
-            daemon_target: daemon_target.to_owned(),
-            interface: interface.label(),
-            reason,
-        }
-    }));
+    let ScopeCheck::Launch(selection) = check else {
+        return;
+    };
+    refusals.extend(
+        parsed
+            .check_launch(prepared, selection)
+            .into_iter()
+            .map(|reason| DaemonScopeError::ScopeRefusedByLauncher {
+                instance: instance.to_owned(),
+                daemon_target: daemon_target.to_owned(),
+                interface: interface.label(),
+                reason,
+            }),
+    );
 }

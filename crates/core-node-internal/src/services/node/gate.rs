@@ -610,7 +610,7 @@ mod tests {
         let join = state.try_begin_change().unwrap();
         let bravo = CopyChange {
             action: CopyAction::Join,
-            name: config::runtime::Name::new("bravo").unwrap(),
+            name: config::runtime::CopyName::new("bravo").unwrap(),
             option: "so101_sim".to_owned(),
         };
         join.report(bravo.clone());

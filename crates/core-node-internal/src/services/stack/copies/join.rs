@@ -24,14 +24,14 @@ use super::{
     changed_slots::{Change, changed_slots, deliver_sets, grow_or_restore, holds_any, whole_sets},
     live::{LiveCheck, check_hosts_live, check_live_stack, live_machines, node_info_on},
     plan::{ResolvedJoin, join_dependencies, selected_instances},
-    remove::stop_copy,
+    remove::stop_copy_on_live_machines,
 };
 use crate::services::node::common::panic_message;
 use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry,
     NodeRunLogEntry, StackJoinGoal,
 };
-use daemon_config::launcher::CopyMembership;
+use daemon_config::launcher::{CopyMembership, ScopeCheck};
 use futures::FutureExt;
 use std::{collections::HashMap, panic::AssertUnwindSafe};
 
@@ -112,7 +112,7 @@ async fn join_inner(
         planned,
         placements,
         new_ids,
-        host,
+        copy_core_node,
         copy,
         resolved,
     } = ResolvedJoin::resolve(ctx, active, goal).await?;
@@ -124,7 +124,7 @@ async fn join_inner(
     // clock that simulation is already supplying.
     let (clocks, incarnations) = plan_clocks(&combined, &placements, &active.clocks)?;
     let copies = CopyMembership::of(active.copy_records().chain([&copy]));
-    check_planned_daemon_scopes(&active.prepared, &planned, &copies)?;
+    check_planned_daemon_scopes(&active.prepared, &planned, &copies, ScopeCheck::Join)?;
     let ValidatedPlan {
         ordered,
         slot_bindings: bindings,
@@ -161,8 +161,9 @@ async fn join_inner(
     // were.
     let record = StackCopy {
         record: copy_in_start_order(copy.clone(), &planned, &ordered),
-        core_node: host,
+        core_node: copy_core_node,
     };
+    let joined = joined_line(&goal.copy.name, &copy.option, &record, &placements);
     let phase = PhaseGoal {
         launch_id: active.launch_id.clone(),
         rebuild: false,
@@ -173,7 +174,7 @@ async fn join_inner(
     let mut scope: Option<JoinScope> = None;
     let mut stage = JoinStage::Planned;
     let operation = async {
-        let live = check_live_stack(
+        let found = check_live_stack(
             ctx,
             LiveCheck {
                 active,
@@ -213,12 +214,13 @@ async fn join_inner(
             })
             .collect();
         let scope: &mut JoinScope = scope.insert(JoinScope {
-            name: goal.name.clone(),
+            name: goal.copy.name.clone(),
             copy: record.clone(),
+            live: live.clone(),
             copies: copies.clone(),
-            existing_nodes: live.reusable,
+            existing_nodes: found.reusable,
             planned_nodes,
-            fresh_hosts: live.fresh_hosts,
+            fresh_hosts: found.fresh_hosts,
             participants: participants.clone(),
             placements: placements.clone(),
             restored_watchers: watchers_replacing(&watchers, &previous.watchers),
@@ -249,7 +251,7 @@ async fn join_inner(
         active.clocks = incarnations;
         active.resolved_clocks = clocks.clone();
         active.watchers = watchers;
-        active.copies.insert(goal.name.clone(), record);
+        active.copies.insert(goal.copy.name.clone(), record);
         stage = JoinStage::NodesAdding;
         add_nodes_to_stack(
             ctx,
@@ -314,18 +316,28 @@ async fn join_inner(
     };
     change.reserved.release().await;
     outcome?;
-    publish_stdout(
-        ctx,
-        format!(
-            "Copy `{}` of `{}` joined: {}",
-            goal.name,
-            copy.option,
-            copy.selection.echo()
-        ),
-        LaunchFeedbackStep::LauncherStep,
-    )
-    .await;
+    publish_stdout(ctx, joined, LaunchFeedbackStep::LauncherStep).await;
     Ok(())
+}
+
+/// The line a join ends with: the copy, its option and its machine, then the
+/// words that add it again, as `stack list` prints them.
+fn joined_line(
+    name: &config::runtime::CopyName,
+    option: &str,
+    record: &StackCopy,
+    placements: &daemon_config::launcher::Placements,
+) -> String {
+    let words = record.words(placements);
+    let line = format!(
+        "Copy `{name}` of `{option}` joined on `{}`",
+        record.core_node
+    );
+    if words.is_empty() {
+        line
+    } else {
+        format!("{line}: {words}")
+    }
 }
 
 /// Undoes what the failed join's stage did: stops what it started, removes
@@ -347,7 +359,8 @@ async fn rollback_join(
     let plan = stage.rollback_plan();
     let cleanup = async {
         if plan.stops_instances {
-            stop_copy(ctx, launch_id, &scope.copy).await?;
+            stop_copy_on_live_machines(ctx, launch_id, &scope.copy, &scope.placements, &scope.live)
+                .await?;
         }
         if plan.removes_added_nodes {
             for hosted in scope.added_nodes() {

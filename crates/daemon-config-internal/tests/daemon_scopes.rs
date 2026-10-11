@@ -3,14 +3,14 @@
 //! through a copy, and the launch checks every scope meets once the
 //! exposure deployments are resolved.
 
-use config::runtime::Name;
-use core_node_api::encoding::LaunchJoin;
+use config::runtime::{CopyName, Name};
+use core_node_api::encoding::CopyReference;
 use daemon_config::daemon_interface::DaemonInterface;
 use daemon_config::launcher::{
     AppliedChange, ComposedLaunch, CompositionError, CopyMembership, DaemonScopeError,
     DaemonScopeRefusals, Deployment, DeploymentInstance, DeploymentSource, JoinRequest,
-    PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, SkipReason,
-    check_daemon_scopes,
+    PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, ScopeCheck, SkipReason,
+    UnitSelection, check_daemon_scopes,
 };
 use daemon_config::mcp_deployment::DeploymentTargets;
 use serde_json::json;
@@ -90,11 +90,14 @@ fn name(value: &str) -> Name {
     Name::new(value).expect("a name")
 }
 
-fn launch_join(option: &str, copy: &str) -> LaunchJoin {
-    LaunchJoin {
-        option: option.to_owned(),
-        name: name(copy),
-    }
+fn copy_name(value: &str) -> CopyName {
+    CopyName::new(value).expect("a copy name")
+}
+
+fn launch_join(option: &str, copy: &str) -> CopyReference {
+    format!("{option}:{copy}")
+        .parse()
+        .expect("a copy reference")
 }
 
 fn instance<'a>(flat: &'a PeppyLauncher, id: &str) -> &'a DeploymentInstance {
@@ -133,15 +136,29 @@ fn check(
     prepared: &PreparedLauncher,
     flat: &PeppyLauncher,
     copies: &CopyMembership,
+    scope_check: ScopeCheck<'_>,
 ) -> Result<(), DaemonScopeRefusals> {
     let targets: Vec<DeploymentTargets> = flat.deployments.iter().map(targets_of).collect();
-    check_daemon_scopes(prepared, flat.deployments.iter().zip(&targets), copies)
+    check_daemon_scopes(
+        prepared,
+        flat.deployments.iter().zip(&targets),
+        copies,
+        scope_check,
+    )
 }
 
+/// The refusals of the launch checks of `flat`, the plan of a launch of
+/// `prepared` with no word.
 fn refusals(prepared: &PreparedLauncher, flat: &PeppyLauncher) -> Vec<DaemonScopeError> {
-    check(prepared, flat, &CopyMembership::default())
-        .expect_err("the scopes are refused")
-        .0
+    let selection = prepared.launch(&[], &[]).expect("composes").selection;
+    check(
+        prepared,
+        flat,
+        &CopyMembership::default(),
+        ScopeCheck::Launch(&selection),
+    )
+    .expect_err("the scopes are refused")
+    .0
 }
 
 /// The shape of `simulation_mcp`: the top-level scope runs in the stack and
@@ -181,13 +198,14 @@ fn a_top_level_scope_runs_in_the_stack_and_copies_join_beside_it() {
     );
 
     let copies = CopyMembership::of(report.copies.iter());
-    check(&prepared, &flat, &copies).expect("the scopes hold at launch");
+    check(&prepared, &flat, &copies, ScopeCheck::Launch(&selection))
+        .expect("the scopes hold at launch");
 
     let joined = prepared
         .join(
             JoinRequest {
-                option: "so101_sim",
-                name: &name("bravo"),
+                option: &name("so101_sim"),
+                name: &copy_name("bravo"),
                 words: &[],
                 arguments: &[],
             },
@@ -210,7 +228,8 @@ fn a_top_level_scope_runs_in_the_stack_and_copies_join_beside_it() {
         scoped.daemon_scopes
     );
     let copies = CopyMembership::of(report.copies.iter().chain([&joined.copy]));
-    check(&prepared, &joined.launcher, &copies).expect("the scopes hold after the join");
+    check(&prepared, &joined.launcher, &copies, ScopeCheck::Join)
+        .expect("the scopes hold after the join");
 
     // The same launcher, checked as `repo index --check` checks it.
     let parsed = PeppyLauncherParser::from_content(&simulation_mcp("", "")).expect("parses");
@@ -233,8 +252,13 @@ fn a_scope_of_an_instance_the_selection_does_not_define_is_skipped() {
         entry.target == "framework_controls_inst"
             && matches!(entry.reason, SkipReason::TargetAbsent)
     }));
-    check(&prepared, &composed.launcher, &CopyMembership::default())
-        .expect("no instance serves a daemon target");
+    check(
+        &prepared,
+        &composed.launcher,
+        &CopyMembership::default(),
+        ScopeCheck::Launch(&composed.selection),
+    )
+    .expect("no instance serves a daemon target");
 }
 
 #[test]
@@ -332,8 +356,8 @@ fn a_scope_written_through_a_copy_is_refused() {
     let error = prepared
         .join(
             JoinRequest {
-                option: "openarm_sim",
-                name: &name("bravo"),
+                option: &name("openarm_sim"),
+                name: &copy_name("bravo"),
                 words: &[],
                 arguments: &[],
             },
@@ -383,8 +407,8 @@ fn a_scope_written_under_an_option_that_runs_as_copies_is_refused() {
     let error = prepared
         .join(
             JoinRequest {
-                option: "scoping_sim",
-                name: &name("bravo"),
+                option: &name("scoping_sim"),
+                name: &copy_name("bravo"),
                 words: &[],
                 arguments: &[],
             },
@@ -637,9 +661,14 @@ fn an_instance_that_serves_a_daemon_target_runs_on_the_coordinator() {
         .launch(&[], &[launch_join("endpoint", "delta")])
         .expect("composes");
     let copies = CopyMembership::of(composed.copies());
-    let refused = check(&prepared, &composed.launcher, &copies)
-        .expect_err("the copy's instance serves a daemon target")
-        .0;
+    let refused = check(
+        &prepared,
+        &composed.launcher,
+        &copies,
+        ScopeCheck::Launch(&composed.selection),
+    )
+    .expect_err("the copy's instance serves a daemon target")
+    .0;
     assert!(
         refused.contains(&DaemonScopeError::InCopy {
             instance: "delta_endpoint_inst".to_owned(),
@@ -691,7 +720,13 @@ fn every_refusal_is_reported_at_once() {
            {{ source: {{ name: "arm", tag: "v1" }}, instances: [
                {{ instance_id: "arm_inst", daemon_scopes: {{ stack: {{}} }} }} ] }}"#
     ));
-    let error = check(&prepared, &launcher, &CopyMembership::default()).expect_err("refused");
+    let error = check(
+        &prepared,
+        &launcher,
+        &CopyMembership::default(),
+        ScopeCheck::Launch(&UnitSelection::default()),
+    )
+    .expect_err("refused");
     assert_eq!(error.0.len(), 3, "{error}");
     let rendered = error.to_string();
     assert!(
@@ -702,5 +737,280 @@ fn every_refusal_is_reported_at_once() {
     assert!(
         instances.iter().all(|id| rendered.contains(id)),
         "{rendered}"
+    );
+}
+
+// -- features ------------------------------------------------------------
+
+/// A robot option with own axes: a commander whose `mcp` option brings no
+/// instance, a brain and a recorder that each bring one, and the
+/// constraints `constraints` adds to it.
+fn featured_option(constraints: &str) -> String {
+    format!(
+        r#"featured_sim: {{
+            deployments: [
+                {{ source: {{ name: "arm", tag: "v1" }}, instances: [{{ instance_id: "arm_inst" }}] }},
+            ],
+            components: [
+                {{ name: "commander", options: {{
+                    web: {{ deployments: [
+                        {{ source: {{ name: "panel", tag: "v1" }}, instances: [{{ instance_id: "commander_inst" }}] }}
+                    ] }},
+                    mcp: {{}},
+                }} }},
+                {{ name: "brain", cardinality: "zero_or_one", options: {{
+                    ai_brain_vla: {{ deployments: [
+                        {{ source: {{ name: "brain", tag: "v1" }}, instances: [{{ instance_id: "brain_inst" }}] }}
+                    ] }},
+                }} }},
+                {{ name: "recorder", cardinality: "zero_or_one", options: {{
+                    lerobot_recorder: {{ deployments: [
+                        {{ source: {{ name: "recorder", tag: "v1" }}, instances: [{{ instance_id: "recorder_inst" }}] }}
+                    ] }},
+                }} }},
+            ],
+            constraints: [{constraints}],
+        }},"#
+    )
+}
+
+/// The feature `name` on `axis=option`, as a scope writes it.
+fn feature(name: &str, axis: &str, option: &str) -> String {
+    format!(
+        r#"{{ feature: "{name}", axis: "{axis}", option: "{option}", description: "Adds {name}." }}"#
+    )
+}
+
+/// `simulation_mcp` with the featured option, its launcher entry `entry`
+/// (the option's `with`), a scope whose `featured_sim` offers `features`,
+/// and the option's `constraints`.
+fn featured_launcher(entry: &str, features: &[String], constraints: &str) -> PreparedLauncher {
+    load(&simulation_mcp_with(
+        &format!(r#"{{ robot: "featured_sim", with: {{ {entry} }} }},"#),
+        &format!(
+            r#"{{ target: "framework_controls_inst", set_daemon_scopes: {{ stack: {{
+                max_copies: 4,
+                options: [
+                    {{ option: "openarm_sim", description: "An OpenArm" }},
+                    {{ option: "featured_sim", description: "A featured robot",
+                       features: [{}] }},
+                ] }} }} }},"#,
+            features.join(", ")
+        ),
+        &featured_option(constraints),
+    ))
+}
+
+/// The reasons a launch with no word gives against the scope of `prepared`.
+fn scope_reasons(prepared: &PreparedLauncher) -> Vec<String> {
+    let composed = prepared.launch(&[], &[]).expect("composes");
+    match check(
+        prepared,
+        &composed.launcher,
+        &CopyMembership::default(),
+        ScopeCheck::Launch(&composed.selection),
+    ) {
+        Ok(()) => Vec::new(),
+        Err(refusals) => refusals
+            .0
+            .into_iter()
+            .map(|refusal| match refusal {
+                DaemonScopeError::ScopeRefusedByLauncher { reason, .. } => reason,
+                other => panic!("expected a refusal by the launcher, got {other}"),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn a_scope_with_features_that_compose_holds() {
+    let prepared = featured_launcher(
+        r#"commander: "mcp""#,
+        &[
+            feature("ai_brain", "brain", "ai_brain_vla"),
+            feature("recorder", "recorder", "lerobot_recorder"),
+        ],
+        "",
+    );
+    assert_eq!(scope_reasons(&prepared), Vec::<String>::new());
+}
+
+/// Step 2: a feature on an axis its option does not declare, with an
+/// option its axis does not have, or whose option brings no instance, is
+/// refused without a composition, each with a text for the scope's author.
+#[test]
+fn a_feature_is_refused_for_what_its_option_declares() {
+    for (feature_text, expected) in [
+        (
+            feature("ai_brain", "mind", "ai_brain_vla"),
+            "feature `ai_brain` of option `featured_sim` selects `mind=ai_brain_vla`, but \
+             `featured_sim` has no own axis `mind`; its own axes: `commander`, `brain`, `recorder`",
+        ),
+        (
+            feature("ai_brain", "brain", "big_brain"),
+            "feature `ai_brain` of option `featured_sim` selects `brain=big_brain`, but axis \
+             `brain` of `featured_sim` has no option `big_brain`; its options: `ai_brain_vla`",
+        ),
+        (
+            feature("commander", "commander", "mcp"),
+            "feature `commander` of option `featured_sim` selects `commander=mcp`, which brings \
+             no instance, so it cannot run on another machine and cannot be a feature",
+        ),
+    ] {
+        let prepared = featured_launcher(r#"commander: "mcp""#, &[feature_text], "");
+        assert_eq!(scope_reasons(&prepared), [expected.to_owned()]);
+    }
+    // An option with no own axis at all says so.
+    let prepared = load(&simulation_mcp(
+        &format!(
+            r#"{{ target: "framework_controls_inst", set_daemon_scopes: {{ stack: {{
+                max_copies: 4,
+                options: [{{ option: "so101_sim", description: "An SO-101",
+                             features: [{}] }}] }} }} }},"#,
+            feature("ai_brain", "brain", "ai_brain_vla")
+        ),
+        "",
+    ));
+    assert_eq!(
+        scope_reasons(&prepared),
+        [
+            "feature `ai_brain` of option `so101_sim` selects `brain=ai_brain_vla`, but \
+          `so101_sim` has no own axis `brain`; its own axes: none"
+                .to_owned()
+        ]
+    );
+}
+
+/// Step 3: every feature set composes as a join over the bare stack. A set
+/// refused by a constraint alone, a set refused only with another feature,
+/// and a feature the robot with no feature already holds are refused, each
+/// naming the option and the features.
+#[test]
+fn every_feature_set_composes_over_the_bare_stack() {
+    let brain = feature("ai_brain", "brain", "ai_brain_vla");
+    let recorder = feature("recorder", "recorder", "lerobot_recorder");
+
+    let prepared = featured_launcher(
+        r#"commander: "mcp""#,
+        std::slice::from_ref(&brain),
+        r#"{ when: { brain: "ai_brain_vla" }, requires: [{ commander: "web" }],
+             reason: "the brain needs the web panel" }"#,
+    );
+    let reasons = scope_reasons(&prepared);
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert!(
+        reasons[0].starts_with("option `featured_sim` with the features `ai_brain`: ")
+            && reasons[0].contains("the brain needs the web panel"),
+        "{reasons:?}"
+    );
+
+    let prepared = featured_launcher(
+        r#"commander: "mcp""#,
+        &[brain.clone(), recorder.clone()],
+        r#"{ when: { brain: "ai_brain_vla" }, forbids: [{ recorder: "lerobot_recorder" }],
+             reason: "the brain and the recorder share the GPU" }"#,
+    );
+    let reasons = scope_reasons(&prepared);
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert!(
+        reasons[0].starts_with("option `featured_sim` with the features `ai_brain`, `recorder`: ")
+            && reasons[0].contains("the brain and the recorder share the GPU"),
+        "{reasons:?}"
+    );
+
+    let prepared = featured_launcher(
+        r#"commander: "mcp", brain: "ai_brain_vla""#,
+        &[brain.clone(), recorder.clone()],
+        "",
+    );
+    assert_eq!(
+        scope_reasons(&prepared),
+        [
+            "option `featured_sim` with no feature already holds the feature `ai_brain`: its \
+          launcher entry selects them, so a feature adds nothing to its robot; take them out of \
+          the scope, or out of the entry"
+                .to_owned()
+        ]
+    );
+}
+
+/// The robot with no feature is the robot of the launcher entry: an entry
+/// that leaves a `one` axis unfilled gives no robot, which a join of the
+/// option would refuse every time.
+#[test]
+fn an_option_whose_robot_with_no_feature_does_not_compose_is_refused() {
+    let prepared = featured_launcher("", &[feature("ai_brain", "brain", "ai_brain_vla")], "");
+    let reasons = scope_reasons(&prepared);
+    assert_eq!(reasons.len(), 2, "{reasons:?}");
+    for reason in &reasons {
+        assert!(
+            reason.contains("axis `commander` of `featured_sim` has cardinality `one`"),
+            "{reason}"
+        );
+    }
+    assert!(reasons[0].starts_with("option `featured_sim` with no feature: "));
+    assert!(reasons[1].starts_with("option `featured_sim` with the features `ai_brain`: "));
+}
+
+/// The trials compose over the bare stack, so a copy of the launch named
+/// as the trial copy is no collision.
+#[test]
+fn a_robot_named_like_the_trial_copy_passes_the_launch_checks() {
+    let prepared = featured_launcher(
+        r#"commander: "mcp""#,
+        &[feature("ai_brain", "brain", "ai_brain_vla")],
+        "",
+    );
+    let composed = prepared
+        .launch(
+            &words(&["composition_check.ai_brain_vla"]),
+            &[launch_join("featured_sim", "composition_check")],
+        )
+        .expect("composes");
+    let copies = CopyMembership::of(composed.copies());
+    check(
+        &prepared,
+        &composed.launcher,
+        &copies,
+        ScopeCheck::Launch(&composed.selection),
+    )
+    .expect("the scope holds");
+}
+
+/// A join holds each instance to its rules alone: a scope the launch would
+/// refuse against the launcher passes, and a scope that does not parse is
+/// still refused.
+#[test]
+fn a_join_runs_no_trial() {
+    let prepared = featured_launcher(
+        r#"commander: "mcp""#,
+        &[feature("commander", "commander", "mcp")],
+        "",
+    );
+    let composed = prepared.launch(&[], &[]).expect("composes");
+    assert_eq!(scope_reasons(&prepared).len(), 1);
+    check(
+        &prepared,
+        &composed.launcher,
+        &CopyMembership::default(),
+        ScopeCheck::Join,
+    )
+    .expect("a join runs no check against the launcher");
+
+    let (prepared, launcher) = flat(&format!(
+        r#"{FRAMEWORK} {{ instance_id: "mcp_inst", daemon_scopes: {{ stack: {{
+               max_copies: 0, options: [{{ option: "a", description: "One." }}] }} }} }} ] }}"#
+    ));
+    let refused = check(
+        &prepared,
+        &launcher,
+        &CopyMembership::default(),
+        ScopeCheck::Join,
+    )
+    .expect_err("a scope that does not parse is refused at a join too")
+    .0;
+    assert!(
+        matches!(&refused[..], [DaemonScopeError::InvalidScope { .. }]),
+        "{refused:?}"
     );
 }

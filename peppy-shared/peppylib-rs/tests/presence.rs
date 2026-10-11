@@ -65,6 +65,23 @@ async fn presence_facade_declares_watches_and_lists_with_name_filtering() {
         ]
     );
 
+    // The machines of the federation: the caller's own name and every listed
+    // name, each once, in name order.
+    let machines = CoreNodePresenceMessenger::live_core_node_names(&observer, "core-own", TIMEOUT)
+        .await
+        .expect("list the live machines");
+    assert_eq!(
+        machines.into_iter().collect::<Vec<_>>(),
+        ["core-a", "core-b", "core-own"]
+    );
+    let machines = CoreNodePresenceMessenger::live_core_node_names(&observer, "core-b", TIMEOUT)
+        .await
+        .expect("list the live machines");
+    assert_eq!(
+        machines.into_iter().collect::<Vec<_>>(),
+        ["core-a", "core-b"]
+    );
+
     let core_a = CoreNodePresenceMessenger::list_live(&observer, Some("core-a"), TIMEOUT)
         .await
         .expect("list core-a presence");

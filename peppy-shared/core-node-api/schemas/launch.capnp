@@ -44,10 +44,12 @@ struct LaunchGoal {
     # and the two origins would drift into meaning different things.
     #
     # `places` is the `--place` wiring, keyed by the placeholder the launcher
-    # author declared; empty means no placement flag was given at all, which
-    # only a launcher declaring no `core_nodes` can satisfy. `local` is
-    # `--local`: collapse EVERY link the document declares onto the
-    # coordinator, whatever it turns out to declare.
+    # author declared or by the name of a copy the file lists, never by a
+    # `--join` copy, which takes its machine from its own reference; empty
+    # means no placement flag was given at all. `local` is `--local`:
+    # collapse EVERY link the document declares onto the coordinator,
+    # whatever it turns out to declare, and no `--join` and no word names a
+    # machine.
     #
     # Cap'n Proto defaults an unset union to its first member, so a goal that
     # sets neither decodes as an empty `places`, which means no placement
@@ -56,8 +58,9 @@ struct LaunchGoal {
         places @8 :List(CoreNodeLink);
         local @9 :Void;
     }
-    # The launcher's `--with` selections, verbatim: each entry is `option` or
-    # `axis=option`, exactly as the caller typed it.
+    # The launcher's `--with` words: each selects an option of a stack axis,
+    # or of an own axis of one copy of the launch, the part that it selects
+    # running on the machine the word names or with the copy's base.
     #
     # The WORDS travel, not their resolution, for the same reason placement
     # is an intent: only the coordinator holds a repository launcher's
@@ -67,58 +70,101 @@ struct LaunchGoal {
     # different things. Empty means no `--with` was given, which a launcher
     # with no `components` requires and any other launcher fills from its
     # defaults.
-    selections @10 :List(Text);
+    selections @10 :List(LaunchWord);
     # Build every node of the launch from its staged sources even when
     # storage already holds an artifact built from byte-identical sources.
     # Forwarded to each node build the launch performs, on the coordinator
     # and on every peer. Absent decodes as false, which reuses such artifacts.
     rebuild @11 :Bool;
-    # The copies `--join OPTION:NAME` starts with the launch, in the order
-    # they were given: each a copy of the launcher's entry for the option
-    # under that name, composed, validated and started with the launch.
-    joins @12 :List(LaunchJoin);
+    # The copies `--join OPTION:NAME@CORE_NODE` starts with the launch, in
+    # the order they were given: each a copy of the launcher's entry for the
+    # option under that name, its base on the copy's machine, composed,
+    # validated and started with the launch.
+    joins @12 :List(CopyReference);
 }
 
-# One `--join OPTION:NAME` on `stack launch`: the option of an axis that runs
-# as copies and the name the copy runs under.
-struct LaunchJoin {
-    option @0 :Text;
-    name @1 :Text;
+# The machine a copy, a part of a copy or a core node link runs on. `self`
+# travels as `coordinator`, the daemon the launch or the join is sent to,
+# and is resolved there.
+struct CoreNodeTarget {
+  union {
+    coordinator @0 :Void;
+    named @1 :Text;
+  }
+}
+
+# `option` or `axis=option`: one option of one component axis. With no
+# axis, the coordinator finds the axis that holds the option.
+struct OptionChoice {
+  axis :union {
+    unnamed @0 :Void;
+    named @1 :Text;
+  }
+  option @2 :Text;
+}
+
+# `CHOICE[@CORE_NODE]`: one option of an own axis of a copy, and where the
+# part it selects runs. `withCopy` runs the part on the copy's machine,
+# with its base.
+struct SelectionWord {
+  choice @0 :OptionChoice;
+  coreNode :union {
+    withCopy @1 :Void;
+    target @2 :CoreNodeTarget;
+  }
+}
+
+# `NAME.CHOICE[@CORE_NODE]`: a selection word of the copy NAME of a launch.
+struct CopyWord {
+  copy @0 :Text;
+  word @1 :SelectionWord;
+}
+
+# One `--with` word of a launch: an option of a stack axis, which runs
+# where its `core_node` link says, or a word of one copy.
+struct LaunchWord {
+  union {
+    stack @0 :OptionChoice;
+    copy @1 :CopyWord;
+  }
+}
+
+# `OPTION:NAME[@CORE_NODE]`: the copy of `option` that runs under `name`,
+# its base on the copy's machine.
+struct CopyReference {
+  option @0 :Text;
+  name @1 :Text;
+  coreNode @2 :CoreNodeTarget;
 }
 
 # One `--place <core-node-link>@<core-node>` wiring: the placeholder the
-# launcher author declared on the left, the concrete machine on the right.
+# launcher author declared, or the name of a copy the file lists, on the
+# left, the machine on the right.
 struct CoreNodeLink {
-    # The placeholder as it appears in the launcher's `core_nodes` list.
+    # The placeholder as it appears in the launcher's `core_nodes` list, or
+    # the name of a copy the launcher file lists.
     linkId @0 :Text;
-    # The core node it is wired to. Never the literal `self`: the CLI
-    # resolves `self` to the coordinator's own name before dispatch, so a
-    # daemon only ever sees concrete names.
-    coreNode @1 :Text;
+    # The machine it is wired to; `self` travels as `coordinator`.
+    coreNode @1 :CoreNodeTarget;
 }
 
 struct StackJoinGoal {
-    # The copy's name: the prefix of every instance id it mints, and the
-    # placement link the whole copy is wired by.
-    name @0 :Text;
-    # The option the copy runs, of an axis that runs as copies.
-    option @1 :Text;
-    # `--with` words over the copied option's own axes, verbatim.
-    selections @2 :List(Text);
+    # The copy: its option, of an axis that runs as copies; its name, the
+    # prefix of every instance id it mints and the placement link of the
+    # copy's machine; and the copy's machine, which runs its base.
+    copy @0 :CopyReference;
+    # `--with` words over the copied option's own axes, each with the
+    # machine of the part it selects.
+    selections @1 :List(SelectionWord);
     # Argument overrides for the copy's instances, each `(instanceId,
     # argument)` pair named at most once.
-    arguments @3 :List(ArgumentOverride);
-    # Where the whole copy runs; absent decodes to the coordinator.
-    placement :union {
-        coordinator @4 :Void;
-        coreNode @5 :Text;
-    }
+    arguments @2 :List(ArgumentOverride);
     # The same budgets a LaunchGoal carries.
-    envVars @6 :List(EnvVar);
-    nodeAddIdleTimeoutSecs @7 :UInt64;
-    nodeBuildIdleTimeoutSecs @8 :UInt64;
-    nodeRunIdleTimeoutSecs @9 :UInt64;
-    maxTimeoutSecs @10 :UInt64;
+    envVars @3 :List(EnvVar);
+    nodeAddIdleTimeoutSecs @4 :UInt64;
+    nodeBuildIdleTimeoutSecs @5 :UInt64;
+    nodeRunIdleTimeoutSecs @6 :UInt64;
+    maxTimeoutSecs @7 :UInt64;
 }
 
 # One argument of one of the copy's instances, given a new value.

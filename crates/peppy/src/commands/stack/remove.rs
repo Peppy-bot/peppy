@@ -3,7 +3,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::runtime::CopyName;
 use core_node_api::encoding::StackBudgets;
+use futures::future::join_all;
 use peppylib::core_node::transport::poll;
 
 use super::goal::drive_stack_goal;
@@ -11,10 +13,13 @@ use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-/// How long the copy's host has to report its shutdown grace.
+/// How long each machine of the copy has to report its shutdown grace.
 const HOST_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(super) fn remove(ctx: &Arc<AppContext>, name: config::runtime::Name) -> Result<()> {
+/// Removes the copy `name`, its idle watchdog sized from the longest
+/// shutdown grace of the copy's machines, read from all of them at the same
+/// time, for each of its instances.
+pub(super) fn remove(ctx: &Arc<AppContext>, name: CopyName) -> Result<()> {
     crate::commands::block_on(async {
         let conn = ctx.connect_to_daemon().await?;
         let stack = poll(
@@ -29,27 +34,35 @@ pub(super) fn remove(ctx: &Arc<AppContext>, name: config::runtime::Name) -> Resu
         .map_err(|error| {
             Error::ExecutionFailed(format!("cannot inspect the stack before removal: {error}"))
         })?;
-        let timeout = match stack.copies.iter().find(|copy| copy.name == name.as_str()) {
+        let timeout = match stack.copies.iter().find(|copy| copy.name == name) {
             Some(copy) => {
-                let grace = if copy.core_node.as_str() == conn.target_core_node {
-                    stack.shutdown_grace_secs
-                } else {
-                    // The host's grace sizes the watchdog. A host that does
-                    // not answer in time is one the daemon drops the copy
-                    // from when it is off the federation, or stops under
-                    // that host's own grace when it is merely slow; the
-                    // coordinator's grace stands in for it then.
+                // Each machine's grace sizes the watchdog. A machine that does
+                // not answer in time is one the daemon stops nothing on when
+                // it is off the federation, or stops under its own grace when
+                // it is merely slow; the coordinator's grace stands in for it
+                // then.
+                let conn = &conn;
+                let fallback = stack.shutdown_grace_secs;
+                let graces = join_all(copy.core_nodes().into_iter().map(|machine| async move {
+                    if machine.as_str() == conn.target_core_node {
+                        return fallback;
+                    }
                     poll(
                         &core_node_api::encoding::StackListRequest::new(),
                         conn.messenger,
                         &conn.core_node_name,
                         CALLER_INSTANCE_ID,
-                        copy.core_node.as_str(),
+                        machine.as_str(),
                         HOST_PROBE_TIMEOUT,
                     )
                     .await
-                    .map_or(stack.shutdown_grace_secs, |host| host.shutdown_grace_secs)
-                };
+                    .map_or(fallback, |host| host.shutdown_grace_secs)
+                }))
+                .await;
+                let grace = graces
+                    .into_iter()
+                    .max()
+                    .unwrap_or(stack.shutdown_grace_secs);
                 removal_idle_timeout(grace, copy.instance_ids.len())
             }
             // The daemon holds no such copy and refuses the goal, well within
@@ -66,8 +79,9 @@ pub(super) fn remove(ctx: &Arc<AppContext>, name: config::runtime::Name) -> Resu
 }
 
 /// The CLI's idle watchdog for a removal: the daemon's budget for stopping
-/// the copy's instances, plus the default launch idle budget its preflight
-/// runs under.
+/// the copy's instances, here each under the longest grace of the copy's
+/// machines, so it is at least the daemon's, plus the default launch idle
+/// budget its preflight runs under.
 fn removal_idle_timeout(shutdown_grace_secs: u64, instance_count: usize) -> u64 {
     core_node::copy_removal_budget(shutdown_grace_secs, instance_count)
         .as_secs()

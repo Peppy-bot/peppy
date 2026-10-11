@@ -49,8 +49,11 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
             "name": "alpha",
             "option": "real",
             "core_node": "core",
-            "instance_ids": ["alpha_arm_inst"],
-            "selections": ["commander=web"],
+            "instance_ids": ["alpha_arm_inst", "alpha_commander_inst"],
+            "selections": [
+                {"axis": "commander", "option": "web", "core_node": "cn-gpu-box"},
+                {"axis": "recorder", "option": "lerobot"},
+            ],
             "set_members": [
                 {
                     "instance_id": "monitor_inst",

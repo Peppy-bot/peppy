@@ -12,6 +12,8 @@
 use thiserror::Error;
 
 use super::super::types::EACH_TARGET_ONCE;
+use super::select::WrittenWord;
+use core_node_api::encoding::{LaunchWord, OptionChoice};
 
 /// Payload for [`CompositionError::AdjustmentTargetAmbiguous`], boxed past
 /// the `clippy::result_large_err` threshold as [`ClockDomainConflict`] and
@@ -56,6 +58,14 @@ pub struct CopyAdjustmentTargetUndefined {
     pub defining: String,
 }
 
+/// Where a copy and its parts run, as the refusals of a placement written
+/// in a launcher file or a fragment say it.
+pub(crate) const COPY_PLACEMENT: &str = "a copy runs where it is named (`--join \
+     OPTION:NAME@CORE_NODE` on `peppy stack launch`, `peppy stack join OPTION:NAME@CORE_NODE`, \
+     or `--place NAME@CORE_NODE` for a copy the launcher file lists), and a part of it where \
+     the word that selects it says (`--with NAME.option@CORE_NODE` on `peppy stack launch`, \
+     `--with option@CORE_NODE` on `peppy stack join`)";
+
 #[derive(Debug, Error)]
 pub enum CompositionError {
     #[error(
@@ -65,13 +75,16 @@ pub enum CompositionError {
     WithOnFlatLauncher,
 
     #[error("`--with {word}` names no axis or option in reach of this launch.{menu}")]
-    UnknownSelection { word: String, menu: String },
+    UnknownSelection { word: OptionChoice, menu: String },
 
     #[error(
         "`--with {word}` matches an option of more than one axis ({axes}); say which you mean \
          with the `axis=option` form"
     )]
-    AmbiguousSelection { word: String, axes: String },
+    AmbiguousSelection {
+        word: Box<WrittenWord>,
+        axes: String,
+    },
 
     #[error(transparent)]
     ClockDomainConflict(Box<ClockDomainConflict>),
@@ -82,8 +95,31 @@ pub enum CompositionError {
     )]
     ConflictingSelection {
         axis: String,
-        first: String,
-        second: String,
+        first: Box<WrittenWord>,
+        second: Box<WrittenWord>,
+    },
+
+    #[error(
+        "the words `{first}` and `{second}` place axis `{axis}` of copy `{copy}` twice; write \
+         one machine (`self` and the coordinator's name are two spellings of one machine)"
+    )]
+    PartPlacedTwice {
+        copy: String,
+        axis: String,
+        first: Box<WrittenWord>,
+        second: Box<WrittenWord>,
+    },
+
+    #[error(
+        "`--with {word}` places a part of copy `{copy}` on `{machine}`, but option `{option}` of \
+         axis `{axis}` brings no instance; drop `@{machine}`"
+    )]
+    PlacedPartBringsNothing {
+        copy: String,
+        word: Box<WrittenWord>,
+        axis: String,
+        option: String,
+        machine: String,
     },
 
     #[error(
@@ -107,7 +143,7 @@ pub enum CompositionError {
          or add one to the running stack with `peppy stack join {option}:NAME`"
     )]
     RepeatableAxisAtLaunch {
-        word: String,
+        word: OptionChoice,
         axis: String,
         option: String,
     },
@@ -118,7 +154,7 @@ pub enum CompositionError {
          {parent}:NAME --with {option}`"
     )]
     CopyAxisAtLaunch {
-        word: String,
+        word: Box<OptionChoice>,
         axis: String,
         parent: String,
         option: String,
@@ -174,12 +210,6 @@ pub enum CompositionError {
          least one"
     )]
     CopyStartsNothing { copy: String, option: String },
-
-    #[error(
-        "copy `{copy}` cannot run under that name: {reason}. A copy's name is its placement \
-         link, a core node name"
-    )]
-    CopyNameNotPlaceable { copy: String, reason: String },
 
     #[error(
         "`{target}.{argument}` is overridden twice; pass one --set-arguments value per argument"
@@ -321,8 +351,7 @@ pub enum CompositionError {
     },
 
     #[error(
-        "{origin} declares `core_nodes`, which a copy of `{axis}` cannot use; a copy is placed \
-         whole: `--place NAME@CORE_NODE` at launch, `--place CORE_NODE` at join"
+        "{origin} declares `core_nodes`, which a copy of `{axis}` cannot use; {COPY_PLACEMENT}"
     )]
     CopyFragmentCoreNodes { origin: String, axis: String },
 
@@ -357,36 +386,25 @@ pub enum CompositionError {
          `peppy stack join OPTION:NAME`, choosing from:{menu}"
     )]
     RepeatableAxisUnknownOption {
-        word: String,
+        word: OptionChoice,
         axis: String,
         menu: String,
     },
 
     #[error("`--with {word}` names no option of the axes `{option}` declares.{menu}")]
     UnknownCopySelection {
-        word: String,
+        word: Box<WrittenWord>,
         option: String,
         menu: String,
     },
 
-    #[error("`--with {word}` names copy `{copy}`, which the file does not deploy; {copies}")]
+    #[error("`--with {word}` names copy `{copy}`, which the launch does not start; {copies}")]
     ScopedSelectionUnknownCopy {
-        word: String,
+        word: Box<LaunchWord>,
         copy: String,
-        /// The file's copies and where a copy comes from.
+        /// The launch's copies and where a copy comes from.
         copies: String,
     },
-
-    #[error(
-        "`--with {word}` names no copy before the dot; a launch word is `option`, \
-         `axis=option`, `NAME.option` or `NAME.axis=option`"
-    )]
-    ScopedWordNamesNoCopy { word: String },
-    #[error(
-        "`{word}` names copy `{copy}` and nothing after the dot; a launch word selects a file \
-         copy's own axis as `NAME.axis=option` or `NAME.option`"
-    )]
-    ScopedWordNamesNoOption { word: String, copy: String },
 
     #[error(
         "a guard in {origin} names axis `{axis}`, which runs as copies; a copy's adjustments \
@@ -430,8 +448,8 @@ pub enum CompositionError {
     NameIsCoreNodeLink { name: String },
 
     #[error(
-        "instance `{instance}` of copy `{copy}` declares `core_node: {core_node}`; a copy is \
-         placed as a whole with `--place {copy}@CORE_NODE`, so drop the instance's `core_node`"
+        "instance `{instance}` of copy `{copy}` declares `core_node: {core_node}`, so drop it; \
+         {COPY_PLACEMENT}"
     )]
     CopyInstancePlaced {
         copy: String,

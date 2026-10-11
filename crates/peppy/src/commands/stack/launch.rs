@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use config::runtime::CoreNodeName;
+use config::runtime::{CoreNodeTarget, Name};
 use core_node_api::encoding::{LaunchGoal, LauncherOrigin, PlacementSpec};
 use daemon_config::launcher::{PeppyLauncher, PeppyLauncherParser, PreparedLauncher};
 use stack_goal::StackGoal;
@@ -92,35 +92,44 @@ pub(super) fn infer_launcher_origin(input: PathBuf) -> Result<LauncherOrigin> {
 pub struct PlacementArgs {
     /// Wire a placement link to a real federated core node:
     /// `NAME@<core-node>`, with NAME a `core_nodes` placeholder the
-    /// launcher declares or the name of a copy it deploys. Repeatable,
-    /// once per link; `self` names the daemon this command is sent to.
+    /// launcher declares or the name of a copy the file lists. A copy
+    /// `--join` adds runs where its `--join` names. Repeatable, once per
+    /// link; `self` names the daemon this command is sent to.
     #[arg(long = "place", value_name = "NAME@CORE_NODE", value_parser = parse_place)]
-    pub places: Vec<(String, String)>,
+    pub places: Vec<(Name, CoreNodeTarget)>,
     /// Wire every declared core node link to this daemon, so a
     /// multi-machine launcher runs unmodified on one box. How you develop
-    /// against a federated topology with no second machine.
+    /// against a federated topology with no second machine. No `--join` and
+    /// no `--with` word then names a machine.
     #[arg(long)]
     pub local: bool,
 }
 
 /// `--place NAME@CORE_NODE`: NAME is a core node link the flat launcher
-/// carries, which every copy's name is one of.
-fn parse_place(raw: &str) -> std::result::Result<(String, String), String> {
-    crate::commands::node::parse_key_at_target(raw, "--place", "NAME@CORE_NODE")
+/// carries, which every copy's name is one of, and CORE_NODE a machine or
+/// `self`.
+fn parse_place(raw: &str) -> std::result::Result<(Name, CoreNodeTarget), String> {
+    let (link, target) =
+        crate::commands::node::parse_key_at_target(raw, "--place", "NAME@CORE_NODE")?;
+    let link = Name::new(link.as_str())
+        .map_err(|reason| format!("invalid --place link `{link}`: {reason}"))?;
+    let target = CoreNodeTarget::parse(&target).map_err(|reason| {
+        format!("invalid --place target `{target}` for core node link `{link}`: {reason}")
+    })?;
+    Ok((link, target))
 }
 
 impl PlacementArgs {
-    /// Resolves the raw flags into the intent the goal carries, with `self`
-    /// replaced by the coordinator's real name.
+    /// The raw flags as the intent the goal carries.
     ///
     /// The CLI owns only the flag GRAMMAR (no repeats, no `--local` mixed with
-    /// `--place`, and `self` resolution). Which links a launcher declares,
-    /// whether the wired ones match, and whether each target is live on the
-    /// federation are all the coordinator's: it has the resolved document,
-    /// which for a `Repository` launcher the CLI may never have seen. That is
-    /// why `--local` travels as [`PlacementSpec::Local`] rather than as the
-    /// map it expands to: the CLI cannot expand what it cannot read.
-    fn resolve(&self, coordinator: &str) -> Result<PlacementSpec> {
+    /// `--place`). Which links a launcher declares, whether the wired ones
+    /// match, and whether each target is live on the federation are all the
+    /// coordinator's: it has the resolved document, which for a `Repository`
+    /// launcher the CLI may never have seen. That is why `--local` travels as
+    /// [`PlacementSpec::Local`] rather than as the map it expands to, and why
+    /// `self` travels as the coordinator, which the daemon resolves.
+    fn resolve(&self) -> Result<PlacementSpec> {
         if self.local && !self.places.is_empty() {
             return Err(Error::ExecutionFailed(
                 "--local and --place cannot be combined: --local puts every core node link on \
@@ -135,19 +144,7 @@ impl PlacementArgs {
 
         let mut resolved = BTreeMap::new();
         for (link, target) in &self.places {
-            let target = if CoreNodeName::is_self_keyword(target) {
-                coordinator.to_owned()
-            } else {
-                CoreNodeName::new(target.as_str())
-                    .map_err(|reason| {
-                        Error::ExecutionFailed(format!(
-                            "invalid --place target `{target}` for core node link `{link}`: \
-                             {reason}"
-                        ))
-                    })?
-                    .into_string()
-            };
-            if resolved.insert(link.clone(), target).is_some() {
+            if resolved.insert(link.clone(), target.clone()).is_some() {
                 return Err(Error::ExecutionFailed(format!(
                     "--place wires core node link `{link}` more than once; each link takes \
                      exactly one core node"
@@ -156,6 +153,47 @@ impl PlacementArgs {
         }
         Ok(PlacementSpec::Places(resolved))
     }
+}
+
+/// The goal of a launch of `origin` under `budgets`, with its placement, its
+/// words and its joins, refused as the daemon would refuse it: a `--place`
+/// key that names a `--join` copy, and a machine on a `--join` or a word
+/// under `--local`.
+fn launch_goal(
+    origin: LauncherOrigin,
+    budgets: core_node_api::encoding::StackBudgets,
+    placement: &PlacementArgs,
+    words: Vec<core_node_api::encoding::LaunchWord>,
+    joins: Vec<core_node_api::encoding::CopyReference>,
+) -> Result<LaunchGoal> {
+    LaunchGoal::new(
+        origin,
+        // The launch id is minted here, by the process that starts the launch,
+        // and recorded by every participant alongside its slice. That is what
+        // makes the global stack reconstructible by query afterwards.
+        new_launch_id(),
+        budgets,
+    )
+    .with_layout(placement.resolve()?, words, joins)
+    .map_err(|error| Error::ExecutionFailed(error.to_string()))
+}
+
+/// The machines other than `coordinator` that `goal` names: its `--place`
+/// values, the machines of its `--join` copies and of its words. `self` is
+/// the coordinator, never a remote machine.
+fn remote_machines<'a>(goal: &'a LaunchGoal, coordinator: &str) -> BTreeSet<&'a str> {
+    let places = match goal.placement() {
+        PlacementSpec::Places(places) => places.values().collect(),
+        PlacementSpec::Local => Vec::new(),
+    };
+    places
+        .into_iter()
+        .chain(goal.joins().iter().map(|join| &join.core_node))
+        .chain(goal.selections().iter().filter_map(|word| word.core_node()))
+        .filter_map(CoreNodeTarget::named)
+        .map(|machine| machine.as_str())
+        .filter(|machine| *machine != coordinator)
+        .collect()
 }
 
 /// Sends the launch `args` describes to the daemon as `G` and follows it to
@@ -186,6 +224,14 @@ where
     let subcommand = G::OPERATION.to_ascii_lowercase();
     let launcher_origin = infer_launcher_origin(launcher_config_path)?;
 
+    let goal = launch_goal(
+        launcher_origin.clone(),
+        timeouts.budgets().with_env_vars(caller_env_overrides()),
+        &placement,
+        words,
+        joins,
+    )?
+    .with_rebuild(rebuild);
     // Pre-validate the launcher config locally for `Fs` so the user gets a fast, precise parse
     // error before the daemon round-trip. `Repository` resolution lives daemon-side, so we
     // skip the local check rather than duplicate the lookup here. Only the verdict is
@@ -194,7 +240,7 @@ where
     if let LauncherOrigin::Fs(path) = &launcher_origin {
         let parsed = parse_launcher_file(path)?;
         PreparedLauncher::load(&parsed, path)
-            .and_then(|prepared| prepared.launch(&words, &joins))
+            .and_then(|prepared| prepared.launch(goal.selections(), goal.joins()))
             .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
     }
 
@@ -216,21 +262,13 @@ where
         })?;
     }
 
-    let placement = placement.resolve(&conn.target_core_node)?;
-
     // State loudly which remote daemons are about to have their stacks
     // replaced. A launch or a build is destructive on every machine it
-    // touches, and the operator typed only one command. `--local` names none by construction,
-    // and a `--place` target the launcher does not declare is the
-    // coordinator's refusal to make, so this only reports what was asked for.
-    let remote: BTreeSet<&str> = match &placement {
-        PlacementSpec::Places(places) => places
-            .values()
-            .map(String::as_str)
-            .filter(|core_node| *core_node != conn.target_core_node)
-            .collect(),
-        PlacementSpec::Local => BTreeSet::new(),
-    };
+    // touches, and the operator typed only one command. `--local` names none
+    // by construction, and a `--place` target the launcher does not declare is
+    // the coordinator's refusal to make, so this only reports what was asked
+    // for: the `--place` values, the `--join` machines and the word machines.
+    let remote = remote_machines(&goal, &conn.target_core_node);
     if !remote.is_empty() {
         println!(
             "This {subcommand} will REPLACE the node stack on {} remote daemon(s): {}",
@@ -251,18 +289,6 @@ where
         ),
     }
 
-    let goal = LaunchGoal::new(
-        launcher_origin,
-        // The launch id is minted here, by the process that starts the launch,
-        // and recorded by every participant alongside its slice. That is what
-        // makes the global stack reconstructible by query afterwards.
-        new_launch_id(),
-        timeouts.budgets().with_env_vars(caller_env_overrides()),
-    )
-    .with_placement(placement)
-    .with_selections(words)
-    .with_joins(joins)
-    .with_rebuild(rebuild);
     let budgets = goal.budgets.clone();
 
     drive_stack_goal(&conn, &G::from(goal), &budgets).await
@@ -390,7 +416,7 @@ mod tests {
         PlacementArgs {
             places: pairs
                 .iter()
-                .map(|(link, target)| ((*link).to_owned(), (*target).to_owned()))
+                .map(|(link, target)| parse_place(&format!("{link}@{target}")).unwrap())
                 .collect(),
             local: false,
         }
@@ -399,43 +425,51 @@ mod tests {
     /// The wirings of a `--place` resolution, or a panic naming what came out
     /// instead. Every `--place` case must produce explicit places; `--local`
     /// has its own assertions.
-    fn resolved_places(args: PlacementArgs, coordinator: &str) -> BTreeMap<String, String> {
-        match args.resolve(coordinator).expect("valid wiring") {
-            PlacementSpec::Places(places) => places,
+    fn resolved_places(args: PlacementArgs) -> BTreeMap<String, String> {
+        match args.resolve().expect("valid wiring") {
+            PlacementSpec::Places(places) => places
+                .into_iter()
+                .map(|(link, target)| (link.to_string(), target.to_string()))
+                .collect(),
             PlacementSpec::Local => panic!("expected explicit places, got --local"),
         }
     }
 
     #[test]
     fn place_wires_each_link_to_its_core_node() {
-        let resolved = resolved_places(
-            places(&[
-                ("robot_onboard", "cn-robot-7"),
-                ("cloud_inference", "cn-atlas-h100"),
-            ]),
-            "cn-robot-7",
-        );
+        let resolved = resolved_places(places(&[
+            ("robot_onboard", "cn-robot-7"),
+            ("cloud_inference", "cn-atlas-h100"),
+        ]));
 
         assert_eq!(resolved["robot_onboard"], "cn-robot-7");
         assert_eq!(resolved["cloud_inference"], "cn-atlas-h100");
     }
 
-    /// `self` means "the daemon this launch is sent to", and it is resolved
-    /// CLI-side so a daemon only ever sees concrete names.
+    /// `self` means "the daemon this launch is sent to": it travels as the
+    /// coordinator, which the daemon resolves.
     #[test]
-    fn self_resolves_to_the_coordinator() {
-        let resolved = resolved_places(places(&[("robot_onboard", "self")]), "cn-robot-7");
-        assert_eq!(resolved["robot_onboard"], "cn-robot-7");
+    fn self_travels_as_the_coordinator() {
+        let PlacementSpec::Places(resolved) = places(&[("robot_onboard", "self")])
+            .resolve()
+            .expect("valid wiring")
+        else {
+            panic!("expected explicit places");
+        };
+        assert_eq!(
+            resolved[&Name::new("robot_onboard").unwrap()],
+            CoreNodeTarget::Coordinator
+        );
     }
 
     /// Wiring two placeholders to one machine is legitimate: a launcher that
     /// describes a two-machine topology must still be runnable on one box.
     #[test]
     fn two_links_may_share_one_core_node() {
-        let resolved = resolved_places(
-            places(&[("robot_onboard", "cn-solo"), ("cloud_inference", "cn-solo")]),
-            "cn-robot-7",
-        );
+        let resolved = resolved_places(places(&[
+            ("robot_onboard", "cn-solo"),
+            ("cloud_inference", "cn-solo"),
+        ]));
         assert_eq!(resolved.len(), 2);
         assert!(resolved.values().all(|target| target == "cn-solo"));
     }
@@ -446,18 +480,18 @@ mod tests {
             ("robot_onboard", "cn-robot-7"),
             ("robot_onboard", "cn-atlas-h100"),
         ])
-        .resolve("cn-robot-7")
+        .resolve()
         .expect_err("a link takes exactly one core node");
         assert!(error.to_string().contains("more than once"), "got: {error}");
     }
 
     #[test]
-    fn a_malformed_place_target_is_refused_by_the_shared_validator() {
-        let error = places(&[("robot_onboard", "has space")])
-            .resolve("cn-robot-7")
-            .expect_err("a bad core node name must fail");
-        assert!(error.to_string().contains("robot_onboard"), "got: {error}");
-        assert!(error.to_string().contains("characters"), "got: {error}");
+    fn a_malformed_place_is_refused_by_the_shared_validator() {
+        let error = parse_place("robot_onboard@has space").expect_err("a bad core node name");
+        assert!(error.contains("robot_onboard"), "got: {error}");
+        assert!(error.contains("characters"), "got: {error}");
+        let error = parse_place("bad link@cn-robot-7").expect_err("a bad link name");
+        assert!(error.contains("invalid --place link"), "got: {error}");
     }
 
     /// `--local` travels as INTENT. The CLI never expands it, for either
@@ -471,7 +505,7 @@ mod tests {
             places: Vec::new(),
             local: true,
         }
-        .resolve("cn-robot-7")
+        .resolve()
         .expect("valid wiring");
         assert_eq!(resolved, PlacementSpec::Local);
     }
@@ -479,10 +513,10 @@ mod tests {
     #[test]
     fn local_mixed_with_place_is_refused() {
         let error = PlacementArgs {
-            places: vec![("robot_onboard".to_owned(), "cn-robot-7".to_owned())],
+            places: vec![parse_place("robot_onboard@cn-robot-7").unwrap()],
             local: true,
         }
-        .resolve("cn-robot-7")
+        .resolve()
         .expect_err("--local and --place are two ways to say the same thing");
         assert!(
             error.to_string().contains("cannot be combined"),
@@ -492,8 +526,107 @@ mod tests {
 
     #[test]
     fn no_placement_flags_wire_nothing() {
-        let resolved = resolved_places(PlacementArgs::default(), "cn-robot-7");
+        let resolved = resolved_places(PlacementArgs::default());
         assert!(resolved.is_empty());
+    }
+
+    /// The notice names every remote machine the launch places something on:
+    /// a `--place` value, a `--join` machine and a word machine, each once,
+    /// never the coordinator, whether named or written `self`.
+    #[test]
+    fn the_remote_machines_are_every_machine_the_launch_names() {
+        let words = [
+            "xiaozhu.ai_brain_vla@cn-gpu-box",
+            "bravo.pad@self",
+            "mujoco",
+        ]
+        .iter()
+        .map(|word| word.parse().unwrap())
+        .collect();
+        let joins = [
+            "openarm_sim:xiaozhu@cn-jetson-1",
+            "openarm_sim:charlie@cn-robot-7",
+        ]
+        .iter()
+        .map(|join| join.parse().unwrap())
+        .collect();
+        let goal = LaunchGoal::new(
+            LauncherOrigin::repository("simulation_mcp"),
+            "launch-1",
+            core_node_api::encoding::StackBudgets::new(1, 1, 1, None),
+        )
+        .with_layout(
+            places(&[("bravo", "cn-gpu-box"), ("robot_onboard", "self")])
+                .resolve()
+                .unwrap(),
+            words,
+            joins,
+        )
+        .unwrap();
+        assert_eq!(
+            remote_machines(&goal, "cn-robot-7")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["cn-gpu-box", "cn-jetson-1"]
+        );
+    }
+
+    /// The goal holds the rules that read several flags: a `--place` key
+    /// names no `--join` copy, and `--local` leaves every machine unnamed.
+    #[test]
+    fn the_goal_refuses_a_placed_join_copy_and_a_machine_under_local() {
+        let goal = |placement: PlacementArgs, words: &[&str], joins: &[&str]| {
+            launch_goal(
+                LauncherOrigin::repository("simulation_mcp"),
+                core_node_api::encoding::StackBudgets::new(1, 1, 1, None),
+                &placement,
+                words.iter().map(|word| word.parse().unwrap()).collect(),
+                joins.iter().map(|join| join.parse().unwrap()).collect(),
+            )
+        };
+        let error = goal(
+            places(&[("xiaozhu", "cn-x")]),
+            &[],
+            &["openarm_sim:xiaozhu"],
+        )
+        .expect_err("a joined copy is placed where it is joined");
+        assert!(
+            error.to_string().contains(
+                "place a joined copy where you join it: `--join openarm_sim:xiaozhu@CORE_NODE`"
+            ),
+            "{error}"
+        );
+        let local = || PlacementArgs {
+            places: Vec::new(),
+            local: true,
+        };
+        for (words, joins) in [
+            (
+                &["xiaozhu.ai_brain_vla@self"][..],
+                &["openarm_sim:xiaozhu"][..],
+            ),
+            (&[][..], &["openarm_sim:xiaozhu@cn-x"][..]),
+        ] {
+            let error = goal(local(), words, joins).expect_err("--local names no machine");
+            assert!(
+                error
+                    .to_string()
+                    .contains("`--local` runs the whole launch on this machine"),
+                "{error}"
+            );
+        }
+        goal(
+            local(),
+            &["xiaozhu.ai_brain_vla", "mujoco"],
+            &["openarm_sim:xiaozhu"],
+        )
+        .expect("--local with no machine named");
+        goal(
+            places(&[("bravo", "cn-x")]),
+            &["xiaozhu.ai_brain_vla@cn-gpu-box"],
+            &["openarm_sim:xiaozhu@cn-y"],
+        )
+        .expect("a copy of the file is placed with --place, a joined one where it is joined");
     }
 
     /// Two launches of the same file must be distinguishable, or a reset would

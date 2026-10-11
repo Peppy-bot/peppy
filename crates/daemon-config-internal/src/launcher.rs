@@ -19,12 +19,12 @@ pub use clocks::{
 };
 pub use compose::{
     AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyInstance,
-    CopyMembership, CopyRecord, JoinRequest, PreparedLauncher, RunningStack,
-    SELF_COPY_NAME_REFUSAL, SkipReason, SkippedAdjustment, UnitSelection, check_composition,
-    parse_copy_name,
+    CopyMembership, CopyRecord, JoinRequest, PartMachines, PartRefusal, PreparedLauncher,
+    RunningStack, SkipReason, SkippedAdjustment, TrialStack, UnitSelection, WrittenWord,
+    check_composition,
 };
 pub use composition::{ComponentAxis, LauncherFragmentParser, OptionSpec};
-pub use daemon_scopes::{DaemonScopeError, DaemonScopeRefusals, check_daemon_scopes};
+pub use daemon_scopes::{DaemonScopeError, DaemonScopeRefusals, ScopeCheck, check_daemon_scopes};
 pub use links::validate_link_plan;
 pub use observations::PlannedObservation;
 pub use pairings::{
