@@ -221,7 +221,7 @@ async fn node_info_has_instance_ids() {
     let start_response_1 = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        instance_plan_1.clone(),
+        instance_plan_1,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -242,7 +242,7 @@ async fn node_info_has_instance_ids() {
     let start_response_2 = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        instance_plan_2.clone(),
+        instance_plan_2,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {

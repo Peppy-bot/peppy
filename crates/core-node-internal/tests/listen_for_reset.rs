@@ -386,7 +386,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {

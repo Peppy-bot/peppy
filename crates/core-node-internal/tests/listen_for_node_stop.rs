@@ -506,12 +506,12 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
 
     // The daemon assembles the runtime config, endpoint included, so the test
     // only says WHICH instance to start.
-    let instance_plan = common::instance_plan(TARGET_INSTANCE_ID, Default::default());
+    let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -759,7 +759,7 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {

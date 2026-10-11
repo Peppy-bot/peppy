@@ -52,12 +52,12 @@ async fn listen_for_node_run_success() {
     .expect("node_add should succeed");
 
     // Create a runtime config for the node_run request
-    let instance_plan = common::instance_plan(TARGET_INSTANCE_ID, Default::default());
+    let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -156,7 +156,7 @@ async fn listen_for_node_run_timeout() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -217,7 +217,7 @@ async fn listen_for_node_run_not_found() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -326,7 +326,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
         &started.caller_handle,
         &node_messenger,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
@@ -403,7 +403,7 @@ async fn listen_for_node_run_writes_log_file() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -516,7 +516,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -645,7 +645,7 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -802,7 +802,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     let second_start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        second_instance_plan.clone(),
+        second_instance_plan,
         SECOND_NODE_NAME,
         SECOND_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -933,7 +933,7 @@ sleep \"${1:-3}\"
     let start_response = send_node_run_and_wait_with_env(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -998,7 +998,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1098,7 +1098,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let start_response = send_node_run_and_wait_with_env(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1274,7 +1274,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1397,7 +1397,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1487,7 +1487,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1692,7 +1692,7 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1857,7 +1857,7 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -2022,7 +2022,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -2191,7 +2191,7 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
