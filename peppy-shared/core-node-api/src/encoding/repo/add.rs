@@ -6,7 +6,7 @@ use capnp::message::Builder;
 use crate::repo_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_fs_path, encode_message};
 
 use super::git_ref::{GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, decode_git_repo_ref};
 
@@ -35,6 +35,13 @@ impl RepoSourceKind {
     }
 }
 
+/// Decodes a `sourceType` text field as [`RepoSourceKind::as_str`] writes it;
+/// a kind outside the two fails the decode.
+pub(super) fn decode_source_kind(text: &str) -> Result<RepoSourceKind> {
+    RepoSourceKind::parse(text)
+        .ok_or_else(|| crate::Error::Decoding(format!("unknown source type: {text}")))
+}
+
 impl fmt::Display for RepoSourceKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -55,8 +62,8 @@ impl RepoSource {
     ///
     /// The canonical *identity* string (used for duplicate detection and
     /// exclusion matching) is intentionally not computed here: the `Fs` arm
-    /// canonicalizes against the real filesystem, which is the daemon's job —
-    /// see `core-node`'s `services::repo::source_identity`.
+    /// canonicalizes against the real filesystem, which is the daemon's job
+    /// (see `core-node`'s `services::repo::source_identity`).
     pub fn kind(&self) -> RepoSourceKind {
         match self {
             RepoSource::Fs(_) => RepoSourceKind::Fs,
@@ -137,12 +144,10 @@ impl RepoAddRequest {
             let mut source = request.reborrow().init_source();
             match &self.source {
                 RepoSource::Fs(path) => {
-                    source.set_fs(path.to_string_lossy().as_ref());
+                    source.set_fs(encode_fs_path(path, "RepoAddRequest.source.fs")?);
                 }
                 RepoSource::Git { repo_url, repo_ref } => {
-                    let mut git = source.init_git();
-                    git.set_repo_url(repo_url);
-                    git.set_repo_ref(repo_ref.to_string().as_str());
+                    write_git_source(source.init_git(), repo_url, repo_ref);
                 }
             }
         }
@@ -157,7 +162,7 @@ impl RepoAddRequest {
         let request = reader.get_root::<repo_capnp::repo_add_request::Reader>()?;
         let top = request.get_top();
         // An `auto` discriminant is what a sender that never set the union
-        // leaves on the wire, so ids decode as `None` for every pre-id peer.
+        // leaves on the wire, so a request that pins no id decodes as `None`.
         let id = match request.get_id().which()? {
             IdWhich::Auto(()) => None,
             IdWhich::Explicit(id) => Some(id),
@@ -167,15 +172,31 @@ impl RepoAddRequest {
                 path?.to_str()?,
                 "RepoAddRequest.source.fs",
             )?),
-            Which::Git(git) => {
-                let git = git?;
-                let repo_url = git.get_repo_url()?.to_str()?.to_owned();
-                let repo_ref = decode_git_repo_ref(git.get_repo_ref()?.to_str()?)?;
-                RepoSource::Git { repo_url, repo_ref }
-            }
+            Which::Git(git) => read_git_source(git?)?,
         };
         Ok(Self { source, top, id })
     }
+}
+
+/// Writes a git source into an initialized `RepoAddGitSource` builder, the
+/// struct that both `RepoAddRequest` and `RepoExcludeRequest` carry.
+pub(super) fn write_git_source(
+    mut git: repo_capnp::repo_add_git_source::Builder<'_>,
+    repo_url: &str,
+    repo_ref: &GitRepoRef,
+) {
+    git.set_repo_url(repo_url);
+    git.set_repo_ref(repo_ref.to_string().as_str());
+}
+
+/// Inverse of [`write_git_source`]: a ref peppy cannot read is refused.
+pub(super) fn read_git_source(
+    git: repo_capnp::repo_add_git_source::Reader<'_>,
+) -> Result<RepoSource> {
+    Ok(RepoSource::Git {
+        repo_url: git.get_repo_url()?.to_str()?.to_owned(),
+        repo_ref: decode_git_repo_ref(git.get_repo_ref()?.to_str()?)?,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,6 +252,20 @@ impl crate::encoding::Wire for RepoAddResponse {
 mod tests {
     use super::*;
 
+    /// The daemon registers the repository at `RepoSource::Fs` as sent, so a
+    /// path that is not UTF-8 is refused instead of reaching it with its
+    /// invalid bytes replaced.
+    #[cfg(unix)]
+    #[test]
+    fn add_request_encode_refuses_an_fs_source_that_is_not_utf8() {
+        let request = RepoAddRequest::new_fs(crate::encoding::non_utf8_path());
+        let refusal = crate::encoding::encoding_error(request.encode());
+        assert!(
+            refusal.contains("RepoAddRequest.source.fs is not valid UTF-8"),
+            "{refusal}"
+        );
+    }
+
     #[test]
     fn source_kind_as_str_parse_roundtrips() {
         for kind in [RepoSourceKind::Fs, RepoSourceKind::Git] {
@@ -249,6 +284,8 @@ mod tests {
         assert_eq!(RepoSourceKind::parse("bogus"), None);
         assert_eq!(RepoSourceKind::parse(""), None);
         assert_eq!(RepoSourceKind::parse("Fs"), None);
+        assert_eq!(RepoSourceKind::parse("ftp"), None);
+        assert_eq!(RepoSourceKind::parse("FS"), None);
     }
 
     #[test]
@@ -378,8 +415,8 @@ mod tests {
 
     #[test]
     fn add_request_without_id_decodes_as_auto() {
-        // A request that never pins an id — including bytes a pre-id sender
-        // produced — must decode with `id: None`, never a bogus explicit id.
+        // A request that never pins an id must decode with `id: None`, never a
+        // bogus explicit id.
         let request =
             RepoAddRequest::new_git("https://github.com/org/repo", GitRepoRef::RemoteHead);
         assert_eq!(request.id, None);

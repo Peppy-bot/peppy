@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use super::builder::FeedbackStream;
 use crate::encoding::{
-    capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
+    capnp_list_len, decode_message, encode_fs_path, encode_message, encode_message_non_empty,
+    optional_text,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +20,7 @@ pub enum NodeSource {
         repo_path: String,
         repo_ref: Option<String>,
     },
-    // Only .tzst (.tar.zstd) archives are supported for the moment
+    /// An HTTP archive: a zstd-compressed tarball (`.tar.zst`, `.tar.zstd` or `.tzst`).
     Http {
         url: url::Url,
         sha256: Option<String>,
@@ -36,7 +37,7 @@ pub enum NodeSource {
     /// Resolve a `(name, tag)` against the RECEIVING daemon's own repo
     /// cache, then continue exactly as a pinned batch: that daemon
     /// resolves the transitive closure once, pins every entry, and adds
-    /// by pin. The entry arm for `peppy node add <name>:<tag>` — the
+    /// by pin. The entry arm for `peppy node add <name>:<tag>`: the
     /// receiving daemon is the coordinator of its own add.
     ResolveRef {
         name: String,
@@ -62,9 +63,7 @@ impl NodeSource {
     pub fn resolve_ref(name: impl AsRef<str>, tag: impl AsRef<str>) -> Result<Self> {
         Self::decode_resolve_ref(name.as_ref(), tag.as_ref())
     }
-}
 
-impl NodeSource {
     pub fn decode_fs(path: &str) -> Result<Self> {
         Ok(Self::Fs(crate::encoding::decode_fs_path(
             path,
@@ -82,7 +81,7 @@ impl NodeSource {
         })
     }
 
-    pub(crate) fn normalize_http_sha256(sha256: Option<&str>) -> Option<String> {
+    fn normalize_http_sha256(sha256: Option<&str>) -> Option<String> {
         sha256
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -290,7 +289,7 @@ impl NodeAddGoal {
             let mut source = goal.reborrow().init_source();
             match &self.source {
                 NodeSource::Fs(path) => {
-                    source.set_fs(path.to_string_lossy().as_ref());
+                    source.set_fs(encode_fs_path(path, "NodeSource.fs")?);
                 }
                 NodeSource::Git {
                     repo_url,
@@ -301,8 +300,8 @@ impl NodeAddGoal {
                     // Borrow the canonicalized URL bytes as text instead of
                     // allocating a second `String`: `from_utf8_lossy` returns a
                     // borrowed `Cow` for the valid-UTF-8 case (every real git
-                    // URL), matching the lossy decoding `BString`'s `Display`
-                    // already used.
+                    // URL), the same lossy decoding that `BString`'s `Display`
+                    // applies.
                     git.set_repo_url(String::from_utf8_lossy(&repo_url.to_bstring()).as_ref());
                     git.set_repo_path(repo_path);
                     git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
@@ -328,12 +327,7 @@ impl NodeAddGoal {
             }
 
             let env_var_count = capnp_list_len(self.env_vars.len(), "NodeAddGoal.env_vars")?;
-            let mut env_vars = goal.reborrow().init_env_vars(env_var_count);
-            for (idx, (key, value)) in self.env_vars.iter().enumerate() {
-                let mut env_var = env_vars.reborrow().get(idx as u32);
-                env_var.set_key(key);
-                env_var.set_value(value);
-            }
+            super::write_env_vars(goal.reborrow().init_env_vars(env_var_count), &self.env_vars);
 
             goal.reborrow().set_timeout_secs(self.timeout_secs);
             goal.reborrow().set_force(self.force);
@@ -380,15 +374,7 @@ impl NodeAddGoal {
             }
         };
 
-        let env_vars_reader = goal.get_env_vars()?;
-        let mut env_vars = Vec::with_capacity(env_vars_reader.len() as usize);
-        for idx in 0..env_vars_reader.len() {
-            let env_var = env_vars_reader.get(idx);
-            env_vars.push((
-                env_var.get_key()?.to_str()?.to_owned(),
-                env_var.get_value()?.to_str()?.to_owned(),
-            ));
-        }
+        let env_vars = super::read_env_vars(goal.get_env_vars()?)?;
 
         Ok(Self {
             source,
@@ -398,6 +384,188 @@ impl NodeAddGoal {
             force: goal.get_force(),
             launch_id: optional_text(goal.get_launch_id()?.to_str()?),
             pins_json5: crate::encoding::read_text_list(goal.get_pins_json5()?)?,
+        })
+    }
+}
+
+/// Response to the NodeAdd goal request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeAddGoalResponse {
+    pub accepted: bool,
+    pub log_path: PathBuf,
+    pub rejection_reason: Option<String>,
+}
+
+impl NodeAddGoalResponse {
+    pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
+        Self {
+            accepted: true,
+            log_path: log_path.into(),
+            rejection_reason: None,
+        }
+    }
+
+    pub fn rejected(reason: impl Into<String>) -> Self {
+        Self {
+            accepted: false,
+            log_path: PathBuf::new(),
+            rejection_reason: Some(reason.into()),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut response = builder.init_root::<node_capnp::node_add_goal_response::Builder>();
+            response.set_accepted(self.accepted);
+            response.set_log_path(self.log_path.to_string_lossy().as_ref());
+            if let Some(ref reason) = self.rejection_reason {
+                response.set_rejection_reason(reason);
+            }
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let response = reader.get_root::<node_capnp::node_add_goal_response::Reader>()?;
+        Ok(Self {
+            accepted: response.get_accepted(),
+            log_path: PathBuf::from(response.get_log_path()?.to_str()?),
+            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
+        })
+    }
+}
+
+/// Feedback message for the NodeAdd action.
+/// One line the add reports, tagged with the stream it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeAddFeedback {
+    pub stream: FeedbackStream,
+    /// The line of output
+    pub line: String,
+}
+
+impl NodeAddFeedback {
+    pub fn from_stream(stream: FeedbackStream, line: impl Into<String>) -> Self {
+        Self {
+            stream,
+            line: line.into(),
+        }
+    }
+
+    pub fn stdout(line: impl Into<String>) -> Self {
+        Self::from_stream(FeedbackStream::Stdout, line)
+    }
+
+    pub fn stderr(line: impl Into<String>) -> Self {
+        Self::from_stream(FeedbackStream::Stderr, line)
+    }
+
+    pub fn warning(line: impl Into<String>) -> Self {
+        Self::from_stream(FeedbackStream::Warning, line)
+    }
+
+    pub fn is_stdout(&self) -> bool {
+        self.stream == FeedbackStream::Stdout
+    }
+
+    pub fn is_stderr(&self) -> bool {
+        self.stream == FeedbackStream::Stderr
+    }
+
+    pub fn is_warning(&self) -> bool {
+        self.stream == FeedbackStream::Warning
+    }
+
+    pub fn encode(&self) -> Result<NonEmptyPayload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder>();
+            feedback.set_stream(self.stream.to_capnp());
+            feedback.set_line(&self.line);
+        }
+        encode_message_non_empty(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let feedback = reader.get_root::<node_capnp::node_add_feedback::Reader>()?;
+        Ok(Self {
+            stream: FeedbackStream::from_capnp(feedback.get_stream()?),
+            line: feedback.get_line()?.to_str()?.to_owned(),
+        })
+    }
+}
+
+/// Result message for the NodeAdd action.
+///
+/// Note: `node add` only registers the node config and stages a working
+/// directory; the build artifact is produced by a separate `node build`
+/// action and is therefore not part of this result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeAddResult {
+    pub log_path: PathBuf,
+    pub success: bool,
+    pub error_message: Option<String>,
+    pub node_name: Option<String>,
+    pub node_tag: Option<String>,
+}
+
+impl NodeAddResult {
+    pub fn success(
+        log_path: impl Into<PathBuf>,
+        node_name: impl Into<String>,
+        node_tag: impl Into<String>,
+    ) -> Self {
+        Self {
+            log_path: log_path.into(),
+            success: true,
+            error_message: None,
+            node_name: Some(node_name.into()),
+            node_tag: Some(node_tag.into()),
+        }
+    }
+
+    pub fn failure(log_path: impl Into<PathBuf>, error_message: impl Into<String>) -> Self {
+        Self {
+            log_path: log_path.into(),
+            success: false,
+            error_message: Some(error_message.into()),
+            node_name: None,
+            node_tag: None,
+        }
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut result = builder.init_root::<node_capnp::node_add_result::Builder>();
+            result.set_success(self.success);
+            if let Some(ref error_message) = self.error_message {
+                result.set_error_message(error_message);
+            }
+            result.set_log_path(self.log_path.to_string_lossy().as_ref());
+            if let Some(ref node_name) = self.node_name {
+                result.set_node_name(node_name);
+            }
+            if let Some(ref node_tag) = self.node_tag {
+                result.set_node_tag(node_tag);
+            }
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let result = reader.get_root::<node_capnp::node_add_result::Reader>()?;
+        let log_path = PathBuf::from(result.get_log_path()?.to_str()?);
+        Ok(Self {
+            log_path,
+            success: result.get_success(),
+            error_message: optional_text(result.get_error_message()?.to_str()?),
+            node_name: optional_text(result.get_node_name()?.to_str()?),
+            node_tag: optional_text(result.get_node_tag()?.to_str()?),
         })
     }
 }
@@ -421,6 +589,20 @@ impl crate::encoding::Wire for NodeAddResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The daemon reads the node from `NodeSource::Fs` as sent, so a path
+    /// that is not UTF-8 is refused instead of reaching it with its invalid
+    /// bytes replaced.
+    #[cfg(unix)]
+    #[test]
+    fn goal_encode_refuses_an_fs_source_that_is_not_utf8() {
+        let goal = NodeAddGoal::new(crate::encoding::non_utf8_path(), "deadbeef", 60);
+        let refusal = crate::encoding::encoding_error(goal.encode());
+        assert!(
+            refusal.contains("NodeSource.fs is not valid UTF-8"),
+            "{refusal}"
+        );
+    }
 
     #[test]
     fn decode_fs_rejects_empty_path() {
@@ -695,40 +877,22 @@ mod tests {
         assert_eq!(decoded, feedback);
     }
 
+    /// Each constructor sets exactly the predicate of its stream, before and
+    /// after the trip.
     #[test]
-    fn node_add_feedback_stdout_predicates() {
-        let feedback = NodeAddFeedback::stdout("out");
-        assert!(feedback.is_stdout());
-        assert!(!feedback.is_stderr());
-        assert!(!feedback.is_warning());
-        let encoded = feedback.encode().expect("encode");
-        let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
-        assert_eq!(decoded, feedback);
-        assert!(decoded.is_stdout());
-    }
-
-    #[test]
-    fn node_add_feedback_stderr_predicates() {
-        let feedback = NodeAddFeedback::stderr("err");
-        assert!(!feedback.is_stdout());
-        assert!(feedback.is_stderr());
-        assert!(!feedback.is_warning());
-        let encoded = feedback.encode().expect("encode");
-        let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
-        assert_eq!(decoded, feedback);
-        assert!(decoded.is_stderr());
-    }
-
-    #[test]
-    fn node_add_feedback_warning_predicates() {
-        let feedback = NodeAddFeedback::warning("warn");
-        assert!(!feedback.is_stdout());
-        assert!(!feedback.is_stderr());
-        assert!(feedback.is_warning());
-        let encoded = feedback.encode().expect("encode");
-        let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
-        assert_eq!(decoded, feedback);
-        assert!(decoded.is_warning());
+    fn node_add_feedback_predicates_name_its_stream() {
+        let predicates = |f: &NodeAddFeedback| [f.is_stdout(), f.is_stderr(), f.is_warning()];
+        for (feedback, expected) in [
+            (NodeAddFeedback::stdout("out"), [true, false, false]),
+            (NodeAddFeedback::stderr("err"), [false, true, false]),
+            (NodeAddFeedback::warning("warn"), [false, false, true]),
+        ] {
+            assert_eq!(predicates(&feedback), expected, "{feedback:?}");
+            let encoded = feedback.encode().expect("encode");
+            let decoded = NodeAddFeedback::decode(&encoded.into_inner()).expect("decode");
+            assert_eq!(decoded, feedback);
+            assert_eq!(predicates(&decoded), expected, "{decoded:?}");
+        }
     }
 
     #[test]
@@ -767,187 +931,5 @@ mod tests {
     #[test]
     fn node_add_result_decode_rejects_malformed_bytes() {
         assert!(NodeAddResult::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
-    }
-}
-
-/// Response to the NodeAdd goal request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeAddGoalResponse {
-    pub accepted: bool,
-    pub log_path: PathBuf,
-    pub rejection_reason: Option<String>,
-}
-
-impl NodeAddGoalResponse {
-    pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
-        Self {
-            accepted: true,
-            log_path: log_path.into(),
-            rejection_reason: None,
-        }
-    }
-
-    pub fn rejected(reason: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            log_path: PathBuf::new(),
-            rejection_reason: Some(reason.into()),
-        }
-    }
-
-    pub fn encode(&self) -> Result<Payload> {
-        let mut builder = Builder::new_default();
-        {
-            let mut response = builder.init_root::<node_capnp::node_add_goal_response::Builder>();
-            response.set_accepted(self.accepted);
-            response.set_log_path(self.log_path.to_string_lossy().as_ref());
-            if let Some(ref reason) = self.rejection_reason {
-                response.set_rejection_reason(reason);
-            }
-        }
-        encode_message(&builder)
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_add_goal_response::Reader>()?;
-        Ok(Self {
-            accepted: response.get_accepted(),
-            log_path: PathBuf::from(response.get_log_path()?.to_str()?),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
-        })
-    }
-}
-
-/// Feedback message for the NodeAdd action.
-/// Represents a single line of output from the build_cmd process.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeAddFeedback {
-    pub stream: FeedbackStream,
-    /// The line of output
-    pub line: String,
-}
-
-impl NodeAddFeedback {
-    pub fn from_stream(stream: FeedbackStream, line: impl Into<String>) -> Self {
-        Self {
-            stream,
-            line: line.into(),
-        }
-    }
-
-    pub fn stdout(line: impl Into<String>) -> Self {
-        Self::from_stream(FeedbackStream::Stdout, line)
-    }
-
-    pub fn stderr(line: impl Into<String>) -> Self {
-        Self::from_stream(FeedbackStream::Stderr, line)
-    }
-
-    pub fn warning(line: impl Into<String>) -> Self {
-        Self::from_stream(FeedbackStream::Warning, line)
-    }
-
-    pub fn is_stdout(&self) -> bool {
-        self.stream == FeedbackStream::Stdout
-    }
-
-    pub fn is_stderr(&self) -> bool {
-        self.stream == FeedbackStream::Stderr
-    }
-
-    pub fn is_warning(&self) -> bool {
-        self.stream == FeedbackStream::Warning
-    }
-
-    pub fn encode(&self) -> Result<NonEmptyPayload> {
-        let mut builder = Builder::new_default();
-        {
-            let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder>();
-            feedback.set_stream(self.stream.to_capnp());
-            feedback.set_line(&self.line);
-        }
-        encode_message_non_empty(&builder)
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = decode_message(data)?;
-        let feedback = reader.get_root::<node_capnp::node_add_feedback::Reader>()?;
-        Ok(Self {
-            stream: FeedbackStream::from_capnp(feedback.get_stream()?),
-            line: feedback.get_line()?.to_str()?.to_owned(),
-        })
-    }
-}
-
-/// Result message for the NodeAdd action.
-///
-/// Note: `node add` only registers the node config and stages a working
-/// directory; the build artifact is produced by a separate `node build`
-/// action and is therefore not part of this result.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeAddResult {
-    pub log_path: PathBuf,
-    pub success: bool,
-    pub error_message: Option<String>,
-    pub node_name: Option<String>,
-    pub node_tag: Option<String>,
-}
-
-impl NodeAddResult {
-    pub fn success(
-        log_path: impl Into<PathBuf>,
-        node_name: impl Into<String>,
-        node_tag: impl Into<String>,
-    ) -> Self {
-        Self {
-            log_path: log_path.into(),
-            success: true,
-            error_message: None,
-            node_name: Some(node_name.into()),
-            node_tag: Some(node_tag.into()),
-        }
-    }
-
-    pub fn failure(log_path: impl Into<PathBuf>, error_message: impl Into<String>) -> Self {
-        Self {
-            log_path: log_path.into(),
-            success: false,
-            error_message: Some(error_message.into()),
-            node_name: None,
-            node_tag: None,
-        }
-    }
-
-    pub fn encode(&self) -> Result<Payload> {
-        let mut builder = Builder::new_default();
-        {
-            let mut result = builder.init_root::<node_capnp::node_add_result::Builder>();
-            result.set_success(self.success);
-            if let Some(ref error_message) = self.error_message {
-                result.set_error_message(error_message);
-            }
-            result.set_log_path(self.log_path.to_string_lossy().as_ref());
-            if let Some(ref node_name) = self.node_name {
-                result.set_node_name(node_name);
-            }
-            if let Some(ref node_tag) = self.node_tag {
-                result.set_node_tag(node_tag);
-            }
-        }
-        encode_message(&builder)
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = decode_message(data)?;
-        let result = reader.get_root::<node_capnp::node_add_result::Reader>()?;
-        let log_path = PathBuf::from(result.get_log_path()?.to_str()?);
-        Ok(Self {
-            log_path,
-            success: result.get_success(),
-            error_message: optional_text(result.get_error_message()?.to_str()?),
-            node_name: optional_text(result.get_node_name()?.to_str()?),
-            node_tag: optional_text(result.get_node_tag()?.to_str()?),
-        })
     }
 }

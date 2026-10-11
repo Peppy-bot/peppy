@@ -12,9 +12,6 @@ mod node;
 mod repo;
 mod stack;
 
-// Note: there used to be a top-level `builder` module here. Build encoding
-// now lives at `node::builder` alongside `node::add`.
-
 pub use clock::{
     ClockConsumerInfo, ClockDomainInfo, ClockListRequest, ClockListResponse, ClockOffsetRequest,
     ClockOffsetResponse, ClockRequest, ClockResponse, ClockTick,
@@ -76,14 +73,14 @@ pub use stack::reset::{StackResetRequest, StackResetResponse};
 use capnp::introspect::Introspect;
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{Payload, Result};
 
 /// Ties a codec struct to the Cap'n Proto wire root it encodes.
 ///
 /// Implemented next to each codec, in the same file whose `encode`/`decode`
-/// bodies name that root — the one place the pairing is a checkable fact.
+/// bodies name that root, the one place the pairing is a checkable fact.
 /// The method registry ([`crate::registry`]) resolves a payload's reflection
 /// handle through this trait, so registry entries name only the codec struct.
 pub trait Wire {
@@ -116,7 +113,7 @@ pub(crate) fn optional_text(s: &str) -> Option<String> {
 /// field and an omitted one are indistinguishable on the wire. Refusing here is
 /// what stops a receiver from acting on a defaulted identity. Sites that can
 /// name the fix for the operator (a version skew, say) should return their own
-/// `Error::Decoding` with that prose instead — this is the default, not a rule.
+/// `Error::Decoding` with that prose instead. This is the default, not a rule.
 pub(crate) fn required_text(value: &str, field: &str) -> Result<String> {
     if value.is_empty() {
         return Err(crate::Error::Decoding(format!("`{field}` is empty")));
@@ -138,6 +135,31 @@ pub(crate) fn read_core_node_name(
 ) -> Result<config::runtime::CoreNodeName> {
     config::runtime::CoreNodeName::new(value)
         .map_err(|e| crate::Error::Decoding(format!("`{field}`: {e}")))
+}
+
+/// A required text field that must spell a
+/// [`Cardinality`](config::node::Cardinality); the refusal names the field and
+/// lists the spellings it accepts.
+pub(crate) fn read_cardinality(value: &str, field: &str) -> Result<config::node::Cardinality> {
+    required_text(value, field)?.parse().map_err(|spelling| {
+        crate::Error::Decoding(format!(
+            "{field} `{spelling}` is none of one, zero_or_one, one_or_more, zero_or_more"
+        ))
+    })
+}
+
+/// The copy a pair endpoint belongs to: empty text is outside a copy, and any
+/// other text must be a [`Name`](config::runtime::Name).
+pub(crate) fn read_optional_copy(
+    value: &str,
+    field: &str,
+) -> Result<Option<config::runtime::Name>> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    config::runtime::Name::new(value)
+        .map(Some)
+        .map_err(|e| crate::Error::Decoding(format!("{field} is not a name: {e}")))
 }
 
 /// Refuses an empty entry in a list whose members each name something: a
@@ -202,6 +224,32 @@ pub(crate) fn decoding_error<T: std::fmt::Debug>(result: Result<T>) -> String {
     }
 }
 
+/// A path that is not UTF-8, for tests of the encoders that refuse one.
+#[cfg(all(test, unix))]
+pub(crate) fn non_utf8_path() -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+
+    PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9"))
+}
+
+/// The message of an encode refusal, for tests that assert on it.
+#[cfg(all(test, unix))]
+pub(crate) fn encoding_error<T: std::fmt::Debug>(result: Result<T>) -> String {
+    match result.expect_err("encode should fail") {
+        crate::Error::Encoding(message) => message,
+        other => panic!("expected an encoding error, got {other:?}"),
+    }
+}
+
+/// The text of a filesystem-path field, for a path the daemon opens as sent.
+/// The wire carries paths as text, so a path that is not UTF-8 is refused: a
+/// lossy conversion would replace its invalid bytes and name another file.
+pub(crate) fn encode_fs_path<'a>(path: &'a Path, field: &str) -> Result<&'a str> {
+    path.to_str().ok_or_else(|| {
+        crate::Error::Encoding(format!("{field} is not valid UTF-8: {}", path.display()))
+    })
+}
+
 /// Decode a non-empty filesystem-path text field into a `PathBuf`.
 /// Relative paths are accepted; sites that name a real location should use
 /// [`decode_absolute_fs_path`] instead.
@@ -214,7 +262,7 @@ pub(crate) fn decode_fs_path(path: &str, label: &str) -> Result<PathBuf> {
 
 /// Like [`decode_fs_path`] but additionally requires an absolute path.
 /// Use this when the daemon will open the path without further
-/// resolution — relative paths would silently anchor at the daemon's
+/// resolution: relative paths would silently anchor at the daemon's
 /// CWD, which is a footgun.
 pub(crate) fn decode_absolute_fs_path(path: &str, label: &str) -> Result<PathBuf> {
     let buf = decode_fs_path(path, label)?;
@@ -235,10 +283,15 @@ pub(crate) fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
 }
 
 /// Encode a Cap'n Proto message builder into a `Payload`.
+///
+/// `write_message_to_words` sizes its buffer once from the segment table, so
+/// the bytes land in one allocation whose length equals its capacity, and
+/// `Bytes::from(Vec<u8>)` takes that buffer over without allocating a shared
+/// header for it. Serializing into a `Vec` cannot fail; the function returns
+/// a `Result` so that every codec calls it the same way as the fallible encode
+/// steps around it.
 pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
-    let mut buffer = Vec::new();
-    serialize::write_message(&mut buffer, message)?;
-    Ok(Payload::from(buffer))
+    Ok(Payload::from(serialize::write_message_to_words(message)))
 }
 
 /// Encode a Cap'n Proto message builder into a [`NonEmptyPayload`].
@@ -247,13 +300,14 @@ pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload
 /// header, so the produced payload is non-empty by construction. The
 /// `NonEmptyPayload::try_new` here is therefore infallible in practice and
 /// the `expect` documents that invariant; if it ever fires it indicates a
-/// `capnp::serialize::write_message` regression rather than a caller bug.
+/// `capnp::serialize::write_message_to_words` regression rather than a caller
+/// bug.
 pub(crate) fn encode_message_non_empty(
     message: &Builder<HeapAllocator>,
 ) -> Result<crate::NonEmptyPayload> {
     let payload = encode_message(message)?;
     Ok(crate::NonEmptyPayload::try_new(payload)
-        .expect("capnp serialize::write_message always emits a non-empty framed buffer"))
+        .expect("capnp serialize::write_message_to_words always emits a non-empty framed buffer"))
 }
 
 /// Decode bytes into a Cap'n Proto message reader over `data` itself: the
@@ -315,8 +369,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn read_cardinality_reads_every_spelling_and_refuses_an_empty_one() {
+        for cardinality in [
+            config::node::Cardinality::One,
+            config::node::Cardinality::ZeroOrOne,
+            config::node::Cardinality::OneOrMore,
+            config::node::Cardinality::ZeroOrMore,
+        ] {
+            assert_eq!(
+                read_cardinality(cardinality.as_str(), "MyField").expect("a known spelling"),
+                cardinality
+            );
+        }
+        assert_eq!(
+            decoding_error(read_cardinality("", "MyField")),
+            "`MyField` is empty"
+        );
+    }
+
     // The write/read pair is only useful if it is exactly lossless, empty list
-    // included — an off-by-one in either half would survive a one-element test.
+    // included: an off-by-one in either half would survive a one-element test.
     #[test]
     fn text_list_round_trips() {
         for values in [
@@ -358,6 +431,31 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("MyField"), "got: {msg}");
         assert!(msg.contains("exceeds"), "got: {msg}");
+    }
+
+    /// The payload is the standard framed stream that `write_message` writes,
+    /// for a one-segment message and for one that spills into more segments.
+    #[test]
+    fn encode_message_writes_the_framed_stream_bytes() {
+        for pin_count in [1_u32, 4096] {
+            let mut message = Builder::new_default();
+            {
+                let request = message
+                    .init_root::<crate::federation_capnp::participant_reserve_request::Builder>();
+                let mut pins = request.init_deployment_pins_json5(pin_count);
+                for index in 0..pin_count {
+                    pins.set(index, "{ node: 'pinned' }");
+                }
+            }
+            let mut framed = Vec::new();
+            serialize::write_message(&mut framed, &message).expect("write to a Vec");
+            assert!(
+                pin_count == 1 || message.get_segments_for_output().len() > 1,
+                "the large message spans several segments"
+            );
+            let payload = encode_message(&message).expect("encode");
+            assert_eq!(payload.as_ref(), framed.as_slice());
+        }
     }
 
     #[test]

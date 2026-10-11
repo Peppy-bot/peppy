@@ -18,7 +18,7 @@ use crate::encoding::{
 /// leaves an unset `UInt32` at 0).
 pub const DEFAULT_SAMPLES: u32 = 200;
 /// Default per-sample probe/observe timeout in milliseconds when the goal sends 0.
-pub const DEFAULT_PER_SAMPLE_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_PER_SAMPLE_TIMEOUT_MS: u64 = 2_000;
 
 // ---------------------------------------------------------------------------
 // Goal

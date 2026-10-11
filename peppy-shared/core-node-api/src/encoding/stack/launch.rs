@@ -10,8 +10,8 @@ use crate::{NonEmptyPayload, Payload, Result};
 
 use crate::encoding::endpoints::{read_launch_endpoints, write_launch_endpoints};
 use crate::encoding::{
-    capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
-    required_text, write_text_list,
+    capnp_list_len, decode_message, encode_fs_path, encode_message, encode_message_non_empty,
+    optional_text, required_text, write_text_list,
 };
 use crate::graph::InstanceEndpoint;
 use config::runtime::Name;
@@ -43,8 +43,8 @@ impl LauncherOrigin {
 /// How a launch places the core node links its launcher declares.
 ///
 /// The INTENT, not its expansion. Only the coordinator holds the resolved
-/// launcher — a [`LauncherOrigin::Repository`] is read from the daemon's own
-/// cache, which the caller may never have seen — so the caller cannot know
+/// launcher: a [`LauncherOrigin::Repository`] is read from the daemon's own
+/// cache, which the caller may never have seen, so the caller cannot know
 /// what the document declares. Sending what the user asked for, and expanding
 /// it where the document lives, is what makes `--local` mean the same thing
 /// for both origins instead of working only for the one the caller can read.
@@ -185,7 +185,7 @@ impl LaunchGoal {
             let mut origin = goal.reborrow().init_launcher_origin();
             match &self.launcher_origin {
                 LauncherOrigin::Fs(path) => {
-                    origin.set_fs(path.to_string_lossy().as_ref());
+                    origin.set_fs(encode_fs_path(path, "LaunchGoal.launcher_origin.fs")?);
                 }
                 LauncherOrigin::Repository { name } => {
                     origin.set_repository(name.as_str());
@@ -261,50 +261,14 @@ impl LaunchGoal {
 
         let placement = match goal.get_placement().which()? {
             PlacementWhich::Local(()) => PlacementSpec::Local,
-            PlacementWhich::Places(places) => {
-                let places_reader = places?;
-                let mut places = BTreeMap::new();
-                for idx in 0..places_reader.len() {
-                    let link = places_reader.get(idx);
-                    let link_id = link.get_link_id()?.to_str()?;
-                    let core_node = link.get_core_node()?.to_str()?;
-                    if link_id.is_empty() || core_node.is_empty() {
-                        return Err(crate::Error::Decoding(format!(
-                            "LaunchGoal.placement.places[{idx}] has an empty link_id or core_node"
-                        )));
-                    }
-                    if places
-                        .insert(link_id.to_owned(), core_node.to_owned())
-                        .is_some()
-                    {
-                        return Err(crate::Error::Decoding(format!(
-                            "LaunchGoal.placement.places wires `{link_id}` more than once"
-                        )));
-                    }
-                }
-                PlacementSpec::Places(places)
-            }
+            PlacementWhich::Places(places) => PlacementSpec::Places(read_places(places?)?),
         };
 
         let selections = read_selections(goal.get_selections()?, "LaunchGoal.selections")?;
         let joins = goal
             .get_joins()?
             .iter()
-            .map(|wire| {
-                let option = wire.get_option()?.to_str()?;
-                if option.is_empty() {
-                    return Err(crate::Error::Decoding(
-                        "LaunchGoal.joins names an empty option".to_owned(),
-                    ));
-                }
-                Ok(LaunchJoin {
-                    option: option.to_owned(),
-                    name: crate::encoding::read_name(
-                        wire.get_name()?.to_str()?,
-                        "LaunchGoal.joins.name",
-                    )?,
-                })
-            })
+            .map(read_launch_join)
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
@@ -317,6 +281,48 @@ impl LaunchGoal {
             joins,
         })
     }
+}
+
+/// Reads the `--place` wirings of a [`LaunchGoal`]. A link with a blank half
+/// is refused, and so is a link wired twice, which keeps "at most one target
+/// per placeholder" true of every decoded [`PlacementSpec::Places`].
+fn read_places(
+    places: capnp::struct_list::Reader<'_, launch_capnp::core_node_link::Owned>,
+) -> Result<BTreeMap<String, String>> {
+    let mut wirings = BTreeMap::new();
+    for (index, link) in places.iter().enumerate() {
+        let link_id = link.get_link_id()?.to_str()?;
+        let core_node = link.get_core_node()?.to_str()?;
+        if link_id.is_empty() || core_node.is_empty() {
+            return Err(crate::Error::Decoding(format!(
+                "LaunchGoal.placement.places[{index}] has an empty link_id or core_node"
+            )));
+        }
+        if wirings
+            .insert(link_id.to_owned(), core_node.to_owned())
+            .is_some()
+        {
+            return Err(crate::Error::Decoding(format!(
+                "LaunchGoal.placement.places wires `{link_id}` more than once"
+            )));
+        }
+    }
+    Ok(wirings)
+}
+
+/// Reads one `--join OPTION:NAME` reference of a [`LaunchGoal`]; a blank
+/// option is refused.
+fn read_launch_join(wire: launch_capnp::launch_join::Reader<'_>) -> Result<LaunchJoin> {
+    let option = wire.get_option()?.to_str()?;
+    if option.is_empty() {
+        return Err(crate::Error::Decoding(
+            "LaunchGoal.joins names an empty option".to_owned(),
+        ));
+    }
+    Ok(LaunchJoin {
+        option: option.to_owned(),
+        name: crate::encoding::read_name(wire.get_name()?.to_str()?, "LaunchGoal.joins.name")?,
+    })
 }
 
 /// Goal message for the Build action: the launch `peppy stack build` runs
@@ -749,6 +755,15 @@ mod tests {
     use super::*;
     use crate::encoding::decoding_error;
 
+    /// A launch of the repository launcher `name` with the smallest budgets.
+    fn repository_goal(name: &str) -> LaunchGoal {
+        LaunchGoal::new(
+            LauncherOrigin::repository(name),
+            "launch-abc123",
+            StackBudgets::new(1, 1, 1, None),
+        )
+    }
+
     #[test]
     fn launch_goal_roundtrips_fs_origin() {
         let goal = LaunchGoal::new(
@@ -785,14 +800,8 @@ mod tests {
     /// launch.
     #[test]
     fn a_build_goal_carries_the_launch_it_would_run() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "openarm_simulation".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_selections(vec!["mujoco".to_string()]);
+        let goal =
+            repository_goal("openarm_simulation").with_selections(vec!["mujoco".to_string()]);
         let build = StackBuildGoal::from(goal.clone());
 
         let bytes = build.encode().expect("encode");
@@ -859,14 +868,7 @@ mod tests {
     /// local or on a peer, ignores a cached artifact.
     #[test]
     fn launch_goal_roundtrips_rebuild() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "openarm_v2".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_rebuild(true);
+        let goal = repository_goal("openarm_v2").with_rebuild(true);
 
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
@@ -905,14 +907,8 @@ mod tests {
     /// had read a document only the coordinator holds.
     #[test]
     fn launch_goal_roundtrips_local_placement() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "split_compute_manipulation".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_placement(PlacementSpec::Local);
+        let goal =
+            repository_goal("split_compute_manipulation").with_placement(PlacementSpec::Local);
 
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
@@ -920,17 +916,11 @@ mod tests {
         assert_eq!(goal, decoded);
     }
 
-    /// A goal that sets no placement decodes as empty `places`, which is what
-    /// "neither `--place` nor `--local`" has always meant.
+    /// A goal that sets no placement decodes as empty `places`, which means
+    /// neither `--place` nor `--local` was given.
     #[test]
     fn launch_goal_without_placement_decodes_as_no_places() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "teleop".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        );
+        let goal = repository_goal("teleop");
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert_eq!(decoded.placement, PlacementSpec::Places(BTreeMap::new()));
@@ -942,14 +932,7 @@ mod tests {
     /// meaning.
     #[test]
     fn launch_goal_roundtrips_selections_verbatim() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "openarm_v2".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_selections(vec![
+        let goal = repository_goal("openarm_v2").with_selections(vec![
             "mujoco".to_string(),
             "robot=mujoco".to_string(),
             "xr_commander".to_string(),
@@ -1007,17 +990,12 @@ mod tests {
     /// that describes a two-machine topology must still run on one box.
     #[test]
     fn launch_goal_roundtrips_two_links_wired_to_one_core_node() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "split_compute_manipulation".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_placement(PlacementSpec::Places(BTreeMap::from([
-            ("robot_onboard".to_string(), "cn-solo".to_string()),
-            ("cloud_inference".to_string(), "cn-solo".to_string()),
-        ])));
+        let goal = repository_goal("split_compute_manipulation").with_placement(
+            PlacementSpec::Places(BTreeMap::from([
+                ("robot_onboard".to_string(), "cn-solo".to_string()),
+                ("cloud_inference".to_string(), "cn-solo".to_string()),
+            ])),
+        );
 
         let bytes = goal.encode().expect("encode");
         assert_eq!(LaunchGoal::decode(&bytes).expect("decode"), goal);
@@ -1045,20 +1023,42 @@ mod tests {
     #[test]
     fn launch_goal_decode_rejects_empty_core_node_link_fields() {
         for (link_id, core_node) in [("", "cn-atlas"), ("cloud_inference", "")] {
-            let goal = LaunchGoal::new(
-                LauncherOrigin::Repository {
-                    name: "teleop".to_string(),
-                },
-                "launch-abc123",
-                StackBudgets::new(1, 1, 1, None),
-            )
-            .with_placement(PlacementSpec::Places(BTreeMap::from([(
-                link_id.to_string(),
-                core_node.to_string(),
-            )])));
+            let goal =
+                repository_goal("teleop").with_placement(PlacementSpec::Places(BTreeMap::from([
+                    (link_id.to_string(), core_node.to_string()),
+                ])));
             let msg = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
             assert!(msg.contains("empty link_id or core_node"), "got: {msg}");
         }
+    }
+
+    /// A [`PlacementSpec::Places`] map cannot hold one link twice, so only a
+    /// hand-built message reaches this refusal. It is what keeps "at most one
+    /// target per placeholder" a property of the decoded type.
+    #[test]
+    fn launch_goal_decode_refuses_a_link_wired_twice() {
+        let mut builder = Builder::new_default();
+        {
+            let mut wire = builder.init_root::<launch_capnp::launch_goal::Builder>();
+            wire.set_launch_id("launch-1");
+            wire.set_node_add_idle_timeout_secs(1);
+            wire.set_node_build_idle_timeout_secs(1);
+            wire.set_node_run_idle_timeout_secs(1);
+            wire.reborrow()
+                .init_launcher_origin()
+                .set_repository("fleet");
+            let mut places = wire.init_placement().init_places(2);
+            for (index, core_node) in ["cn-a", "cn-b"].into_iter().enumerate() {
+                let mut link = places.reborrow().get(index as u32);
+                link.set_link_id("robot_onboard");
+                link.set_core_node(core_node);
+            }
+        }
+        let refusal = decoding_error(LaunchGoal::decode(&encode_message(&builder).unwrap()));
+        assert!(
+            refusal.contains("wires `robot_onboard` more than once"),
+            "{refusal}"
+        );
     }
 
     /// `LauncherOrigin::Fs` is documented to carry an absolute path; the
@@ -1075,15 +1075,28 @@ mod tests {
         assert!(msg.contains("absolute"), "got: {msg}");
     }
 
+    /// The daemon opens `LauncherOrigin::Fs` as sent, and the wire carries it
+    /// as text. A path that is not UTF-8 would reach the daemon with its
+    /// invalid bytes replaced, naming a file the caller never pointed at, so
+    /// the encoder refuses it.
+    #[cfg(unix)]
     #[test]
-    fn launch_goal_decode_rejects_empty_repository_name() {
+    fn launch_goal_encode_refuses_a_launcher_path_that_is_not_utf8() {
         let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "".to_string(),
-            },
+            LauncherOrigin::Fs(crate::encoding::non_utf8_path()),
             "launch-abc123",
             StackBudgets::new(1, 1, 1, None),
         );
+        let refusal = crate::encoding::encoding_error(goal.encode());
+        assert!(
+            refusal.contains("LaunchGoal.launcher_origin.fs is not valid UTF-8"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn launch_goal_decode_rejects_empty_repository_name() {
+        let goal = repository_goal("");
         let msg = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
         assert!(msg.contains("repository name is empty"), "got: {msg}");
     }
@@ -1132,51 +1145,34 @@ mod tests {
         assert!(LaunchFeedback::decode(b"not capnp").is_err());
     }
 
+    /// Every constructor sets the outcome it names, starts with no node log,
+    /// and round-trips.
     #[test]
-    fn launch_result_new_roundtrips() {
-        let result = LaunchResult::new(true, "/var/log/launch.log", None);
-        assert!(result.success);
-        assert!(result.node_add_logs.is_empty());
-        assert!(result.node_build_logs.is_empty());
-        assert!(result.node_run_logs.is_empty());
-        let bytes = result.encode().expect("encode");
-        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
-        assert_eq!(decoded, result);
-    }
-
-    #[test]
-    fn launch_result_success_constructor_roundtrips() {
-        let result = LaunchResult::success("/var/log/launch.log");
-        assert!(result.success);
-        assert_eq!(result.error_message, None);
-        let bytes = result.encode().expect("encode");
-        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
-        assert_eq!(decoded, result);
-    }
-
-    #[test]
-    fn launch_result_failure_constructor_roundtrips() {
-        let result = LaunchResult::failure("/var/log/launch.log", "node build failed");
-        assert!(!result.success);
-        assert_eq!(result.error_message.as_deref(), Some("node build failed"));
-        let bytes = result.encode().expect("encode");
-        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
-        assert_eq!(decoded, result);
-    }
-
-    #[test]
-    fn launch_result_with_empty_node_logs_roundtrips() {
-        let result = LaunchResult::success("/var/log/launch.log").with_node_logs(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
-        let bytes = result.encode().expect("encode");
-        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
-        assert_eq!(decoded, result);
-        assert!(decoded.node_add_logs.is_empty());
-        assert!(decoded.node_build_logs.is_empty());
-        assert!(decoded.node_run_logs.is_empty());
+    fn launch_result_constructors_roundtrip() {
+        let log_path = "/var/log/launch.log";
+        for (result, success, error_message) in [
+            (LaunchResult::new(true, log_path, None), true, None),
+            (LaunchResult::success(log_path), true, None),
+            (
+                LaunchResult::failure(log_path, "node build failed"),
+                false,
+                Some("node build failed"),
+            ),
+            (
+                LaunchResult::success(log_path).with_node_logs(Vec::new(), Vec::new(), Vec::new()),
+                true,
+                None,
+            ),
+        ] {
+            assert_eq!(result.success, success, "{result:?}");
+            assert_eq!(result.error_message.as_deref(), error_message, "{result:?}");
+            let bytes = result.encode().expect("encode");
+            let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
+            assert_eq!(decoded, result);
+            assert!(decoded.node_add_logs.is_empty());
+            assert!(decoded.node_build_logs.is_empty());
+            assert!(decoded.node_run_logs.is_empty());
+        }
     }
 
     #[test]

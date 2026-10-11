@@ -106,12 +106,7 @@ impl NodeBuildGoal {
             goal.set_node_tag(&self.node_tag);
 
             let env_var_count = capnp_list_len(self.env_vars.len(), "NodeBuildGoal.env_vars")?;
-            let mut env_vars = goal.reborrow().init_env_vars(env_var_count);
-            for (idx, (key, value)) in self.env_vars.iter().enumerate() {
-                let mut env_var = env_vars.reborrow().get(idx as u32);
-                env_var.set_key(key);
-                env_var.set_value(value);
-            }
+            super::write_env_vars(goal.reborrow().init_env_vars(env_var_count), &self.env_vars);
 
             goal.reborrow().set_timeout_secs(self.timeout_secs);
             goal.reborrow().set_force(self.force);
@@ -127,15 +122,7 @@ impl NodeBuildGoal {
         let reader = decode_message(data)?;
         let goal = reader.get_root::<node_capnp::node_build_goal::Reader>()?;
 
-        let env_vars_reader = goal.get_env_vars()?;
-        let mut env_vars = Vec::with_capacity(env_vars_reader.len() as usize);
-        for idx in 0..env_vars_reader.len() {
-            let env_var = env_vars_reader.get(idx);
-            env_vars.push((
-                env_var.get_key()?.to_str()?.to_owned(),
-                env_var.get_value()?.to_str()?.to_owned(),
-            ));
-        }
+        let env_vars = super::read_env_vars(goal.get_env_vars()?)?;
 
         Ok(Self {
             node_name: goal.get_node_name()?.to_str()?.to_owned(),
@@ -485,40 +472,22 @@ mod tests {
         assert_eq!(decoded, feedback);
     }
 
+    /// Each constructor sets exactly the predicate of its stream, before and
+    /// after the trip.
     #[test]
-    fn node_build_feedback_stdout_predicates() {
-        let feedback = NodeBuildFeedback::stdout("out");
-        assert!(feedback.is_stdout());
-        assert!(!feedback.is_stderr());
-        assert!(!feedback.is_warning());
-        let encoded = feedback.encode().expect("encode");
-        let decoded = NodeBuildFeedback::decode(&encoded.into_inner()).expect("decode");
-        assert_eq!(decoded, feedback);
-        assert!(decoded.is_stdout());
-    }
-
-    #[test]
-    fn node_build_feedback_stderr_predicates() {
-        let feedback = NodeBuildFeedback::stderr("err");
-        assert!(!feedback.is_stdout());
-        assert!(feedback.is_stderr());
-        assert!(!feedback.is_warning());
-        let encoded = feedback.encode().expect("encode");
-        let decoded = NodeBuildFeedback::decode(&encoded.into_inner()).expect("decode");
-        assert_eq!(decoded, feedback);
-        assert!(decoded.is_stderr());
-    }
-
-    #[test]
-    fn node_build_feedback_warning_predicates() {
-        let feedback = NodeBuildFeedback::warning("warn");
-        assert!(!feedback.is_stdout());
-        assert!(!feedback.is_stderr());
-        assert!(feedback.is_warning());
-        let encoded = feedback.encode().expect("encode");
-        let decoded = NodeBuildFeedback::decode(&encoded.into_inner()).expect("decode");
-        assert_eq!(decoded, feedback);
-        assert!(decoded.is_warning());
+    fn node_build_feedback_predicates_name_its_stream() {
+        let predicates = |f: &NodeBuildFeedback| [f.is_stdout(), f.is_stderr(), f.is_warning()];
+        for (feedback, expected) in [
+            (NodeBuildFeedback::stdout("out"), [true, false, false]),
+            (NodeBuildFeedback::stderr("err"), [false, true, false]),
+            (NodeBuildFeedback::warning("warn"), [false, false, true]),
+        ] {
+            assert_eq!(predicates(&feedback), expected, "{feedback:?}");
+            let encoded = feedback.encode().expect("encode");
+            let decoded = NodeBuildFeedback::decode(&encoded.into_inner()).expect("decode");
+            assert_eq!(decoded, feedback);
+            assert_eq!(predicates(&decoded), expected, "{decoded:?}");
+        }
     }
 
     #[test]

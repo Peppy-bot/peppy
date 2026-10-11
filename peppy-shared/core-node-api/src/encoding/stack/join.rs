@@ -50,7 +50,7 @@ impl ArgumentOverride {
         argument: Name,
         value: AnyType,
     ) -> std::result::Result<Self, ArgumentOverrideError> {
-        if !finite(&value) {
+        if !has_only_finite_numbers(&value) {
             return Err(ArgumentOverrideError::NonFinite {
                 instance_id,
                 argument,
@@ -111,11 +111,11 @@ impl std::str::FromStr for ArgumentOverride {
 }
 
 /// Whether every number the value holds, at any depth, is finite.
-fn finite(value: &AnyType) -> bool {
+fn has_only_finite_numbers(value: &AnyType) -> bool {
     match value {
         AnyType::Float(value) => value.is_finite(),
-        AnyType::Array(values) => values.iter().all(finite),
-        AnyType::Object(values) => values.values().all(finite),
+        AnyType::Array(values) => values.iter().all(has_only_finite_numbers),
+        AnyType::Object(values) => values.values().all(has_only_finite_numbers),
         AnyType::Null
         | AnyType::Bool(_)
         | AnyType::String(_)
@@ -197,33 +197,23 @@ impl StackJoinGoal {
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
+        use launch_capnp::stack_join_goal::placement::Which;
+
         let message = decode_message(data)?;
         let goal = message.get_root::<launch_capnp::stack_join_goal::Reader>()?;
         let name = read_name(goal.get_name()?.to_str()?, "StackJoinGoal.name")?;
         let option = required_text(goal.get_option()?.to_str()?, "StackJoinGoal.option")?;
         let selections = read_selections(goal.get_selections()?, "StackJoinGoal.selections")?;
-        let arguments =
-            goal.get_arguments()?
-                .iter()
-                .map(|argument| {
-                    let instance_id = read_name(
-                        argument.get_instance_id()?.to_str()?,
-                        "arguments.instance_id",
-                    )?;
-                    let key = read_name(argument.get_argument()?.to_str()?, "arguments.argument")?;
-                    let value = serde_json5::from_str(argument.get_value()?.to_str()?).map_err(
-                        |error| crate::Error::Decoding(format!("`arguments.value`: {error}")),
-                    )?;
-                    ArgumentOverride::new(instance_id, key, value)
-                        .map_err(|error| crate::Error::Decoding(error.to_string()))
-                })
-                .collect::<Result<Vec<_>>>()?;
+        let arguments = goal
+            .get_arguments()?
+            .iter()
+            .map(read_argument_override)
+            .collect::<Result<Vec<_>>>()?;
         if let Some((instance_id, argument)) = repeated_target(&arguments) {
             return Err(crate::Error::Decoding(format!(
                 "`arguments` overrides `{instance_id}.{argument}` twice"
             )));
         }
-        use launch_capnp::stack_join_goal::placement::Which;
         let placement = match goal.get_placement().which()? {
             Which::Coordinator(()) => JoinPlacement::Local,
             Which::CoreNode(host) => {
@@ -246,6 +236,22 @@ impl StackJoinGoal {
             budgets,
         })
     }
+}
+
+/// Reads one override of a [`StackJoinGoal`]: both names must be names and
+/// the value must be JSON5 holding only finite numbers.
+fn read_argument_override(
+    argument: launch_capnp::argument_override::Reader<'_>,
+) -> Result<ArgumentOverride> {
+    let instance_id = read_name(
+        argument.get_instance_id()?.to_str()?,
+        "arguments.instance_id",
+    )?;
+    let key = read_name(argument.get_argument()?.to_str()?, "arguments.argument")?;
+    let value = serde_json5::from_str(argument.get_value()?.to_str()?)
+        .map_err(|error| crate::Error::Decoding(format!("`arguments.value`: {error}")))?;
+    ArgumentOverride::new(instance_id, key, value)
+        .map_err(|error| crate::Error::Decoding(error.to_string()))
 }
 
 impl crate::encoding::Wire for StackJoinGoal {
@@ -337,24 +343,41 @@ mod tests {
         assert!(refusal.contains("stray comma"), "{refusal}");
     }
 
+    /// Each refusal of a wire override names what is wrong with it. The goal
+    /// carries valid budgets, so no later field refusal can stand in for the
+    /// override's own.
     #[test]
-    fn wire_arguments_reject_non_finite_numbers_and_invalid_names() {
-        for (instance, key, value) in [
-            ("arm", "gain", "NaN"),
-            ("arm", "gain", "{value: [Infinity]}"),
-            ("bad/name", "gain", "1"),
-            ("arm", "", "1"),
+    fn wire_argument_refusals_name_the_override_field() {
+        for (instance, key, value, expected) in [
+            (
+                "arm",
+                "gain",
+                "NaN",
+                "`arm.gain` contains a non-finite number",
+            ),
+            (
+                "arm",
+                "gain",
+                "{value: [Infinity]}",
+                "`arm.gain` contains a non-finite number",
+            ),
+            ("bad/name", "gain", "1", "`arguments.instance_id`"),
+            ("arm", "", "1", "`arguments.argument`"),
+            ("arm", "gain", "{", "`arguments.value`"),
         ] {
             let mut message = Builder::new_default();
             let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder>();
             goal.set_name("alpha");
             goal.set_option("openarm_real");
-            let mut arguments = goal.init_arguments(1);
-            let mut argument = arguments.reborrow().get(0);
+            goal.set_node_add_idle_timeout_secs(1);
+            goal.set_node_build_idle_timeout_secs(1);
+            goal.set_node_run_idle_timeout_secs(1);
+            let mut argument = goal.init_arguments(1).get(0);
             argument.set_instance_id(instance);
             argument.set_argument(key);
             argument.set_value(value);
-            assert!(StackJoinGoal::decode(&encode_message(&message).unwrap()).is_err());
+            let refusal = decoding_error(StackJoinGoal::decode(&encode_message(&message).unwrap()));
+            assert!(refusal.contains(expected), "{refusal}");
         }
     }
 

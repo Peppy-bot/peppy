@@ -6,7 +6,9 @@ use crate::node_capnp;
 use crate::{Payload, Result};
 
 use crate::encoding::RepoSourceKind;
-use crate::encoding::{capnp_list_len, decode_message, encode_message};
+use crate::encoding::{
+    capnp_list_len, decode_message, encode_fs_path, encode_message, read_text_list, write_text_list,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeSyncRequest {
@@ -36,7 +38,7 @@ impl NodeSyncRequest {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_sync_request::Builder>();
-            request.set_node_root_dir(self.node_root_dir.to_string_lossy());
+            request.set_node_root_dir(encode_fs_path(&self.node_root_dir, "node_root_dir")?);
             request.set_git_hash(&self.git_hash);
             request.set_include_repositories(self.include_repositories);
         }
@@ -118,10 +120,10 @@ impl NodeSyncResponse {
                 self.resolved_from_stack.len(),
                 "NodeSyncResponse.resolved_from_stack",
             )?;
-            let mut stack_list = response.reborrow().init_resolved_from_stack(stack_count);
-            for (i, dep) in self.resolved_from_stack.iter().enumerate() {
-                stack_list.set(i as u32, dep.as_str());
-            }
+            write_text_list(
+                response.reborrow().init_resolved_from_stack(stack_count),
+                &self.resolved_from_stack,
+            );
             let repo_count = capnp_list_len(
                 self.resolved_from_repositories.len(),
                 "NodeSyncResponse.resolved_from_repositories",
@@ -140,27 +142,21 @@ impl NodeSyncResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_sync_response::Reader>()?;
-        let mut resolved_from_stack = Vec::new();
-        if response.has_resolved_from_stack() {
-            for dep in response.get_resolved_from_stack()?.iter() {
-                resolved_from_stack.push(dep?.to_str()?.to_owned());
-            }
-        }
-        let mut resolved_from_repositories = Vec::new();
-        if response.has_resolved_from_repositories() {
-            for item in response.get_resolved_from_repositories()?.iter() {
-                let kind_str = item.get_source_kind()?.to_str()?;
-                let source_kind = RepoSourceKind::parse(kind_str).ok_or_else(|| {
-                    crate::Error::Decoding(format!(
-                        "unknown source_kind '{kind_str}' in NodeSyncResponse"
-                    ))
-                })?;
-                resolved_from_repositories.push(RepoResolvedEntry {
-                    name: item.get_name()?.to_str()?.to_owned(),
-                    tag: item.get_tag()?.to_str()?.to_owned(),
-                    source_kind,
-                });
-            }
+        let resolved_from_stack = read_text_list(response.get_resolved_from_stack()?)?;
+        let repositories = response.get_resolved_from_repositories()?;
+        let mut resolved_from_repositories = Vec::with_capacity(repositories.len() as usize);
+        for item in repositories.iter() {
+            let kind_str = item.get_source_kind()?.to_str()?;
+            let source_kind = RepoSourceKind::parse(kind_str).ok_or_else(|| {
+                crate::Error::Decoding(format!(
+                    "unknown source_kind '{kind_str}' in NodeSyncResponse"
+                ))
+            })?;
+            resolved_from_repositories.push(RepoResolvedEntry {
+                name: item.get_name()?.to_str()?.to_owned(),
+                tag: item.get_tag()?.to_str()?.to_owned(),
+                source_kind,
+            });
         }
         Ok(Self {
             success: response.get_success(),
@@ -182,6 +178,21 @@ impl crate::encoding::Wire for NodeSyncResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::decoding_error;
+
+    /// The daemon syncs the node under `node_root_dir` as sent, so a path
+    /// that is not UTF-8 is refused instead of reaching it with its invalid
+    /// bytes replaced.
+    #[cfg(unix)]
+    #[test]
+    fn sync_request_encode_refuses_a_node_root_dir_that_is_not_utf8() {
+        let request = NodeSyncRequest::new(crate::encoding::non_utf8_path(), "deadbeef", false);
+        let refusal = crate::encoding::encoding_error(request.encode());
+        assert!(
+            refusal.contains("node_root_dir is not valid UTF-8"),
+            "{refusal}"
+        );
+    }
 
     #[test]
     fn node_sync_request_roundtrip_with_flag_off() {
@@ -231,5 +242,36 @@ mod tests {
         assert_eq!(decoded.error_message, "nope");
         assert!(decoded.resolved_from_stack.is_empty());
         assert!(decoded.resolved_from_repositories.is_empty());
+    }
+
+    /// A sender that never initializes the provenance lists sends null list
+    /// pointers, which read as no provenance.
+    #[test]
+    fn node_sync_response_without_provenance_lists_decodes_empty() {
+        let mut builder = Builder::new_default();
+        builder
+            .init_root::<node_capnp::node_sync_response::Builder>()
+            .set_success(true);
+        let encoded = encode_message(&builder).unwrap();
+        let decoded = NodeSyncResponse::decode(&encoded).unwrap();
+        assert_eq!(decoded, NodeSyncResponse::success());
+    }
+
+    #[test]
+    fn node_sync_response_decode_refuses_an_unknown_source_kind() {
+        let mut builder = Builder::new_default();
+        {
+            let mut response = builder.init_root::<node_capnp::node_sync_response::Builder>();
+            response.set_success(true);
+            let mut entry = response.init_resolved_from_repositories(1).get(0);
+            entry.set_name("baz");
+            entry.set_tag("v2");
+            entry.set_source_kind("bogus");
+        }
+        let encoded = encode_message(&builder).unwrap();
+        assert_eq!(
+            decoding_error(NodeSyncResponse::decode(&encoded)),
+            "unknown source_kind 'bogus' in NodeSyncResponse"
+        );
     }
 }

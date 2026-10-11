@@ -106,46 +106,31 @@ mod tests {
     }
 
     #[test]
-    fn response_new_round_trips_success() {
-        let response = StackResetResponse::new(true, None);
-        let payload = response.encode().expect("encode");
-        let decoded = StackResetResponse::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, response);
-        assert!(decoded.success);
-        assert_eq!(decoded.error_message, None);
-    }
-
-    #[test]
-    fn response_new_round_trips_with_error_message() {
-        let response = StackResetResponse::new(false, Some("reset failed".to_string()));
-        let payload = response.encode().expect("encode");
-        let decoded = StackResetResponse::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, response);
-        assert!(!decoded.success);
-        assert_eq!(decoded.error_message.as_deref(), Some("reset failed"));
-    }
-
-    #[test]
-    fn response_success_constructor_round_trips() {
-        let response = StackResetResponse::success();
-        assert!(response.success);
-        assert_eq!(response.error_message, None);
-        let payload = response.encode().expect("encode");
-        let decoded = StackResetResponse::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn response_failure_constructor_round_trips() {
-        let response = StackResetResponse::failure("daemon unreachable");
-        assert!(!response.success);
-        assert_eq!(
-            response.error_message.as_deref(),
-            Some("daemon unreachable")
-        );
-        let payload = response.encode().expect("encode");
-        let decoded = StackResetResponse::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, response);
+    fn response_constructors_round_trip() {
+        for (response, success, error_message) in [
+            (StackResetResponse::new(true, None), true, None),
+            (
+                StackResetResponse::new(false, Some("reset failed".to_string())),
+                false,
+                Some("reset failed"),
+            ),
+            (StackResetResponse::success(), true, None),
+            (
+                StackResetResponse::failure("daemon unreachable"),
+                false,
+                Some("daemon unreachable"),
+            ),
+        ] {
+            assert_eq!(response.success, success, "{response:?}");
+            assert_eq!(
+                response.error_message.as_deref(),
+                error_message,
+                "{response:?}"
+            );
+            let payload = response.encode().expect("encode");
+            let decoded = StackResetResponse::decode(payload.as_ref()).expect("decode");
+            assert_eq!(decoded, response);
+        }
     }
 
     #[test]

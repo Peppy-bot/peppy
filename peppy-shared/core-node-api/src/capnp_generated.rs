@@ -1,9 +1,9 @@
-//! Generated Cap'n Proto types — one `include!` per schema in `schemas/`.
+//! Generated Cap'n Proto types: one `include!` per schema in `schemas/`.
 //!
 //! These modules are an implementation detail, sealed behind `pub(crate)`: the
 //! capnp schema never appears in a public signature. `lib.rs` re-exports each of
 //! them at the crate root (`crate::*_capnp`) because capnpc emits crate-root-
-//! relative paths — the generated code refers to its sibling types via absolute
+//! relative paths. The generated code refers to its sibling types via absolute
 //! `crate::<name>_capnp::...` paths, so the modules must be reachable there.
 
 #![allow(clippy::all)]

@@ -11,7 +11,7 @@ use crate::encoding::{capnp_list_len, read_text_list, required_text, write_text_
 use crate::graph::InstanceEndpoint;
 
 macro_rules! endpoint_list_codec {
-    ($write:ident, $read:ident, $capnp:ident, $endpoint:ident, $kind:ident) => {
+    ($write:ident, $read:ident, $capnp:ident, $endpoint:ident) => {
         /// Writes `endpoints` into a struct list already sized for them.
         pub(crate) fn $write(
             mut list: ::capnp::struct_list::Builder<'_, crate::$capnp::$endpoint::Owned>,
@@ -26,8 +26,8 @@ macro_rules! endpoint_list_codec {
                 let mut wire = list.reborrow().get(index as u32);
                 wire.set_label(&endpoint.label);
                 wire.set_kind(match endpoint.kind {
-                    EndpointKind::Page => crate::$capnp::$kind::Page,
-                    EndpointKind::Mcp => crate::$capnp::$kind::Mcp,
+                    EndpointKind::Page => crate::$capnp::EndpointKind::Page,
+                    EndpointKind::Mcp => crate::$capnp::EndpointKind::Mcp,
                 });
                 let url_count = capnp_list_len(endpoint.urls.len(), "InstanceEndpoint.urls")?;
                 write_text_list(wire.init_urls(url_count), &endpoint.urls);
@@ -45,8 +45,8 @@ macro_rules! endpoint_list_codec {
                 let wire = list.get(index);
                 let label = required_text(wire.get_label()?.to_str()?, "InstanceEndpoint.label")?;
                 let kind = match wire.get_kind() {
-                    Ok(crate::$capnp::$kind::Page) => EndpointKind::Page,
-                    Ok(crate::$capnp::$kind::Mcp) => EndpointKind::Mcp,
+                    Ok(crate::$capnp::EndpointKind::Page) => EndpointKind::Page,
+                    Ok(crate::$capnp::EndpointKind::Mcp) => EndpointKind::Mcp,
                     Err(err) => {
                         return Err(crate::Error::Decoding(format!(
                             "InstanceEndpoint.kind for `{label}`: {err}"
@@ -68,16 +68,14 @@ endpoint_list_codec!(
     write_node_endpoints,
     read_node_endpoints,
     node_capnp,
-    instance_endpoint,
-    EndpointKind
+    instance_endpoint
 );
 
 endpoint_list_codec!(
     write_launch_endpoints,
     read_launch_endpoints,
     launch_capnp,
-    launch_endpoint,
-    EndpointKind
+    launch_endpoint
 );
 
 /// Sample endpoints for the codec tests of the messages that carry them:

@@ -17,8 +17,8 @@ use crate::{Payload, Result};
 
 use crate::encoding::{
     ObservationTarget, ObservationTargets, capnp_list_len, decode_message, encode_message,
-    optional_text, read_core_node_name, read_name, read_name_list, read_text_list, required_text,
-    required_text_list, write_text_list,
+    optional_text, read_cardinality, read_core_node_name, read_name, read_name_list,
+    read_optional_copy, read_text_list, required_text, required_text_list, write_text_list,
 };
 
 /// Reserves one participant for one launch, carrying the pins for every
@@ -421,29 +421,7 @@ impl ParticipantSetsUpdateRequest {
             request.set_launch_id(&self.launch_id);
             let mut sets = request.init_sets(capnp_list_len(self.sets.len(), "sets")?);
             for (index, set) in self.sets.iter().enumerate() {
-                let mut wire = sets.reborrow().get(index as u32);
-                wire.set_instance_id(set.instance_id.as_str());
-                wire.set_link_id(&set.link_id);
-                let members = wire.init_members();
-                match &set.members {
-                    SlotMembers::Producers(producers) => {
-                        let mut list =
-                            members.init_producers(capnp_list_len(producers.len(), "producers")?);
-                        for (member_index, member) in producers.iter().enumerate() {
-                            write_bound_member(list.reborrow().get(member_index as u32), member);
-                        }
-                    }
-                    SlotMembers::Observed(targets) => {
-                        let mut list =
-                            members.init_observed(capnp_list_len(targets.len(), "observed")?);
-                        for (member_index, target) in targets.iter().enumerate() {
-                            write_observation_member(
-                                list.reborrow().get(member_index as u32),
-                                target,
-                            );
-                        }
-                    }
-                }
+                write_slot_set(sets.reborrow().get(index as u32), set)?;
             }
         }
         encode_message(&builder)
@@ -456,43 +434,7 @@ impl ParticipantSetsUpdateRequest {
         let sets = request
             .get_sets()?
             .iter()
-            .map(|wire| {
-                use federation_capnp::slot_set::members::Which;
-                let link_id = required_text(wire.get_link_id()?.to_str()?, "sets.link_id")?;
-                let members = match wire.get_members().which()? {
-                    Which::Producers(list) => {
-                        let members = list?
-                            .iter()
-                            .map(read_bound_member)
-                            .collect::<Result<Vec<_>>>()?;
-                        SlotMembers::Producers(BoundProducers::try_from(members).map_err(
-                            |error| crate::Error::Decoding(format!("slot `{link_id}`: {error}")),
-                        )?)
-                    }
-                    Which::Unset(()) => {
-                        return Err(crate::Error::Decoding(format!(
-                            "slot `{link_id}`: the set names neither producers nor observed \
-                             pairings"
-                        )));
-                    }
-                    Which::Observed(list) => {
-                        let targets = list?
-                            .iter()
-                            .map(read_observation_member)
-                            .collect::<Result<Vec<_>>>()?;
-                        SlotMembers::Observed(
-                            ObservationTargets::new(&link_id, targets).map_err(|duplicate| {
-                                crate::Error::Decoding(duplicate.to_string())
-                            })?,
-                        )
-                    }
-                };
-                Ok(SlotSet {
-                    instance_id: read_name(wire.get_instance_id()?.to_str()?, "sets.instance_id")?,
-                    link_id,
-                    members,
-                })
-            })
+            .map(read_slot_set)
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
@@ -505,13 +447,74 @@ impl crate::encoding::Wire for ParticipantSetsUpdateRequest {
     type Root = federation_capnp::participant_sets_update_request::Owned;
 }
 
+/// Writes one set slot and its members into an initialized `SlotSet` builder.
+fn write_slot_set(mut wire: federation_capnp::slot_set::Builder<'_>, set: &SlotSet) -> Result<()> {
+    wire.set_instance_id(set.instance_id.as_str());
+    wire.set_link_id(&set.link_id);
+    let members = wire.init_members();
+    match &set.members {
+        SlotMembers::Producers(producers) => {
+            let mut list = members.init_producers(capnp_list_len(producers.len(), "producers")?);
+            for (member_index, member) in producers.iter().enumerate() {
+                write_bound_member(list.reborrow().get(member_index as u32), member);
+            }
+        }
+        SlotMembers::Observed(targets) => {
+            let mut list = members.init_observed(capnp_list_len(targets.len(), "observed")?);
+            for (member_index, target) in targets.iter().enumerate() {
+                write_observation_member(list.reborrow().get(member_index as u32), target);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Inverse of [`write_slot_set`]. A set that names neither kind of member is
+/// refused, and so is a member set that repeats a member.
+fn read_slot_set(wire: federation_capnp::slot_set::Reader<'_>) -> Result<SlotSet> {
+    use federation_capnp::slot_set::members::Which;
+    let link_id = required_text(wire.get_link_id()?.to_str()?, "sets.link_id")?;
+    let members =
+        match wire.get_members().which()? {
+            Which::Producers(list) => {
+                let members = list?
+                    .iter()
+                    .map(read_bound_member)
+                    .collect::<Result<Vec<_>>>()?;
+                SlotMembers::Producers(BoundProducers::try_from(members).map_err(|error| {
+                    crate::Error::Decoding(format!("slot `{link_id}`: {error}"))
+                })?)
+            }
+            Which::Unset(()) => {
+                return Err(crate::Error::Decoding(format!(
+                    "slot `{link_id}`: the set names neither producers nor observed pairings"
+                )));
+            }
+            Which::Observed(list) => {
+                let targets = list?
+                    .iter()
+                    .map(read_observation_member)
+                    .collect::<Result<Vec<_>>>()?;
+                SlotMembers::Observed(
+                    ObservationTargets::new(&link_id, targets)
+                        .map_err(|duplicate| crate::Error::Decoding(duplicate.to_string()))?,
+                )
+            }
+        };
+    Ok(SlotSet {
+        instance_id: read_name(wire.get_instance_id()?.to_str()?, "sets.instance_id")?,
+        link_id,
+        members,
+    })
+}
+
 /// The reply to every federation exchange whose answer is "did you do it, and
 /// if not, why": `pair_commit`, `participant_release`,
 /// `participant_instances_remove` and `participant_sets_update`. One codec for
 /// all of them, because they differ only in which verb the bool reports and
 /// that verb is already the service name.
 ///
-/// [`Self::rejection_reason`] is load-bearing on refusal — see the schema.
+/// [`Self::rejection_reason`] is load-bearing on refusal; see the schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationVerdict {
     pub ok: bool,
@@ -725,22 +728,11 @@ impl PairCommitRequest {
             peer: read_instance_address(request.get_peer()?, "peer")?,
             peer_link_id: required_text(request.get_peer_link_id()?.to_str()?, "peer_link_id")?,
             peer_role: required_text(request.get_peer_role()?.to_str()?, "peer_role")?,
-            peer_cardinality: required_text(
+            peer_cardinality: read_cardinality(
                 request.get_peer_cardinality()?.to_str()?,
                 "peer_cardinality",
-            )?
-            .parse()
-            .map_err(|spelling| {
-                crate::Error::Decoding(format!(
-                    "peer_cardinality `{spelling}` is none of one, zero_or_one, one_or_more, zero_or_more"
-                ))
-            })?,
-            peer_copy: match request.get_peer_copy()?.to_str()? {
-                "" => None,
-                copy => Some(config::runtime::Name::new(copy).map_err(|e| {
-                    crate::Error::Decoding(format!("peer_copy is not a name: {e}"))
-                })?),
-            },
+            )?,
+            peer_copy: read_optional_copy(request.get_peer_copy()?.to_str()?, "peer_copy")?,
         })
     }
 }
@@ -848,7 +840,7 @@ impl RelationshipNotification {
 }
 
 /// Carries no fields: the notification is best-effort and the receiver simply
-/// converges on what it is told, so a well-formed reply is itself the ack —
+/// converges on what it is told, so a well-formed reply is itself the ack,
 /// the same contract [`HealthRequest`](crate::encoding::HealthRequest) uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RelationshipNotificationAck;
@@ -914,6 +906,7 @@ impl crate::encoding::Wire for RelationshipNotificationAck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::decoding_error;
 
     /// The tag a launch stamps on an instance of a copy: the copy's name and
     /// the id its fragment wrote.
@@ -1375,6 +1368,55 @@ mod tests {
                 .unwrap_or_else(|| panic!("a blank `{field}` must be refused"));
             assert!(error.to_string().contains(field), "got: {error}");
         }
+    }
+
+    /// The wire form of [`pair_commit`] with its fields edited, for refusals
+    /// the typed request cannot express.
+    fn pair_commit_payload_with(
+        edit: impl FnOnce(federation_capnp::pair_commit_request::Builder<'_>),
+    ) -> Payload {
+        let payload = pair_commit().encode().expect("encode");
+        let reader = decode_message(payload.as_ref()).expect("decode");
+        let mut message = Builder::new_default();
+        message
+            .set_root(
+                reader
+                    .get_root::<federation_capnp::pair_commit_request::Reader>()
+                    .expect("root"),
+            )
+            .expect("copy the request");
+        edit(
+            message
+                .get_root::<federation_capnp::pair_commit_request::Builder>()
+                .expect("root"),
+        );
+        encode_message(&message).expect("encode")
+    }
+
+    /// The peer's cardinality decides whether one pair takes its slot, so a
+    /// spelling the receiver does not know is refused rather than guessed.
+    #[test]
+    fn pair_commit_decode_refuses_an_unknown_peer_cardinality() {
+        let payload = pair_commit_payload_with(|mut request| request.set_peer_cardinality("many"));
+        assert_eq!(
+            decoding_error(PairCommitRequest::decode(payload.as_ref())),
+            "peer_cardinality `many` is none of one, zero_or_one, one_or_more, zero_or_more"
+        );
+    }
+
+    /// An empty copy is "outside a copy"; any other text must be a name.
+    #[test]
+    fn pair_commit_decode_reads_the_peer_copy_as_an_optional_name() {
+        let outside_a_copy = pair_commit_payload_with(|mut request| request.set_peer_copy(""));
+        let decoded = PairCommitRequest::decode(outside_a_copy.as_ref()).expect("decode");
+        assert_eq!(decoded.peer_copy, None);
+
+        let not_a_name = pair_commit_payload_with(|mut request| request.set_peer_copy("bad/name"));
+        let message = decoding_error(PairCommitRequest::decode(not_a_name.as_ref()));
+        assert!(
+            message.starts_with("peer_copy is not a name: "),
+            "got: {message}"
+        );
     }
 
     #[test]

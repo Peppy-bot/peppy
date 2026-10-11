@@ -76,7 +76,7 @@ impl ClockResponse {
     }
 }
 
-/// Request to a node's `clock_offset` service. Empty on the wire — the node
+/// Request to a node's `clock_offset` service. Empty on the wire: the node
 /// performs the NTP exchange against the core node on receipt.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClockOffsetRequest;

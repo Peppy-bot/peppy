@@ -19,7 +19,7 @@ pub const PEPPY_RELEASE_TAG_PREFIX: &str = "peppy-release/";
 
 /// The branch `@{peppy-release}` reads in a build that is not a release:
 /// the hub content the next release will carry.
-pub const UNRELEASED_HUB_BRANCH: &str = "main";
+const UNRELEASED_HUB_BRANCH: &str = "main";
 
 /// The ref a git repository entry is configured to read.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -78,8 +78,8 @@ impl GitRepoRef {
     /// [`GitRepoRef::RemoteHead`].
     ///
     /// [`GitRepoRef::PeppyRelease`] reads the tag
-    /// `peppy-release/<version>` in a release build, and the branch
-    /// [`UNRELEASED_HUB_BRANCH`] in any other build.
+    /// `peppy-release/<version>` in a release build, and the branch that
+    /// `UNRELEASED_HUB_BRANCH` names in any other build.
     pub fn read_ref(&self, build: &PeppyBuild) -> Option<ReadRef> {
         match (self, build) {
             (Self::RemoteHead, _) => None,

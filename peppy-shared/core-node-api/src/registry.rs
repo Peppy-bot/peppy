@@ -6,12 +6,12 @@
 //! topic, so entries are keyed by `(name, kind)`). Every method is declared
 //! exactly once, in the `methods!` invocation below, which emits:
 //!
-//! * the [`ServiceId`] / [`ActionId`] / [`TopicId`] enums — the handles every
+//! * the [`ServiceId`] / [`ActionId`] / [`TopicId`] enums: the handles every
 //!   consumer that must make a per-method decision (daemon registration,
 //!   wire-name pinning, doc tagging) matches on **exhaustively**, so
 //!   forgetting a new method is a compile error there;
 //! * a [`ServiceRequest`] impl per routable service request codec and an
-//!   [`ActionGoal`] impl per goal codec — the hooks `peppylib`'s generic
+//!   [`ActionGoal`] impl per goal codec: the hooks `peppylib`'s generic
 //!   `transport::poll` / `transport::send_goal` are bounded on, so a method
 //!   declared here needs no per-method client wrapper anywhere;
 //! * the [`METHODS`] descriptor slice, in declaration order, which the
@@ -21,10 +21,10 @@
 //!
 //! * a display name ([`PayloadDescriptor::rust_type`]),
 //! * a [`TypeId`](core::any::TypeId) of the codec struct
-//!   ([`PayloadDescriptor::rust_type_id`]) — a stable identity handle,
+//!   ([`PayloadDescriptor::rust_type_id`]), a stable identity handle,
 //!   sanity-checked by this module's tests, and
 //! * a runtime Cap'n Proto reflection handle ([`PayloadDescriptor::introspect`])
-//!   plus the originating `.capnp` file — consumed by the `platform-backend`
+//!   plus the originating `.capnp` file, consumed by the `platform-backend`
 //!   AsyncAPI generator, which walks the type into JSON Schema.
 //!
 //! The registry describes the Cap'n Proto payloads *only*. The wire framing

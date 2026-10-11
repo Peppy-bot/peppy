@@ -241,20 +241,12 @@ impl StackListResponse {
             }
             let mut launch = response.reborrow().init_launch();
             match &self.launch {
-                Some(identity) => {
-                    let mut wire = launch.init_identity();
-                    wire.set_launch_id(&identity.launch_id);
-                    wire.set_coordinator_core_node(&identity.coordinator_core_node);
-                }
+                Some(identity) => write_identity(launch.init_identity(), identity),
                 None => launch.set_standalone(()),
             }
             let mut reservation = response.reborrow().init_reservation();
             match &self.reservation {
-                Some(identity) => {
-                    let mut wire = reservation.init_identity();
-                    wire.set_launch_id(&identity.launch_id);
-                    wire.set_coordinator_core_node(&identity.coordinator_core_node);
-                }
+                Some(identity) => write_identity(reservation.init_identity(), identity),
                 None => reservation.set_none(()),
             }
             let mut copy_change = response.reborrow().init_copy_change();
@@ -309,44 +301,7 @@ impl StackListResponse {
             copies: response
                 .get_copies()?
                 .iter()
-                .map(|copy| {
-                    Ok(CopyInfo {
-                        name: read_name(copy.get_name()?.to_str()?, "copies.name")?,
-                        core_node: read_core_node_name(
-                            copy.get_core_node()?.to_str()?,
-                            "copies.core_node",
-                        )?,
-                        instance_ids: read_name_list(
-                            copy.get_instance_ids()?,
-                            "copies.instance_ids",
-                        )?,
-                        selections: required_text_list(
-                            read_text_list(copy.get_selections()?)?,
-                            "copies.selections",
-                        )?,
-                        option: required_text(copy.get_option()?.to_str()?, "copies.option")?,
-                        set_members: copy
-                            .get_set_members()?
-                            .iter()
-                            .map(|entry| {
-                                Ok(SetMember {
-                                    instance_id: read_name(
-                                        entry.get_instance_id()?.to_str()?,
-                                        "copies.set_members.instance_id",
-                                    )?,
-                                    link_id: required_text(
-                                        entry.get_link_id()?.to_str()?,
-                                        "copies.set_members.link_id",
-                                    )?,
-                                    target: required_text(
-                                        entry.get_target()?.to_str()?,
-                                        "copies.set_members.target",
-                                    )?,
-                                })
-                            })
-                            .collect::<Result<_>>()?,
-                    })
-                })
+                .map(decode_copy)
                 .collect::<Result<_>>()?,
             core_node: response.get_core_node()?.to_str()?.to_owned(),
             instance_id: response.get_instance_id()?.to_str()?.to_owned(),
@@ -356,6 +311,44 @@ impl StackListResponse {
             copy_change,
         })
     }
+}
+
+/// Decodes one wire copy, refusing a blank or invalid field of the copy or of
+/// any of its set members.
+fn decode_copy(copy: node_capnp::copy_info::Reader<'_>) -> Result<CopyInfo> {
+    Ok(CopyInfo {
+        name: read_name(copy.get_name()?.to_str()?, "copies.name")?,
+        core_node: read_core_node_name(copy.get_core_node()?.to_str()?, "copies.core_node")?,
+        instance_ids: read_name_list(copy.get_instance_ids()?, "copies.instance_ids")?,
+        selections: required_text_list(
+            read_text_list(copy.get_selections()?)?,
+            "copies.selections",
+        )?,
+        option: required_text(copy.get_option()?.to_str()?, "copies.option")?,
+        set_members: copy
+            .get_set_members()?
+            .iter()
+            .map(decode_set_member)
+            .collect::<Result<_>>()?,
+    })
+}
+
+/// Decodes one member a copy added to a set slot; every field is required.
+fn decode_set_member(entry: node_capnp::set_member::Reader<'_>) -> Result<SetMember> {
+    Ok(SetMember {
+        instance_id: read_name(
+            entry.get_instance_id()?.to_str()?,
+            "copies.set_members.instance_id",
+        )?,
+        link_id: required_text(entry.get_link_id()?.to_str()?, "copies.set_members.link_id")?,
+        target: required_text(entry.get_target()?.to_str()?, "copies.set_members.target")?,
+    })
+}
+
+/// Writes one launch identity, for either union that carries one.
+fn write_identity(mut wire: node_capnp::launch_identity::Builder<'_>, identity: &LaunchIdentity) {
+    wire.set_launch_id(&identity.launch_id);
+    wire.set_coordinator_core_node(&identity.coordinator_core_node);
 }
 
 /// Decodes the copy of a wire copy change, refusing a name that is not a
@@ -400,6 +393,7 @@ impl crate::encoding::Wire for StackListResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::decoding_error;
 
     /// Interleaved members group under their slot, slots in the order each was
     /// first added to and targets in the order they were added.
@@ -441,19 +435,19 @@ mod tests {
     }
 
     #[test]
-    fn request_decode_rejects_legacy_nonempty_struct() {
-        // The old schema encoded a removed boolean in a one-data-word root
-        // struct. Build both possible framed messages directly so this
-        // regression fixture needs no legacy generated API.
-        for legacy_flag in [false, true] {
+    fn request_decode_rejects_a_struct_that_carries_data() {
+        // A request is an empty struct, so a root struct with one data word
+        // is refused whatever the word holds. The schema has no field to
+        // set, so both framed messages are built by hand.
+        for flag in [false, true] {
             let mut payload = Vec::new();
             payload.extend_from_slice(&0_u32.to_le_bytes()); // one segment
             payload.extend_from_slice(&2_u32.to_le_bytes()); // two words
             payload.extend_from_slice(&(1_u64 << 32).to_le_bytes()); // struct: data=1, ptrs=0
-            payload.extend_from_slice(&u64::from(legacy_flag).to_le_bytes());
+            payload.extend_from_slice(&u64::from(flag).to_le_bytes());
 
             let error = StackListRequest::decode(&payload)
-                .expect_err("legacy request shape must not decode as the new empty request");
+                .expect_err("a request that carries data must not decode");
             assert!(
                 error.to_string().contains("must be an empty struct"),
                 "got: {error}"
@@ -532,6 +526,54 @@ mod tests {
         }
     }
 
+    /// A set member with a blank or invalid field, or a blank selection word,
+    /// is refused at the wire boundary with the field that carried it.
+    #[test]
+    fn response_decode_refuses_a_blank_set_member_field_or_selection() {
+        for (selection, (instance_id, link_id, target), expected) in [
+            (
+                "commander=xr_commander",
+                ("bad/id", "robots", "alpha_arm_inst"),
+                "copies.set_members.instance_id",
+            ),
+            (
+                "commander=xr_commander",
+                ("monitor_inst", "", "alpha_arm_inst"),
+                "copies.set_members.link_id",
+            ),
+            (
+                "commander=xr_commander",
+                ("monitor_inst", "robots", ""),
+                "copies.set_members.target",
+            ),
+            (
+                "",
+                ("monitor_inst", "robots", "alpha_arm_inst"),
+                "copies.selections[0]",
+            ),
+        ] {
+            let mut builder = Builder::new_default();
+            let wire = builder.init_root::<node_capnp::stack_list_response::Builder>();
+            let mut copy = wire.init_copies(1).get(0);
+            copy.set_name("alpha");
+            copy.set_option("openarm_v2");
+            copy.set_core_node("jetson-1");
+            copy.reborrow()
+                .init_instance_ids(1)
+                .set(0, "alpha_arm_inst");
+            copy.reborrow().init_selections(1).set(0, selection);
+            let mut member = copy.init_set_members(1).get(0);
+            member.set_instance_id(instance_id);
+            member.set_link_id(link_id);
+            member.set_target(target);
+
+            let refusal = decoding_error(StackListResponse::decode(
+                &encode_message(&builder).unwrap(),
+            ));
+            assert!(refusal.contains(expected), "{refusal}");
+        }
+    }
+
     /// A slice is self-describing: it names the launch it belongs to and the
     /// coordinator that drove it, which is what lets a restarted coordinator
     /// rediscover its participants rather than lose them.
@@ -566,10 +608,10 @@ mod tests {
     }
 
     /// The unions carry "part of a launch or not" and "held by a launch or
-    /// not" in their discriminants, so the two halves can no longer be sent
-    /// apart. What remains decodable-but-wrong is an identity arm with a blank
-    /// half, and that is still refused: a launch nobody can name is no better
-    /// than no launch at all, whichever field carried it.
+    /// not" in their discriminants, so the two halves cannot be sent apart.
+    /// What remains decodable-but-wrong is an identity arm with a blank half,
+    /// and that is still refused: a launch nobody can name is no better than
+    /// no launch at all, whichever field carried it.
     #[test]
     fn response_decode_rejects_a_blank_half_of_the_identity() {
         for (launch_id, coordinator, expected) in [

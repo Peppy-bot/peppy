@@ -42,7 +42,7 @@ struct RepoAddResponse {
 # ── Repo Refresh (action with feedback) ──────────────────────────
 
 struct RepoRefreshGoal {
-    # Empty for now — refresh all repos.
+    # Empty: refresh all repos.
 }
 
 struct RepoRefreshGoalResponse {
@@ -100,7 +100,7 @@ struct RepoRefreshResult {
 # ── Repo List (request-response) ────────────────────────────────
 
 struct RepoListRequest {
-    # Empty — list all repositories and their nodes.
+    # Empty: list all repositories and their nodes.
 }
 
 struct RepoListNodeEntry {

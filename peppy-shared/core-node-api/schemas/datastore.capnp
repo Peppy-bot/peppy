@@ -28,7 +28,7 @@ struct DatastoreGetResponse {
     lastModifiedBy @3 :Text;
 }
 
-# Lists every key currently in the store. Takes no arguments — the whole
+# Lists every key currently in the store. Takes no arguments: the whole
 # keyspace is returned.
 struct DatastoreListRequest {
 }
