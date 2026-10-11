@@ -24,7 +24,8 @@ use tempfile::tempdir;
 use crate::common::{
     StartedCoreNode, TestPackagesCache, TestRunningInstance, answer_readiness, build_staged_node,
     commit_path, is_process_running, poll_until, send_node_add_and_wait,
-    spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
+    spawn_real_running_instance, start_core_node_with_mock_messenger, wait_until_process_exits,
+    write_peppy_json5,
 };
 
 struct NodeConfigOptions<'a> {
@@ -1207,10 +1208,10 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     // The relaunch must terminate the previous stack's process: an orphan
     // would outlive the relaunch, detached from the daemon and invisible to
     // `stack list`.
-    poll_until(
+    wait_until_process_exits(
+        pid_a,
         Duration::from_secs(10),
         &format!("node_a process {pid_a} should be terminated by the relaunch, not orphaned"),
-        || (!is_process_running(pid_a)).then_some(()),
     )
     .await;
 }
@@ -1320,16 +1321,16 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
 
     // Neither the previous stack's process nor the partially-started new
     // instance may be orphaned by the failure path.
-    poll_until(
+    wait_until_process_exits(
+        existing_pid,
         Duration::from_secs(15),
         &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
-        || (!is_process_running(existing_pid)).then_some(()),
     )
     .await;
-    poll_until(
+    wait_until_process_exits(
+        node_b_pid,
         Duration::from_secs(15),
         &format!("partial new instance {node_b_pid} should be terminated, not orphaned"),
-        || (!is_process_running(node_b_pid)).then_some(()),
     )
     .await;
 }
@@ -1414,10 +1415,10 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
     );
 
     // The previous stack's process must be terminated, not orphaned.
-    poll_until(
+    wait_until_process_exits(
+        existing_pid,
         Duration::from_secs(10),
         &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
-        || (!is_process_running(existing_pid)).then_some(()),
     )
     .await;
 }
@@ -1508,10 +1509,10 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     );
 
     // The previous stack's process must be terminated, not orphaned.
-    poll_until(
+    wait_until_process_exits(
+        existing_pid,
         Duration::from_secs(10),
         &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
-        || (!is_process_running(existing_pid)).then_some(()),
     )
     .await;
 

@@ -5,7 +5,7 @@ use common::{
     build_staged_node, children_of, install_kill_on_shutdown_listener, instance_state_in_any_state,
     is_process_running, poll_until, send_node_add_and_wait, send_node_add_then_build,
     send_node_run_and_wait, spawn_real_running_instance, spawn_real_stuck_instance,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    start_core_node_with_mock_messenger, wait_until_process_exits, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::StackResetRequest;
@@ -167,10 +167,10 @@ async fn listen_for_node_reset_clears_node_stack() {
     // from tracking. Before this fix the OS process was orphaned and stayed
     // alive after the stack was cleared. `running_a` is still alive here, so the
     // reset is the only thing that could have killed it.
-    poll_until(
+    wait_until_process_exits(
+        node_a_pid,
         Duration::from_secs(10),
         &format!("node A process {node_a_pid} should be terminated by reset, not orphaned"),
-        || (!is_process_running(node_a_pid)).then_some(()),
     )
     .await;
 
@@ -267,17 +267,17 @@ async fn node_reset_force_kills_whole_process_group() {
     assert_eq!(node_stack.len(), 1, "only root should remain after reset");
 
     // The node and every grandchild must be gone, with no orphans left behind.
-    poll_until(
+    wait_until_process_exits(
+        node_pid,
         Duration::from_secs(5),
         &format!("node process {node_pid} should be gone after reset"),
-        || (!is_process_running(node_pid)).then_some(()),
     )
     .await;
     for &gc in &grandchildren {
-        poll_until(
+        wait_until_process_exits(
+            gc,
             Duration::from_secs(5),
             &format!("grandchild {gc} should be gone after reset (group kill)"),
-            || (!is_process_running(gc)).then_some(()),
         )
         .await;
     }
@@ -435,10 +435,10 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
         1,
         "only the root should remain after reset"
     );
-    poll_until(
+    wait_until_process_exits(
+        pid,
         Duration::from_secs(5),
         "node process should be gone after reset",
-        || (!is_process_running(pid)).then_some(()),
     )
     .await;
 

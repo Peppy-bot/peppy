@@ -396,17 +396,6 @@ async fn wait_for_building(node_stack: &node_stack::NodeStack, name: &str, tag: 
     .await
 }
 
-/// Polls until the process `pid` is gone: absent or a zombie, as
-/// `common::is_process_running` and the daemon define it.
-async fn wait_until_pid_dead(pid: u32) {
-    common::poll_until(
-        Duration::from_secs(30),
-        &format!("build subprocess (pid {pid}) was not killed within 30s"),
-        || (!common::is_process_running(pid)).then_some(()),
-    )
-    .await
-}
-
 /// `node build --force` on a node whose build is stuck mid-flight (the daemon
 /// task kept running after the CLI was Ctrl+C'd) must cancel + SIGKILL the
 /// in-flight build, reuse the staged working dir, and succeed, rather than
@@ -502,7 +491,12 @@ async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
     };
 
     // The in-flight build's subprocess must actually be killed by the force.
-    wait_until_pid_dead(first_pid).await;
+    common::wait_until_process_exits(
+        first_pid,
+        Duration::from_secs(30),
+        &format!("build subprocess (pid {first_pid}) was not killed within 30s"),
+    )
+    .await;
 
     // Let the (reused) forced build run to completion.
     std::fs::write(&proceed_file, b"").expect("touch proceed file");

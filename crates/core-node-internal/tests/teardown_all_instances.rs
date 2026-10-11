@@ -14,6 +14,7 @@ mod common;
 use common::{
     add_and_build_forking_node, children_of, is_process_running, poll_until,
     spawn_real_starting_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    wait_until_process_exits,
 };
 use config::runtime::Name;
 use peppylib::messaging::MessengerHandle;
@@ -71,10 +72,10 @@ async fn teardown_force_kills_whole_process_group() {
         "node process {node_pid} should be gone after teardown"
     );
     for &gc in &grandchildren {
-        poll_until(
+        wait_until_process_exits(
+            gc,
             Duration::from_secs(5),
             &format!("grandchild {gc} should be gone after teardown (group kill)"),
-            || (!is_process_running(gc)).then_some(()),
         )
         .await;
     }
@@ -156,10 +157,10 @@ async fn teardown_force_kills_instance_still_in_starting() {
         "Starting node {node_pid} should be gone after teardown"
     );
     for &gc in &grandchildren {
-        poll_until(
+        wait_until_process_exits(
+            gc,
             Duration::from_secs(5),
             &format!("grandchild {gc} should be gone after teardown (group kill)"),
-            || (!is_process_running(gc)).then_some(()),
         )
         .await;
     }

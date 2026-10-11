@@ -51,6 +51,16 @@ pub fn is_process_running(pid: u32) -> bool {
     }
 }
 
+/// Polls until the process `pid` has exited (absent or a zombie, as
+/// [`is_process_running`] defines it). If `timeout` elapses first, panics with
+/// `timeout_message`.
+pub async fn wait_until_process_exits(pid: u32, timeout: Duration, timeout_message: &str) {
+    poll_until(timeout, timeout_message, || {
+        (!is_process_running(pid)).then_some(())
+    })
+    .await
+}
+
 /// PIDs of live children of `parent_pid`, via sysinfo's parent links.
 pub fn children_of(parent_pid: u32) -> Vec<u32> {
     let system = sysinfo::System::new_with_specifics(

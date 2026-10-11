@@ -1148,10 +1148,10 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
 
     // The real process must be gone, with no orphan. Poll: the reap is bounded and
     // best-effort, so the OS may finish teardown a beat after the add returns.
-    poll_until(
+    wait_until_process_exits(
+        stuck_pid,
         Duration::from_secs(5),
         &format!("stuck instance process {stuck_pid} should be force-killed, not orphaned"),
-        || (!is_process_running(stuck_pid)).then_some(()),
     )
     .await;
 }
@@ -1252,10 +1252,10 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
         "both stuck instances should be removed after the overwrite"
     );
     for pid in [pid_a, pid_b] {
-        poll_until(
+        wait_until_process_exits(
+            pid,
             Duration::from_secs(5),
             &format!("stuck instance process {pid} should be force-killed, not orphaned"),
-            || (!is_process_running(pid)).then_some(()),
         )
         .await;
     }

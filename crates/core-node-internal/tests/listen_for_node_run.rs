@@ -6,7 +6,7 @@ use common::{
     send_node_add_then_build, send_node_run_and_wait, send_node_run_and_wait_with_env,
     start_core_node_with_health_monitor, start_core_node_with_health_timeout,
     start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
-    wait_until_action_completes, write_peppy_json5,
+    wait_until_action_completes, wait_until_process_exits, write_peppy_json5,
 };
 use config::runtime::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
@@ -2225,10 +2225,10 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     // Sync on the process actually being gone (a zombie counts as gone): by now
     // the watcher's `child.wait()` would have fired had the token not pre-empted
     // it, so any (wrong) terminal transition would already have happened.
-    poll_until(
+    wait_until_process_exits(
+        pid,
         Duration::from_secs(5),
         "node process should be gone after the force-kill",
-        || (!common::is_process_running(pid)).then_some(()),
     )
     .await;
 
