@@ -44,6 +44,67 @@ async fn stage_node_for_build<'a>(
     )
 }
 
+/// Builds a `peppy.json5` document for a Rust node whose build step runs
+/// `build_cmd`, given as a JSON5 array literal.
+fn node_config_with_build_cmd(name: &str, tag: &str, build_cmd: &str) -> String {
+    format!(
+        r#"{{
+            peppy_schema: "node/v1",
+            manifest: {{
+                name: "{name}",
+                tag: "{tag}",
+            }},
+            execution: {{
+                language: "rust",
+                build_cmd: {build_cmd},
+                run_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    )
+}
+
+/// Builds a `peppy.json5` document for a Rust node built from the container
+/// definition `apptainer.def` of its source directory.
+fn container_node_config(name: &str, tag: &str) -> String {
+    format!(
+        r#"{{
+            peppy_schema: "node/v1",
+            manifest: {{
+                name: "{name}",
+                tag: "{tag}",
+            }},
+            execution: {{
+                language: "rust",
+                container: {{
+                    def_file: "apptainer.def",
+                }}
+            }}
+        }}"#
+    )
+}
+
+/// Builds the staged node `(node_name, node_tag)` with no env overrides and
+/// no feedback channel, and returns the result of the build.
+async fn build_node_and_wait(
+    started_core_node: &common::StartedCoreNode,
+    node_name: &str,
+    node_tag: &str,
+    result_timeout: Duration,
+) -> NodeBuildResult {
+    send_node_build_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        node_name,
+        node_tag,
+        GOAL_TIMEOUT,
+        result_timeout,
+        Vec::new(),
+        None,
+    )
+    .await
+    .expect("node_build request should complete")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_runs_build_cmd() {
     const TARGET_NODE_NAME: &str = "add_cmd_node";
@@ -54,38 +115,18 @@ async fn listen_for_node_build_runs_build_cmd() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["touch", "{BUILD_CMD_MARKER_FILE}"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{BUILD_CMD_MARKER_FILE}", BUILD_CMD_MARKER_FILE);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(r#"["touch", "{BUILD_CMD_MARKER_FILE}"]"#),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should succeed");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         build_result.success,
@@ -115,18 +156,13 @@ async fn listen_for_node_build_runs_build_cmd() {
 async fn a_build_of_a_node_in_another_stage_than_added_is_rejected() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
+    let build_result = build_node_and_wait(
+        &started_core_node,
         &started_core_node.core_node_name,
         &started_core_node.core_node_tag,
-        GOAL_TIMEOUT,
         RESULT_TIMEOUT,
-        Vec::new(),
-        None,
     )
-    .await
-    .expect("node_build request should succeed");
+    .await;
 
     assert!(!build_result.success);
     assert_eq!(
@@ -164,18 +200,8 @@ async fn a_build_of_a_node_without_a_staged_working_dir_is_rejected() {
         .push_config(config, false, source_dir.path())
         .expect("push_config should succeed");
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        "unstaged_node",
-        "v1",
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should succeed");
+    let build_result =
+        build_node_and_wait(&started_core_node, "unstaged_node", "v1", RESULT_TIMEOUT).await;
 
     assert!(!build_result.success);
     assert_eq!(
@@ -263,18 +289,8 @@ wheels = [
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should succeed");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
     assert!(
         build_result.success,
         "node_build should succeed, got error: {:?}",
@@ -419,21 +435,11 @@ async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
     );
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["{BUILD_SCRIPT}"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{BUILD_SCRIPT}", &build_script);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(r#"["{build_script}"]"#),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
@@ -545,37 +551,18 @@ async fn listen_for_node_build_cmd_failure_fails_build() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["this_command_does_not_exist_12345"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        r#"["this_command_does_not_exist_12345"]"#,
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should complete");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         !build_result.success,
@@ -609,37 +596,18 @@ async fn listen_for_node_build_cmd_nonzero_exit_fails_build() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["sh", "-c", "exit 1"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        r#"["sh", "-c", "exit 1"]"#,
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should complete");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         !build_result.success,
@@ -675,22 +643,11 @@ async fn listen_for_node_build_cmd_streams_stdout_and_stderr() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
-    .replace("{STDERR_MARKER}", STDERR_MARKER);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(r#"["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"]"#),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
@@ -742,39 +699,18 @@ async fn listen_for_node_build_writes_log_file() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
-    .replace("{STDERR_MARKER}", STDERR_MARKER);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(r#"["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"]"#),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should succeed");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         build_result.success,
@@ -839,18 +775,8 @@ async fn listen_for_node_build_copies_files_to_storage() {
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should succeed");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         build_result.success,
@@ -893,40 +819,19 @@ async fn listen_for_node_build_uses_env_overrides_for_path() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
-    .replace("{STDERR_MARKER}", STDERR_MARKER);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(r#"["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"]"#),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
     // First build attempt: should fail because `printout` is not on PATH.
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should complete");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
     assert!(
         !build_result.success,
         "build should fail, printout does not exist: {:?}",
@@ -989,41 +894,24 @@ async fn listen_for_node_build_injects_runtime_env_vars() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: [
-                    "sh",
-                    "-c",
-                    "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\""
-                ],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(
+            r#"[
+                "sh",
+                "-c",
+                "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\""
+            ]"#
+        ),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should succeed");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         build_result.success,
@@ -1043,21 +931,7 @@ async fn listen_for_node_build_with_container_success() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        peppy_schema: "node/v1",
-        manifest: {
-            name: "TARGET_NODE_NAME",
-            tag: "TARGET_NODE_TAG",
-        },
-        execution: {
-            language: "rust",
-            container: {
-                def_file: "apptainer.def",
-            }
-        }
-    }"#
-    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    let peppy_json5 = container_node_config(TARGET_NODE_NAME, TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
     let apptainer_def = r#"
 Bootstrap: docker
@@ -1083,18 +957,13 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     )
     .await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
+    let build_result = build_node_and_wait(
+        &started_core_node,
         &node_name,
         &node_tag,
-        GOAL_TIMEOUT,
         CONTAINER_RESULT_TIMEOUT,
-        Vec::new(),
-        None,
     )
-    .await
-    .expect("node_build request should succeed");
+    .await;
 
     assert!(
         build_result.success,
@@ -1193,21 +1062,7 @@ async fn listen_for_node_build_with_container_from_outside_home_root() {
     let started_core_node = start_core_node_with_mock_messenger_outside_home().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        peppy_schema: "node/v1",
-        manifest: {
-            name: "TARGET_NODE_NAME",
-            tag: "TARGET_NODE_TAG",
-        },
-        execution: {
-            language: "rust",
-            container: {
-                def_file: "apptainer.def",
-            }
-        }
-    }"#
-    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    let peppy_json5 = container_node_config(TARGET_NODE_NAME, TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
     let apptainer_def = format!(
         "Bootstrap: docker\n\
@@ -1234,18 +1089,13 @@ async fn listen_for_node_build_with_container_from_outside_home_root() {
     )
     .await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
+    let build_result = build_node_and_wait(
+        &started_core_node,
         &node_name,
         &node_tag,
-        GOAL_TIMEOUT,
         CONTAINER_RESULT_TIMEOUT,
-        Vec::new(),
-        None,
     )
-    .await
-    .expect("node_build request should succeed");
+    .await;
 
     assert!(
         build_result.success,
@@ -1283,21 +1133,7 @@ async fn listen_for_node_build_container_build_failure_includes_stderr_in_error(
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        peppy_schema: "node/v1",
-        manifest: {
-            name: "TARGET_NODE_NAME",
-            tag: "TARGET_NODE_TAG",
-        },
-        execution: {
-            language: "rust",
-            container: {
-                def_file: "apptainer.def",
-            }
-        }
-    }"#
-    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    let peppy_json5 = container_node_config(TARGET_NODE_NAME, TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let broken_def = format!(
@@ -1391,37 +1227,18 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        r#"["nonexistent_binary_peppy_test_xyz", "--flag"]"#,
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should complete");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         !build_result.success,
