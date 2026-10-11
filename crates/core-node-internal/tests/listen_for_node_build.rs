@@ -572,8 +572,7 @@ async fn listen_for_node_build_cmd_failure_fails_build() {
         build_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("build_cmd failed"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("build_cmd failed")),
         "error message should mention build_cmd failure, got: {:?}",
         build_result.error_message
     );
@@ -581,8 +580,7 @@ async fn listen_for_node_build_cmd_failure_fails_build() {
         build_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("this_command_does_not_exist_12345"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("this_command_does_not_exist_12345")),
         "error message should include the command that failed, got: {:?}",
         build_result.error_message
     );
@@ -617,8 +615,7 @@ async fn listen_for_node_build_cmd_nonzero_exit_fails_build() {
         build_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("build_cmd failed"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("build_cmd failed")),
         "error message should mention build_cmd failure, got: {:?}",
         build_result.error_message
     );
@@ -626,8 +623,7 @@ async fn listen_for_node_build_cmd_nonzero_exit_fails_build() {
         build_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("exit 1"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("exit 1")),
         "error message should include the command that failed, got: {:?}",
         build_result.error_message
     );

@@ -338,8 +338,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
         dependency_add_v2
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("Cannot overwrite node"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("Cannot overwrite node")),
         "error message should indicate overwrite is not allowed, got: {:?}",
         dependency_add_v2.error_message
     );
@@ -459,8 +458,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
         add_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("Codegen fingerprint verification failed"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("Codegen fingerprint verification failed")),
         "error message should indicate fingerprint verification failure, got: {:?}",
         add_result.error_message
     );
@@ -468,8 +466,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
         add_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("fingerprint mismatch"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("fingerprint mismatch")),
         "error message should mention fingerprint mismatch, got: {:?}",
         add_result.error_message
     );
@@ -990,8 +987,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         add_v2
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("Cannot overwrite node"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("Cannot overwrite node")),
         "error should indicate the overwrite is blocked: {:?}",
         add_v2.error_message
     );

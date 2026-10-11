@@ -76,14 +76,10 @@ async fn listen_for_node_run_success() {
         start_response.result.error_message
     );
 
-    // Verify that the PID is returned on success
     assert!(
-        start_response.result.pid.is_some(),
-        "node_run should return a PID on success"
-    );
-    assert!(
-        start_response.result.pid.unwrap() > 0,
-        "node_run PID should be a positive number"
+        start_response.result.pid.is_some_and(|pid| pid > 0),
+        "node_run should return a positive PID on success, got {:?}",
+        start_response.result.pid
     );
 
     // Verify that the instance was added to the node stack
@@ -178,8 +174,7 @@ async fn listen_for_node_run_timeout() {
             .result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("health check timed out"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("health check timed out")),
         "error message should indicate health check failure, got: {:?}",
         start_response.result.error_message
     );
@@ -239,8 +234,7 @@ async fn listen_for_node_run_not_found() {
             .result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("not found in node stack"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("not found in node stack")),
         "error message should indicate node not found, got: {:?}",
         start_response.result.error_message
     );
@@ -1118,14 +1112,10 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         start_response.result.error_message
     );
 
-    // Verify that the PID is returned on success
     assert!(
-        start_response.result.pid.is_some(),
-        "node_run should return a PID on success"
-    );
-    assert!(
-        start_response.result.pid.unwrap() > 0,
-        "node_run PID should be a positive number"
+        start_response.result.pid.is_some_and(|pid| pid > 0),
+        "node_run should return a positive PID on success, got {:?}",
+        start_response.result.pid
     );
 
     // Verify that the instance was added to the node stack

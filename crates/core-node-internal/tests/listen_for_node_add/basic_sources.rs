@@ -285,8 +285,7 @@ async fn listen_for_node_http_add_rejects_wrong_sha256() {
         add_result
             .error_message
             .as_deref()
-            .map(|msg| msg.contains("checksum mismatch"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("checksum mismatch")),
         "error should mention checksum mismatch, got: {:?}",
         add_result.error_message
     );

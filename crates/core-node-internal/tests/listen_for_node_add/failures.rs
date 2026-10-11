@@ -264,8 +264,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
         add_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("git hash mismatch"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("git hash mismatch")),
         "error message should indicate git hash mismatch, got: {:?}",
         add_result.error_message
     );
@@ -496,8 +495,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
         add_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("is not exposed"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("is not exposed")),
         "error message should indicate missing interface, got: {:?}",
         add_result.error_message
     );

@@ -156,12 +156,9 @@ mod container_e2e_tests {
         );
 
         assert!(
-            start_response.result.pid.is_some(),
-            "node_run should return a PID on success"
-        );
-        assert!(
-            start_response.result.pid.unwrap() > 0,
-            "node_run PID should be a positive number"
+            start_response.result.pid.is_some_and(|pid| pid > 0),
+            "node_run should return a positive PID on success, got {:?}",
+            start_response.result.pid
         );
 
         let instance_id = NodeName::new(instance_id).expect("valid instance id");
