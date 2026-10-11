@@ -424,7 +424,6 @@ pub async fn send_node_run_with_delayed_health(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn send_node_add_and_wait_internal<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -432,7 +431,6 @@ async fn send_node_add_and_wait_internal<'a>(
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-    env_vars: Vec<(String, String)>,
     force: bool,
 ) -> Result<NodeAddResult, String> {
     let source = source.into();
@@ -486,7 +484,6 @@ async fn send_node_add_and_wait_internal<'a>(
             NodeAddGoal::from_source(src, TEST_GIT_HASH, result_timeout.as_secs())
         }
     }
-    .with_env_vars(env_vars)
     .with_force(force);
 
     let mut action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
@@ -665,29 +662,6 @@ pub async fn send_node_add_and_wait<'a>(
         goal_timeout,
         result_timeout,
         feedback_tx,
-        Vec::new(),
-        false,
-    )
-    .await
-}
-
-pub async fn send_node_add_and_wait_with_env<'a>(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
-    source: impl Into<NodeAddSource<'a>>,
-    goal_timeout: Duration,
-    result_timeout: Duration,
-    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-    env_vars: Vec<(String, String)>,
-) -> Result<NodeAddResult, String> {
-    send_node_add_and_wait_internal(
-        messenger,
-        core_node_name,
-        source,
-        goal_timeout,
-        result_timeout,
-        feedback_tx,
-        env_vars,
         false,
     )
     .await
@@ -733,7 +707,6 @@ pub async fn send_node_add_then_build<'a>(
         goal_timeout,
         result_timeout,
         None,
-        Vec::new(),
         false,
     )
     .await?;
@@ -817,7 +790,6 @@ pub async fn send_node_add_and_wait_with_force<'a>(
         goal_timeout,
         result_timeout,
         feedback_tx,
-        Vec::new(),
         true,
     )
     .await

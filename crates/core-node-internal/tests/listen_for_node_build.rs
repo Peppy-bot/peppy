@@ -2,8 +2,8 @@ mod common;
 
 use common::{
     NodeAddSource, acquire_container_test_guard, archive_contains_entry, entity_artifact_path,
-    read_file_from_archive, send_node_add_and_wait, send_node_add_and_wait_with_env,
-    send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
+    read_file_from_archive, send_node_add_and_wait, send_node_build_and_wait,
+    send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
     start_core_node_with_mock_messenger_outside_home, write_peppy_json5,
 };
 use core_node_api::encoding::{NodeBuildFeedback, NodeBuildResult};
@@ -960,17 +960,7 @@ echo \"$@\"
     let env_vars = vec![("PATH".to_string(), new_path)];
 
     // Re-stage the node and rebuild with the PATH override.
-    let _ = send_node_add_and_wait_with_env(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-        Vec::new(),
-    )
-    .await
-    .expect("re-add should complete");
+    stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
     let build_result = send_node_build_and_wait(
         &started_core_node.caller_handle,
