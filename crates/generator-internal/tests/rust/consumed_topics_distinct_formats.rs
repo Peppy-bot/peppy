@@ -190,9 +190,8 @@ fn generate_and_build(order: [Slot; 2]) {
     );
 
     helpers::init_cargo_user_node(&user_node_dir);
-    let src_dir = user_node_dir.join("src");
-    fs::create_dir_all(&src_dir).expect("failed to create src dir");
-    fs::write(src_dir.join("main.rs"), USER_MAIN).expect("failed to write user main.rs");
+    fs::write(user_node_dir.join("src").join("main.rs"), USER_MAIN)
+        .expect("failed to write user main.rs");
 
     helpers::compile_project(&user_node_dir);
 }
