@@ -263,7 +263,16 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
     .await
     .expect("failed to start shutdown service");
     let _shutdown_task = AbortOnDrop(shutdown_task);
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    common::wait_until_service_reachable(
+        &shutdown_handle,
+        &started_core_node.core_node_name,
+        TARGET_NODE_NAME,
+        peppylib::messaging::SHUTDOWN_SERVICE,
+        &started_core_node.core_node_name,
+        TARGET_INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
 
     // The cooperative node acks the shutdown immediately but only exits after
     // `exit_delay`, modeling hook cleanup plus runtime teardown that runs past
@@ -302,10 +311,9 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
         "process {pid} should be gone after a graceful stop"
     );
 
-    tokio::time::timeout(Duration::from_secs(1), kill_task)
-        .await
-        .expect("kill task should complete")
-        .expect("kill task should not panic");
+    // Only the kill task ends the `sleep 60` before the force-kill deadline,
+    // so a graceful stop means it has already killed the process.
+    kill_task.await.expect("kill task should not panic");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -656,12 +664,28 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
         }))
     };
 
-    // Allow both listeners to fully establish their queryables.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Both listeners must be reachable, or the foreign one could not win an
+    // unscoped discovery and the test would pass vacuously. Reachability
+    // probes are answered by the transport and never reach the handlers.
+    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    for (core_node, listener_instance_id) in [
+        (LOCAL_CORE_NODE, LOCAL_LISTENER_INSTANCE_ID),
+        (FOREIGN_CORE_NODE, FOREIGN_LISTENER_INSTANCE_ID),
+    ] {
+        common::wait_until_service_reachable(
+            &caller_handle,
+            LOCAL_CORE_NODE,
+            NODE_NAME,
+            ServiceId::NodeStop.name(),
+            core_node,
+            listener_instance_id,
+            Duration::from_secs(5),
+        )
+        .await;
+    }
 
     // Each iteration runs a fresh discover-then-pin sequence; without the
     // bound-core-node scope the foreign listener could win any of them.
-    let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     for i in 0..10 {
         let response = poll_node_stop(
             &NodeStopRequest::new(TARGET_INSTANCE_ID),
