@@ -18,7 +18,7 @@
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage, TopicRetention};
-use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -155,17 +155,8 @@ fn generate_and_build(order: [Slot; 2]) {
 
     let interfaces = order.into_iter().map(consumed_topic).collect();
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        &user_node_dir,
-        interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, &user_node_dir, interfaces)
+        .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let capnp_dir = peppygen_dir.join("src/capnp");

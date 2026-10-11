@@ -4,10 +4,9 @@
 //! `peppylib::messaging::ConcurrentAction::expose` call inside those files
 //! passes the matching `contract_name`/`contract_tag` literals.
 
-use crate::helpers::{prepare_directories, test_peppy_dirs};
+use crate::helpers::{generate_test_peppygen_lib, prepare_directories};
 use crate::implements_fixtures::{contract_backed_action, make_move_arm_action};
 use config::node::PeppygenLanguage;
-use generator::{CrateDeployMode, NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
 
@@ -60,18 +59,8 @@ fn nests_contract_backed_actions_under_link_id() {
         contract_backed_action("arm_v2", "arm", "v2", make_move_arm_action("arm_v2_marker")),
     ];
 
-    let peppy_dirs = test_peppy_dirs();
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        &user_node,
-        extras,
-        "test-hash",
-        &peppy_dirs,
-        CrateDeployMode::default(),
-        Some(&peppy_node_config),
-        NodeTree::Source,
-    )
-    .expect("generation should succeed");
+    generate_test_peppygen_lib(PeppygenLanguage::Rust, &user_node, extras)
+        .expect("generation should succeed");
 
     let src = user_node
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)

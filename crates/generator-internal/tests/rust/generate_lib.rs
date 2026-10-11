@@ -75,17 +75,8 @@ fn generate_peppygen_lib_minimal_config() {
     fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
 
     // Generate should succeed even with no interfaces
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate library for minimal config");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, node_dir, Vec::new())
+        .expect("failed to generate library for minimal config");
 
     // Verify the generated library exists
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
@@ -313,16 +304,7 @@ fn generate_peppygen_lib_missing_config() {
     let node_dir = temp_dir.path();
 
     // Try to generate without a peppy.json5 - should fail
-    let result = generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    );
+    let result = helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, node_dir, Vec::new());
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }
 
@@ -364,17 +346,8 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        exposed_node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for exposed node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, exposed_node_dir, Vec::new())
+        .expect("failed to generate peppygen lib for exposed node");
 
     let exposed_peppygen_dir = exposed_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
@@ -422,15 +395,10 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
         dependency: helpers::native_dep(EXPOSED_NODE_NAME, "v1", EXPOSED_NODE_NAME),
     })];
 
-    generate_peppygen_lib(
+    helpers::generate_test_peppygen_lib(
         PeppygenLanguage::Rust,
         consumer_node_dir,
         expected_interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -485,17 +453,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        exposed_node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for exposed node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, exposed_node_dir, Vec::new())
+        .expect("failed to generate peppygen lib for exposed node");
 
     let exposed_peppygen_dir = exposed_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
@@ -548,15 +507,10 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         },
     )];
 
-    generate_peppygen_lib(
+    helpers::generate_test_peppygen_lib(
         PeppygenLanguage::Rust,
         consumer_node_dir,
         consumed_interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -630,17 +584,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        exposed_node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for exposed node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, exposed_node_dir, Vec::new())
+        .expect("failed to generate peppygen lib for exposed node");
 
     let exposed_peppygen_dir = exposed_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
@@ -719,15 +664,10 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         dependency: helpers::native_dep(EXPOSED_NODE_NAME, "v1", EXPOSED_NODE_NAME),
     })];
 
-    generate_peppygen_lib(
+    helpers::generate_test_peppygen_lib(
         PeppygenLanguage::Rust,
         consumer_node_dir,
         consumed_interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -787,17 +727,8 @@ fn generate_peppygen_rust_lib_renders_optional_accessor_for_a_zero_or_one_contra
         ),
     })];
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        consumer_node_dir,
-        interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for consumer node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, consumer_node_dir, interfaces)
+        .expect("failed to generate peppygen lib for consumer node");
 
     let leaf = consumer_node_dir
         .join(PEPPYGEN_OUTPUT_PATH)

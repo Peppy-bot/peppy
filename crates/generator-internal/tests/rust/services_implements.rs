@@ -4,10 +4,9 @@
 //! those files passes the matching target: `SenderTarget::contract("name", "tag")?`
 //! for contract-backed leaves and `SenderTarget::node(...)` for the native one.
 
-use crate::helpers::{prepare_directories, test_peppy_dirs};
+use crate::helpers::{generate_test_peppygen_lib, prepare_directories};
 use crate::implements_fixtures::{contract_backed_service, make_control_service};
 use config::node::PeppygenLanguage;
-use generator::{CrateDeployMode, NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
 
@@ -61,18 +60,8 @@ fn nests_contract_backed_services_under_link_id() {
         contract_backed_service("arm", "arm", "v2", make_control_service("arm_v2_marker")),
     ];
 
-    let peppy_dirs = test_peppy_dirs();
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        &user_node,
-        extras,
-        "test-hash",
-        &peppy_dirs,
-        CrateDeployMode::default(),
-        Some(&peppy_node_config),
-        NodeTree::Source,
-    )
-    .expect("generation should succeed");
+    generate_test_peppygen_lib(PeppygenLanguage::Rust, &user_node, extras)
+        .expect("generation should succeed");
 
     let src = user_node
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)

@@ -30,8 +30,8 @@
 
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, TEST_CORE_NODE, assert_exited_successfully, bind_slot,
-    init_python_project_venv, init_python_user_node, native_dep, shut_down_test_node,
-    spawn_python_run, test_node_runtime_config, test_peppy_dirs, test_wait_context,
+    generate_test_peppygen_lib, init_python_project_venv, init_python_user_node, native_dep,
+    shut_down_test_node, spawn_python_run, test_node_runtime_config, test_wait_context,
     wait_for_action_service_reachable_or_exit, wait_for_child,
     wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
@@ -40,9 +40,7 @@ use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, NodeConfigParser, PeppygenLanguage,
     TopicRetention,
 };
-use generator::{
-    ConsumedActionMessage, DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib,
-};
+use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
@@ -178,17 +176,8 @@ async fn actions_preserve_result_field_order() {
     fs::create_dir_all(&producer_dir).unwrap();
     write_producer_config_via_round_trip(ACTION_PRODUCER_CONFIG, &producer_dir);
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &producer_dir,
-        Vec::new(),
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("generate peppygen for producer");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &producer_dir, Vec::new())
+        .expect("generate peppygen for producer");
 
     let producer_runtime_config_path = temp_dir_producer.path().join("peppy_runtime.json5");
     build_runtime_config(
@@ -285,15 +274,10 @@ if __name__ == "__main__":
         dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
 
-    generate_peppygen_lib(
+    generate_test_peppygen_lib(
         PeppygenLanguage::Python,
         &consumer_dir,
         vec![consumed_interface],
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("generate peppygen for consumer");
 
@@ -532,17 +516,8 @@ async fn services_preserve_response_field_order() {
     fs::create_dir_all(&producer_dir).unwrap();
     write_producer_config_via_round_trip(SERVICE_PRODUCER_CONFIG, &producer_dir);
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &producer_dir,
-        Vec::new(),
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("generate peppygen for producer");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &producer_dir, Vec::new())
+        .expect("generate peppygen for producer");
 
     let producer_runtime_config_path = temp_dir_producer.path().join("peppy_runtime.json5");
     build_runtime_config(
@@ -614,15 +589,10 @@ if __name__ == "__main__":
         dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
 
-    generate_peppygen_lib(
+    generate_test_peppygen_lib(
         PeppygenLanguage::Python,
         &consumer_dir,
         vec![consumed_interface],
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("generate peppygen for consumer");
 
@@ -849,17 +819,8 @@ async fn topics_preserve_message_field_order() {
     fs::create_dir_all(&producer_dir).unwrap();
     write_producer_config_via_round_trip(TOPIC_PRODUCER_CONFIG, &producer_dir);
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &producer_dir,
-        Vec::new(),
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("generate peppygen for producer");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &producer_dir, Vec::new())
+        .expect("generate peppygen for producer");
 
     let producer_runtime_config_path = temp_dir_producer.path().join("peppy_runtime.json5");
     build_runtime_config(
@@ -928,15 +889,10 @@ if __name__ == "__main__":
         dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
 
-    generate_peppygen_lib(
+    generate_test_peppygen_lib(
         PeppygenLanguage::Python,
         &consumer_dir,
         vec![consumed_interface],
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("generate peppygen for consumer");
 
