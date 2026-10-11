@@ -8,6 +8,7 @@ use crate::services::repo::index::{
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::contract::PeppyContractParser;
+use daemon_config::daemon_interface::served_interfaces;
 use daemon_config::mcp_deployment::PinnedContract;
 use daemon_config::mcp_exposure::{McpExposure, PeppyMcpExposureParser, PinnedContractRef};
 use daemon_config::repository::{ManifestFingerprint, RepoItemKind};
@@ -40,7 +41,8 @@ impl std::fmt::Display for ExposureFinding {
 
 /// Validates every exposure the committed index of `root` lists against the
 /// contracts it references, resolved through this machine's repository
-/// caches, reporting every problem of every exposure at once. A file that
+/// caches, and the daemon interfaces it references, which this peppy
+/// serves, reporting every problem of every exposure at once. A file that
 /// declares the exposure schema but does not parse as one (a document
 /// naming a public name twice, say) declares no item and is listed by no
 /// index, so it is reported here by path rather than passing unseen.
@@ -159,20 +161,37 @@ impl Contracts<'_> {
     }
 }
 
-/// One exposure's problems: every contract it references that the caches
+/// One exposure's problems: every daemon interface it references that this
+/// peppy does not serve and every contract it references that the caches
 /// cannot resolve, then every validation violation against the ones they
 /// can.
 fn exposure_problems(exposure: &McpExposure, contracts: &mut Contracts<'_>) -> Vec<String> {
     let mut problems = Vec::new();
+    let mut interfaces = Vec::new();
+    match served_interfaces(exposure) {
+        Ok(served) => {
+            for (_, interface) in served {
+                if !interfaces.contains(&interface) {
+                    interfaces.push(interface);
+                }
+            }
+        }
+        Err(unserved) => problems.extend(unserved),
+    }
+    let references: Vec<&PinnedContractRef> = exposure
+        .surface
+        .targets()
+        .into_iter()
+        .filter_map(|(_, target, _)| target.source.contract())
+        .collect();
     let mut resolved: Vec<&PinnedContract> = Vec::new();
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
     // Resolve first, then borrow: every reference goes through the memo
     // before any resolved contract is held by reference.
-    for (_, target, _) in exposure.surface.targets() {
-        contracts.get(&target.contract);
+    for reference in &references {
+        contracts.get(reference);
     }
-    for (_, target, _) in exposure.surface.targets() {
-        let reference = &target.contract;
+    for reference in references {
         if !seen.insert((reference.name.as_str().to_owned(), reference.tag.clone())) {
             continue;
         }
@@ -191,7 +210,11 @@ fn exposure_problems(exposure: &McpExposure, contracts: &mut Contracts<'_>) -> V
         .iter()
         .map(|contract| contract.resolved())
         .collect();
-    if let Err(error) = build_exposure_bundle(exposure, &contracts) {
+    let interfaces: Vec<_> = interfaces
+        .into_iter()
+        .map(|interface| interface.resolved())
+        .collect();
+    if let Err(error) = build_exposure_bundle(exposure, &contracts, &interfaces) {
         problems.extend(error.violations);
     }
     problems

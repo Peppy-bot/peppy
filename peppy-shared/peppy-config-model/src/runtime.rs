@@ -6,6 +6,7 @@ pub use core_node_name::{CoreNodeName, CoreNodeNameError, MAX_CORE_NODE_NAME_LEN
 use crate::common::AnyType;
 use crate::consts::ALLOWED_CONFIG_CHARS;
 use crate::error::{ParsingError, Result};
+use crate::internal::node::SetupTimeout;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::{
@@ -450,7 +451,15 @@ pub struct NodeInstanceConfig {
     /// left with nothing to observe.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub observation_seeds: ObservationSeeds,
+    /// See [`NodeInstancePlan::daemon_scopes`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub daemon_scopes: DaemonScopes,
 }
+
+/// The scope of each daemon target an instance of the built-in MCP server
+/// serves, keyed by target name, as the launcher gives it: a value the
+/// server parses into the scope type of the target's daemon interface.
+pub type DaemonScopes = BTreeMap<String, serde_json::Value>;
 
 impl NodeInstanceConfig {
     /// Builds a config with everything except `instance_id` defaulted:
@@ -466,6 +475,7 @@ impl NodeInstanceConfig {
             slot_bindings: BTreeMap::new(),
             pairing_slots: BTreeMap::new(),
             observation_seeds: BTreeMap::new(),
+            daemon_scopes: BTreeMap::new(),
         }
     }
 }
@@ -505,6 +515,13 @@ pub struct NodeInstancePlan {
     /// identically to a local one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: SlotBindings,
+    /// The scope of each daemon target the instance serves, as the launch
+    /// composed it and checked it against the target's interface. Only an
+    /// instance that serves a daemon target carries any, so the field is
+    /// written only then, and a node built before the field existed still
+    /// reads its configuration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub daemon_scopes: DaemonScopes,
 }
 
 impl NodeInstancePlan {
@@ -517,6 +534,7 @@ impl NodeInstancePlan {
             arguments: BTreeMap::new(),
             clock: ClockBinding::Wall,
             slot_bindings: BTreeMap::new(),
+            daemon_scopes: BTreeMap::new(),
         }
     }
 
@@ -539,6 +557,7 @@ impl NodeInstancePlan {
             // carries daemon-held state (source generations and liveness)
             // that a plan, by design, does not know.
             observation_seeds: BTreeMap::new(),
+            daemon_scopes: self.daemon_scopes,
         }
     }
 }
@@ -575,14 +594,17 @@ fn default_shutdown_grace_secs() -> u64 {
     crate::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
 }
 
-/// Node lifecycle settings the daemon resolves once (from `peppy_config.json5`)
-/// and ships to each spawned node. `daemon_grace_secs` is the grace period the
-/// node's daemon-liveness watchdog waits, after the daemon's heartbeat goes
-/// silent, before shutting itself down — the uncatchable-death safety net.
-/// `shutdown_grace_secs` is the cooperative-shutdown window: the daemon waits
-/// this long for a stopping node to exit before SIGKILL, and the node runtime
-/// bounds its registered shutdown hooks by the same window so cleanup can never
-/// hang a stop (or outlive a dead daemon) indefinitely.
+/// Node lifecycle settings the daemon resolves and ships to each spawned node.
+/// `daemon_grace_secs` is the grace period the node's daemon-liveness watchdog
+/// waits, after the daemon's heartbeat goes silent, before shutting itself
+/// down: the uncatchable-death safety net. `shutdown_grace_secs` is the
+/// cooperative-shutdown window: the daemon waits this long for a stopping node
+/// to exit before SIGKILL, and the node runtime bounds its registered shutdown
+/// hooks by the same window so cleanup can never hang a stop (or outlive a dead
+/// daemon) indefinitely. Both come from `peppy_config.json5`.
+/// `setup_timeout_secs` is the setup budget of the instance: how long the
+/// daemon waits for its setup to end once it answers ready, which the daemon
+/// resolves from the node's manifest.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LifecycleRuntimeConfig {
@@ -590,6 +612,11 @@ pub struct LifecycleRuntimeConfig {
     pub daemon_grace_secs: u64,
     #[serde(default = "default_shutdown_grace_secs")]
     pub shutdown_grace_secs: u64,
+    /// Left out when it is the default setup budget, so the configuration of
+    /// an instance with the default budget stays byte-identical, and a node
+    /// built with a peppylib that does not know the field still reads it.
+    #[serde(default, skip_serializing_if = "SetupTimeout::is_default")]
+    pub setup_timeout_secs: SetupTimeout,
 }
 
 impl Default for LifecycleRuntimeConfig {
@@ -597,6 +624,7 @@ impl Default for LifecycleRuntimeConfig {
         Self {
             daemon_grace_secs: default_daemon_grace_secs(),
             shutdown_grace_secs: default_shutdown_grace_secs(),
+            setup_timeout_secs: SetupTimeout::DEFAULT,
         }
     }
 }
@@ -861,6 +889,38 @@ mod tests {
         assert!(plan(ClockBinding::Wall).resolve().framework.clock.is_wall());
     }
 
+    /// The scopes a launch gave an instance reach its configuration whole,
+    /// and an instance with none writes no field, so a node built before
+    /// the field existed still reads its configuration.
+    #[test]
+    fn daemon_scopes_travel_from_the_plan_to_the_config_and_only_when_present() {
+        let scope = serde_json::json!({
+            "max_copies": 4,
+            "options": [{ "option": "so101_sim", "description": "A simulated SO-101" }],
+        });
+        let scoped = NodeInstancePlan {
+            daemon_scopes: BTreeMap::from([("stack".to_owned(), scope.clone())]),
+            ..plan(ClockBinding::Wall)
+        };
+        let encoded = serde_json5::to_string(&scoped).unwrap();
+        let decoded: NodeInstancePlan = serde_json5::from_str(&encoded).unwrap();
+        assert_eq!(decoded, scoped);
+
+        let config = decoded.resolve();
+        assert_eq!(config.daemon_scopes["stack"], scope);
+        let encoded = serde_json5::to_string(&config).unwrap();
+        let decoded: NodeInstanceConfig = serde_json5::from_str(&encoded).unwrap();
+        assert_eq!(decoded.daemon_scopes["stack"], scope);
+
+        let unscoped = plan(ClockBinding::Wall);
+        let encoded = serde_json5::to_string(&unscoped).unwrap();
+        assert!(!encoded.contains("daemon_scopes"), "{encoded}");
+        let encoded = serde_json5::to_string(&unscoped.resolve()).unwrap();
+        assert!(!encoded.contains("daemon_scopes"), "{encoded}");
+        let decoded: NodeInstanceConfig = serde_json5::from_str(&encoded).unwrap();
+        assert!(decoded.daemon_scopes.is_empty());
+    }
+
     /// Wall time is the absence of a binding on the wire, so a plan and a
     /// config for an instance reading its own machine's clock carry no clock
     /// field at all.
@@ -945,6 +1005,73 @@ mod tests {
         let reparsed: RuntimeConfig =
             serde_json5::from_str(&serde_json5::to_string(&custom_shutdown).unwrap()).unwrap();
         assert_eq!(reparsed.lifecycle, custom_shutdown.lifecycle);
+    }
+
+    /// A runtime config whose `lifecycle` block is `lifecycle`.
+    fn runtime_config_with_lifecycle(
+        lifecycle: &str,
+    ) -> std::result::Result<RuntimeConfig, String> {
+        serde_json5::from_str(&format!(
+            r#"{{
+                messaging_host: "127.0.0.1",
+                messaging_port: 7448,
+                node_instance: {{ instance_id: "robot_initializer_inst" }},
+                node_name: "robot_initializer",
+                node_tag: "v1",
+                bound_core_node: "core_node",
+                lifecycle: {lifecycle}
+            }}"#
+        ))
+        .map_err(|error| error.to_string())
+    }
+
+    /// The setup budget the daemon writes round-trips, and the default setup
+    /// budget is left out of the serialized form even when another lifecycle
+    /// setting is written, so the configuration of an instance with the
+    /// default budget stays byte-identical.
+    #[test]
+    fn the_setup_budget_round_trips_and_the_default_is_left_out() {
+        let config = runtime_config_from_json("camera_front").unwrap();
+        assert_eq!(config.lifecycle.setup_timeout_secs, SetupTimeout::DEFAULT);
+
+        let other_grace = runtime_config_with_lifecycle("{ daemon_grace_secs: 42 }").unwrap();
+        assert_eq!(
+            other_grace.lifecycle.setup_timeout_secs,
+            SetupTimeout::DEFAULT
+        );
+        let serialized = serde_json5::to_string(&other_grace).unwrap();
+        assert!(serialized.contains("daemon_grace_secs"), "{serialized}");
+        assert!(!serialized.contains("setup_timeout_secs"), "{serialized}");
+
+        let declared = runtime_config_with_lifecycle("{ setup_timeout_secs: 180 }").unwrap();
+        assert_eq!(
+            declared.lifecycle.setup_timeout_secs,
+            SetupTimeout::from_secs(180).unwrap()
+        );
+        assert_eq!(
+            declared.lifecycle.daemon_grace_secs,
+            crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS
+        );
+        let serialized = serde_json5::to_string(&declared).unwrap();
+        assert!(
+            serialized.contains("\"setup_timeout_secs\":180"),
+            "{serialized}"
+        );
+        let reparsed: RuntimeConfig = serde_json5::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.lifecycle, declared.lifecycle);
+    }
+
+    #[test]
+    fn a_setup_budget_outside_the_range_does_not_parse() {
+        for written in ["0", "541", "\"15\""] {
+            let error =
+                runtime_config_with_lifecycle(&format!("{{ setup_timeout_secs: {written} }}"))
+                    .expect_err("out of range");
+            assert!(
+                error.contains("a setup budget is a whole number of seconds from 1 to 540"),
+                "{written}: {error}"
+            );
+        }
     }
 
     /// A launch config written before `discovery` existed (no `discovery` key)

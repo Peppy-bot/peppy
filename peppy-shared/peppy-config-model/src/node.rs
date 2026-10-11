@@ -4,6 +4,7 @@ mod mount_policy;
 mod parse;
 mod refine;
 mod retention;
+mod setup_timeout;
 mod types;
 mod validation;
 
@@ -18,6 +19,7 @@ pub use refine::{
 pub use retention::{
     MAX_RETENTION_DEPTH, RetentionDepth, RetentionDepthOutOfRange, TopicRetention,
 };
+pub use setup_timeout::{SetupTimeout, SetupTimeoutOutOfRange};
 pub use types::{
     ActionInterfaces, ActionTopicEndpoint, ArrayKind, ArraySchema, Cardinality, ConsumedAction,
     ConsumedService, ConsumedTopic, ContainerConfig, DependsOn, EmittedTopic, EndpointDeclaration,

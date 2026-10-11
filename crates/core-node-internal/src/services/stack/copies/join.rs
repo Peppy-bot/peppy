@@ -14,7 +14,8 @@ use super::super::launch::preflight::preflight_change;
 use super::super::launch::start::start_node_instances;
 use super::super::launch::watchers::{lifecycle_watchers, watchers_replacing};
 use super::super::launch::{
-    HostedNode, JoinScope, NodeKey, PhaseChange, PhaseGoal, UnresolvedAdd, federated,
+    HostedNode, JoinScope, NodeKey, PhaseChange, PhaseGoal, UnresolvedAdd,
+    check_planned_daemon_scopes, federated,
 };
 use super::super::state::{ActiveLaunch, StackCopy, copy_in_start_order};
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
@@ -124,6 +125,7 @@ async fn join_inner(
     // clock that simulation is already supplying.
     let (clocks, incarnations) = plan_clocks(&combined, &placements, &active.clocks)?;
     let copies = CopyMembership::of(active.copy_records().chain([&copy]));
+    check_planned_daemon_scopes(&active.prepared, &planned, &copies)?;
     let (ordered, bindings, pairings, observations) =
         validate_and_order_dependencies(ctx, &planned, &root, &placements, &copies, &clocks)
             .await?;

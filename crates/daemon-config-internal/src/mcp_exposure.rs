@@ -7,8 +7,8 @@ mod parse;
 // error vocabulary the way the contract and pairing parsers do.
 pub use parse::PeppyMcpExposureParser;
 pub use peppy_mcp_catalog::{
-    ActionExposure, ActionOperation, ExposureManifest, ExposureTarget, FreshnessPolicy, GoalBound,
-    ImageCodec, ImageFieldMap, ImageRepresentation, JpegQuality, MaxHz, McpExposure,
-    OversizePolicy, PinnedContractRef, PublicName, RestrictBounds, ServerIdentity, ServiceExposure,
-    ServiceOperation, TopicExposure, UpdatePolicy,
+    ActionExposure, ActionOperation, DaemonInterfaceRef, ExposureManifest, ExposureTarget,
+    FreshnessPolicy, GoalBound, ImageCodec, ImageFieldMap, ImageRepresentation, JpegQuality, MaxHz,
+    McpExposure, OversizePolicy, PinnedContractRef, PublicName, RestrictBounds, ServerIdentity,
+    ServiceExposure, ServiceOperation, TargetSource, TopicExposure, UpdatePolicy,
 };
