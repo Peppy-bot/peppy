@@ -204,7 +204,7 @@ impl Processor {
         let observation_seeds = seed_observations(&node_config, &config.observed_sources);
         let pairing_slots_seed = seed_pairing_slots(&node_config, &config.peer_pins)?;
 
-        let runtime_config = RuntimeConfig::new(
+        let mut runtime_config = RuntimeConfig::new(
             &messaging_host,
             messaging_port,
             NodeInstanceConfig {
@@ -224,6 +224,10 @@ impl Processor {
             node_config.manifest.tag.as_str(),
             STANDALONE_CORE_NODE,
         )?;
+        // No daemon resolves the setup budget here: the node reads the one its
+        // manifest declares, or the default setup budget, as a daemon would
+        // resolve it.
+        runtime_config.lifecycle.setup_timeout_secs = node_config.execution.setup_timeout();
         Self::from_runtime_config(runtime_config, validated_arguments, &node_config)
     }
 
@@ -327,6 +331,18 @@ impl Processor {
     /// runtime config; standalone nodes use the built-in default.
     pub fn shutdown_grace(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.runtime_config.lifecycle.shutdown_grace_secs)
+    }
+
+    /// The setup budget of this instance: how long the daemon waits for its
+    /// setup to end once it answers ready, before it stops the instance. The
+    /// daemon resolves it from the manifest's `execution.setup_timeout_secs`,
+    /// else its default setup budget, and ships it in the runtime config; a
+    /// standalone node and the test harness read the budget of the manifest.
+    pub fn setup_timeout(&self) -> std::time::Duration {
+        self.runtime_config
+            .lifecycle
+            .setup_timeout_secs
+            .as_duration()
     }
 
     /// The one clock this instance reads, and its role in that clock's
@@ -546,6 +562,13 @@ impl Processor {
             .copy
             .as_ref()
             .map(|copy| copy.as_str())
+    }
+
+    /// The scope of each daemon target this instance serves, keyed by
+    /// target name, as the launch gave it. Empty for an instance that
+    /// serves no daemon target, and for one run standalone.
+    pub fn daemon_scopes(&self) -> &config::runtime::DaemonScopes {
+        &self.runtime_config.node_instance.daemon_scopes
     }
 
     /// Shared handle to all pairing-slot channels, handed to the pre-setup
@@ -1429,6 +1452,50 @@ mod tests {
             processor.sole_bound_producer("camera"),
             &config::runtime::ProducerRef::new("epic-whale-6789", "the_camera")
         );
+        assert!(processor.daemon_scopes().is_empty());
+    }
+
+    /// The scopes the daemon writes into the runtime configuration reach the
+    /// node through the file it reads at start.
+    #[test]
+    fn daemon_mode_reads_the_daemon_scopes_of_its_instance() {
+        let scope = serde_json::json!({
+            "max_copies": 4,
+            "options": [{ "option": "so101_sim", "description": "A simulated SO-101" }],
+        });
+        let runtime_config = RuntimeConfig::new(
+            "127.0.0.1",
+            7448,
+            config::runtime::NodeInstanceConfig {
+                arguments: BTreeMap::from([("port".to_string(), AnyType::Int(8903))]),
+                slot_bindings: BTreeMap::from([(
+                    "camera".to_string(),
+                    config::runtime::ProducerRef::new("epic-whale-6789", "the_camera").into(),
+                )]),
+                daemon_scopes: BTreeMap::from([("stack".to_string(), scope.clone())]),
+                ..config::runtime::NodeInstanceConfig::new(
+                    config::runtime::Name::new("mcp").expect("valid instance id"),
+                )
+            },
+            "built_in_server",
+            "v1",
+            "epic-whale-6789",
+        )
+        .expect("runtime config builds");
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("peppy_runtime.json5");
+        runtime_config
+            .save_json5_launch_config(&path)
+            .expect("the runtime config is written");
+        let read = Processor::load_runtime_config(path.to_str().expect("a UTF-8 path"))
+            .expect("the runtime config is read back");
+
+        let processor = Processor::daemon_from_manifest(read, in_memory_manifest())
+            .expect("the manifest and the launch config agree");
+        assert_eq!(
+            processor.daemon_scopes(),
+            &BTreeMap::from([("stack".to_string(), scope)])
+        );
     }
 
     #[test]
@@ -1482,6 +1549,82 @@ mod tests {
         assert_eq!(
             processor.sole_bound_producer("camera"),
             &config::runtime::ProducerRef::new("standalone-core", "the_camera")
+        );
+    }
+
+    /// A runtime config for the in-memory manifest, whose `lifecycle` carries
+    /// `setup_timeout_secs` when it is given.
+    fn runtime_config_with_setup_budget(
+        setup_timeout_secs: Option<config::node::SetupTimeout>,
+    ) -> RuntimeConfig {
+        let mut runtime_config = RuntimeConfig::new(
+            "127.0.0.1",
+            7448,
+            config::runtime::NodeInstanceConfig {
+                slot_bindings: BTreeMap::from([(
+                    "camera".to_string(),
+                    config::runtime::ProducerRef::new("epic-whale-6789", "the_camera").into(),
+                )]),
+                ..config::runtime::NodeInstanceConfig::new(
+                    config::runtime::Name::new("mcp").expect("valid instance id"),
+                )
+            },
+            "built_in_server",
+            "v1",
+            "epic-whale-6789",
+        )
+        .expect("runtime config builds");
+        if let Some(budget) = setup_timeout_secs {
+            runtime_config.lifecycle.setup_timeout_secs = budget;
+        }
+        runtime_config
+    }
+
+    #[test]
+    fn daemon_mode_reads_the_setup_budget_of_the_runtime_config() {
+        let declared = config::node::SetupTimeout::from_secs(180).expect("in range");
+        let processor = Processor::daemon_from_manifest(
+            runtime_config_with_setup_budget(Some(declared)),
+            in_memory_manifest(),
+        )
+        .expect("the manifest and the launch config agree");
+        assert_eq!(
+            processor.setup_timeout(),
+            std::time::Duration::from_secs(180)
+        );
+
+        let processor = Processor::daemon_from_manifest(
+            runtime_config_with_setup_budget(None),
+            in_memory_manifest(),
+        )
+        .expect("the manifest and the launch config agree");
+        assert_eq!(
+            processor.setup_timeout(),
+            config::node::SetupTimeout::DEFAULT.as_duration(),
+            "a runtime config without the field carries the default setup budget"
+        );
+    }
+
+    #[test]
+    fn standalone_mode_reads_the_setup_budget_of_the_manifest() {
+        let config =
+            StandaloneConfig::new().with_bound_producer("camera", "standalone-core", "the_camera");
+
+        let mut declaring = in_memory_manifest();
+        declaring.execution.setup_timeout_secs =
+            Some(config::node::SetupTimeout::from_secs(540).expect("in range"));
+        let processor = Processor::standalone_from_manifest(declaring, &config)
+            .expect("should create processor");
+        assert_eq!(
+            processor.setup_timeout(),
+            std::time::Duration::from_secs(540)
+        );
+
+        let processor = Processor::standalone_from_manifest(in_memory_manifest(), &config)
+            .expect("should create processor");
+        assert_eq!(
+            processor.setup_timeout(),
+            std::time::Duration::from_secs(15)
         );
     }
 

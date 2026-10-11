@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::generator::testgen::{
-    DepLinkSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
+    DepLinkSpec, DepServiceSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
 use config::node::{Cardinality, MessageFormat, NativeEmittedTopic, TopicRetention};
 
@@ -84,6 +84,53 @@ fn multi_instance_dep_slot_gets_an_instance_id_override() {
             "let motor_health_member_ids: Vec<String>",
             "config.motor_health_instance_ids",
         ],
+    );
+}
+
+/// An optional dep slot waits for the readiness of the services its mock
+/// serves only when the slot is bound, and a slot whose mock serves no
+/// service or action has no readiness to wait for, so it renders no guard.
+#[test]
+fn optional_dep_slot_guards_only_the_readiness_its_mock_serves() {
+    let registry_serving = |services: Vec<DepServiceSpec>| {
+        let mut registry = TestGenRegistry::default();
+        registry.record_node_identity("relay_node", "v1");
+        registry.deps.insert(
+            "camera".to_string(),
+            DepLinkSpec {
+                producer_name: "uvc_camera".to_string(),
+                target: TargetSpec::Node {
+                    name: "uvc_camera".to_string(),
+                    tag: "v1".to_string(),
+                },
+                cardinality: Cardinality::ZeroOrOne,
+                topics: Vec::new(),
+                services,
+                actions: Vec::new(),
+            },
+        );
+        registry
+    };
+
+    let serving_nothing = rendered_harness(&registry_serving(Vec::new()));
+    assert_contains_all(
+        &serving_nothing,
+        &["pub camera_vacant: bool", "if config.camera_vacant"],
+    );
+    assert!(
+        !serving_nothing.contains("if !config.camera_vacant"),
+        "a mock that serves nothing has no readiness to guard:\n{serving_nothing}"
+    );
+
+    let serving_a_service = rendered_harness(&registry_serving(vec![DepServiceSpec {
+        name: "enable_camera".to_string(),
+        module_link: "camera".to_string(),
+        request: None,
+        response: None,
+    }]));
+    assert_contains_all(
+        &serving_a_service,
+        &["if !config.camera_vacant", "\"enable_camera\""],
     );
 }
 
@@ -281,6 +328,106 @@ fn harness_of_a_node_with_retaining_topics_lints_clean() {
                 TopicRetention::latest(3).unwrap(),
                 &crate::DependencyContext::native("robot_state", "v1", "robot", Cardinality::One),
             )
+            .unwrap();
+    });
+}
+
+/// This is a long running test that verifies the generated code passes clippy.
+/// Every name a manifest gives (interface names, link ids, message fields at
+/// any depth) can be a Rust keyword. The generated items named after them
+/// and the locals and fields derived from them stay snake case, so the
+/// `non_snake_case` lint passes.
+#[test]
+fn harness_of_a_node_with_rust_keyword_names_lints_clean() {
+    let keyword_fields: MessageFormat = serde_json5::from_str(
+        r#"{
+          type: "u32",
+          shape: {
+            $type: "object",
+            kind: "string",
+            box: { $type: "array", $items: "f64", $length: 4 },
+          },
+          in: { $type: "array", $items: "string" },
+          for: { $type: "array", $items: { $type: "object", ref: "f64" } },
+        }"#,
+    )
+    .unwrap();
+    let keyword_action: config::node::NativeExposedAction = serde_json5::from_str(
+        r#"{
+          name: "move",
+          goal_service: {
+            request_message_format: { box: { $type: "array", $items: "f64", $length: 4 } },
+            response_message_format: { match: "bool" },
+          },
+          feedback_topic: { qos_profile: "sensor_data", message_format: { loop: "f64" } },
+          result_service: { response_message_format: { yield: "u32" } },
+        }"#,
+    )
+    .unwrap();
+    let keyword_topic: NativeEmittedTopic = serde_json5::from_str(
+        r#"{ name: "box", qos_profile: "reliable", message_format: { type: "string" } }"#,
+    )
+    .unwrap();
+
+    assert_generated_node_lints_clean(|generator| {
+        let exposed_service = config::node::NativeExposedService {
+            name: "type".to_string(),
+            request_message_format: Some(keyword_fields.clone()),
+            response_message_format: Some(keyword_fields.clone()),
+        };
+        generator
+            .add_exposed_service(&exposed_service, None)
+            .unwrap();
+        generator.add_exposed_action(&keyword_action, None).unwrap();
+        generator.add_emitted_topic(&keyword_topic, None).unwrap();
+
+        let consumed_topic: config::node::ConsumedTopic =
+            serde_json5::from_str(r#"{ link_id: "ref", name: "static" }"#).unwrap();
+        generator
+            .add_consumed_topic(
+                &consumed_topic,
+                keyword_fields.clone(),
+                TopicRetention::LiveOnly,
+                &crate::DependencyContext::native("ref_node", "v1", "ref", Cardinality::ZeroOrOne),
+            )
+            .unwrap();
+        let consumed_service: config::node::ConsumedService =
+            serde_json5::from_str(r#"{ link_id: "dyn", name: "where" }"#).unwrap();
+        generator
+            .add_consumed_service(
+                &consumed_service,
+                &keyword_fields,
+                &keyword_fields,
+                &crate::DependencyContext::native("dyn_node", "v1", "dyn", Cardinality::OneOrMore),
+            )
+            .unwrap();
+        let consumed_action: config::node::ConsumedAction =
+            serde_json5::from_str(r#"{ link_id: "for", name: "move" }"#).unwrap();
+        generator
+            .add_consumed_action(
+                &consumed_action,
+                &(&keyword_action).into(),
+                &crate::DependencyContext::native("for_node", "v1", "for", Cardinality::ZeroOrMore),
+            )
+            .unwrap();
+
+        let peer = crate::generator::types::PeerContext {
+            link_id: "mod".to_string(),
+            pairing_name: "mod_link".to_string(),
+            pairing_tag: "v1".to_string(),
+            cardinality: Cardinality::ZeroOrOne,
+        };
+        generator
+            .add_peer_emitted_topic(&keyword_topic, &peer)
+            .unwrap();
+        let observer = crate::generator::types::PeerContext {
+            link_id: "trait".to_string(),
+            pairing_name: "trait_link".to_string(),
+            pairing_tag: "v1".to_string(),
+            cardinality: Cardinality::OneOrMore,
+        };
+        generator
+            .add_observed_topic(&keyword_topic, &observer, Cardinality::OneOrMore)
             .unwrap();
     });
 }
