@@ -7,8 +7,8 @@
 //! bounded: a record that arrives while it is full is discarded and counted.
 //!
 //! An [`ExportWorker`] takes the records off the queue and posts them to an
-//! OTLP/HTTP endpoint through a [`Transport`], with the request headers of
-//! an [`OtlpHeaders`] file.
+//! OTLP/HTTP endpoint through its transport, the [`HttpTransport`] in the
+//! daemon, with the request headers of an [`OtlpHeaders`] file.
 
 mod exporter;
 mod headers;
