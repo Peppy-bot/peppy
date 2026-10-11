@@ -2,9 +2,12 @@ use super::activity::{
     BuildActivity, BuildActivityProbe, ProcessCpu, build_cpu_time, parse_guest_activity,
     parse_ps_cputime, parse_ps_process_table,
 };
-use super::facade::{Apptainer, Backend, is_uri, prepare_scratch_dir};
 #[cfg(target_os = "linux")]
-use super::facade::{apparmor_profile_ref, check_setup_status, shell_escape_single_quoted};
+use super::facade::{
+    ApparmorProfileRef, apparmor_profile_ref, check_setup_status, setup_fix_script,
+    shell_escape_single_quoted,
+};
+use super::facade::{Apptainer, Backend, GuestSignal, is_uri, prepare_scratch_dir};
 use super::registry_auth::{RegistryAuth, RegistryAuthSource};
 use crate::error::Error;
 use std::fs;
@@ -125,12 +128,7 @@ fn native_facade_with_l4t_manifest(apptainer_dir: &Path, manifest_dir: &Path) ->
 /// once it is stale.
 fn native_fixture_scratch() -> &'static Path {
     static SCRATCH: OnceLock<TempDir> = OnceLock::new();
-    SCRATCH
-        .get_or_init(|| {
-            TempDir::new_in(config_test_support::test_tmp_root())
-                .expect("create native fixture scratch dir")
-        })
-        .path()
+    SCRATCH.get_or_init(super::scratch_dir).path()
 }
 
 /// Builds a Lima-backend facade for command-assembly and path-translation
@@ -146,6 +144,52 @@ fn lima_facade() -> Apptainer {
         },
         extra_mounts: Vec::new(),
     }
+}
+
+/// The arguments of an assembled command, as strings.
+fn argv_of(cmd: &Command) -> Vec<String> {
+    cmd.get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The output image and def file paths of a build under `$HOME`, which both
+/// backends accept: Lima mounts the home directory into the guest.
+fn build_paths_under_home() -> (PathBuf, PathBuf) {
+    let home = PathBuf::from(std::env::var("HOME").expect("HOME must be set"));
+    (home.join("test/output.sif"), home.join("test/def.def"))
+}
+
+/// Runs a binary bundled into the apptainer install with `args`, or returns
+/// `None` after printing a SKIPPING diagnostic when the test environment cannot
+/// execute it (a sandbox that hides the file or forbids exec). Any other spawn
+/// failure fails the test.
+#[cfg(target_os = "linux")]
+fn run_bundled_binary_or_skip(binary: &Path, args: &[&str]) -> Option<std::process::Output> {
+    let e = match Command::new(binary)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(output) => return Some(output),
+        Err(e) => e,
+    };
+    if !matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+    ) {
+        panic!(
+            "unexpected error invoking bundled binary at {:?}: {} (kind: {:?})",
+            binary,
+            e,
+            e.kind()
+        );
+    }
+    eprintln!(
+        "SKIPPING: cannot invoke bundled binary at {:?}: {} (likely a sandboxed test env)",
+        binary, e
+    );
+    None
 }
 
 /// Whether this host's kernel restricts unprivileged user namespaces via
@@ -194,9 +238,7 @@ fn test_exec_command_builds_correct_args() {
 fn test_build_command_builds_correct_args() {
     let facade = native_facade();
 
-    let home = std::env::var("HOME").unwrap();
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
     let cmd = facade.build(&output, &def);
     let args = cmd.build_args().expect("build_args should succeed");
 
@@ -218,9 +260,7 @@ fn test_build_command_builds_correct_args() {
 fn a_build_flag_for_mksquashfs_comes_after_the_default_compression() {
     let facade = native_facade();
 
-    let home = std::env::var("HOME").unwrap();
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
     let args = facade
         .build(&output, &def)
         .raw_flag("--mksquashfs-args")
@@ -246,18 +286,13 @@ fn a_build_flag_for_mksquashfs_comes_after_the_default_compression() {
 fn a_lima_build_passes_the_compression_as_one_argument() {
     let facade = lima_facade();
 
-    let home = std::env::var("HOME").unwrap();
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
     let std_cmd = facade
         .build(&output, &def)
         .into_std_command()
         .expect("command should assemble");
 
-    let args: Vec<String> = std_cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&std_cmd);
     let flag = args
         .iter()
         .position(|a| a == "--mksquashfs-args")
@@ -269,9 +304,7 @@ fn a_lima_build_passes_the_compression_as_one_argument() {
 fn test_apptainer_env_sets_process_env_on_native_build() {
     let facade = native_facade();
 
-    let home = std::env::var("HOME").unwrap();
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
     let cmd = facade
         .build(&output, &def)
         .apptainer_env("RUSTC_WRAPPER", "/peppy-cache/sccache");
@@ -299,19 +332,14 @@ fn test_apptainer_env_sets_process_env_on_native_build() {
 fn test_apptainer_env_rides_the_guest_argv_on_lima_build() {
     let facade = lima_facade();
 
-    let home = std::env::var("HOME").unwrap();
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
     let std_cmd = facade
         .build(&output, &def)
         .apptainer_env("RUSTC_WRAPPER", "/peppy-cache/sccache")
         .into_std_command()
         .expect("command should assemble");
 
-    let args: Vec<String> = std_cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&std_cmd);
     let env_pos = args
         .iter()
         .position(|a| a == "env")
@@ -385,6 +413,24 @@ fn test_bind_with_opts() {
         bind_spec.ends_with("data:/mnt/data:ro"),
         "bind spec should have src:dest:opts format, got: {}",
         bind_spec
+    );
+}
+
+/// Options need a destination in the spec to ride on, so a bind that mirrors
+/// its source writes the source out as the destination instead of dropping
+/// the options: a read-only bind must not silently become a writable one.
+#[test]
+fn test_bind_without_dest_keeps_its_opts() {
+    let facade = native_facade();
+
+    let cmd = facade.run("image.sif").bind("/data", None, Some("ro"));
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    let bind_idx = args.iter().position(|a| a == "--bind").unwrap();
+    assert_eq!(
+        args[bind_idx + 1],
+        "/data:/data:ro",
+        "bind spec should mirror the source and keep the options, got: {args:?}"
     );
 }
 
@@ -481,10 +527,7 @@ fn test_lima_shell_extra_args_reach_limactl_argv_before_separator() {
         .lima_shell_extra_args(&["--timeout".to_string(), "30".to_string()])
         .into_std_command()
         .expect("Lima run command should assemble");
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
 
     let separator = args
         .iter()
@@ -529,7 +572,7 @@ impl JetsonFixture {
     const STOCK_LIST: &'static str = "libcuda.so\nlibEGL_nvidia.so\n";
 
     fn new() -> Self {
-        let scratch = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
+        let scratch = super::scratch_dir();
         let fixture = Self { scratch };
         fs::create_dir_all(fixture.nvliblist().parent().unwrap()).unwrap();
         fs::write(fixture.nvliblist(), Self::STOCK_LIST).unwrap();
@@ -838,8 +881,8 @@ fn test_translate_path_rejects_var_folders() {
     );
 }
 
-/// A host runtime path stays rejected under Lima — passing it through to the
-/// guest would only defer the failure to Apptainer — but it must be rejected
+/// A host runtime path stays rejected under Lima (passing it through to the
+/// guest would only defer the failure to Apptainer), but it must be rejected
 /// with the error that names the real constraint. The generic
 /// `PathNotAccessibleInVm` advice (declare it in `container.mount_paths`, move
 /// it under `$HOME`) is unfollowable for a device node, and telling an
@@ -874,8 +917,8 @@ fn test_translate_path_rejects_host_runtime_paths_with_a_targeted_error() {
 /// A host runtime path must never reach the Lima mount list. The per-node run
 /// path hands `ensure_host_mounts` the node's raw bind sources, so a node
 /// declaring `mount_paths: ["/run/user"]` would otherwise have it written into
-/// the Lima YAML — restarting the VM to mount the Mac's `/run/user` over the
-/// guest's own — and then whitelisted in `extra_mounts`.
+/// the Lima YAML (restarting the VM to mount the Mac's `/run/user` over the
+/// guest's own) and then whitelisted in `extra_mounts`.
 ///
 /// The facade's lima paths are fake, so reaching the YAML at all would error:
 /// this passes only because the filter empties `external_paths` and takes the
@@ -908,7 +951,7 @@ fn test_translate_path_rejects_host_runtime_paths_despite_registration() {
 }
 
 /// The complement: an ordinary unreachable path keeps the generic error, whose
-/// advice does apply to it — put it under `$HOME`, or declare it as a mount.
+/// advice does apply to it: put it under `$HOME`, or declare it as a mount.
 #[test]
 fn test_translate_path_keeps_generic_error_for_ordinary_paths() {
     let path = Path::new("/opt/robot_assets/openarm");
@@ -1268,6 +1311,51 @@ fn shell_escape_single_quoted_survives_embedded_quotes() {
     assert_eq!(shell_escape_single_quoted("/plain/path"), "/plain/path");
 }
 
+/// The fix script holds one step per failing check, in a fixed order, and is
+/// absent when every check passes. A profile that is missing or stale is
+/// written and loaded in one step, so a profile that only needs loading gets
+/// the load alone.
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_fix_script_holds_a_step_for_each_failing_check() {
+    const INSTALL_UIDMAP: &str = "sudo apt-get install -y uidmap";
+    const INSTALL_PROFILE: &str = "echo 'abi <abi/4.0>,\n\
+         include <tunables/global>\n\
+         \n\
+         profile peppy-apptainer-0000000000000000 /opt/a/libexec/apptainer/bin/starter \
+         flags=(unconfined) {\n  userns,\n}' \
+         | sudo tee /etc/apparmor.d/peppy-apptainer-0000000000000000 > /dev/null \\\n  \
+         && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
+    const LOAD_PROFILE: &str =
+        "sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer-0000000000000000";
+    let profile = ApparmorProfileRef {
+        starter_path: "/opt/a/libexec/apptainer/bin/starter".to_string(),
+        name: "peppy-apptainer-0000000000000000".to_string(),
+        file: PathBuf::from("/etc/apparmor.d/peppy-apptainer-0000000000000000"),
+    };
+    let uidmap_then = |step: &str| format!("{INSTALL_UIDMAP} \\\n  && {step}");
+
+    // (newuidmap_ok, apparmor_ok, apparmor_loaded, script)
+    let cases = [
+        (true, true, true, None),
+        (false, true, true, Some(INSTALL_UIDMAP.to_string())),
+        (true, false, true, Some(INSTALL_PROFILE.to_string())),
+        (true, false, false, Some(INSTALL_PROFILE.to_string())),
+        (true, true, false, Some(LOAD_PROFILE.to_string())),
+        (false, false, true, Some(uidmap_then(INSTALL_PROFILE))),
+        (false, false, false, Some(uidmap_then(INSTALL_PROFILE))),
+        (false, true, false, Some(uidmap_then(LOAD_PROFILE))),
+    ];
+    for (newuidmap_ok, apparmor_ok, apparmor_loaded, script) in cases {
+        assert_eq!(
+            setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile),
+            script,
+            "newuidmap_ok={newuidmap_ok} apparmor_ok={apparmor_ok} \
+             apparmor_loaded={apparmor_loaded}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Compile-time cache consistency test
 // ---------------------------------------------------------------------------
@@ -1383,9 +1471,8 @@ fn out_dir_trees_carry_no_build_machine_paths() {
 fn gocryptfs_bundled_in_apptainer_install_dir() {
     let install_dir =
         linux_apptainer_cache_dir().expect("HOME is not set; cannot locate the apptainer cache");
-    let path = install_dir;
 
-    let gocryptfs_bin = path.join("libexec/apptainer/bin/gocryptfs");
+    let gocryptfs_bin = install_dir.join("libexec/apptainer/bin/gocryptfs");
     assert!(
         gocryptfs_bin.exists(),
         "gocryptfs binary missing at {:?}; apptainer encryption support will be disabled",
@@ -1394,7 +1481,7 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
 
     // Bundle the xray helper too; same archive, useful for inspecting
     // encrypted volumes.
-    let gocryptfs_xray = path.join("libexec/apptainer/bin/gocryptfs-xray");
+    let gocryptfs_xray = install_dir.join("libexec/apptainer/bin/gocryptfs-xray");
     assert!(
         gocryptfs_xray.exists(),
         "gocryptfs-xray helper missing at {:?}",
@@ -1402,7 +1489,7 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
     );
 
     // Sentinel encodes the version so a bump invalidates the cache.
-    let sentinel = path.join("libexec/apptainer/bin").join(format!(
+    let sentinel = install_dir.join("libexec/apptainer/bin").join(format!(
         ".peppy-gocryptfs-version-{}",
         crate::GOCRYPTFS_VERSION
     ));
@@ -1423,28 +1510,8 @@ fn gocryptfs_bundled_binary_is_runnable() {
         linux_apptainer_cache_dir().expect("HOME is not set; cannot locate the apptainer cache");
     let gocryptfs_bin = install_dir.join("libexec/apptainer/bin/gocryptfs");
 
-    let output = Command::new(&gocryptfs_bin)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .output();
-
-    let output = match output {
-        Ok(o) => o,
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
-                eprintln!(
-                    "SKIPPING: cannot invoke bundled gocryptfs at {:?}: {} (likely a sandboxed test env)",
-                    gocryptfs_bin, e
-                );
-                return;
-            }
-            _ => panic!(
-                "unexpected error invoking bundled gocryptfs at {:?}: {} (kind: {:?})",
-                gocryptfs_bin,
-                e,
-                e.kind()
-            ),
-        },
+    let Some(output) = run_bundled_binary_or_skip(&gocryptfs_bin, &["--version"]) else {
+        return;
     };
 
     assert!(
@@ -1524,25 +1591,8 @@ fn squashfuse_bundled_binary_is_runnable() {
     // its usage banner carries the version. Apptainer scans the same output for
     // `-o uid=` to decide whether it can map ownership, so this doubles as a
     // check that the multithreaded build really does support it.
-    let output = Command::new(&squashfuse_bin).stdin(Stdio::null()).output();
-
-    let output = match output {
-        Ok(o) => o,
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
-                eprintln!(
-                    "SKIPPING: cannot invoke bundled squashfuse_ll at {:?}: {} (likely a sandboxed test env)",
-                    squashfuse_bin, e
-                );
-                return;
-            }
-            _ => panic!(
-                "unexpected error invoking bundled squashfuse_ll at {:?}: {} (kind: {:?})",
-                squashfuse_bin,
-                e,
-                e.kind()
-            ),
-        },
+    let Some(output) = run_bundled_binary_or_skip(&squashfuse_bin, &[]) else {
+        return;
     };
 
     // The usage banner goes to stderr on some builds and stdout on others;
@@ -1640,7 +1690,7 @@ struct RegistryAuthFixture {
 }
 
 fn native_facade_reading_docker_config(contents: &str) -> RegistryAuthFixture {
-    let dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("create scratch dir");
+    let dir = super::scratch_dir();
     let docker_config = dir.path().join("config.json");
     fs::write(&docker_config, contents).expect("write docker config");
     let sanitized_file = dir.path().join("sanitized/docker-config.json");
@@ -1751,9 +1801,7 @@ fn native_build_fails_on_an_invalid_registry_auth_file() {
 #[test]
 fn lima_build_does_not_set_apptainer_auth_file() {
     let facade = lima_facade();
-    let home = std::env::var("HOME").expect("HOME must be set");
-    let output = PathBuf::from(&home).join("test/output.sif");
-    let def = PathBuf::from(&home).join("test/def.def");
+    let (output, def) = build_paths_under_home();
 
     let cmd = facade
         .build(&output, &def)
@@ -1761,10 +1809,7 @@ fn lima_build_does_not_set_apptainer_auth_file() {
         .expect("lima build command should assemble");
 
     assert_eq!(command_env(&cmd, "APPTAINER_AUTH_FILE"), None);
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
     assert!(
         !args.iter().any(|a| a.contains("APPTAINER_AUTH_FILE")),
         "the guest argv must not carry it either, got: {args:?}"
@@ -1790,11 +1835,11 @@ fn prepare_scratch_dir_creates_missing_directory() {
     );
 }
 
-/// Regression: concurrent preparation of the same scratch directory must
-/// succeed on every thread. `Apptainer::new()` is called from several test
-/// threads at once (and from more than one daemon thread in production), so a
-/// write probe named only after the process id had them all racing on a single
-/// path: the first `remove_file` to land won and the losers reported
+/// Concurrent preparation of the same scratch directory succeeds on every
+/// thread. `Apptainer::new()` runs on several test threads at once (and on more
+/// than one daemon thread in production), and a write probe named only after
+/// the process id would have them all racing on a single path, where the first
+/// `remove_file` to land wins and the others report
 /// `ScratchDirUnavailable { NotFound }` against a perfectly writable directory.
 #[test]
 fn prepare_scratch_dir_tolerates_concurrent_preparation() {
@@ -1824,7 +1869,7 @@ fn prepare_scratch_dir_tolerates_concurrent_preparation() {
     );
 }
 
-/// Regression: an existing but non-writable scratch directory must fail at
+/// An existing but non-writable scratch directory must fail at
 /// construction, not survive `create_dir_all` (which succeeds on any existing
 /// directory, whatever its mode) only to fail later inside apptainer as an
 /// opaque `MkdirTemp` error on the extract fallback.
@@ -1922,11 +1967,11 @@ fn lima_guest_pgid_argv_with_workdir_cds_first_and_aborts_on_failure() {
 
     // Same wrapper as above with the working dir prepended as `$1`: the script
     // `cd`s there FIRST and exits non-zero if it cannot. Relying on `limactl
-    // shell`'s host-cwd propagation instead is what once copied the user's
-    // entire $HOME into an image: the kernel canonicalizes the host cwd to
-    // `/private/var/…`, the guest mount only exists at `/var/folders/…`, and
-    // Lima's own failed `cd` is non-fatal, so `%files .` ran from the guest
-    // home directory.
+    // shell`'s host-cwd propagation instead would copy the user's entire $HOME
+    // into an image: the kernel canonicalizes the host cwd to `/private/var/…`,
+    // the guest mount only exists at `/var/folders/…`, and Lima's own failed
+    // `cd` is non-fatal, so `%files .` would run from the guest home
+    // directory.
     assert_eq!(argv[0], "setsid");
     assert_eq!(argv[1], "-w");
     assert_eq!(argv[2], "sh");
@@ -2072,16 +2117,13 @@ fn lima_build_wraps_in_setsid_with_guest_native_pgid() {
         .cancel_pgid("buildkey")
         .into_std_command()
         .expect("Lima build command should assemble");
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
 
     assert!(
         args.iter().any(|a| a == "setsid"),
         "Lima build must be wrapped in setsid, got: {args:?}"
     );
-    // The pgid path is now its own argv element (a positional param to the
+    // The pgid path is its own argv element (a positional param to the
     // wrapper), not interpolated into the script string.
     assert!(
         args.iter().any(|a| a == "/tmp/peppy/pgids/buildkey.pgid"),
@@ -2117,10 +2159,7 @@ fn lima_run_wraps_in_setsid_with_guest_native_pgid() {
         .cancel_pgid("inst-key")
         .into_std_command()
         .expect("Lima run command should assemble");
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
 
     assert!(
         args.iter().any(|a| a == "setsid"),
@@ -2149,10 +2188,7 @@ fn native_run_is_plain() {
         .cancel_pgid("inst-key")
         .into_std_command()
         .expect("native run command should assemble");
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
 
     assert!(
         !args.iter().any(|a| a == "setsid"),
@@ -2180,10 +2216,7 @@ fn native_build_is_plain_and_kill_is_a_noop() {
         .cancel_pgid("buildkey")
         .into_std_command()
         .expect("native build command should assemble");
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let args = argv_of(&cmd);
 
     assert!(
         !args.iter().any(|a| a == "setsid"),
@@ -2226,6 +2259,22 @@ fn guest_command_rejects_empty_args() {
         }
         other => panic!("expected ConfigurationError, got {other:?}"),
     }
+}
+
+/// Each guest signal sends the argv of its own script: a swap would SIGKILL a
+/// workload that the stop path means to ask to exit, or leave a group that a
+/// cancel means to kill running.
+#[test]
+fn each_guest_signal_sends_its_own_argv() {
+    let pgid_file = Path::new("/tmp/peppy/pgids/buildkey.pgid");
+    assert_eq!(
+        GuestSignal::Kill.argv(pgid_file),
+        super::lima::lima_kill_pgid_argv(pgid_file)
+    );
+    assert_eq!(
+        GuestSignal::Terminate.argv(pgid_file),
+        super::lima::lima_terminate_pgid_argv(pgid_file)
+    );
 }
 
 // ---------------------------------------------------------------------------

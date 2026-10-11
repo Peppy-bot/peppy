@@ -21,6 +21,7 @@
 
 use super::facade::{Apptainer, Backend};
 use super::lima;
+use daemon_config::consts::non_empty_env_path;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::num::NonZeroU64;
@@ -53,11 +54,10 @@ pub(crate) fn effective_host_cache_dir_from(
     cachedir_env: Option<OsString>,
     home: Option<OsString>,
 ) -> Option<PathBuf> {
-    if let Some(dir) = cachedir_env.filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(dir));
+    if let Some(dir) = non_empty_env_path(cachedir_env) {
+        return Some(dir);
     }
-    home.filter(|v| !v.is_empty())
-        .map(|home| PathBuf::from(home).join(".apptainer/cache"))
+    non_empty_env_path(home).map(|home| home.join(".apptainer/cache"))
 }
 
 /// One reading of the work a build has done so far.
@@ -497,9 +497,8 @@ fn clock_ticks_to_duration(ticks: u64, ticks_per_second: NonZeroU64) -> Duration
 /// own metadata is counted, not its target's). Missing paths and unreadable
 /// entries contribute 0 so one bad subtree cannot zero out the whole sample.
 fn dir_size_bytes(root: &Path) -> u64 {
-    let meta = match std::fs::symlink_metadata(root) {
-        Ok(meta) => meta,
-        Err(_) => return 0,
+    let Ok(meta) = std::fs::symlink_metadata(root) else {
+        return 0;
     };
     if meta.is_dir() {
         dir_tree_size(root)
@@ -513,9 +512,8 @@ fn dir_size_bytes(root: &Path) -> u64 {
 /// recursion; `metadata`, an lstat with no path building, for sizes) because
 /// this runs over the whole apptainer cache every sample tick.
 fn dir_tree_size(dir: &Path) -> u64 {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return 0,
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
     };
     entries
         .filter_map(|entry| entry.ok())

@@ -6,8 +6,8 @@ mod apptainer_build {
 
     const APPTAINER_VERSION: &str = "1.5.2";
     /// SHA-256 of `apptainer-{APPTAINER_VERSION}.tar.gz` from the GitHub release.
-    /// Bump alongside `APPTAINER_VERSION`; both `verify_apptainer_checksum`
-    /// call sites (host build, Lima guest build) consume this constant.
+    /// Bump alongside `APPTAINER_VERSION`; the host build and the Lima guest
+    /// build script both verify the source tarball against this constant.
     const APPTAINER_SHA256: &str =
         "0dc689f4b1036941837f38376313082d953eec920520e295525d89e0f0e04f98";
 
@@ -30,24 +30,24 @@ mod apptainer_build {
         "3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec";
 
     /// Bumped whenever the apptainer build recipe (not its version) changes in
-    /// a way that alters the produced tree — new link flags, newly bundled
-    /// libraries, a different install layout. It is part of the cache sentinel
+    /// a way that alters the produced tree (new link flags, newly bundled
+    /// libraries, a different install layout). It is part of the cache sentinel
     /// filename, so a bump invalidates every previously built cache instead of
     /// silently shipping a tree built by the old recipe.
     ///
     /// Bumping [`SQUASHFUSE_VERSION`] is not one of those occasions: it is keyed
     /// into the sentinel filename in its own right.
     ///
-    /// r2 added the bundled `squashfuse_ll` (see [`SQUASHFUSE_VERSION`]). It has
-    /// to be a revision bump rather than a retrofit of existing caches: unlike
-    /// gocryptfs (a prebuilt download that can be dropped into any cache
-    /// afterwards) squashfuse is compiled for the target ISA, so it can only be
-    /// produced inside the build environment that built apptainer itself.
-    ///
-    /// r3 and r4 scrub the building user's home directory out of the installed
-    /// man pages, which render flag defaults from `$HOME` at build time and
-    /// ship inside release archives otherwise. r4 extends the scrub to the
-    /// native Linux build path, which r3 covered only inside Lima guests.
+    /// The recipe of this revision covers:
+    /// - the bundled `squashfuse_ll` (see [`SQUASHFUSE_VERSION`]). A cache
+    ///   without it needs a rebuild rather than a retrofit: unlike gocryptfs (a
+    ///   prebuilt download that can be dropped into any cache afterwards)
+    ///   squashfuse is compiled for the target ISA, so only the build
+    ///   environment that built apptainer itself can produce it.
+    /// - the scrub of the building user's home directory out of the installed
+    ///   man pages, which render flag defaults from `$HOME` at build time and
+    ///   otherwise ship inside release archives, on both the Lima guest and the
+    ///   native Linux build paths.
     const APPTAINER_RECIPE_REVISION: u32 = 4;
 
     /// Directory, relative to the apptainer install prefix, holding the shared
@@ -60,7 +60,7 @@ mod apptainer_build {
     /// and `libexec/apptainer/bin/starter`).
     ///
     /// Both are dynamically linked against `libseccomp.so.2`, so without this
-    /// they resolve it from whatever the *runtime* host provides — and a binary
+    /// they resolve it from whatever the *runtime* host provides, and a binary
     /// built against libseccomp 2.6 dies on a 2.5 host with
     /// `undefined symbol: seccomp_transaction_reject`. That is exactly the skew
     /// between a modern build host and the Ubuntu 24.04 guests peppy installs
@@ -75,7 +75,7 @@ mod apptainer_build {
     /// `DT_RPATH` instead of `DT_RUNPATH`. Extracting a SIF re-executes
     /// `bin/apptainer` with an `LD_LIBRARY_PATH` apptainer builds from
     /// `unsquashfs`'s own library directories (`unsquashfsRootlessCmd` in
-    /// `internal/pkg/image/unpacker/squashfs_apptainer.go`) — and
+    /// `internal/pkg/image/unpacker/squashfs_apptainer.go`), and
     /// `LD_LIBRARY_PATH` is searched *before* `DT_RUNPATH`, so a RUNPATH bundle
     /// loses to the runtime host's `/usr/lib/.../libseccomp.so.2` on exactly
     /// the code path that needs it. `DT_RPATH` is searched first and wins.
@@ -168,9 +168,9 @@ mod apptainer_build {
     ///
     /// Each entry pairs the package with the probe [`assert_host_build_deps`]
     /// uses to prove it is present. The probes mirror how the consumer actually
-    /// looks the dependency up — `mconfig` and `configure` find FUSE and
+    /// looks the dependency up (`mconfig` and `configure` find FUSE and
     /// libseccomp through pkg-config, and the compressors through a plain
-    /// `#include` — so peppy never rejects a host that would have built fine.
+    /// `#include`), so peppy never rejects a host that would have built fine.
     ///
     /// `scripts/functions/lima.py` installs the same set into the release VM,
     /// where cargo (and therefore this build script) runs against a guest this
@@ -247,7 +247,7 @@ mod apptainer_build {
     /// (the contents are for humans), so everything that changes the produced
     /// tree has to be keyed into the name or a stale cache is silently reused.
     /// [`SQUASHFUSE_VERSION`] is keyed in alongside the recipe revision because
-    /// squashfuse is compiled into the tree with no version marker of its own —
+    /// squashfuse is compiled into the tree with no version marker of its own,
     /// unlike gocryptfs, which carries a version-keyed sentinel of its own
     /// ([`gocryptfs_sentinel_path`]) and so re-installs itself on a bump.
     /// The bare file name, also exported to the crate (see
@@ -330,10 +330,9 @@ mod apptainer_build {
     /// Whether the apptainer binary under `dir` is built for `arch`.
     ///
     /// The cache directory's name states the arch; this reads the binary. The
-    /// two disagreed for weeks on one release machine (an aarch64 apptainer
-    /// under the x86_64 name), and everything downstream trusted the name:
-    /// the sentinel reused the cache, packaging shipped it, and the archive
-    /// verifier checked only that the path existed.
+    /// name alone proves nothing: a cache can hold an aarch64 apptainer under
+    /// the x86_64 name, and the sentinel check that reuses a cache trusts the
+    /// name, as does the release packaging that ships it.
     fn cache_arch_matches(dir: &Path, arch: &str) -> bool {
         elf_machine(&dir.join("bin/apptainer")) == Some(expected_elf_machine(arch))
     }
@@ -580,7 +579,6 @@ mod apptainer_build {
             return None;
         }
 
-        // Clean up the archive
         std::fs::remove_file(&archive_path).ok();
 
         if !cached_limactl.exists() {
@@ -605,8 +603,8 @@ mod apptainer_build {
     /// keeps host and guest agent in lockstep; a mismatch leaves the VM stuck in
     /// a DEGRADED state because the host cannot reach the guest agent.
     ///
-    /// The agent is copied unconditionally so a previously cached, version-
-    /// skewed agent (e.g. a Homebrew copy left by an older build) is replaced.
+    /// The agent is copied unconditionally, so a cached agent of another Lima
+    /// version (for example a Homebrew copy) is replaced.
     fn ensure_cross_guest_agent(lima_share: &Path, lima_arch: &str) -> bool {
         let agent_name = format!("lima-guestagent.Linux-{}.gz", lima_arch);
         let extract_dir = build_helpers::cache_dir(&format!(
@@ -692,9 +690,9 @@ mod apptainer_build {
     }
 
     /// Query an instance's hypervisor type (`vz`, `qemu`, ...). Returns `None`
-    /// when the instance does not exist or the query fails. Used to detect a
-    /// stale instance whose VM type no longer matches the desired strategy
-    /// (e.g. a leftover QEMU x86_64 VM after switching to the Rosetta path).
+    /// when the instance does not exist or the query fails. Detects an
+    /// instance whose VM type does not match this build's strategy (for
+    /// example a QEMU x86_64 VM when this build takes the Rosetta path).
     fn lima_instance_vmtype(lima: &LimaConfig) -> Option<String> {
         let output = lima
             .lima_command()
@@ -732,8 +730,9 @@ mod apptainer_build {
     ) -> bool {
         // Rosetta and native builds run on VZ; only a QEMU cross-arch fallback
         // uses qemu. If an existing instance has the wrong backend (e.g. a
-        // leftover QEMU x86_64 VM from before the Rosetta switch), delete it so
-        // it is recreated with the right one instead of being silently reused.
+        // QEMU x86_64 VM left by a build that ran with `PEPPY_NO_ROSETTA=1`),
+        // delete it so it is recreated with the right one instead of being
+        // silently reused.
         let desired_vmtype = if arch.is_some() && !rosetta {
             "qemu"
         } else {
@@ -1194,7 +1193,7 @@ mod apptainer_build {
     /// autoconf, automake and libtool on every machine that builds peppy; the
     /// release asset is a `make dist` tarball with `configure` already
     /// generated, which drops all three from
-    /// [`APPTAINER_BUILD_DEPS`]. Same upstream sources either way — only the
+    /// [`APPTAINER_BUILD_DEPS`]. Same upstream sources either way: only the
     /// build-time toolchain requirement differs.
     fn squashfuse_source_url(version: &str) -> String {
         format!(
@@ -1388,12 +1387,12 @@ mod apptainer_build {
     /// Worth checking up front because both ways this fails without it are bad.
     /// The loud one is merely slow: apptainer compiles for minutes before
     /// squashfuse's `configure` dies, and it names only the first thing it
-    /// happened to reach for. The quiet one is worse — a dependency that is
+    /// happened to reach for. The quiet one is worse: a dependency that is
     /// *optional to the tool being configured* gets skipped rather than
     /// reported, and the build succeeds with a hole in it. `configure` drops a
     /// compressor whose headers are absent, leaving a `squashfuse_ll` that
     /// cannot mount a SIF built with it, so apptainer falls back to extracting
-    /// the whole rootfs — the exact behaviour bundling it was meant to prevent.
+    /// the whole rootfs, the exact behaviour that bundling it prevents.
     /// `mconfig` logs `libseccomp+headers... no` and builds an apptainer with
     /// seccomp filtering compiled out. Both surface much later, on a user's
     /// machine, looking nothing like a missing apt package.
@@ -1464,7 +1463,7 @@ mod apptainer_build {
     impl DepProbe {
         /// `Some(false)` means proven absent. `None` means the probe could not
         /// run because the tool it needs (pkg-config, the C compiler) is itself
-        /// one of the missing packages — an unknown answer, not a negative one,
+        /// one of the missing packages: an unknown answer, not a negative one,
         /// and reporting it as missing would blame a dozen `-dev` packages on
         /// one absent compiler.
         fn satisfied(&self) -> Option<bool> {
@@ -1558,12 +1557,10 @@ mod apptainer_build {
         let tarball_path = source_cache.join(format!("apptainer-{version}.tar.gz"));
         let source_dir = source_cache.join(format!("apptainer-{version}"));
 
-        // Clean previous source directory
         if source_dir.exists() {
             std::fs::remove_dir_all(&source_dir).ok();
         }
 
-        // Download source tarball
         if !build_helpers::run_command(
             Command::new("curl")
                 .args(["-fsSL", &tarball_url, "-o"])
@@ -1578,7 +1575,6 @@ mod apptainer_build {
             return false;
         }
 
-        // Extract source tarball
         if !build_helpers::run_command(
             Command::new("tar")
                 .args(["-xzf"])
@@ -1590,7 +1586,6 @@ mod apptainer_build {
             return false;
         }
 
-        // Clean up tarball
         std::fs::remove_file(&tarball_path).ok();
 
         // The GitHub auto-generated tarball does not include a VERSION file,
@@ -1599,11 +1594,9 @@ mod apptainer_build {
         std::fs::write(source_dir.join("VERSION"), format!("{}\n", version))
             .expect("Failed to write apptainer VERSION file");
 
-        // Start fresh install directory
         force_remove_dir(install_dir);
         std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
 
-        // Configure: ./mconfig --without-suid --prefix=<install_dir>
         // Build without setuid support; apptainer uses unprivileged user
         // namespaces instead.  This avoids the "Relocation not allowed with
         // starter-suid" error that occurs when the compiled-in --prefix
@@ -1623,7 +1616,6 @@ mod apptainer_build {
             return false;
         }
 
-        // Build: make -C builddir
         if !build_helpers::run_command_streaming(
             Command::new("make")
                 .current_dir(&source_dir)
@@ -1636,7 +1628,6 @@ mod apptainer_build {
             return false;
         }
 
-        // Install: make -C builddir install
         if !build_helpers::run_command(
             Command::new("make")
                 .current_dir(&source_dir)
@@ -1651,7 +1642,6 @@ mod apptainer_build {
             return false;
         }
 
-        // Clean up source directory
         std::fs::remove_dir_all(&source_dir).ok();
 
         // Ship the libseccomp the binaries were just linked against, so they
@@ -2061,7 +2051,6 @@ echo "=== Apptainer build complete ==="
             }
         }
 
-        // Clean up guest temp files
         let _ = lima
             .lima_command()
             .args(["shell", lima.instance, "--", "rm", "-rf", guest_dir])
@@ -2158,27 +2147,36 @@ echo "=== Apptainer build complete ==="
         };
 
         // Copy Lima installation to OUT_DIR for the crate to reference at compile time.
-        // Use a sentinel to skip the copy when the source hasn't changed. The
-        // sentinel stores a digest of the cache path, not the path itself:
-        // `.copy-source` ships inside release archives and must not name the
-        // building machine.
-        let out_lima_dir = PathBuf::from(out_dir).join("lima-install");
-        let lima_sentinel_path = out_lima_dir.join(".copy-source");
-        let lima_sentinel_content = cache_path_digest(&lima_cache_dir);
-        let lima_needs_copy = !lima_sentinel_path.exists()
-            || std::fs::read_to_string(&lima_sentinel_path)
-                .map_or(true, |s| s.trim() != lima_sentinel_content.trim());
-        if lima_needs_copy {
-            if out_lima_dir.exists() {
-                std::fs::remove_dir_all(&out_lima_dir).ok();
-            }
-            if let Err(e) = copy_dir_recursive(&lima_cache_dir, &out_lima_dir) {
-                panic!("Failed to copy Lima installation to OUT_DIR: {}", e);
-            }
-            std::fs::write(&lima_sentinel_path, &lima_sentinel_content).ok();
-        }
+        copy_tree_to_out_dir(
+            &lima_cache_dir,
+            &PathBuf::from(out_dir).join("lima-install"),
+            &cache_path_digest(&lima_cache_dir),
+            "Lima installation",
+        );
 
         lima
+    }
+
+    /// Copies the tree at `source` to `dest` under OUT_DIR, unless the
+    /// `.copy-source` stamp in `dest` already holds `stamp`. Skipping the copy
+    /// of an unchanged source avoids mtime bumps that trigger unnecessary
+    /// recompilation. The stamp holds a digest of the source path, never the
+    /// path itself: `.copy-source` ships inside release archives and must not
+    /// name the building machine. `what` names the tree in the panic of a
+    /// failed copy.
+    fn copy_tree_to_out_dir(source: &Path, dest: &Path, stamp: &str, what: &str) {
+        let stamp_path = dest.join(".copy-source");
+        let is_current = std::fs::read_to_string(&stamp_path)
+            .is_ok_and(|current| current.trim() == stamp.trim());
+        if is_current {
+            return;
+        }
+        if dest.exists() {
+            std::fs::remove_dir_all(dest).ok();
+        }
+        copy_dir_recursive(source, dest)
+            .unwrap_or_else(|e| panic!("Failed to copy {what} to OUT_DIR: {e}"));
+        std::fs::write(&stamp_path, stamp).ok();
     }
 
     /// Pre-build apptainer for all target architectures via Lima VMs.
@@ -2323,8 +2321,9 @@ echo "=== Apptainer build complete ==="
         discard_mislabeled_cache(&cache_dir, arch);
         if sentinel.exists() && cached_bin.exists() {
             build_helpers::progress!("Using cached apptainer installation from {:?}", cache_dir);
-            // The cache may pre-date the gocryptfs bundle, which is
-            // retrofitted in place even when the rest of the build is skipped.
+            // `complete_apptainer_cache` re-installs gocryptfs in place when
+            // its version-keyed sentinel is missing, even when the rest of the
+            // build is skipped.
             complete_apptainer_cache(&cache_dir, arch);
             return cache_dir;
         }
@@ -2369,23 +2368,23 @@ echo "=== Apptainer build complete ==="
 
         // On macOS, apptainer is Linux-only and runs inside a Lima VM.
         // We download and bundle Lima ourselves; no `brew install lima` required.
-        let use_lima = if target_os == "macos" {
-            true
-        } else if target_os != "linux" {
-            println!(
-                "cargo:warning=Skipping apptainer build: apptainer is Linux-only (target_os={})",
-                target_os
-            );
-            return;
-        } else {
-            false
+        let use_lima = match target_os.as_str() {
+            "macos" => true,
+            "linux" => false,
+            other => {
+                println!(
+                    "cargo:warning=Skipping apptainer build: apptainer is Linux-only (target_os={})",
+                    other
+                );
+                return;
+            }
         };
 
         // fuse2fs is the one userspace mount helper the bundled apptainer tree
         // does not carry: squashfs (every SIF root filesystem) is handled by
         // the compiled-in squashfuse_ll and encrypted images by the bundled
         // gocryptfs, but EXT3 filesystem images can only be mounted by the
-        // rootless fuse2fs image driver — this apptainer is deliberately
+        // rootless fuse2fs image driver: this apptainer is deliberately
         // built `--without-suid`, so there is no privileged ext mount to fall
         // back on. Apptainer searches its own libexec bin dir (where peppy
         // drops squashfuse_ll and gocryptfs) ahead of `$PATH` and ships no
@@ -2452,30 +2451,20 @@ echo "=== Apptainer build complete ==="
         println!("cargo:rerun-if-changed={}", cache_sentinel.display());
 
         // Step 3: Copy apptainer installation to OUT_DIR for release packaging.
-        // Use a sentinel to skip the copy when the source hasn't changed,
-        // avoiding mtime bumps that trigger unnecessary recompilation. Like
-        // the Lima sentinel, it stores a digest of the source path so the
-        // building machine's directories never ship in release archives.
-        let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
-        let sentinel_path = out_install_dir.join(".copy-source");
+        // The stamp also names the bundled gocryptfs and squashfuse versions:
+        // a bump of either changes the tree in the same cache path.
         let sentinel_content = format!(
             "{}\ngocryptfs={}\nsquashfuse={}",
             cache_path_digest(&cache_dir),
             GOCRYPTFS_VERSION,
             SQUASHFUSE_VERSION
         );
-        let needs_copy = !sentinel_path.exists()
-            || std::fs::read_to_string(&sentinel_path)
-                .map_or(true, |s| s.trim() != sentinel_content.trim());
-        if needs_copy {
-            if out_install_dir.exists() {
-                std::fs::remove_dir_all(&out_install_dir).ok();
-            }
-            copy_dir_recursive(&cache_dir, &out_install_dir).unwrap_or_else(|e| {
-                panic!("Failed to copy apptainer installation to OUT_DIR: {}", e)
-            });
-            std::fs::write(&sentinel_path, &sentinel_content).ok();
-        }
+        copy_tree_to_out_dir(
+            &cache_dir,
+            &PathBuf::from(&out_dir).join("apptainer-install"),
+            &sentinel_content,
+            "apptainer installation",
+        );
     }
 }
 

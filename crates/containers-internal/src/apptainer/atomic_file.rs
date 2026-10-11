@@ -2,64 +2,32 @@
 //! either the old contents or the new ones, never a partial file.
 
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Replaces `path` with `contents`.
+/// Replaces `path` with `contents`, which end with `mode` exactly whatever
+/// the umask.
 ///
-/// The contents are written to a sibling file, which is then renamed over
-/// `path`. The sibling is created with `mode`, which the process umask can
-/// only narrow, and then set to `mode` exactly, so the file is never readable
-/// under a wider mode and ends with `mode` whatever the umask. The sibling's
-/// name is unique per call, not merely per process, so writers of the same
-/// path in several threads never share one; the last rename wins. When a step
-/// fails, the sibling is removed.
+/// The contents are staged in a sibling file through
+/// [`publish_atomic`](daemon_config::atomic_write::publish_atomic), which
+/// creates the sibling readable by its owner alone, syncs it to disk after it
+/// gets `mode`, and renames it over `path`. A reader therefore gets the old
+/// file or the new one, and a power loss right after the rename never leaves
+/// a file whose data did not reach the disk. Each call stages in a sibling of
+/// its own, so writers of the same path in several threads never share one;
+/// the last rename wins. When a step fails, the sibling is removed.
 pub(crate) fn replace_file(path: &Path, contents: &[u8], mode: u32) -> std::io::Result<()> {
-    static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    let dir = path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "path has no parent directory",
-        )
+    daemon_config::atomic_write::publish_atomic(path, |staged| {
+        fs::write(staged, contents)?;
+        fs::set_permissions(staged, fs::Permissions::from_mode(mode))
     })?;
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
-    })?;
-    let mut staging_name = file_name.to_os_string();
-    staging_name.push(format!(
-        ".{}.{}.tmp",
-        std::process::id(),
-        WRITE_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let staging = dir.join(staging_name);
-
-    let written = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
-        .open(&staging)
-        .and_then(|mut file| {
-            file.set_permissions(fs::Permissions::from_mode(mode))?;
-            file.write_all(contents)
-        })
-        .and_then(|()| fs::rename(&staging, path));
-    if written.is_err() {
-        let _ = fs::remove_file(&staging);
-    }
-    written
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-
-    fn scratch() -> TempDir {
-        TempDir::new_in(config_test_support::test_tmp_root()).expect("create scratch dir")
-    }
+    use crate::apptainer::scratch_dir;
 
     /// The names in `dir`, sorted.
     fn names_in(dir: &Path) -> Vec<String> {
@@ -79,7 +47,7 @@ mod tests {
 
     #[test]
     fn a_replaced_file_holds_the_new_contents_and_no_sibling_is_left() {
-        let scratch = scratch();
+        let scratch = scratch_dir();
         let path = scratch.path().join("list.conf");
         fs::write(&path, "old\n").unwrap();
 
@@ -93,7 +61,7 @@ mod tests {
     /// the test also holds when the tests run under one.
     #[test]
     fn the_file_ends_with_the_mode_asked_for() {
-        let scratch = scratch();
+        let scratch = scratch_dir();
         for (name, mode) in [("private.json", 0o600), ("list.conf", 0o644)] {
             let path = scratch.path().join(name);
 
@@ -106,7 +74,7 @@ mod tests {
 
     #[test]
     fn a_failed_rename_leaves_the_target_and_no_sibling() {
-        let scratch = scratch();
+        let scratch = scratch_dir();
         // A non-empty directory in the target's place: the sibling is written,
         // and the rename over the directory fails.
         let path = scratch.path().join("occupied");

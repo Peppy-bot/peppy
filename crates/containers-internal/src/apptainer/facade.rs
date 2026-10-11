@@ -78,8 +78,8 @@ fn apptainer_scratch_dir() -> PathBuf {
 ///
 /// The write probe is not redundant with the creation: `create_dir_all`
 /// succeeds on a directory that already exists whatever its mode, so a scratch
-/// dir left behind non-writable — the classic case being one created while the
-/// daemon ran under `sudo` and now owned by root — passes creation and only
+/// dir left behind non-writable (typically one created while the daemon ran
+/// under `sudo`, so owned by root) passes creation and only
 /// fails later, inside apptainer, as an opaque `MkdirTemp` error on the extract
 /// fallback. Probing here surfaces it at construction, named and pointed at the
 /// offending path. The probe is a file rather than a directory (which would
@@ -91,7 +91,7 @@ fn apptainer_scratch_dir() -> PathBuf {
 /// on the pid has them all probing one shared path, where the first
 /// `remove_file` to land leaves the others failing `ENOENT` on a scratch
 /// directory that is perfectly writable. For the same reason a probe that has
-/// already vanished is not an error — the `create` is what proves writability,
+/// already vanished is not an error: the `create` is what proves writability,
 /// and the `remove` only keeps apptainer's `--tmpdir` free of litter.
 pub(crate) fn prepare_scratch_dir(tmp_dir: &Path) -> Result<()> {
     static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -186,7 +186,7 @@ fn which(cmd: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
             let full = dir.join(cmd);
-            if full.is_file() { Some(full) } else { None }
+            full.is_file().then_some(full)
         })
     })
 }
@@ -257,10 +257,9 @@ impl SetupStatus {
 /// `~/.peppy/tmp/`, installed release layouts, `PEPPY_APPTAINER_DIR`
 /// overrides) gets its own profile file under `/etc/apparmor.d/`. A single
 /// shared profile can only reference one starter path, so regenerating it for
-/// one installation used to silently invalidate every other one: after an
-/// apptainer version bump renamed the build cache, CI runs on commits from
-/// either side of the bump needed different profiles and kept breaking each
-/// other depending on which one ran `peppy container setup` last.
+/// one installation would invalidate every other one: two build caches of
+/// different apptainer versions on one machine each need the profile, and
+/// whichever ran `peppy container setup` last would break the other.
 #[cfg(target_os = "linux")]
 pub(crate) struct ApparmorProfileRef {
     /// Canonical starter path, exactly as embedded in the profile body.
@@ -339,72 +338,11 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
             .unwrap_or(false);
 
     let profile = apparmor_profile_ref(apptainer_dir);
-
-    let apparmor_ok = if apparmor_restricted {
-        // The per-install profile file must exist AND reference the current
-        // starter path. The hashed file name already namespaces installations;
-        // the content check additionally catches a manually edited or
-        // corrupted profile that would not grant the binary namespace
-        // privileges.
-        std::fs::read_to_string(&profile.file)
-            .map(|content| content.contains(&profile.starter_path))
-            .unwrap_or(false)
-    } else {
-        true
-    };
-
-    let apparmor_loaded = if apparmor_restricted {
-        // /sys/kernel/security/apparmor/profiles requires CAP_MAC_ADMIN, so
-        // use the policy directory listing which is world-readable.
-        let kernel_entry_prefix = format!("{}.", profile.name);
-        std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles")
-            .map(|entries| {
-                entries.filter_map(|e| e.ok()).any(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|name| name.starts_with(&kernel_entry_prefix))
-                })
-            })
-            .unwrap_or(false)
-    } else {
-        true
-    };
-
-    let fix_script = if newuidmap_ok && apparmor_ok && apparmor_loaded {
-        None
-    } else {
-        let mut parts: Vec<String> = Vec::new();
-
-        if !newuidmap_ok {
-            parts.push("sudo apt-get install -y uidmap".to_string());
-        }
-
-        if apparmor_restricted && !apparmor_ok {
-            parts.push(format!(
-                "echo 'abi <abi/4.0>,\n\
-                 include <tunables/global>\n\
-                 \n\
-                 profile {profile_name} {starter_path} flags=(unconfined) {{\n\
-                 \x20 userns,\n\
-                 }}' | sudo tee {profile_file} > /dev/null \\\n  \
-                 && sudo apparmor_parser -r {profile_file}",
-                profile_name = profile.name,
-                starter_path = shell_escape_single_quoted(&profile.starter_path),
-                profile_file = profile.file.display(),
-            ));
-        } else if apparmor_restricted && !apparmor_loaded {
-            parts.push(format!(
-                "sudo apparmor_parser -r {}",
-                profile.file.display()
-            ));
-        }
-
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join(" \\\n  && "))
-        }
-    };
+    let apparmor_ok = !apparmor_restricted || profile_references_starter(&profile);
+    let apparmor_loaded = !apparmor_restricted || is_profile_loaded(&profile);
+    // Both AppArmor checks pass on a system that does not restrict user
+    // namespaces, so the fix script needs no restriction flag of its own.
+    let fix_script = setup_fix_script(newuidmap_ok, apparmor_ok, apparmor_loaded, &profile);
 
     SetupStatus {
         newuidmap_ok,
@@ -414,6 +352,77 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
         apparmor_manageable,
         fix_script,
     }
+}
+
+/// Whether the profile file of `profile` exists and references its starter
+/// path. The hashed file name already namespaces installations; the content
+/// check additionally catches a manually edited or corrupted profile that
+/// would not grant the binary namespace privileges.
+#[cfg(target_os = "linux")]
+fn profile_references_starter(profile: &ApparmorProfileRef) -> bool {
+    std::fs::read_to_string(&profile.file)
+        .map(|content| content.contains(&profile.starter_path))
+        .unwrap_or(false)
+}
+
+/// Whether the kernel has `profile` loaded. Reads the policy directory
+/// listing, which is world-readable, because
+/// `/sys/kernel/security/apparmor/profiles` requires CAP_MAC_ADMIN.
+#[cfg(target_os = "linux")]
+fn is_profile_loaded(profile: &ApparmorProfileRef) -> bool {
+    let kernel_entry_prefix = format!("{}.", profile.name);
+    std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles")
+        .map(|entries| {
+            entries.filter_map(|e| e.ok()).any(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(&kernel_entry_prefix))
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// The shell script that fixes the failing checks, one step per failure
+/// joined with `&&`, or `None` when every check passes. A profile that is
+/// missing or stale is written and loaded in one step, so the load alone is
+/// for a profile that is in place but not loaded.
+#[cfg(target_os = "linux")]
+pub(crate) fn setup_fix_script(
+    newuidmap_ok: bool,
+    apparmor_ok: bool,
+    apparmor_loaded: bool,
+    profile: &ApparmorProfileRef,
+) -> Option<String> {
+    let mut steps: Vec<String> = Vec::new();
+
+    if !newuidmap_ok {
+        steps.push("sudo apt-get install -y uidmap".to_string());
+    }
+
+    if !apparmor_ok {
+        steps.push(format!(
+            "echo 'abi <abi/4.0>,\n\
+             include <tunables/global>\n\
+             \n\
+             profile {profile_name} {starter_path} flags=(unconfined) {{\n\
+             \x20 userns,\n\
+             }}' | sudo tee {profile_file} > /dev/null \\\n  \
+             && sudo apparmor_parser -r {profile_file}",
+            profile_name = profile.name,
+            starter_path = shell_escape_single_quoted(&profile.starter_path),
+            profile_file = profile.file.display(),
+        ));
+    } else if !apparmor_loaded {
+        steps.push(format!(
+            "sudo apparmor_parser -r {}",
+            profile.file.display()
+        ));
+    }
+
+    if steps.is_empty() {
+        return None;
+    }
+    Some(steps.join(" \\\n  && "))
 }
 
 /// Check that Apptainer's user namespace prerequisites are met.
@@ -450,17 +459,7 @@ impl Apptainer {
     /// On Linux this always returns `true` (no VM needed). On macOS it checks
     /// whether the Lima instance is booted and SSH-reachable without starting it.
     pub fn is_lima_ready() -> bool {
-        if !cfg!(target_os = "macos") {
-            return true;
-        }
-        let Ok(lima_dir) = lima::resolve_lima_dir() else {
-            return false;
-        };
-        let limactl_path = lima_dir.join("bin/limactl");
-        let Ok(lima_home) = lima::resolve_lima_home() else {
-            return false;
-        };
-        lima::is_lima_instance_running(&limactl_path, &lima_home)
+        !cfg!(target_os = "macos") || running_lima().is_some()
     }
 
     /// Creates a new `Apptainer` by resolving the apptainer installation directory.
@@ -715,67 +714,8 @@ impl Apptainer {
                 limactl_path,
                 lima_home,
                 ..
-            } => Self::kill_guest_pgid(limactl_path, lima_home, key),
+            } => signal_guest_pgid(limactl_path, lima_home, key, GuestSignal::Kill),
         }
-    }
-
-    /// Issues the in-VM group kill for `key` via `limactl shell`. Shared by
-    /// [`kill_guest_process_group`](Self::kill_guest_process_group) (facade
-    /// instance) and
-    /// [`kill_guest_process_groups_best_effort`](Self::kill_guest_process_groups_best_effort)
-    /// (no facade).
-    ///
-    /// Bounded: `limactl shell` reaches into the VM over SSH, which can hang
-    /// on a wedged VM, and this runs on stop/teardown paths that must not
-    /// block. On deadline expiry the `limactl` child is killed and a
-    /// timeout-specific error returned.
-    fn kill_guest_pgid(limactl_path: &Path, lima_home: &Path, key: &str) -> Result<()> {
-        /// Generous upper bound for one in-VM `kill` round trip over `limactl shell`.
-        const KILL_GUEST_PGID_TIMEOUT: Duration = Duration::from_secs(10);
-        /// Poll cadence while waiting for the `limactl` child to exit.
-        const KILL_GUEST_PGID_POLL: Duration = Duration::from_millis(50);
-
-        let guest_pgid = lima::guest_pgid_path(key);
-        let mut child = lima::lima_shell_cmd(limactl_path, lima_home, lima::LIMA_INSTANCE)
-            .args(lima::lima_kill_pgid_argv(&guest_pgid))
-            .spawn()
-            .map_err(Error::from)?;
-        await_guest_kill(
-            &mut child,
-            &guest_pgid,
-            KILL_GUEST_PGID_TIMEOUT,
-            KILL_GUEST_PGID_POLL,
-            Instant::now,
-            std::thread::sleep,
-        )
-    }
-
-    /// Issues a cooperative in-VM SIGTERM for `key` via `limactl shell`. The
-    /// guest pgid file is left in place so the force phase can still SIGKILL the
-    /// same group if it ignores SIGTERM.
-    ///
-    /// Bounded for the same reason as [`kill_guest_pgid`](Self::kill_guest_pgid):
-    /// stop/teardown paths cannot block indefinitely on a wedged VM or SSH
-    /// channel.
-    fn terminate_guest_pgid(limactl_path: &Path, lima_home: &Path, key: &str) -> Result<()> {
-        /// Generous upper bound for one in-VM `kill` round trip over `limactl shell`.
-        const TERMINATE_GUEST_PGID_TIMEOUT: Duration = Duration::from_secs(10);
-        /// Poll cadence while waiting for the `limactl` child to exit.
-        const TERMINATE_GUEST_PGID_POLL: Duration = Duration::from_millis(50);
-
-        let guest_pgid = lima::guest_pgid_path(key);
-        let mut child = lima::lima_shell_cmd(limactl_path, lima_home, lima::LIMA_INSTANCE)
-            .args(lima::lima_terminate_pgid_argv(&guest_pgid))
-            .spawn()
-            .map_err(Error::from)?;
-        await_guest_kill(
-            &mut child,
-            &guest_pgid,
-            TERMINATE_GUEST_PGID_TIMEOUT,
-            TERMINATE_GUEST_PGID_POLL,
-            Instant::now,
-            std::thread::sleep,
-        )
     }
 
     /// Best-effort batch form of
@@ -791,24 +731,7 @@ impl Apptainer {
     /// Synchronous (it shells out to `limactl`), so call it from a blocking
     /// context (e.g. `tokio::task::spawn_blocking`).
     pub fn kill_guest_process_groups_best_effort(keys: &[String]) {
-        if !cfg!(target_os = "macos") || keys.is_empty() {
-            return;
-        }
-        let (limactl_path, lima_home) = match (lima::resolve_lima_dir(), lima::resolve_lima_home())
-        {
-            (Ok(lima_dir), Ok(lima_home)) => (lima_dir.join("bin/limactl"), lima_home),
-            // No resolvable Lima installation means no VM, hence no guest
-            // processes to kill.
-            _ => return,
-        };
-        if !lima::is_lima_instance_running(&limactl_path, &lima_home) {
-            return;
-        }
-        for key in keys {
-            if let Err(e) = Self::kill_guest_pgid(&limactl_path, &lima_home, key) {
-                tracing::debug!("In-VM guest group kill failed for '{key}': {e}");
-            }
-        }
+        signal_guest_process_groups_best_effort(keys, GuestSignal::Kill);
     }
 
     /// Best-effort batch form of the guest-side cooperative SIGTERM used by
@@ -825,25 +748,7 @@ impl Apptainer {
     /// Synchronous (it shells out to `limactl`), so call it from a blocking
     /// context (e.g. `tokio::task::spawn_blocking`).
     pub fn terminate_guest_process_groups_best_effort(keys: &[String]) -> bool {
-        if !cfg!(target_os = "macos") || keys.is_empty() {
-            return false;
-        }
-        let (limactl_path, lima_home) = match (lima::resolve_lima_dir(), lima::resolve_lima_home())
-        {
-            (Ok(lima_dir), Ok(lima_home)) => (lima_dir.join("bin/limactl"), lima_home),
-            // No resolvable Lima installation means no VM, hence no guest
-            // processes to signal.
-            _ => return false,
-        };
-        if !lima::is_lima_instance_running(&limactl_path, &lima_home) {
-            return false;
-        }
-        for key in keys {
-            if let Err(e) = Self::terminate_guest_pgid(&limactl_path, &lima_home, key) {
-                tracing::debug!("In-VM guest group SIGTERM failed for '{key}': {e}");
-            }
-        }
-        true
+        signal_guest_process_groups_best_effort(keys, GuestSignal::Terminate)
     }
 
     /// Run `args` in the container runtime environment and capture its output.
@@ -897,19 +802,14 @@ impl Apptainer {
     /// # Ok::<(), containers::Error>(())
     /// ```
     pub fn run(&self, image: &str) -> ApptainerCommand<'_> {
-        ApptainerCommand {
-            facade: self,
-            kind: CommandKind::Run {
+        ApptainerCommand::new(
+            self,
+            CommandKind::Run {
                 image: image.to_string(),
                 args: Vec::new(),
             },
-            flags: Vec::new(),
-            bind_mounts: Vec::new(),
-            apptainer_env: Vec::new(),
-            lima_shell_extra_args: Vec::new(),
-            cancel_pgid_path: None,
-            working_dir: None,
-        }
+            Vec::new(),
+        )
     }
 
     /// Start building an `apptainer exec` command.
@@ -917,19 +817,14 @@ impl Apptainer {
     /// If `container` is a filesystem path (not a URI) it is translated to a
     /// guest-visible path when running under Lima.
     pub fn exec(&self, container: &str, cmd: &[&str]) -> ApptainerCommand<'_> {
-        ApptainerCommand {
-            facade: self,
-            kind: CommandKind::Exec {
+        ApptainerCommand::new(
+            self,
+            CommandKind::Exec {
                 container: container.to_string(),
                 cmd: cmd.iter().map(|s| s.to_string()).collect(),
             },
-            flags: Vec::new(),
-            bind_mounts: Vec::new(),
-            apptainer_env: Vec::new(),
-            lima_shell_extra_args: Vec::new(),
-            cancel_pgid_path: None,
-            working_dir: None,
-        }
+            Vec::new(),
+        )
     }
 
     /// Start building an `apptainer build` command.
@@ -939,22 +834,17 @@ impl Apptainer {
     /// `--mksquashfs-args` flag added later with [`ApptainerCommand::raw_flag`]
     /// replaces it, as apptainer reads the last one.
     pub fn build(&self, output: &Path, def_file: &Path) -> ApptainerCommand<'_> {
-        ApptainerCommand {
-            facade: self,
-            kind: CommandKind::Build {
+        ApptainerCommand::new(
+            self,
+            CommandKind::Build {
                 output: output.to_string_lossy().into_owned(),
                 def_file: def_file.to_string_lossy().into_owned(),
             },
-            flags: vec![
+            vec![
                 MKSQUASHFS_ARGS_FLAG.to_string(),
                 SQUASHFS_COMPRESSION.to_string(),
             ],
-            bind_mounts: Vec::new(),
-            apptainer_env: Vec::new(),
-            lima_shell_extra_args: Vec::new(),
-            cancel_pgid_path: None,
-            working_dir: None,
-        }
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -1038,9 +928,7 @@ impl Apptainer {
         match &self.backend {
             Backend::Native { .. } => Ok(absolute_path),
             Backend::Lima { .. } => {
-                let home = std::env::var("HOME").map_err(|_| {
-                    Error::ConfigurationError("HOME environment variable not set".into())
-                })?;
+                let home = lima::home_dir_from_env()?;
 
                 // Ahead of both acceptance checks on purpose. `ensure_host_mounts`
                 // already refuses to register these, but a `$HOME`-relative or
@@ -1087,7 +975,7 @@ impl Apptainer {
     /// shell` propagates the host cwd into the guest with a NON-fatal `cd`, and
     /// the kernel reports the cwd in canonical form (`/private/var/…`) while the
     /// Lima mount exists in the guest only at its literal lima.yaml location
-    /// (`/var/folders/…`) — so the propagation silently falls back to the guest
+    /// (`/var/folders/…`), so the propagation silently falls back to the guest
     /// home directory and relative paths (a def file's `%files .`) resolve
     /// against `$HOME` instead of the working dir.
     ///
@@ -1201,6 +1089,109 @@ impl Apptainer {
     }
 }
 
+/// The signal a stop or cancel path sends to the guest process group that the
+/// Lima wrapper recorded for a key (see [`lima::lima_guest_pgid_argv`]).
+#[derive(Clone, Copy)]
+pub(crate) enum GuestSignal {
+    /// A cooperative SIGTERM to the wrapped `apptainer` child. The pgid file
+    /// stays, so the force phase can still SIGKILL the same group if the
+    /// workload ignores SIGTERM.
+    Terminate,
+    /// A SIGKILL to the whole group, which also removes the pgid file.
+    Kill,
+}
+
+impl GuestSignal {
+    /// The guest-side argv that sends this signal to the group recorded at
+    /// `pgid_file`.
+    pub(crate) fn argv(self, pgid_file: &Path) -> Vec<String> {
+        match self {
+            GuestSignal::Terminate => lima::lima_terminate_pgid_argv(pgid_file),
+            GuestSignal::Kill => lima::lima_kill_pgid_argv(pgid_file),
+        }
+    }
+
+    /// How the debug line of a failed best-effort signal names it.
+    fn name(self) -> &'static str {
+        match self {
+            GuestSignal::Terminate => "SIGTERM",
+            GuestSignal::Kill => "kill",
+        }
+    }
+}
+
+/// The `limactl` binary and the LIMA_HOME of the peppy Lima VM, or `None` when
+/// no Lima installation resolves or its VM is not running. A VM that is not
+/// running has no guest processes left to signal, and the callers must never
+/// boot one, which a full [`Apptainer::new`] readiness preflight could do.
+fn running_lima() -> Option<(PathBuf, PathBuf)> {
+    let limactl_path = lima::resolve_lima_dir().ok()?.join("bin/limactl");
+    let lima_home = lima::resolve_lima_home().ok()?;
+    if !lima::is_lima_instance_running(&limactl_path, &lima_home) {
+        return None;
+    }
+    Some((limactl_path, lima_home))
+}
+
+/// Sends `signal` to the guest process group recorded for `key` via `limactl
+/// shell`. Shared by [`Apptainer::kill_guest_process_group`] (facade instance)
+/// and the best-effort batch forms (no facade).
+///
+/// Bounded: `limactl shell` reaches into the VM over SSH, which can hang on a
+/// wedged VM, and this runs on stop/teardown paths that must not block. On
+/// deadline expiry the `limactl` child is killed and a timeout-specific error
+/// returned.
+fn signal_guest_pgid(
+    limactl_path: &Path,
+    lima_home: &Path,
+    key: &str,
+    signal: GuestSignal,
+) -> Result<()> {
+    /// Generous upper bound for one in-VM `kill` round trip over `limactl shell`.
+    const SIGNAL_GUEST_PGID_TIMEOUT: Duration = Duration::from_secs(10);
+    /// Poll cadence while waiting for the `limactl` child to exit.
+    const SIGNAL_GUEST_PGID_POLL: Duration = Duration::from_millis(50);
+
+    let guest_pgid = lima::guest_pgid_path(key);
+    let mut child = lima::lima_shell_cmd(limactl_path, lima_home, lima::LIMA_INSTANCE)
+        .args(signal.argv(&guest_pgid))
+        .spawn()
+        .map_err(Error::from)?;
+    await_guest_kill(
+        &mut child,
+        &guest_pgid,
+        SIGNAL_GUEST_PGID_TIMEOUT,
+        SIGNAL_GUEST_PGID_POLL,
+        Instant::now,
+        std::thread::sleep,
+    )
+}
+
+/// Sends `signal` to the guest process group of each key, best effort, for
+/// node stop and daemon teardown. Returns `false` without signaling outside
+/// macOS (the host process-group signal already reaches the shared-namespace
+/// workload), when there are no keys, and when the Lima VM is not running (see
+/// [`running_lima`]). Otherwise signals every key and returns `true`. Failures
+/// are logged at debug level, never returned: a guest-signal problem must not
+/// block a stop.
+fn signal_guest_process_groups_best_effort(keys: &[String], signal: GuestSignal) -> bool {
+    if !cfg!(target_os = "macos") || keys.is_empty() {
+        return false;
+    }
+    let Some((limactl_path, lima_home)) = running_lima() else {
+        return false;
+    };
+    for key in keys {
+        if let Err(e) = signal_guest_pgid(&limactl_path, &lima_home, key, signal) {
+            tracing::debug!(
+                "In-VM guest group {} failed for '{key}': {e}",
+                signal.name()
+            );
+        }
+    }
+    true
+}
+
 /// Resolve a relative path to absolute by joining it onto the current working
 /// directory; absolute paths are returned unchanged. Shared by [`translate_path`]
 /// (which propagates a `current_dir()` failure) and [`resolve_absolute`] (which
@@ -1228,8 +1219,7 @@ fn to_absolute(path: &Path) -> std::io::Result<PathBuf> {
 /// run, node build) funnel through the two methods that use it, which must
 /// agree on what counts.
 fn paths_lima_must_mount<'a>(mount_src_paths: &[&'a str]) -> Result<Vec<&'a str>> {
-    let home = std::env::var("HOME")
-        .map_err(|_| Error::ConfigurationError("HOME environment variable not set".into()))?;
+    let home = lima::home_dir_from_env()?;
     Ok(mount_src_paths
         .iter()
         .filter(|p| {
@@ -1413,6 +1403,21 @@ pub struct ApptainerCommand<'a> {
 }
 
 impl<'a> ApptainerCommand<'a> {
+    /// A command of `kind` that starts with `flags` and none of the optional
+    /// settings the builder methods add.
+    fn new(facade: &'a Apptainer, kind: CommandKind, flags: Vec<String>) -> Self {
+        Self {
+            facade,
+            kind,
+            flags,
+            bind_mounts: Vec::new(),
+            apptainer_env: Vec::new(),
+            lima_shell_extra_args: Vec::new(),
+            cancel_pgid_path: None,
+            working_dir: None,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Named flag methods
     // -----------------------------------------------------------------------
@@ -1499,8 +1504,8 @@ impl<'a> ApptainerCommand<'a> {
     }
 
     /// Run the apptainer process from `dir` (a host-side path), so relative
-    /// paths — chiefly a build def's `%files` sources like the generated
-    /// `%files . /opt/{name}` — resolve against it.
+    /// paths (chiefly a build def's `%files` sources like the generated
+    /// `%files . /opt/{name}`) resolve against it.
     ///
     /// On the native backend (Linux) this is applied as the child's
     /// `current_dir`. Under Lima (macOS) the path is translated to its
@@ -1510,8 +1515,8 @@ impl<'a> ApptainerCommand<'a> {
     /// [`Command`]: `limactl shell`'s own host-cwd propagation canonicalizes
     /// the path (`/var/folders/…` → `/private/var/…`), misses the literal
     /// Lima mount location in the guest, and falls back to the guest home
-    /// directory WITHOUT failing — which once made a build's `%files .` copy
-    /// the user's entire `$HOME` into the image.
+    /// directory WITHOUT failing, so a build's `%files .` would copy the
+    /// user's entire `$HOME` into the image.
     pub fn working_dir(mut self, dir: &Path) -> Self {
         self.working_dir = Some(dir.to_path_buf());
         self
@@ -1665,7 +1670,12 @@ impl<'a> ApptainerCommand<'a> {
             match (&bind.dest, &bind.opts) {
                 (Some(dest), Some(opts)) => args.push(format!("{translated_src}:{dest}:{opts}")),
                 (Some(dest), None) => args.push(format!("{translated_src}:{dest}")),
-                (None, _) => args.push(translated_src),
+                // Options ride after a destination, so a mirrored bind that
+                // carries options writes its source out as the destination.
+                (None, Some(opts)) => {
+                    args.push(format!("{translated_src}:{translated_src}:{opts}"))
+                }
+                (None, None) => args.push(translated_src),
             }
         }
 

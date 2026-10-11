@@ -4,7 +4,7 @@
 //! different question: that list rejects whole top-level system directories
 //! (`/dev`, `/tmp`, `/usr`, …) as bind sources or Lima mountPoints outright.
 //! This one accepts the *subpaths* under a handful of those trees and says
-//! only that peppy must not conjure them — `/dev/video0` is a legitimate bind
+//! only that peppy must not conjure them: `/dev/video0` is a legitimate bind
 //! source, `/dev` is not.
 
 use std::path::Path;
@@ -22,8 +22,8 @@ use std::path::Path;
 /// The distinction matters most off-Linux. A macOS daemon runs its containers
 /// inside the Lima guest, and macOS has neither `/run` nor a writable `/`
 /// (the sealed system volume), so auto-creating these paths fails outright
-/// with `EROFS` — see the sim nodes that bind `/run/user` to back
-/// `XDG_RUNTIME_DIR`. Skipping them here leaves resolution to the guest,
+/// with `EROFS` (see the sim nodes that bind `/run/user` to back
+/// `XDG_RUNTIME_DIR`). Skipping them here leaves resolution to the guest,
 /// where the path really lives.
 pub fn is_host_provided_mount_source(path: &Path) -> bool {
     path.starts_with("/dev")

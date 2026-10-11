@@ -1,6 +1,7 @@
 use super::super::error::{Error, Result};
 use super::facade::wait_for_child_bounded;
 use config::node::is_blocked_mount_source;
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -23,7 +24,7 @@ const LIMA_PROBE_POLL: Duration = Duration::from_millis(50);
 /// guest's own tmpfs (alongside the synced apptainer install), never the
 /// virtiofs host-home mount, so the wrapper's pgid write cannot lose a
 /// mount-visibility race the way a path under `$HOME` can.
-pub(crate) const GUEST_PGID_DIR: &str = "/tmp/peppy/pgids";
+const GUEST_PGID_DIR: &str = "/tmp/peppy/pgids";
 
 /// Guest-native path of a guest PGID file, keyed by a unique, filesystem-safe
 /// key (the working-dir basename for a build, the instance id for a run). The
@@ -40,7 +41,7 @@ pub(crate) fn guest_pgid_path(key: &str) -> PathBuf {
 /// The `cd` MUST abort on failure. `limactl shell` propagates the host cwd
 /// into the guest with a NON-fatal `cd`, and on macOS the kernel reports the
 /// host cwd in canonical form (`/private/var/…`) while the Lima mount only
-/// exists in the guest at its literal lima.yaml location (`/var/folders/…`) —
+/// exists in the guest at its literal lima.yaml location (`/var/folders/…`),
 /// so that propagation silently lands in the guest's home directory. A build
 /// def whose `%files` uses relative sources (the generated `%files .
 /// /opt/{name}`) then copies the user's entire `$HOME` into the image. The
@@ -214,12 +215,22 @@ if [ -n "$leader" ]; then
 fi
 exit 0"#;
 
+/// A `limactl` command pointed at peppy's LIMA_HOME. Every `limactl` command
+/// that reaches an instance goes through here: one without LIMA_HOME talks to
+/// the user's default Lima home instead of the peppy instance. The version
+/// check of [`check_lima_version`] reads no instance and needs no LIMA_HOME.
+fn limactl_command(limactl: &Path, lima_home: &Path) -> Command {
+    let mut cmd = Command::new(limactl);
+    cmd.env("LIMA_HOME", lima_home);
+    cmd
+}
+
 /// Build a `limactl shell <instance>` command pre-configured with LIMA_HOME,
 /// stopping before the `--` separator so callers can inject `limactl`-level flags
 /// (e.g. `lima_shell_extra_args`) between the instance and the guest command.
 pub(crate) fn lima_shell_base(limactl: &Path, lima_home: &Path, instance: &str) -> Command {
-    let mut cmd = Command::new(limactl);
-    cmd.env("LIMA_HOME", lima_home).args(["shell", instance]);
+    let mut cmd = limactl_command(limactl, lima_home);
+    cmd.args(["shell", instance]);
     cmd
 }
 
@@ -293,9 +304,10 @@ fn validate_lima_version_output(
     Ok(())
 }
 
-/// Drain an already-exited child's captured pipe to a string, best effort. The
-/// bounded `limactl` probes produce tiny output, so reading after the child has
-/// exited cannot deadlock on a full pipe buffer.
+/// Drain an already-exited child's captured pipe to a string, best effort.
+/// Reading only after the exit suits small outputs, such as those of the
+/// bounded `limactl` probes and the error lines of a failed host `tar`: a child
+/// that fills the pipe buffer before it exits blocks until someone reads it.
 fn read_child_pipe(pipe: Option<impl Read>) -> String {
     let mut buf = String::new();
     if let Some(mut pipe) = pipe {
@@ -318,35 +330,47 @@ fn query_instance_status(
     lima_home: &Path,
     instance: &str,
 ) -> Result<Option<String>> {
-    let mut child = Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
+    let mut child = limactl_command(limactl, lima_home)
         .args(["list", "--format", "{{.Status}}", instance])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| Error::LimaInstanceError(format!("failed to run limactl list: {e}")))?;
 
-    let status = match wait_for_child_bounded(
+    let Some(status) = wait_for_child_bounded(
         &mut child,
         LIMA_PROBE_TIMEOUT,
         LIMA_PROBE_POLL,
         Instant::now,
         std::thread::sleep,
-    )? {
-        Some(status) => status,
-        None => {
-            return Err(Error::LimaInstanceError(format!(
-                "limactl list timed out after {LIMA_PROBE_TIMEOUT:?} for instance '{instance}'"
-            )));
-        }
+    )?
+    else {
+        return Err(Error::LimaInstanceError(format!(
+            "limactl list timed out after {LIMA_PROBE_TIMEOUT:?} for instance '{instance}'"
+        )));
     };
 
+    let stdout = read_child_pipe(child.stdout.take());
+    let stderr = read_child_pipe(child.stderr.take());
+    instance_status_from_exit(instance, status, &stdout, &stderr)
+}
+
+/// Map the exit of `limactl list --format {{.Status}} <instance>` to the
+/// answer of [`query_instance_status`]: the trimmed output on success (`None`
+/// when it is empty), `None` when the failure names a missing instance, and an
+/// error for any other failure. Pure, so tests drive each answer with a fixed
+/// exit status instead of a `limactl` that the host must reap in time.
+fn instance_status_from_exit(
+    instance: &str,
+    status: std::process::ExitStatus,
+    stdout: &str,
+    stderr: &str,
+) -> Result<Option<String>> {
     if status.success() {
-        let s = read_child_pipe(child.stdout.take()).trim().to_string();
-        return Ok(if s.is_empty() { None } else { Some(s) });
+        let answer = stdout.trim();
+        return Ok((!answer.is_empty()).then_some(answer.to_string()));
     }
 
-    let stderr = read_child_pipe(child.stderr.take());
     if stderr.contains("No instance matching") {
         return Ok(None);
     }
@@ -390,13 +414,11 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
                 "Lima {} instance reports Running but SSH is unresponsive; restarting...",
                 LIMA_INSTANCE
             );
-            let _ = Command::new(limactl)
-                .env("LIMA_HOME", lima_home)
+            let _ = limactl_command(limactl, lima_home)
                 .args(["stop", "--force", LIMA_INSTANCE])
                 .output();
 
-            let start = Command::new(limactl)
-                .env("LIMA_HOME", lima_home)
+            let start = limactl_command(limactl, lima_home)
                 .args(["start", LIMA_INSTANCE])
                 .output()?;
 
@@ -409,8 +431,7 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
         }
         Some(_) => {
             tracing::info!("Starting Lima {} instance...", LIMA_INSTANCE);
-            let start = Command::new(limactl)
-                .env("LIMA_HOME", lima_home)
+            let start = limactl_command(limactl, lima_home)
                 .args(["start", LIMA_INSTANCE])
                 .output()?;
 
@@ -428,8 +449,7 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
                 template
             );
             let name_flag = format!("--name={}", LIMA_INSTANCE);
-            let create = Command::new(limactl)
-                .env("LIMA_HOME", lima_home)
+            let create = limactl_command(limactl, lima_home)
                 .args([
                     "start",
                     &name_flag,
@@ -457,14 +477,13 @@ fn is_ssh_alive(limactl: &Path, lima_home: &Path, instance: &str) -> bool {
     // thread, so a timeout is treated as "not reachable" (false) rather than
     // parking the thread; the force phase still SIGKILLs the host-side `limactl`
     // client.
-    let mut child = match lima_shell_cmd(limactl, lima_home, instance)
+    let Ok(mut child) = lima_shell_cmd(limactl, lima_home, instance)
         .arg("true")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return false,
+    else {
+        return false;
     };
     matches!(
         wait_for_child_bounded(
@@ -599,13 +618,11 @@ pub(crate) fn ensure_guest_apptainer(
 
     tracing::info!("Syncing apptainer installation to Lima VM guest...");
 
-    // Remove stale installation in guest.
     let _ = lima_shell_cmd(limactl, lima_home, instance)
         .args(["rm", "-rf"])
         .arg(&guest_dir)
         .status();
 
-    // Create the target directory in the guest.
     let mkdir = lima_shell_cmd(limactl, lima_home, instance)
         .args(["mkdir", "-p"])
         .arg(&guest_dir)
@@ -652,11 +669,7 @@ pub(crate) fn ensure_guest_apptainer(
         .wait()
         .map_err(|e| Error::LimaSyncFailed(format!("failed to wait for host tar: {e}")))?;
     if !host_status.success() {
-        let mut stderr = String::new();
-        if let Some(mut pipe) = host_tar.stderr.take() {
-            use std::io::Read;
-            let _ = pipe.read_to_string(&mut stderr);
-        }
+        let stderr = read_child_pipe(host_tar.stderr.take());
         return Err(Error::LimaSyncFailed(format!(
             "host tar returned {host_status}: {}",
             stderr.trim()
@@ -709,6 +722,14 @@ pub(crate) fn ensure_guest_apptainer(
 /// known.
 pub(crate) fn peppy_home_dir(rel: &str) -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| Path::new(&home).join(".peppy").join(rel))
+}
+
+/// The user's home directory from `$HOME`, which Lima auto-mounts into the
+/// guest at the same path. The Lima path rules read it through here, so they
+/// agree on what the home directory is and on the error when it is unset.
+pub(crate) fn home_dir_from_env() -> Result<String> {
+    std::env::var("HOME")
+        .map_err(|_| Error::ConfigurationError("HOME environment variable not set".into()))
 }
 
 /// Resolve an installation directory using a standard three-step fallback:
@@ -809,8 +830,7 @@ pub(crate) fn resolve_lima_home() -> Result<PathBuf> {
     }
 
     // 3) Fallback: well-known location in the user's home
-    let home = std::env::var("HOME")
-        .map_err(|_| Error::ConfigurationError("HOME environment variable not set".into()))?;
+    let home = home_dir_from_env()?;
     Ok(PathBuf::from(home).join(".peppy/lima-data"))
 }
 
@@ -837,8 +857,7 @@ pub(crate) fn stop_instance(limactl: &Path, lima_home: &Path, instance: &str) ->
         instance,
         || query_instance_status(limactl, lima_home, instance),
         || {
-            Command::new(limactl)
-                .env("LIMA_HOME", lima_home)
+            limactl_command(limactl, lima_home)
                 .args(["stop", instance])
                 .output()
                 .map_err(Error::from)
@@ -964,7 +983,6 @@ fn plan_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<MountPlan> {
         ))
     })?;
 
-    // Get or create the mounts array
     let mounts = config
         .as_mapping_mut()
         .ok_or_else(|| Error::LimaInstanceError("Lima config is not a YAML mapping".into()))?
@@ -994,8 +1012,10 @@ fn plan_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<MountPlan> {
         true
     });
 
-    // Phase 2: Add new mounts (skip blocked system paths).
-    let existing: Vec<String> = mounts_seq
+    // Phase 2: Add new mounts (skip blocked system paths). A path joins the
+    // registered set as soon as it is added, so a path that `paths` names
+    // twice is written once: Lima refuses repeated mount locations.
+    let mut registered: HashSet<String> = mounts_seq
         .iter()
         .filter_map(|entry| {
             entry
@@ -1013,19 +1033,20 @@ fn plan_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<MountPlan> {
             );
             continue;
         }
-        if !existing.iter().any(|loc| loc == *path) {
-            let mut mount_entry = serde_yaml::Mapping::new();
-            mount_entry.insert(
-                serde_yaml::Value::String("location".to_string()),
-                serde_yaml::Value::String(path.to_string()),
-            );
-            mount_entry.insert(
-                serde_yaml::Value::String("writable".to_string()),
-                serde_yaml::Value::Bool(true),
-            );
-            mounts_seq.push(serde_yaml::Value::Mapping(mount_entry));
-            added.push((*path).to_string());
+        if !registered.insert((*path).to_string()) {
+            continue;
         }
+        let mut mount_entry = serde_yaml::Mapping::new();
+        mount_entry.insert(
+            serde_yaml::Value::String("location".to_string()),
+            serde_yaml::Value::String(path.to_string()),
+        );
+        mount_entry.insert(
+            serde_yaml::Value::String("writable".to_string()),
+            serde_yaml::Value::Bool(true),
+        );
+        mounts_seq.push(serde_yaml::Value::Mapping(mount_entry));
+        added.push((*path).to_string());
     }
 
     Ok(MountPlan {
@@ -1140,6 +1161,35 @@ mod tests {
         );
     }
 
+    /// Two binds from the same host directory hand the same path in twice.
+    /// Lima refuses a config whose mounts repeat a location, so the VM
+    /// restart that follows the write would fail.
+    #[test]
+    fn ensure_extra_mounts_registers_a_path_given_twice_once() {
+        let dir = tempdir().expect("create temp dir");
+        let config_path = dir.path().join("lima.yaml");
+        let initial = "mounts:\n- location: \"~\"\n  writable: true\n";
+        fs::write(&config_path, initial).expect("write initial config");
+
+        let modified = ensure_extra_mounts(&config_path, &["/data/twice", "/data/twice"])
+            .expect("should succeed");
+        assert!(modified, "config should have been modified");
+
+        let content = fs::read_to_string(&config_path).expect("read config");
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&content).expect("parse result config");
+        let entries_for_path = parsed["mounts"]
+            .as_sequence()
+            .expect("mounts is a sequence")
+            .iter()
+            .filter(|m| m["location"].as_str() == Some("/data/twice"))
+            .count();
+        assert_eq!(
+            entries_for_path, 1,
+            "the path should be registered once, got:\n{content}"
+        );
+    }
+
     #[test]
     fn test_ensure_extra_mounts_creates_mounts_section() {
         let dir = tempdir().expect("create temp dir");
@@ -1158,14 +1208,97 @@ mod tests {
         );
     }
 
-    // These tests previously spawned fake `limactl` shell scripts via tempdirs
-    // and hit Linux ETXTBSY races: when Thread A held a writable FD to a newly
-    // written script, a parallel test on Thread B calling `Command::spawn`
-    // would fork, inheriting Thread A's writable FD, and the kernel refused
-    // Thread A's subsequent `execve` until Thread B's child finished its own
-    // `execve`. The fix is to exercise the pure branch logic directly via the
-    // `validate_lima_version_output` and `stop_instance_inner` helpers: no
-    // subprocess, no race.
+    /// Every `limactl` command that reaches an instance carries peppy's
+    /// LIMA_HOME: without it, `limactl` talks to the user's default Lima home
+    /// instead of the peppy instance.
+    #[test]
+    fn lima_shell_base_points_limactl_at_the_peppy_lima_home() {
+        let cmd = lima_shell_base(
+            Path::new("/opt/lima/bin/limactl"),
+            Path::new("/home/u/.lima"),
+            "peppy",
+        );
+
+        assert_eq!(cmd.get_program(), "/opt/lima/bin/limactl");
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert_eq!(
+            envs,
+            [(
+                std::ffi::OsStr::new("LIMA_HOME"),
+                Some(std::ffi::OsStr::new("/home/u/.lima"))
+            )]
+        );
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args, ["shell", "peppy"]);
+    }
+
+    /// The exit of `limactl list` maps to the instance status: a success
+    /// answers with the trimmed output, or with no instance when the output
+    /// is empty, a failure that names a missing instance answers with no
+    /// instance, and any other failure is an error that carries the trimmed
+    /// stderr. A success ignores stderr and a failure ignores stdout.
+    #[cfg(unix)]
+    #[test]
+    fn instance_status_from_exit_maps_each_limactl_answer() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let success = std::process::ExitStatus::from_raw(0);
+        let failure = std::process::ExitStatus::from_raw(1 << 8);
+        let missing_instance = "No instance matching peppy found.\n";
+        let cases = [
+            (
+                "trimmed output",
+                success,
+                "  Running\n",
+                "a warning\n",
+                Some("Running"),
+            ),
+            ("empty output", success, "\n", "", None),
+            (
+                "missing instance",
+                failure,
+                "Running\n",
+                missing_instance,
+                None,
+            ),
+        ];
+        for (case, status, stdout, stderr, expected) in cases {
+            let answer = instance_status_from_exit("peppy", status, stdout, stderr)
+                .unwrap_or_else(|e| panic!("{case}: unexpected error {e:?}"));
+            assert_eq!(answer.as_deref(), expected, "{case}");
+        }
+
+        match instance_status_from_exit("peppy", failure, "Running\n", "  driver unreachable\n") {
+            Err(Error::LimaInstanceError(msg)) => assert_eq!(
+                msg,
+                "limactl list failed for instance 'peppy': driver unreachable"
+            ),
+            other => panic!("expected LimaInstanceError, got {other:?}"),
+        }
+    }
+
+    /// The SSH probe reads a guest as unreachable when `limactl shell ...
+    /// true` exits non-zero, with `false` from `PATH` in the place of
+    /// `limactl`, and when `limactl` cannot be spawned.
+    #[cfg(unix)]
+    #[test]
+    fn is_ssh_alive_is_false_for_a_limactl_that_fails_or_cannot_run() {
+        let lima_home = Path::new("/nonexistent/lima-home");
+
+        assert!(!is_ssh_alive(Path::new("false"), lima_home, "peppy"));
+        assert!(!is_ssh_alive(
+            Path::new("/nonexistent/bin/limactl"),
+            lima_home,
+            "peppy"
+        ));
+    }
+
+    // These tests drive the pure branch logic through the
+    // `validate_lima_version_output` and `stop_instance_inner` helpers instead
+    // of spawning a fake `limactl` script that a test writes. A parallel test
+    // thread that forks while another thread still holds such a script open
+    // for writing leaks that writable FD into its child, and the kernel then
+    // refuses to `execve` the script with ETXTBSY until the child execs.
 
     #[cfg(unix)]
     #[test]
