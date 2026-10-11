@@ -5,7 +5,7 @@ use common::{
     answer_readiness, build_staged_node, children_of, create_test_node_with_name,
     install_kill_on_shutdown_listener, instance_state_in_any_state, is_process_running, poll_until,
     send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
-    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
@@ -66,9 +66,14 @@ async fn listen_for_node_stop_success() {
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     // Drive the real start lifecycle so the entity tracks a live child
-    // process (spawned from the node's `run_cmd = ["sleep", "10"]`).
+    // process (spawned from the node's `run_cmd = ["sleep", "10"]`). The stuck
+    // variant installs no shutdown listener, so the listener below is the only
+    // SHUTDOWN_SERVICE responder of the instance. With a second responder the
+    // mock delivers the daemon's request to both, the daemon closes its reply
+    // stream on the first answer, and the slower listener drops the request
+    // without running its handler.
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let running = spawn_real_running_instance(
+    let running = spawn_real_stuck_instance(
         &started_core_node,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
@@ -100,16 +105,28 @@ async fn listen_for_node_stop_success() {
     .await
     .expect("failed to start shutdown service");
     let _shutdown_task = AbortOnDrop(shutdown_task);
-
-    // Allow the shutdown service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    common::wait_until_service_reachable(
+        &shutdown_handle,
+        &started_core_node.core_node_name,
+        TARGET_NODE_NAME,
+        peppylib::messaging::SHUTDOWN_SERVICE,
+        &started_core_node.core_node_name,
+        TARGET_INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
 
     // Spawn a task to SIGKILL the entity-tracked pid when shutdown is
-    // received (simulating the target node's own exit path).
+    // received (simulating the target node's own exit path). It reports the
+    // request before the kill, and the daemon reports a graceful stop only
+    // once the process is gone, so the report is in place when the stop
+    // returns.
+    let (shutdown_asked_tx, mut shutdown_asked_rx) = tokio::sync::oneshot::channel();
     let kill_task = tokio::spawn(async move {
         shutdown_rx
             .await
             .expect("shutdown channel should not be dropped");
+        let _ = shutdown_asked_tx.send(());
         let _ = std::process::Command::new("kill")
             .arg("-KILL")
             .arg(pid.to_string())
@@ -148,11 +165,11 @@ async fn listen_for_node_stop_success() {
         pid
     );
 
-    // Wait for the kill task to complete
-    tokio::time::timeout(Duration::from_millis(500), kill_task)
-        .await
-        .expect("kill task should complete within timeout")
-        .expect("kill task should not panic");
+    assert!(
+        shutdown_asked_rx.try_recv().is_ok(),
+        "node_stop should send the shutdown request to the instance"
+    );
+    kill_task.await.expect("kill task should not panic");
 }
 
 /// A cooperative node that legitimately takes longer than the bare grace window
