@@ -5,10 +5,11 @@ use std::sync::Arc;
 use config::runtime::CoreNodeName;
 use core_node_api::encoding::{LaunchGoal, LauncherOrigin, PlacementSpec};
 use daemon_config::launcher::{PeppyLauncher, PeppyLauncherParser, PreparedLauncher};
+use stack_goal::StackGoal;
 use tracing::info;
 
 use super::LauncherArgs;
-use super::goal::{StackGoal, drive_stack_goal};
+use super::goal::drive_stack_goal;
 use crate::commands::node::caller_env_overrides;
 use crate::context::AppContext;
 use crate::error::{Error, Result};

@@ -74,6 +74,7 @@ pub(super) fn planned_container_deployment(
         closure_pins: Vec::new(),
         pin_manifests: Vec::new(),
         addressing: MemberAddressing::WholeSet,
+        targets: daemon_config::mcp_deployment::DeploymentTargets::default(),
     }
 }
 
