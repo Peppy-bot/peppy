@@ -2,19 +2,22 @@ mod common;
 #[path = "listen_for_launch/copies.rs"]
 mod copies;
 
-use common::{AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_health_timeout};
+use common::{
+    AbortOnDrop, CALLER_INSTANCE_ID, FeedbackDrainOutcome, drain_feedback, fetch_result,
+    send_daemon_goal, start_core_node_with_health_timeout,
+};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::NodeConfigParser;
 use config::runtime::Name;
-use core_node_api::ActionId;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult, LauncherOrigin, StackBudgets,
 };
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
-use peppylib::messaging::{MessengerHandle, ResultStatus};
+use peppylib::messaging::MessengerHandle;
 use std::fs;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -409,27 +412,11 @@ async fn send_launch_origin_and_wait_observing(
         TEST_LAUNCH_ID,
         StackBudgets::new(300, 300, 300, Some(3600)).with_env_vars(env_vars),
     );
-    let goal_payload = goal
-        .encode()
-        .map_err(|e| format!("Failed to encode launch goal: {e}"))?;
+    let mut action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
+        .await
+        .map_err(|e| format!("Failed to send launch goal: {e}"))?;
 
-    let mut action_handle = ActionMessenger::send_goal(
-        messenger,
-        core_node_name,
-        CALLER_INSTANCE_ID,
-        common::core_node_target(core_node_name),
-        ActionId::StackLaunch.name(),
-        None,
-        goal_payload,
-        config::node::QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
-        goal_timeout,
-    )
-    .await
-    .map_err(|e| format!("Failed to send launch goal: {e}"))?;
-
-    let goal_response_payload = action_handle.goal_reply().body.clone();
-    let goal_response = LaunchGoalResponse::decode(&goal_response_payload)
+    let goal_response = LaunchGoalResponse::decode(&action_handle.goal_reply().body)
         .map_err(|e| format!("Failed to decode goal response: {e}"))?;
 
     if !goal_response.accepted {
@@ -442,38 +429,32 @@ async fn send_launch_origin_and_wait_observing(
 
     // Drain feedback until the server closes the stream on completion, then
     // fetch the buffered result once.
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= absolute_deadline {
-            return Err("Timeout waiting for launch result".to_string());
-        }
-        let drain_timeout = Duration::from_millis(50);
-        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                let payload = msg.payload();
-                if let Ok(feedback) = LaunchFeedback::decode(&payload) {
-                    on_feedback(feedback);
-                }
-            }
-            Ok(Err(_)) => break,
-            Err(_) => {}
-        }
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| LaunchFeedback::decode(payload).expect("failed to decode LaunchFeedback"),
+        |feedback| {
+            on_feedback(feedback);
+            ControlFlow::Continue(())
+        },
+        absolute_deadline,
+    )
+    .await;
+    if matches!(drained, FeedbackDrainOutcome::TimedOut) {
+        return Err("Timeout waiting for launch result".to_string());
     }
 
     let fetch_timeout = absolute_deadline
         .saturating_duration_since(tokio::time::Instant::now())
         .max(Duration::from_secs(1));
-    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
-        Ok(reply) => match reply.status {
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                let result = LaunchResult::decode(reply.body.as_ref())
-                    .map_err(|err| format!("Failed to decode launch result: {err}"))?;
-                Ok((goal_response, result))
-            }
-            other => Err(format!("launch did not complete with a result: {other:?}")),
-        },
-        Err(err) => Err(format!("Failed to get launch result: {err}")),
-    }
+    let result = fetch_result(
+        messenger,
+        &action_handle,
+        fetch_timeout,
+        LaunchResult::decode,
+        "launch result",
+    )
+    .await?;
+    Ok((goal_response, result))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,16 +1,17 @@
 mod common;
 
+use std::ops::ControlFlow;
 use std::time::Duration;
 
-use common::{CALLER_INSTANCE_ID, core_node_target, start_core_node_with_mock_messenger};
-use config::node::{NodeConfigParser, QoSProfile};
-use core_node_api::ActionId;
+use common::{
+    FeedbackDrainOutcome, drain_feedback, fetch_result, send_daemon_goal,
+    start_core_node_with_mock_messenger,
+};
+use config::node::NodeConfigParser;
 use core_node_api::encoding::{InterfaceKind, MeasurementKind};
 use core_node_api::encoding::{
     StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
-use peppylib::ActionMessenger;
-use peppylib::messaging::ResultStatus;
 
 /// Drives the `stack_benchmark` action end-to-end against the in-process daemon
 /// and returns the decoded result plus the count of feedback messages received.
@@ -18,18 +19,10 @@ async fn run_benchmark_goal(
     started: &common::StartedCoreNode,
     goal: StackBenchmarkGoal,
 ) -> (StackBenchmarkResult, usize) {
-    let goal_payload = goal.encode().expect("encode goal");
-
-    let mut action_handle = ActionMessenger::send_goal(
+    let mut action_handle = send_daemon_goal(
         &started.caller_handle,
         &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(&started.core_node_name),
-        ActionId::StackBenchmark.name(),
-        None,
-        goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
+        &goal,
         Duration::from_secs(5),
     )
     .await
@@ -42,38 +35,29 @@ async fn run_benchmark_goal(
     // Drain feedback to end-of-stream with a generous overall deadline.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut feedback_count = 0usize;
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            panic!("timed out draining benchmark feedback");
-        }
-        match tokio::time::timeout(Duration::from_millis(50), action_handle.on_next_feedback())
-            .await
-        {
-            Ok(Ok(msg)) => {
-                StackBenchmarkFeedback::decode(&msg.payload()).expect("decode feedback");
-                feedback_count += 1;
-            }
-            Ok(Err(_)) => break, // end-of-stream
-            Err(_) => {}
-        }
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| StackBenchmarkFeedback::decode(payload).expect("decode feedback"),
+        |_feedback| {
+            feedback_count += 1;
+            ControlFlow::Continue(())
+        },
+        deadline,
+    )
+    .await;
+    if matches!(drained, FeedbackDrainOutcome::TimedOut) {
+        panic!("timed out draining benchmark feedback");
     }
 
-    let reply = ActionMessenger::request_result(
+    let result = fetch_result(
         &started.caller_handle,
         &action_handle,
         Duration::from_secs(10),
+        StackBenchmarkResult::decode,
+        "benchmark result",
     )
     .await
-    .expect("fetch benchmark result");
-    assert!(
-        matches!(
-            reply.status,
-            ResultStatus::Completed | ResultStatus::Cancelled
-        ),
-        "benchmark should complete, got {:?}",
-        reply.status
-    );
-    let result = StackBenchmarkResult::decode(reply.body.as_ref()).expect("decode result");
+    .unwrap_or_else(|err| panic!("{err}"));
     (result, feedback_count)
 }
 

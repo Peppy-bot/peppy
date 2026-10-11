@@ -1,23 +1,20 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, StartedCoreNode, create_node_dir, fs_repositories_json,
-    minimal_peppy_json5, read_json5_array, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger, write_excluded_repositories_json5,
-    write_repositories_json5, write_repositories_json5_in,
+    FeedbackDrainOutcome, StartedCoreNode, create_node_dir, drain_feedback, fetch_result,
+    fs_repositories_json, minimal_peppy_json5, read_json5_array, send_daemon_goal,
+    start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
+    write_excluded_repositories_json5, write_repositories_json5, write_repositories_json5_in,
 };
 use config::consts::NODE_CONFIG_FILE;
-use config::node::QoSProfile;
 use core_node::nodes_repo_cache_path;
-use core_node_api::ActionId;
 use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSourceKind,
 };
 use daemon_config::consts::PeppyDirs;
 use git2::Repository;
-use peppylib::ActionMessenger;
-use peppylib::messaging::ResultStatus;
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 struct RefreshTestResult {
@@ -31,69 +28,53 @@ struct RefreshTestResult {
 /// receives feedback over a real messenger; the mock adapter just doesn't
 /// deliver feedback.
 async fn send_refresh_and_wait(started: &StartedCoreNode) -> RefreshTestResult {
-    let goal = RepoRefreshGoal;
-    let goal_payload = goal.encode().expect("encode goal");
-
-    let mut action_handle = ActionMessenger::send_goal(
+    let mut action_handle = send_daemon_goal(
         &started.caller_handle,
         &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        common::core_node_target(&started.core_node_name),
-        ActionId::RepoRefresh.name(),
-        None,
-        goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
+        &RepoRefreshGoal,
         Duration::from_secs(5),
     )
     .await
     .expect("send goal should succeed");
 
-    let goal_response_payload = action_handle.goal_reply().body.clone();
-    let goal_response =
-        RepoRefreshGoalResponse::decode(&goal_response_payload).expect("decode goal response");
+    let goal_response = RepoRefreshGoalResponse::decode(&action_handle.goal_reply().body)
+        .expect("decode goal response");
 
     let mut feedbacks = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
 
     // Drain feedback until the server closes the stream on completion, then
     // fetch the buffered result once.
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            panic!("Timeout waiting for repo_refresh result");
-        }
-        let drain_timeout = Duration::from_millis(50);
-        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                feedbacks.push(
-                    RepoRefreshFeedback::decode(msg.payload().as_ref())
-                        .expect("decode repo_refresh feedback"),
-                );
-            }
-            Ok(Err(_)) => break,
-            Err(_) => {}
-        }
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| RepoRefreshFeedback::decode(payload).expect("decode repo_refresh feedback"),
+        |feedback| {
+            feedbacks.push(feedback);
+            ControlFlow::Continue(())
+        },
+        deadline,
+    )
+    .await;
+    if matches!(drained, FeedbackDrainOutcome::TimedOut) {
+        panic!("Timeout waiting for repo_refresh result");
     }
 
     let fetch_timeout = deadline
         .saturating_duration_since(tokio::time::Instant::now())
         .max(Duration::from_secs(1));
-    match ActionMessenger::request_result(&started.caller_handle, &action_handle, fetch_timeout)
-        .await
-    {
-        Ok(reply) => match reply.status {
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                let result = RepoRefreshResult::decode(reply.body.as_ref())
-                    .expect("decode repo_refresh result");
-                RefreshTestResult {
-                    goal_response,
-                    feedbacks,
-                    result,
-                }
-            }
-            other => panic!("repo_refresh did not complete with a result: {other:?}"),
-        },
-        Err(err) => panic!("Failed to get result: {}", err),
+    let result = fetch_result(
+        &started.caller_handle,
+        &action_handle,
+        fetch_timeout,
+        RepoRefreshResult::decode,
+        "repo_refresh result",
+    )
+    .await
+    .unwrap_or_else(|err| panic!("{err}"));
+    RefreshTestResult {
+        goal_response,
+        feedbacks,
+        result,
     }
 }
 

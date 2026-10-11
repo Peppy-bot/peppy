@@ -3,7 +3,7 @@ use config::node::Cardinality;
 use core_node_api::encoding::{
     NodeStopRequest, NodeStopResponse, StackJoinGoal, StackListRequest, StackRemoveGoal,
 };
-use peppylib::core_node::transport::{poll, poll_node_stop, send_goal};
+use peppylib::core_node::transport::{poll, poll_node_stop};
 use peppylib::services::slot_update::SlotChannel;
 
 async fn participant_request<R: core_node_api::ServiceRequest>(
@@ -24,12 +24,10 @@ async fn participant_request<R: core_node_api::ServiceRequest>(
 
 async fn execute(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoal) -> LaunchResult {
     tokio::time::timeout(RESULT_TIMEOUT, async {
-        let mut handle = send_goal(
-            goal,
+        let mut handle = send_daemon_goal(
             &started.caller_handle,
             &started.core_node_name,
-            CALLER_INSTANCE_ID,
-            Some(&started.core_node_name),
+            goal,
             GOAL_TIMEOUT,
         )
         .await
@@ -50,12 +48,10 @@ async fn execute(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoa
 
 /// Sends a goal the daemon rejects at admission and returns its reason.
 async fn refusal(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoal) -> String {
-    let handle = send_goal(
-        goal,
+    let handle = send_daemon_goal(
         &started.caller_handle,
         &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        Some(&started.core_node_name),
+        goal,
         GOAL_TIMEOUT,
     )
     .await

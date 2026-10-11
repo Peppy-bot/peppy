@@ -91,7 +91,7 @@ pub fn default_instance_plan(instance_id: &str) -> config::runtime::NodeInstance
 }
 
 /// Why [`drain_feedback`] returned.
-enum FeedbackDrainOutcome {
+pub enum FeedbackDrainOutcome {
     /// The feedback handler asked to stop after a feedback line.
     Stopped,
     /// The server closed the feedback stream, i.e. the action completed.
@@ -103,7 +103,7 @@ enum FeedbackDrainOutcome {
 /// Drains feedback from a live action handle, decoding each line with
 /// `decode` and handing it to `on_feedback`. Returns as soon as `on_feedback`
 /// breaks, the server closes the stream, or the absolute deadline elapses.
-async fn drain_feedback<F>(
+pub async fn drain_feedback<F>(
     action_handle: &mut ActionGoalHandle,
     decode: impl Fn(&[u8]) -> F,
     mut on_feedback: impl FnMut(F) -> ControlFlow<()>,
@@ -142,7 +142,7 @@ fn forward_until_closed<F>(
 
 /// Fetches the buffered result of a completed action and decodes it with
 /// `decode`. `what` names the result in the errors.
-async fn fetch_result<R, E: Display>(
+pub async fn fetch_result<R, E: Display>(
     messenger: &MessengerHandle,
     action_handle: &ActionGoalHandle,
     fetch_timeout: Duration,
@@ -162,7 +162,7 @@ async fn fetch_result<R, E: Display>(
 
 /// Sends `goal` to the daemon action it belongs to on `core_node_name`, from
 /// the test caller.
-async fn send_daemon_goal(
+pub async fn send_daemon_goal(
     messenger: &MessengerHandle,
     core_node_name: &str,
     goal: &impl core_node_api::ActionGoal,
