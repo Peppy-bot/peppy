@@ -7,6 +7,7 @@ use daemon_config::consts::PEPPYLIB_OUTPUT_PATH;
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use generator::{NodeTree, generate_peppygen_lib};
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
 use crate::helpers;
@@ -52,27 +53,49 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   },
 }"#;
 
+/// The manifest of a Rust node named `name` that declares no interfaces and
+/// no dependencies.
+fn minimal_rust_node_config(name: &str) -> String {
+    format!(
+        r#"{{
+  peppy_schema: "node/v1",
+  manifest: {{
+    name: "{name}",
+    tag: "v1"
+  }},
+  execution: {{
+    language: "rust",
+    run_cmd: ["./target/debug/{name}"]
+  }}
+}}"#
+    )
+}
+
+/// The vendored crates whose deployment the copy-mode and symlink-mode tests
+/// check, so that both modes are checked on the same crates.
+const CHECKED_VENDORED_CRATES: [&str; 3] = [
+    "peppylib",
+    "peppy-messaging-interface",
+    "peppy-config-model",
+];
+
+/// The directory, relative to the node directory, that holds the vendored
+/// crates side by side.
+fn vendored_libs_dir() -> &'static Path {
+    Path::new(PEPPYLIB_OUTPUT_PATH)
+        .parent()
+        .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory")
+}
+
 #[test]
 fn generate_peppygen_lib_minimal_config() {
     let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
-    // Minimal config with no interfaces
-    let minimal_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "minimal_node",
-        tag: "v1"
-      },
-      execution: {
-        language: "rust",
-        run_cmd: ["./target/debug/minimal_node"]
-      }
-    }"#;
-
     let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
-    fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
+    fs::write(&config_path, minimal_rust_node_config("minimal_node"))
+        .expect("failed to write peppy.json5");
 
     // Generate should succeed even with no interfaces
     helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, node_dir, Vec::new())
@@ -94,19 +117,9 @@ fn generate_peppygen_lib_copy_mode_deploys_real_dirs() {
         .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
-    let minimal_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "copy_node",
-        tag: "v1"
-      },
-      execution: {
-        language: "rust",
-        run_cmd: ["./target/debug/copy_node"]
-      }
-    }"#;
     let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
-    fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
+    fs::write(&config_path, minimal_rust_node_config("copy_node"))
+        .expect("failed to write peppy.json5");
 
     generate_peppygen_lib(
         PeppygenLanguage::Rust,
@@ -120,15 +133,8 @@ fn generate_peppygen_lib_copy_mode_deploys_real_dirs() {
     )
     .expect("failed to generate library in Copy mode");
 
-    let libs_dir = std::path::Path::new(PEPPYLIB_OUTPUT_PATH)
-        .parent()
-        .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory");
-    for crate_name in [
-        "peppylib",
-        "peppy-messaging-interface",
-        "peppy-config-model",
-    ] {
-        let dest = node_dir.join(libs_dir).join(crate_name);
+    for crate_name in CHECKED_VENDORED_CRATES {
+        let dest = node_dir.join(vendored_libs_dir()).join(crate_name);
         let meta = dest.symlink_metadata().unwrap_or_else(|e| {
             panic!("{crate_name} should be deployed at {}: {e}", dest.display())
         });
@@ -235,15 +241,8 @@ fn generate_peppygen_lib_cargo() {
     );
 
     // Verify the Rust crate symlinks exist.
-    let libs_dir = std::path::Path::new(PEPPYLIB_OUTPUT_PATH)
-        .parent()
-        .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory");
-    for crate_name in [
-        "peppylib",
-        "peppy-messaging-interface",
-        "peppy-config-model",
-    ] {
-        let link = node_dir.join(libs_dir).join(crate_name);
+    for crate_name in CHECKED_VENDORED_CRATES {
+        let link = node_dir.join(vendored_libs_dir()).join(crate_name);
         let meta = link.symlink_metadata().unwrap_or_else(|e| {
             panic!(
                 "{crate_name} symlink should exist at {}: {e}",
@@ -362,20 +361,11 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
         .expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
-    let consumer_config = r#"{
-          peppy_schema: "node/v1",
-          manifest: {
-            name: "{CONSUMER_NODE_NAME}",
-            tag: "v1",
-          },
-          execution: {
-            language: "rust",
-            run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
-          }
-        }"#
-    .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
-    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
-        .expect("failed to write consumer peppy.json5");
+    fs::write(
+        consumer_node_dir.join(NODE_CONFIG_FILE),
+        minimal_rust_node_config(CONSUMER_NODE_NAME),
+    )
+    .expect("failed to write consumer peppy.json5");
 
     let consumed_topic: ConsumedTopic = serde_json5::from_str(&format!(
         r#"{{
@@ -469,20 +459,11 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         .expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
-    let consumer_config = r#"{
-          peppy_schema: "node/v1",
-          manifest: {
-            name: "{CONSUMER_NODE_NAME}",
-            tag: "v1",
-          },
-          execution: {
-            language: "rust",
-            run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
-          }
-        }"#
-    .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
-    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
-        .expect("failed to write consumer peppy.json5");
+    fs::write(
+        consumer_node_dir.join(NODE_CONFIG_FILE),
+        minimal_rust_node_config(CONSUMER_NODE_NAME),
+    )
+    .expect("failed to write consumer peppy.json5");
 
     let consumed_service: ConsumedService = serde_json5::from_str(&format!(
         r#"{{
@@ -618,20 +599,11 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         .expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
-    let consumer_config = r#"{
-          peppy_schema: "node/v1",
-          manifest: {
-            name: "{CONSUMER_NODE_NAME}",
-            tag: "v1",
-          },
-          execution: {
-            language: "rust",
-            run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
-          }
-        }"#
-    .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
-    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
-        .expect("failed to write consumer peppy.json5");
+    fs::write(
+        consumer_node_dir.join(NODE_CONFIG_FILE),
+        minimal_rust_node_config(CONSUMER_NODE_NAME),
+    )
+    .expect("failed to write consumer peppy.json5");
 
     let consumed_action: ConsumedAction = serde_json5::from_str(&format!(
         r#"{{
