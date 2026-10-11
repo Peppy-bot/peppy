@@ -301,7 +301,7 @@ mod tests {
     use super::*;
     use crate::clock::test_support::{MS, manual_clock};
     use serde_json::json;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A read spawned to wait for the next message, registered as waiting
     /// before this returns.
@@ -331,15 +331,20 @@ mod tests {
         .expect("valid resource entry")
     }
 
-    fn ingest_with_clock() -> (ResourceIngest, std::sync::Arc<std::sync::atomic::AtomicU64>) {
+    /// An ingest of `entry` on a clock the test advances by hand.
+    fn ingest_of(entry: ResourceEntry) -> (ResourceIngest, Arc<AtomicU64>) {
         let (clock, nanos) = manual_clock();
         let (events, _) = broadcast::channel(16);
         let ingest = ResourceIngest {
-            state: Arc::new(ResourceState::new(status_entry())),
+            state: Arc::new(ResourceState::new(entry)),
             events,
             clock,
         };
         (ingest, nanos)
+    }
+
+    fn ingest_with_clock() -> (ResourceIngest, Arc<AtomicU64>) {
+        ingest_of(status_entry())
     }
 
     #[test]
@@ -415,17 +420,11 @@ mod tests {
 
     #[test]
     fn a_refused_publish_keeps_the_previous_snapshot() {
-        let (clock, nanos) = manual_clock();
-        let (events, _) = broadcast::channel(16);
         let mut entry = status_entry();
         entry.policies.max_result_bytes = Some(std::num::NonZeroU64::new(32).expect("non-zero"));
         entry.policies.on_oversize =
             Some(serde_json::from_value(json!("reject")).expect("valid policy"));
-        let ingest = ResourceIngest {
-            state: Arc::new(ResourceState::new(entry)),
-            events,
-            clock,
-        };
+        let (ingest, nanos) = ingest_of(entry);
 
         let token = ingest.admit().expect("gate open");
         ingest
@@ -486,13 +485,8 @@ mod tests {
             .publish(token, json!({ "battery": 1 }))
             .expect("publishes");
         nanos.store(100 * MS, Ordering::SeqCst);
-        let read = || {
-            let state = Arc::clone(&ingest.state);
-            let clock = ingest.clock.clone();
-            tokio::spawn(async move { state.next_snapshot(&clock).await })
-        };
-        let (first, second) = (read(), read());
-        tokio::task::yield_now().await;
+        let first = waiting_reader(&ingest).await;
+        let second = waiting_reader(&ingest).await;
         assert_eq!(ingest.state.waiting.load(Ordering::SeqCst), 2);
         let token = ingest.admit().expect("gate open for the readers");
         ingest

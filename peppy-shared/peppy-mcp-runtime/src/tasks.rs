@@ -69,9 +69,7 @@ impl CancelledGoal {
         result.content.insert(0, ContentBlock::text(summary));
         result
     }
-}
 
-impl CancelledGoal {
     /// The status message of a task whose goal ended cancelled: what
     /// [`Self::into_tool_result`] says, the provider's result as JSON
     /// after it. A `cancelled` task carries no result, so this is where its

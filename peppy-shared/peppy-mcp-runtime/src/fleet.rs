@@ -502,7 +502,13 @@ pub(crate) struct FleetRuntime {
     /// The resource entries of every target, flat, in catalog order.
     pub(crate) entries: Vec<ResourceEntry>,
     /// The state of every attached resource, keyed by URI.
-    pub(crate) states: RwLock<HashMap<String, Arc<ResourceState>>>,
+    states: RwLock<HashMap<String, AttachedState>>,
+}
+
+/// One attached resource state and the member whose messages feed it.
+struct AttachedState {
+    member: MemberAddress,
+    state: Arc<ResourceState>,
 }
 
 impl FleetRuntime {
@@ -567,14 +573,19 @@ impl FleetRuntime {
             .unwrap_or_default()
     }
 
+    /// The robot `member` serves and the name a call addresses it by
+    /// (`None` on a target filled once per robot); `None` for a member of
+    /// no robot or of a target the surface does not declare. The published
+    /// names and the routing both derive from it, so they always agree.
+    fn call_address<'a>(&self, member: &'a FleetMember) -> Option<(&'a str, Option<&'a str>)> {
+        let robot = member.robot.as_deref()?;
+        let argument = self.argument_of.get(&member.target)?;
+        Some((robot, argument.as_ref().map(|_| member.name.as_str())))
+    }
+
     /// The published name of `entry` for `member`.
     fn name_for(&self, member: &FleetMember, entry: &ResourceEntry) -> Option<String> {
-        let robot = member.robot.as_deref()?;
-        let name = self
-            .argument_of
-            .get(&member.target)?
-            .as_ref()
-            .map(|_| member.name.as_str());
+        let (robot, name) = self.call_address(member)?;
         Some(published_name(&entry.name, robot, name))
     }
 
@@ -592,12 +603,19 @@ impl FleetRuntime {
             .iter()
             .filter_map(|entry| {
                 let name = self.name_for(member, entry)?;
+                let uri = published_uri(&name);
                 let state = Arc::new(ResourceState::new(ResourceEntry {
-                    name: name.clone(),
-                    uri: published_uri(&name),
+                    name,
+                    uri: uri.clone(),
                     ..entry.clone()
                 }));
-                states.insert(published_uri(&name), Arc::clone(&state));
+                states.insert(
+                    uri,
+                    AttachedState {
+                        member: member.address.clone(),
+                        state: Arc::clone(&state),
+                    },
+                );
                 Some((entry.clone(), state))
             })
             .collect()
@@ -605,19 +623,18 @@ impl FleetRuntime {
 
     /// Whether a call naming `member`'s robot and name reaches it.
     fn routes_to(&self, member: &FleetMember) -> bool {
-        let Some(robot) = member.robot.as_deref() else {
+        let Some((robot, name)) = self.call_address(member) else {
             return false;
         };
-        let Some(argument) = self.argument_of.get(&member.target) else {
-            return false;
-        };
-        let name = argument.as_ref().map(|_| member.name.as_str());
         self.fleet()
             .route(robot, &member.target, name)
             .is_ok_and(|address| address == member.address)
     }
 
-    /// Drops the resource states of `member`.
+    /// Drops the resource states `member` attached. A state that another
+    /// member attached under the same published name stays: the host
+    /// detaches every member that leaves, also one that attached nothing
+    /// because it conflicted with the member that did.
     pub(crate) fn detach(&self, member: &FleetMember) {
         let entries = self.published_by(&member.target);
         if entries.is_empty() {
@@ -625,8 +642,15 @@ impl FleetRuntime {
         }
         let mut states = self.states.write().expect("fleet lock is never poisoned");
         for entry in entries {
-            if let Some(name) = self.name_for(member, entry) {
-                states.remove(&published_uri(&name));
+            let Some(name) = self.name_for(member, entry) else {
+                continue;
+            };
+            let uri = published_uri(&name);
+            let attached_by_member = states
+                .get(&uri)
+                .is_some_and(|attached| attached.member == member.address);
+            if attached_by_member {
+                states.remove(&uri);
             }
         }
     }
@@ -636,7 +660,7 @@ impl FleetRuntime {
             .read()
             .expect("fleet lock is never poisoned")
             .get(uri)
-            .cloned()
+            .map(|attached| Arc::clone(&attached.state))
     }
 
     /// The fields of the listing entry the `describe` sources fill, keyed

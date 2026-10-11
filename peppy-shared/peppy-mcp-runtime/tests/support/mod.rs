@@ -13,14 +13,14 @@
 
 use peppy_mcp_catalog::ExposureBundle;
 use peppy_mcp_runtime::{
-    ActionContext, ActionExit, CancelledGoal, Clock, ExposureServer, ExposureSet, ResourceIngest,
-    ToolCall,
+    ActionContext, ActionExit, CancelledGoal, Clock, ExposureServer, ExposureServerBuilder,
+    ExposureSet, ResourceIngest, ToolCall,
 };
 use rmcp::model::{
     ClientCapabilities, ClientConfig, DetailedTask, GetTaskParams, ProgressNotificationParam,
-    ProtocolVersion, TaskStatus, UpdateTaskParams,
+    ProtocolVersion, ServerNotification, TaskStatus, UpdateTaskParams,
 };
-use rmcp::service::{NotificationContext, RunningService, ServiceError};
+use rmcp::service::{NotificationContext, RunningService, ServiceError, Subscription};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt, RoleClient};
@@ -325,7 +325,7 @@ impl ServedSet {
 pub fn fixture_server(
     expected: &Expected,
     bundle: ExposureBundle,
-) -> (peppy_mcp_runtime::ExposureServerBuilder, Arc<AtomicU64>) {
+) -> (ExposureServerBuilder, Arc<AtomicU64>) {
     let (clock, nanos) = manual_clock();
     let builder = with_camera_tools(ExposureServer::builder(bundle).with_clock(clock), expected);
     (builder, nanos)
@@ -384,12 +384,23 @@ pub async fn replay_episode(call: ToolCall, context: ActionContext) -> Result<Va
 /// Serves the full fixture set: both exposures with their tool handlers and
 /// both recorder task handlers.
 pub async fn start_set() -> ServedSet {
+    start_set_with(|builder| {
+        builder
+            .with_task("recorder.record_episode", record_episode)
+            .with_task("recorder.replay_episode", replay_episode)
+    })
+    .await
+}
+
+/// Serves the fixture set with its tool handlers and the task handlers
+/// `register_tasks` adds to the builder of each endpoint, in set order.
+pub async fn start_set_with(
+    mut register_tasks: impl FnMut(ExposureServerBuilder) -> ExposureServerBuilder,
+) -> ServedSet {
     let mut servers = Vec::new();
     for expected in fixture_exposures() {
         let (builder, nanos) = fixture_server(&expected, fixture_bundle(&expected));
-        let server = builder
-            .with_task("recorder.record_episode", record_episode)
-            .with_task("recorder.replay_episode", replay_episode)
+        let server = register_tasks(builder)
             .build()
             .expect("bundle and handlers agree");
         servers.push((expected, server, nanos));
@@ -576,6 +587,16 @@ pub async fn poll_task_until(
     })
     .await
     .unwrap_or_else(|_| panic!("task `{task_id}` never reached: {description}"))
+}
+
+/// The next notification `subscription` receives, bounded by [`GUARD`]
+/// and driven by the server's publish, not by elapsed host time.
+pub async fn next_notification(subscription: &mut Subscription) -> ServerNotification {
+    tokio::time::timeout(GUARD, subscription.next())
+        .await
+        .expect("a notification arrives")
+        .expect("the subscription stream is healthy")
+        .expect("the stream did not end")
 }
 
 pub fn confirmation_accept(task_id: &str) -> UpdateTaskParams {

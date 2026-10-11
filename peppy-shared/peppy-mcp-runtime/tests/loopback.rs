@@ -22,9 +22,8 @@ use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
 use support::{
     Client, FRAME_URI, GUARD, STATUS_URI, Streaming, assert_ended_cancelled, confirmation_accept,
-    connect, connect_logging_progress, connect_named, connect_with_tasks, fixture_bundle,
-    fixture_exposures, fixture_server, poll_task_until, protocol_error, sample_rgb8_frame,
-    serve_set, start_set,
+    connect, connect_logging_progress, connect_named, connect_with_tasks, next_notification,
+    poll_task_until, protocol_error, sample_rgb8_frame, start_set, start_set_with,
 };
 
 const MS: u64 = 1_000_000;
@@ -145,11 +144,7 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
             .publish(token, json!({ "battery": 87 }))
             .expect("publishes");
 
-        let notification = tokio::time::timeout(GUARD, subscription.next())
-            .await
-            .expect("a notification arrives")
-            .expect("the subscription stream is healthy")
-            .expect("the stream did not end");
+        let notification = next_notification(&mut subscription).await;
         match notification {
             ServerNotification::ResourceUpdatedNotification(updated) => {
                 assert_eq!(updated.params.uri, STATUS_URI);
@@ -653,11 +648,9 @@ async fn signal_on_cancel(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn closing_the_call_cancels_the_goal_running_inside_it() {
     let (signal, mut cancelled) = tokio::sync::mpsc::unbounded_channel();
-    let mut servers = Vec::new();
-    for expected in fixture_exposures() {
+    let set = start_set_with(|builder| {
         let signal = signal.clone();
-        let (builder, nanos) = fixture_server(&expected, fixture_bundle(&expected));
-        let server = builder
+        builder
             .with_task("recorder.record_episode", support::record_episode)
             .with_task(
                 "recorder.replay_episode",
@@ -666,11 +659,8 @@ async fn closing_the_call_cancels_the_goal_running_inside_it() {
                     signal_on_cancel(signal.clone(), context)
                 },
             )
-            .build()
-            .expect("bundle and handlers agree");
-        servers.push((expected, server, nanos));
-    }
-    let set = serve_set(servers).await;
+    })
+    .await;
     let http = reqwest::Client::new();
     for endpoint in &set.endpoints {
         // A raw call, so the test owns the response stream: once the first

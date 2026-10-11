@@ -57,11 +57,13 @@ pub fn value_array<'a>(value: &'a Value, name: &str) -> Result<&'a Vec<Value>, S
         .ok_or_else(|| format!("`{name}` is not an array"))
 }
 
-macro_rules! unsigned_value_accessor {
-    ($fn_name:ident, $ty:ty) => {
+/// Defines `$fn_name`, the accessor of a JSON integer that `$as_wide` reads
+/// and that fits `$ty`.
+macro_rules! ranged_integer_accessor {
+    ($fn_name:ident, $ty:ty, $as_wide:ident) => {
         pub fn $fn_name(value: &Value, name: &str) -> Result<$ty, String> {
             value
-                .as_u64()
+                .$as_wide()
                 .and_then(|wide| <$ty>::try_from(wide).ok())
                 .ok_or_else(|| {
                     format!(
@@ -74,29 +76,12 @@ macro_rules! unsigned_value_accessor {
     };
 }
 
-macro_rules! signed_value_accessor {
-    ($fn_name:ident, $ty:ty) => {
-        pub fn $fn_name(value: &Value, name: &str) -> Result<$ty, String> {
-            value
-                .as_i64()
-                .and_then(|wide| <$ty>::try_from(wide).ok())
-                .ok_or_else(|| {
-                    format!(
-                        "`{name}` is not an integer between {} and {}",
-                        <$ty>::MIN,
-                        <$ty>::MAX
-                    )
-                })
-        }
-    };
-}
-
-unsigned_value_accessor!(value_u8, u8);
-unsigned_value_accessor!(value_u16, u16);
-unsigned_value_accessor!(value_u32, u32);
-signed_value_accessor!(value_i8, i8);
-signed_value_accessor!(value_i16, i16);
-signed_value_accessor!(value_i32, i32);
+ranged_integer_accessor!(value_u8, u8, as_u64);
+ranged_integer_accessor!(value_u16, u16, as_u64);
+ranged_integer_accessor!(value_u32, u32, as_u64);
+ranged_integer_accessor!(value_i8, i8, as_i64);
+ranged_integer_accessor!(value_i16, i16, as_i64);
+ranged_integer_accessor!(value_i32, i32, as_i64);
 
 /// A `u64` carried as a canonical decimal string, because JSON numbers lose
 /// precision above 2^53. Canonical form is the catalog's
@@ -389,6 +374,18 @@ mod tests {
         assert_eq!(value_i8(&json!(-128), "n").expect("fits"), -128);
         assert!(value_i8(&json!(-129), "n").is_err());
         assert!(value_u16(&json!(-1), "n").is_err());
+    }
+
+    #[test]
+    fn a_ranged_integer_refusal_names_the_field_and_the_range() {
+        assert_eq!(
+            value_u16(&json!(-1), "gain").unwrap_err(),
+            "`gain` is not an integer between 0 and 65535"
+        );
+        assert_eq!(
+            value_i32(&json!("1"), "offset").unwrap_err(),
+            "`offset` is not an integer between -2147483648 and 2147483647"
+        );
     }
 
     #[test]

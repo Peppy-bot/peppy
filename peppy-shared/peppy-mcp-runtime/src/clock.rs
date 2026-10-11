@@ -1,13 +1,16 @@
-//! The injected time source behind freshness and update-rate policies.
+//! The injected time source behind freshness and update-rate policies and
+//! the call record's timestamps.
 
 use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// A monotonic-enough nanosecond source with an arbitrary origin. The
-/// runtime only ever compares differences between readings, so any source
-/// that never runs backwards works: the wall clock, a node's sim-time-aware
-/// clock, or a test counter.
+/// A nanosecond source. The freshness and update-rate policies only compare
+/// differences between readings, so for them any source that never runs
+/// backwards works, whatever its origin: the wall clock, a node's
+/// sim-time-aware clock, or a test counter. The call record renders the
+/// readings of its wall clock as dates, so that clock counts nanoseconds
+/// since the Unix epoch.
 #[derive(Clone)]
 pub struct Clock {
     now_nanos: Arc<dyn Fn() -> u64 + Send + Sync>,
