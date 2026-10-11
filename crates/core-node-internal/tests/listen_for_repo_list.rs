@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    StartedCoreNode, create_node_dir, poll_core_node, read_json5_array,
+    StartedCoreNode, create_node_dir, fs_repositories_json, poll_core_node, read_json5_array,
     start_core_node_with_mock_messenger, write_excluded_repositories_json5, write_packages_cache,
     write_repositories_json5,
 };
@@ -94,13 +94,7 @@ async fn list_finds_nodes_in_fs_repo() {
     let sensor_dir = create_node_dir(&repo_dir, "my_sensor", "v1");
     let actuator_dir = create_node_dir(&repo_dir, "my_actuator", "v2");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo_dir.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
     index_nodes(
         &started,
         vec![
@@ -190,14 +184,7 @@ async fn list_marks_cross_repo_duplicates_fs() {
     let shared_b = create_node_dir(&repo_b, "shared", "v1");
     let unique_b = create_node_dir(&repo_b, "unique_b", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo_a.to_string_lossy() },
-            { "id": 2, "type": "fs", "path": repo_b.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
     index_nodes(
         &started,
         vec![
@@ -337,14 +324,7 @@ async fn list_excludes_fs_repo() {
     let node_a = create_node_dir(&repo_a, "node_a", "v1");
     let node_b = create_node_dir(&repo_b, "node_b", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo_a.to_string_lossy() },
-            { "id": 2, "type": "fs", "path": repo_b.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
     // Both are indexed; the exclusion is what keeps repo_b out of the list.
     index_nodes(
         &started,
@@ -353,13 +333,7 @@ async fn list_excludes_fs_repo() {
             fs_cache_entry(&node_b, "node_b", "v1"),
         ],
     );
-    write_excluded_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo_b.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_excluded_repositories_json5(&started, &fs_repositories_json(&[&repo_b]));
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success);
@@ -381,13 +355,7 @@ async fn list_omits_nodes_that_are_on_disk_but_not_indexed() {
     let indexed = create_node_dir(&repo, "keep_node", "v1");
     create_node_dir(&repo, "added_since_the_last_refresh", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo]));
     index_nodes(&started, vec![fs_cache_entry(&indexed, "keep_node", "v1")]);
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
@@ -452,14 +420,7 @@ async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
     let shadowed_a = create_node_dir(&repo_a, "shadowed", "v1");
     let shadowed_b = create_node_dir(&repo_b, "shadowed", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo_a.to_string_lossy() },
-            { "id": 2, "type": "fs", "path": repo_b.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
     index_nodes(
         &started,
         vec![
@@ -503,13 +464,7 @@ async fn list_reports_retained_entries_and_the_failure_reason() {
     let repo = started.peppy_dirs.root().join("stale_repo");
     let node = create_node_dir(&repo, "kept", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo]));
     index_nodes(&started, vec![fs_cache_entry(&node, "kept", "v1")]);
     std::fs::write(
         started.peppy_dirs.cache_dir().join("repo_status.json5"),
@@ -561,13 +516,7 @@ async fn list_reports_a_healthy_repository_as_current() {
     let repo = started.peppy_dirs.root().join("healthy_repo");
     let node = create_node_dir(&repo, "fresh", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo]));
     index_nodes(&started, vec![fs_cache_entry(&node, "fresh", "v1")]);
     std::fs::write(
         started.peppy_dirs.cache_dir().join("repo_status.json5"),

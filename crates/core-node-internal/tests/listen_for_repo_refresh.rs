@@ -1,9 +1,10 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, StartedCoreNode, create_node_dir, minimal_peppy_json5, read_json5_array,
-    start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
-    write_excluded_repositories_json5, write_repositories_json5, write_repositories_json5_in,
+    CALLER_INSTANCE_ID, StartedCoreNode, create_node_dir, fs_repositories_json,
+    minimal_peppy_json5, read_json5_array, start_core_node_with_mock_messenger,
+    start_core_node_with_real_messenger, write_excluded_repositories_json5,
+    write_repositories_json5, write_repositories_json5_in,
 };
 use config::consts::NODE_CONFIG_FILE;
 use config::node::QoSProfile;
@@ -118,13 +119,7 @@ async fn refresh_fs_discovers_nodes() {
     create_node_dir(&repo_dir, "my_sensor", "v1");
     common::publish_repo_index(&repo_dir);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
 
@@ -164,13 +159,7 @@ async fn refresh_multiple_nodes() {
     create_node_dir(&repo_dir, "node_b", "v2");
     common::publish_repo_index(&repo_dir);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
 
@@ -209,14 +198,7 @@ async fn refresh_deduplication() {
     common::publish_repo_index(&repo_dir_b);
 
     // repo_a listed first (lower id), should take precedence
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_dir_a.display(),
-            repo_dir_b.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir_a, &repo_dir_b]));
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
 
@@ -415,14 +397,7 @@ async fn refresh_cache_includes_duplicates() {
     common::publish_repo_index(&repo_dir_a);
     common::publish_repo_index(&repo_dir_b);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_dir_a.display(),
-            repo_dir_b.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir_a, &repo_dir_b]));
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
 
@@ -537,14 +512,7 @@ async fn refresh_reports_unreadable_repos_without_failing() {
 
     write_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }},
-                {{ "id": 2, "type": "fs", "path": "{}" }},
-                {{ "id": 3, "type": "fs", "path": "{}" }}]"#,
-            healthy.display(),
-            unpublished.display(),
-            never_mounted.display(),
-        ),
+        &fs_repositories_json(&[&healthy, &unpublished, &never_mounted]),
     );
 
     let result = send_refresh_and_wait(&started).await;
@@ -595,21 +563,8 @@ async fn refresh_excludes_fs_repo_with_feedback() {
     common::publish_repo_index(&repo_a);
     common::publish_repo_index(&repo_b);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_a.display(),
-            repo_b.display()
-        ),
-    );
-    write_excluded_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_b.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
+    write_excluded_repositories_json5(&started, &fs_repositories_json(&[&repo_b]));
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
 
@@ -671,19 +626,10 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
     create_node_dir(&repo, "secret_node", "v1");
     common::publish_repo_index(&repo);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo]));
     write_excluded_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo.join("secret_node_v1").display()
-        ),
+        &fs_repositories_json(&[&repo.join("secret_node_v1")]),
     );
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
@@ -744,21 +690,10 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
     common::publish_repo_index(&repo_a);
     common::publish_repo_index(&repo_b);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_a.display(),
-            repo_b.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
     write_excluded_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_b.display(),
-            repo_a.join("secret_node_v1").display()
-        ),
+        &fs_repositories_json(&[&repo_b, &repo_a.join("secret_node_v1")]),
     );
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
@@ -804,21 +739,8 @@ async fn refresh_excluded_repos_not_in_cache() {
     common::publish_repo_index(&repo_a);
     common::publish_repo_index(&repo_b);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_a.display(),
-            repo_b.display()
-        ),
-    );
-    write_excluded_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_b.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
+    write_excluded_repositories_json5(&started, &fs_repositories_json(&[&repo_b]));
 
     let result = send_refresh_and_wait(&started).await;
     assert!(result.result.success, "refresh should succeed");
@@ -906,13 +828,7 @@ async fn refresh_discovers_contracts() {
     std::fs::write(iface_dir.join("peppy.json5"), manifest_body).expect("write contract manifest");
     common::publish_repo_index(&repo_dir);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
     assert!(result.result.success, "refresh should succeed");
@@ -976,13 +892,7 @@ async fn refresh_discovers_nodes() {
     create_node_dir(&repo_dir, "my_sensor", "v1");
     common::publish_repo_index(&repo_dir);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
     assert!(result.result.success, "refresh should succeed");
@@ -1053,13 +963,7 @@ async fn refresh_discovers_launchers() {
         .expect("write launcher manifest");
     common::publish_repo_index(&repo_dir);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
     assert!(result.result.success, "refresh should succeed");

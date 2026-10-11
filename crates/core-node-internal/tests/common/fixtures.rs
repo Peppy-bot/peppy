@@ -495,6 +495,19 @@ pub fn write_repositories_json5_in(peppy_dirs: &PeppyDirs, content: &str) {
         .expect("write repos file");
 }
 
+/// The content of a repositories.json5 (or excluded_repositories.json5) that
+/// lists the fs repositories at `paths`, with ids 1, 2, ... in order.
+pub fn fs_repositories_json(paths: &[&Path]) -> String {
+    let entries: Vec<serde_json::Value> = paths
+        .iter()
+        .zip(1u64..)
+        .map(|(path, id)| {
+            serde_json::json!({ "id": id, "type": "fs", "path": path.to_string_lossy() })
+        })
+        .collect();
+    serde_json::to_string(&entries).expect("serialize fs repository entries")
+}
+
 /// The excluded_repositories.json5 file in the conf_dir of `peppy_dirs`.
 pub fn excluded_repositories_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs.conf_dir().join("excluded_repositories.json5")
