@@ -56,16 +56,6 @@ async fn listen_for_node_run_success() {
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
-    // Intentionally keep the started node process running: nodes are expected to linger
-    // and the test should still tear down cleanly.
-    let _artifact_path = add_response.artifact_path;
-
-    // Get the actual messaging endpoint from the Zenoh session
-    let (_messaging_host, _messaging_port) = started_core_node
-        .caller_handle
-        .messaging_endpoint()
-        .await
-        .expect("zenoh endpoint should be available");
 
     // Create a runtime config for the node_run request
     let instance_plan = common::instance_plan(TARGET_INSTANCE_ID, Default::default());
