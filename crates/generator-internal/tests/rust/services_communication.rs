@@ -827,14 +827,11 @@ fn main() -> Result<()> {
 use peppygen::exposed_services::enable_camera;
 use peppygen::NodeBuilder;
 use peppygen::Result;
-use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         enable_camera::handle_next_request(&node_runner, |request| -> Result<enable_camera::Response> {
             println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
-            // Sleep to ensure exposer1 responds first
-            std::thread::sleep(Duration::from_secs(2));
             Ok(enable_camera::Response::new(
                 request.data.enable,
                 Some("handled_by_exposer2".to_owned()),
@@ -1010,27 +1007,17 @@ fn main() -> Result<()> {
         consumer_stderr
     );
 
-    let (winner_stdout, winner_stderr, loser_stdout, loser_stderr, winner_label, loser_label) = (
-        &exposer1_stdout,
-        &exposer1_stderr,
-        &exposer2_stdout,
-        &exposer2_stderr,
-        "exposer1",
-        "exposer2",
+    assert!(
+        exposer1_stdout.contains(&expected_request_log)
+            && exposer1_stdout.contains("enable_camera handler finished"),
+        "exposer1 is the bound producer but did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
+        exposer1_stdout,
+        exposer1_stderr
     );
     assert!(
-        winner_stdout.contains(&expected_request_log)
-            && winner_stdout.contains("enable_camera handler finished"),
-        "{} is the bound producer but did not process the enable_camera request.\nstdout:\n{}\nstderr:\n{}",
-        winner_label,
-        winner_stdout,
-        winner_stderr
-    );
-    assert!(
-        !loser_stdout.contains(&expected_request_log),
-        "{} must NOT process the enable_camera request: the slot is bound to the other exposer and there is no wildcard fallback.\nstdout:\n{}\nstderr:\n{}",
-        loser_label,
-        loser_stdout,
-        loser_stderr
+        !exposer2_stdout.contains(&expected_request_log),
+        "exposer2 must NOT process the enable_camera request: the slot is bound to the other exposer and there is no wildcard fallback.\nstdout:\n{}\nstderr:\n{}",
+        exposer2_stdout,
+        exposer2_stderr
     );
 }
