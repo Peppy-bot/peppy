@@ -104,7 +104,6 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     // `listen_for_node_build.rs`. Here we only verify the add-side overwrite
     // semantics: stack shape, no instances, and that the live config reflects
     // the overwritten interfaces.
-    let _ = add_v2.log_path;
     assert!(
         entity_guard
             .config()
@@ -115,7 +114,6 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             .is_some_and(|topics| topics.iter().any(|topic| topic.name() == "/example")),
         "node should have updated interfaces from the overwritten config"
     );
-    drop(entity_guard);
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents() {
@@ -860,7 +858,6 @@ async fn node_add_same_node_shutdown_existing_instances() {
         add_v2.error_message
     );
 
-    let _ = add_v2.log_path;
     assert_eq!(
         entity_instance_count(&node_stack, NODE_NAME, NODE_TAG),
         0,
