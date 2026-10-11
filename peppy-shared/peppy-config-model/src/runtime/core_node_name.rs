@@ -61,6 +61,29 @@ impl CoreNodeName {
     pub fn into_string(self) -> String {
         self.0
     }
+
+    /// The JSON Schema of a core node name, derived from the rule every
+    /// constructor applies: a string of 1 to [`MAX_CORE_NODE_NAME_LEN`]
+    /// characters from [`ALLOWED_CONFIG_CHARS`], and not
+    /// [`SELF_CORE_NODE`]. Every allowed character is ASCII, so the pattern
+    /// counts characters as the rule counts bytes.
+    pub fn json_schema() -> serde_json::Value {
+        let class: String = ALLOWED_CONFIG_CHARS
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c.to_string()
+                } else {
+                    format!("\\{c}")
+                }
+            })
+            .collect();
+        serde_json::json!({
+            "type": "string",
+            "pattern": format!("^[{class}]{{1,{MAX_CORE_NODE_NAME_LEN}}}$"),
+            "not": { "const": SELF_CORE_NODE },
+        })
+    }
 }
 
 impl TryFrom<String> for CoreNodeName {
@@ -112,5 +135,25 @@ mod tests {
         }
         assert!(CoreNodeName::is_self_keyword("self"));
         assert!(!CoreNodeName::is_self_keyword("selfish"));
+    }
+
+    /// The schema says what the rule says: the allowed characters and the
+    /// length bound as a pattern, and the reserved word as a `not`.
+    #[test]
+    fn the_json_schema_restates_the_rule() {
+        let schema = CoreNodeName::json_schema();
+        assert_eq!(schema["type"], "string");
+        assert_eq!(schema["not"], serde_json::json!({ "const": "self" }));
+        let pattern = schema["pattern"].as_str().expect("a pattern");
+        let class = pattern
+            .strip_prefix("^[")
+            .and_then(|rest| rest.strip_suffix(&format!("]{{1,{MAX_CORE_NODE_NAME_LEN}}}$")))
+            .expect("one character class with the length bound");
+        assert_eq!(class.replace('\\', ""), ALLOWED_CONFIG_CHARS);
+        assert_eq!(
+            pattern.matches('\\').count(),
+            1,
+            "only `-` is escaped: {pattern}"
+        );
     }
 }

@@ -41,15 +41,39 @@ struct ContractMembers {
 }
 
 impl Fixture {
+    fn members(&self) -> DeclaredMembers<'_> {
+        DeclaredMembers {
+            topics: &self.document.interfaces.topics,
+            services: &self.document.interfaces.services,
+            actions: &self.document.interfaces.actions,
+        }
+    }
+
     fn resolved(&self) -> ResolvedContract<'_> {
         ResolvedContract {
             name: &self.document.manifest.name,
             tag: &self.document.manifest.tag,
             sha256: &self.sha256,
-            topics: &self.document.interfaces.topics,
-            services: &self.document.interfaces.services,
-            actions: &self.document.interfaces.actions,
+            members: self.members(),
         }
+    }
+
+    /// The fixture as a daemon interface: the same identity and members,
+    /// with no fingerprint.
+    fn interface(&self) -> ResolvedInterface<'_> {
+        ResolvedInterface {
+            name: &self.document.manifest.name,
+            tag: &self.document.manifest.tag,
+            members: self.members(),
+        }
+    }
+}
+
+/// The contract slot behind an entry of a contract target.
+fn slot<M>(bound: &BoundMember<M>) -> &BundleContractPin {
+    match &bound.source {
+        MemberSource::Slot(slot) => slot,
+        MemberSource::Daemon(daemon) => panic!("expected a contract slot, got {daemon:?}"),
     }
 }
 
@@ -70,7 +94,8 @@ fn parse_exposure(exposure_json5: &str) -> McpExposure {
 
 fn validate(exposure_json5: &str, contracts: &[&Fixture]) -> ValidatedExposure {
     let resolved: Vec<ResolvedContract<'_>> = contracts.iter().map(|f| f.resolved()).collect();
-    build_exposure_bundle(&parse_exposure(exposure_json5), &resolved).expect("exposure validates")
+    build_exposure_bundle(&parse_exposure(exposure_json5), &resolved, &[])
+        .expect("exposure validates")
 }
 
 fn build(exposure_json5: &str, contracts: &[&Fixture]) -> ExposureBundle {
@@ -79,7 +104,7 @@ fn build(exposure_json5: &str, contracts: &[&Fixture]) -> ExposureBundle {
 
 fn violations_of(exposure_json5: &str, contracts: &[&Fixture]) -> Vec<String> {
     let resolved: Vec<ResolvedContract<'_>> = contracts.iter().map(|f| f.resolved()).collect();
-    build_exposure_bundle(&parse_exposure(exposure_json5), &resolved)
+    build_exposure_bundle(&parse_exposure(exposure_json5), &resolved, &[])
         .expect_err("expected the exposure to be refused")
         .violations
 }
@@ -127,7 +152,7 @@ fn every_entry_is_bound_to_the_member_it_was_validated_against() {
         .map(|(entry, bound)| {
             (
                 entry.target.as_str(),
-                bound.slot.link_id.as_str(),
+                slot(bound).link_id.as_str(),
                 entry.member.as_str(),
                 bound.member.name.as_str(),
             )
@@ -135,7 +160,7 @@ fn every_entry_is_bound_to_the_member_it_was_validated_against() {
         .chain(validated.tools().map(|(entry, bound)| {
             (
                 entry.target.as_str(),
-                bound.slot.link_id.as_str(),
+                slot(bound).link_id.as_str(),
                 entry.member.as_str(),
                 bound.member.name.as_str(),
             )
@@ -143,7 +168,7 @@ fn every_entry_is_bound_to_the_member_it_was_validated_against() {
         .chain(validated.tasks().map(|(entry, bound)| {
             (
                 entry.target.as_str(),
-                bound.slot.link_id.as_str(),
+                slot(bound).link_id.as_str(),
                 entry.member.as_str(),
                 bound.member.name.as_str(),
             )
@@ -163,9 +188,9 @@ fn every_entry_is_bound_to_the_member_it_was_validated_against() {
     // format a server lays out, behind the slot with its resolved bytes.
     let (frame, topic) = validated.resources().next().expect("one resource");
     assert_eq!(frame.member, "video_stream");
-    assert_eq!(topic.slot.name, "rgb_camera");
-    assert_eq!(topic.slot.tag, "v1");
-    assert_eq!(topic.slot.sha256, sha_of(CAMERA_CONTRACT));
+    assert_eq!(slot(topic).name, "rgb_camera");
+    assert_eq!(slot(topic).tag, "v1");
+    assert_eq!(slot(topic).sha256, sha_of(CAMERA_CONTRACT));
     assert!(
         topic
             .member
@@ -175,8 +200,8 @@ fn every_entry_is_bound_to_the_member_it_was_validated_against() {
         "the topic's format is the contract's"
     );
     let (_, recording) = validated.tasks().next().expect("one task");
-    assert_eq!(recording.slot.name, "episode_recording");
-    assert_eq!(recording.slot.link_id, "recorder");
+    assert_eq!(slot(recording).name, "episode_recording");
+    assert_eq!(slot(recording).link_id, "recorder");
 }
 
 #[test]
@@ -913,7 +938,8 @@ fn the_validation_error_renders_one_bullet_per_violation() {
     };
     assert_eq!(
         error.to_string(),
-        "the exposure does not validate against its contracts:\n  - first problem\n  - second problem"
+        "the exposure does not validate against its contracts and daemon interfaces:\n  - first \
+         problem\n  - second problem"
     );
 }
 
@@ -1315,6 +1341,154 @@ fn a_pictured_service_needs_its_representation_fields_in_the_response() {
     assert!(
         violations[1].contains("`height` names `message`")
             && violations[1].contains("`u8`, `u16`, or `u32`"),
+        "{violations:?}"
+    );
+}
+
+/// `recorder_exposure` with its target drawing from the daemon interface of
+/// the recording fixture's identity instead of the contract.
+fn daemon_recorder_exposure(member: &str, bound: &str) -> String {
+    let contract_reference = format!(
+        r#"contract: {{ name: "episode_recording", tag: "v1", sha256: "{}" }}"#,
+        sha_of(RECORDING_CONTRACT)
+    );
+    recorder_exposure(RECORDING_CONTRACT, member, bound).replace(
+        &contract_reference,
+        r#"daemon: { name: "episode_recording", tag: "v1" }"#,
+    )
+}
+
+fn validate_daemon(exposure_json5: &str, interface: &Fixture) -> ValidatedExposure {
+    build_exposure_bundle(
+        &parse_exposure(exposure_json5),
+        &[],
+        &[interface.interface()],
+    )
+    .expect("exposure validates")
+}
+
+#[test]
+fn a_daemon_target_derives_its_entries_as_a_contract_target_does() {
+    let recording = fixture(RECORDING_CONTRACT);
+    let from_contract = build(
+        &recorder_exposure(
+            RECORDING_CONTRACT,
+            "record_episode",
+            "progress_timeout_ms: 60000",
+        ),
+        &[&recording],
+    );
+    let validated = validate_daemon(
+        &daemon_recorder_exposure("record_episode", "progress_timeout_ms: 60000"),
+        &recording,
+    );
+    assert_eq!(
+        validated.bundle.tasks, from_contract.tasks,
+        "one derivation: the same members give the same entries"
+    );
+
+    // The bundle marks the target as a daemon target, apart from the slots.
+    assert!(validated.bundle.surface.contracts().is_empty());
+    assert_eq!(
+        validated.bundle.surface.daemon_targets(),
+        [BundleDaemonTarget {
+            target: "recorder".to_string(),
+            name: "episode_recording".to_string(),
+            tag: "v1".to_string(),
+        }]
+    );
+    let (_, bound) = validated.tasks().next().expect("one task");
+    assert_eq!(
+        bound.source,
+        MemberSource::Daemon(validated.bundle.surface.daemon_targets()[0].clone())
+    );
+    assert_eq!(bound.member.name, "record_episode");
+}
+
+#[test]
+fn a_daemon_target_follows_the_member_rules_of_a_contract_target() {
+    let recording = fixture(RECORDING_CONTRACT);
+    let violations = build_exposure_bundle(
+        &parse_exposure(&daemon_recorder_exposure(
+            "no_such_action",
+            "deadline_ms: 60000",
+        )),
+        &[],
+        &[recording.interface()],
+    )
+    .expect_err("the interface declares no such action")
+    .violations;
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(
+        violations[0].contains(
+            "target `recorder` selects action member `no_such_action`, but daemon interface \
+             `episode_recording:v1` declares no such action"
+        ),
+        "{violations:?}"
+    );
+
+    let violations = build_exposure_bundle(
+        &parse_exposure(&daemon_recorder_exposure(
+            "finish_session",
+            "progress_timeout_ms: 60000",
+        )),
+        &[],
+        &[recording.interface()],
+    )
+    .expect_err("a progress window needs a feedback topic")
+    .violations;
+    assert!(
+        violations[0]
+            .contains("daemon interface `episode_recording:v1` declares no `feedback_topic`"),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn a_daemon_target_needs_its_interface() {
+    let violations = build_exposure_bundle(
+        &parse_exposure(&daemon_recorder_exposure(
+            "record_episode",
+            "deadline_ms: 60000",
+        )),
+        &[fixture(RECORDING_CONTRACT).resolved()],
+        &[],
+    )
+    .expect_err("a contract of the same identity is not the interface")
+    .violations;
+    assert_eq!(
+        violations,
+        [
+            "target `recorder` references daemon interface `episode_recording:v1`, which was not \
+          provided"
+        ]
+    );
+}
+
+#[test]
+fn a_daemon_target_on_a_per_robot_surface_is_a_violation() {
+    // The document refuses the pair when it parses; a value built in code
+    // meets the same rule when it validates.
+    let mut exposure = parse_exposure(&per_robot_exposure(&sha_of(STATUS_CONTRACT), ""));
+    let ExposureSurface::PerRobot { targets, .. } = &mut exposure.surface else {
+        panic!("a per-robot surface");
+    };
+    targets["status"].selection.source = TargetSource::Daemon(crate::DaemonInterfaceRef {
+        name: peppy_config_model::runtime::Name::new("robot_status").expect("a name"),
+        tag: "v1".to_string(),
+    });
+    let status = fixture(STATUS_CONTRACT);
+    let violations = build_exposure_bundle(
+        &exposure,
+        &[fixture(CAMERA_CONTRACT).resolved()],
+        &[status.interface()],
+    )
+    .expect_err("a daemon target sits on a fixed surface")
+    .violations;
+    assert!(
+        violations[0].contains(
+            "target `status` names daemon interface `robot_status:v1` on a per-robot surface"
+        ),
         "{violations:?}"
     );
 }

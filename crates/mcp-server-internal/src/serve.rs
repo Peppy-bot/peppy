@@ -2,7 +2,9 @@
 //! then run as a node and serve.
 
 use crate::bridges::{self, PreparedExposure};
+use crate::daemon_bridge::{DaemonBridges, DaemonScopes, OwnDaemon};
 use crate::fleet;
+use daemon_config::daemon_interface::DaemonInterface;
 use daemon_config::mcp_deployment::{
     McpDeploymentError, McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, SPEC_ENV_VAR,
     endpoint_label, plan_deployment,
@@ -12,6 +14,7 @@ use peppy_mcp_catalog::BundleSurface;
 use peppy_mcp_runtime::{Clock, ExposureServer, ExposureSet};
 use peppylib::runtime::{EndpointBinding, NodeBuilder, NodeRunner, bind_preferred};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
@@ -37,6 +40,29 @@ pub enum ServeError {
          show progress with"
     )]
     ProgressWithoutFeedback { tool: String },
+    #[error(
+        "resource `{resource}` reads a topic of daemon target `{target}`; a daemon interface \
+         serves no topic"
+    )]
+    DaemonResource { resource: String, target: String },
+    #[error("target `{target}` names a daemon interface this server does not serve: {reason}")]
+    UnservedDaemonInterface { target: String, reason: String },
+    #[error(
+        "tool `{tool}` selects member `{member}` of {interface}, which this server does not \
+         bridge as {kind}"
+    )]
+    UnbridgedDaemonMember {
+        tool: String,
+        member: String,
+        interface: String,
+        kind: &'static str,
+    },
+    #[error(
+        "the daemon targets cannot be served:{problems}\nA launch and a join check every scope \
+         before they start the server; a server started another way, for example with `peppy \
+         node run`, gets its scopes from the runtime configuration of its instance only"
+    )]
+    DaemonScopes { problems: String },
     #[error("{0}")]
     Build(#[from] peppy_mcp_runtime::BuildError),
     #[error("cannot bind 127.0.0.1:{port}: {source}")]
@@ -67,10 +93,13 @@ const _: () = assert!(
 /// Runs the server to completion: until the daemon stops it, the process
 /// receives a signal, or the endpoint fails.
 ///
-/// Everything that can refuse the deployment (a spec that does not verify,
-/// an exposure that does not validate against its pinned contracts, a
-/// format that cannot be laid out) refuses before the process connects to
-/// the daemon, with the full report on stderr.
+/// Everything the documents can refuse (a spec that does not verify, an
+/// exposure that does not validate against its pinned contracts, a format
+/// that cannot be laid out) refuses before the process connects to the
+/// daemon, with the full report on stderr. The scopes of the daemon targets
+/// come with the runtime configuration of the instance, so a missing or bad
+/// scope refuses at the start of the node's setup, before anything is
+/// served.
 pub fn serve() -> Result<(), ServeError> {
     let spec_path = std::env::var_os(SPEC_ENV_VAR).ok_or(ServeError::NoSpec)?;
     let spec = McpServeSpec::from_path(Path::new(&spec_path)).map_err(ServeError::Spec)?;
@@ -78,27 +107,41 @@ pub fn serve() -> Result<(), ServeError> {
     let McpDeploymentPlan {
         config: manifest,
         exposures: validated,
+        targets,
         ..
     } = plan_deployment(&exposures, &contracts)?;
     let prepared = bridges::prepare(validated)?;
     NodeBuilder::<ServeArguments>::new()
         .with_manifest(manifest)
         .run(move |arguments, node_runner| async move {
-            run(arguments, node_runner, prepared)
+            run(arguments, node_runner, prepared, targets.daemon)
                 .await
                 .map_err(|error| peppylib::PeppyError::Io(std::io::Error::other(error.to_string())))
         })?;
     Ok(())
 }
 
-/// The node's setup: bridges to the producers of each target, one server
-/// per exposure, the listener, and the pumps that feed the resources.
+/// The node's setup: the scope of each daemon target, bridges to the
+/// producers of each contract target and to the daemon, one server per
+/// exposure, the listener, and the pumps that feed the resources.
+/// `daemon_targets` are the daemon targets of the deployment, with the
+/// interface each one names.
 async fn run(
     arguments: ServeArguments,
     node_runner: Arc<NodeRunner>,
     prepared: Vec<PreparedExposure>,
+    daemon_targets: BTreeMap<String, DaemonInterface>,
 ) -> Result<(), ServeError> {
     let port = arguments.port;
+
+    // A daemon target is served only under the scope the launch gave it:
+    // parsed first, so a server without one stops before it serves anything.
+    let scopes = DaemonScopes::parse(
+        node_runner.processor().bound_instance_id(),
+        &daemon_targets,
+        node_runner.daemon_scopes(),
+    )?;
+    let daemon = DaemonBridges::new(OwnDaemon::of(&node_runner), scopes);
 
     // The daemon's clock, sim time included, governs freshness and rate
     // gating; `0` while a sim clock has not ticked yet reads as "stale".
@@ -116,7 +159,8 @@ async fn run(
     let mut pumps = Vec::new();
     let mut followers = Vec::new();
     let mut announcements = Vec::with_capacity(prepared.len());
-    for exposure in prepared {
+    for mut exposure in prepared {
+        daemon.narrow(&mut exposure.bundle);
         announcements.push((
             endpoint_label(
                 &exposure.bundle.exposure.name,
@@ -169,6 +213,12 @@ async fn run(
                         }
                     },
                 );
+        }
+        for tool in &exposure.daemon_tools {
+            builder = builder.with_tool(tool.name.clone(), daemon.tool(tool)?);
+        }
+        for task in &exposure.daemon_tasks {
+            builder = builder.with_task(task.name.clone(), daemon.task(task)?);
         }
         if per_robot {
             let node_runner = Arc::clone(&node_runner);

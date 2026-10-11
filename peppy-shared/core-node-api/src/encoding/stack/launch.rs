@@ -807,7 +807,7 @@ mod tests {
                 name: "fleet".to_owned(),
             },
             "launch-1",
-            StackBudgets::default(),
+            StackBudgets::new(1, 1, 1, None),
         )
         .with_joins(vec![
             LaunchJoin {
@@ -828,7 +828,7 @@ mod tests {
                         name: "fleet".to_owned(),
                     },
                     "launch-1",
-                    StackBudgets::default(),
+                    StackBudgets::new(1, 1, 1, None),
                 )
                 .encode()
                 .unwrap()

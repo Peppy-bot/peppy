@@ -30,6 +30,23 @@ const STACK_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// whole account of it.
 type ChangeResult<T> = std::result::Result<T, String>;
 
+/// The stack listing of `host`, a participant of the launch.
+async fn stack_list_on(
+    ctx: &action::StackChangeContext,
+    host: &str,
+) -> ChangeResult<core_node_api::encoding::StackListResponse> {
+    peppylib::core_node::transport::poll(
+        &core_node_api::encoding::StackListRequest::new(),
+        &ctx.messenger,
+        &ctx.bound_core_node,
+        &ctx.core_instance_id,
+        host,
+        STACK_QUERY_TIMEOUT,
+    )
+    .await
+    .map_err(|error| format!("cannot inspect `{host}`: {error}"))
+}
+
 /// Whether the stack runs anything beyond its root entity, which is always
 /// present.
 pub(crate) fn holds_nodes(node_stack: &node_stack::NodeStack) -> bool {
