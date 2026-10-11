@@ -367,7 +367,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -376,11 +376,6 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Mocks satisfy the readiness gate so the real node_run path commits the
     // instance and spawns its exit watcher.

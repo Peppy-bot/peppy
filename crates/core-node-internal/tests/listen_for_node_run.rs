@@ -39,7 +39,7 @@ async fn listen_for_node_run_success() {
     let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     // Add the node to the core node's node stack
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         node_dir.path(),
@@ -50,12 +50,6 @@ async fn listen_for_node_run_success() {
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Create a runtime config for the node_run request
     let instance_plan = common::instance_plan(TARGET_INSTANCE_ID, Default::default());
@@ -131,7 +125,7 @@ async fn listen_for_node_run_timeout() {
     let temp_dir = create_node_config_dir(&peppy_json5);
 
     // Add the node to the core node's node stack
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -140,12 +134,6 @@ async fn listen_for_node_run_timeout() {
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Set up a ready listener so node_run can proceed to the health-check phase.
     // We intentionally do NOT set up a health listener to force the health check to time out.
@@ -295,7 +283,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
     .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -304,12 +292,6 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Bring up only the ready responder. The health responder is deliberately
     // delayed by `send_node_run_with_delayed_health` until both markers have
@@ -404,7 +386,7 @@ async fn listen_for_node_run_writes_log_file() {
     .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -413,12 +395,6 @@ async fn listen_for_node_run_writes_log_file() {
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
@@ -523,7 +499,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -532,12 +508,6 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Create a runtime config WITHOUT providing any parameters
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
@@ -641,7 +611,7 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -650,12 +620,6 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Create a runtime config with SOME parameters provided (device is complete, video is missing)
     use config::AnyType;
@@ -775,7 +739,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     .replace("{FIRST_NODE_TAG}", FIRST_NODE_TAG);
     write_peppy_json5(first_source_dir.path(), &first_peppy_json5);
 
-    let first_add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         first_source_dir.path(),
@@ -784,12 +748,6 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     )
     .await
     .expect("first node_add should succeed");
-
-    assert!(
-        first_add_response.success,
-        "first node_add should succeed, got error: {:?}",
-        first_add_response.error_message
-    );
 
     // Create and add second node
     let second_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -808,7 +766,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     .replace("{SECOND_NODE_TAG}", SECOND_NODE_TAG);
     write_peppy_json5(second_source_dir.path(), &second_peppy_json5);
 
-    let second_add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         second_source_dir.path(),
@@ -817,12 +775,6 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     )
     .await
     .expect("second node_add should succeed");
-
-    assert!(
-        second_add_response.success,
-        "second node_add should succeed, got error: {:?}",
-        second_add_response.error_message
-    );
 
     // Set up ready/health services for both nodes
     let mut responders = answer_readiness(&started, FIRST_NODE_NAME, FIRST_INSTANCE_ID).await;
@@ -935,7 +887,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -944,11 +896,6 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
@@ -1061,7 +1008,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1070,11 +1017,6 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
@@ -1162,7 +1104,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1171,12 +1113,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Set up ready/health services for the container instance
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
@@ -1346,7 +1282,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1355,12 +1291,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Set up ready/health services for the container instance. The container
     // will actually launch (auto-create succeeds), so these need to be live.
@@ -1476,7 +1406,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (builds the .sif image).
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1485,12 +1415,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Do NOT set up ready/health services; the process will exit immediately
     // which means the ready signal will fail (process died).
@@ -1575,7 +1499,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1584,12 +1508,6 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -1686,7 +1604,7 @@ async fn listen_for_node_run_logs_why_a_node_that_exits_before_ready_never_start
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1695,11 +1613,6 @@ async fn listen_for_node_run_logs_why_a_node_that_exits_before_ready_never_start
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
@@ -1768,7 +1681,7 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
 
     let temp_dir = create_node_config_dir(&peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -1777,12 +1690,6 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Set up ready+health listeners so the initial start succeeds
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
@@ -1940,7 +1847,7 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
 
     let temp_dir = create_node_config_dir(&peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -1949,11 +1856,6 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let _ready_task = AbortOnDrop(
@@ -2110,7 +2012,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
 
     let temp_dir = create_node_config_dir(&peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -2119,11 +2021,6 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let _ready_task = AbortOnDrop(
@@ -2284,7 +2181,7 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
 
     let temp_dir = create_node_config_dir(&peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -2293,11 +2190,6 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let _ready_task = AbortOnDrop(
@@ -2452,7 +2344,7 @@ async fn add_panel_node_with_services(
 ) -> Vec<AbortOnDrop<peppylib::PeppyResult<()>>> {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     write_peppy_json5(source_dir.path(), &panel_node_json5(node_name));
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -2461,11 +2353,6 @@ async fn add_panel_node_with_services(
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     let mut services = answer_readiness(started, node_name, instance_id).await;
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
@@ -2656,7 +2543,7 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
     .to_string();
     let temp_dir = create_node_config_dir(&peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -2665,11 +2552,6 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 

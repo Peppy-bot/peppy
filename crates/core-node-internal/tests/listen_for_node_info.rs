@@ -199,7 +199,7 @@ async fn node_info_has_instance_ids() {
         }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
 
-    let add_result = send_node_add_then_build(
+    send_node_add_then_build(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir.path(),
@@ -208,12 +208,6 @@ async fn node_info_has_instance_ids() {
     )
     .await
     .expect("node_add should complete");
-
-    assert!(
-        add_result.success,
-        "node_build should succeed, got error: {:?}",
-        add_result.error_message
-    );
 
     // Simulate each instance exposing ready/health services so the node_run
     // action can proceed against the mock messenger (we start `sleep` rather
@@ -382,7 +376,7 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
         }"#
         .replace("{NODE_NAME}", NODE_NAME),
     );
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         node_dir.path(),
@@ -391,7 +385,6 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(add_response.success, "{:?}", add_response.error_message);
 
     let node_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));

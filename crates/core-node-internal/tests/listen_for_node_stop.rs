@@ -492,7 +492,7 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
     // for the whole test body; the TempDir guard reclaims the build dir.
     let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         node_dir.path(),
@@ -503,11 +503,6 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
     )
     .await
     .expect("node_add should complete");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // The daemon assembles the runtime config, endpoint included, so the test
     // only says WHICH instance to start.
@@ -745,7 +740,7 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -754,11 +749,6 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Mocks satisfy the readiness gate so the real node_run path commits the
     // instance and spawns its exit watcher (the bare `sleep` cannot speak the
