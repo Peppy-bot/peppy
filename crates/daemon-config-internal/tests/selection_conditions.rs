@@ -1,5 +1,7 @@
-use daemon_config::launcher::{PeppyLauncherParser, PreparedLauncher};
-use std::path::Path;
+use daemon_config::launcher::PreparedLauncher;
+
+mod common;
+use common::load;
 
 fn prepared(constraint: &str) -> PreparedLauncher {
     let document = format!(
@@ -23,8 +25,7 @@ fn prepared(constraint: &str) -> PreparedLauncher {
         constraints: [{constraint}]
     }}"#
     );
-    let launcher = PeppyLauncherParser::from_content(&document).unwrap();
-    PreparedLauncher::load(&launcher, Path::new("fleet.json5")).unwrap()
+    load(&document)
 }
 
 #[test]

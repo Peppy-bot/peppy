@@ -48,9 +48,8 @@ pub struct Manifest {
 
 /// Enforce the repo-ID tag contract on the manifest tag at parse time, reusing
 /// the shared rules from `repo_node_id` so a `name`/`tag` pair from a contract
-/// document matches node dependencies the same way everywhere. Shared with the
-/// MCP exposure model, whose contract references carry the same tag rules.
-pub(crate) fn deserialize_tag<'de, D>(deserializer: D) -> Result<String, D::Error>
+/// document matches node dependencies the same way everywhere.
+fn deserialize_tag<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -465,50 +464,32 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_topic_names() {
-        let json5 = r#"{
-            peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "v1" },
-            interfaces: {
-                topics: [
-                    { name: "stream" },
-                    { name: "stream" }
-                ]
-            }
-        }"#;
-        let err = serde_json5::from_str::<PeppyContract>(json5)
-            .expect_err("duplicate topic name must be rejected");
-        assert!(err.to_string().contains("duplicate"), "error: {err}");
-    }
-
-    #[test]
-    fn rejects_duplicate_service_names() {
-        let json5 = r#"{
-            peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "v1" },
-            interfaces: {
-                services: [
-                    { name: "svc" },
-                    { name: "svc" }
-                ]
-            }
-        }"#;
-        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
-    }
-
-    #[test]
-    fn rejects_duplicate_action_names() {
-        let json5 = r#"{
-            peppy_schema: "contract/v1",
-            manifest: { name: "x", tag: "v1" },
-            interfaces: {
-                actions: [
-                    { name: "act" },
-                    { name: "act" }
-                ]
-            }
-        }"#;
-        assert!(serde_json5::from_str::<PeppyContract>(json5).is_err());
+    fn rejects_duplicate_names_in_each_interface_section() {
+        for (section, name) in [
+            ("topics", "stream"),
+            ("services", "svc"),
+            ("actions", "act"),
+        ] {
+            let json5 = format!(
+                r#"{{
+                    peppy_schema: "contract/v1",
+                    manifest: {{ name: "x", tag: "v1" }},
+                    interfaces: {{
+                        {section}: [
+                            {{ name: "{name}" }},
+                            {{ name: "{name}" }}
+                        ]
+                    }}
+                }}"#
+            );
+            let err = serde_json5::from_str::<PeppyContract>(&json5)
+                .expect_err("a duplicate name must be rejected");
+            let message = err.to_string();
+            assert!(
+                message.contains("duplicate") && message.contains(&format!("`{name}`")),
+                "{section}: {message}"
+            );
+        }
     }
 
     /// A topic with the same name as a service is allowed: the daemon

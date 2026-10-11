@@ -4,14 +4,14 @@ use std::{fs, path::Path};
 mod common;
 use common::{fragment_file, write};
 
-fn repository(path: &Path) {
+fn write_repository_index(path: &Path) {
     write(
         &path.join("peppy_repository.json5"),
         r#"{ peppy_schema: "repository/v1" }"#,
     );
 }
 
-fn fragment(path: &Path) {
+fn write_controller_fragment(path: &Path) {
     write(
         path,
         &fragment_file(
@@ -37,9 +37,9 @@ fn prepare(file: &Path, reference: &str) -> Result<PreparedLauncher, String> {
 #[test]
 fn a_robot_launcher_shares_sibling_fragments_inside_its_repository() {
     let root = tempfile::tempdir().unwrap();
-    repository(root.path());
+    write_repository_index(root.path());
     fs::create_dir(root.path().join("openarm")).unwrap();
-    fragment(&root.path().join("commanders/xr.json5"));
+    write_controller_fragment(&root.path().join("commanders/xr.json5"));
     let launcher = root.path().join("openarm/fleet.json5");
     let prepared = prepare(&launcher, "../commanders/xr.json5").unwrap();
     let flat = prepared.launch(&[], &[]).unwrap().launcher;
@@ -58,7 +58,7 @@ fn a_robot_launcher_shares_sibling_fragments_inside_its_repository() {
 fn standalone_launchers_remain_confined_to_their_own_directory() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir(root.path().join("robot")).unwrap();
-    fragment(&root.path().join("shared/controller.json5"));
+    write_controller_fragment(&root.path().join("shared/controller.json5"));
     let error = prepare(
         &root.path().join("robot/fleet.json5"),
         "../shared/controller.json5",
@@ -75,10 +75,10 @@ fn standalone_launchers_remain_confined_to_their_own_directory() {
 fn parent_segments_cannot_leave_and_reenter_the_repository() {
     let outer = tempfile::tempdir().unwrap();
     let root = outer.path().join("repository");
-    repository(&root);
+    write_repository_index(&root);
     fs::create_dir(root.join("robot")).unwrap();
-    fragment(&root.join("shared/controller.json5"));
-    fragment(&outer.path().join("outside.json5"));
+    write_controller_fragment(&root.join("shared/controller.json5"));
+    write_controller_fragment(&outer.path().join("outside.json5"));
     for reference in [
         "../../outside.json5",
         "../../repository/shared/controller.json5",
@@ -94,10 +94,10 @@ fn parent_segments_cannot_leave_and_reenter_the_repository() {
 #[test]
 fn the_nearest_repository_index_sets_the_boundary() {
     let outer = tempfile::tempdir().unwrap();
-    repository(outer.path());
-    fragment(&outer.path().join("shared/controller.json5"));
+    write_repository_index(outer.path());
+    write_controller_fragment(&outer.path().join("shared/controller.json5"));
     let inner = outer.path().join("nested");
-    repository(&inner);
+    write_repository_index(&inner);
     fs::create_dir(inner.join("robot")).unwrap();
     let error = prepare(
         &inner.join("robot/fleet.json5"),
@@ -118,7 +118,7 @@ fn an_invalid_repository_index_is_reported_at_its_path() {
         r#"{ peppy_schema: "repository/v999" }"#,
     );
     fs::create_dir(root.path().join("robot")).unwrap();
-    fragment(&root.path().join("shared/controller.json5"));
+    write_controller_fragment(&root.path().join("shared/controller.json5"));
     let error = prepare(
         &root.path().join("robot/fleet.json5"),
         "../shared/controller.json5",
@@ -133,9 +133,9 @@ fn an_invalid_repository_index_is_reported_at_its_path() {
 fn repository_fragments_cannot_escape_through_file_or_directory_symlinks() {
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
-    repository(root.path());
+    write_repository_index(root.path());
     fs::create_dir(root.path().join("robot")).unwrap();
-    fragment(&outside.path().join("controller.json5"));
+    write_controller_fragment(&outside.path().join("controller.json5"));
     std::os::unix::fs::symlink(
         outside.path().join("controller.json5"),
         root.path().join("controller.json5"),
@@ -152,9 +152,9 @@ fn repository_fragments_cannot_escape_through_file_or_directory_symlinks() {
 #[test]
 fn internal_symlinks_keep_the_same_repository_boundary() {
     let root = tempfile::tempdir().unwrap();
-    repository(root.path());
+    write_repository_index(root.path());
     fs::create_dir(root.path().join("robot")).unwrap();
-    fragment(&root.path().join("shared/controller.json5"));
+    write_controller_fragment(&root.path().join("shared/controller.json5"));
     std::os::unix::fs::symlink(root.path().join("shared"), root.path().join("alias")).unwrap();
     assert!(
         prepare(

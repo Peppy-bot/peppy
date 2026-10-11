@@ -153,21 +153,29 @@ pub(super) fn ids_beside<'a>(
     under: Option<(&str, &str)>,
     axes: impl Iterator<Item = &'a ComponentAxis>,
 ) -> HashSet<&'a str> {
-    launcher
+    let mut ids: HashSet<&'a str> = launcher
         .deployments
         .iter()
         .flat_map(|deployment| &deployment.instances)
         .map(|instance| instance.instance_id.as_str())
-        .chain(
-            axes.flat_map(|axis| loaded.options_of(&axis.name).map(move |o| (axis, o)))
-                .filter(|(axis, (option, _))| {
-                    under.is_none_or(|(under_axis, under_option)| {
-                        axis.name != under_axis || option.as_str() == under_option
-                    })
-                })
-                .flat_map(|(_, (_, option))| option.definable_ids()),
-        )
-        .collect()
+        .collect();
+    for axis in axes {
+        for (option, loaded_option) in loaded.options_of(&axis.name) {
+            if is_sibling_of_entry(under, &axis.name, option) {
+                continue;
+            }
+            ids.extend(loaded_option.definable_ids());
+        }
+    }
+    ids
+}
+
+/// Whether `option` of `axis` is a sibling of the option an entry sits
+/// `under`: another option of the same axis, which never runs beside the
+/// entry. The launcher's own entries sit under no option and have no
+/// sibling.
+fn is_sibling_of_entry(under: Option<(&str, &str)>, axis: &str, option: &str) -> bool {
+    under.is_some_and(|(under_axis, under_option)| axis == under_axis && option != under_option)
 }
 
 /// The copy axes that reach one launcher adjustment, `stack_ids` being

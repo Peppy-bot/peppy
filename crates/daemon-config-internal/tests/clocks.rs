@@ -9,9 +9,9 @@ use config::runtime::{
     SlotBindings,
 };
 use daemon_config::launcher::{
-    AppliedChange, ClockIncarnations, CompositionError, PeppyLauncherParser, Placements,
-    PlannedObservation, PlannedPairEndpoint, PlannedPairing, PreparedLauncher, ResolvedClocks,
-    resolve_clocks, validate_clock_connections,
+    AppliedChange, ClockIncarnations, ComposedLaunch, CompositionError, PeppyLauncherParser,
+    Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing, PreparedLauncher,
+    ResolvedClocks, resolve_clocks, validate_clock_connections,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -67,6 +67,48 @@ fn connection_refusals(errors: &[daemon_config::ParsingError]) -> String {
         .join("\n")
 }
 
+/// The slot bindings of one `consumer` whose `slot` reads one `producer`
+/// on the machine.
+fn one_producer_bindings(
+    consumer: &str,
+    slot: &str,
+    producer: &str,
+) -> BTreeMap<String, SlotBindings> {
+    BTreeMap::from([(
+        consumer.to_owned(),
+        BTreeMap::from([(
+            slot.to_owned(),
+            BoundProducers::try_from(vec![ProducerRef::new(MACHINE, producer)])
+                .expect("one producer is a valid set"),
+        )]),
+    )])
+}
+
+/// The adjustment `origin` names binds `arm_inst` of `composed` to the
+/// `simulation` clock, which puts the arm on the engine's timeline.
+fn assert_arm_follows_the_engine(composed: &ComposedLaunch, origin: &str) {
+    let bound = composed
+        .report
+        .applied
+        .iter()
+        .find(|entry| entry.target == "arm_inst")
+        .expect("an adjustment binds the arm's clock");
+    assert!(
+        matches!(&bound.change, AppliedChange::Clock { old: None, new } if new.as_str() == "simulation"),
+        "{:?}",
+        bound.change
+    );
+    assert_eq!(bound.origin, origin);
+    let clocks = resolve_clocks(&composed.launcher, &placements(), &ClockIncarnations::new())
+        .expect("the adjusted instance resolves");
+    assert!(
+        clocks
+            .of("arm_inst")
+            .is_compatible_with(clocks.of("engine_inst")),
+        "the adjustment put the arm on the engine's timeline"
+    );
+}
+
 /// The launcher's adjustment under an option binds an instance's clock, and
 /// the report names the option.
 #[test]
@@ -93,26 +135,7 @@ fn an_options_adjustment_binds_a_clock() {
     let composed = prepare(directory.path(), launcher)
         .launch(&words(&["mujoco"]), &[])
         .expect("the adjustment applies");
-    let bound = composed
-        .report
-        .applied
-        .iter()
-        .find(|entry| entry.target == "arm_inst")
-        .expect("the option binds the arm's clock");
-    assert!(
-        matches!(&bound.change, AppliedChange::Clock { old: None, new } if new.as_str() == "simulation"),
-        "{:?}",
-        bound.change
-    );
-    assert_eq!(bound.origin, "fleet.json5, option `engine.mujoco`");
-    let clocks = resolve_clocks(&composed.launcher, &placements(), &ClockIncarnations::new())
-        .expect("the adjusted instance resolves");
-    assert!(
-        clocks
-            .of("arm_inst")
-            .is_compatible_with(clocks.of("engine_inst")),
-        "the adjustment put the arm on the engine's timeline"
-    );
+    assert_arm_follows_the_engine(&composed, "fleet.json5, option `engine.mujoco`");
 }
 
 /// Naming an instance as a domain's publisher assigns it that domain and the
@@ -233,6 +256,32 @@ fn wall_is_reserved_but_may_be_aliased() {
     ))
     .expect("an alias resolves");
     assert!(clocks.of("arm_inst").is_wall());
+}
+
+/// The refusals that name the declared domains list every one of them in
+/// order, the unknown-domain one with `wall` first, and the reserved-name
+/// refusal is reported once.
+#[test]
+fn clock_refusals_list_the_declared_domains() {
+    let reserved = resolve(&document(
+        r#"framework: { clocks: { wall: "wall", physical_robot: "wall" } },"#,
+        r#"{ instance_id: "arm_inst" }"#,
+    ))
+    .expect_err("declaring `wall` is refused");
+    assert_eq!(reserved.len(), 1, "{reserved:?}");
+    assert!(
+        reserved[0].ends_with("This launcher declares `physical_robot`, `wall`"),
+        "{reserved:?}"
+    );
+
+    let unknown = refusal(&document(
+        r#"framework: { clocks: { physical_robot: "wall", bench: "wall" } },"#,
+        r#"{ instance_id: "arm_inst", framework: { clock: "simulated_robot" } }"#,
+    ));
+    assert!(
+        unknown.ends_with("name one of `wall`, `bench`, `physical_robot`"),
+        "{unknown}"
+    );
 }
 
 /// Two names for wall time are one timeline; two simulations are never one,
@@ -363,32 +412,13 @@ fn a_fragments_adjustment_binds_the_clock_of_an_instance_it_deploys() {
     let composed = prepare(directory.path(), launcher)
         .launch(&words(&["mujoco"]), &[])
         .expect("the adjustment applies");
-    let bound = composed
-        .report
-        .applied
-        .iter()
-        .find(|entry| entry.target == "arm_inst")
-        .expect("the fragment binds the arm's clock");
-    assert!(
-        matches!(&bound.change, AppliedChange::Clock { old: None, new } if new.as_str() == "simulation"),
-        "{:?}",
-        bound.change
-    );
-    assert_eq!(bound.origin, "sim.json5");
+    assert_arm_follows_the_engine(&composed, "sim.json5");
     let lines = composed.report.render_lines();
     assert!(
         lines
             .iter()
             .any(|line| line.contains("arm_inst.framework.clock: (absent) -> simulation")),
         "{lines:?}"
-    );
-    let clocks = resolve_clocks(&composed.launcher, &placements(), &ClockIncarnations::new())
-        .expect("the adjusted instance resolves");
-    assert!(
-        clocks
-            .of("arm_inst")
-            .is_compatible_with(clocks.of("engine_inst")),
-        "the adjustment put the arm on the engine's timeline"
     );
 }
 
@@ -474,15 +504,7 @@ fn a_connection_across_two_clocks_is_refused_naming_both() {
     ))
     .expect("resolves");
 
-    let mut slot_bindings: BTreeMap<String, SlotBindings> = BTreeMap::new();
-    slot_bindings.insert(
-        "unbound".to_owned(),
-        BTreeMap::from([(
-            "camera".to_owned(),
-            BoundProducers::try_from(vec![ProducerRef::new(MACHINE, "bound")])
-                .expect("one producer is a valid set"),
-        )]),
-    );
+    let slot_bindings = one_producer_bindings("unbound", "camera", "bound");
     let pairings = [PlannedPairing {
         pairing_name: "arm_control".to_owned(),
         pairing_tag: "v1".to_owned(),
@@ -537,14 +559,7 @@ fn a_connection_within_one_clock_holds() {
     ))
     .expect("resolves");
 
-    let slot_bindings: BTreeMap<String, SlotBindings> = BTreeMap::from([(
-        "arm_inst".to_owned(),
-        BTreeMap::from([(
-            "simulation".to_owned(),
-            BoundProducers::try_from(vec![ProducerRef::new(MACHINE, "sim_inst")])
-                .expect("one producer is a valid set"),
-        )]),
-    )]);
+    let slot_bindings = one_producer_bindings("arm_inst", "simulation", "sim_inst");
 
     assert!(
         validate_clock_connections(&clocks, &slot_bindings, &[], &[]).is_empty(),
@@ -567,14 +582,7 @@ fn running_instances_bring_their_own_clocks() {
     ]);
     assert!(clocks.of("fresh_inst").is_wall());
 
-    let slot_bindings: BTreeMap<String, SlotBindings> = BTreeMap::from([(
-        "fresh_inst".to_owned(),
-        BTreeMap::from([(
-            "simulation".to_owned(),
-            BoundProducers::try_from(vec![ProducerRef::new(MACHINE, "sim_inst")])
-                .expect("one producer is a valid set"),
-        )]),
-    )]);
+    let slot_bindings = one_producer_bindings("fresh_inst", "simulation", "sim_inst");
 
     let errors = validate_clock_connections(&clocks, &slot_bindings, &[], &[]);
     let message = connection_refusals(&errors);

@@ -58,13 +58,14 @@ impl EntryOrigin {
     }
 
     /// The path as the cache spells it: absolute for fs, repository-relative
-    /// for git. What error messages quote and what repository attribution
-    /// matches against.
+    /// for git. What error messages, listings, search results and refresh
+    /// reports quote.
     pub fn path_str(&self) -> &str {
         match self {
-            // A path that is not valid UTF-8 renders lossily rather than
-            // failing the whole cache: this is display and attribution, and
-            // a lossy rendering still names the file the user has to look at.
+            // A path that is not valid UTF-8 renders as the fixed text
+            // `<non-UTF-8 path>` rather than failing the whole cache: the
+            // value is only shown to the user, and repository attribution
+            // matches the `PathBuf` itself.
             EntryOrigin::Fs { path } => path.to_str().unwrap_or("<non-UTF-8 path>"),
             EntryOrigin::Git { path, .. } => path.as_str(),
         }

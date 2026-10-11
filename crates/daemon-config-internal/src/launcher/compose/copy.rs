@@ -11,7 +11,8 @@ use super::adjustments::Routed;
 use super::constraints::{self, ConstraintInPlay, ConstraintScope};
 use super::error::CompositionError;
 use super::expand::{
-    Expanded, OriginatedDeployment, Unit, append_links, expand_unit, instance_named_mut,
+    Expanded, OriginatedDeployment, Unit, add_core_node_link, append_links, expand_unit,
+    instance_named_mut, merge_deployment,
 };
 use super::load::{LoadedFragment, LoadedOption, node_ids};
 use super::prepared::PreparedLauncher;
@@ -313,7 +314,7 @@ pub(super) fn compose_copy(
             domain: domain.to_string(),
         });
     }
-    let owned: HashSet<&str> = node_ids(fragments.iter().copied()).collect();
+    let owned: BTreeSet<&str> = node_ids(fragments.iter().copied()).collect();
     if owned.is_empty() {
         return Err(CompositionError::CopyStartsNothing {
             copy: name.to_string(),
@@ -510,7 +511,7 @@ pub(super) fn argument_overrides(
 fn apply_overrides(
     name: &Name,
     expanded: &mut Expanded,
-    owned: &HashSet<&str>,
+    owned: &BTreeSet<&str>,
     arguments: &ArgumentOverrides,
 ) -> Result<(), CompositionError> {
     let origin = format!("arguments of copy `{name}`");
@@ -519,7 +520,7 @@ fn apply_overrides(
             return Err(CompositionError::ArgumentTargetAbsent {
                 copy: name.to_string(),
                 target: target.clone(),
-                available: crate::error::format_quoted_list(owned.iter().collect::<BTreeSet<_>>()),
+                available: crate::error::format_quoted_list(owned.iter()),
             });
         }
         let instance = instance_named_mut(&mut expanded.deployments, target)
@@ -1037,19 +1038,10 @@ fn add_copy(flat: &mut PeppyLauncher, copy: &ComposedCopy) -> Result<(), Composi
         }
     }
     for deployment in &copy.deployments {
-        match flat
-            .deployments
-            .iter_mut()
-            .find(|entry| entry.source == deployment.source)
-        {
-            Some(entry) => entry.instances.extend(deployment.instances.iter().cloned()),
-            None => flat.deployments.push(deployment.clone()),
-        }
+        merge_deployment(&mut flat.deployments, deployment);
     }
     for link in &copy.core_nodes {
-        if !flat.core_nodes.contains(link) {
-            flat.core_nodes.push(link.clone());
-        }
+        add_core_node_link(&mut flat.core_nodes, link);
     }
     Ok(())
 }

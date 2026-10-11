@@ -169,21 +169,28 @@ fn defined_once<'a>(
 }
 
 /// Entries sharing a source merge into one whose instance list is the
-/// union, in collection order. The daemon resolves one deployment per
-/// name:tag, so this merge is what lets a base and a fragment both deploy
-/// `uvc_camera_linux`.
+/// union, in collection order.
 fn merge_by_source(collected: &[OriginatedDeployment<'_>]) -> Vec<Deployment> {
     let mut merged: Vec<Deployment> = Vec::with_capacity(collected.len());
     for &OriginatedDeployment { deployment, .. } in collected {
-        match merged
-            .iter_mut()
-            .find(|entry| entry.source == deployment.source)
-        {
-            Some(entry) => entry.instances.extend(deployment.instances.iter().cloned()),
-            None => merged.push(deployment.clone()),
-        }
+        merge_deployment(&mut merged, deployment);
     }
     merged
+}
+
+/// Adds `deployment`'s instances to the entry of `deployments` that shares
+/// its source, or adds the deployment when no entry does. The daemon
+/// resolves one deployment per name:tag, so this merge is what lets a base
+/// and a fragment both deploy `uvc_camera_linux`, and a copy deploy a
+/// source the stack already runs.
+pub(super) fn merge_deployment(deployments: &mut Vec<Deployment>, deployment: &Deployment) {
+    match deployments
+        .iter_mut()
+        .find(|entry| entry.source == deployment.source)
+    {
+        Some(entry) => entry.instances.extend(deployment.instances.iter().cloned()),
+        None => deployments.push(deployment.clone()),
+    }
 }
 
 /// Core node links: base first, then fragments in collection order; a link
@@ -192,12 +199,18 @@ fn union_core_nodes(unit: &Unit<'_>, core_nodes: &[String]) -> Vec<String> {
     let mut links: Vec<String> = core_nodes.to_vec();
     for fragment in &unit.fragments {
         for link in &fragment.body.core_nodes {
-            if !links.contains(link) {
-                links.push(link.clone());
-            }
+            add_core_node_link(&mut links, link);
         }
     }
     links
+}
+
+/// Adds `link` to `links` unless it is there already: a core node link
+/// declared twice is one link.
+pub(super) fn add_core_node_link(links: &mut Vec<String>, link: &str) {
+    if !links.iter().any(|known| known == link) {
+        links.push(link.to_owned());
+    }
 }
 
 /// The adjustments that run, in order, and the ones skipped with their
@@ -377,17 +390,9 @@ pub(super) fn append_links(
         }
         Some(LinkValue::Vacant(_)) => return Err(refuse("a vacancy")),
     };
-    for addition in additions {
-        if targets.contains(addition) {
-            return Err(CompositionError::AddLinksDuplicateTarget {
-                origin: origin.to_owned(),
-                target: target.to_owned(),
-                slot: slot.to_owned(),
-                added: addition.clone(),
-            });
-        }
-        targets.push(addition.clone());
-    }
+    // The existing targets come from a `LinkTargets` and hold no repeat, so
+    // the repeat `LinkTargets::new` reports is always one of the additions.
+    targets.extend(additions.iter().cloned());
     LinkTargets::new(targets).map_err(|err| CompositionError::AddLinksDuplicateTarget {
         origin: origin.to_owned(),
         target: target.to_owned(),

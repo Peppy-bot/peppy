@@ -1,3 +1,6 @@
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
 /// The peppy output directory relative to node_dir (contains generated libraries).
 pub const PEPPY_OUTPUT_DIR: &str = ".peppy";
 pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppylib";
@@ -59,15 +62,13 @@ pub const DEFAULT_PYTHON_BASE_IMAGE: &str = "peppybot/python-uv-base:latest";
 /// Default base container image for lightweight test containers (Google mirror, CI-friendly).
 pub const DEFAULT_ALPINE_BASE_IMAGE: &str = "mirror.gcr.io/library/alpine:3.20";
 
-// Application runtime environment (dev/prod) tracked internally.
+/// The application environment of the process: a dev or a prod build. It
+/// selects the default peppy data root; see [`set_app_env`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEnv {
     Dev,
     Prod,
 }
-
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
 
@@ -93,7 +94,7 @@ pub fn set_app_env(env: AppEnv) {
 /// Returns the process-wide application environment, defaulting to
 /// [`AppEnv::Dev`] if [`set_app_env`] was never called. Reads only; see
 /// [`set_app_env`] for the set-once contract and what it affects.
-pub fn app_env() -> AppEnv {
+fn app_env() -> AppEnv {
     *APP_ENV.get_or_init(|| AppEnv::Dev)
 }
 

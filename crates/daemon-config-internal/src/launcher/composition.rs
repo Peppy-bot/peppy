@@ -581,11 +581,11 @@ impl<'de> Deserialize<'de> for CopyEntry {
         }
 
         let raw = Declaration::deserialize(deserializer)?;
+        let origin = format!("copy `{}`", raw.instance_id);
         let adjustments = named_entries(raw.adjustments)
-            .map_err(|e| de::Error::custom(format!("copy `{}`: {e}", raw.instance_id)))?;
+            .map_err(|e| de::Error::custom(format!("{origin}: {e}")))?;
         for adjustment in &adjustments {
-            validate_adjustment(adjustment, &format!("copy `{}`", raw.instance_id))
-                .map_err(de::Error::custom)?;
+            validate_adjustment(adjustment, &origin).map_err(de::Error::custom)?;
         }
         if raw.core_node.is_some() {
             return Err(de::Error::custom(format!(
@@ -609,12 +609,7 @@ impl<'de> Deserialize<'de> for CopyEntry {
                 raw.instance_id
             )));
         }
-        check_copy_settings(
-            &raw.with,
-            &raw.arguments,
-            &format!("copy `{}`", raw.instance_id),
-        )
-        .map_err(de::Error::custom)?;
+        check_copy_settings(&raw.with, &raw.arguments, &origin).map_err(de::Error::custom)?;
         Ok(Self {
             instance_id: raw.instance_id,
             with: raw.with,
@@ -689,7 +684,7 @@ enum EntryRefusal {
 
 /// Reads one `deployments` entry by its keys.
 fn read_deployment_entry(
-    entry: serde_json::Map<String, serde_json::Value>,
+    mut entry: serde_json::Map<String, serde_json::Value>,
 ) -> Result<DeploymentEntry, EntryRefusal> {
     if entry.contains_key("source") {
         let deployment = Deployment::deserialize(serde_json::Value::Object(entry))
@@ -735,35 +730,19 @@ fn read_deployment_entry(
             "`{axis}` names an empty option"
         )));
     }
-    let instances = match entry.get("instances") {
-        None => Vec::new(),
-        Some(value) => Vec::<CopyEntry>::deserialize(value.clone())
-            .map_err(|e| EntryRefusal::Option(format!("`instances` of `{axis}: {option}`: {e}")))?,
-    };
-    let with = match entry.get("with") {
-        None => BTreeMap::new(),
-        Some(value) => BTreeMap::<String, String>::deserialize(value.clone())
-            .map_err(|e| EntryRefusal::Option(format!("`with` of `{axis}: {option}`: {e}")))?,
-    };
-    let arguments = match entry.get("arguments") {
-        None => BTreeMap::new(),
-        Some(value) => BTreeMap::<String, BTreeMap<String, AnyType>>::deserialize(value.clone())
-            .map_err(|e| EntryRefusal::Option(format!("`arguments` of `{axis}: {option}`: {e}")))?,
-    };
-    let adjustments = match entry.get("adjustments") {
-        None => None,
-        Some(value) => Some(Vec::<Adjustment>::deserialize(value.clone()).map_err(|e| {
-            EntryRefusal::Option(format!("`adjustments` of `{axis}: {option}`: {e}"))
-        })?),
-    };
-    let adjustments = named_entries(adjustments)
-        .map_err(|e| EntryRefusal::Option(format!("`adjustments` of `{axis}: {option}`: {e}")))?;
+    let origin = format!("`{axis}: {option}`");
+    let instances: Vec<CopyEntry> =
+        read_entry_key(&mut entry, "instances", &origin)?.unwrap_or_default();
+    let with: BTreeMap<String, String> =
+        read_entry_key(&mut entry, "with", &origin)?.unwrap_or_default();
+    let arguments: ArgumentOverrides =
+        read_entry_key(&mut entry, "arguments", &origin)?.unwrap_or_default();
+    let adjustments = named_entries(read_entry_key(&mut entry, "adjustments", &origin)?)
+        .map_err(|e| EntryRefusal::Option(format!("`adjustments` of {origin}: {e}")))?;
     for adjustment in &adjustments {
-        validate_adjustment(adjustment, &format!("`{axis}: {option}`"))
-            .map_err(EntryRefusal::Option)?;
+        validate_adjustment(adjustment, &origin).map_err(EntryRefusal::Option)?;
     }
-    check_copy_settings(&with, &arguments, &format!("`{axis}: {option}`"))
-        .map_err(EntryRefusal::Option)?;
+    check_copy_settings(&with, &arguments, &origin).map_err(EntryRefusal::Option)?;
     Ok(DeploymentEntry::Option(OptionDeployment {
         axis,
         option,
@@ -772,6 +751,21 @@ fn read_deployment_entry(
         adjustments,
         instances,
     }))
+}
+
+/// Reads the optional `key` of one option entry, taking its value out of the
+/// entry instead of copying it. A refusal names the key and the entry.
+fn read_entry_key<T: serde::de::DeserializeOwned>(
+    entry: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    origin: &str,
+) -> Result<Option<T>, EntryRefusal> {
+    let Some(value) = entry.remove(key) else {
+        return Ok(None);
+    };
+    T::deserialize(value)
+        .map(Some)
+        .map_err(|e| EntryRefusal::Option(format!("`{key}` of {origin}: {e}")))
 }
 
 /// A `deployments` list written back in document order: node entries first,
@@ -1424,10 +1418,7 @@ fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), Stri
                         adjustment.target
                     ));
                 }
-                let (instance, link_suffix) = super::types::split_link_target(target);
-                if instance.is_empty()
-                    || link_suffix.is_some_and(|l| l.is_empty() || l.contains('/'))
-                {
+                if super::types::split_well_formed_link_target(target).is_none() {
                     return Err(format!(
                         "adjustment on `{}` in {origin} adds target `{target}` to slot \
                          `{slot}`, which is malformed: expected `<instance>` or \
@@ -1526,6 +1517,33 @@ fn validate_selection_map(
     Ok(())
 }
 
+/// Refuses an entry that names an axis the constraint's `when` fixes to one
+/// option: under the guard such an entry is decided before anything is
+/// selected.
+fn check_entry_names_no_fixed_axis(
+    entry: &SelectionCondition,
+    when: Option<&SelectionCondition>,
+    origin: &str,
+    verb: &str,
+) -> Result<(), String> {
+    let Some(when) = when else {
+        return Ok(());
+    };
+    for axis_name in entry.keys() {
+        let is_fixed_by_guard = when
+            .get(axis_name)
+            .is_some_and(|options| options.0.len() == 1);
+        if is_fixed_by_guard {
+            return Err(format!(
+                "{origin} {verb} axis `{axis_name}` inside a constraint whose `when` already \
+                 fixes that axis: under the guard the entry is decided before anything is \
+                 selected. Restate it without the axis"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The shape checks on a `constraints` list: entries that say something and
 /// lists that agree with themselves. Reference checks (that the axes and
 /// options named exist) are [`validate_constraint_references`]'s, run once
@@ -1563,21 +1581,7 @@ fn validate_constraint_shapes(
                         "{origin} lists an empty {kind}: an entry names at least one axis"
                     ));
                 }
-                if let Some(when) = &constraint.when {
-                    for axis_name in entry.keys() {
-                        if when
-                            .get(axis_name)
-                            .is_some_and(|options| options.0.len() == 1)
-                        {
-                            return Err(format!(
-                                "{origin} {verb} axis `{axis_name}` inside a constraint whose \
-                                 `when` already fixes that axis: under the guard the entry is \
-                                 decided before anything is selected. Restate it without the \
-                                 axis"
-                            ));
-                        }
-                    }
-                }
+                check_entry_names_no_fixed_axis(entry, constraint.when.as_ref(), &origin, verb)?;
                 if seen.contains(&entry) {
                     return Err(format!("{origin} lists the same {kind} more than once"));
                 }
@@ -2614,9 +2618,13 @@ mod tests {
             .expect_err("a duplicate target is a mistake");
         assert!(error.contains("more than once"), "got: {error}");
 
-        let error = parse_adjustment(r#"{ target: "c", add_links: { cameras: ["a//b"] } }"#)
+        for target in ["a//b", "/b", "a/", "a/b/c"] {
+            let error = parse_adjustment(&format!(
+                r#"{{ target: "c", add_links: {{ cameras: ["{target}"] }} }}"#
+            ))
             .expect_err("a malformed target is refused");
-        assert!(error.contains("malformed"), "got: {error}");
+            assert!(error.contains("malformed"), "target `{target}`: {error}");
+        }
     }
 
     #[test]

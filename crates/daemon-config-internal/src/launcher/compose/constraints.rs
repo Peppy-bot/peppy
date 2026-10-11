@@ -9,7 +9,7 @@ use super::load::LoadedFragment;
 use super::select::UnitSelection;
 
 /// How the launcher names its own constraints in a refusal.
-pub(super) const LAUNCHER: &str = "the launcher";
+const LAUNCHER: &str = "the launcher";
 
 /// A constraint in play for one unit, with the document that declares it.
 #[derive(Clone, Copy)]
@@ -19,6 +19,32 @@ pub(super) struct ConstraintInPlay<'a> {
     /// The document declaring the constraint and its position there: the
     /// launcher (`None`) or a loaded fragment.
     pub key: (Option<usize>, usize),
+}
+
+impl<'a> ConstraintInPlay<'a> {
+    /// The launcher's constraint at `position` of its `constraints`.
+    pub(super) fn of_launcher(position: usize, constraint: &'a SelectionConstraint) -> Self {
+        Self {
+            constraint,
+            origin: LAUNCHER,
+            key: (None, position),
+        }
+    }
+
+    /// The constraint at `position` of `fragment`'s `constraints`. A
+    /// fragment file shared by several options gives one key, because the
+    /// key names the loaded document and not the option that pulls it in.
+    pub(super) fn of_fragment(
+        fragment: &'a LoadedFragment,
+        position: usize,
+        constraint: &'a SelectionConstraint,
+    ) -> Self {
+        Self {
+            constraint,
+            origin: &fragment.origin,
+            key: (Some(fragment.id), position),
+        }
+    }
 }
 
 /// The unit of a launch a constraint set is assembled for.
@@ -52,21 +78,15 @@ pub(super) fn constraints_in_play<'a>(
                 .any(|axis| constraint_names_axis(constraint, axis)),
             ConstraintScope::Copy { axis } => constraint_names_axis(constraint, axis),
         })
-        .map(|(position, constraint)| ConstraintInPlay {
-            constraint,
-            origin: LAUNCHER,
-            key: (None, position),
-        })
-        .chain(fragments.iter().flat_map(|fragment| {
+        .map(|(position, constraint)| ConstraintInPlay::of_launcher(position, constraint))
+        .chain(fragments.iter().flat_map(|&fragment| {
             fragment
                 .body
                 .constraints
                 .iter()
                 .enumerate()
-                .map(|(position, constraint)| ConstraintInPlay {
-                    constraint,
-                    origin: &fragment.origin,
-                    key: (Some(fragment.id), position),
+                .map(move |(position, constraint)| {
+                    ConstraintInPlay::of_fragment(fragment, position, constraint)
                 })
         }))
         .collect()
@@ -195,13 +215,10 @@ fn render_condition(in_play: ConstraintInPlay<'_>) -> String {
 }
 
 fn render_alternatives(alternatives: &[SelectionCondition]) -> String {
-    let rendered: Vec<String> = alternatives
-        .iter()
-        .map(|alternative| format!("`{}`", render_guard(alternative)))
-        .collect();
-    match rendered.as_slice() {
-        [single] => single.clone(),
-        many => format!("one of {}", many.join(", ")),
+    let quoted = crate::error::format_quoted_list(alternatives.iter().map(render_guard));
+    match alternatives {
+        [_] => quoted,
+        _ => format!("one of {quoted}"),
     }
 }
 
@@ -218,12 +235,10 @@ pub(super) fn render_constraint(in_play: ConstraintInPlay<'_>) -> String {
         ));
     }
     if !constraint.forbids.is_empty() {
-        let entries: Vec<String> = constraint
-            .forbids
-            .iter()
-            .map(|entry| format!("`{}`", render_guard(entry)))
-            .collect();
-        clauses.push(format!("forbids {}", entries.join(", ")));
+        clauses.push(format!(
+            "forbids {}",
+            crate::error::format_quoted_list(constraint.forbids.iter().map(render_guard))
+        ));
     }
     format!("{} {}", render_condition(in_play), clauses.join(" and "))
 }

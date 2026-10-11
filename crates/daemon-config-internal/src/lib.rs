@@ -97,7 +97,7 @@ pub mod peppy_config {
     pub use crate::internal::peppy_config::{
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, ExternalZenohConfig, LifecycleConfig,
         LocalNodesTopology, ManagedZenohConfig, OtlpEndpoint, OtlpMinSeverity, PackagesBaseUrl,
-        ParsedEndpointBuf, PeppyConfig, ResourceServers, Severity, ZenohConfig, load_or_create,
+        PeppyConfig, ResourceServers, Severity, ZenohConfig, load_or_create,
     };
 }
 
@@ -115,7 +115,7 @@ pub mod launcher {
         UnitSelection, VacantReason, WALL_CLOCK, check_composition, check_daemon_scopes,
         mint_incarnation, parse_copy_name, participant_vacancies, resolve_clocks,
         split_link_target, validate_bindings, validate_clock_connections, validate_link_plan,
-        validate_link_slots, validate_pairings,
+        validate_pairings,
     };
 }
 
@@ -178,5 +178,5 @@ pub mod repository {
 
 // -- source --
 pub mod source {
-    pub use crate::internal::source::{DeploymentSource, ExposureRef, ItemRef};
+    pub use crate::internal::source::{DeploymentSource, ExposureRef};
 }

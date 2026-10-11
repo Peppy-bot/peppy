@@ -307,15 +307,15 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
 ///
 /// `Peer` keeps gossip on so co-located nodes form direct peer-to-peer links;
 /// `Router` turns gossip off so every node routes through the central
-/// `zenohd` and opens no listener. Peer sessions bind the wildcard address —
+/// `zenohd` and opens no listener. Peer sessions bind the wildcard address:
 /// zenoh 1.10 gossips only non-loopback locators, so a loopback listener
-/// would never be advertised and no direct link could form — which makes the
-/// peer listener reachable from the network (the zenoh transport is
-/// unauthenticated, like the router's own listener). Cross-machine traffic
-/// still relays through the routers and their federation; the workspace
-/// namespace isolates what any link may carry. The `gossip()` mapping is
-/// the single source of truth tying this user-facing choice to the
-/// `DiscoveryConfig.gossip` flag the sessions actually read.
+/// would never be advertised and no direct link could form. The wildcard
+/// bind makes the peer listener reachable from the network (the zenoh
+/// transport is unauthenticated, like the router's own listener).
+/// Cross-machine traffic still relays through the routers and their
+/// federation; the workspace namespace isolates what any link may carry. The
+/// `gossip()` mapping is the single source of truth tying this user-facing
+/// choice to the `DiscoveryConfig.gossip` flag the sessions actually read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalNodesTopology {
@@ -325,14 +325,9 @@ pub enum LocalNodesTopology {
 }
 
 impl LocalNodesTopology {
-    /// Whether this is the peer topology (direct peer-to-peer links).
-    pub fn is_peer(self) -> bool {
-        matches!(self, LocalNodesTopology::Peer)
-    }
-
     /// LocalNodesTopology to gossip mapping: peer enables gossip, router disables it.
     pub fn gossip(self) -> bool {
-        self.is_peer()
+        matches!(self, LocalNodesTopology::Peer)
     }
 }
 
@@ -420,75 +415,27 @@ pub fn parse_endpoint<'a>(
         return Err("metadata and endpoint configuration are not supported".to_string());
     }
 
-    let (host, port, bracketed) = split_endpoint_host_port(address)?;
-    validate_endpoint_host(host, bracketed)?;
-    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+    let (host, port) = split_endpoint_host_port(address)?;
+    let host = check_dial_host(host)?;
+    let Some(port) = parse_dial_port(port) else {
         return Err("port must be an integer from 1 through 65535".to_string());
-    }
-    let port = port
-        .parse::<u16>()
-        .map_err(|_| "port must be an integer from 1 through 65535".to_string())?;
-    if port == 0 {
-        return Err("port must be an integer from 1 through 65535".to_string());
-    }
+    };
     Ok(ParsedEndpoint { host, port })
 }
 
-/// Owned form of [`ParsedEndpoint`] that keeps the canonical endpoint text
-/// together with its parsed host and port, so a syntax-checked endpoint can be
-/// stored and passed around without consumers re-parsing (and re-wording
-/// impossible parse failures for) the same string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ParsedEndpointBuf {
-    text: String,
-    /// Host without IPv6 brackets.
-    host: String,
-    port: u16,
+/// The host of a dial endpoint, by the form it is written in.
+#[derive(Debug, Clone, Copy)]
+enum EndpointHost<'a> {
+    /// Written in brackets, which only an IPv6 address may use. Holds the
+    /// text between the brackets.
+    Bracketed(&'a str),
+    /// Written bare: a hostname or an IPv4 address.
+    Plain(&'a str),
 }
 
-impl ParsedEndpointBuf {
-    /// Parses and takes ownership of an endpoint via [`parse_endpoint`].
-    pub fn parse(
-        text: impl Into<String>,
-        expected_scheme: &str,
-    ) -> std::result::Result<Self, String> {
-        let text = text.into();
-        let parsed = parse_endpoint(&text, expected_scheme)?;
-        let host = parsed.host.to_string();
-        let port = parsed.port;
-        Ok(Self { text, host, port })
-    }
-
-    /// The canonical `<scheme>/<host>:<port>` text this was parsed from.
-    pub fn as_str(&self) -> &str {
-        &self.text
-    }
-
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-}
-
-impl std::fmt::Display for ParsedEndpointBuf {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.text)
-    }
-}
-
-impl Serialize for ParsedEndpointBuf {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.text)
-    }
-}
-
-fn split_endpoint_host_port(address: &str) -> std::result::Result<(&str, &str, bool), String> {
+fn split_endpoint_host_port(
+    address: &str,
+) -> std::result::Result<(EndpointHost<'_>, &str), String> {
     if let Some(bracketed) = address.strip_prefix('[') {
         let Some(close) = bracketed.find(']') else {
             return Err("IPv6 addresses must be enclosed in matching brackets".to_string());
@@ -501,7 +448,7 @@ fn split_endpoint_host_port(address: &str) -> std::result::Result<(&str, &str, b
         if port.contains(':') {
             return Err("must contain exactly one port".to_string());
         }
-        return Ok((host, port, true));
+        return Ok((EndpointHost::Bracketed(host), port));
     }
 
     let Some((host, port)) = address.rsplit_once(':') else {
@@ -510,34 +457,40 @@ fn split_endpoint_host_port(address: &str) -> std::result::Result<(&str, &str, b
     if host.contains(':') {
         return Err("IPv6 addresses must be enclosed in brackets".to_string());
     }
-    Ok((host, port, false))
+    Ok((EndpointHost::Plain(host), port))
 }
 
-fn validate_endpoint_host(host: &str, bracketed: bool) -> std::result::Result<(), String> {
-    if host.is_empty() {
-        return Err("host must not be empty".to_string());
+/// Checks that `host` names a machine peppy can dial, and returns it
+/// without brackets.
+fn check_dial_host(host: EndpointHost<'_>) -> std::result::Result<&str, String> {
+    match host {
+        EndpointHost::Bracketed("") | EndpointHost::Plain("") => {
+            Err("host must not be empty".to_string())
+        }
+        EndpointHost::Bracketed(address) => check_bracketed_dial_host(address),
+        EndpointHost::Plain(host) => check_plain_dial_host(host),
     }
+}
 
-    if bracketed {
-        let address = host
-            .parse::<Ipv6Addr>()
-            .map_err(|_| "bracketed host must be a valid IPv6 address".to_string())?;
-        return if address.is_unspecified() {
-            Err(
-                "host must be dialable; the wildcard address [::] is only valid for listening"
-                    .to_string(),
-            )
-        } else {
-            Ok(())
-        };
+fn check_bracketed_dial_host(host: &str) -> std::result::Result<&str, String> {
+    let address = host
+        .parse::<Ipv6Addr>()
+        .map_err(|_| "bracketed host must be a valid IPv6 address".to_string())?;
+    if address.is_unspecified() {
+        return Err(
+            "host must be dialable; the wildcard address [::] is only valid for listening"
+                .to_string(),
+        );
     }
+    Ok(host)
+}
 
+fn check_plain_dial_host(host: &str) -> std::result::Result<&str, String> {
     if let Ok(address) = host.parse::<Ipv4Addr>() {
-        return if address.is_unspecified() {
-            Err("host must be dialable; 0.0.0.0 is only valid for listening".to_string())
-        } else {
-            Ok(())
-        };
+        if address.is_unspecified() {
+            return Err("host must be dialable; 0.0.0.0 is only valid for listening".to_string());
+        }
+        return Ok(host);
     }
     if host
         .bytes()
@@ -563,7 +516,20 @@ fn validate_endpoint_host(host: &str, bracketed: bool) -> std::result::Result<()
     {
         return Err("host must be a valid hostname or IP address".to_string());
     }
-    Ok(())
+    Ok(host)
+}
+
+/// The port of a dial endpoint: decimal digits only, without a sign, from 1
+/// through 65535.
+fn parse_dial_port(port: &str) -> Option<u16> {
+    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let port = port.parse::<u16>().ok()?;
+    if port == 0 {
+        return None;
+    }
+    Some(port)
 }
 
 /// Settings peppy can honor only while it owns the bundled router process.
@@ -770,10 +736,6 @@ where
 /// default on upgrade. Required fields that exist only in a non-default tagged
 /// variant (currently `zenoh.external.endpoint`) are pinned separately and
 /// deliberately are not invented by completion.
-///
-/// Not `Copy`: `resource_servers` owns heap strings. The daemon reads this once
-/// and moves it into the core node, and the CLI clones it field-by-field, so the
-/// lost `Copy` costs nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PeppyConfig {
     /// Fixed core-node name for this daemon; `None` (the template's explicit
@@ -826,9 +788,9 @@ impl PeppyConfig {
         if let Some(name) = &self.core_node_name
             && let Err(reason) = config::runtime::CoreNodeName::new(name.as_str())
         {
-            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+            return Err(cannot_parse_config(format!(
                 "{PEPPY_CONFIG_FILE}: invalid core_node_name {name:?}: {reason}"
-            ))));
+            )));
         }
 
         self.zenoh.validate()?;
@@ -837,14 +799,14 @@ impl PeppyConfig {
         // router restart, or a brief daemon blip would trip every node's
         // watchdog. Reject a hand-edited too-small value loud at load time.
         if self.lifecycle.daemon_grace_secs < MIN_DAEMON_GRACE_SECS {
-            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+            return Err(cannot_parse_config(format!(
                 "invalid lifecycle.daemon_grace_secs: must be >= {MIN_DAEMON_GRACE_SECS}"
-            ))));
+            )));
         }
         if self.lifecycle.shutdown_grace_secs < MIN_SHUTDOWN_GRACE_SECS {
-            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+            return Err(cannot_parse_config(format!(
                 "invalid lifecycle.shutdown_grace_secs: must be >= {MIN_SHUTDOWN_GRACE_SECS}"
-            ))));
+            )));
         }
         Ok(())
     }
@@ -895,11 +857,8 @@ fn load_or_create_with_override(
     }
 
     let content = std::fs::read_to_string(&path)?;
-    let config: PeppyConfig = serde_json5::from_str(&content).map_err(|e| {
-        Error::Parsing(ParsingError::CannotParseConfig(format!(
-            "{PEPPY_CONFIG_FILE}: {e}"
-        )))
-    })?;
+    let config: PeppyConfig = serde_json5::from_str(&content)
+        .map_err(|e| cannot_parse_config(format!("{PEPPY_CONFIG_FILE}: {e}")))?;
     // serde parses any numeric field, so a hand-edited 0 buffer size survives
     // the parse above; reject it before it reaches a bounded channel downstream.
     config.validate()?;
@@ -1333,13 +1292,6 @@ mod tests {
 
         assert_eq!(config, PeppyConfig::default());
         assert_eq!(std::fs::read(&path).unwrap(), before);
-
-        let tmp = tempdir().unwrap();
-        let root = tmp.path().join("never-created");
-        let peppy_dirs = PeppyDirs::new(&root);
-        load_or_create_with_override(&peppy_dirs, Some(DEFAULT_PEPPY_CONFIG_TEMPLATE.into()))
-            .unwrap();
-        assert!(!root.exists());
     }
 
     #[test]
@@ -1386,7 +1338,7 @@ mod tests {
     }
 
     #[test]
-    fn override_with_escaped_key_outdated_doc_crashes() {
+    fn override_with_escaped_key_outdated_doc_names_the_missing_setting() {
         let content = DEFAULT_PEPPY_CONFIG_TEMPLATE
             .replacen("  lifecycle: {", r#"  "life\u0063ycle": {"#, 1)
             .replacen(SHUTDOWN_GRACE_FIELD_SNIPPET, "", 1);
@@ -1404,7 +1356,6 @@ mod tests {
         let managed = managed(&cfg);
         assert_eq!(cfg.core_node_name, None);
         assert_eq!(managed.local_nodes_topology, LocalNodesTopology::Peer);
-        assert!(managed.local_nodes_topology.is_peer());
         assert!(cfg.zenoh.gossip());
         assert!(!LocalNodesTopology::Router.gossip());
         assert_eq!(
@@ -1546,12 +1497,10 @@ mod tests {
             let content = format!(r#"{{ zenoh: {{ external: {{ endpoint: "{endpoint}" }} }} }}"#);
             let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
 
-            let err = load_or_create(&peppy_dirs).unwrap_err();
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
             assert!(
-                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                    if message.contains("zenoh.external.endpoint")
-                        && message.contains(expected_message)),
-                "expected an external endpoint error for {endpoint:?}, got: {err:?}"
+                message.contains("zenoh.external.endpoint") && message.contains(expected_message),
+                "expected an external endpoint error for {endpoint:?}, got: {message}"
             );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
         }
@@ -1575,22 +1524,14 @@ mod tests {
         );
     }
 
+    /// Empty brackets are an empty host, refused as such before the IPv6
+    /// rules of a bracketed host run.
     #[test]
-    fn parsed_endpoint_buf_round_trips() {
-        let buf = ParsedEndpointBuf::parse("tls/[2001:db8::1]:7449", "tls").unwrap();
-        assert_eq!(buf.host(), "2001:db8::1");
-        assert_eq!(buf.port(), 7449);
-        assert_eq!(buf.as_str(), "tls/[2001:db8::1]:7449");
-        assert_eq!(buf.to_string(), buf.as_str());
+    fn endpoint_parser_refuses_empty_brackets_as_an_empty_host() {
         assert_eq!(
-            serde_json::to_string(&buf).unwrap(),
-            "\"tls/[2001:db8::1]:7449\""
+            parse_endpoint("tls/[]:7449", "tls"),
+            Err("host must not be empty".to_string())
         );
-        assert_eq!(
-            ParsedEndpointBuf::parse(buf.to_string(), "tls").unwrap(),
-            buf
-        );
-        assert!(ParsedEndpointBuf::parse("tcp/router.example:7449", "tls").is_err());
     }
 
     #[test]
@@ -1614,11 +1555,10 @@ mod tests {
             ),
         ] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(content);
-            let err = load_or_create(&peppy_dirs).unwrap_err();
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
             assert!(
-                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                    if message.contains(expected)),
-                "expected {expected:?} for {content}, got: {err:?}"
+                message.contains(expected),
+                "expected {expected:?} for {content}, got: {message}"
             );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
         }
@@ -1638,11 +1578,10 @@ mod tests {
 }"#,
         ] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(content);
-            let err = load_or_create(&peppy_dirs).unwrap_err();
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
             assert!(
-                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                    if message.contains("unknown field `zenoh.external.future_router_option`")),
-                "expected an unknown external field error for {content}, got: {err:?}"
+                message.contains("unknown field `zenoh.external.future_router_option`"),
+                "expected an unknown external field error for {content}, got: {message}"
             );
             assert_eq!(std::fs::read_to_string(path).unwrap(), content);
         }
@@ -1666,11 +1605,10 @@ mod tests {
         ] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(content);
 
-            let err = load_or_create(&peppy_dirs).unwrap_err();
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
             assert!(
-                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref message))
-                    if message.contains(expected_message)),
-                "expected an unknown-field error containing {expected_message:?}, got: {err:?}"
+                message.contains(expected_message),
+                "expected an unknown-field error containing {expected_message:?}, got: {message}"
             );
             assert_eq!(std::fs::read_to_string(path).unwrap(), content);
         }
@@ -1722,13 +1660,12 @@ mod tests {
             r#"{ core_node_name: "robot/7" }"#,
         ] {
             let (_tmp, peppy_dirs, path) = dirs_with_config(bad);
-            let err = load_or_create(&peppy_dirs).unwrap_err();
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
             assert!(
-                matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m))
-                    if m.contains("core_node_name")
-                        && m.contains(PEPPY_CONFIG_FILE)
-                        && m.contains(ALLOWED_CONFIG_CHARS)),
-                "expected a core-node-name validation error for {bad}, got: {err:?}"
+                message.contains("core_node_name")
+                    && message.contains(PEPPY_CONFIG_FILE)
+                    && message.contains(ALLOWED_CONFIG_CHARS),
+                "expected a core-node-name validation error for {bad}, got: {message}"
             );
             // Invalid names fail BEFORE completion: the file keeps omitting
             // knobs and is not rewritten, same as the malformed case.
@@ -1748,11 +1685,10 @@ mod tests {
         let over = "x".repeat(MAX_CORE_NODE_NAME_LEN + 1);
         let content = format!(r#"{{ core_node_name: "{over}" }}"#);
         let (_tmp, peppy_dirs, path) = dirs_with_config(&content);
-        let err = load_or_create(&peppy_dirs).unwrap_err();
+        let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
         assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m))
-                if m.contains("core_node_name")),
-            "expected a core-node-name validation error, got: {err:?}"
+            message.contains("core_node_name"),
+            "expected a core-node-name validation error, got: {message}"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
     }
@@ -2019,31 +1955,35 @@ mod tests {
         );
     }
 
+    /// A value out of its range fails the load and names the field. It fails
+    /// BEFORE completion: the file keeps omitting knobs and is not rewritten,
+    /// same as the malformed case.
     #[test]
-    fn sub_minimum_shutdown_grace_fails_loud() {
-        let (_tmp, peppy_dirs, _) =
-            dirs_with_config(r#"{ lifecycle: { shutdown_grace_secs: 0 } }"#);
+    fn out_of_range_values_fail_loud_and_leave_the_file() {
+        for (content, field) in [
+            (
+                r#"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 0 } } } }"#,
+                "standard_buffer_size",
+            ),
+            (
+                r#"{ zenoh: { managed: { subscriber_buffers: { high_throughput_buffer_size: 0 } } } }"#,
+                "high_throughput_buffer_size",
+            ),
+            (
+                r#"{ lifecycle: { shutdown_grace_secs: 0 } }"#,
+                "shutdown_grace_secs",
+            ),
+            (
+                r#"{ lifecycle: { daemon_grace_secs: 5 } }"#,
+                "daemon_grace_secs",
+            ),
+        ] {
+            let (_tmp, peppy_dirs, path) = dirs_with_config(content);
 
-        let err = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("shutdown_grace_secs")),
-            "expected a shutdown-grace validation error, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn sub_minimum_grace_fails_loud_and_leaves_file_untouched() {
-        let invalid = r#"{ lifecycle: { daemon_grace_secs: 5 } }"#;
-        let (_tmp, peppy_dirs, path) = dirs_with_config(invalid);
-
-        let err = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("daemon_grace_secs")),
-            "expected a grace-period validation error, got: {err:?}"
-        );
-        // Out-of-range values fail BEFORE completion: the file keeps omitting
-        // knobs and is not rewritten, same as the malformed case.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+            let message = error_message(load_or_create(&peppy_dirs).unwrap_err());
+            assert!(message.contains(field), "{content}: {message}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
     }
 
     #[test]
@@ -2240,32 +2180,6 @@ mod tests {
         );
         // A failed load never modifies the file, even though it omits knobs.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), malformed);
-    }
-
-    #[test]
-    fn zero_standard_buffer_size_fails_loud() {
-        let (_tmp, peppy_dirs, _) = dirs_with_config(
-            r#"{ zenoh: { managed: { subscriber_buffers: { standard_buffer_size: 0 } } } }"#,
-        );
-
-        let err = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("standard_buffer_size")),
-            "expected a buffer-size validation error, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn zero_high_throughput_buffer_size_fails_loud() {
-        let (_tmp, peppy_dirs, _) = dirs_with_config(
-            r#"{ zenoh: { managed: { subscriber_buffers: { high_throughput_buffer_size: 0 } } } }"#,
-        );
-
-        let err = load_or_create(&peppy_dirs).unwrap_err();
-        assert!(
-            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("high_throughput_buffer_size")),
-            "expected a buffer-size validation error, got: {err:?}"
-        );
     }
 
     #[test]

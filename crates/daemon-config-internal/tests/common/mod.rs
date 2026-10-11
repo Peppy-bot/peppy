@@ -1,6 +1,7 @@
 //! Helpers the launcher test binaries share. Each binary uses a subset.
 #![allow(dead_code)]
 
+use daemon_config::launcher::{PeppyLauncherParser, PreparedLauncher};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +17,12 @@ pub fn write(path: &Path, content: &str) -> PathBuf {
 /// A `launcher_fragment/v1` document around `body`.
 pub fn fragment_file(body: &str) -> String {
     format!("{{ peppy_schema: \"launcher_fragment/v1\", {body} }}")
+}
+
+/// `document` held ready to compose, read as the launcher at `fleet.json5`.
+pub fn load(document: &str) -> PreparedLauncher {
+    let parsed = PeppyLauncherParser::from_content(document).unwrap();
+    PreparedLauncher::load(&parsed, Path::new("fleet.json5")).unwrap()
 }
 
 /// The `--with` words of one launch, as the composer takes them.

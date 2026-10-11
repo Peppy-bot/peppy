@@ -13,6 +13,7 @@
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
 use crate::internal::daemon_interface::{DaemonInterface, served_interfaces};
 use crate::internal::launcher::MemberAddressing;
+use crate::internal::mcp_exposure::PeppyMcpExposureParser;
 use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedItem};
 use crate::internal::source::ExposureRef;
 use config::node::{NodeConfig, NodeConfigParser};
@@ -243,7 +244,7 @@ impl DeploymentTargets {
     /// names; every target that does not is reported at once.
     pub fn of(exposures: &[PinnedExposure]) -> Result<Self, McpDeploymentError> {
         let mut ordered: Vec<&PinnedExposure> = exposures.iter().collect();
-        ordered.sort_by_key(|exposure| exposure.reference());
+        ordered.sort_by_cached_key(|exposure| exposure.reference());
         let mut named: BTreeMap<&str, (&TargetSource, String)> = BTreeMap::new();
         let mut targets = Self::default();
         let mut unserved: Vec<ExposureViolations> = Vec::new();
@@ -325,18 +326,17 @@ pub fn plan_deployment(
         return Err(McpDeploymentError::NoExposures);
     }
     let mut ordered: Vec<&PinnedExposure> = exposures.iter().collect();
-    ordered.sort_by_key(|exposure| exposure.reference());
-    for (index, exposure) in ordered.iter().enumerate() {
-        if ordered[..index]
-            .iter()
-            .any(|other| other.reference() == exposure.reference())
-        {
-            return Err(McpDeploymentError::DuplicateExposure {
-                exposure: exposure.reference().to_string(),
-            });
-        }
+    ordered.sort_by_cached_key(|exposure| exposure.reference());
+    let references: Vec<ExposureRef> = ordered
+        .iter()
+        .map(|exposure| exposure.reference())
+        .collect();
+    // Sorted references put a repeated exposure beside its first listing.
+    if let Some(pair) = references.windows(2).find(|pair| pair[0] == pair[1]) {
+        return Err(McpDeploymentError::DuplicateExposure {
+            exposure: pair[1].to_string(),
+        });
     }
-    let references: Vec<ExposureRef> = ordered.iter().map(|e| e.reference()).collect();
     let name = built_in_identity(&references);
     let tag = BUILT_IN_TAG.to_owned();
 
@@ -639,7 +639,7 @@ impl McpServeSpec {
             &self.exposures,
             PinKind::McpExposure,
             "an exposure",
-            |content| crate::error::deserialize_json5_with_path(content).map_err(|e| e.to_string()),
+            |content| PeppyMcpExposureParser::from_content(content).map_err(|e| e.to_string()),
         )?;
         let contracts = parse_all(
             &self.contracts,
@@ -681,7 +681,6 @@ mod tests {
     use crate::internal::repository::{
         EntryOrigin, GitCommit, ItemName, ItemTag, RepoRelativePath,
     };
-    use peppy_mcp_catalog::McpExposure;
 
     const CAMERA_CONTRACT: &str = r#"{
         peppy_schema: "contract/v1",
@@ -782,8 +781,7 @@ mod tests {
     }
 
     fn exposure(content: &str) -> PinnedExposure {
-        let document: McpExposure =
-            crate::error::deserialize_json5_with_path(content).expect("exposure parses");
+        let document = PeppyMcpExposureParser::from_content(content).expect("exposure parses");
         PinnedExposure {
             pin: pin(
                 PinKind::McpExposure,

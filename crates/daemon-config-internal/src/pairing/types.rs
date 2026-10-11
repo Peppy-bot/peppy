@@ -26,7 +26,7 @@ where
 ///
 /// Direction is explicit data on each topic: a role emits the topics tagged
 /// `emitted_by: <its name>` and consumes every topic tagged with the other
-/// role's name. There is no nesting and no convention — the flat `topics`
+/// role's name. There is no nesting and no convention: the flat `topics`
 /// list with per-topic `emitted_by` is the entire shape.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PeppyPairing {
@@ -100,7 +100,7 @@ impl TryFrom<RawPairingTopic> for PairingTopic {
 /// - a `services` or `actions` key gets a targeted "pairings are
 ///   topics-only" error instead of a generic unknown-field message;
 /// - a non-empty `topics` list (a pairing with no topics carries nothing);
-///   a role with zero topics is fine — that is a strictly one-directional
+///   a role with zero topics is fine: that is a strictly one-directional
 ///   pair;
 /// - every `emitted_by` names one of the two declared roles;
 /// - topic names are unique across the whole flat list.
@@ -121,11 +121,11 @@ impl<'de> Deserialize<'de> for PeppyPairing {
             topics: Vec<PairingTopic>,
             // Captured only to produce a targeted error: pairing documents
             // are topics-only by design (see the pairing guide's "why topics
-            // only" section).
-            #[serde(default)]
-            services: Option<serde_json::Value>,
-            #[serde(default)]
-            actions: Option<serde_json::Value>,
+            // only" section). A null is a present key.
+            #[serde(default, deserialize_with = "config::node::deserialize_present")]
+            services: Option<()>,
+            #[serde(default, deserialize_with = "config::node::deserialize_present")]
+            actions: Option<()>,
         }
 
         let raw = RawPeppyPairing::deserialize(deserializer)?;
@@ -286,172 +286,185 @@ mod tests {
         assert!(err.to_string().contains("pairing/v1"), "error: {err}");
     }
 
-    #[test]
-    fn rejects_one_role() {
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1" },
-            roles: ["solo"],
-            topics: [{ emitted_by: "solo", name: "t" }]
-        }"#;
-        let err = serde_json5::from_str::<PeppyPairing>(json5).expect_err("one role rejected");
-        assert!(
-            err.to_string().contains("exactly two roles"),
-            "error: {err}"
-        );
+    /// The fields of a pairing document below its `peppy_schema` header, so
+    /// each rejection case writes only the field it breaks.
+    struct PairingFields {
+        manifest: &'static str,
+        roles: &'static str,
+        topics: &'static str,
+        extra: &'static str,
+    }
+
+    const VALID_PAIRING: PairingFields = PairingFields {
+        manifest: r#"{ name: "x", tag: "v1" }"#,
+        roles: r#"["a", "b"]"#,
+        topics: r#"[{ emitted_by: "a", name: "t" }]"#,
+        extra: "",
+    };
+
+    fn pairing_document(fields: &PairingFields) -> String {
+        let PairingFields {
+            manifest,
+            roles,
+            topics,
+            extra,
+        } = fields;
+        format!(
+            r#"{{
+                peppy_schema: "pairing/v1",
+                manifest: {manifest},
+                roles: {roles},
+                topics: {topics},
+                {extra}
+            }}"#
+        )
     }
 
     #[test]
-    fn rejects_three_roles() {
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1" },
-            roles: ["a", "b", "c"],
-            topics: [{ emitted_by: "a", name: "t" }]
-        }"#;
-        let err = serde_json5::from_str::<PeppyPairing>(json5).expect_err("three roles rejected");
-        assert!(
-            err.to_string().contains("exactly two roles"),
-            "error: {err}"
-        );
-    }
+    fn rejects_invalid_pairing_documents() {
+        serde_json5::from_str::<PeppyPairing>(&pairing_document(&VALID_PAIRING))
+            .expect("the base document of the rejection cases parses");
 
-    #[test]
-    fn rejects_duplicate_roles() {
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1" },
-            roles: ["same", "same"],
-            topics: [{ emitted_by: "same", name: "t" }]
-        }"#;
-        let err = serde_json5::from_str::<PeppyPairing>(json5).expect_err("dup roles rejected");
-        assert!(err.to_string().contains("distinct"), "error: {err}");
-    }
+        // (what, document fields, substrings the error must contain)
+        let cases: &[(&str, PairingFields, &[&str])] = &[
+            (
+                "one role",
+                PairingFields {
+                    roles: r#"["solo"]"#,
+                    topics: r#"[{ emitted_by: "solo", name: "t" }]"#,
+                    ..VALID_PAIRING
+                },
+                &["exactly two roles"],
+            ),
+            (
+                "three roles",
+                PairingFields {
+                    roles: r#"["a", "b", "c"]"#,
+                    ..VALID_PAIRING
+                },
+                &["exactly two roles"],
+            ),
+            (
+                "duplicate roles",
+                PairingFields {
+                    roles: r#"["same", "same"]"#,
+                    topics: r#"[{ emitted_by: "same", name: "t" }]"#,
+                    ..VALID_PAIRING
+                },
+                &["distinct"],
+            ),
+            (
+                "`_` role",
+                PairingFields {
+                    roles: r#"["_", "b"]"#,
+                    topics: r#"[{ emitted_by: "b", name: "t" }]"#,
+                    ..VALID_PAIRING
+                },
+                &["sentinel"],
+            ),
+            (
+                // The error names the bad role and the declared roles.
+                "undeclared emitted_by",
+                PairingFields {
+                    topics: r#"[{ emitted_by: "ghost", name: "t" }]"#,
+                    ..VALID_PAIRING
+                },
+                &["ghost", "`a`", "`b`"],
+            ),
+            (
+                "empty topics",
+                PairingFields {
+                    topics: "[]",
+                    ..VALID_PAIRING
+                },
+                &["at least one topic"],
+            ),
+            (
+                // The flat-list uniqueness rule: one namespace regardless of
+                // which role emits, which keeps the generated
+                // pairings.<link_id>.* module namespace unambiguous.
+                "cross-direction duplicate topic",
+                PairingFields {
+                    topics: r#"[
+                        { emitted_by: "a", name: "shared" },
+                        { emitted_by: "b", name: "shared" }
+                    ]"#,
+                    ..VALID_PAIRING
+                },
+                &["duplicate"],
+            ),
+            (
+                "services key",
+                PairingFields {
+                    extra: "services: []",
+                    ..VALID_PAIRING
+                },
+                &["topics-only"],
+            ),
+            (
+                "actions key",
+                PairingFields {
+                    extra: "actions: []",
+                    ..VALID_PAIRING
+                },
+                &["topics-only"],
+            ),
+            (
+                "null services key",
+                PairingFields {
+                    extra: "services: null",
+                    ..VALID_PAIRING
+                },
+                &["topics-only"],
+            ),
+            (
+                "null actions key",
+                PairingFields {
+                    extra: "actions: null",
+                    ..VALID_PAIRING
+                },
+                &["topics-only"],
+            ),
+            (
+                "unknown top-level field",
+                PairingFields {
+                    extra: r#"execution: { language: "rust" }"#,
+                    ..VALID_PAIRING
+                },
+                &[],
+            ),
+            (
+                // The shared contract/pairing doc Manifest is
+                // deny_unknown_fields and has no depends_on: a pairing is a
+                // passive contract.
+                "manifest depends_on",
+                PairingFields {
+                    manifest: r#"{ name: "x", tag: "v1", depends_on: { nodes: [] } }"#,
+                    ..VALID_PAIRING
+                },
+                &[],
+            ),
+            (
+                "empty topic name",
+                PairingFields {
+                    topics: r#"[{ emitted_by: "a" }]"#,
+                    ..VALID_PAIRING
+                },
+                &["empty"],
+            ),
+        ];
 
-    #[test]
-    fn rejects_sentinel_role() {
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1" },
-            roles: ["_", "b"],
-            topics: [{ emitted_by: "b", name: "t" }]
-        }"#;
-        let err = serde_json5::from_str::<PeppyPairing>(json5).expect_err("`_` role rejected");
-        assert!(err.to_string().contains("sentinel"), "error: {err}");
-    }
-
-    #[test]
-    fn rejects_emitted_by_undeclared_role() {
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1" },
-            roles: ["a", "b"],
-            topics: [{ emitted_by: "ghost", name: "t" }]
-        }"#;
-        let err = serde_json5::from_str::<PeppyPairing>(json5)
-            .expect_err("undeclared emitted_by rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("ghost") && msg.contains("`a`") && msg.contains("`b`"),
-            "error should name the bad role and the declared roles: {msg}"
-        );
-    }
-
-    #[test]
-    fn rejects_empty_topics() {
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1" },
-            roles: ["a", "b"],
-            topics: []
-        }"#;
-        let err = serde_json5::from_str::<PeppyPairing>(json5).expect_err("empty topics rejected");
-        assert!(
-            err.to_string().contains("at least one topic"),
-            "error: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_topic_names_across_directions() {
-        // The flat-list uniqueness rule: one namespace regardless of which
-        // role emits — this keeps the generated pairings.<link_id>.* module
-        // namespace unambiguous.
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1" },
-            roles: ["a", "b"],
-            topics: [
-                { emitted_by: "a", name: "shared" },
-                { emitted_by: "b", name: "shared" }
-            ]
-        }"#;
-        let err = serde_json5::from_str::<PeppyPairing>(json5)
-            .expect_err("cross-direction duplicate rejected");
-        assert!(err.to_string().contains("duplicate"), "error: {err}");
-    }
-
-    #[test]
-    fn rejects_services_key_with_topics_only_error() {
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1" },
-            roles: ["a", "b"],
-            topics: [{ emitted_by: "a", name: "t" }],
-            services: []
-        }"#;
-        let err = serde_json5::from_str::<PeppyPairing>(json5).expect_err("services rejected");
-        assert!(err.to_string().contains("topics-only"), "error: {err}");
-    }
-
-    #[test]
-    fn rejects_actions_key_with_topics_only_error() {
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1" },
-            roles: ["a", "b"],
-            topics: [{ emitted_by: "a", name: "t" }],
-            actions: []
-        }"#;
-        let err = serde_json5::from_str::<PeppyPairing>(json5).expect_err("actions rejected");
-        assert!(err.to_string().contains("topics-only"), "error: {err}");
-    }
-
-    #[test]
-    fn rejects_unknown_top_level_fields() {
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1" },
-            roles: ["a", "b"],
-            topics: [{ emitted_by: "a", name: "t" }],
-            execution: { language: "rust" }
-        }"#;
-        assert!(serde_json5::from_str::<PeppyPairing>(json5).is_err());
-    }
-
-    #[test]
-    fn rejects_manifest_depends_on() {
-        // The shared contract/pairing doc Manifest is deny_unknown_fields
-        // and has no depends_on: a pairing is a passive contract.
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1", depends_on: { nodes: [] } },
-            roles: ["a", "b"],
-            topics: [{ emitted_by: "a", name: "t" }]
-        }"#;
-        assert!(serde_json5::from_str::<PeppyPairing>(json5).is_err());
-    }
-
-    #[test]
-    fn rejects_empty_topic_name() {
-        let json5 = r#"{
-            peppy_schema: "pairing/v1",
-            manifest: { name: "x", tag: "v1" },
-            roles: ["a", "b"],
-            topics: [{ emitted_by: "a" }]
-        }"#;
-        let err = serde_json5::from_str::<PeppyPairing>(json5).expect_err("empty name rejected");
-        assert!(err.to_string().contains("empty"), "error: {err}");
+        for (what, fields, expected) in cases {
+            let err = serde_json5::from_str::<PeppyPairing>(&pairing_document(fields))
+                .expect_err(&format!("{what}: the document must be rejected"));
+            let message = err.to_string();
+            for substring in *expected {
+                assert!(
+                    message.contains(substring),
+                    "{what}: the error should contain {substring:?}: {message}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -67,7 +67,7 @@ pub struct PeppyLauncher {
     /// nothing to select there is no selection to refuse.
     pub constraints: Vec<SelectionConstraint>,
     /// Framework configuration for the launch as a whole, separate from the
-    /// deployment structure around it. Today that is the clock domains this
+    /// deployment structure around it. It holds the clock domains this
     /// launcher declares.
     pub framework: LauncherFramework,
 }
@@ -348,9 +348,9 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
 
 /// The whole-document cross-checks of a flat launcher: every `core_node`
 /// names a declared link, no link key is the reserved producer-default
-/// sentinel, and every link target names a known instance. Extracted from
-/// [`PeppyLauncher`]'s deserializer so the composed arm of that deserializer
-/// can defer exactly these checks to the flattened document.
+/// sentinel, and every link target names a known instance. Kept apart from
+/// [`PeppyLauncher`]'s deserializer so a composed launcher can defer exactly
+/// these checks to the flattened document.
 fn cross_check_flat_document(
     deployments: &[Deployment],
     core_nodes: &[String],
@@ -359,61 +359,74 @@ fn cross_check_flat_document(
     // whole document is parsed, is what lets the error say WHICH links
     // were available instead of just that this one was not one of them.
     let declared: HashSet<&str> = core_nodes.iter().map(String::as_str).collect();
-    for deployment in deployments {
-        for instance in &deployment.instances {
-            let Some(core_node) = &instance.core_node else {
-                continue;
-            };
-            if declared.contains(core_node.as_str()) {
-                continue;
-            }
-            return Err(undeclared_core_node_message(
-                instance.instance_id.as_str(),
-                core_node,
-                core_nodes,
-            ));
+    for instance in deployments
+        .iter()
+        .flat_map(|deployment| &deployment.instances)
+    {
+        let Some(core_node) = &instance.core_node else {
+            continue;
+        };
+        if declared.contains(core_node.as_str()) {
+            continue;
         }
+        return Err(undeclared_core_node_message(
+            instance.instance_id.as_str(),
+            core_node,
+            core_nodes,
+        ));
     }
 
     let known_ids: HashSet<&str> = deployments
         .iter()
-        .flat_map(|d| d.instances.iter())
-        .map(|i| i.instance_id.as_str())
+        .flat_map(|deployment| &deployment.instances)
+        .map(|instance| instance.instance_id.as_str())
         .collect();
-
-    for deployment in deployments {
-        for instance in &deployment.instances {
-            for (link, value) in &instance.links {
-                if link == DEFAULT_LINK_ID_SENTINEL {
-                    let err = StructuredError::LinkSentinelKey {
-                        owner_instance_id: instance.instance_id.to_string(),
-                        link: link.clone(),
-                    };
-                    return Err(err.json5_message());
-                }
-                // Only the instance part of a target names a deployed
-                // instance; a pairing/observer target's optional
-                // `/<link_id>` suffix selects a slot on that instance and
-                // is resolved (against the manifest) at plan time. A vacant
-                // slot selects nothing, so it names no instance to check.
-                let Some(selection) = value.selection() else {
-                    continue;
-                };
-                for target in selection.targets() {
-                    let (target_instance, _link_suffix) = split_link_target(target);
-                    if !known_ids.contains(target_instance) {
-                        let err = StructuredError::UnknownInstanceId {
-                            owner_instance_id: instance.instance_id.to_string(),
-                            link: link.clone(),
-                            instance_id: target_instance.to_string(),
-                        };
-                        return Err(err.json5_message());
-                    }
-                }
-            }
-        }
+    for instance in deployments
+        .iter()
+        .flat_map(|deployment| &deployment.instances)
+    {
+        check_instance_links(instance, &known_ids)?;
     }
 
+    Ok(())
+}
+
+/// The link checks of one instance of a flat launcher: no link key is the
+/// reserved producer-default sentinel, and every link target names an
+/// instance in `known_ids`.
+fn check_instance_links(
+    instance: &DeploymentInstance,
+    known_ids: &HashSet<&str>,
+) -> Result<(), String> {
+    for (link, value) in &instance.links {
+        if link == DEFAULT_LINK_ID_SENTINEL {
+            let err = StructuredError::LinkSentinelKey {
+                owner_instance_id: instance.instance_id.to_string(),
+                link: link.clone(),
+            };
+            return Err(err.json5_message());
+        }
+        // Only the instance part of a target names a deployed instance; a
+        // pairing/observer target's optional `/<link_id>` suffix selects a
+        // slot on that instance and is resolved (against the manifest) at
+        // plan time. A vacant slot selects nothing, so it names no instance
+        // to check.
+        let Some(selection) = value.selection() else {
+            continue;
+        };
+        for target in selection.targets() {
+            let (target_instance, _link_suffix) = split_link_target(target);
+            if known_ids.contains(target_instance) {
+                continue;
+            }
+            let err = StructuredError::UnknownInstanceId {
+                owner_instance_id: instance.instance_id.to_string(),
+                link: link.clone(),
+                instance_id: target_instance.to_string(),
+            };
+            return Err(err.json5_message());
+        }
+    }
     Ok(())
 }
 
@@ -551,8 +564,7 @@ pub enum LinkValue {
     /// an observer slot or a producer-binding slot. A slot the manifest
     /// declares required cannot be vacated at all,
     /// and a multi-cardinality slot writes its emptiness as `[]` or an omitted
-    /// key; [`crate::launcher::links::validate_link_slots`] rejects a vacancy
-    /// on either.
+    /// key; `validate_link_slots` rejects a vacancy on either.
     Vacant(VacantReason),
 }
 
@@ -735,8 +747,8 @@ pub enum CardinalityShapeViolation {
 ///
 /// Takes a [`Selection`] rather than a [`LinkValue`] because a vacant slot
 /// selects nothing and has no shape to size: whether it may be vacant at all is
-/// the legality question [`crate::launcher::links::validate_link_slots`]
-/// answers, before any of this.
+/// the legality question [`super::links::validate_link_slots`] answers,
+/// before any of this.
 ///
 /// The one shape rule, shared by producer-binding slots and observer slots so a
 /// deployment writes `["a", "b"]` for the same reason on both.
@@ -1001,8 +1013,8 @@ pub struct DeploymentInstance {
     ///
     /// Deliberately a SEPARATE field from `instance_id` rather than a prefix
     /// on it. Identity and placement are two different facts, so they get two
-    /// differently-typed fields: `instance_id` keeps its existing charset
-    /// untouched, nothing anywhere has to split a placement back out of an
+    /// differently-typed fields: `instance_id` keeps the plain identifier
+    /// charset, nothing anywhere has to split a placement back out of an
     /// instance id to use one, and a `links:` target stays a bare instance id
     /// wherever it appears. Placement is declared once, here, and never
     /// repeated at the point of use.
@@ -1050,8 +1062,7 @@ where
             // producer targets never carry a suffix, pairing/observer
             // targets carry at most one). A bad suffix here would otherwise
             // surface later as a confusing "no complementary slot" error.
-            let (instance, link_suffix) = split_link_target(target);
-            if instance.is_empty() || link_suffix.is_some_and(|l| l.is_empty() || l.contains('/')) {
+            if split_well_formed_link_target(target).is_none() {
                 return Err(de::Error::custom(format!(
                     "link target `{target}` for key `{key}` is malformed: expected \
                      `<instance>` or `<instance>/<link_id>`"
@@ -1109,6 +1120,22 @@ pub fn split_link_target(value: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// Splits a link target written as `<instance>` or `<instance>/<link_id>`, or
+/// returns `None` when it is malformed: an empty instance, or a `/` followed
+/// by an empty link id or by a second `/`. A launcher `links` value and an
+/// adjustment's `add_links` value fill the same slots, so both follow this
+/// one grammar.
+pub(crate) fn split_well_formed_link_target(target: &str) -> Option<(&str, Option<&str>)> {
+    let (instance, link) = split_link_target(target);
+    if instance.is_empty() {
+        return None;
+    }
+    if link.is_some_and(|link| link.is_empty() || link.contains('/')) {
+        return None;
+    }
+    Some((instance, link))
+}
+
 /// Map visitor for the unified `links` deserializer. Collects into a Vec so
 /// duplicate keys survive to `validate_named_items` instead of being collapsed
 /// by a map insert.
@@ -1160,9 +1187,9 @@ where
     let instances = Vec::<DeploymentInstance>::deserialize(deserializer)?;
     let mut seen = HashSet::with_capacity(instances.len());
     for instance in &instances {
-        let id = instance.instance_id.to_string();
-        if !seen.insert(id.clone()) {
-            let err = crate::error::StructuredError::DuplicateName(id);
+        if !seen.insert(instance.instance_id.as_str()) {
+            let err =
+                crate::error::StructuredError::DuplicateName(instance.instance_id.to_string());
             return Err(de::Error::custom(err.json5_message()));
         }
     }
@@ -1541,17 +1568,72 @@ mod tests {
         );
     }
 
-    /// Shape-local parse rule: empty-string targets are rejected inside
-    /// arrays exactly as they are for scalars.
+    /// Every entry of a `links` map has a non-empty key and non-empty
+    /// targets, and no key appears twice, whatever kind of slot it names.
     #[test]
-    fn bindings_reject_empty_target_inside_array() {
-        let json5 = r#"{
-            instance_id: "commander",
-            links: { arm_states: ["arm_inst", ""] }
-        }"#;
-        let err = serde_json5::from_str::<DeploymentInstance>(json5)
-            .expect_err("empty target inside an array must be rejected");
-        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+    fn links_reject_empty_and_duplicate_entries() {
+        // (what, instance_id, links, substrings the error must contain)
+        let cases: &[(&str, &str, &str, &[&str])] = &[
+            (
+                // Empty-string targets are rejected inside arrays exactly as
+                // they are for scalars.
+                "an empty target inside an array",
+                "commander",
+                r#"{ arm_states: ["arm_inst", ""] }"#,
+                &["empty"],
+            ),
+            (
+                "an empty binding key",
+                "backbone",
+                r#"{ "": "cam_torso" }"#,
+                &["empty"],
+            ),
+            (
+                "an empty binding value",
+                "backbone",
+                r#"{ torso_camera: "" }"#,
+                &["empty"],
+            ),
+            (
+                // The raw map deserializer surfaces a duplicate key before
+                // the BTreeMap collapses it.
+                "a duplicate binding key",
+                "backbone",
+                r#"{ "main": "prod_a", "main": "prod_b" }"#,
+                &["duplicate", "main"],
+            ),
+            (
+                "a duplicate pairing key",
+                "ctrl_1",
+                r#"{ "arm": "a1", "arm": "a2" }"#,
+                &["duplicate"],
+            ),
+            (
+                "an empty pairing target",
+                "ctrl_1",
+                r#"{ "arm": "" }"#,
+                &["empty"],
+            ),
+            (
+                "an empty pairing key",
+                "ctrl_1",
+                r#"{ "": "arm_1" }"#,
+                &["empty"],
+            ),
+        ];
+
+        for (what, instance_id, links, expected) in cases {
+            let json5 = format!(r#"{{ instance_id: "{instance_id}", links: {links} }}"#);
+            let err = serde_json5::from_str::<DeploymentInstance>(&json5)
+                .expect_err(&format!("{what} must be rejected"));
+            let message = err.to_string();
+            for substring in *expected {
+                assert!(
+                    message.contains(substring),
+                    "{what}: the error should contain {substring:?}: {message}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1596,28 +1678,6 @@ mod tests {
         assert_eq!(instance_id, "does_not_exist");
     }
 
-    #[test]
-    fn bindings_reject_empty_key() {
-        let json5 = r#"{
-            instance_id: "backbone",
-            links: { "": "cam_torso" }
-        }"#;
-        let err = serde_json5::from_str::<DeploymentInstance>(json5)
-            .expect_err("empty binding key must be rejected");
-        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn bindings_reject_empty_value() {
-        let json5 = r#"{
-            instance_id: "backbone",
-            links: { torso_camera: "" }
-        }"#;
-        let err = serde_json5::from_str::<DeploymentInstance>(json5)
-            .expect_err("empty binding value must be rejected");
-        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
-    }
-
     /// Two binding keys may point at the same producer `instance_id`:
     /// that is the "one producer serves multiple `link_id` slots" case
     /// the wiring step materializes as a producer with multiple
@@ -1633,7 +1693,7 @@ mod tests {
             }
         }"#;
         let instance: DeploymentInstance =
-            serde_json5::from_str(json5).expect("duplicate binding targets should now be accepted");
+            serde_json5::from_str(json5).expect("two keys may name one producer");
         assert_eq!(
             instance.links.get("a"),
             Some(&LinkValue::Bound(Selection::Scalar(
@@ -1865,33 +1925,6 @@ mod tests {
         assert_eq!(instance_id, "ghost");
     }
 
-    #[test]
-    fn pairings_reject_duplicate_and_empty_entries() {
-        let dup = r#"{
-            instance_id: "ctrl_1",
-            links: { "arm": "a1", "arm": "a2" }
-        }"#;
-        let err = serde_json5::from_str::<DeploymentInstance>(dup)
-            .expect_err("duplicate pairing key must be rejected");
-        assert!(err.to_string().contains("duplicate"), "error: {err}");
-
-        let empty_value = r#"{
-            instance_id: "ctrl_1",
-            links: { "arm": "" }
-        }"#;
-        let err = serde_json5::from_str::<DeploymentInstance>(empty_value)
-            .expect_err("empty pairing target must be rejected");
-        assert!(err.to_string().contains("empty"), "error: {err}");
-
-        let empty_key = r#"{
-            instance_id: "ctrl_1",
-            links: { "": "arm_1" }
-        }"#;
-        let err = serde_json5::from_str::<DeploymentInstance>(empty_key)
-            .expect_err("empty pairing key must be rejected");
-        assert!(err.to_string().contains("empty"), "error: {err}");
-    }
-
     /// A pairing target must be `<peer_instance>` or
     /// `<peer_instance>/<peer_link_id>`; empty parts or extra `/` segments
     /// fail at parse time with a targeted message instead of surfacing later
@@ -1912,23 +1945,6 @@ mod tests {
                 "target `{target}` should be reported as malformed: {err}"
             );
         }
-    }
-
-    /// Duplicate binding keys must be rejected. The raw map deserializer
-    /// must surface them before the BTreeMap collapses duplicates.
-    #[test]
-    fn bindings_reject_duplicate_keys() {
-        let json5 = r#"{
-            instance_id: "backbone",
-            links: { "main": "prod_a", "main": "prod_b" }
-        }"#;
-        let err = serde_json5::from_str::<DeploymentInstance>(json5)
-            .expect_err("duplicate binding key must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("duplicate") && msg.contains("main"),
-            "unexpected error: {msg}"
-        );
     }
 
     fn core_node(name: &str) -> config::runtime::CoreNodeName {

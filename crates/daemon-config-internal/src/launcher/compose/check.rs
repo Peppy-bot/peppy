@@ -5,8 +5,7 @@
 use super::super::composition::{ArgumentOverrides, ComponentAxis, CopyEntry};
 use super::super::types::PeppyLauncher;
 use super::constraints::{
-    ConstraintInPlay, ConstraintScope, LAUNCHER, constraint_satisfied, constraints_in_play,
-    render_constraint,
+    ConstraintInPlay, ConstraintScope, constraint_satisfied, constraints_in_play, render_constraint,
 };
 use super::copy::{ComposedCopy, CopyRequest, attach, combine, compose_copy, copy_over_stack};
 use super::error::CompositionError;
@@ -17,7 +16,7 @@ use super::select::{
     CopyOrigin, SelectionEntry, SelectionSource, UnitSelection, check_reach, resolve_copy,
 };
 use config::runtime::Name;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 
 /// The ceiling on the selection space [`check_composition`] enumerates.
@@ -34,7 +33,7 @@ const CHECK_COPY: &str = "composition_check";
 /// The checked copy's name over `bare`: the first of `composition_check`,
 /// `composition_check_2`, ... that the stack neither declares as a core
 /// node link nor prefixes an instance id with.
-fn check_copy_name(bare: &Expanded) -> Name {
+fn pick_checked_copy_name(bare: &Expanded) -> Name {
     let ids: Vec<&str> = bare
         .deployments
         .iter()
@@ -173,6 +172,16 @@ fn above_ceiling(
     })
 }
 
+/// A stack selection the constraints admit, composed once for every pass
+/// that checks something over it.
+struct LegalStack {
+    selection: UnitSelection,
+    /// The flat stack and its expansion, or None when the stack does not
+    /// compose: the stack pass reports that once, and the copy passes skip
+    /// the stack.
+    composed: Option<(PeppyLauncher, Expanded)>,
+}
+
 /// Every stack selection the constraints admit, each composed; a
 /// selection that composes badly is reported and kept, since the copies
 /// are checked over it as well.
@@ -181,7 +190,7 @@ fn legal_stacks(
     ledger: &mut Ledger<'_>,
     label: &str,
     problems: &mut Vec<String>,
-) -> Vec<UnitSelection> {
+) -> Vec<LegalStack> {
     let mut legal = Vec::new();
     for selection in enumerate_stack(&prepared.launcher, &prepared.loaded) {
         if let Err(e) = check_reach(&prepared.launcher, &prepared.loaded, &selection.entries) {
@@ -193,10 +202,17 @@ fn legal_stacks(
         if ledger.judge(&in_play, &selection) {
             continue;
         }
-        if let Err(e) = prepared.flat_stack(&selection) {
-            problems.push(format!("{label} ({}): {e}", selection.echo()));
-        }
-        legal.push(selection);
+        let composed = match prepared.flat_stack(&selection) {
+            Ok(composed) => Some(composed),
+            Err(e) => {
+                problems.push(format!("{label} ({}): {e}", selection.echo()));
+                None
+            }
+        };
+        legal.push(LegalStack {
+            selection,
+            composed,
+        });
     }
     legal
 }
@@ -209,7 +225,7 @@ fn legal_stacks(
 /// file deploys must have a way to launch.
 fn check_file_copies_over(
     prepared: &PreparedLauncher,
-    stacks: &[UnitSelection],
+    stacks: &[LegalStack],
     ledger: &mut Ledger<'_>,
     label: &str,
 ) -> Vec<String> {
@@ -218,16 +234,20 @@ fn check_file_copies_over(
     let mut problems = Vec::new();
     // Each copy the file deploys, and whether some legal stack admits it.
     let mut admitted: BTreeMap<String, bool> = BTreeMap::new();
-    for stack in stacks {
-        let Ok((flat, bare)) = prepared.flat_stack(stack) else {
+    for LegalStack {
+        selection: stack,
+        composed,
+    } in stacks
+    {
+        let Some((flat, bare)) = composed else {
             // Reported once, by the stack pass.
             continue;
         };
         let mut taken = bare.core_nodes.clone();
         let mut copies = Vec::new();
-        // A copy whose `one` axis the file leaves for a launch word, once
-        // per option the word may name; each runs beside the file's other
-        // copies.
+        // A copy whose `one` axes the file leaves for launch words, once
+        // per combination of options the words may name; each runs beside
+        // the file's other copies.
         let mut variants: Vec<(String, ComposedCopy)> = Vec::new();
         for entry in &launcher.option_deployments {
             let loaded = prepared.loaded.option(&entry.axis, &entry.option);
@@ -243,6 +263,11 @@ fn check_file_copies_over(
                 arguments: ArgumentOverrides::default(),
                 adjustments: Vec::new(),
             });
+            let origin = if launch_joined.is_some() {
+                CopyOrigin::LaunchJoin
+            } else {
+                CopyOrigin::File
+            };
             for instance in entry.instances.iter().chain(launch_joined.iter()) {
                 let settings = entry.settings_for(instance);
                 let file_copy = if launch_joined.is_some() {
@@ -255,31 +280,15 @@ fn check_file_copies_over(
                 } else {
                     format!("{} + file copy `{}`", stack.echo(), instance.instance_id)
                 };
-                let attempts: Vec<(String, BTreeMap<String, String>)> = match resolve_copy(
+                let attempts = match launch_word_completions(
                     loaded,
                     &entry.axis,
                     instance.instance_id.as_str(),
                     &settings.with,
-                    if launch_joined.is_some() {
-                        CopyOrigin::LaunchJoin
-                    } else {
-                        CopyOrigin::File
-                    },
+                    origin,
+                    &file_copy,
                 ) {
-                    Ok(_) => vec![(file_copy.clone(), settings.with.clone())],
-                    Err(CompositionError::UnresolvedCopyAxis(unresolved)) => {
-                        let axis = unresolved.axis;
-                        loaded
-                            .axis(&axis)
-                            .into_iter()
-                            .flat_map(|left| left.options.keys())
-                            .map(|option| {
-                                let mut with = settings.with.clone();
-                                with.insert(axis.clone(), option.clone());
-                                (format!("{file_copy} ({axis}={option})"), with)
-                            })
-                            .collect()
-                    }
+                    Ok(attempts) => attempts,
                     Err(e) => {
                         problems.push(format!("{label} ({file_copy}): {e}"));
                         continue;
@@ -293,29 +302,19 @@ fn check_file_copies_over(
                 let admitted_here = admitted
                     .entry(instance.instance_id.to_string())
                     .or_insert(false);
-                for (echo, with) in &attempts {
+                for LaunchWordCompletion { echo, with, own } in &attempts {
                     // The copy's constraints, judged over the stack as the
                     // join path judges them: a refused selection is refused
                     // by design and composes nothing.
-                    let refused = resolve_copy(
-                        loaded,
-                        &entry.axis,
-                        instance.instance_id.as_str(),
-                        with,
-                        CopyOrigin::File,
-                    )
-                    .is_ok_and(|own| {
-                        let over = copy_over_stack(launcher, stack, loaded, &entry.axis, &own);
-                        ledger.judge(&over.in_play, &over.selection)
-                    });
-                    if refused {
+                    let over = copy_over_stack(launcher, stack, loaded, &entry.axis, own);
+                    if ledger.judge(&over.in_play, &over.selection) {
                         continue;
                     }
                     *admitted_here = true;
                     match compose_copy(
                         prepared,
                         stack,
-                        &bare,
+                        bare,
                         CopyRequest {
                             axis: &entry.axis,
                             loaded,
@@ -342,13 +341,13 @@ fn check_file_copies_over(
                 taken.extend(links.into_iter().flatten());
             }
         }
-        if let Err(e) = combine(launcher, &bare, &flat.framework, &copies) {
+        if let Err(e) = combine(launcher, bare, &flat.framework, &copies) {
             problems.push(format!("{label} ({}): {e}", stack.echo()));
         }
         for (echo, variant) in variants {
             let mut together = copies.clone();
             together.push(variant);
-            if let Err(e) = combine(launcher, &bare, &flat.framework, &together) {
+            if let Err(e) = combine(launcher, bare, &flat.framework, &together) {
                 problems.push(format!("{label} ({echo}): {e}"));
             }
         }
@@ -365,6 +364,52 @@ fn check_file_copies_over(
     problems
 }
 
+/// One way a launch fills a file copy: the `with` map the copy composes
+/// under, the copy's selection under it, and the label its problems carry.
+struct LaunchWordCompletion {
+    echo: String,
+    with: BTreeMap<String, String>,
+    own: UnitSelection,
+}
+
+/// Every `with` map under which a file copy resolves: the copy's own
+/// `with` when it fills every `one` axis, else one completion per
+/// combination of options of the `one` axes it leaves for launch words.
+/// Every unfilled axis is expanded in turn, as a launch fills each of them
+/// with a word of its own.
+fn launch_word_completions(
+    loaded: &LoadedOption,
+    axis: &str,
+    copy: &str,
+    with: &BTreeMap<String, String>,
+    origin: CopyOrigin,
+    echo: &str,
+) -> Result<Vec<LaunchWordCompletion>, CompositionError> {
+    let mut completions = Vec::new();
+    // Each `with` map still to resolve, with the label its problems carry.
+    let mut pending = VecDeque::from([(echo.to_owned(), with.clone())]);
+    while let Some((echo, with)) = pending.pop_front() {
+        let unfilled = match resolve_copy(loaded, axis, copy, &with, origin) {
+            Ok(own) => {
+                completions.push(LaunchWordCompletion { echo, with, own });
+                continue;
+            }
+            Err(CompositionError::UnresolvedCopyAxis(unresolved)) => unresolved.axis,
+            Err(e) => return Err(e),
+        };
+        let options = loaded
+            .axis(&unfilled)
+            .into_iter()
+            .flat_map(|left| left.options.keys());
+        for option in options {
+            let mut filled = with.clone();
+            filled.insert(unfilled.clone(), option.clone());
+            pending.push_back((format!("{echo} ({unfilled}={option})"), filled));
+        }
+    }
+    Ok(completions)
+}
+
 /// Every copy every legal stack can run: as a launch of one copy, and as a
 /// join onto the bare stack, each under the settings of the launcher's
 /// entry for its option. A copy that writes to a stack instance, or adds a
@@ -374,7 +419,7 @@ fn check_file_copies_over(
 fn check_copies_over(
     prepared: &PreparedLauncher,
     repeatable: &[Repeatable<'_>],
-    stacks: &[UnitSelection],
+    stacks: &[LegalStack],
     ledger: &mut Ledger<'_>,
     label: &str,
     problems: &mut Vec<String>,
@@ -385,7 +430,11 @@ fn check_copies_over(
     for item in repeatable {
         for copy_selection in enumerate_copy(item.loaded, &item.axis.name) {
             let mut legal_somewhere = false;
-            for stack in stacks {
+            for LegalStack {
+                selection: stack,
+                composed,
+            } in stacks
+            {
                 let over = copy_over_stack(
                     launcher,
                     stack,
@@ -397,16 +446,12 @@ fn check_copies_over(
                     continue;
                 }
                 legal_somewhere = true;
-                let (existing, bare) = match prepared.flat_stack(stack) {
-                    Ok(result) => result,
+                let Some((existing, bare)) = composed else {
                     // Reported once, by the stack pass.
-                    Err(_) => continue,
+                    continue;
                 };
-                let name = check_copy_name(&bare);
-                let chosen: BTreeMap<String, String> = copy_selection
-                    .own_axes(&item.axis.name)
-                    .filter_map(|entry| Some((entry.axis.clone(), entry.option.clone()?)))
-                    .collect();
+                let name = pick_checked_copy_name(bare);
+                let chosen = copy_selection.own_choices(&item.axis.name);
                 // The copy as a join composes it: the option entry's
                 // settings under the selection's own choices.
                 let settings = prepared.joined_copy_settings(
@@ -434,7 +479,7 @@ fn check_copies_over(
                 let copy = match compose_copy(
                     prepared,
                     stack,
-                    &bare,
+                    bare,
                     CopyRequest {
                         axis: &item.axis.name,
                         loaded: item.loaded,
@@ -455,14 +500,14 @@ fn check_copies_over(
                 };
                 if let Err(e) = combine(
                     launcher,
-                    &bare,
+                    bare,
                     &existing.framework,
                     std::slice::from_ref(&copy),
                 ) {
                     problems.push(format!("{label} ({echo}): {e}"));
                     continue;
                 }
-                match attach(&existing, &copy) {
+                match attach(existing, &copy) {
                     Ok(_)
                     | Err(
                         CompositionError::JoinChangesExisting { .. }
@@ -484,7 +529,7 @@ fn check_copies_over(
 /// and an axis that can never stay off may stay unfilled in name only.
 fn dead_states(
     prepared: &PreparedLauncher,
-    stacks: &[UnitSelection],
+    stacks: &[LegalStack],
     repeatable: &[Repeatable<'_>],
     legal_copies: &[(String, UnitSelection)],
     label: &str,
@@ -495,7 +540,7 @@ fn dead_states(
         for state in axis_state_names(axis) {
             let reachable = stacks
                 .iter()
-                .any(|selection| selection_holds_state(selection, &axis.name, state));
+                .any(|stack| selection_holds_state(&stack.selection, &axis.name, state));
             if !reachable {
                 problems.push(dead_state(label, &axis.name, state));
             }
@@ -503,9 +548,9 @@ fn dead_states(
         for (option, loaded) in prepared.loaded.options_of(&axis.name) {
             for own in &loaded.axes {
                 for state in axis_state_names(own) {
-                    let reachable = stacks.iter().any(|selection| {
-                        selection.option_of(&axis.name) == Some(option.as_str())
-                            && selection_holds_state(selection, &own.name, state)
+                    let reachable = stacks.iter().any(|stack| {
+                        stack.selection.option_of(&axis.name) == Some(option.as_str())
+                            && selection_holds_state(&stack.selection, &own.name, state)
                     });
                     if !reachable {
                         problems.push(dead_state(label, &own.name, state));
@@ -533,8 +578,9 @@ fn dead_states(
     problems
 }
 
-/// Every state of one axis by name: each option, then unfilled where the
-/// cardinality allows it.
+/// Every state of one axis by name, in a fixed order: its options in name
+/// order (`options` is a sorted map), unfilled last where the cardinality
+/// allows it.
 fn axis_state_names(axis: &ComponentAxis) -> Vec<Option<&str>> {
     let mut states: Vec<Option<&str>> = axis
         .options
@@ -572,26 +618,24 @@ fn dead_state(label: &str, axis: &str, state: Option<&str>) -> String {
     }
 }
 
-/// Every state of one axis, in a fixed order: option by option in
-/// declaration order, unfilled last where the cardinality allows it.
+/// Every state of one axis as a selection entry, in the order of
+/// [`axis_state_names`], so the enumeration and the dead-state report
+/// agree on what the states are.
 fn axis_states(axis: &ComponentAxis) -> Vec<SelectionEntry> {
-    let mut states: Vec<SelectionEntry> = axis
-        .options
-        .keys()
-        .map(|option| SelectionEntry {
-            axis: axis.name.clone(),
-            option: Some(option.clone()),
-            source: SelectionSource::Explicit,
+    axis_state_names(axis)
+        .into_iter()
+        .map(|state| {
+            let source = match state {
+                Some(_) => SelectionSource::Explicit,
+                None => SelectionSource::Unfilled,
+            };
+            SelectionEntry {
+                axis: axis.name.clone(),
+                option: state.map(str::to_owned),
+                source,
+            }
         })
-        .collect();
-    if axis.cardinality.allows_empty() {
-        states.push(SelectionEntry {
-            axis: axis.name.clone(),
-            option: None,
-            source: SelectionSource::Unfilled,
-        });
-    }
-    states
+        .collect()
 }
 
 /// Every combination of the states of `axes`, prefixed by `head`.
@@ -702,24 +746,17 @@ impl<'a> Ledger<'a> {
         let mut constraints: Vec<ConstraintInPlay<'a>> = Vec::new();
         let mut positions: HashMap<(Option<usize>, usize), usize> = HashMap::new();
         for (position, constraint) in prepared.launcher.constraints.iter().enumerate() {
-            positions.insert((None, position), constraints.len());
-            constraints.push(ConstraintInPlay {
-                constraint,
-                origin: LAUNCHER,
-                key: (None, position),
-            });
+            let in_play = ConstraintInPlay::of_launcher(position, constraint);
+            positions.insert(in_play.key, constraints.len());
+            constraints.push(in_play);
         }
         for axis in &prepared.launcher.components {
             for (_, loaded) in prepared.loaded.options_of(&axis.name) {
                 for fragment in loaded.all_fragments() {
                     for (position, constraint) in fragment.body.constraints.iter().enumerate() {
-                        let key = (Some(fragment.id), position);
-                        positions.entry(key).or_insert_with(|| {
-                            constraints.push(ConstraintInPlay {
-                                constraint,
-                                origin: &fragment.origin,
-                                key,
-                            });
+                        let in_play = ConstraintInPlay::of_fragment(fragment, position, constraint);
+                        positions.entry(in_play.key).or_insert_with(|| {
+                            constraints.push(in_play);
                             constraints.len() - 1
                         });
                     }

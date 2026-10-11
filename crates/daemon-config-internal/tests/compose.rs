@@ -25,6 +25,12 @@ fn parse_launcher(content: &str) -> PeppyLauncher {
     PeppyLauncherParser::from_content(content).expect("launcher parses")
 }
 
+/// Writes `content` as the launcher file `name` under `dir` and parses it.
+fn write_launcher(dir: &Path, name: &str, content: &str) -> (PathBuf, PeppyLauncher) {
+    let file = write(&dir.join(name), content);
+    (file, parse_launcher(content))
+}
+
 /// The flat document and report of a launch of `launcher` under `words`.
 fn compose(
     launcher: &PeppyLauncher,
@@ -33,6 +39,20 @@ fn compose(
 ) -> Result<(PeppyLauncher, CompositionReport), CompositionError> {
     let composed = PreparedLauncher::load(launcher, file)?.launch(words, &[])?;
     Ok((composed.launcher, composed.report))
+}
+
+/// The `arguments.rate` writes of `report`, as (old, new) pairs in the
+/// order they applied.
+fn rate_writes(report: &CompositionReport) -> Vec<(Option<AnyType>, AnyType)> {
+    report
+        .applied
+        .iter()
+        .filter(|a| a.change.field() == "arguments.rate")
+        .map(|a| match &a.change {
+            AppliedChange::Argument { old, new, .. } => (old.clone(), new.clone()),
+            other => panic!("expected an argument write, got {other:?}"),
+        })
+        .collect()
 }
 
 /// The worked micro-example: one base, a robot axis with an inline real
@@ -74,8 +94,9 @@ fn composed_fixture(dir: &Path) -> (PathBuf, PeppyLauncher) {
         "#,
         ),
     );
-    let launcher = write(
-        &dir.join("teleop.json5"),
+    write_launcher(
+        dir,
+        "teleop.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -117,9 +138,7 @@ fn composed_fixture(dir: &Path) -> (PathBuf, PeppyLauncher) {
                 { robot: "real" },
             ],
         }"#,
-    );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    (launcher, parsed)
+    )
 }
 
 #[test]
@@ -167,8 +186,8 @@ fn a_launchers_empty_adjustments_list_is_refused() {
     );
 }
 
-/// `null` is neither entries nor absence, under the launcher's own key, a
-/// fragment file's and a copy's alike.
+/// `null` is neither entries nor absence, under the launcher's own key, an
+/// option entry's, a fragment file's and a copy's alike.
 #[test]
 fn a_null_adjustments_key_is_refused_wherever_it_is_written() {
     for (document, site) in [
@@ -177,6 +196,12 @@ fn a_null_adjustments_key_is_refused_wherever_it_is_written() {
                components: [{ name: "a", options: { on: { deployments: [] } } }],
                adjustments: null, deployments: [{ a: "on" }] }"#,
             "the launcher",
+        ),
+        (
+            r#"{ peppy_schema: "launcher/v1",
+               components: [{ name: "a", options: { on: { deployments: [] } } }],
+               deployments: [{ a: "on", adjustments: null }] }"#,
+            "an option entry",
         ),
         (
             r#"{ peppy_schema: "launcher/v1",
@@ -195,18 +220,43 @@ fn a_null_adjustments_key_is_refused_wherever_it_is_written() {
         &dir.path().join("fragments/a.json5"),
         &fragment_file(r#"deployments: [], adjustments: null"#),
     );
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{ peppy_schema: "launcher/v1",
            components: [{ name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } }],
            deployments: [] }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
     let error = compose(&parsed, &launcher, &words(&["on"])).expect_err("a fragment file");
     assert!(
         error.to_string().contains("expected a sequence"),
         "got: {error}"
     );
+}
+
+/// A `null` under an option entry's other keys is no absent key either: the
+/// refusal names the key and the entry.
+#[test]
+fn an_option_entrys_null_key_is_refused_by_name() {
+    for (key, expected) in [
+        ("instances", "expected a sequence"),
+        ("with", "expected a map"),
+        ("arguments", "expected a map"),
+    ] {
+        let error = PeppyLauncherParser::from_content(&format!(
+            r#"{{
+            peppy_schema: "launcher/v1",
+            components: [{{ name: "a", cardinality: "zero_or_more", options: {{ on: {{ deployments: [] }} }} }}],
+            deployments: [{{ a: "on", {key}: null }}]
+        }}"#
+        ))
+        .expect_err(key)
+        .to_string();
+        assert!(
+            error.contains(&format!("`{key}` of `a: on`")) && error.contains(expected),
+            "{key}: {error}"
+        );
+    }
 }
 
 /// An option entry's and a copy's `adjustments` hold to the same rule.
@@ -287,8 +337,9 @@ fn fragments_merge_into_a_base_deployment_of_the_same_source() {
         "#,
         ),
     );
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -301,8 +352,7 @@ fn fragments_merge_into_a_base_deployment_of_the_same_source() {
             ],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let (flat, _) = compose(&parsed, &launcher, &["on".to_string()]).expect("composes");
+    let (flat, _) = compose(&parsed, &launcher, &words(&["on"])).expect("composes");
     assert_eq!(flat.deployments.len(), 1);
     assert_eq!(node_name(&flat.deployments[0]), "camera");
     let ids: Vec<&str> = flat.deployments[0]
@@ -327,8 +377,9 @@ fn a_duplicate_instance_id_names_both_origins() {
         "#,
         ),
     );
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -341,8 +392,7 @@ fn a_duplicate_instance_id_names_both_origins() {
             ],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let err = compose(&parsed, &launcher, &["sim".to_string()]).expect_err("duplicate id");
+    let err = compose(&parsed, &launcher, &words(&["sim"])).expect_err("duplicate id");
     assert!(err.to_string().contains("arm_inst"), "got: {err}");
     assert!(err.to_string().contains("l.json5"), "got: {err}");
     assert!(
@@ -354,8 +404,9 @@ fn a_duplicate_instance_id_names_both_origins() {
 #[test]
 fn add_links_appends_across_options_in_order() {
     let dir = tempdir().unwrap();
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -374,13 +425,7 @@ fn add_links_appends_across_options_in_order() {
             ],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let (flat, report) = compose(
-        &parsed,
-        &launcher,
-        &["a=on".to_string(), "b=on".to_string()],
-    )
-    .expect("composes");
+    let (flat, report) = compose(&parsed, &launcher, &words(&["a=on", "b=on"])).expect("composes");
     let panel = &flat.deployments[0].instances[0];
     let LinkValue::Bound(Selection::Array(targets)) = &panel.links["observers"] else {
         panic!("observers stays an array binding");
@@ -405,8 +450,9 @@ fn add_links_refuses_a_scalar_and_a_vacancy() {
         ("{ vacant: \"nothing here\" }", "a vacancy"),
     ] {
         let dir = tempdir().unwrap();
-        let launcher = write(
-            &dir.path().join("l.json5"),
+        let (launcher, parsed) = write_launcher(
+            dir.path(),
+            "l.json5",
             &format!(
                 r#"{{
                     peppy_schema: "launcher/v1",
@@ -423,7 +469,6 @@ fn add_links_refuses_a_scalar_and_a_vacancy() {
                 }}"#
             ),
         );
-        let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
         let err = compose(&parsed, &launcher, &words(&["on"]))
             .expect_err("appending past a non-array must be refused");
         let CompositionError::AddLinksOnNonArray { holds: actual, .. } = &err else {
@@ -436,8 +481,9 @@ fn add_links_refuses_a_scalar_and_a_vacancy() {
 #[test]
 fn add_links_refuses_a_target_already_bound() {
     let dir = tempdir().unwrap();
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -451,9 +497,65 @@ fn add_links_refuses_a_target_already_bound() {
             ],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let err = compose(&parsed, &launcher, &["on".to_string()]).expect_err("duplicate add");
+    let err = compose(&parsed, &launcher, &words(&["on"])).expect_err("duplicate add");
     assert!(err.to_string().contains("seed_inst"), "got: {err}");
+}
+
+/// The refusal names the addition that repeats a target: one the slot
+/// lists in the file, or one an earlier option already added.
+#[test]
+fn add_links_names_the_addition_the_slot_already_lists() {
+    for (a_adds, b_adds, repeated, adding_origin) in [
+        (
+            r#"["a_inst", "seed_inst"]"#,
+            r#"["b_inst"]"#,
+            "seed_inst",
+            "l.json5, option `a.on`",
+        ),
+        (
+            r#"["a_inst"]"#,
+            r#"["b_inst", "a_inst"]"#,
+            "a_inst",
+            "l.json5, option `b.on`",
+        ),
+    ] {
+        let dir = tempdir().unwrap();
+        let (launcher, parsed) = write_launcher(
+            dir.path(),
+            "l.json5",
+            &format!(
+                r#"{{
+                    peppy_schema: "launcher/v1",
+                    components: [
+                        {{ name: "a", cardinality: "zero_or_one", options: {{ on: {{
+                            adjustments: [ {{ target: "panel", add_links: {{ observers: {a_adds} }} }} ] }} }} }},
+                        {{ name: "b", cardinality: "zero_or_one", options: {{ on: {{
+                            adjustments: [ {{ target: "panel", add_links: {{ observers: {b_adds} }} }} ] }} }} }},
+                    ],
+                    deployments: [
+                        {{ source: {{ name: "panel", tag: "v1" }},
+                          instances: [{{ instance_id: "panel",
+                                        links: {{ observers: ["seed_inst"] }} }}] }},
+                    ],
+                }}"#
+            ),
+        );
+        let err = compose(&parsed, &launcher, &words(&["a=on", "b=on"]))
+            .expect_err("a repeated target must be refused");
+        let CompositionError::AddLinksDuplicateTarget {
+            origin,
+            target,
+            slot,
+            added,
+        } = &err
+        else {
+            panic!("expected AddLinksDuplicateTarget, got: {err}");
+        };
+        assert_eq!(added, repeated);
+        assert_eq!(slot, "observers");
+        assert_eq!(target, "panel");
+        assert_eq!(origin, adding_origin);
+    }
 }
 
 /// Two entries of one option write one slot in order: the second appends
@@ -461,8 +563,9 @@ fn add_links_refuses_a_target_already_bound() {
 #[test]
 fn a_later_entry_appends_to_the_slot_an_earlier_one_set() {
     let dir = tempdir().unwrap();
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -478,7 +581,6 @@ fn a_later_entry_appends_to_the_slot_an_earlier_one_set() {
             ],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
     let (flat, _) = compose(&parsed, &launcher, &words(&["on"])).expect("composes");
     let LinkValue::Bound(Selection::Array(targets)) =
         &flat.deployments[0].instances[0].links["observers"]
@@ -493,8 +595,9 @@ fn a_later_entry_appends_to_the_slot_an_earlier_one_set() {
 #[test]
 fn two_options_writing_one_key_apply_in_axis_order() {
     let dir = tempdir().unwrap();
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -508,13 +611,8 @@ fn two_options_writing_one_key_apply_in_axis_order() {
             ],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let (flat, report) = compose(
-        &parsed,
-        &launcher,
-        &["zulu=on".to_string(), "alpha=on".to_string()],
-    )
-    .expect("composes");
+    let (flat, report) =
+        compose(&parsed, &launcher, &words(&["zulu=on", "alpha=on"])).expect("composes");
     assert_eq!(
         flat.deployments[0].instances[0].arguments.get("rate"),
         Some(&AnyType::Int(20))
@@ -533,8 +631,9 @@ fn two_options_writing_one_key_apply_in_axis_order() {
 #[test]
 fn the_launchers_own_entries_apply_after_an_options_and_a_later_entry_wins() {
     let dir = tempdir().unwrap();
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -550,22 +649,13 @@ fn the_launchers_own_entries_apply_after_an_options_and_a_later_entry_wins() {
             ],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let (flat, report) = compose(&parsed, &launcher, &["on".to_string()]).expect("composes");
+    let (flat, report) = compose(&parsed, &launcher, &words(&["on"])).expect("composes");
     assert_eq!(
         flat.deployments[0].instances[0].arguments.get("rate"),
         Some(&AnyType::Int(30))
     );
     // The option's entry and both of the launcher's own are visible, typed.
-    let rates: Vec<(Option<AnyType>, AnyType)> = report
-        .applied
-        .iter()
-        .filter(|a| a.change.field() == "arguments.rate")
-        .map(|a| match &a.change {
-            AppliedChange::Argument { old, new, .. } => (old.clone(), new.clone()),
-            other => panic!("expected a Set, got {other:?}"),
-        })
-        .collect();
+    let rates = rate_writes(&report);
     let int = |value: i64| AnyType::Int(value);
     assert_eq!(
         rates,
@@ -596,8 +686,9 @@ fn a_fragments_own_guard_on_a_launcher_axis_applies_and_skips() {
         "#,
         ),
     );
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -608,7 +699,6 @@ fn a_fragments_own_guard_on_a_launcher_axis_applies_and_skips() {
             deployments: [],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
     let (flat, report) = compose(&parsed, &launcher, &words(&["on", "engine"])).expect("composes");
     assert_eq!(
         flat.deployments[0].instances[0].arguments.get("rate"),
@@ -648,8 +738,9 @@ fn guards_skip_and_absent_targets_skip() {
         "#,
         ),
     );
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -689,7 +780,6 @@ fn guards_skip_and_absent_targets_skip() {
             ],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
 
     // web + recorder: the xr option's entry is not in a unit that selected
     // web, the recorder option's guard is not met and sim_inst is absent,
@@ -760,8 +850,9 @@ fn an_option_missing_a_provides_id_is_refused() {
         "#,
         ),
     );
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -771,8 +862,7 @@ fn an_option_missing_a_provides_id_is_refused() {
             deployments: [],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let err = compose(&parsed, &launcher, &["sim".to_string()]).expect_err("provides unmet");
+    let err = compose(&parsed, &launcher, &words(&["sim"])).expect_err("provides unmet");
     let CompositionError::ProvidesUnmet { axis, option, id } = &err else {
         panic!("expected ProvidesUnmet, got: {err}");
     };
@@ -785,8 +875,9 @@ fn an_option_missing_a_provides_id_is_refused() {
 #[test]
 fn an_adjustment_target_defined_nowhere_is_refused() {
     let dir = tempdir().unwrap();
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -796,8 +887,7 @@ fn an_adjustment_target_defined_nowhere_is_refused() {
             deployments: [],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let err = compose(&parsed, &launcher, &["on".to_string()]).expect_err("dead target");
+    let err = compose(&parsed, &launcher, &words(&["on"])).expect_err("dead target");
     let CompositionError::TargetDefinedNowhere {
         target,
         origin,
@@ -826,8 +916,9 @@ fn a_fragments_adjustments_run_before_the_options_and_the_options_win() {
         "#,
         ),
     );
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -839,7 +930,6 @@ fn a_fragments_adjustments_run_before_the_options_and_the_options_win() {
             deployments: [],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
     let (flat, report) = compose(&parsed, &launcher, &words(&["on"])).expect("composes");
     assert_eq!(
         flat.deployments[0].instances[0].arguments.get("rate"),
@@ -872,15 +962,15 @@ fn a_fragments_entries_apply_in_list_order_replace_then_append_included() {
         "#,
         ),
     );
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [{ name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } }],
             deployments: [],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
     let (flat, report) = compose(&parsed, &launcher, &words(&["on"])).expect("composes");
     let panel = flat.deployments[0]
         .instances
@@ -914,8 +1004,9 @@ fn a_fragment_adjusting_an_instance_it_does_not_deploy_is_refused() {
         "#,
         ),
     );
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -926,7 +1017,6 @@ fn a_fragment_adjusting_an_instance_it_does_not_deploy_is_refused() {
             ],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
     let err = compose(&parsed, &launcher, &words(&["on"])).expect_err("a fragment writes its own");
     let CompositionError::FragmentInvalid { path, detail, .. } = &err else {
         panic!("expected FragmentInvalid, got: {err}");
@@ -954,8 +1044,9 @@ fn the_launchers_own_entries_apply_after_a_fragments_and_a_later_entry_wins() {
         "#,
         ),
     );
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -968,22 +1059,13 @@ fn the_launchers_own_entries_apply_after_a_fragments_and_a_later_entry_wins() {
             deployments: [],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let (flat, report) = compose(&parsed, &launcher, &["on".to_string()]).expect("composes");
+    let (flat, report) = compose(&parsed, &launcher, &words(&["on"])).expect("composes");
     assert_eq!(
         flat.deployments[0].instances[0].arguments.get("rate"),
         Some(&AnyType::Int(30))
     );
     // Both launcher entries and the fragment's contribution are visible, typed.
-    let rates: Vec<(Option<AnyType>, AnyType)> = report
-        .applied
-        .iter()
-        .filter(|a| a.change.field() == "arguments.rate")
-        .map(|a| match &a.change {
-            AppliedChange::Argument { old, new, .. } => (old.clone(), new.clone()),
-            other => panic!("expected a Set, got {other:?}"),
-        })
-        .collect();
+    let rates = rate_writes(&report);
     let int = |value: i64| AnyType::Int(value);
     assert_eq!(
         rates,
@@ -1025,7 +1107,7 @@ fn unsafe_fragment_paths_are_refused() {
             constraints: Vec::new(),
             framework: Default::default(),
         };
-        let err = compose(&launcher, &dir.path().join("l.json5"), &["sim".to_string()])
+        let err = compose(&launcher, &dir.path().join("l.json5"), &words(&["sim"]))
             .expect_err("unsafe path must be refused");
         assert!(
             err.to_string().contains("not usable") || err.to_string().contains("cannot be read"),
@@ -1080,8 +1162,9 @@ fn a_symlink_escaping_the_launcher_directory_is_refused() {
         dir.path().join("fragments/escape.json5"),
     )
     .unwrap();
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -1091,8 +1174,7 @@ fn a_symlink_escaping_the_launcher_directory_is_refused() {
             deployments: [],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let err = compose(&parsed, &launcher, &["sim".to_string()]).expect_err("escape refused");
+    let err = compose(&parsed, &launcher, &words(&["sim"])).expect_err("escape refused");
     assert!(
         err.to_string().contains("leaves the launcher's repository"),
         "got: {err}"
@@ -1110,8 +1192,9 @@ fn core_nodes_union_base_first() {
         "#,
         ),
     );
-    let launcher = write(
-        &dir.path().join("l.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "l.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -1121,8 +1204,7 @@ fn core_nodes_union_base_first() {
             deployments: [],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let (flat, _) = compose(&parsed, &launcher, &["on".to_string()]).expect("composes");
+    let (flat, _) = compose(&parsed, &launcher, &words(&["on"])).expect("composes");
     assert_eq!(flat.core_nodes, ["cloud", "base", "edge"]);
 }
 
@@ -1225,12 +1307,8 @@ fn a_required_axis_the_file_does_not_deploy_needs_a_word() {
 #[test]
 fn with_on_a_flat_launcher_is_refused() {
     let launcher = parse_launcher(r#"{ peppy_schema: "launcher/v1", deployments: [] }"#);
-    let err = compose(
-        &launcher,
-        Path::new("/tmp/x.json5"),
-        &["mujoco".to_string()],
-    )
-    .expect_err("flat launcher has nothing to select");
+    let err = compose(&launcher, Path::new("/tmp/x.json5"), &words(&["mujoco"]))
+        .expect_err("flat launcher has nothing to select");
     assert!(matches!(err, CompositionError::WithOnFlatLauncher));
 }
 
@@ -1273,8 +1351,9 @@ fn nested_fixture(dir: &Path, commander_deployment: &str) -> (PathBuf, PeppyLaun
                ]"#
         )),
     );
-    let launcher = write(
-        &dir.join("fleet.json5"),
+    write_launcher(
+        dir,
+        "fleet.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -1289,9 +1368,7 @@ fn nested_fixture(dir: &Path, commander_deployment: &str) -> (PathBuf, PeppyLaun
             ],
             deployments: [{ robot: "openarm" }],
         }"#,
-    );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    (launcher, parsed)
+    )
 }
 
 #[test]
@@ -1363,13 +1440,13 @@ fn a_fragment_two_levels_down_declares_no_axes() {
                components: [{ name: "commander", options: { deep: "deep.json5" } }]"#,
         ),
     );
-    let launcher = write(
-        &dir.path().join("fleet.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "fleet.json5",
         r#"{ peppy_schema: "launcher/v1",
             components: [{ name: "robot", options: { openarm: "fragments/robot.json5" } }],
             deployments: [{ robot: "openarm" }] }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
     let err = PreparedLauncher::load(&parsed, &launcher).expect_err("two levels down is refused");
     assert!(
         matches!(&err, CompositionError::NestedComponents { path, .. } if path == "fragments/deep.json5"),
@@ -1453,6 +1530,27 @@ fn a_selection_the_constraints_refuse_does_not_launch() {
     assert!(
         message.contains("films the physical rig"),
         "the author's reason must reach the operator, got: {message}"
+    );
+}
+
+/// A refusal of a constraint with several `requires` alternatives lists
+/// them all, so the operator sees every way to satisfy it.
+#[test]
+fn a_refusal_lists_every_requires_alternative() {
+    let launcher = constrained_launcher(
+        r#"{ requires: [{ robot: "real" }, { recorder: "on" }],
+             reason: "a run needs the physical rig or a recording" }"#,
+    );
+    let err = compose(&launcher, Path::new("family.json5"), &words(&["mujoco"]))
+        .expect_err("no alternative holds for this member");
+    assert!(
+        matches!(err, CompositionError::ConstraintUnsatisfied { .. }),
+        "got: {err}"
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("the launcher requires one of `robot=real`, `recorder=on`, which"),
+        "got: {message}"
     );
 }
 
@@ -1858,8 +1956,9 @@ fn check_composition_checks_a_fragments_own_axes_and_copies() {
 
     // A copy whose fragment constraint can never be satisfied leaves a dead
     // option behind.
-    let fleet = write(
-        &dir.path().join("copies.json5"),
+    let (fleet, parsed) = write_launcher(
+        dir.path(),
+        "copies.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -1874,7 +1973,6 @@ fn check_composition_checks_a_fragments_own_axes_and_copies() {
             ],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&fleet).unwrap());
     let problems = check_composition(&parsed, &fleet);
     assert!(
         problems
@@ -1889,8 +1987,9 @@ fn check_composition_checks_a_fragments_own_axes_and_copies() {
 #[test]
 fn check_composition_names_its_copy_clear_of_the_launcher() {
     let dir = tempdir().unwrap();
-    let fleet = write(
-        &dir.path().join("placed.json5"),
+    let (fleet, parsed) = write_launcher(
+        dir.path(),
+        "placed.json5",
         r#"{
             peppy_schema: "launcher/v1",
             core_nodes: ["composition_check"],
@@ -1902,12 +2001,12 @@ fn check_composition_names_its_copy_clear_of_the_launcher() {
                 instances: [{ instance_id: "composition_check_engine_inst", core_node: "composition_check" }] }],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&fleet).unwrap());
     let problems = check_composition(&parsed, &fleet);
     assert!(problems.is_empty(), "got: {problems:?}");
 
-    let prefixed = write(
-        &dir.path().join("prefixed.json5"),
+    let (prefixed, parsed) = write_launcher(
+        dir.path(),
+        "prefixed.json5",
         r#"{
             peppy_schema: "launcher/v1",
             components: [
@@ -1918,7 +2017,6 @@ fn check_composition_names_its_copy_clear_of_the_launcher() {
                 instances: [{ instance_id: "composition_check_arm_inst" }] }],
         }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&prefixed).unwrap());
     let problems = check_composition(&parsed, &prefixed);
     assert!(problems.is_empty(), "got: {problems:?}");
 }
@@ -1976,8 +2074,9 @@ fn the_check_tells_apart_fragment_files_that_share_a_name() {
             ),
         );
     }
-    let launcher = write(
-        &dir.path().join("fleet.json5"),
+    let (launcher, parsed) = write_launcher(
+        dir.path(),
+        "fleet.json5",
         r#"{ peppy_schema: "launcher/v1",
             components: [
                 { name: "simulation", cardinality: "zero_or_one", options: { engine: { deployments: [
@@ -1986,7 +2085,6 @@ fn the_check_tells_apart_fragment_files_that_share_a_name() {
             ],
             deployments: [{ robot: "b" }] }"#,
     );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
     compose(&parsed, &launcher, &words(&["b"])).expect("b without the engine");
     compose(&parsed, &launcher, &words(&["b", "engine"])).expect_err("b forbids the engine");
     let problems = check_composition(&parsed, &launcher);

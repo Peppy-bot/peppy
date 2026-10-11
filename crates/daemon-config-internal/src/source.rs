@@ -40,45 +40,6 @@ impl DeploymentSource {
     }
 }
 
-/// A `<name>:<tag>` reference to a tagged repository item, held to the
-/// identity rules every cache keys on. The one parser for a reference a
-/// user types, whatever kind of item it names; `label` is the kind, so a
-/// refusal says which reference was malformed (`exposure reference ...`,
-/// `search reference ...`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ItemRef {
-    pub name: String,
-    pub tag: String,
-}
-
-impl ItemRef {
-    pub fn parse(raw: &str, label: &str) -> Result<Self, String> {
-        let Some((name, tag)) = raw.trim().split_once(':') else {
-            return Err(format!(
-                "{label} reference `{raw}` must be written as `<name>:<tag>`"
-            ));
-        };
-        if tag.contains(':') {
-            return Err(format!(
-                "{label} reference `{raw}` must contain at most one ':' separating name and tag"
-            ));
-        }
-        let (name, tag) = (name.trim(), tag.trim());
-        config::repo_node_id::validate_repo_node_name(name, &format!("{label} name"))?;
-        config::repo_node_id::validate_repo_node_tag(tag, &format!("{label} tag"))?;
-        Ok(Self {
-            name: name.to_owned(),
-            tag: tag.to_owned(),
-        })
-    }
-}
-
-impl fmt::Display for ItemRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.name, self.tag)
-    }
-}
-
 /// One `<name>:<tag>` exposure reference of an `exposures` deployment,
 /// held to the same identity rules as a node reference.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -89,8 +50,23 @@ pub struct ExposureRef {
 
 impl ExposureRef {
     pub fn parse(raw: &str) -> Result<Self, String> {
-        let ItemRef { name, tag } = ItemRef::parse(raw, "exposure")?;
-        Ok(Self { name, tag })
+        let Some((name, tag)) = raw.trim().split_once(':') else {
+            return Err(format!(
+                "exposure reference `{raw}` must be written as `<name>:<tag>`"
+            ));
+        };
+        if tag.contains(':') {
+            return Err(format!(
+                "exposure reference `{raw}` must contain at most one ':' separating name and tag"
+            ));
+        }
+        let (name, tag) = (name.trim(), tag.trim());
+        config::repo_node_id::validate_repo_node_name(name, "exposure name")?;
+        config::repo_node_id::validate_repo_node_tag(tag, "exposure tag")?;
+        Ok(Self {
+            name: name.to_owned(),
+            tag: tag.to_owned(),
+        })
     }
 }
 
@@ -132,7 +108,7 @@ where
     de::Error::custom(err.json5_message())
 }
 
-fn split_name_and_tag<E>(raw_name: String, raw_tag: Option<&str>) -> Result<(String, String), E>
+fn split_name_and_tag<E>(raw_name: &str, raw_tag: Option<&str>) -> Result<(String, String), E>
 where
     E: de::Error,
 {
@@ -143,34 +119,32 @@ where
         ));
     }
 
-    let (name, tag) = if let Some((n, t)) = name_trimmed.split_once(':') {
-        if raw_tag.is_some() {
+    let (name, tag) = match (name_trimmed.split_once(':'), raw_tag) {
+        (Some(_), Some(_)) => {
             return Err(invalid_deployment_source::<E>(
                 "deployment source cannot combine `name: \"<name>:<tag>\"` with a separate `tag` field",
             ));
         }
-        if t.contains(':') {
+        (Some((_, tag)), None) if tag.contains(':') => {
             return Err(invalid_deployment_source::<E>(
                 "deployment source `name` must contain at most one ':' separating name and tag",
             ));
         }
-        (n.trim().to_owned(), t.trim().to_owned())
-    } else {
-        let tag = raw_tag.map(str::trim).unwrap_or("");
-        if tag.is_empty() {
+        (Some((name, tag)), None) => (name.trim(), tag.trim()),
+        (None, Some(tag)) if !tag.trim().is_empty() => (name_trimmed, tag.trim()),
+        (None, _) => {
             return Err(invalid_deployment_source::<E>(
                 "deployment source requires a non-empty `tag` (or the combined `name: \"<name>:<tag>\"` form)",
             ));
         }
-        (name_trimmed.to_owned(), tag.to_owned())
     };
 
-    config::repo_node_id::validate_repo_node_name(&name, "deployment source name")
+    config::repo_node_id::validate_repo_node_name(name, "deployment source name")
         .map_err(invalid_deployment_source::<E>)?;
-    config::repo_node_id::validate_repo_node_tag(&tag, "deployment source tag")
+    config::repo_node_id::validate_repo_node_tag(tag, "deployment source tag")
         .map_err(invalid_deployment_source::<E>)?;
 
-    Ok((name, tag))
+    Ok((name.to_owned(), tag.to_owned()))
 }
 
 /// The exposure list of an `exposures` deployment: non-empty, every entry a
@@ -262,7 +236,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                  or `exposures` (`{ exposures: [\"<name>:<tag>\", ...] }`)",
             )
         })?;
-        let (name, tag) = split_name_and_tag::<D::Error>(name_raw, raw.tag.as_deref())?;
+        let (name, tag) = split_name_and_tag::<D::Error>(&name_raw, raw.tag.as_deref())?;
         Ok(DeploymentSource::Node { name, tag })
     }
 }
@@ -297,65 +271,73 @@ mod tests {
         );
     }
 
+    /// The refusal text of a deployment source `body` that must not parse.
+    fn deployment_source_refusal(body: &str) -> String {
+        let Err(err) = serde_json5::from_str::<DeploymentSource>(body) else {
+            panic!("the deployment source {body} must be refused");
+        };
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource for {body}");
+        };
+        msg
+    }
+
     #[test]
     fn deployment_source_rejects_name_without_tag() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\" }").unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo\" }");
+        assert!(msg.contains("non-empty `tag`"), "unexpected: {msg}");
+    }
+
+    /// Both forms trim the whitespace around the name and the tag, and a
+    /// blank `tag` counts as no tag.
+    #[test]
+    fn deployment_source_trims_its_parts_and_refuses_a_blank_tag() {
+        for body in [
+            "{ name: \" robot_brain \", tag: \" v1 \" }",
+            "{ name: \" robot_brain : v1 \" }",
+        ] {
+            let src: DeploymentSource = serde_json5::from_str(body).unwrap();
+            assert_eq!(
+                src,
+                DeploymentSource::Node {
+                    name: "robot_brain".to_owned(),
+                    tag: "v1".to_owned()
+                },
+                "{body}"
+            );
+        }
+
+        let msg = deployment_source_refusal("{ name: \"foo\", tag: \"  \" }");
         assert!(msg.contains("non-empty `tag`"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_rejects_empty_name() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"\", tag: \"v1\" }").unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"\", tag: \"v1\" }");
         assert_eq!(msg, "deployment source name cannot be empty");
     }
 
     #[test]
     fn deployment_source_rejects_missing_name() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ tag: \"v1\" }").unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ tag: \"v1\" }");
         assert!(msg.contains("requires `name`"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_rejects_combined_with_separate_tag() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:v1\", tag: \"v1\" }")
-                .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo:v1\", tag: \"v1\" }");
         assert!(msg.contains("cannot combine"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_rejects_multiple_colons() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:v1:extra\" }").unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo:v1:extra\" }");
         assert!(msg.contains("at most one ':'"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_rejects_dot_in_tag() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"v1.2\" }")
-                .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo\", tag: \"v1.2\" }");
         assert!(
             msg.contains("disallowed character") && msg.contains("'.'"),
             "unexpected: {msg}"
@@ -364,12 +346,7 @@ mod tests {
 
     #[test]
     fn deployment_source_rejects_tag_not_starting_with_letter() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"0.1.0\" }")
-                .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo\", tag: \"0.1.0\" }");
         assert!(
             msg.contains("must start with an ASCII letter"),
             "unexpected: {msg}"
@@ -378,12 +355,7 @@ mod tests {
 
     #[test]
     fn deployment_source_rejects_invalid_name_char() {
-        let err: serde_json5::Error =
-            serde_json5::from_str::<DeploymentSource>("{ name: \"foo/bar\", tag: \"v1\" }")
-                .unwrap_err();
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
+        let msg = deployment_source_refusal("{ name: \"foo/bar\", tag: \"v1\" }");
         assert!(
             msg.contains("invalid deployment source name"),
             "unexpected: {msg}"
@@ -402,11 +374,7 @@ mod tests {
             ("url", "{ url: \"https://example.com/node.tar.zst\" }"),
             ("repo", "{ repo: \"uvc_camera:v1\" }"),
         ] {
-            let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(body)
-                .expect_err("a retired source key must be rejected");
-            let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-                panic!("expected InvalidDeploymentSource for `{key}`");
-            };
+            let msg = deployment_source_refusal(body);
             assert!(msg.contains(key), "error should name `{key}`: {msg}");
             assert!(
                 msg.contains("peppy repo add") && msg.contains("peppy repo refresh"),
@@ -470,24 +438,15 @@ mod tests {
         assert_eq!(back, src);
     }
 
-    fn exposures_error(body: &str) -> String {
-        let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(body)
-            .expect_err("the exposure list must be refused");
-        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
-            panic!("expected InvalidDeploymentSource");
-        };
-        msg
-    }
-
     #[test]
     fn deployment_source_refuses_an_empty_exposure_list() {
-        let msg = exposures_error("{ exposures: [] }");
+        let msg = deployment_source_refusal("{ exposures: [] }");
         assert!(msg.contains("at least one exposure"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_refuses_an_exposure_listed_twice() {
-        let msg = exposures_error("{ exposures: [\"a:v1\", \"b:v1\", \"a:v1\"] }");
+        let msg = deployment_source_refusal("{ exposures: [\"a:v1\", \"b:v1\", \"a:v1\"] }");
         assert!(
             msg.contains("lists exposure `a:v1` twice"),
             "unexpected: {msg}"
@@ -496,53 +455,46 @@ mod tests {
 
     #[test]
     fn deployment_source_refuses_a_malformed_exposure_reference() {
-        let msg = exposures_error("{ exposures: [\"camera_and_recording\"] }");
+        let msg = deployment_source_refusal("{ exposures: [\"camera_and_recording\"] }");
         assert!(msg.contains("`<name>:<tag>`"), "unexpected: {msg}");
-        let msg = exposures_error("{ exposures: [\"camera:1v\"] }");
+        let msg = deployment_source_refusal("{ exposures: [\"camera:1v\"] }");
         assert!(msg.contains("exposure tag"), "unexpected: {msg}");
-        let msg = exposures_error("{ exposures: [\"cam era:v1\"] }");
+        let msg = deployment_source_refusal("{ exposures: [\"cam era:v1\"] }");
         assert!(msg.contains("exposure name"), "unexpected: {msg}");
     }
 
     #[test]
     fn deployment_source_refuses_exposures_beside_a_node_reference() {
-        let msg = exposures_error("{ name: \"camera:v1\", exposures: [\"a:v1\"] }");
+        let msg = deployment_source_refusal("{ name: \"camera:v1\", exposures: [\"a:v1\"] }");
         assert!(msg.contains("not both"), "unexpected: {msg}");
     }
 
-    /// A reference of any kind is refused with the kind in the message,
-    /// and parsed with its whitespace trimmed.
+    /// An exposure reference is refused with the part that is wrong named in
+    /// the message, and parsed with its whitespace trimmed.
     #[test]
-    fn item_reference_refusals_name_the_kind() {
-        let err = |raw: &str| ItemRef::parse(raw, "search").expect_err("malformed");
+    fn exposure_reference_refusals_name_the_part_and_trim() {
+        let err = |raw: &str| ExposureRef::parse(raw).expect_err("malformed");
         assert_eq!(
             err("rgb_camera"),
-            "search reference `rgb_camera` must be written as `<name>:<tag>`"
+            "exposure reference `rgb_camera` must be written as `<name>:<tag>`"
+        );
+        assert_eq!(
+            err("a:v1:x"),
+            "exposure reference `a:v1:x` must contain at most one ':' separating name and tag"
         );
         assert!(
-            err("a:v1:x").contains("at most one ':'"),
-            "{}",
-            err("a:v1:x")
-        );
-        assert!(
-            err("camera:1v").contains("search tag"),
+            err("camera:1v").contains("exposure tag"),
             "{}",
             err("camera:1v")
         );
         assert!(
-            err("cam era:v1").contains("search name"),
+            err("cam era:v1").contains("exposure name"),
             "{}",
             err("cam era:v1")
         );
 
-        let parsed = ItemRef::parse(" rgb_camera : v1 ", "search").expect("parses");
-        assert_eq!(
-            parsed,
-            ItemRef {
-                name: "rgb_camera".to_owned(),
-                tag: "v1".to_owned()
-            }
-        );
+        let parsed = ExposureRef::parse(" rgb_camera : v1 ").expect("parses");
+        assert_eq!(parsed, exposure("rgb_camera", "v1"));
         assert_eq!(parsed.to_string(), "rgb_camera:v1");
     }
 

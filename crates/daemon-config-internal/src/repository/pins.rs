@@ -145,7 +145,6 @@ impl DeploymentRoot {
 /// Everything one deployment runs: the root the launcher names and the
 /// closure the coordinator resolved underneath it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct DeploymentPins {
     pub root: DeploymentRoot,
     /// For a node root: every transitive node dependency of the root, and

@@ -176,6 +176,17 @@ struct MissingEntry {
     path: String,
 }
 
+/// The dot-separated path of the setting `key` inside the block at `parent`,
+/// where an empty `parent` is the document root. The added-settings log, the
+/// override refusal and the coverage tests compare these paths, so every path
+/// is spelled here.
+fn dotted_path(parent: &str, key: &str) -> String {
+    if parent.is_empty() {
+        return key.to_string();
+    }
+    format!("{parent}.{key}")
+}
+
 /// Walks `specs` against `block`, recording every absent entry and descending
 /// into present entries that have children. Per level, the absent entries come
 /// first and the descents after, so the added-settings log lists each block's
@@ -193,11 +204,7 @@ fn collect_missing(
                 .iter()
                 .any(|alternative| block.contains_key(*alternative))
         {
-            let path = if parent_path.is_empty() {
-                spec.key.to_string()
-            } else {
-                format!("{}.{}", parent_path.join("."), spec.key)
-            };
+            let path = dotted_path(&parent_path.join("."), spec.key);
             missing.push(MissingEntry {
                 parent_path: parent_path.to_vec(),
                 snippet: spec.snippet,
@@ -229,11 +236,7 @@ fn collect_missing(
 pub(super) fn missing_paths_in_template_order(completion: &Completion) -> Vec<String> {
     fn collect_known_paths(specs: &[EntrySpec], parent: &str, paths: &mut Vec<String>) {
         for spec in specs {
-            let path = if parent.is_empty() {
-                spec.key.to_string()
-            } else {
-                format!("{parent}.{}", spec.key)
-            };
+            let path = dotted_path(parent, spec.key);
             paths.push(path.clone());
             collect_known_paths(spec.children, &path, paths);
         }
@@ -274,15 +277,12 @@ pub(super) fn complete_config_content(content: &str) -> Option<Completion> {
         return None;
     }
 
-    let layout = match scan_layout(content) {
-        Some(layout) => layout,
-        None => {
-            return Some(Completion {
-                content: content.to_string(),
-                added_paths: Vec::new(),
-                unspliceable_paths: missing.into_iter().map(|entry| entry.path).collect(),
-            });
-        }
+    let Some(layout) = scan_layout(content) else {
+        return Some(Completion {
+            content: content.to_string(),
+            added_paths: Vec::new(),
+            unspliceable_paths: missing.into_iter().map(|entry| entry.path).collect(),
+        });
     };
 
     // One insertion per target block: group the missing entries by their
@@ -595,16 +595,16 @@ fn scan_layout(content: &str) -> Option<DocumentLayout> {
                         if stack.is_empty() {
                             root = Some(span);
                         } else if let Some(key) = frame.key
-                            && stack[1..]
+                            && let Some(mut path) = stack[1..]
                                 .iter()
-                                .all(|ancestor| ancestor.is_object && ancestor.key.is_some())
+                                .map(|ancestor| ancestor.key.clone())
+                                .collect::<Option<Vec<String>>>()
                         {
                             // The full key chain from the root: every ancestor
-                            // besides the root object contributes its key.
-                            let mut path: Vec<String> = stack[1..]
-                                .iter()
-                                .map(|ancestor| ancestor.key.clone().expect("checked above"))
-                                .collect();
+                            // besides the root object contributes its key. Only
+                            // a keyed object has a key, so an array or an
+                            // array element on the way leaves the block
+                            // without a chain.
                             path.push(key);
                             blocks.insert(path, span);
                         }
@@ -659,11 +659,7 @@ pub(super) fn leaf_paths(value: &Value) -> Vec<String> {
         match value.as_object() {
             Some(entries) => {
                 for (key, nested) in entries {
-                    let path = if prefix.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{prefix}.{key}")
-                    };
+                    let path = dotted_path(prefix, key);
                     walk(nested, &path, paths);
                 }
             }
@@ -741,11 +737,7 @@ mod tests {
 
         fn table_leaf_paths(specs: &[EntrySpec], prefix: &str, out: &mut Vec<String>) {
             for spec in specs {
-                let path = if prefix.is_empty() {
-                    spec.key.to_string()
-                } else {
-                    format!("{prefix}.{}", spec.key)
-                };
+                let path = dotted_path(prefix, spec.key);
                 if spec.children.is_empty() {
                     out.push(path);
                 } else {
@@ -1132,7 +1124,7 @@ mod tests {
     /// JSON5 ends a `//` comment at any LineTerminator (LF, CR, U+2028,
     /// U+2029). A scanner that only honors LF reads code that hides between a
     /// lone CR and the next LF differently from serde_json5; two such comments
-    /// used to rotate brace pairings and splice into the wrong user object.
+    /// make it rotate brace pairings and splice into the wrong user object.
     #[test]
     fn lone_cr_terminates_line_comments_like_serde() {
         let content = "{\nzenoh: { managed: { subscriber_buffers: { standard_buffer_size: 1 // X\r } } },\njunk: // Y\r {\nb: 2 },\ncore_node_name: null\n}\n";

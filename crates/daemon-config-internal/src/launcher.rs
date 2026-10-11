@@ -25,7 +25,7 @@ pub use compose::{
 };
 pub use composition::{ComponentAxis, LauncherFragmentParser, OptionSpec};
 pub use daemon_scopes::{DaemonScopeError, DaemonScopeRefusals, check_daemon_scopes};
-pub use links::{validate_link_plan, validate_link_slots};
+pub use links::validate_link_plan;
 pub use observations::PlannedObservation;
 pub use pairings::{
     AlreadyPairedSlots, ExternallyCoveredSlots, PairingValidationItem, PlannedPairEndpoint,

@@ -27,7 +27,9 @@ use config::runtime::{ObservedPeer, ProducerRef};
 use core_node_api::encoding::ObservationTarget;
 use std::collections::{BTreeMap, HashSet};
 
-use super::pairings::{AlreadyPairedSlots, PairingValidationItem, PlannedPairing};
+use super::pairings::{
+    AlreadyPairedSlots, PairingValidationItem, PlannedPairing, build_instance_lookup,
+};
 use super::types::{
     CardinalityShapeViolation, Selection, check_cardinality_shape, split_link_target,
 };
@@ -45,8 +47,8 @@ pub struct PlannedObservation {
     pub pairing_name: String,
     pub pairing_tag: String,
     pub observed_role: String,
-    /// The observed source instance, stamped with the launching daemon's
-    /// `core_node` exactly as a resolved binding is.
+    /// The observed source instance, stamped with the core node it is placed
+    /// on, exactly as a resolved binding is.
     pub source: ProducerRef,
     /// The producer-side `link_id` of the source's participant slot: the
     /// segment the source publishes its role topics under, and the third
@@ -101,9 +103,10 @@ pub struct ValidatedObservations {
     pub planned: Vec<PlannedObservation>,
 }
 
-/// Run all observation validator rules over the plan. `producer_core_node` is
-/// the launching daemon's core_node, stamped into every resolved source
-/// [`ProducerRef`] exactly as [`super::validate_bindings`] stamps bindings.
+/// Run all observation validator rules over the plan. `placements` says which
+/// core node each source runs on, and that core node is stamped into every
+/// resolved source [`ProducerRef`] exactly as [`super::validate_bindings`]
+/// stamps bindings.
 ///
 /// Rules:
 /// 1. Only `links` keys naming one of this node's observer slots are processed;
@@ -140,14 +143,7 @@ pub fn validate_observations(
     pairs: &ObservablePairs,
 ) -> ValidatedObservations {
     let mut out = ValidatedObservations::default();
-
-    // instance_id → owning item (any state, so a preexisting source resolves).
-    let mut lookup: BTreeMap<&str, &PairingValidationItem<'_>> = BTreeMap::new();
-    for item in items {
-        for instance in item.instances {
-            lookup.entry(instance.instance_id.as_str()).or_insert(item);
-        }
-    }
+    let lookup = build_instance_lookup(items);
 
     for item in items.iter().filter(|i| !i.preexisting) {
         let observers_by_link: BTreeMap<&str, &PairingObserverDependency> = item
