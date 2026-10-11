@@ -1,6 +1,6 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
+use common::start_core_node_with_mock_messenger;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::Toolchain;
 use config_test_support::assert_contains_all;
@@ -8,7 +8,6 @@ use core_node_api::encoding::{NodeInitRequest, NodeInitResponse};
 use daemon_config::consts::{
     DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, PEPPY_OUTPUT_DIR, PEPPYLIB_OUTPUT_PATH,
 };
-use peppylib::core_node::transport::poll;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -22,16 +21,7 @@ async fn send_node_init(
     started_core_node: &common::StartedCoreNode,
     request: &NodeInitRequest,
 ) -> NodeInitResponse {
-    poll(
-        request,
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        NODE_INIT_TIMEOUT,
-    )
-    .await
-    .expect("node_init request should complete")
+    common::poll_core_node_with_timeout(started_core_node, request, NODE_INIT_TIMEOUT).await
 }
 
 /// Asserts the files every initialized node has, whatever its toolchain: the

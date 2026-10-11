@@ -1353,16 +1353,11 @@ async fn listen_for_node_add_stages_a_generated_copy_that_removal_deletes() {
         "the bindings are generated into the staged copy"
     );
 
-    let response = poll(
+    let response = common::poll_core_node(
+        &started_core_node,
         &NodeRemoveRequest::new(NODE_NAME, NODE_TAG),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
     assert!(
         response.success,
         "node_remove should succeed, got error: {:?}",

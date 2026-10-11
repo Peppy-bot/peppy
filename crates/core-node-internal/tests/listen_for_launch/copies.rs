@@ -268,16 +268,8 @@ async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() 
         !is_process_running(pids.remove("bravo").unwrap()),
         "removed process has exited"
     );
-    let list = poll(
-        &StackListRequest::new(),
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        GOAL_TIMEOUT,
-    )
-    .await
-    .unwrap();
+    let list =
+        common::poll_core_node_with_timeout(&started, &StackListRequest::new(), GOAL_TIMEOUT).await;
     assert_eq!(list.copies.len(), 5);
     assert!(
         !list
@@ -1081,16 +1073,8 @@ async fn joins_grow_and_removals_shrink_a_running_monitors_sets() {
         ["alpha_arm_inst/controller", "bravo_arm_inst/controller"]
     );
 
-    let list = poll(
-        &StackListRequest::new(),
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        GOAL_TIMEOUT,
-    )
-    .await
-    .unwrap();
+    let list =
+        common::poll_core_node_with_timeout(&started, &StackListRequest::new(), GOAL_TIMEOUT).await;
     let bravo = list
         .copies
         .iter()

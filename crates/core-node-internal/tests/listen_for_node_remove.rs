@@ -1,13 +1,12 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, build_staged_node, send_node_add_and_wait,
-    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
-    wait_until_service_reachable, write_peppy_json5,
+    AbortOnDrop, build_staged_node, send_node_add_and_wait, spawn_real_running_instance,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger, wait_until_service_reachable,
+    write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::NodeRemoveRequest;
-use peppylib::core_node::transport::poll;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
@@ -67,16 +66,11 @@ async fn listen_for_node_remove_success() {
         "node should have no instances"
     );
 
-    let response = poll(
+    let response = common::poll_core_node(
+        &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
 
     assert!(
         response.success,
@@ -105,16 +99,11 @@ async fn listen_for_node_remove_node_name_not_found_fails() {
     let node_stack = started_core_node.node_stack.clone();
     let before_len = node_stack.len();
 
-    let response = poll(
+    let response = common::poll_core_node(
+        &started_core_node,
         &NodeRemoveRequest::new(MISSING_NODE_NAME, MISSING_NODE_TAG),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
 
     assert!(!response.success, "node_remove should fail");
     let error_message = response
@@ -149,16 +138,11 @@ async fn listen_for_node_remove_refuses_the_core_node() {
         )
     };
 
-    let response = poll(
+    let response = common::poll_core_node(
+        &started_core_node,
         &NodeRemoveRequest::new(&root_name, &root_tag).with_stop_instances(true),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
 
     assert!(!response.success, "node_remove should fail");
     assert_eq!(
@@ -252,16 +236,12 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     )
     .await;
 
-    let response = poll(
+    let response = common::poll_core_node_with_timeout(
+        &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
         Duration::from_secs(10),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
 
     assert!(
         response.success,
@@ -356,16 +336,11 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
     );
 
     // Without `stop_instances`, the tracked terminal instance still gates the remove.
-    let gated = poll(
+    let gated = common::poll_core_node(
+        &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
     assert!(
         !gated.success,
         "a tracked terminal instance must gate a plain remove"
@@ -376,16 +351,12 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
     );
 
     // With `stop_instances`, the terminal instance is cleared and the node removed.
-    let response = poll(
+    let response = common::poll_core_node_with_timeout(
+        &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
         Duration::from_secs(10),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
     assert!(
         response.success,
         "node_remove should clear a terminal instance, got error: {:?}",
@@ -480,16 +451,11 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
 
     let before_len = node_stack.len();
 
-    let response = poll(
+    let response = common::poll_core_node(
+        &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
 
     assert!(
         !response.success,

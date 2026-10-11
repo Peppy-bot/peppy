@@ -1,37 +1,16 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, answer_readiness,
+    AbortOnDrop, NodeRunTestTimeouts, answer_readiness, poll_core_node_with_timeout,
     real_build_and_spawn_instance, send_node_add_then_build, send_node_run_and_wait,
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
-use peppylib::core_node::transport::poll as transport_poll;
 use peppylib::messaging::MessengerHandle;
 use std::sync::Arc;
 use std::time::Duration;
-
-/// Sends a `NODE_INFO` poll request and returns the raw response enum.
-///
-/// Most tests assert on the `Found` body and use `poll_node_info_found`
-/// below; the negative-lookup test uses this variant directly.
-async fn poll_node_info_raw(
-    started_core_node: &common::StartedCoreNode,
-    request: &NodeInfoRequest,
-    timeout: Duration,
-) -> peppylib::PeppyResult<NodeInfoResponse> {
-    transport_poll(
-        request,
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        timeout,
-    )
-    .await
-}
 
 /// Sends a `NODE_INFO` poll request and unwraps the `Found` body. Panics
 /// if the daemon answers `NotInStack`; happy-path tests expect the node
@@ -40,9 +19,9 @@ async fn poll_node_info(
     started_core_node: &common::StartedCoreNode,
     request: &NodeInfoRequest,
     timeout: Duration,
-) -> peppylib::PeppyResult<NodeInfo> {
-    match poll_node_info_raw(started_core_node, request, timeout).await? {
-        NodeInfoResponse::Found(info) => Ok(*info),
+) -> NodeInfo {
+    match poll_core_node_with_timeout(started_core_node, request, timeout).await {
+        NodeInfoResponse::Found(info) => *info,
         NodeInfoResponse::NotInStack => panic!(
             "node_info unexpectedly reported `{}:{}` as not in the stack",
             request.node_name, request.node_tag
@@ -94,9 +73,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     .await;
 
     let request = NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG);
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info request should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5)).await;
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -143,8 +120,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
         Duration::from_secs(5),
     )
-    .await
-    .expect("node_info request should succeed");
+    .await;
     assert_eq!(
         info_response.add_log_path.as_deref(),
         Some(recorded_add_log.as_path())
@@ -165,8 +141,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
         Duration::from_secs(5),
     )
-    .await
-    .expect("node_info request should succeed");
+    .await;
     assert!(
         !info_response.instances[0].healthy,
         "node info should report the instance unhealthy after set_healthy(false)"
@@ -264,8 +239,7 @@ async fn node_info_has_instance_ids() {
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
         Duration::from_secs(5),
     )
-    .await
-    .expect("node_info request should succeed");
+    .await;
 
     let mut instance_ids: Vec<String> = info_response
         .instances
@@ -303,13 +277,12 @@ async fn node_info_reports_not_in_stack_and_recovers() {
 
     // First: an unknown node; the daemon answers `NotInStack` on the
     // successful response channel. No error log, no transport fault.
-    let response = poll_node_info_raw(
+    let response = poll_core_node_with_timeout(
         &started_core_node,
         &NodeInfoRequest::new("ghost_node", "v999"),
         Duration::from_secs(2),
     )
-    .await
-    .expect("node_info should return a successful response for an unknown node");
+    .await;
     assert!(
         matches!(response, NodeInfoResponse::NotInStack),
         "expected NotInStack for an unknown `(name, tag)`, got: {response:?}"
@@ -343,8 +316,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
         Duration::from_secs(5),
     )
-    .await
-    .expect("node_info should still work after a failed request");
+    .await;
     assert_eq!(
         info_response.config.manifest.name.as_str(),
         TARGET_NODE_NAME
@@ -433,8 +405,7 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
         &NodeInfoRequest::new(NODE_NAME, "v1"),
         Duration::from_secs(5),
     )
-    .await
-    .expect("node_info request should succeed");
+    .await;
     assert_eq!(info.instances.len(), 1);
     assert_eq!(
         info.instances[0].endpoints,

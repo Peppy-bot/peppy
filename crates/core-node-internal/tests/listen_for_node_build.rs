@@ -1272,16 +1272,12 @@ async fn stack_reset_cancels_a_running_build_and_allows_a_new_add() {
         })
     };
     let pid = wait_for_pid_file(&pid_file).await;
-    let response = peppylib::core_node::transport::poll(
+    let response = common::poll_core_node_with_timeout(
+        &started,
         &core_node_api::encoding::StackResetRequest::new(),
-        &started.caller_handle,
-        &started.core_node_name,
-        common::CALLER_INSTANCE_ID,
-        &started.core_node_name,
         RESULT_TIMEOUT,
     )
-    .await
-    .unwrap();
+    .await;
     assert!(response.success, "{:?}", response.error_message);
     assert!(
         !common::is_process_running(pid),

@@ -4,7 +4,7 @@ mod container_e2e_tests {
     mod common;
 
     use common::{
-        CALLER_INSTANCE_ID, NodeRunTestTimeouts, send_node_add_and_wait, send_node_build_and_wait,
+        NodeRunTestTimeouts, send_node_add_and_wait, send_node_build_and_wait,
         send_node_build_and_wait_forced, send_node_run_and_wait,
         start_core_node_with_real_messenger_and_timeouts, write_peppy_json5,
     };
@@ -13,7 +13,6 @@ mod container_e2e_tests {
     use core_node_api::encoding::{NodeBuildResult, NodeInitRequest};
     use daemon_config::consts::{DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_PYTHON_BASE_IMAGE};
     use node_stack::NodeStack;
-    use peppylib::core_node::transport::poll;
     use std::collections::HashSet;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -55,7 +54,8 @@ mod container_e2e_tests {
         // Step 1: Init the node with container support
         let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-        let init_response = poll(
+        let init_response = common::poll_core_node_with_timeout(
+            &started,
             &NodeInitRequest::new(
                 nodes_root.path(),
                 node_name,
@@ -63,14 +63,9 @@ mod container_e2e_tests {
                 true,
                 toolchain,
             ),
-            &started.caller_handle,
-            &started.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started.core_node_name,
             Duration::from_secs(30),
         )
-        .await
-        .expect("node_init request should complete");
+        .await;
 
         assert!(
             init_response.success,
