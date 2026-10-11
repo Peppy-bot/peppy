@@ -180,11 +180,12 @@ async fn send_daemon_goal(
 }
 
 /// Sends a `node_run` goal and returns the live action handle plus its decoded
-/// goal response. Split out so tests that interleave work between the goal and
-/// the result (e.g. bringing up a delayed health responder once startup output
-/// has streamed) share one goal-send implementation with the plain wait helper.
+/// goal response, or an error when the goal is not accepted. The wait helpers
+/// build on it, and a test calls it directly when it does work between the
+/// goal and the result (e.g. bringing up a delayed health responder once
+/// startup output has streamed) or never fetches the result at all.
 #[allow(clippy::too_many_arguments)]
-async fn send_node_run_goal(
+pub async fn send_node_run_goal(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_plan: config::runtime::NodeInstancePlan,

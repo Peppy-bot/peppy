@@ -709,10 +709,6 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
 /// (goal accepted but result never polled).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
-    use config::node::QoSProfile;
-    use core_node_api::encoding::NodeRunGoal;
-    use peppylib::ActionMessenger;
-
     const FIRST_NODE_NAME: &str = "abandoned_start_node";
     const FIRST_NODE_TAG: &str = "v1";
     const FIRST_INSTANCE_ID: &str = "abandoned_start_instance";
@@ -780,42 +776,19 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     let mut responders = answer_readiness(&started, FIRST_NODE_NAME, FIRST_INSTANCE_ID).await;
     responders.extend(answer_readiness(&started, SECOND_NODE_NAME, SECOND_INSTANCE_ID).await);
 
-    // Create runtime config for first node
-    let first_instance_plan = common::default_instance_plan(FIRST_INSTANCE_ID);
-
     // Send first goal but DON'T wait for result (simulating abandoned action)
-    let first_goal = NodeRunGoal::new(
-        first_instance_plan.clone(),
-        FIRST_NODE_NAME,
-        FIRST_NODE_TAG,
-        60,
-    );
-    let first_goal_payload = first_goal.encode().expect("failed to encode first goal");
-
-    let mut first_action_handle = ActionMessenger::send_goal(
+    let (mut first_action_handle, _) = common::send_node_run_goal(
         &started.caller_handle,
         &started.core_node_name,
-        common::CALLER_INSTANCE_ID,
-        common::core_node_target(&started.core_node_name),
-        core_node_api::ActionId::NodeRun.name(),
-        None,
-        first_goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
+        common::default_instance_plan(FIRST_INSTANCE_ID),
+        FIRST_NODE_NAME,
+        FIRST_NODE_TAG,
         Duration::from_secs(5),
+        60,
+        Vec::new(),
     )
     .await
-    .expect("first goal should be sent");
-
-    // Verify first goal was accepted
-    let first_goal_response_payload = first_action_handle.goal_reply().body.clone();
-    let first_goal_response =
-        core_node_api::encoding::NodeRunGoalResponse::decode(&first_goal_response_payload)
-            .expect("failed to decode first goal response");
-    assert!(
-        first_goal_response.accepted,
-        "first goal should be accepted"
-    );
+    .expect("first goal should be accepted");
 
     // Settle the first action without ever fetching its result, the whole
     // point of this test: the daemon closes the feedback stream only after
