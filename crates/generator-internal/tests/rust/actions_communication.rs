@@ -36,27 +36,6 @@ const CONSUMED_ACTION_EXAMPLE: &str = r#"
 }
 "#;
 
-/// Consumer node config for the bimanual capstone: unlike
-/// [`STUB_NODE_CONFIG`], the manifest declares a pinned `depends_on`
-/// slot (`link_id: "brain"`), which is what makes the runtime processor
-/// resolve `slot_bindings["brain"]` into the bound producer that
-/// the generated `fire_goal` splices as its target.
-const BIMANUAL_CONSUMER_NODE_CONFIG: &str = r#"{
-  peppy_schema: "node/v1",
-  manifest: {
-    name: "generated_node",
-    tag: "v1",
-    depends_on: {
-      nodes: [{ name: "brain", tag: "v1", link_id: "brain" }]
-    }
-  },
-  execution: {
-    language: "rust",
-    run_cmd: ["./target/release/generated_node"]
-  }
-}
-"#;
-
 /// E2E capstone for the bimanual field scenario: two instances of the SAME
 /// producer node run on one core_node, and a generated consumer whose
 /// manifest slot is pinned (via `NodeInstanceConfig.slot_bindings`) to one
@@ -90,7 +69,7 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(
             &temp_dir_consumer,
-            BIMANUAL_CONSUMER_NODE_CONFIG,
+            &consumer_stub_node_config("brain", "v1", "brain"),
         );
     generator
         .add_consumed_action(
