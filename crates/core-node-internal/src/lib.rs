@@ -10,7 +10,8 @@ pub mod test_support;
 
 pub use error::{Error, Result};
 pub use services::mcp::{
-    ExposureFinding, check_repository_exposures, derive_exposure_catalog, resolve_exposure_plan,
+    ExposureDocumentsError, ExposureFinding, check_repository_exposures, derive_exposure_catalog,
+    resolve_exposure_documents, resolve_exposure_plan,
 };
 pub use services::repo::cache::{
     ContractSlot, DeclaredLinks, EntryOrigin, ImplementsClaim, NodeCacheEntry, ObserverSlot,

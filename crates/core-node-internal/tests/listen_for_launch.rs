@@ -4,7 +4,7 @@ mod copies;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, FeedbackDrainOutcome, drain_feedback, fetch_result,
-    send_daemon_goal, start_core_node_with_health_timeout,
+    send_daemon_goal, start_core_node_with_default_setup_timeout,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::NodeConfigParser;
@@ -1193,8 +1193,9 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
  {
     const NODE_TAG: &str = "v1";
 
-    // Use a short health timeout so the test doesn't take too long.
-    let started_core_node = start_core_node_with_health_timeout(Duration::from_secs(2)).await;
+    // A short default setup budget, so the test doesn't take too long.
+    let started_core_node =
+        start_core_node_with_default_setup_timeout(common::setup_budget(2)).await;
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
@@ -1214,6 +1215,15 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
 
     // Set up ONLY the ready responder. Do not set up health responder so it times out.
     let _ready_b = answer_ready_probe(&started_core_node, "node_b", "b1").await;
+    // An instance that answered ready is stopped through its shutdown
+    // request; this one ends at once instead of at its force-kill deadline.
+    let (_shutdown_b, _) = common::install_shutdown_listener_for_instance(
+        &started_core_node,
+        "node_b",
+        NODE_TAG,
+        "b1",
+    )
+    .await;
 
     let launch_b = r#"
     { peppy_schema: "launcher/v1", deployments: [ { source: { name: "node_b:v1" }, instances: [ { instance_id: "b1" } ] } ] }
@@ -1263,6 +1273,12 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     assert!(
         !result.success,
         "launch should fail because the node never becomes healthy"
+    );
+    let reason = result.error_message.clone().unwrap_or_default();
+    assert!(
+        reason.contains("the setup did not end within 2 s, the default setup budget")
+            && reason.contains("`execution.setup_timeout_secs`"),
+        "the failure names the default setup budget and the key: {reason}"
     );
 
     // A failed launch leaves a clean empty stack.

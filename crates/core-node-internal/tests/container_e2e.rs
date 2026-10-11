@@ -5,7 +5,7 @@ mod container_e2e_tests {
 
     use common::{
         NodeRunTestTimeouts, send_node_add_and_wait, send_node_build_and_wait,
-        send_node_build_and_wait_forced, send_node_run_and_wait,
+        send_node_build_and_wait_forced, send_node_run_and_wait, setup_budget,
         start_core_node_with_real_messenger_and_timeouts, write_peppy_json5,
     };
     use config::node::Toolchain;
@@ -47,7 +47,7 @@ mod container_e2e_tests {
 
         let started = start_core_node_with_real_messenger_and_timeouts(
             Duration::from_secs(120),
-            Duration::from_secs(60),
+            setup_budget(60),
         )
         .await;
 
@@ -204,7 +204,7 @@ mod container_e2e_tests {
 
         let started = start_core_node_with_real_messenger_and_timeouts(
             Duration::from_secs(120),
-            Duration::from_secs(60),
+            setup_budget(60),
         )
         .await;
 
@@ -281,7 +281,7 @@ mod container_e2e_tests {
 
         let started = start_core_node_with_real_messenger_and_timeouts(
             Duration::from_secs(120),
-            Duration::from_secs(60),
+            setup_budget(60),
         )
         .await;
 
@@ -509,7 +509,7 @@ mod container_e2e_tests {
 
         let started = start_core_node_with_real_messenger_and_timeouts(
             Duration::from_secs(120),
-            Duration::from_secs(60),
+            setup_budget(60),
         )
         .await;
 
