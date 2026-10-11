@@ -55,11 +55,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from http import HTTPStatus
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
 
 
 class ResolveError(Exception):
@@ -682,9 +682,11 @@ def release_set_summary(version: str, hub_set: HubSet) -> str:
     lines = [
         f"### The hub commits peppy {version} tests and tags",
         "",
-        f"Each hub is at `{hub_release_tag(version)}` where it carries that tag, "
-        f"and at the head of `{HUB_MAIN_BRANCH}` where it does not. Every later "
-        "job of this release uses these commits.",
+        (
+            f"Each hub is at `{hub_release_tag(version)}` where it carries that tag, "
+            f"and at the head of `{HUB_MAIN_BRANCH}` where it does not. Every later "
+            "job of this release uses these commits."
+        ),
         "",
         *hub_table(hub_set),
     ]
@@ -721,10 +723,11 @@ def choose_peppy_build(
 
 def peppy_build_notes(kind: PeppyBuildKind, from_fork: bool) -> tuple[str, ...]:
     if from_fork and kind is PeppyBuildKind.LATEST_RELEASE:
-        return (
+        note = (
             "A pull request from a fork gets no secrets, so it always runs the "
-            "latest release of peppy.",
+            "latest release of peppy."
         )
+        return (note,)
     return ()
 
 
@@ -942,6 +945,15 @@ def repositories_json(entries: Sequence[dict]) -> str:
     return json.dumps(list(entries), indent=2) + "\n"
 
 
+def repository_entry(resolved: ResolvedHub, hub_path: str) -> dict:
+    """The repositories.json5 entry of a hub of the set: the checkout itself
+    for the hub under test, its git repository pinned at the commit of the set
+    for every other hub."""
+    if resolved.origin is HubOrigin.CHECKOUT:
+        return {"id": resolved.hub.repository_id, "type": "fs", "path": hub_path}
+    return pinned_git_entry(resolved)
+
+
 def repositories_file(hub_set: HubSet, hub_path: str) -> str:
     """The repositories.json5 of the job's daemon, ordered by id.
 
@@ -950,12 +962,7 @@ def repositories_file(hub_set: HubSet, hub_path: str) -> str:
     git repository pinned at the commit of the set.
     """
     return repositories_json(
-        [
-            {"id": resolved.hub.repository_id, "type": "fs", "path": hub_path}
-            if resolved.origin is HubOrigin.CHECKOUT
-            else pinned_git_entry(resolved)
-            for resolved in hub_set.hubs
-        ]
+        [repository_entry(resolved, hub_path) for resolved in hub_set.hubs]
     )
 
 
@@ -1040,8 +1047,10 @@ def summary_markdown(
         "",
         heading,
         "",
-        f"**peppy**: `{peppy.version}`, {peppy.build.description} "
-        f"({peppy.build.source})",
+        (
+            f"**peppy**: `{peppy.version}`, {peppy.build.description} "
+            f"({peppy.build.source})"
+        ),
         "",
         *hub_table(hub_set),
     ]
@@ -1069,7 +1078,11 @@ def git_environment() -> dict[str, str]:
 def run_git(arguments: Sequence[str]) -> str:
     """What `git <arguments>` prints; a git that fails stops the job."""
     result = subprocess.run(
-        ["git", *arguments], capture_output=True, text=True, env=git_environment()
+        ["git", *arguments],
+        capture_output=True,
+        text=True,
+        env=git_environment(),
+        check=False,
     )
     if result.returncode != 0:
         raise ResolveError(f"git {' '.join(arguments)} failed: {result.stderr.strip()}")
@@ -1100,7 +1113,9 @@ def agent_holds_a_key() -> bool:
     """Whether an ssh-agent this process reaches holds a key, which is what
     load-private-hub-key.sh leaves."""
     try:
-        result = subprocess.run(["ssh-add", "-l"], capture_output=True, text=True)
+        result = subprocess.run(
+            ["ssh-add", "-l"], capture_output=True, text=True, check=False
+        )
     except FileNotFoundError:
         return False
     return result.returncode == 0
@@ -1416,6 +1431,7 @@ def unpack_peppy(archive: Path, destination: Path) -> Path:
         ["tar", "-xzf", str(archive), "-C", str(destination)],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise ResolveError(f"unpacking {archive} failed: {result.stderr.strip()}")
@@ -1426,7 +1442,9 @@ def unpack_peppy(archive: Path, destination: Path) -> Path:
 
 
 def peppy_version(peppy: Path) -> str:
-    result = subprocess.run([str(peppy), "--version"], capture_output=True, text=True)
+    result = subprocess.run(
+        [str(peppy), "--version"], capture_output=True, text=True, check=False
+    )
     version = result.stdout.strip()
     if result.returncode != 0 or not version or "\n" in version:
         raise ResolveError(
@@ -1482,7 +1500,7 @@ def parse_hub_path(text: str) -> str:
 def parse_release_run_id(text: str) -> int | None:
     if not text:
         return None
-    if not text.isdigit():
+    if not (text.isascii() and text.isdigit()):
         raise ResolveError(f"`peppy-run-id` must be a workflow run id, got `{text}`")
     return int(text)
 

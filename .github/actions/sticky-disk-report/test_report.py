@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """What `report.py` reads from a sticky disk, and the report it writes.
 
 The cases give the script the mount table, the du output and the record the
@@ -10,9 +9,10 @@ out, and checks only which directories it reports.
 import contextlib
 import io
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 import report
@@ -107,7 +107,9 @@ class DuTest(unittest.TestCase):
             deep.mkdir(parents=True)
             (deep / "file").write_bytes(b"x" * 10000)
             result = report.measure(disk)
-        self.assertEqual(set(result.directories), {"cache", "cache/child", "cache/child/grandchild"})
+        self.assertEqual(
+            set(result.directories), {"cache", "cache/child", "cache/child/grandchild"}
+        )
         self.assertEqual(result.notes, [])
 
     def test_a_disk_without_caches_reports_no_directory(self):
@@ -126,7 +128,9 @@ class RecordTest(unittest.TestCase):
 
     def test_a_disk_without_a_record_has_no_note(self):
         with tempfile.TemporaryDirectory() as disk:
-            self.assertEqual(report.load_record(Path(disk, report.RECORD_NAME)), (None, None))
+            self.assertEqual(
+                report.load_record(Path(disk, report.RECORD_NAME)), (None, None)
+            )
 
     def test_an_unusable_record_is_ignored_with_a_note(self):
         cases = {
@@ -145,7 +149,9 @@ class RecordTest(unittest.TestCase):
 
     def test_a_record_that_cannot_be_written_becomes_a_note(self):
         with tempfile.TemporaryDirectory() as disk:
-            note = report.write_record(Path(disk, "missing", report.RECORD_NAME), record({}))
+            note = report.write_record(
+                Path(disk, "missing", report.RECORD_NAME), record({})
+            )
         self.assertIn("could not be written", note)
 
 
@@ -196,7 +202,7 @@ class FormatTest(unittest.TestCase):
 
 
 class RenderTest(unittest.TestCase):
-    points = {NODES_CACHE: "/home/runner/.cache/nodes-hub-ci"}
+    points: ClassVar[dict[str, str]] = {NODES_CACHE: "/home/runner/.cache/nodes-hub-ci"}
 
     def test_the_report_compares_each_directory_with_the_restore(self):
         now = measurement(
@@ -217,7 +223,9 @@ class RenderTest(unittest.TestCase):
             }
         )
         self.assertEqual(
-            report.render_report("node-tests", now, before, ["A note."], self.points, PLACES),
+            report.render_report(
+                "node-tests", now, before, ["A note."], self.points, PLACES
+            ),
             "\n".join(
                 [
                     "### Sticky disk `node-tests`",
@@ -249,7 +257,9 @@ class RenderTest(unittest.TestCase):
         )
 
     def test_without_a_record_only_the_current_sizes_show(self):
-        now = measurement({NODES_CACHE: 2 * GIB, f"{NODES_CACHE}/target": 2 * GIB}, used=2 * GIB)
+        now = measurement(
+            {NODES_CACHE: 2 * GIB, f"{NODES_CACHE}/target": 2 * GIB}, used=2 * GIB
+        )
         text = report.render_report("node-tests", now, None, [], self.points, PLACES)
         self.assertIn("| Restored | No record of an earlier job:", text)
         self.assertIn("| Used | 2.0 GiB of 200.0 GiB (1%) |", text)
@@ -280,7 +290,10 @@ class MainTest(unittest.TestCase):
             summary = Path(directory, "summary.md")
             summary.touch()
             environment = {"GITHUB_STEP_SUMMARY": str(summary), **environment}
-            with mock.patch.dict(os.environ, environment, clear=True), contextlib.redirect_stdout(out):
+            with (
+                mock.patch.dict(os.environ, environment, clear=True),
+                contextlib.redirect_stdout(out),
+            ):
                 code = report.main()
             return code, out.getvalue(), summary.read_text()
 

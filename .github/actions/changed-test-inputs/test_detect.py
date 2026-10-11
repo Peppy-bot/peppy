@@ -1,15 +1,22 @@
-#!/usr/bin/env python3
 """Tests for the test-input detection.
 
 The detection decides which suites a pull request runs, so a defect here is
 wasted compute at best and a silently skipped suite at worst. These cases run
 against this repository's real manifests: what they assert is what the
 selection has to do about the layout, never a second copy of the layout. The
-changes job of tests.yml runs them before it trusts what the detection says.
+cases of the change set run git in a scratch repository instead, because what
+they hold is how the detection reads what git prints. The changes job of
+tests.yml runs them before it trusts what the detection says.
 """
 
+import contextlib
+import io
 import os
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import detect
 
@@ -21,17 +28,13 @@ def select(*files):
 
 def cargo_packages(selection):
     """The peppy-shared packages a selection names, without the `-p` flags."""
-    return [
-        word for word in selection["peppy_shared_packages"].split() if word != "-p"
-    ]
+    return [word for word in selection["peppy_shared_packages"].split() if word != "-p"]
 
 
 def selected(selection):
     """Every output of a selection that names something to run."""
     return {
-        gate: value
-        for gate, value in selection.items()
-        if value not in ("", "false")
+        gate: value for gate, value in selection.items() if value not in ("", "false")
     }
 
 
@@ -42,8 +45,10 @@ def declared_outputs():
     installed, so this walks the indentation rather than importing PyYAML.
     """
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "action.yml")
+    with open(path) as handle:
+        lines = handle.readlines()
     names, inside = [], False
-    for line in open(path):
+    for line in lines:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if not line[0].isspace():
@@ -106,7 +111,7 @@ class Detection(unittest.TestCase):
         # peppylib-rs takes peppy-messaging-interface by path, so a change to
         # the latter has to run the former's suite too.
         selection = select(
-            "%s/peppy-messaging-interface/src/lib.rs" % detect.PEPPY_SHARED
+            f"{detect.PEPPY_SHARED}/peppy-messaging-interface/src/lib.rs"
         )
         self.assertIn("peppylib-rs", cargo_packages(selection))
 
@@ -124,7 +129,7 @@ class Detection(unittest.TestCase):
         # The peppy crates take the tree by path, so a change to one of its
         # packages has to run the suites of crates/ that compile it.
         selection = select(
-            "%s/peppy-messaging-interface/src/lib.rs" % detect.PEPPY_SHARED
+            f"{detect.PEPPY_SHARED}/peppy-messaging-interface/src/lib.rs"
         )
         self.assertEqual(selection["container_e2e"], "true")
 
@@ -231,7 +236,7 @@ class Detection(unittest.TestCase):
         # Both build the `peppy` package, which reaches the sealed tree.
         for path in (
             "crates/daemon-internal/src/lib.rs",
-            "%s/peppy-messaging-interface/src/lib.rs" % detect.PEPPY_SHARED,
+            f"{detect.PEPPY_SHARED}/peppy-messaging-interface/src/lib.rs",
         ):
             with self.subTest(path=path):
                 selection = select(path)
@@ -316,11 +321,129 @@ class Detection(unittest.TestCase):
     def test_the_action_declares_every_output_the_detection_emits(self):
         # A composite action forwards only what it declares. An output the
         # detection emits and action.yml does not reaches the workflow as the
-        # empty string, which is how a skipped job is spelled -- so the suite
-        # is silently gated off and nothing anywhere is red. That is exactly
-        # what adding the gate of one half of the release scripts did until
-        # this case existed.
+        # empty string, which is how a skipped job is spelled, so the suite is
+        # silently gated off and nothing anywhere is red.
         self.assertEqual(sorted(declared_outputs()), sorted(select("Readme.md")))
+
+
+class ChangedFiles(unittest.TestCase):
+    """The change set of a scratch repository whose base commit holds one
+    fixture. git reads no configuration of the host, whose settings would
+    change what `git diff` prints."""
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.repository = Path(scratch.name)
+        hermetic_git = mock.patch.dict(
+            os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        )
+        hermetic_git.start()
+        self.addCleanup(hermetic_git.stop)
+        self.git("init", "--quiet", "--initial-branch=main")
+        self.commit_new_file("crates/a/fixture.json")
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def git(self, *arguments):
+        return subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                *arguments,
+            ],
+            cwd=self.repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    def commit_new_file(self, relative):
+        path = self.repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n")
+        self.git("add", relative)
+        self.git("commit", "--quiet", "--message", f"Add {relative}")
+
+    def changed_files(self):
+        with contextlib.chdir(self.repository):
+            return detect.changed_files(self.base)
+
+    def test_a_moved_file_counts_at_both_of_its_paths(self):
+        # The suite that read the file at its old path lost an input.
+        (self.repository / "docs").mkdir()
+        self.git("mv", "crates/a/fixture.json", "docs/fixture.json")
+        self.git("commit", "--quiet", "--message", "Move the fixture")
+        self.assertEqual(
+            sorted(self.changed_files()),
+            ["crates/a/fixture.json", "docs/fixture.json"],
+        )
+
+    def test_a_path_git_would_quote_is_read_as_it_is(self):
+        # git quotes a path with a byte outside printable ASCII, and the
+        # quoted form matches no glob and no crate directory.
+        self.commit_new_file("docs/café.md")
+        self.assertEqual(self.changed_files(), ["docs/café.md"])
+
+
+class Report(unittest.TestCase):
+    """What the detection tells the workflow and the reader of its run."""
+
+    def run_in_step(self, function, *arguments, **environment):
+        """Run `function` as the step does, with scratch files for the step
+        summary and the outputs. Returns what it wrote to each, and to
+        stdout."""
+        with tempfile.TemporaryDirectory() as scratch:
+            summary = Path(scratch) / "summary.md"
+            outputs = Path(scratch) / "outputs"
+            summary.touch()
+            outputs.touch()
+            environment = {
+                "GITHUB_STEP_SUMMARY": str(summary),
+                "GITHUB_OUTPUT": str(outputs),
+                **environment,
+            }
+            stdout = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, environment),
+                contextlib.redirect_stdout(stdout),
+            ):
+                function(*arguments)
+            return summary.read_text(), outputs.read_text(), stdout.getvalue()
+
+    def test_the_summary_names_what_each_job_runs_and_why_one_is_skipped(self):
+        selection = {
+            output: "false" for outputs in detect.JOBS.values() for output in outputs
+        }
+        selection["workspace"] = "true"
+        selection["peppy_shared_packages"] = "-p json5-pretty"
+        summary, _, stdout = self.run_in_step(
+            detect.report, selection, "0123456789abcdef"
+        )
+        self.assertIn("Measured against the diff vs `0123456789ab`.\n", summary)
+        self.assertIn("- **workspace-tests** runs\n", summary)
+        self.assertIn("- **peppy-shared** runs: `-p json5-pretty`\n", summary)
+        self.assertIn(
+            "- **container-e2e** is skipped: nothing it builds from or reads changed\n",
+            summary,
+        )
+        self.assertIn(
+            '::notice::Skipped "container-e2e": none of the files it builds from '
+            "or reads changed vs 0123456789ab\n",
+            stdout,
+        )
+        self.assertNotIn('Skipped "workspace-tests"', stdout)
+
+    def test_an_unknowable_change_set_writes_every_output_selected(self):
+        _, outputs, stdout = self.run_in_step(detect.main, INPUT_BASE="")
+        self.assertIn("running every suite", stdout)
+        self.assertEqual(len(outputs.splitlines()), len(detect.select_everything()))
+        self.assertIn("workspace=true\n", outputs)
+        self.assertIn(
+            "peppy_shared_packages=--workspace --exclude peppylib-py\n", outputs
+        )
 
 
 if __name__ == "__main__":

@@ -32,7 +32,8 @@ Three commands, each on the paths as the host sees them:
     sweep <target dir>
         Removes every unit the record does not list, which cleans up after
         a run that stopped before its `record`. A target dir without a
-        record is cleared: nothing in it is known to be live.
+        record is cleared: nothing in it is known to be live. A record this
+        script cannot read counts as no record.
 
     prune <target root> <live dir>...
         Removes every entry of <target root> that is not a live dir, inside
@@ -49,15 +50,14 @@ the dir stays bounded.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sys
-
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 # `cargo test` builds with the `test` profile, which inherits `dev` and so
 # builds into `debug/`. CI builds for the host only, so no target triple
@@ -161,7 +161,9 @@ def relative_to_build_root(path: str, build_root: PurePosixPath) -> PurePosixPat
     try:
         return PurePosixPath(path).relative_to(build_root)
     except ValueError:
-        raise UnknownLayout(f"{path} is outside the build's target dir {build_root}") from None
+        raise UnknownLayout(
+            f"{path} is outside the build's target dir {build_root}"
+        ) from None
 
 
 def live_units(target_dir: Path, outputs: Iterable[PurePosixPath]) -> LiveUnits:
@@ -171,31 +173,52 @@ def live_units(target_dir: Path, outputs: Iterable[PurePosixPath]) -> LiveUnits:
     copies: set[str] = set()
     inode_indexes: dict[str, dict[tuple[int, int], str]] = {}
     for output in outputs:
-        parts = output.parts
-        if len(parts) < 2 or parts[0] != PROFILE_DIR:
-            raise UnknownLayout(f"{output} is outside the profile dir {PROFILE_DIR}/")
-        inner = parts[1:]
-        if len(inner) >= 2 and inner[0] in OUTPUT_DIRS:
-            unit_hash = hash_in_name(inner[1])
-            if unit_hash is not None:
-                hashes.add(unit_hash)
-                continue
-            if inner[0] == "examples" and len(inner) == 2:
-                copy, unit_dir = f"examples/{inner[1]}", "examples"
-            else:
-                raise UnknownLayout(f"{output} names no unit hash")
-        elif len(inner) == 1:
-            copy, unit_dir = inner[0], "deps"
-        else:
-            raise UnknownLayout(f"{output} is in no directory cargo lists outputs in")
+        inner = path_in_profile_dir(output)
+        unit_hash = unit_hash_of_output(inner)
+        if unit_hash is not None:
+            hashes.add(unit_hash)
+            continue
+        copy, unit_dir = copy_and_its_unit_dir(output, inner)
         if unit_dir not in inode_indexes:
             inode_indexes[unit_dir] = inode_index(profile_dir / unit_dir)
         unit_hash = inode_indexes[unit_dir].get(inode_of(profile_dir / copy))
         if unit_hash is None:
-            raise UnknownLayout(f"{output} is a hardlink to the output of no unit in {unit_dir}/")
+            raise UnknownLayout(
+                f"{output} is a hardlink to the output of no unit in {unit_dir}/"
+            )
         hashes.add(unit_hash)
         copies.add(copy)
     return LiveUnits(frozenset(hashes), frozenset(copies))
+
+
+def path_in_profile_dir(output: PurePosixPath) -> tuple[str, ...]:
+    """The parts of a listed output below the profile dir."""
+    parts = output.parts
+    if len(parts) < 2 or parts[0] != PROFILE_DIR:
+        raise UnknownLayout(f"{output} is outside the profile dir {PROFILE_DIR}/")
+    return parts[1:]
+
+
+def unit_hash_of_output(inner: tuple[str, ...]) -> str | None:
+    """The unit hash that names the entry of an output directory the output
+    is in; None when no unit hash names it."""
+    if len(inner) >= 2 and inner[0] in OUTPUT_DIRS:
+        return hash_in_name(inner[1])
+    return None
+
+
+def copy_and_its_unit_dir(
+    output: PurePosixPath, inner: tuple[str, ...]
+) -> tuple[str, str]:
+    """Names an output that no unit hash names as a copy of a binary or an
+    example, with the unit dir of the output the copy is a hardlink to."""
+    if len(inner) == 1:
+        return inner[0], "deps"
+    if len(inner) == 2 and inner[0] == "examples":
+        return f"examples/{inner[1]}", "examples"
+    if inner[0] in OUTPUT_DIRS:
+        raise UnknownLayout(f"{output} names no unit hash")
+    raise UnknownLayout(f"{output} is in no directory cargo lists outputs in")
 
 
 def inode_of(path: Path) -> tuple[int, int]:
@@ -216,11 +239,20 @@ def inode_index(directory: Path) -> dict[tuple[int, int], str]:
 
 
 def read_record(target_dir: Path) -> LiveUnits | None:
+    """The live units the record lists; None when there is no record, or one
+    this script cannot read, since nothing in the dir is then known to be
+    live."""
     record = target_dir / RECORD_NAME
     if not record.exists():
         return None
-    content = json.loads(record.read_text())
-    return LiveUnits(frozenset(content["hashes"]), frozenset(content["copies"]))
+    try:
+        content = json.loads(record.read_text())
+        return LiveUnits(frozenset(content["hashes"]), frozenset(content["copies"]))
+    except (OSError, ValueError, KeyError, TypeError) as unreadable:
+        print(
+            f"::warning::the record of {target_dir} is unreadable ({unreadable!r}); it counts as absent"
+        )
+        return None
 
 
 def write_record(target_dir: Path, live: LiveUnits) -> None:
@@ -229,14 +261,23 @@ def write_record(target_dir: Path, live: LiveUnits) -> None:
     record = target_dir / RECORD_NAME
     partial = record.with_name(f"{RECORD_NAME}.partial")
     partial.write_text(
-        json.dumps({"hashes": sorted(live.hashes), "copies": sorted(live.copies)}, indent=1) + "\n"
+        json.dumps(
+            {"hashes": sorted(live.hashes), "copies": sorted(live.copies)}, indent=1
+        )
+        + "\n"
     )
     os.replace(partial, record)
 
 
+def is_directory_not_symlink(path: Path) -> bool:
+    """Whether `path` is a directory itself: the sweep removes a symlink and
+    never follows it."""
+    return path.is_dir() and not path.is_symlink()
+
+
 def remove(path: Path) -> Removal:
     size = size_of(path)
-    if path.is_dir() and not path.is_symlink():
+    if is_directory_not_symlink(path):
         shutil.rmtree(path)
     else:
         path.unlink()
@@ -244,7 +285,7 @@ def remove(path: Path) -> Removal:
 
 
 def size_of(path: Path) -> int:
-    if not path.is_dir() or path.is_symlink():
+    if not is_directory_not_symlink(path):
         return path.lstat().st_size
     total = 0
     for directory, _, files in os.walk(path):
@@ -282,7 +323,11 @@ def sweep_to(target_dir: Path, live: LiveUnits) -> Removal:
             if not live.keeps_unit_entry(entry.name) and not live.keeps_copy(copy):
                 removed += remove(entry)
     for entry in children(profile_dir):
-        is_copy = entry.is_file() and not entry.is_symlink() and not entry.name.startswith(".")
+        is_copy = (
+            entry.is_file()
+            and not entry.is_symlink()
+            and not entry.name.startswith(".")
+        )
         if is_copy and not live.keeps_copy(entry.name):
             removed += remove(entry)
     return removed
@@ -343,7 +388,7 @@ def prune(target_root: Path, live_dirs: Iterable[PurePosixPath]) -> Removal:
             relative = PurePosixPath(entry.relative_to(target_root).as_posix())
             if relative in live:
                 continue
-            if relative in on_the_path and entry.is_dir() and not entry.is_symlink():
+            if relative in on_the_path and is_directory_not_symlink(entry):
                 pending.append(entry)
                 continue
             removed += remove(entry)
@@ -368,7 +413,9 @@ def main(arguments: list[str]) -> int:
             removed = record(Path(target_dir), Path(listing), PurePosixPath(build_root))
         case ["prune", target_root, *live_dir_arguments]:
             try:
-                live_dirs = [parse_live_dir(argument) for argument in live_dir_arguments]
+                live_dirs = [
+                    parse_live_dir(argument) for argument in live_dir_arguments
+                ]
             except ValueError as invalid:
                 print(f"{invalid}\n{USAGE}", file=sys.stderr)
                 return 2
