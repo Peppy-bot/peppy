@@ -8,35 +8,19 @@
 #![cfg(feature = "build_zenoh")]
 
 mod common;
-use common::{RECV_TIMEOUT, ZENOH_SERIAL, test_node_target, wait_for_subscriber_discovery};
+use common::{
+    RECV_TIMEOUT, ZENOH_SERIAL, next_message, next_request, test_node_target,
+    wait_for_subscriber_discovery,
+};
 
 use bytes::Bytes;
 use config::node::TopicRetention;
 use pmi::{
-    ActionWireReceiver, ActionWireSender, FeedbackBuffer, IncomingRequest, MessengerBackend,
-    Payload, ProducerRef, PublisherQoS, ReplyStream, SenderTarget, ServiceKind, ServiceQueryKind,
-    ServiceQueryable, ServiceWireReceiver, ServiceWireSender, SubscriberBufferSizes, SubscriberQoS,
-    Subscription, TopicMessage, TopicWireReceiver, TopicWireSender, ZenohAdapter,
+    ActionWireReceiver, ActionWireSender, FeedbackBuffer, MessengerBackend, Payload, ProducerRef,
+    PublisherQoS, ReplyStream, SenderTarget, ServiceKind, ServiceQueryKind, ServiceWireReceiver,
+    ServiceWireSender, SubscriberBufferSizes, SubscriberQoS, TopicMessage, TopicWireReceiver,
+    TopicWireSender, ZenohAdapter,
 };
-
-/// Awaits the next message on `sub` or fails the test after `RECV_TIMEOUT`. The
-/// `label` is included in the panic message so reviewers can identify which
-/// receiver stalled in CI.
-async fn recv_or_timeout(sub: &mut Subscription, label: &str) -> TopicMessage {
-    tokio::time::timeout(RECV_TIMEOUT, sub.rx.recv_async())
-        .await
-        .unwrap_or_else(|_| panic!("timed out waiting for message on {label}"))
-        .unwrap_or_else(|_| panic!("channel closed before message on {label}"))
-}
-
-/// Waits for the next inbound request on a service queryable's fan-in
-/// channel. Panics on timeout.
-async fn recv_request(queryable: &mut ServiceQueryable) -> IncomingRequest {
-    tokio::time::timeout(RECV_TIMEOUT, queryable.rx.recv_async())
-        .await
-        .unwrap_or_else(|_| panic!("timed out waiting for inbound service request"))
-        .unwrap_or_else(|_| panic!("service queryable channel closed before request arrived"))
-}
 
 /// Waits for the next reply on a service `ReplyStream` and returns its
 /// underlying [`TopicMessage`] (caller-visible payload + responder identity).
@@ -52,14 +36,43 @@ async fn recv_reply(stream: &mut ReplyStream, label: &str) -> TopicMessage {
 
 // ─── Topics ───────────────────────────────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn topic_native_roundtrip() {
-    let _lock = ZENOH_SERIAL.lock().await;
+/// Publishes `body` from `sender` through a fresh ephemeral router and returns
+/// the message that a live subscription of `receiver` reads.
+async fn run_topic_roundtrip(
+    sender: &TopicWireSender,
+    receiver: &TopicWireReceiver,
+    body: Bytes,
+    label: &str,
+) -> TopicMessage {
     let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("Failed to start zenohd process");
     instance.messenger().start_session().await.unwrap();
 
+    let sub = instance
+        .messenger()
+        .subscribe_topic(receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
+        .await
+        .unwrap();
+    wait_for_subscriber_discovery().await;
+
+    instance
+        .messenger()
+        .publish_topic(
+            sender,
+            Payload::from_bytes(body),
+            PublisherQoS::Standard,
+            true,
+        )
+        .await
+        .unwrap();
+
+    next_message(&sub, label).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn topic_native_roundtrip() {
+    let _lock = ZENOH_SERIAL.lock().await;
     let sender = TopicWireSender::new(
         "core_pub",
         "publisher_inst",
@@ -79,26 +92,14 @@ async fn topic_native_roundtrip() {
     )
     .expect("valid wire fields");
 
-    let mut sub = instance
-        .messenger()
-        .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
-        .await
-        .unwrap();
-    wait_for_subscriber_discovery().await;
-
     let body = Bytes::from_static(b"native_frame");
-    instance
-        .messenger()
-        .publish_topic(
-            &sender,
-            Payload::from_bytes(body.clone()),
-            PublisherQoS::Standard,
-            true,
-        )
-        .await
-        .unwrap();
-
-    let received = recv_or_timeout(&mut sub, "topic_native_roundtrip sub").await;
+    let received = run_topic_roundtrip(
+        &sender,
+        &receiver,
+        body.clone(),
+        "topic_native_roundtrip sub",
+    )
+    .await;
     assert_eq!(received.payload(), &body);
     assert_eq!(received.core_node(), "core_pub");
     assert_eq!(received.instance_id(), "publisher_inst");
@@ -107,11 +108,6 @@ async fn topic_native_roundtrip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn topic_contract_roundtrip() {
     let _lock = ZENOH_SERIAL.lock().await;
-    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .unwrap();
-    instance.messenger().start_session().await.unwrap();
-
     let target = SenderTarget::contract("manipulator", "v1-rc2").expect("valid target");
     let sender = TopicWireSender::new("core_pub", "pub_inst", target.clone(), None, "joint_states")
         .expect("valid wire fields");
@@ -126,37 +122,20 @@ async fn topic_contract_roundtrip() {
     )
     .expect("valid wire fields");
 
-    let mut sub = instance
-        .messenger()
-        .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
-        .await
-        .unwrap();
-    wait_for_subscriber_discovery().await;
-
     let body = Bytes::from_static(b"q=[0.1,0.2,0.3]");
-    instance
-        .messenger()
-        .publish_topic(
-            &sender,
-            Payload::from_bytes(body.clone()),
-            PublisherQoS::Standard,
-            true,
-        )
-        .await
-        .unwrap();
-
-    let received = recv_or_timeout(&mut sub, "topic_contract_roundtrip sub").await;
+    let received = run_topic_roundtrip(
+        &sender,
+        &receiver,
+        body.clone(),
+        "topic_contract_roundtrip sub",
+    )
+    .await;
     assert_eq!(received.payload(), &body);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn topic_wildcard_subscriber() {
     let _lock = ZENOH_SERIAL.lock().await;
-    let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .unwrap();
-    instance.messenger().start_session().await.unwrap();
-
     let sender = TopicWireSender::new(
         "any_publisher_core",
         "any_publisher_inst",
@@ -177,26 +156,14 @@ async fn topic_wildcard_subscriber() {
     )
     .expect("valid wire fields");
 
-    let mut sub = instance
-        .messenger()
-        .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
-        .await
-        .unwrap();
-    wait_for_subscriber_discovery().await;
-
     let body = Bytes::from_static(b"frame_42");
-    instance
-        .messenger()
-        .publish_topic(
-            &sender,
-            Payload::from_bytes(body.clone()),
-            PublisherQoS::Standard,
-            true,
-        )
-        .await
-        .unwrap();
-
-    let received = recv_or_timeout(&mut sub, "topic_wildcard_subscriber sub").await;
+    let received = run_topic_roundtrip(
+        &sender,
+        &receiver,
+        body.clone(),
+        "topic_wildcard_subscriber sub",
+    )
+    .await;
     assert_eq!(received.payload(), &body);
 }
 
@@ -232,7 +199,7 @@ async fn run_service_roundtrip(sender: ServiceWireSender) {
     instance.messenger().start_session().await.unwrap();
 
     let receiver = service_receiver();
-    let mut queryable = instance
+    let queryable = instance
         .messenger()
         .listen_service(&receiver)
         .await
@@ -252,7 +219,7 @@ async fn run_service_roundtrip(sender: ServiceWireSender) {
         .unwrap();
 
     // Server: wait for the request and verify the producer-bound link_id.
-    let incoming = recv_request(&mut queryable).await;
+    let incoming = next_request(&queryable, "the service request").await;
     assert_eq!(incoming.link_id, pmi::DEFAULT_LINK_ID);
     assert_eq!(incoming.kind, ServiceQueryKind::UserRequest);
 
@@ -264,14 +231,14 @@ async fn run_service_roundtrip(sender: ServiceWireSender) {
         .await
         .unwrap();
 
-    // Client: drain replies until the user payload arrives (Zenoh delivers
-    // every reply with `ConsolidationMode::None`, but in this test only one
-    // reply is sent — no ACK because the adapter no longer auto-ACKs.)
+    // Client: read the user payload. (Zenoh delivers every reply with
+    // `ConsolidationMode::None`; this test sends one reply and the adapter
+    // adds no ACK.)
     let response = recv_reply(&mut reply_stream, "service reply_stream").await;
     assert_eq!(response.payload(), &response_body);
 }
 
-// Only two target shapes exist on the wire now: a full `(core_node,
+// Two target shapes exist on the wire: a full `(core_node,
 // instance_id)` pin and a full wildcard (the discovery probe shape).
 // Half-pinned selectors are unrepresentable at the constructor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -364,21 +331,21 @@ async fn action_goal_feedback_result() {
     let client = action_sender();
     let goal_id = "goal_xyz";
 
-    let mut goal_queryable = instance
+    let goal_queryable = instance
         .messenger()
         .listen_service(&server.goal_service())
         .await
         .unwrap();
-    let mut result_queryable = instance
+    let result_queryable = instance
         .messenger()
         .listen_service(&server.result_service())
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;
 
-    // Client subscribes to feedback BEFORE sending the goal — otherwise early
+    // Client subscribes to feedback BEFORE sending the goal: otherwise early
     // feedback can be lost in tight in-process tests.
-    let mut feedback_sub = instance
+    let feedback_sub = instance
         .messenger()
         .subscribe_action_feedback(
             &client,
@@ -390,7 +357,7 @@ async fn action_goal_feedback_result() {
         .unwrap();
     wait_for_subscriber_discovery().await;
 
-    // Client sends the goal — the reply stream stays alive until we've
+    // Client sends the goal; the reply stream stays alive until we've
     // received the goal response.
     let goal_payload = Payload::from_bytes(Bytes::from_static(b"goal_data"));
     let mut goal_replies = instance
@@ -405,7 +372,7 @@ async fn action_goal_feedback_result() {
         .unwrap();
 
     // Server: receive goal request, respond.
-    let goal_request = recv_request(&mut goal_queryable).await;
+    let goal_request = next_request(&goal_queryable, "the goal request").await;
     assert_eq!(goal_request.link_id, pmi::DEFAULT_LINK_ID);
     goal_request
         .token
@@ -436,7 +403,7 @@ async fn action_goal_feedback_result() {
         .unwrap();
 
     // Client receives feedback.
-    let feedback = recv_or_timeout(&mut feedback_sub, "feedback_sub").await;
+    let feedback = next_message(&feedback_sub, "feedback_sub").await;
     assert_eq!(feedback.payload(), &Bytes::from_static(b"progress=0.5"));
 
     // Client polls result service.
@@ -451,7 +418,7 @@ async fn action_goal_feedback_result() {
         )
         .await
         .unwrap();
-    let result_request = recv_request(&mut result_queryable).await;
+    let result_request = next_request(&result_queryable, "the result request").await;
     result_request
         .token
         .respond_response(Payload::from_bytes(Bytes::from_static(b"result=done")))
@@ -475,7 +442,7 @@ async fn action_cancel_roundtrip() {
     let server = action_receiver();
     let client = action_sender();
 
-    let mut cancel_queryable = instance
+    let cancel_queryable = instance
         .messenger()
         .listen_service(&server.cancel_service())
         .await
@@ -494,7 +461,7 @@ async fn action_cancel_roundtrip() {
         .await
         .unwrap();
 
-    let cancel_request = recv_request(&mut cancel_queryable).await;
+    let cancel_request = next_request(&cancel_queryable, "the cancel request").await;
     cancel_request
         .token
         .respond_response(Payload::from_bytes(Bytes::from_static(b"cancel_accepted")))

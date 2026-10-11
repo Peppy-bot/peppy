@@ -20,8 +20,8 @@ impl Segment {
         &self.0
     }
 
-    /// Reserved single-character segment placed at the `link_id` wire slot when
-    /// a producer is run without `--link-id`. User-supplied input cannot
+    /// Reserved single-character segment placed at the `link_id` wire slot of
+    /// an emission that names no link_id. User-supplied input cannot
     /// construct this segment via `try_from` (the reserved-sentinel rule
     /// rejects `_`); the runtime uses this constructor to materialize the
     /// default sentinel at producer-side fan-out sites.
@@ -30,10 +30,8 @@ impl Segment {
     }
 
     /// Lenient parser used by runtime paths that need to accept the reserved
-    /// link_id default `_` alongside user-supplied link_ids (for example, when
-    /// parsing the `PEPPY_LINK_IDS` env var inside the runner). Continues to
-    /// reject `*` / `**` so a publisher can never advertise itself on a
-    /// wildcard.
+    /// link_id default `_` alongside user-supplied link_ids. It rejects
+    /// `*` / `**`, so a publisher can never advertise itself on a wildcard.
     pub fn try_link_id(s: &str) -> Result<Self, SegmentError> {
         validate_segment_chars(s)?;
         if matches!(s, "*" | "**") {
@@ -60,10 +58,10 @@ impl Segment {
     }
 }
 
-/// Wire literal used at the `link_id` slot when a producer is run without
-/// `--link-id`. Kept in sync with [`Segment::default_link_id`] / the CLI
-/// validator in `peppy::commands::node::run`. The single source of truth
-/// lives in `config::consts::DEFAULT_LINK_ID_SENTINEL`; this is a re-export.
+/// Wire literal at the `link_id` slot of an emission that names no link_id
+/// ([`Segment::default_link_id`]). An alias of
+/// `config::consts::DEFAULT_LINK_ID_SENTINEL`, the one definition, which the
+/// config parsers also reject as a slot link_id.
 pub const DEFAULT_LINK_ID: &str = config::consts::DEFAULT_LINK_ID_SENTINEL;
 
 impl std::ops::Deref for Segment {
@@ -277,7 +275,7 @@ impl NodeIdentifier {
 }
 
 /// Addressing target carried by a sender (or matched by a receiver). Each
-/// emission is **either** a contract, a node, **or** a pairing — never more
+/// emission is **either** a contract, a node, **or** a pairing, never more
 /// than one. The wire format embeds a `contract`|`node`|`pairing`
 /// discriminator so the three identifier spaces cannot collide.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -351,7 +349,8 @@ impl SenderTarget {
 }
 
 /// Returned by [`ContractIdentifier::new`] / [`NodeIdentifier::new`] /
-/// [`SenderTarget::contract`] / [`SenderTarget::node`] when a name or tag
+/// [`PairingIdentifier::new`] / [`SenderTarget::contract`] /
+/// [`SenderTarget::node`] / [`SenderTarget::pairing`] when a name or tag
 /// segment fails validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SenderTargetError {
@@ -374,9 +373,7 @@ impl fmt::Display for SenderTargetError {
 
 impl std::error::Error for SenderTargetError {}
 
-/// Discriminator for service-shaped traffic. Replaces the stringly-typed
-/// `message_type: &str` (`"service"` / `"action"`) parameter previously
-/// threaded through call sites.
+/// Discriminator for service-shaped traffic.
 ///
 /// On the wire, `Service` produces `service/{discriminator}/.../{name}` while
 /// action variants produce `action/{discriminator}/.../{name}/{goal|cancel|result}`.
@@ -498,17 +495,14 @@ impl TopicWireSender {
         as_topic_name: &str,
         peer: WirePeer,
     ) -> crate::error::Result<Self> {
-        if !as_target.is_pairing() {
-            return Err(crate::error::Error::PeerOnNonPairingPublish);
-        }
-        Ok(Self {
-            as_core_node: Segment::try_from(as_core_node)?,
-            as_instance_id: Segment::try_from(as_instance_id)?,
+        Self::pairing_emission(
+            as_core_node,
+            as_instance_id,
             as_target,
-            link_id: Segment::try_link_id(link_id)?,
-            as_topic_name: Segment::try_from(as_topic_name)?,
-            to_peer: Some(peer),
-        })
+            link_id,
+            as_topic_name,
+            Some(peer),
+        )
     }
 
     /// A pairing emission from this node's scalar slot `link_id` to the one
@@ -521,6 +515,27 @@ impl TopicWireSender {
         link_id: &str,
         as_topic_name: &str,
     ) -> crate::error::Result<Self> {
+        Self::pairing_emission(
+            as_core_node,
+            as_instance_id,
+            as_target,
+            link_id,
+            as_topic_name,
+            None,
+        )
+    }
+
+    /// A pairing emission from this node's slot `link_id`, to `to_peer` or,
+    /// when `None`, to the one peer holding the slot's pair. Only a pairing
+    /// target has peers.
+    fn pairing_emission(
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_target: SenderTarget,
+        link_id: &str,
+        as_topic_name: &str,
+        to_peer: Option<WirePeer>,
+    ) -> crate::error::Result<Self> {
         if !as_target.is_pairing() {
             return Err(crate::error::Error::PeerOnNonPairingPublish);
         }
@@ -530,7 +545,7 @@ impl TopicWireSender {
             as_target,
             link_id: Segment::try_link_id(link_id)?,
             as_topic_name: Segment::try_from(as_topic_name)?,
-            to_peer: None,
+            to_peer,
         })
     }
 }
@@ -687,12 +702,11 @@ impl TopicWireReceiver {
         })
     }
 
-    /// Wire rule shared by every adapter: wildcard-link_id subscribers
-    /// (`from_link_id: None`) match every per-link_id publish a multi-link
-    /// `emit` produces and must drop the secondaries — see the
-    /// topic-attachment block in `wire::zenoh_format`. Pinned subscribers
-    /// ignore the attachment because their keyexpr already selects a single
-    /// publish per emit.
+    /// Wire rule shared by every adapter: a subscriber that wildcards the
+    /// link_id slot (`from_link_id: None`) matches the publish under every
+    /// link_id and drops the ones marked secondary (see `TopicAttachment` in
+    /// `wire::zenoh_format`). A pinned subscriber ignores the marker, because
+    /// its keyexpr selects one publish.
     pub fn drops_secondary_publishes(&self) -> bool {
         self.from_link_id.is_none()
     }
@@ -700,14 +714,27 @@ impl TopicWireReceiver {
 
 // ─── Services ────────────────────────────────────────────────────────────────
 
+/// The producer's `(core_node, instance_id)` wire slots of a caller-side
+/// sender: both pinned for a `Some` target, both open for `None`.
+fn producer_slots(
+    target: Option<&ProducerRef>,
+) -> Result<(Option<Segment>, Option<Segment>), SegmentError> {
+    let Some(target) = target else {
+        return Ok((None, None));
+    };
+    let core_node = Segment::try_from(target.core_node.as_str())?;
+    let instance_id = Segment::try_from(target.instance_id.as_str())?;
+    Ok((Some(core_node), Some(instance_id)))
+}
+
 /// Caller-side addressing for a service. `target` is the producer's full
 /// `(core_node, instance_id)` wire address; `None` is a genuine wildcard
 /// on both slots (the discovery probe shape). The one representable
-/// half-address is core-without-instance via [`Self::scoped_to_core_node`]
-/// — for callers that know which core node must answer but cannot know
+/// half-address is core-without-instance via [`Self::scoped_to_core_node`],
+/// for callers that know which core node must answer but cannot know
 /// the producer's per-boot instance_id. Instance-without-core stays
 /// unrepresentable at this boundary.
-/// The link_id wire slot is always emitted as `*` — producers advertise under
+/// The link_id wire slot is always emitted as `*`: producers advertise under
 /// the reserved `_` segment, and Zenoh's matcher unifies the two.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireSender {
@@ -729,15 +756,14 @@ impl ServiceWireSender {
         to_service_name: &str,
         kind: ServiceKind,
     ) -> crate::error::Result<Self> {
+        let bound_core_node = Segment::try_from(bound_core_node)?;
+        let as_instance_id = Segment::try_from(as_instance_id)?;
+        let (target_core_node, target_instance_id) = producer_slots(target)?;
         Ok(Self {
-            bound_core_node: Segment::try_from(bound_core_node)?,
-            as_instance_id: Segment::try_from(as_instance_id)?,
-            target_core_node: target
-                .map(|t| Segment::try_from(t.core_node.as_str()))
-                .transpose()?,
-            target_instance_id: target
-                .map(|t| Segment::try_from(t.instance_id.as_str()))
-                .transpose()?,
+            bound_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
             to_target,
             to_service_name: Segment::try_from(to_service_name)?,
             kind,
@@ -745,7 +771,7 @@ impl ServiceWireSender {
     }
 
     /// Scopes the selector's target core_node slot to `target_core_node`
-    /// while leaving the instance slot wildcarded — the core-without-instance
+    /// while leaving the instance slot wildcarded: the core-without-instance
     /// half-address. The selector then matches only producers hosted by that
     /// core node, regardless of their per-boot instance_id.
     pub fn scoped_to_core_node(mut self, target_core_node: &str) -> crate::error::Result<Self> {
@@ -812,7 +838,7 @@ impl ServiceWireReceiver {
 /// Feedback subscription is built per `goal_id` by the transport adapter.
 /// `target` is the producer's full `(core_node, instance_id)` wire address;
 /// `None` is a genuine wildcard on both slots (the discovery probe shape).
-/// The link_id wire slot is always `*` — producers advertise under the
+/// The link_id wire slot is always `*`: producers advertise under the
 /// reserved `_` segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionWireSender {
@@ -832,15 +858,14 @@ impl ActionWireSender {
         to_target: SenderTarget,
         to_action_name: &str,
     ) -> crate::error::Result<Self> {
+        let as_core_node = Segment::try_from(as_core_node)?;
+        let as_instance_id = Segment::try_from(as_instance_id)?;
+        let (target_core_node, target_instance_id) = producer_slots(target)?;
         Ok(Self {
-            as_core_node: Segment::try_from(as_core_node)?,
-            as_instance_id: Segment::try_from(as_instance_id)?,
-            target_core_node: target
-                .map(|t| Segment::try_from(t.core_node.as_str()))
-                .transpose()?,
-            target_instance_id: target
-                .map(|t| Segment::try_from(t.instance_id.as_str()))
-                .transpose()?,
+            as_core_node,
+            as_instance_id,
+            target_core_node,
+            target_instance_id,
             to_target,
             to_action_name: Segment::try_from(to_action_name)?,
         })
@@ -951,10 +976,27 @@ impl ActionWireReceiver {
 pub(crate) mod zenoh_format;
 
 /// Public channel-address templates, re-exported at the crate root as
-/// `pmi::templates`. Pure string code — compiled in every feature config.
+/// `pmi::templates`. Pure string code, compiled in every feature config.
 pub mod templates;
 
 pub use zenoh_format::{ServiceQueryKind, ServiceReplyKind};
+
+/// Test support shared by this crate's unit tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{Segment, SenderTarget};
+
+    /// A segment from a test value. Panics on invalid input, so tests use
+    /// known-good values only.
+    pub(crate) fn seg(value: &str) -> Segment {
+        Segment::try_from(value).expect("test segment value should be valid")
+    }
+
+    /// A node-shaped target from test values. Panics on invalid input.
+    pub(crate) fn node(name: &str, tag: &str) -> SenderTarget {
+        SenderTarget::node(name, tag).expect("test node target should be valid")
+    }
+}
 
 #[cfg(test)]
 mod tests;

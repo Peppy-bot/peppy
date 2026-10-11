@@ -1,14 +1,14 @@
 //! Benchmark "sized probe" body codec.
 //!
 //! A `ServiceQueryKind::Probe` is normally empty and the transport adapter
-//! auto-answers it empty, never running the producer's handler — shared by
-//! liveness, discovery, node removal, and `stack benchmark`. To let the
-//! benchmark measure REAL-payload latency without running the handler, its
-//! probe carries a small body: a magic prefix, the desired response size,
-//! then zero padding up to the real request size. The adapter parses it and
-//! replies with that many bytes (still no handler). Everything else is
-//! unaffected: an empty or unrecognized body — every liveness/discovery
-//! probe — replies empty, exactly as before.
+//! auto-answers it empty, never running the producer's handler. Liveness,
+//! discovery, node removal and `stack benchmark` all use this probe. To let
+//! the benchmark measure REAL-payload latency without running the handler,
+//! its probe carries a small body: a magic prefix, the desired response
+//! size, then zero padding up to the real request size. The adapter parses
+//! it and replies with that many bytes (still no handler). Everything else
+//! is unaffected: an empty or unrecognized body (every liveness or discovery
+//! probe) gets an empty reply.
 //!
 //! Lives in pmi (not peppylib) because probe replies are produced inside the
 //! adapters' query dispatch, so a producer answers probes even while user
@@ -17,7 +17,7 @@
 use bytes::Bytes;
 
 /// Marks a probe body as a benchmark sized-probe. Liveness/discovery probes send
-/// empty bodies, so the magic's absence means "reply empty, as before".
+/// empty bodies, so a body without the magic gets an empty reply.
 const SIZED_PROBE_MAGIC: [u8; 4] = *b"PBSZ";
 /// Header = magic (4 bytes) + desired response size (little-endian `u32`).
 const SIZED_PROBE_HEADER_LEN: usize = 8;

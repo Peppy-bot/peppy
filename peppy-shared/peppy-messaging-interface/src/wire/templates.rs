@@ -7,7 +7,7 @@
 //! is public, so these thin helpers expose the grammar without letting the
 //! generator hand-roll key expressions.
 //!
-//! The complex part of each shape — the service-root / action-root — is
+//! The complex part of each shape (the service-root / action-root) is
 //! delegated to the shared [`super::zenoh_format::service_root`] /
 //! [`super::zenoh_format::action_root`] builders, so this module never
 //! duplicates that grammar. The surrounding identity-slot arrangement is
@@ -15,27 +15,23 @@
 //! `ZenohWireFormat` builder by the tests below.
 //!
 //! All slots are inserted verbatim: any string that is a valid keyexpr
-//! segment (which the `{curly}` AsyncAPI parameters are — no `/`, `@`, and
+//! segment (which the `{curly}` AsyncAPI parameters are: no `/`, `@`, and
 //! not a reserved `*`/`_` sentinel) renders unchanged.
 
-use super::zenoh_format::{action_root, service_root};
+use super::zenoh_format::{SINGLE_CHUNK_WILDCARD, action_root, service_root};
 use super::{SenderTarget, ServiceKind};
-
-/// Single-chunk wildcard, matching exactly one path segment. Kept as a local
-/// literal (the canonical definition is private to [`super::zenoh_format`]).
-const WILDCARD: &str = "*";
 
 /// Fully-addressed service channel key expression, mirroring
 /// [`super::zenoh_format::ZenohWireFormat::service_reply_keyexpr`]:
 /// `{to_core}/{from_core}/{to_instance}/{from_instance}/{service_root}`.
 ///
-/// * `to_core` / `to_instance` — the producer (daemon) identity the caller
+/// * `to_core` / `to_instance`: the producer (daemon) identity the caller
 ///   addresses.
-/// * `from_core` / `from_instance` — the caller's own identity.
-/// * `target` — the producer's `(name, tag)` addressing (for a core-node
+/// * `from_core` / `from_instance`: the caller's own identity.
+/// * `target`: the producer's `(name, tag)` addressing (for a core-node
 ///   service this is `SenderTarget::node(core_node_name, "core")`).
-/// * `link_id` — the link-id slot literal.
-/// * `service_name`, `kind` — the service / action sub-service.
+/// * `link_id`: the link-id slot literal.
+/// * `service_name`, `kind`: the service / action sub-service.
 // The arguments are the wire's positional identity slots; grouping them into a
 // struct would obscure that one-to-one mapping with the key expression.
 #[allow(clippy::too_many_arguments)]
@@ -72,7 +68,7 @@ pub fn topic_channel_address(
     topic_name: &str,
 ) -> String {
     format!(
-        "{WILDCARD}/{as_core}/{WILDCARD}/{as_instance}/topic/{}/{}/{}/{link_id}/{topic_name}",
+        "{SINGLE_CHUNK_WILDCARD}/{as_core}/{SINGLE_CHUNK_WILDCARD}/{as_instance}/topic/{}/{}/{}/{link_id}/{topic_name}",
         target.discriminator(),
         target.name(),
         target.tag(),
@@ -94,7 +90,7 @@ pub fn action_feedback_channel_address(
     goal_id: &str,
 ) -> String {
     format!(
-        "{WILDCARD}/{bound_core}/{WILDCARD}/{as_instance}/{}/feedback/{as_instance}/{goal_id}",
+        "{SINGLE_CHUNK_WILDCARD}/{bound_core}/{SINGLE_CHUNK_WILDCARD}/{as_instance}/{}/feedback/{as_instance}/{goal_id}",
         action_root(target, link_id, action_name),
     )
 }
@@ -102,12 +98,9 @@ pub fn action_feedback_channel_address(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::test_support::node;
     use crate::wire::zenoh_format::ZenohWireFormat;
     use crate::wire::{ActionWireReceiver, ServiceWireReceiver, TopicWireSender};
-
-    fn node(name: &str, tag: &str) -> SenderTarget {
-        SenderTarget::node(name, tag).expect("valid node target")
-    }
 
     /// The service helper must equal both a hand-written golden key expression
     /// and the real `service_reply_keyexpr` builder, for each `ServiceKind`

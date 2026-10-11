@@ -1,41 +1,54 @@
+use super::test_support::{node, seg};
 use super::*;
 
-/// Test-local shorthand: wrap a `&str` in a validated [`Segment`]. Panics on
-/// invalid input — tests use known-good values only.
-fn seg(value: &str) -> Segment {
-    Segment::try_from(value).expect("test segment value should be valid")
-}
+// ─── Identifier constructors ─────────────────────────────────────────────
 
-/// Test-local shorthand: build a node-shaped target with the standard test tag.
-fn test_node_target(name: &str) -> SenderTarget {
-    SenderTarget::node(name, "v1").expect("test node target")
-}
+type TargetConstructor = fn(&str, &str) -> Result<SenderTarget, SenderTargetError>;
 
-// ─── ContractIdentifier ──────────────────────────────────────────────────
-
-#[test]
-fn contract_new_preserves_alphanumeric_tag() {
-    let contract = ContractIdentifier::new("camera_driver", "v1").expect("valid contract");
-    assert_eq!(contract.name(), "camera_driver");
-    assert_eq!(contract.tag(), "v1");
-}
+/// The contract, node and pairing constructors share one name and tag
+/// validation, so each constructor test runs against all three.
+const TARGET_CONSTRUCTORS: [(&str, TargetConstructor); 3] = [
+    ("contract", SenderTarget::contract),
+    ("node", SenderTarget::node),
+    ("pairing", SenderTarget::pairing),
+];
 
 #[test]
-fn contract_new_normalizes_hyphenated_tag() {
-    let contract = ContractIdentifier::new("camera_driver", "v1-beta-2").expect("valid contract");
-    assert_eq!(contract.tag(), "v1_beta_2");
+fn target_constructors_preserve_an_alphanumeric_tag() {
+    for (kind, new_target) in TARGET_CONSTRUCTORS {
+        let target =
+            new_target("camera_driver", "v1").unwrap_or_else(|err| panic!("{kind}: {err}"));
+        assert_eq!(target.name(), "camera_driver", "{kind}");
+        assert_eq!(target.tag(), "v1", "{kind}");
+    }
 }
 
 #[test]
-fn contract_new_does_not_touch_underscored_tag() {
-    let contract = ContractIdentifier::new("nav", "v2_stable").expect("valid contract");
-    assert_eq!(contract.tag(), "v2_stable");
+fn target_constructors_normalize_a_hyphenated_tag() {
+    for (kind, new_target) in TARGET_CONSTRUCTORS {
+        let target =
+            new_target("camera_driver", "v1-beta-2").unwrap_or_else(|err| panic!("{kind}: {err}"));
+        assert_eq!(target.tag(), "v1_beta_2", "{kind}");
+    }
 }
 
 #[test]
-fn contract_new_rejects_segment_with_slash() {
-    let err = ContractIdentifier::new("nav/sub", "v1").unwrap_err();
-    assert!(matches!(err, SenderTargetError::InvalidSegment(_)));
+fn target_constructors_keep_an_underscored_tag() {
+    for (kind, new_target) in TARGET_CONSTRUCTORS {
+        let target = new_target("nav", "v2_stable").unwrap_or_else(|err| panic!("{kind}: {err}"));
+        assert_eq!(target.tag(), "v2_stable", "{kind}");
+    }
+}
+
+#[test]
+fn target_constructors_reject_a_segment_with_a_slash() {
+    for (kind, new_target) in TARGET_CONSTRUCTORS {
+        let err = new_target("nav/sub", "v1").unwrap_err();
+        assert!(
+            matches!(err, SenderTargetError::InvalidSegment(_)),
+            "{kind}"
+        );
+    }
 }
 
 #[test]
@@ -70,33 +83,6 @@ fn segment_try_link_id_still_rejects_slash_and_wildcards() {
     ));
 }
 
-// ─── NodeIdentifier ───────────────────────────────────────────────────────
-
-#[test]
-fn node_new_preserves_alphanumeric_tag() {
-    let node = NodeIdentifier::new("uvc_camera", "v1").expect("valid node");
-    assert_eq!(node.name(), "uvc_camera");
-    assert_eq!(node.tag(), "v1");
-}
-
-#[test]
-fn node_new_normalizes_hyphenated_tag() {
-    let node = NodeIdentifier::new("uvc_camera", "v1-beta-2").expect("valid node");
-    assert_eq!(node.tag(), "v1_beta_2");
-}
-
-#[test]
-fn node_new_does_not_touch_underscored_tag() {
-    let node = NodeIdentifier::new("uvc_camera", "v2_stable").expect("valid node");
-    assert_eq!(node.tag(), "v2_stable");
-}
-
-#[test]
-fn node_new_rejects_segment_with_slash() {
-    let err = NodeIdentifier::new("nav/sub", "v1").unwrap_err();
-    assert!(matches!(err, SenderTargetError::InvalidSegment(_)));
-}
-
 // ─── SenderTarget ─────────────────────────────────────────────────────────
 
 #[test]
@@ -111,7 +97,7 @@ fn sender_target_contract_discriminator_is_contract() {
 
 #[test]
 fn sender_target_node_discriminator_is_node() {
-    let target = test_node_target("uvc_camera");
+    let target = node("uvc_camera", "v1");
     assert_eq!(target.discriminator(), "node");
     assert_eq!(target.name(), "uvc_camera");
     assert_eq!(target.tag(), "v1");
@@ -122,9 +108,9 @@ fn sender_target_node_discriminator_is_node() {
 #[test]
 fn sender_target_contract_and_node_with_same_name_tag_are_distinct() {
     let contract = SenderTarget::contract("widget", "v1").expect("valid contract target");
-    let node = test_node_target("widget");
-    assert_ne!(contract, node);
-    assert_ne!(contract.discriminator(), node.discriminator());
+    let node_target = node("widget", "v1");
+    assert_ne!(contract, node_target);
+    assert_ne!(contract.discriminator(), node_target.discriminator());
 }
 
 #[test]
@@ -139,25 +125,13 @@ fn sender_target_pairing_discriminator_is_pairing() {
 }
 
 #[test]
-fn sender_target_pairing_normalizes_hyphenated_tag() {
-    let target = SenderTarget::pairing("arm_link", "v1-beta").expect("valid pairing target");
-    assert_eq!(target.tag(), "v1_beta");
-}
-
-#[test]
 fn sender_target_pairing_and_contract_with_same_name_tag_are_distinct() {
-    // The load-bearing lock-in property: pairing traffic can never match an
+    // The load-bearing lock-in property: pairing traffic can never match a
     // contract subscription because the wire discriminators differ.
     let pairing = SenderTarget::pairing("widget", "v1").expect("valid pairing target");
     let contract = SenderTarget::contract("widget", "v1").expect("valid contract target");
     assert_ne!(pairing, contract);
     assert_ne!(pairing.discriminator(), contract.discriminator());
-}
-
-#[test]
-fn sender_target_pairing_rejects_invalid_segment() {
-    let err = SenderTarget::pairing("arm/link", "v1").unwrap_err();
-    assert!(matches!(err, SenderTargetError::InvalidSegment(_)));
 }
 
 // ─── ServiceKind ──────────────────────────────────────────────────────────
@@ -179,6 +153,112 @@ fn service_kind_action_variants_share_root_with_distinct_suffixes() {
     assert_eq!(ServiceKind::ActionResult.suffix(), Some("result"));
 }
 
+// ─── Caller-side sender constructors ──────────────────────────────────────
+
+/// The outcome of building a service sender and an action sender from the
+/// same arguments, so that one case checks both constructors.
+fn build_caller_senders(
+    own_core_node: &str,
+    target: Option<&ProducerRef>,
+    name: &str,
+) -> [(&'static str, crate::error::Result<()>); 2] {
+    [
+        (
+            "ServiceWireSender",
+            ServiceWireSender::new(
+                own_core_node,
+                "caller_inst",
+                target,
+                node("robot_arm", "v1"),
+                name,
+                ServiceKind::Service,
+            )
+            .map(drop),
+        ),
+        (
+            "ActionWireSender",
+            ActionWireSender::new(
+                own_core_node,
+                "caller_inst",
+                target,
+                node("robot_arm", "v1"),
+                name,
+            )
+            .map(drop),
+        ),
+    ]
+}
+
+#[test]
+fn caller_senders_check_their_own_core_node_then_the_target_then_the_name() {
+    let invalid_core_node = ProducerRef::new("bad/core", "target_inst");
+    let invalid_instance_id = ProducerRef::new("target_core", "bad@inst");
+    let cases = [
+        (
+            "caller@core",
+            Some(&invalid_core_node),
+            "ping",
+            SegmentError::ContainsAt("caller@core".to_string()),
+        ),
+        (
+            "caller_core",
+            Some(&invalid_core_node),
+            "bad/name",
+            SegmentError::ContainsSlash("bad/core".to_string()),
+        ),
+        (
+            "caller_core",
+            Some(&invalid_instance_id),
+            "bad/name",
+            SegmentError::ContainsAt("bad@inst".to_string()),
+        ),
+        (
+            "caller_core",
+            None,
+            "bad/name",
+            SegmentError::ContainsSlash("bad/name".to_string()),
+        ),
+    ];
+
+    for (own_core_node, target, name, expected) in cases {
+        for (constructor, result) in build_caller_senders(own_core_node, target, name) {
+            match result {
+                Err(crate::error::Error::InvalidSegment(error)) => {
+                    assert_eq!(error, expected, "{constructor}");
+                }
+                other => panic!("{constructor}: expected {expected:?}, got {other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn caller_senders_pin_both_producer_slots_or_leave_both_open() {
+    let target = ProducerRef::new("target_core", "target_inst");
+    let pinned = ServiceWireSender::new(
+        "caller_core",
+        "caller_inst",
+        Some(&target),
+        node("robot_arm", "v1"),
+        "ping",
+        ServiceKind::Service,
+    )
+    .expect("valid service sender");
+    assert_eq!(pinned.target_core_node, Some(seg("target_core")));
+    assert_eq!(pinned.target_instance_id, Some(seg("target_inst")));
+
+    let open = ActionWireSender::new(
+        "caller_core",
+        "caller_inst",
+        None,
+        node("robot_arm", "v1"),
+        "pick_place",
+    )
+    .expect("valid action sender");
+    assert_eq!(open.target_core_node, None);
+    assert_eq!(open.target_instance_id, None);
+}
+
 // ─── ActionWireSender derived services ────────────────────────────────────
 
 fn sample_action_sender() -> ActionWireSender {
@@ -187,7 +267,7 @@ fn sample_action_sender() -> ActionWireSender {
         as_instance_id: seg("caller_inst"),
         target_core_node: Some(seg("target_core")),
         target_instance_id: Some(seg("target_inst")),
-        to_target: test_node_target("robot_arm"),
+        to_target: node("robot_arm", "v1"),
         to_action_name: seg("pick_place"),
     }
 }

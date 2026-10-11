@@ -85,3 +85,29 @@ impl core::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl Error {
+    /// An operation that needs an open messaging session ran before
+    /// `start_session` or after `stop_session`.
+    pub(crate) fn session_not_initialized() -> Self {
+        Self::MessagingSessionError("Session not initialized".to_string())
+    }
+}
+
+/// Test support shared by this crate's unit tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{Error, Result};
+
+    /// Asserts that `result` is the error an operation reports when it runs
+    /// without an open messaging session.
+    pub(crate) fn assert_session_not_initialized<T>(operation: &str, result: Result<T>) {
+        match result {
+            Err(Error::MessagingSessionError(message)) => {
+                assert_eq!(message, "Session not initialized", "{operation}");
+            }
+            Err(other) => panic!("{operation}: expected the missing-session error, got {other:?}"),
+            Ok(_) => panic!("{operation}: succeeded without a session"),
+        }
+    }
+}

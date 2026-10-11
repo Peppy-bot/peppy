@@ -8,7 +8,7 @@
 //! `flume::bounded` channel and logs
 //! `zenoh::api::handlers::fifo: error=sending on a closed channel` at ERROR
 //! whenever zenoh tries to deliver a sample/query/reply after the
-//! receiver-side has been dropped — a routine event in this codebase (e.g. a
+//! receiver-side has been dropped, a routine event in this codebase (e.g. a
 //! `QueryTarget::All` `call_service` keeps the query open until its
 //! `NO_TIMEOUT_SENTINEL`, and sibling producers' late replies hit a
 //! `ReplyStream` the consumer dropped after the first valid response).
@@ -53,7 +53,7 @@ use config::node::{RetentionDepth, TopicRetention};
 use crate::zenoh_config::render_probe_config;
 #[cfg(feature = "router")]
 use crate::zenohd;
-use crate::zenohd::{ZenohEndpoint, ZenohNetProtocol};
+use crate::zenohd::{ZenohEndpoint, ZenohNetProtocol, unbracket_host};
 #[cfg(feature = "router")]
 use crate::{Messenger, MessengerAdapter};
 use crate::{MessengerBackend, Subscription};
@@ -197,7 +197,8 @@ pub struct ZenohAdapter {
     /// publisher. Emptied whenever the session starts or stops.
     declared: Mutex<DeclaredTopics<Arc<RetainingPublisher>>>,
     /// When true, [`start_session`](MessengerBackend::start_session) opens a
-    /// reconnecting session (see [`ZenohReconnectingClientConfigTemplate`]).
+    /// reconnecting session (it re-renders the client config with
+    /// `reconnect: true`).
     reconnect_session: bool,
 }
 
@@ -240,7 +241,7 @@ impl ZenohAdapter {
         )?;
         let facade = zenohd::ZenohdFacade::managed(zenohd_config_path)?;
         let client_config =
-            Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, tls)?;
+            Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, tls);
 
         Ok(Self {
             zenohd: Some(facade),
@@ -270,7 +271,7 @@ impl ZenohAdapter {
         endpoint.validate_external_tcp()?;
         let facade = zenohd::ZenohdFacade::external(endpoint);
         let client_config =
-            Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, None)?;
+            Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, None);
 
         Ok(Self {
             zenohd: Some(facade),
@@ -301,7 +302,7 @@ impl ZenohAdapter {
     /// **client** session to `host:port`, verifying the router against `tls`'s
     /// `root_ca_certificate` (with `verify_name_on_connect`). Unlike `connect_to`,
     /// this is **client** mode (`gossip = false`): all traffic routes through the
-    /// router and the session binds no loopback peer listener — which is what we
+    /// router and the session binds no loopback peer listener, which is what we
     /// want for a remote router (a peer listener would also need its own server
     /// cert, which a pure client has no reason to hold). Use
     /// [`connect_to_with_discovery`](Self::connect_to_with_discovery) for control.
@@ -466,7 +467,7 @@ impl ZenohAdapter {
         let max_attempts = if port.is_some() { 1 } else { 32 };
 
         for attempt in 0..max_attempts {
-            let (port, _reservation) = match port {
+            let (port, reservation) = match port {
                 Some(p) => (p, None),
                 None => {
                     let (p, listener) =
@@ -502,41 +503,38 @@ impl ZenohAdapter {
             let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
 
             // Drop the port reservation before starting the router so zenohd can bind to it
-            drop(_reservation);
+            drop(reservation);
 
             match messenger.start_router().await {
-                Ok(()) => {
-                    // Readiness signal: zenohd's TCP listener can accept before the
-                    // protocol handshake is settled, so a real zenoh::open is the only
-                    // reliable signal that subsequent sessions will succeed. The probe
-                    // session is dropped immediately; the caller opens their own.
-                    match zenoh::open(probe_config).await {
-                        Ok(probe) => {
-                            drop(probe);
-                            return Ok(ZenohdInstance {
-                                messenger: Some(messenger),
-                                host: host.to_string(),
-                                port,
-                                log_path,
-                            });
-                        }
-                        Err(_) if attempt + 1 < max_attempts => {
-                            // Drop messenger to stop the router, then retry on a fresh port.
-                            drop(messenger);
-                            continue;
-                        }
-                        Err(e) => {
-                            return Err(Error::BackendError(format!(
-                                "Zenoh readiness probe failed: {}",
-                                e
-                            )));
-                        }
-                    }
+                Ok(()) => {}
+                Err(Error::BackendError(_)) if attempt + 1 < max_attempts => continue,
+                Err(err) => return Err(err),
+            }
+
+            // Readiness signal: zenohd's TCP listener can accept before the
+            // protocol handshake is settled, so a real zenoh::open is the only
+            // reliable signal that subsequent sessions will succeed. The probe
+            // session is dropped immediately; the caller opens their own.
+            match zenoh::open(probe_config).await {
+                Ok(probe) => {
+                    drop(probe);
+                    return Ok(ZenohdInstance {
+                        messenger: Some(messenger),
+                        host: host.to_string(),
+                        port,
+                        log_path,
+                    });
                 }
-                Err(Error::BackendError(_)) if attempt + 1 < max_attempts => {
+                Err(_) if attempt + 1 < max_attempts => {
+                    // Drop messenger to stop the router, then retry on a fresh port.
+                    drop(messenger);
                     continue;
                 }
-                Err(err) => return Err(err),
+                Err(e) => {
+                    return Err(Error::BackendError(format!(
+                        "Zenoh readiness probe failed: {e}"
+                    )));
+                }
             }
         }
 
@@ -582,7 +580,7 @@ impl ZenohAdapter {
     /// establish, run by the daemon before its boot-time presence check so the
     /// check sees the wired mesh instead of racing zenohd's dials. `None` when
     /// there is nothing to wait for: no router, an external/adopted router
-    /// (its config — and so its links — belong to the operator), or a managed
+    /// (its config, and so its links, belong to the operator), or a managed
     /// config with no connect endpoints (the standalone default).
     #[cfg(feature = "router")]
     pub fn router_links_probe(&self) -> Option<zenohd::RouterLinksProbe> {
@@ -629,45 +627,35 @@ impl ZenohAdapter {
         tls: Option<TlsConfig>,
         namespace: Option<Namespace>,
     ) -> ZenohClientConfig {
-        let connect_host = connectable_host(host);
+        let connect_host = connectable_host(host).to_string();
         let seeds = if seed_peers.is_empty() {
             vec![format!("{protocol}/{connect_host}:{port}")]
         } else {
             seed_peers
         };
 
-        let zenoh_config = if gossip {
+        let (mode, listen_endpoints) = if gossip {
             // A `peer` binds a wildcard listener and forms direct peer-to-peer
             // links via gossip; the endpoint must be non-loopback for zenoh
             // 1.10 to advertise it (see [`peer_listen_endpoint`]).
-            render_config(&ZenohConfigSpec {
-                mode: SessionMode::Peer,
-                connect_endpoints: seeds.clone(),
-                listen_endpoints: vec![peer_listen_endpoint(protocol)],
-                reconnect,
-                gossip: true,
-                tls: tls.clone(),
-                namespace: namespace.clone(),
-                // Application sessions are process-scoped and identified by their
-                // declarations, not by a zid, so nothing pins one here.
-                id: None,
-            })
+            (SessionMode::Peer, vec![peer_listen_endpoint(protocol)])
         } else {
             // A plain `client` routes only through the selected router (no
             // listener or peer discovery).
-            render_config(&ZenohConfigSpec {
-                mode: SessionMode::Client,
-                connect_endpoints: seeds.clone(),
-                listen_endpoints: Vec::new(),
-                reconnect,
-                gossip: false,
-                tls: tls.clone(),
-                namespace: namespace.clone(),
-                // Application sessions are process-scoped and identified by their
-                // declarations, not by a zid, so nothing pins one here.
-                id: None,
-            })
+            (SessionMode::Client, Vec::new())
         };
+        let zenoh_config = render_config(&ZenohConfigSpec {
+            mode,
+            connect_endpoints: seeds.clone(),
+            listen_endpoints,
+            reconnect,
+            gossip,
+            tls: tls.clone(),
+            namespace: namespace.clone(),
+            // Application sessions are process-scoped and identified by their
+            // declarations, not by a zid, so nothing pins one here.
+            id: None,
+        });
 
         ZenohClientConfig {
             zenoh_config,
@@ -688,7 +676,7 @@ impl ZenohAdapter {
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
         tls: Option<TlsConfig>,
-    ) -> Result<ZenohClientConfig> {
+    ) -> ZenohClientConfig {
         // Build the adapter session from the router endpoint carried by the
         // facade. `with_router` supplies a Peppy-managed router, while
         // `with_external_router` may supply a remote, operator-owned router.
@@ -697,7 +685,7 @@ impl ZenohAdapter {
         // reconnecting in `start_session` when `reconnect_session` is set; the
         // readiness probe in `start_router_ephemeral` builds its own client
         // probe config.
-        Ok(Self::create_client_config(
+        Self::create_client_config(
             zenohd.zenoh_endpoint.protocol(),
             zenohd.zenoh_endpoint.host(),
             zenohd.zenoh_endpoint.port(),
@@ -709,7 +697,7 @@ impl ZenohAdapter {
             // Both router constructors derive a namespace-free session; callers
             // apply workspace routing afterward via [`Self::with_namespace`].
             None,
-        ))
+        )
     }
 
     /// Applies a project namespace to this adapter's session, re-rendering
@@ -749,7 +737,7 @@ impl MessengerBackend for ZenohAdapter {
     async fn start_session(&mut self) -> Result<()> {
         // The daemon's long-lived session uses a reconnecting config so it
         // re-establishes itself (and re-declares its subscriptions/queryables)
-        // if the router is restarted under it — e.g. by the router watchdog.
+        // if the router is restarted under it, e.g. by the router watchdog.
         // Short-lived / CLI sessions keep the fail-fast default.
         let config = if self.reconnect_session {
             Self::create_client_config(
@@ -794,7 +782,7 @@ impl MessengerBackend for ZenohAdapter {
             // Close while zenohd is still alive so the undeclare-face
             // messages reach the router. Drop's later close becomes a
             // no-op (primitives already taken), which is what keeps the
-            // session's other Arc clones — e.g. ZenohPublisher — from
+            // session's other Arc clones (e.g. ZenohPublisher) from
             // spamming "Undefined face context" when they finally drop.
             if let Err(err) = session.close().await {
                 tracing::warn!("Zenoh session close returned an error: {err}");
@@ -834,10 +822,7 @@ impl MessengerBackend for ZenohAdapter {
     }
 
     async fn listen_service(&self, recv: &ServiceWireReceiver) -> Result<ServiceQueryable> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
 
         let (tx, rx) = flume::bounded::<IncomingRequest>(
             self.client_config
@@ -846,7 +831,7 @@ impl MessengerBackend for ZenohAdapter {
         );
 
         // One queryable per listen call. The declared keyexpr has `*` at the
-        // link_id slot so a single queryable absorbs every bound link_id —
+        // link_id slot so a single queryable absorbs every bound link_id:
         // `process_inbound_query` does the dispatch by parsing the selector.
         // Two queryables for one process would let a caller's wildcard
         // `*` selector double-deliver via `QueryTarget::All`.
@@ -866,7 +851,7 @@ impl MessengerBackend for ZenohAdapter {
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
 
-        Ok(ServiceQueryable::new(rx, vec![Box::new(queryable)]))
+        Ok(ServiceQueryable::new(rx, Box::new(queryable)))
     }
 
     async fn call_service(
@@ -876,17 +861,13 @@ impl MessengerBackend for ZenohAdapter {
         kind: ServiceQueryKind,
         timeout: Option<std::time::Duration>,
     ) -> Result<ReplyStream> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let selector = ZenohWireFormat::service_get_selector(sender);
         // Mandatory query attachment: carries the request kind (UserRequest
-        // vs Probe) plus the consumer's sibling-exclusion set. The producer
-        // refuses queries with no attachment, which is what makes the
-        // mid-rollout failure mode loud (consumer sees ServiceUnreachable
-        // instead of misclassifying the request as a default).
-        let attachment = ZenohWireFormat::service_get_selector_attachment(sender, kind);
+        // vs Probe). The producer refuses queries with no attachment, so a
+        // caller without one sees ServiceUnreachable instead of a request
+        // misclassified as a default.
+        let attachment = ZenohWireFormat::service_get_selector_attachment(kind);
 
         // The zenoh-side `.timeout(...)` is the query's wire lifetime, not
         // the caller's deadline; see `service_query_lifetime`.
@@ -901,11 +882,11 @@ impl MessengerBackend for ZenohAdapter {
         // `try_send` (not `send`) because the callback runs synchronously on
         // a zenoh worker thread that we must not block. Two drop conditions
         // are tolerated here:
-        //   1. receiver dropped — caller has the first valid reply and has
+        //   1. receiver dropped: caller has the first valid reply and has
         //      released the `ReplyStream`; sibling producers' late replies
         //      go nowhere, which is intentional;
-        //   2. channel full (capacity = the Standard subscriber buffer size)
-        //      — would only happen if the consumer's `poll_service` loop
+        //   2. channel full (capacity = the Standard subscriber buffer size):
+        //      would only happen if the consumer's `poll_service` loop
         //      stalls for thousands of replies; in practice the consumer
         //      drains the channel as fast as zenoh fills it, so this branch
         //      is effectively unreachable. If it ever fires, the lost reply
@@ -981,7 +962,7 @@ impl MessengerBackend for ZenohAdapter {
         buffer: FeedbackBuffer,
     ) -> Result<Subscription> {
         // Action feedback shares the wildcard-link_id keyexpr shape with
-        // topic subscribe but doesn't multi-publish per goal — feedback is
+        // topic subscribe but doesn't multi-publish per goal: feedback is
         // emitted under the single link_id chosen at goal time (see the
         // `action_feedback_publish` comment in `wire::zenoh_format`). So
         // there are no secondaries to drop; pass `false`.
@@ -1015,10 +996,7 @@ impl MessengerBackend for ZenohAdapter {
         sender: &ActionWireSender,
         timeout: std::time::Duration,
     ) -> Result<ActionLivelinessProbe> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let keyexpr = ZenohWireFormat::action_liveliness_watch(sender);
         // The callback closure owns `tx`; zenoh drops it when the query
         // finalizes (at the latest after `timeout`), so the probe's
@@ -1077,10 +1055,7 @@ impl MessengerBackend for ZenohAdapter {
         core_node: Option<&Segment>,
         timeout: std::time::Duration,
     ) -> Result<CoreNodePresenceList> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let keyexpr = ZenohWireFormat::core_node_presence_filter(scope, core_node);
         // Owned so the `'static` reply callback can strip exactly the prefix
         // the selector above wrote.
@@ -1173,14 +1148,10 @@ impl MessengerBackend for ZenohAdapter {
         let host = &self.client_config.host;
         let port = self.client_config.port;
         // Zenoh locators bracket IPv6 literals (`tcp/[::1]:7448`), while
-        // `IpAddr::from_str` expects the bare address. Preserve this legacy
-        // socket accessor for IPv6 callers even though `client_locator()` is the
-        // authoritative endpoint representation.
-        let ip_host = host
-            .strip_prefix('[')
-            .and_then(|host| host.strip_suffix(']'))
-            .unwrap_or(host);
-        let ip = ip_host
+        // `IpAddr::from_str` expects the bare address, so the brackets come
+        // off before parsing. `client_locator()` is the complete endpoint,
+        // protocol included.
+        let ip = unbracket_host(host)
             .parse()
             .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
         SocketAddr::new(ip, port)
@@ -1236,7 +1207,7 @@ impl ZenohAdapter {
     fn open_session(&self) -> Result<&Arc<zenoh::Session>> {
         self.session
             .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))
+            .ok_or_else(Error::session_not_initialized)
     }
 
     fn declared_topics(
@@ -1277,10 +1248,7 @@ impl ZenohAdapter {
     /// a lock can release it before waiting out the timeout (mirrors
     /// [`ActionLivelinessProbe`]).
     fn subscriber_match_wait(&self, keyexpr: String) -> Result<SubscriberMatchWait> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         Ok(SubscriberMatchWait {
             session: Arc::clone(session),
             keyexpr,
@@ -1291,10 +1259,7 @@ impl ZenohAdapter {
     /// differ per domain (action producers, core-node presence), the
     /// declaration mechanics don't.
     async fn declare_liveliness_token(&self, keyexpr: String) -> Result<LivelinessToken> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let token = session
             .liveliness()
             .declare_token(keyexpr)
@@ -1318,10 +1283,7 @@ impl ZenohAdapter {
         keyexpr: String,
         extract: impl Fn(&Sample) -> Option<T> + Send + Sync + 'static,
     ) -> Result<LivelinessWatch<T>> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let (tx, rx) = flume::unbounded::<LivelinessEvent<T>>();
         let subscriber = session
             .liveliness()
@@ -1365,10 +1327,7 @@ impl ZenohAdapter {
         qos: PublisherQoS,
         is_primary: bool,
     ) -> Result<()> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
         let zenoh_qos = ZenohQoS::from(qos);
 
         // session.put() directly rather than declare_publisher() + put() + drop.
@@ -1402,10 +1361,7 @@ impl ZenohAdapter {
             buffering,
         );
 
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let session = self.open_session()?;
 
         // The callback runs on zenoh's reception thread. A topic's full
         // buffer blocks that thread until the reader takes a message, so the
@@ -1540,7 +1496,7 @@ fn declare_retaining_publisher(
 /// action goal run on a sibling instance. Queries whose link_id slot is neither
 /// `*` nor `_` are dropped silently for the same reason.
 ///
-/// This runs inside zenoh's reception callback, so the function is sync —
+/// This runs inside zenoh's reception callback, so the function is sync:
 /// `flume::Sender::send` blocks the zenoh worker thread when the buffer is
 /// full so peppylib applies backpressure rather than losing requests, and
 /// returns `Err` (silently ignored) only when the consumer has dropped the
@@ -1568,21 +1524,18 @@ fn process_inbound_query(
         }
     };
 
-    let chosen_link_id = match parsed.claim() {
-        Some(l) => l.to_string(),
-        None => {
-            tracing::trace!(
-                query_keyexpr = %query.key_expr().as_str(),
-                parsed_link_id = %parsed.link_id,
-                "dropping inbound query: link_id slot is neither '*' nor '_'",
-            );
-            return;
-        }
+    let Some(chosen_link_id) = parsed.claim() else {
+        tracing::trace!(
+            query_keyexpr = %query.key_expr().as_str(),
+            parsed_link_id = %parsed.link_id,
+            "dropping inbound query: link_id slot is neither '*' nor '_'",
+        );
+        return;
     };
 
     let reply_keyexpr = ZenohWireFormat::service_reply_keyexpr(
         recv,
-        &chosen_link_id,
+        chosen_link_id,
         &parsed.caller_core,
         &parsed.caller_inst,
     );
@@ -1599,7 +1552,7 @@ fn process_inbound_query(
     // the endpoint's recv loop only runs while the producer task is parked
     // in it, so answering there would starve discovery whenever user code
     // is executing a handler or goal. The reply MUST be Response-kind
-    // (never Ack) — the consumer's discover-then-pin loop pins identity
+    // (never Ack): the consumer's discover-then-pin loop pins identity
     // off the first non-Ack reply. The reply is spawned (not awaited):
     // this callback runs on a zenoh worker thread that must not block.
     if parsed.kind == ServiceQueryKind::Probe {
@@ -1615,7 +1568,7 @@ fn process_inbound_query(
     let request = IncomingRequest {
         payload,
         kind: parsed.kind,
-        link_id: chosen_link_id,
+        link_id: chosen_link_id.to_string(),
         caller_core: parsed.caller_core,
         caller_inst: parsed.caller_inst,
         token,
@@ -1645,7 +1598,7 @@ enum PublishRoute {
 /// In-flight wait for a matching subscriber, issued by
 /// [`ZenohAdapter::topic_subscriber_wait`]. Owns its session handle, so
 /// [`resolve`](Self::resolve) runs detached from the adapter and callers can
-/// release any shared adapter lock before waiting out the timeout — the same
+/// release any shared adapter lock before waiting out the timeout, the same
 /// issue-then-resolve split as
 /// [`ActionLivelinessProbe`](crate::types::ActionLivelinessProbe).
 pub struct SubscriberMatchWait {
@@ -1788,9 +1741,183 @@ mod tests {
         assert_eq!(cfg.buffer_sizes.high_throughput, 4096);
     }
 
+    #[test]
+    fn create_client_config_renders_a_listening_gossip_peer_or_a_plain_client() {
+        let render = |gossip| {
+            ZenohAdapter::create_client_config(
+                ZenohNetProtocol::Tcp,
+                "127.0.0.1",
+                7448,
+                false,
+                Vec::new(),
+                gossip,
+                SubscriberBufferSizes::default(),
+                None,
+                None,
+            )
+            .zenoh_config
+        };
+        let rendered = |config: &zenoh::config::Config, key: &str| {
+            config.get_json(key).expect("a key of the rendered config")
+        };
+
+        // A gossip peer dials the seed and listens on a wildcard port of its
+        // own, so other peers can link to it directly.
+        let peer = render(true);
+        assert_eq!(rendered(&peer, "mode"), r#""peer""#);
+        assert_eq!(
+            rendered(&peer, "connect/endpoints"),
+            r#"["tcp/127.0.0.1:7448"]"#
+        );
+        assert_eq!(
+            rendered(&peer, "listen/endpoints"),
+            r#"{"peer":["tcp/0.0.0.0:0"]}"#
+        );
+        assert_eq!(rendered(&peer, "scouting/gossip/enabled"), "true");
+        assert_eq!(rendered(&peer, "id"), "null");
+
+        // A plain client dials the seed and keeps Zenoh's default listen
+        // endpoints, which a client does not bind.
+        let client = render(false);
+        assert_eq!(rendered(&client, "mode"), r#""client""#);
+        assert_eq!(
+            rendered(&client, "connect/endpoints"),
+            r#"["tcp/127.0.0.1:7448"]"#
+        );
+        assert_eq!(
+            rendered(&client, "listen/endpoints"),
+            rendered(&zenoh::config::Config::default(), "listen/endpoints")
+        );
+        assert_eq!(rendered(&client, "scouting/gossip/enabled"), "false");
+        assert_eq!(rendered(&client, "id"), "null");
+    }
+
+    /// Every operation that needs the session refuses to run before
+    /// `start_session` opened it. Building the adapter opens nothing, so no
+    /// router is needed.
+    #[tokio::test]
+    async fn operations_before_start_session_report_the_missing_session() {
+        use crate::error::test_support::assert_session_not_initialized;
+        use crate::wire::{SenderTarget, ServiceKind};
+
+        let mut adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", 7447)
+            .expect("build a client adapter");
+        let node = SenderTarget::node("arm", "v1").expect("node target");
+        let topic_sender = TopicWireSender::new("core", "instance", node.clone(), None, "joints")
+            .expect("valid topic sender");
+        let topic_receiver = TopicWireReceiver::new(
+            "core",
+            "instance",
+            None,
+            None,
+            Some(node.clone()),
+            None,
+            "joints",
+        )
+        .expect("valid topic receiver");
+        let service_receiver = ServiceWireReceiver::new(
+            "core",
+            "instance",
+            node.clone(),
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid service receiver");
+        let service_sender = ServiceWireSender::new(
+            "caller_core",
+            "caller_instance",
+            None,
+            node.clone(),
+            "ping",
+            ServiceKind::Service,
+        )
+        .expect("valid service sender");
+        let action_receiver = ActionWireReceiver::new("core", "instance", node.clone(), "move")
+            .expect("valid action receiver");
+        let action_sender =
+            ActionWireSender::new("caller_core", "caller_instance", None, node, "move")
+                .expect("valid action sender");
+        let core_node = Segment::try_from("core").expect("valid segment");
+        let instance = Segment::try_from("instance").expect("valid segment");
+        let timeout = std::time::Duration::from_secs(1);
+        let payload = || Payload::from_bytes(bytes::Bytes::from_static(b"payload"));
+
+        assert_session_not_initialized(
+            "publish_topic",
+            adapter
+                .publish_topic(&topic_sender, payload(), PublisherQoS::Standard, true)
+                .await,
+        );
+        assert_session_not_initialized(
+            "subscribe_topic",
+            adapter
+                .subscribe_topic(
+                    &topic_receiver,
+                    SubscriberQoS::Standard,
+                    TopicRetention::LiveOnly,
+                )
+                .await,
+        );
+        assert_session_not_initialized(
+            "declare_topic_publisher",
+            adapter.declare_topic_publisher(
+                &topic_sender,
+                PublisherQoS::Standard,
+                TopicRetention::LiveOnly,
+            ),
+        );
+        assert_session_not_initialized(
+            "topic_subscriber_wait",
+            adapter.topic_subscriber_wait(&topic_sender),
+        );
+        assert_session_not_initialized(
+            "listen_service",
+            adapter.listen_service(&service_receiver).await,
+        );
+        assert_session_not_initialized(
+            "call_service",
+            adapter
+                .call_service(
+                    &service_sender,
+                    payload(),
+                    ServiceQueryKind::UserRequest,
+                    None,
+                )
+                .await,
+        );
+        assert_session_not_initialized(
+            "declare_action_liveliness",
+            adapter.declare_action_liveliness(&action_receiver).await,
+        );
+        assert_session_not_initialized(
+            "watch_action_producer",
+            adapter.watch_action_producer(&action_sender).await,
+        );
+        assert_session_not_initialized(
+            "probe_action_producer",
+            adapter.probe_action_producer(&action_sender, timeout).await,
+        );
+        assert_session_not_initialized(
+            "declare_core_node_presence",
+            adapter
+                .declare_core_node_presence(&core_node, &instance)
+                .await,
+        );
+        assert_session_not_initialized(
+            "watch_core_node_presence",
+            adapter.watch_core_node_presence(None).await,
+        );
+        assert_session_not_initialized(
+            "list_core_node_presence",
+            adapter
+                .list_core_node_presence(PresenceScope::Session, None, timeout)
+                .await,
+        );
+    }
+
     #[cfg(feature = "router")]
     #[test]
-    fn external_ipv6_locator_preserves_the_legacy_socket_address() {
+    fn external_ipv6_locator_yields_its_socket_address() {
         let adapter = ZenohAdapter::with_external_router(
             "tcp/[::1]:17448",
             false,

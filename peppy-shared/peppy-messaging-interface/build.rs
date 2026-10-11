@@ -1,7 +1,8 @@
 // The `build_zenoh` feature compiles the external zenohd daemon from source.
-// Everything here — including the `build-helpers` build-dependency — is gated on
-// that feature, so the common client/library/node builds (which only need
-// `zenoh`/`router`) get an empty `main()` and pull no build-dependency at all.
+// Everything in this file is gated on that feature, so the common client,
+// library and node builds (which only need `zenoh` or `router`) run an empty
+// `main()`. The `build-helpers` build-dependency stays in every build (see
+// Cargo.toml), but only this feature calls it.
 #[cfg(feature = "build_zenoh")]
 mod zenoh_build {
     use std::env;

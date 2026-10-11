@@ -1,17 +1,16 @@
 //! Generation of Zenoh session and router configs.
 //!
-//! This is the single source of truth that replaced the former set of per-shape
-//! Askama templates (one each for the fail-fast client, the reconnecting client,
-//! the watchdog probe, and the router). A typed [`ZenohConfigSpec`] keeps the
-//! mode / connect / listen / scouting / timestamping settings in one place so
-//! adding a knob touches one struct instead of four string templates.
+//! A typed [`ZenohConfigSpec`] describes every config shape peppy renders (the
+//! fail-fast client, the reconnecting client, the watchdog probe, and the
+//! router) and keeps the mode / connect / listen / scouting / timestamping
+//! settings in one place, so adding a knob touches one struct.
 //!
 //! ## Discovery model: gossip-only, multicast off
 //!
 //! Every generated config disables multicast scouting and relies on gossip
 //! seeded by the configured connect endpoints (the router). Nodes open a `peer`
 //! session that connects to the router, learn each other's locators via gossip,
-//! and then form direct peer-to-peer links so data no longer relays through the
+//! and then form direct peer-to-peer links so data does not relay through the
 //! router. Multicast is left off on purpose: on a shared host it bridges
 //! otherwise-independent peer groups (and would cross-link unrelated test runs),
 //! and with a known seed it adds nothing gossip does not already cover.
@@ -20,7 +19,7 @@ use crate::router_id::RouterId;
 use crate::zenohd::ZenohNetProtocol;
 use config::namespace::Namespace;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// TLS material for a `tls/` (or `quic/`) session, rendered into the zenoh
 /// `transport.link.tls` block. One type serves every role: a router/listener
@@ -30,7 +29,7 @@ use std::path::PathBuf;
 /// [`ConnectIdentity`], and a listener that demands one sets
 /// `require_client_certificate`. The keys map 1:1 to zenoh 1.10's
 /// `transport.link.tls.*` (verified against its `DEFAULT_CONFIG.json5`); unset
-/// path fields are omitted so a non-TLS config renders byte-identical to before.
+/// path fields are omitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TlsConfig {
     /// CA used to validate the peer's certificate. Required on the client side
@@ -88,7 +87,7 @@ impl Default for TlsConfig {
 /// ## Why a raw handshake and not `zenoh::open`
 ///
 /// In zenoh *client* mode `zenoh::open` returns `Ok` as soon as the local
-/// session is created — even if the configured connect endpoint cannot be
+/// session is created, even if the configured connect endpoint cannot be
 /// reached or its certificate cannot be validated. The link failure is
 /// asynchronous and silent (no data ever flows, but nothing errors), so a
 /// successful `open` is NOT a usable "the federation link validates" signal.
@@ -168,39 +167,30 @@ pub async fn probe_tls_reachable(
 
     // One deadline for the whole probe (TCP connect + TLS handshake), so a peer
     // that accepts the TCP connection but stalls the handshake cannot stretch the
-    // call to ~2x `timeout` — the total stays bounded by `timeout`.
+    // call to ~2x `timeout`: the total stays bounded by `timeout`.
     let deadline = tokio::time::Instant::now() + timeout;
 
-    let tcp = match tokio::time::timeout_at(deadline, tokio::net::TcpStream::connect((host, port)))
+    let tcp = tokio::time::timeout_at(deadline, tokio::net::TcpStream::connect((host, port)))
         .await
-    {
-        Err(_) => {
-            return Err(format!(
-                "connect to {host}:{port} timed out after {timeout:?}"
-            ));
-        }
-        Ok(Err(e)) => return Err(format!("connect to {host}:{port} failed: {e}")),
-        Ok(Ok(tcp)) => tcp,
-    };
+        .map_err(|_| format!("connect to {host}:{port} timed out after {timeout:?}"))?
+        .map_err(|e| format!("connect to {host}:{port} failed: {e}"))?;
 
     // Finish the handshake under the same deadline. tokio-rustls surfaces
     // validation failures (UnknownIssuer / unknown CA / bad server name) as an
     // io::Error whose message contains the rustls reason, so `{e}` carries the
     // cause.
     let connector = TlsConnector::from(Arc::new(config));
-    match tokio::time::timeout_at(deadline, connector.connect(server_name, tcp)).await {
-        Err(_) => Err(format!(
-            "TLS handshake to {host}:{port} timed out after {timeout:?}"
-        )),
-        Ok(Err(e)) => Err(format!("TLS handshake to {host}:{port} failed: {e}")),
-        Ok(Ok(_stream)) => Ok(()),
-    }
+    tokio::time::timeout_at(deadline, connector.connect(server_name, tcp))
+        .await
+        .map_err(|_| format!("TLS handshake to {host}:{port} timed out after {timeout:?}"))?
+        .map_err(|e| format!("TLS handshake to {host}:{port} failed: {e}"))?;
+    Ok(())
 }
 
 /// Every certificate of the PEM bundle at `path`, in the order written. An
 /// error names the bundle as `label` does; an empty bundle is an error.
 fn read_pem_certificates(
-    path: &std::path::Path,
+    path: &Path,
     label: &str,
 ) -> Result<Vec<tokio_rustls::rustls::pki_types::CertificateDer<'static>>, String> {
     let bytes = std::fs::read(path)
@@ -303,6 +293,20 @@ pub(crate) enum SessionMode {
     Router,
 }
 
+impl SessionMode {
+    /// The name zenoh gives this mode. Zenoh reads every per-mode map
+    /// (`listen.endpoints`, `timestamping.enabled`) against the session's own
+    /// mode, so this name is also the key of the session's entry in each map:
+    /// an entry under another key is silently ignored.
+    fn zenoh_name(self) -> &'static str {
+        match self {
+            SessionMode::Peer => "peer",
+            SessionMode::Client => "client",
+            SessionMode::Router => "router",
+        }
+    }
+}
+
 /// Inputs for [`build_zenoh_config`].
 pub(crate) struct ZenohConfigSpec {
     pub mode: SessionMode,
@@ -319,8 +323,7 @@ pub(crate) struct ZenohConfigSpec {
     /// form direct links. Multicast scouting is always off (see module docs).
     pub gossip: bool,
     /// TLS material for a `tls/` endpoint. `None` for plaintext transports
-    /// (`tcp/`, …), in which case no `transport.link.tls` block is rendered and
-    /// the output is byte-identical to a pre-TLS config.
+    /// (`tcp/`, …), in which case no `transport.link.tls` block is rendered.
     pub tls: Option<TlsConfig>,
     /// Workspace namespace for an application session. Rendered into the
     /// session-level `namespace` field for
@@ -337,11 +340,7 @@ pub(crate) struct ZenohConfigSpec {
 
 /// Builds the JSON5-equivalent config value for a session or the router.
 pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
-    let mode = match spec.mode {
-        SessionMode::Peer => "peer",
-        SessionMode::Client => "client",
-        SessionMode::Router => "router",
-    };
+    let mode = spec.mode.zenoh_name();
 
     let mut config = json!({
         "mode": mode,
@@ -374,43 +373,23 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
     }
 
     if !spec.listen_endpoints.is_empty() {
-        // Zenoh reads `listen.endpoints` against the session's OWN mode, so the
-        // key must match `mode` above — the same per-role-map rule as
-        // `timestamping` below. Deriving it exhaustively (rather than
-        // `else => "peer"`) keeps a client's endpoints from being silently
-        // misfiled under `peer` if one ever listens.
-        let role = match spec.mode {
-            SessionMode::Router => "router",
-            SessionMode::Peer => "peer",
-            SessionMode::Client => "client",
-        };
-        config["listen"] = json!({ "endpoints": { role: spec.listen_endpoints } });
+        config["listen"] = json!({ "endpoints": { mode: spec.listen_endpoints } });
     }
 
     // Stamp data at the producer so consumers can measure real delivery latency.
-    // Zenoh matches `enabled` against the session's OWN mode, so the key must
-    // match `mode` above — a `peer` session ignores an `enabled.client` entry.
     // Stamping at the source keeps peer mode (no router in the direct path) on
     // par with router mode, where the client/router already stamps.
-    config["timestamping"] = match spec.mode {
-        SessionMode::Router => {
-            json!({ "enabled": { "router": true }, "drop_future_timestamp": false })
-        }
-        SessionMode::Peer => json!({ "enabled": { "peer": true }, "drop_future_timestamp": false }),
-        SessionMode::Client => {
-            json!({ "enabled": { "client": true }, "drop_future_timestamp": false })
-        }
-    };
+    config["timestamping"] = json!({ "enabled": { mode: true }, "drop_future_timestamp": false });
 
     // Workspace routing namespace. zenoh's `namespace` is a
     // session-level field: it is applied to the application session opened
     // against a router, where egress prepends `<ns>/` to every declared key and
-    // ingress strips it — so two sessions interoperate iff their namespaces
+    // ingress strips it, so two sessions interoperate iff their namespaces
     // match. It is rendered only for `Peer`/`Client` application sessions, never
     // for the router: a router only forwards between transport faces and never
     // opens an application session, so a router-level `namespace` would NOT
     // prefix forwarded/federated traffic. `router_spec` and `render_probe_config`
-    // therefore pass `namespace: None` — readiness probes are deliberately
+    // therefore pass `namespace: None`: readiness probes are deliberately
     // namespace-free (they only check "is our router up?").
     if let Some(namespace) = &spec.namespace
         && !matches!(spec.mode, SessionMode::Router)
@@ -419,7 +398,7 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
     }
 
     // TLS material maps to zenoh's `transport.link.tls`. Rendered only when
-    // present so a plaintext config is byte-identical to before. The output is a
+    // present, so a plaintext config carries no TLS keys. The output is a
     // pure function of [`TlsConfig`]: every field renders, and nothing else does.
     // Path fields are omitted when unset (zenoh treats a missing key as `null`);
     // `verify_name_on_connect` always renders, having no "absent" meaning.
@@ -436,17 +415,17 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
         let mut tls_json = json!({
             "verify_name_on_connect": tls.verify_name_on_connect,
         });
-        let mut put_path = |key: &str, value: &Option<PathBuf>| {
+        let mut put_path = |key: &str, value: Option<&Path>| {
             if let Some(path) = value {
                 tls_json[key] = json!(path.to_string_lossy());
             }
         };
-        put_path("root_ca_certificate", &tls.root_ca_certificate);
-        put_path("listen_certificate", &tls.listen_certificate);
-        put_path("listen_private_key", &tls.listen_private_key);
+        put_path("root_ca_certificate", tls.root_ca_certificate.as_deref());
+        put_path("listen_certificate", tls.listen_certificate.as_deref());
+        put_path("listen_private_key", tls.listen_private_key.as_deref());
         if let Some(identity) = &tls.connect_identity {
-            put_path("connect_certificate", &Some(identity.certificate.clone()));
-            put_path("connect_private_key", &Some(identity.private_key.clone()));
+            put_path("connect_certificate", Some(&identity.certificate));
+            put_path("connect_private_key", Some(&identity.private_key));
         }
         if tls.connect_identity.is_some() || tls.require_client_certificate {
             tls_json["enable_mtls"] = json!(true);
@@ -469,19 +448,15 @@ pub(crate) fn render_config(spec: &ZenohConfigSpec) -> zenoh::config::Config {
 }
 
 /// Rewrites the unroutable wildcard bind address to a connectable loopback host.
-pub(crate) fn connectable_host(host: &str) -> String {
-    if host == "0.0.0.0" {
-        "127.0.0.1".to_string()
-    } else {
-        host.to_string()
-    }
+pub(crate) fn connectable_host(host: &str) -> &str {
+    if host == "0.0.0.0" { "127.0.0.1" } else { host }
 }
 
 /// The liveness-probe config shared by the router watchdog and the
 /// ephemeral-router readiness check: a plain client targeting one router
 /// endpoint, no peer discovery. Only the `router` paths probe, so this is
-/// `router`-gated (a `zenoh`-without-`router` consumer — e.g. the backend, which
-/// only renders configs — would otherwise see it as dead code).
+/// `router`-gated (a `zenoh`-without-`router` consumer, such as the backend,
+/// which only renders configs, would otherwise see it as dead code).
 #[cfg(feature = "router")]
 pub(crate) fn render_probe_config(
     protocol: ZenohNetProtocol,
@@ -496,7 +471,7 @@ pub(crate) fn render_probe_config(
         reconnect: false,
         gossip: false,
         // A `tls/` router needs the probe to speak TLS too; plaintext callers pass
-        // `None` (no `transport.link.tls` block, byte-identical to before).
+        // `None` (no `transport.link.tls` block).
         tls,
         // Readiness probes are deliberately namespace-free: a probe only checks
         // "is our router up?", which a namespace would only get in the way of.
@@ -514,8 +489,8 @@ pub(crate) fn render_probe_config(
 /// a platform's project router wants it off so routers cannot mesh).
 ///
 /// `connect_endpoints` makes this router *federate* to other zenohd routers it
-/// dials (`<proto>/<host>:<port>` each) — distinct from gossip, which is peer
-/// auto-discovery. Empty is the standalone router (today's behavior); a non-empty
+/// dials (`<proto>/<host>:<port>` each), distinct from gossip, which is peer
+/// auto-discovery. Empty is the standalone router; a non-empty
 /// list (e.g. the daemon's local router dialing a remote `tls/` router) turns the
 /// retry/keep-alive on (`reconnect`) so an unreachable or restarted upstream is
 /// recovered transparently and never stops the local router serving its own
@@ -594,9 +569,9 @@ pub fn render_router_config(
 /// (a host can always reach its own interface addresses) and remote peers
 /// could too, should a mesh ever span hosts. The trade is that the listener
 /// leaves loopback: it is reachable from the network. That widens an existing
-/// exposure class rather than opening a new one — the zenoh transport is
+/// exposure class rather than opening a new one (the zenoh transport is
 /// unauthenticated, and the router's own listener is already bound to
-/// `0.0.0.0` — but a deployment that must not accept inbound peer links can
+/// `0.0.0.0`), but a deployment that must not accept inbound peer links can
 /// set `gossip: false` in its discovery config to keep every session a
 /// relay-only client with no listener at all.
 pub(crate) fn peer_listen_endpoint(protocol: ZenohNetProtocol) -> String {
@@ -638,7 +613,7 @@ mod tests {
         // Discovery is gossip-only.
         assert_eq!(cfg["scouting"]["multicast"]["enabled"], false);
         assert_eq!(cfg["scouting"]["gossip"]["enabled"], true);
-        // A peer session stamps under its own role, not `client` — Zenoh reads
+        // A peer session stamps under its own role, not `client`: Zenoh reads
         // `enabled` against the session's mode, so an `enabled.client` entry here
         // would be silently ignored and leave samples unstamped.
         assert_eq!(cfg["timestamping"]["enabled"]["peer"], true);
@@ -689,10 +664,9 @@ mod tests {
 
     #[test]
     fn client_listen_endpoints_land_under_the_client_key() {
-        // Clients do not listen today, so this guards the per-role-map rule
-        // directly: were a client ever given a listen endpoint, it must land
-        // under its own `client` key, not be silently misfiled under `peer`
-        // (the same mismatch that left peer-mode samples unstamped).
+        // No client listens, so this guards the per-role-map rule directly: a
+        // client given a listen endpoint must have it under its own `client`
+        // key, not misfiled under `peer`, where zenoh would silently ignore it.
         let cfg = build_zenoh_config(&ZenohConfigSpec {
             mode: SessionMode::Client,
             connect_endpoints: vec!["tcp/127.0.0.1:7448".to_string()],
@@ -805,10 +779,10 @@ mod tests {
         render_probe_config(ZenohNetProtocol::Tcp, "0.0.0.0", 7448, None);
     }
 
-    // ---- TLS rendering (the Phase-A breaking change) ----
+    // ---- TLS rendering ----
 
-    /// Regression guard: with `tls: None` the TLS feature is inert — no
-    /// `transport` block is emitted, so a plaintext config is unchanged.
+    /// Regression guard: with `tls: None` the TLS feature is inert, and no
+    /// `transport` block is emitted.
     /// (We assert structurally rather than byte-for-byte because serde_json's
     /// object key order depends on whether the `preserve_order` feature is
     /// unified in by some dependency, which would make an exact-string golden
@@ -1129,7 +1103,7 @@ mod tests {
             "a router must never render a namespace: {router}"
         );
 
-        // A session with no namespace omits the key entirely (back-compat).
+        // A session with no namespace omits the key entirely.
         let bare = build_zenoh_config(&peer_spec(false, true));
         assert!(bare.get("namespace").is_none());
     }

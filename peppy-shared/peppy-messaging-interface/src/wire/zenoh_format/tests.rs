@@ -1,28 +1,19 @@
 //! Snapshot tests for the zenoh wire format functions. These pin the exact
-//! keyexpr strings produced for every (role × variant) combination — if a
-//! change shifts the bytes, the test catches it. Roundtrip tests against a
+//! keyexpr strings produced for every (role × variant) combination, so a
+//! change that shifts the bytes fails a test. Roundtrip tests against a
 //! real router live in `peppy-messaging-interface/tests/wire.rs`.
 
 use super::*;
+use crate::adapters::mock::MockAdapter;
 use crate::wire::WirePeer;
+use crate::wire::test_support::{node, seg};
 use crate::wire::{Segment, SenderTarget};
 use config::namespace::Namespace;
-
-/// Test-local shorthand: wrap a `&str` in a validated [`Segment`]. Panics on
-/// invalid input — tests use known-good values only.
-fn seg(value: &str) -> Segment {
-    Segment::try_from(value).expect("test segment value should be valid")
-}
 
 /// Test-local shorthand: wrap a `&str` in a validated [`Namespace`]. Panics on
 /// invalid input.
 fn namespace(value: &str) -> Namespace {
     Namespace::parse(value).expect("test namespace value should be valid")
-}
-
-/// Test-local shorthand: build a node-shaped target. Panics on invalid input.
-fn node(name: &str, tag: &str) -> SenderTarget {
-    SenderTarget::node(name, tag).expect("test node target should be valid")
 }
 
 /// Test-local shorthand: build a contract-shaped target. Panics on invalid input.
@@ -36,7 +27,7 @@ fn pairing(name: &str, tag: &str) -> SenderTarget {
 }
 
 /// Test-local shorthand: encoded bytes for a default UserRequest query
-/// attachment (no exclusion set). Lets selector-shape tests focus on
+/// attachment. Lets selector-shape tests focus on
 /// keyexpr parsing without restating the attachment payload at every
 /// call site.
 fn user_request_attachment_bytes() -> bytes::Bytes {
@@ -212,8 +203,8 @@ fn topic_publish_from_a_scalar_slot_leaves_its_peer_open() {
         .unwrap(),
     );
     let publish = ZenohWireFormat::topic_publish(&sender);
-    assert!(keyexprs_match(&publish, &paired));
-    assert!(keyexprs_match(&publish, &observing));
+    assert!(MockAdapter::key_exprs_intersect(&publish, &paired));
+    assert!(MockAdapter::key_exprs_intersect(&publish, &observing));
 }
 
 #[test]
@@ -269,11 +260,72 @@ fn a_pairing_emission_reaches_its_peer_and_its_observers_only() {
             .unwrap(),
         )
     };
-    assert!(keyexprs_match(&to_ctrl_1, &paired("ctrl_1")));
-    assert!(!keyexprs_match(&to_ctrl_1, &paired("ctrl_2")));
-    assert!(keyexprs_match(&to_ctrl_1, &observing));
-    assert!(keyexprs_match(&to_ctrl_1, &observing_pair_of("ctrl_1")));
-    assert!(!keyexprs_match(&to_ctrl_1, &observing_pair_of("ctrl_2")));
+    assert!(MockAdapter::key_exprs_intersect(
+        &to_ctrl_1,
+        &paired("ctrl_1")
+    ));
+    assert!(!MockAdapter::key_exprs_intersect(
+        &to_ctrl_1,
+        &paired("ctrl_2")
+    ));
+    assert!(MockAdapter::key_exprs_intersect(&to_ctrl_1, &observing));
+    assert!(MockAdapter::key_exprs_intersect(
+        &to_ctrl_1,
+        &observing_pair_of("ctrl_1")
+    ));
+    assert!(!MockAdapter::key_exprs_intersect(
+        &to_ctrl_1,
+        &observing_pair_of("ctrl_2")
+    ));
+}
+
+#[test]
+fn a_pairing_emission_checks_its_target_then_each_segment_in_order() {
+    use crate::error::Error;
+    use crate::wire::SegmentError;
+
+    type BuildEmission = fn(&str, SenderTarget, &str) -> crate::error::Result<TopicWireSender>;
+    let to_peer: BuildEmission = |core_node, target, link_id| {
+        TopicWireSender::to_peer(
+            core_node,
+            "arm_1",
+            target,
+            link_id,
+            "joint_states",
+            WirePeer::new("core_b", "ctrl_1", "arm").unwrap(),
+        )
+    };
+    let to_sole_peer: BuildEmission = |core_node, target, link_id| {
+        TopicWireSender::to_sole_peer(core_node, "arm_1", target, link_id, "joint_states")
+    };
+
+    for (constructor, build) in [("to_peer", to_peer), ("to_sole_peer", to_sole_peer)] {
+        assert!(
+            matches!(
+                build("core/a", node("uvc_camera", "v1"), "*"),
+                Err(Error::PeerOnNonPairingPublish)
+            ),
+            "{constructor}"
+        );
+        assert!(
+            matches!(
+                build("core/a", pairing("arm_link", "v1"), "*"),
+                Err(Error::InvalidSegment(SegmentError::ContainsSlash(_)))
+            ),
+            "{constructor}"
+        );
+        assert!(
+            matches!(
+                build("core_a", pairing("arm_link", "v1"), "*"),
+                Err(Error::InvalidSegment(SegmentError::ReservedSentinel(_)))
+            ),
+            "{constructor}"
+        );
+        assert!(
+            build("core_a", pairing("arm_link", "v1"), "controller").is_ok(),
+            "{constructor}"
+        );
+    }
 }
 
 #[test]
@@ -323,17 +375,6 @@ fn a_pairing_key_without_its_recipient_is_refused() {
     ));
 }
 
-/// Single-chunk wildcard matching of two keyexprs, segment by segment: the
-/// rule the wire relies on, checked here without a transport.
-fn keyexprs_match(publish: &str, subscribe: &str) -> bool {
-    let (p, s): (Vec<&str>, Vec<&str>) =
-        (publish.split('/').collect(), subscribe.split('/').collect());
-    p.len() == s.len()
-        && p.iter()
-            .zip(&s)
-            .all(|(a, b)| *a == "*" || *b == "*" || a == b)
-}
-
 #[test]
 fn topic_pairing_and_contract_keyexprs_never_match() {
     // Lock-in guard: identical (name, tag, topic) under pairing vs contract
@@ -365,6 +406,10 @@ fn topic_pairing_and_contract_keyexprs_never_match() {
     let subscribe_discriminator = wildcard_subscribe.split('/').nth(5);
     assert_eq!(publish_discriminator, Some("pairing"));
     assert_eq!(subscribe_discriminator, Some("contract"));
+    assert!(!MockAdapter::key_exprs_intersect(
+        &pairing_publish,
+        &wildcard_subscribe
+    ));
 }
 
 #[test]
@@ -457,7 +502,7 @@ fn topic_subscribe_fully_untargeted_wildcards_all_slots() {
     );
 }
 
-// ─── Topics — parse ────────────────────────────────────────────────────────
+// ─── Topics: parse ─────────────────────────────────────────────────────────
 
 #[test]
 fn parse_topic_keyexpr_extracts_caller_addressing() {
@@ -484,60 +529,25 @@ fn parse_topic_keyexpr_roundtrips_through_topic_publish() {
 }
 
 #[test]
-fn parse_topic_keyexpr_missing_core_node_errors() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("only_one_segment").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::MissingSegment("caller_core_node")
-    ));
+fn parse_topic_keyexpr_rejects_a_missing_empty_or_wildcard_caller_slot() {
+    use ZenohWireParseError::{MissingSegment, WildcardInCallerSegment};
+    for (keyexpr, expected) in [
+        ("only_one_segment", MissingSegment("caller_core_node")),
+        ("a//c/d/rest", MissingSegment("caller_core_node")),
+        ("a/b/c", MissingSegment("caller_instance_id")),
+        ("a/b/c//rest", MissingSegment("caller_instance_id")),
+        ("a/*/c/d/rest", WildcardInCallerSegment("caller_core_node")),
+        (
+            "a/b/c/*/rest",
+            WildcardInCallerSegment("caller_instance_id"),
+        ),
+    ] {
+        let err = ZenohWireFormat::parse_topic_keyexpr(keyexpr).unwrap_err();
+        assert_eq!(err, expected, "{keyexpr}");
+    }
 }
 
-#[test]
-fn parse_topic_keyexpr_empty_core_node_errors() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("a//c/d/rest").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::MissingSegment("caller_core_node")
-    ));
-}
-
-#[test]
-fn parse_topic_keyexpr_missing_instance_id_errors() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("a/b/c").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::MissingSegment("caller_instance_id")
-    ));
-}
-
-#[test]
-fn parse_topic_keyexpr_empty_instance_id_errors() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("a/b/c//rest").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::MissingSegment("caller_instance_id")
-    ));
-}
-
-#[test]
-fn parse_topic_keyexpr_rejects_wildcard_in_caller_core_node() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("a/*/c/d/rest").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::WildcardInCallerSegment("caller_core_node")
-    ));
-}
-
-#[test]
-fn parse_topic_keyexpr_rejects_wildcard_in_caller_instance_id() {
-    let err = ZenohWireFormat::parse_topic_keyexpr("a/b/c/*/rest").unwrap_err();
-    assert!(matches!(
-        err,
-        ZenohWireParseError::WildcardInCallerSegment("caller_instance_id")
-    ));
-}
-
-// ─── Services — queryable declare ─────────────────────────────────────────
+// ─── Services: queryable declare ──────────────────────────────────────────
 
 fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
     ServiceWireReceiver::new(
@@ -554,7 +564,7 @@ fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
 fn service_queryable_declare_node_identity_plain_service() {
     // One queryable per `listen_service`. The link_id slot is `*` so the
     // queryable absorbs both `*` (callers always wildcard the link_id slot)
-    // and `_` (the default literal post-binding-map) at that wire slot.
+    // and `_` (the default literal) at that wire slot.
     let recv = sample_service_receiver(ServiceKind::Service);
     let key = ZenohWireFormat::service_queryable_declare(&recv);
     assert_eq!(
@@ -595,7 +605,7 @@ fn service_queryable_declare_contract_identity_normalizes_tag() {
     );
 }
 
-// ─── Services — get selector ──────────────────────────────────────────────
+// ─── Services: get selector ───────────────────────────────────────────────
 
 fn sample_service_sender(kind: ServiceKind) -> ServiceWireSender {
     ServiceWireSender {
@@ -620,8 +630,8 @@ fn service_get_selector_specific_target() {
 
 #[test]
 fn service_get_selector_broadcast_instance() {
-    // `target_instance_id: None` becomes the Zenoh single-chunk wildcard, not
-    // the legacy `_any_` literal — `session.get` accepts wildcards.
+    // `target_instance_id: None` becomes the Zenoh single-chunk wildcard,
+    // which `session.get` accepts.
     let mut sender = sample_service_sender(ServiceKind::Service);
     sender.target_instance_id = None;
     assert_eq!(
@@ -667,7 +677,7 @@ fn service_get_selector_scoped_to_core_node() {
 
 #[test]
 fn service_get_selector_always_wildcards_link_id_slot() {
-    // The link_id wire slot is always `*` — producers advertise under `_`
+    // The link_id wire slot is always `*`: producers advertise under `_`
     // and Zenoh's matcher unifies the two. There is no caller-side knob to
     // pin a concrete literal.
     let sender = sample_service_sender(ServiceKind::Service);
@@ -692,13 +702,13 @@ fn service_get_selector_action_goal() {
     );
 }
 
-// ─── Services — reply keyexpr ─────────────────────────────────────────────
+// ─── Services: reply keyexpr ──────────────────────────────────────────────
 
 #[test]
 fn service_reply_keyexpr_topic_shape_addresses_caller() {
     // The reply keyexpr is topic-shape (caller at segments 0/2, responder
     // at segments 1/3) so the caller's `parse_topic_keyexpr` surfaces the
-    // responder's identity via `Message::core_node()` / `instance_id()`.
+    // responder's identity via `TopicMessage::core_node()` / `instance_id()`.
     let receiver = sample_service_receiver(ServiceKind::Service);
     assert_eq!(
         ZenohWireFormat::service_reply_keyexpr(&receiver, "_", "caller_core", "caller_inst"),
@@ -722,7 +732,7 @@ fn service_reply_keyexpr_action_result_appends_suffix() {
     );
 }
 
-// ─── Services — parse_inbound_query ───────────────────────────────────────
+// ─── Services: parse_inbound_query ────────────────────────────────────────
 
 #[test]
 fn parse_inbound_query_extracts_caller_identity_and_literal_link_id() {
@@ -794,10 +804,8 @@ fn parse_inbound_query_rejects_concrete_target_instance_mismatch() {
 
 #[test]
 fn parse_inbound_query_surfaces_probe_kind_from_attachment() {
-    // The probe kind discriminator lives on the attachment. A user payload
-    // that happens to start with the legacy probe sentinel bytes no longer
-    // reaches this layer — discrimination happens entirely on the
-    // attachment, not the payload.
+    // The probe kind lives on the attachment, so discrimination never reads
+    // the payload.
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "*/caller_core/*/caller_inst/service/node/robot_arm/v1/*/ping";
     let probe_attachment = ServiceQueryAttachment {
@@ -811,10 +819,9 @@ fn parse_inbound_query_surfaces_probe_kind_from_attachment() {
 
 #[test]
 fn parse_inbound_query_rejects_missing_attachment_with_structured_error() {
-    // Mid-rollout safety: a peer running the old protocol sends queries
-    // with no attachment. The producer must surface the structured error
-    // rather than silently treating the query as a default UserRequest —
-    // dropping the query is what triggers the consumer's ServiceUnreachable.
+    // A query with no attachment must surface the structured error rather
+    // than be treated as a default UserRequest: dropping the query is what
+    // gives the consumer ServiceUnreachable.
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping";
     let err = ZenohWireFormat::parse_inbound_query(&receiver, query, &[]).unwrap_err();
@@ -826,8 +833,8 @@ fn parse_inbound_query_rejects_missing_attachment_with_structured_error() {
 
 #[test]
 fn parse_inbound_query_rejects_v1_magic_with_structured_error() {
-    // Old-protocol attachment bytes (V1 magic) must produce a structured
-    // mismatch error so mid-rollout skew is loud, not silent.
+    // Attachment bytes with magic `0x01` must produce a structured mismatch
+    // error so mid-rollout skew is loud, not silent.
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "server_core/caller_core/server_inst/caller_inst/service/node/robot_arm/v1/_/ping";
     let v1_bytes: &[u8] = &[0x01, 0x00];
@@ -878,7 +885,7 @@ fn parse_inbound_query_rejects_too_short() {
     assert!(matches!(err, ZenohWireParseError::MissingSegment(_)));
 }
 
-// ─── Actions — feedback ───────────────────────────────────────────────────
+// ─── Actions: feedback ────────────────────────────────────────────────────
 
 fn sample_action_receiver() -> ActionWireReceiver {
     ActionWireReceiver {
@@ -1143,9 +1150,9 @@ fn namespace_scoped_parser_rejects_unprefixed_and_malformed_keys() {
 
 // ─── Collision safety: node vs contract with overlapping name+tag ────────
 //
-// Core property the refactor exists to guarantee: a `NodeIdentifier { name, tag }`
-// must never share a wire key with an `ContractIdentifier { name, tag }` even
-// when both carry the same `name` and `tag`. The wire format embeds an
+// Core property of the wire format: a `NodeIdentifier { name, tag }` must
+// never share a wire key with a `ContractIdentifier { name, tag }` even when
+// both carry the same `name` and `tag`. The wire format embeds a
 // `contract` | `node` discriminator immediately before the name/tag pair to
 // prevent the two identifier namespaces from colliding.
 
@@ -1265,14 +1272,22 @@ fn topic_subscribe_node_only_segment_does_not_match_contract_publisher() {
     // The subscriber keyexpr has `topic/node/widget/v1/*/frames` in its tail.
     // The node-shaped publisher key matches segment-by-segment (after the
     // per-`*` caller-side wildcards) while the contract-shaped one differs
-    // on the discriminator literal. We verify by checking the discriminator
-    // segments appear distinct in the rendered strings.
+    // on the discriminator literal. The substring checks pin the
+    // discriminator segments, and the matcher checks pin the intersection
+    // itself.
     assert!(sub_key.contains("/topic/node/widget/v1/*/frames"));
     assert!(node_pub_key.contains("/topic/node/widget/v1/_/frames"));
     assert!(contract_pub_key.contains("/topic/contract/widget/v1/_/frames"));
     // Cross-check: the contract publisher's tail must NOT appear inside the
     // node-pinned subscriber's keyexpr.
     assert!(!sub_key.contains("/topic/contract/"));
+    // The node publisher reaches the subscriber, the contract publisher does
+    // not.
+    assert!(MockAdapter::key_exprs_intersect(&node_pub_key, &sub_key));
+    assert!(!MockAdapter::key_exprs_intersect(
+        &contract_pub_key,
+        &sub_key
+    ));
 }
 
 #[test]
@@ -1368,33 +1383,31 @@ fn parse_inbound_query_node_receiver_rejects_contract_shaped_query() {
 // ─── Topic attachment ────────────────────────────────────────────────────
 
 #[test]
-fn topic_attachment_primary_roundtrip() {
-    let encoded = TopicAttachment { is_primary: true }.encode();
-    assert_eq!(encoded.as_ref(), &[0x01u8]);
-    assert!(TopicAttachment::decode(&encoded).is_primary);
-}
-
-#[test]
-fn topic_attachment_secondary_roundtrip() {
-    let encoded = TopicAttachment { is_primary: false }.encode();
-    assert_eq!(encoded.as_ref(), &[0x00u8]);
-    assert!(!TopicAttachment::decode(&encoded).is_primary);
+fn topic_attachment_roundtrips_through_its_marker_byte() {
+    for (is_primary, marker) in [(true, 0x01u8), (false, 0x00u8)] {
+        let encoded = TopicAttachment { is_primary }.encode();
+        assert_eq!(encoded.as_ref(), &[marker], "is_primary: {is_primary}");
+        assert_eq!(
+            TopicAttachment::decode(&encoded).is_primary,
+            is_primary,
+            "marker: {marker:#04x}"
+        );
+    }
 }
 
 #[test]
 fn topic_attachment_missing_decodes_as_primary() {
     // Defensive: a publish that drops or omits the attachment should not
     // cause wildcard subscribers to silently drop every message. Missing
-    // attachment == primary so the failure mode is "duplicates" (the
-    // pre-fix behavior), not "silence".
+    // attachment == primary so the failure mode is "duplicates", not
+    // "silence".
     assert!(TopicAttachment::decode(&[]).is_primary);
 }
 
 #[test]
 fn topic_attachment_unknown_byte_decodes_as_primary() {
     // Any byte other than the explicit 0x00 secondary marker decodes as
-    // primary — keeps forward compat if the marker schema grows fields
-    // (additional bytes are ignored by the current decoder).
+    // primary, and bytes after the first are ignored.
     assert!(TopicAttachment::decode(&[0xff]).is_primary);
     assert!(TopicAttachment::decode(&[0x01, 0xaa]).is_primary);
 }
@@ -1402,23 +1415,13 @@ fn topic_attachment_unknown_byte_decodes_as_primary() {
 // ─── Service query attachment (kind only) ────────────────────────────────
 
 #[test]
-fn service_query_attachment_user_request_roundtrips() {
-    let attachment = ServiceQueryAttachment {
-        kind: ServiceQueryKind::UserRequest,
-    };
-    let decoded = ServiceQueryAttachment::decode(attachment.encode().as_ref())
-        .expect("encoded attachment decodes");
-    assert_eq!(decoded.kind, ServiceQueryKind::UserRequest);
-}
-
-#[test]
-fn service_query_attachment_probe_kind_roundtrips() {
-    let attachment = ServiceQueryAttachment {
-        kind: ServiceQueryKind::Probe,
-    };
-    let decoded = ServiceQueryAttachment::decode(attachment.encode().as_ref())
-        .expect("encoded attachment decodes");
-    assert_eq!(decoded.kind, ServiceQueryKind::Probe);
+fn service_query_attachment_roundtrips_every_kind() {
+    for kind in [ServiceQueryKind::UserRequest, ServiceQueryKind::Probe] {
+        let attachment = ServiceQueryAttachment { kind };
+        let decoded = ServiceQueryAttachment::decode(attachment.encode().as_ref())
+            .expect("encoded attachment decodes");
+        assert_eq!(decoded.kind, kind);
+    }
 }
 
 #[test]
@@ -1431,8 +1434,8 @@ fn service_query_attachment_decode_rejects_empty_bytes() {
 
 #[test]
 fn service_query_attachment_decode_rejects_older_magic() {
-    // Earlier versions also carried a sibling-pinned exclusion set. New
-    // producers MUST refuse those so mid-rollout skew surfaces loudly.
+    // A query attachment with another magic, such as `0x02`, is refused so
+    // schema skew surfaces loudly.
     assert!(matches!(
         ServiceQueryAttachment::decode(&[0x02, 0x00, 0x00]),
         Err(ZenohWireParseError::ServiceQueryAttachmentMagicMismatch { .. })
@@ -1461,33 +1464,17 @@ fn service_query_attachment_decode_rejects_truncated_payload() {
 // ─── Service reply attachment (Ack / Response / HandlerError) ────────────
 
 #[test]
-fn service_reply_attachment_ack_roundtrips() {
-    let attachment = ServiceReplyAttachment {
-        kind: ServiceReplyKind::Ack,
-    };
-    let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())
-        .expect("encoded reply attachment decodes");
-    assert_eq!(decoded.kind, ServiceReplyKind::Ack);
-}
-
-#[test]
-fn service_reply_attachment_response_roundtrips() {
-    let attachment = ServiceReplyAttachment {
-        kind: ServiceReplyKind::Response,
-    };
-    let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())
-        .expect("encoded reply attachment decodes");
-    assert_eq!(decoded.kind, ServiceReplyKind::Response);
-}
-
-#[test]
-fn service_reply_attachment_handler_error_roundtrips() {
-    let attachment = ServiceReplyAttachment {
-        kind: ServiceReplyKind::HandlerError,
-    };
-    let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())
-        .expect("encoded reply attachment decodes");
-    assert_eq!(decoded.kind, ServiceReplyKind::HandlerError);
+fn service_reply_attachment_roundtrips_every_kind() {
+    for kind in [
+        ServiceReplyKind::Ack,
+        ServiceReplyKind::Response,
+        ServiceReplyKind::HandlerError,
+    ] {
+        let attachment = ServiceReplyAttachment { kind };
+        let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())
+            .expect("encoded reply attachment decodes");
+        assert_eq!(decoded.kind, kind);
+    }
 }
 
 #[test]
@@ -1557,9 +1544,8 @@ fn claim_rejects_other_literals_defensively() {
 #[test]
 fn parse_topic_keyexpr_surfaces_concrete_link_id_at_segment_eight() {
     // Publish format: `*/{as_core}/*/{as_inst}/topic/{disc}/{name}/{tag}/{link_id}/{topic}`.
-    // Index 8 is the link_id slot. The peppylib Subscription wrapper drops
-    // messages whose link_id is in the sibling-pinned excluded set;
-    // surfacing the literal is the load-bearing change.
+    // Index 8 is the link_id slot, which a consumer reads to tell a
+    // producer's slots apart.
     let key = "*/publisher_core/*/publisher_inst/topic/node/sensor_node/v1/wrist_left/temperature";
     let parsed = ZenohWireFormat::parse_topic_keyexpr(key).expect("should parse");
     assert_eq!(parsed.link_id, "wrist_left");
@@ -1567,11 +1553,22 @@ fn parse_topic_keyexpr_surfaces_concrete_link_id_at_segment_eight() {
 
 #[test]
 fn parse_topic_keyexpr_surfaces_default_link_id_literal() {
-    // A producer without `--link-id` publishes under the reserved `_` slot.
-    // It still surfaces; the filter compares against the consumer's
-    // excluded set, and `_` is a valid literal that just doesn't appear
-    // there in practice.
+    // An emission that names no link_id publishes under the reserved `_`
+    // slot. It surfaces as `_`, like any other literal.
     let key = "*/publisher_core/*/publisher_inst/topic/node/sensor_node/v1/_/temperature";
     let parsed = ZenohWireFormat::parse_topic_keyexpr(key).expect("should parse");
     assert_eq!(parsed.link_id, "_");
+}
+
+#[test]
+fn parse_topic_keyexpr_surfaces_an_empty_link_id_for_a_short_key_or_an_empty_slot() {
+    // A key cut short before index 8 and a key with an empty segment there
+    // both parse, and both surface an empty link_id rather than an error.
+    for key in [
+        "*/publisher_core/*/publisher_inst/topic",
+        "*/publisher_core/*/publisher_inst/topic/node/sensor_node/v1//temperature",
+    ] {
+        let parsed = ZenohWireFormat::parse_topic_keyexpr(key).expect("should parse");
+        assert_eq!(parsed.link_id, "", "{key}");
+    }
 }

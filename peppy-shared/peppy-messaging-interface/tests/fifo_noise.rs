@@ -3,7 +3,7 @@
 //! zenoh's default `flume::bounded` FIFO handler. The FIFO handler logs
 //! `error=sending on a closed channel` at ERROR (`target =
 //! zenoh::api::handlers::fifo`) when zenoh delivers a reply/sample/query
-//! after the receiver is dropped — which fires routinely once a consumer
+//! after the receiver is dropped, which happens routinely once a consumer
 //! takes the first reply of a wildcard service call and drops its
 //! `ReplyStream` while the query window stays open.
 //!
@@ -14,7 +14,7 @@
 #![cfg(feature = "build_zenoh")]
 
 mod common;
-use common::{ZENOH_SERIAL, test_node_target};
+use common::{ZENOH_SERIAL, test_node_target, wait_for_subscriber_discovery};
 
 use bytes::Bytes;
 use pmi::{
@@ -117,8 +117,8 @@ async fn wildcard_service_call_emits_no_fifo_errors() {
         .unwrap();
 
     // Let the two queryables propagate through zenoh's discovery before the
-    // wildcard get goes out. Same delay the other integration tests use.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // wildcard get goes out.
+    wait_for_subscriber_discovery().await;
 
     // Server A: respond as soon as the query lands.
     let server_a = tokio::spawn(async move {
@@ -168,8 +168,8 @@ async fn wildcard_service_call_emits_no_fifo_errors() {
 
     // Consumer side: take whichever reply arrives first (expected: A) and
     // drop the stream. This mirrors `discover_producer` / health-monitor
-    // poll semantics, which is the call site that produced the original
-    // log spam in production.
+    // poll semantics, the call site where a FIFO handler logs on every late
+    // reply.
     let first = tokio::time::timeout(Duration::from_secs(2), reply_stream.rx.recv())
         .await
         .expect("first reply arrived within budget")
@@ -183,9 +183,9 @@ async fn wildcard_service_call_emits_no_fifo_errors() {
     );
     drop(reply_stream);
 
-    // Hold past server B's reply so its late delivery finishes flushing
-    // through the (now-absent) FIFO. If the regression returns, this is the
-    // window in which the ERROR log would have fired.
+    // Hold past server B's reply so its late delivery reaches the dropped
+    // stream. With a FIFO handler, this is the window in which the ERROR log
+    // fires.
     tokio::time::sleep(Duration::from_millis(1_500)).await;
 
     // Both server tasks should have completed (B's response went into the

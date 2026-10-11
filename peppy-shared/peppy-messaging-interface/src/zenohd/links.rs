@@ -4,8 +4,8 @@
 //! A managed zenohd accepts local sessions as soon as its listener binds, but
 //! dials its configured `connect` endpoints (operator-pinned federation links,
 //! a just-applied cloud upstream) asynchronously. Anything that queries the
-//! mesh right after startup — the daemon's boot-time core-node presence check
-//! above all — would race that link formation and see only the local router.
+//! mesh right after startup (the daemon's boot-time core-node presence check
+//! above all) would race that link formation and see only the local router.
 //! [`RouterLinksProbe`] closes the race: it polls the local router's admin
 //! space (`@/<zid>/router`) until every configured endpoint has an established
 //! transport link, bounded by the caller's timeout and fail-open (an
@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::ZenohEndpoint;
+use super::{ZenohEndpoint, unbracket_host};
 
 /// How often the probe re-reads the admin space while links are still
 /// pending. Establishment is normally a few tens of milliseconds after
@@ -46,14 +46,16 @@ struct ConfiguredEndpoint {
     port: u16,
     /// Addresses `host` resolves to (or parses to, for a literal IP). Empty
     /// until [`RouterLinksProbe::wait_established`] resolves it, and left empty
-    /// when resolution fails — the literal comparison still applies then.
+    /// when resolution fails; the literal comparison still applies then.
     ips: Vec<IpAddr>,
 }
 
 impl ConfiguredEndpoint {
     /// Parses a zenoh endpoint string (`<proto>/<host>:<port>[?config][#meta]`).
-    /// Returns `None` for a form [`ZenohEndpoint`] cannot represent; the caller
-    /// warns and skips it rather than failing the whole probe.
+    /// Returns `None` for a form [`ZenohEndpoint`] cannot represent:
+    /// [`RouterLinksProbe::new`] warns about such an endpoint and skips it
+    /// rather than failing the whole probe, and [`Self::matches_dst`] treats
+    /// such a destination as no match.
     fn parse(endpoint: &str) -> Option<Self> {
         // An `EndPoint` may carry a `?<config>` and/or `#<metadata>` suffix;
         // the locator part before them is what a link destination reports.
@@ -62,7 +64,7 @@ impl ConfiguredEndpoint {
         Some(Self {
             raw: locator.to_string(),
             protocol: parsed.protocol().to_string(),
-            host: unbracket(parsed.host()).to_ascii_lowercase(),
+            host: unbracket_host(parsed.host()).to_ascii_lowercase(),
             port: parsed.port(),
             ips: Vec::new(),
         })
@@ -72,27 +74,19 @@ impl ConfiguredEndpoint {
     /// endpoint: same protocol and port, and a host that matches literally or
     /// through one of the resolved addresses.
     fn matches_dst(&self, dst: &str) -> bool {
-        let locator = dst.split(['?', '#']).next().unwrap_or(dst).trim();
-        let Ok(parsed) = ZenohEndpoint::from_str(locator) else {
+        let Some(dst) = Self::parse(dst) else {
             return false;
         };
-        if parsed.protocol().to_string() != self.protocol || parsed.port() != self.port {
+        if dst.protocol != self.protocol || dst.port != self.port {
             return false;
         }
-        let dst_host = unbracket(parsed.host()).to_ascii_lowercase();
-        if dst_host == self.host {
+        if dst.host == self.host {
             return true;
         }
-        dst_host
+        dst.host
             .parse::<IpAddr>()
             .is_ok_and(|ip| self.ips.contains(&ip))
     }
-}
-
-fn unbracket(host: &str) -> &str {
-    host.strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host)
 }
 
 /// Extracts every transport link destination from a router admin-space reply
@@ -129,7 +123,7 @@ pub struct RouterLinksProbe {
 
 impl RouterLinksProbe {
     /// Builds a probe for `endpoints`, or `None` when none of them parses (an
-    /// unparseable endpoint is the operator's to dial, not ours to wait for —
+    /// unparseable endpoint is the operator's to dial, not ours to wait for:
     /// it is warned about and skipped).
     pub(crate) fn new(probe_config: zenoh::config::Config, endpoints: Vec<String>) -> Option<Self> {
         let endpoints: Vec<ConfiguredEndpoint> = endpoints
@@ -164,7 +158,7 @@ impl RouterLinksProbe {
 
     /// Waits until every configured endpoint has an established link on the
     /// local router, bounded by `timeout`. Returns `true` when they all did,
-    /// `false` when the bound elapsed first (callers proceed — fail-open — and
+    /// `false` when the bound elapsed first (callers proceed, failing open, and
     /// log). DNS-named endpoints are resolved once up front so they compare
     /// against the resolved addresses the admin space reports.
     pub async fn wait_established(mut self, timeout: Duration) -> bool {
@@ -205,9 +199,8 @@ impl RouterLinksProbe {
             tokio::time::sleep(LINKS_POLL_INTERVAL).await;
         };
 
-        // The probe served its purpose either way; don't let a slow close
-        // stall the caller (same policy as the router health checker).
-        let _ = tokio::time::timeout(Duration::from_secs(1), session.close()).await;
+        // The probe served its purpose either way.
+        super::health::close_probe_session(session).await;
         established
     }
 }

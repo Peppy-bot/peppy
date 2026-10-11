@@ -1,7 +1,7 @@
 //! End-to-end TLS transport tests: a real `zenohd` router listening on `tls/`
 //! and a `connect_to_tls` client completing a TLS handshake and a pub/sub
 //! round-trip. This is the *authoritative* check that the `transport.link.tls`
-//! block pmi renders is actually accepted by zenoh — a wrong key would be
+//! block pmi renders is actually accepted by zenoh: a wrong key would be
 //! silently dropped at config parse, so only a live handshake proves it.
 //!
 //! Gated behind `build_zenoh` like the other integration tests (it needs the
@@ -16,7 +16,8 @@ mod common;
 
 mod zenoh_tls_tests {
     use crate::common::{
-        RECV_TIMEOUT, ZENOH_SERIAL, receiver, sender, wait_for_subscriber_discovery,
+        ZENOH_SERIAL, next_message, receiver, sender, start_session_with_retry,
+        wait_for_subscriber_discovery,
     };
     use bytes::Bytes;
     use config::node::TopicRetention;
@@ -39,8 +40,7 @@ mod zenoh_tls_tests {
     /// config takes filesystem paths, so the embedded fixtures are written out.
     struct Certs {
         // Held only for its `Drop` (cleans up the tempdir at end of test).
-        #[allow(dead_code)]
-        dir: tempfile::TempDir,
+        _dir: tempfile::TempDir,
         ca: PathBuf,
         cert: PathBuf,
         key: PathBuf,
@@ -62,7 +62,7 @@ mod zenoh_tls_tests {
         let client_cert = put("client.pem", CLIENT_CERT_PEM);
         let client_key = put("client.key", CLIENT_KEY_PEM);
         Certs {
-            dir,
+            _dir: dir,
             ca,
             cert,
             key,
@@ -72,7 +72,7 @@ mod zenoh_tls_tests {
     }
 
     /// The server leaf's SAN is `localhost`, but we dial `127.0.0.1` (no DNS
-    /// resolution ambiguity), so name verification is off — exactly how zenoh's
+    /// resolution ambiguity), so name verification is off, exactly how zenoh's
     /// own TLS test uses these fixtures. The CA-trust check stays on, which is
     /// what the negative test below exercises.
     fn trusting_client_tls(certs: &Certs) -> TlsConfig {
@@ -117,41 +117,45 @@ mod zenoh_tls_tests {
     }
 
     async fn start_router_with_tls(tls: TlsConfig) -> (Messenger, u16) {
+        start_router(ZenohNetProtocol::Tls, Vec::new(), tls).await
+    }
+
+    /// Starts a `zenohd` router listening on `<protocol>/127.0.0.1:<port>` that
+    /// dials `connect_endpoints` and carries `tls`. Returns the owning
+    /// `Messenger` (drop it to stop zenohd) and the port.
+    async fn start_router(
+        protocol: ZenohNetProtocol,
+        connect_endpoints: Vec<String>,
+        tls: TlsConfig,
+    ) -> (Messenger, u16) {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
         let port = listener.local_addr().expect("local addr").port();
         drop(listener);
 
         let adapter = ZenohAdapter::with_router(
-            ZenohNetProtocol::Tls,
+            protocol,
             "127.0.0.1",
             port,
             false,
             SubscriberBufferSizes::default(),
-            Vec::new(),
+            connect_endpoints,
             Some(tls),
             RouterId::generate(),
         )
-        .expect("build tls router adapter");
+        .expect("build router adapter");
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-        messenger
-            .start_router()
-            .await
-            .expect("start tls zenohd router");
+        messenger.start_router().await.expect("start zenohd router");
         (messenger, port)
     }
 
     /// Opens a `tls/` client session, retrying briefly while the router's TLS
     /// listener finishes settling after the TCP socket starts accepting.
     async fn open_tls_client(port: u16, tls: &TlsConfig) -> ZenohAdapter {
-        for _ in 0..40 {
-            if let Ok(mut adapter) = ZenohAdapter::connect_to_tls("127.0.0.1", port, tls.clone())
-                && adapter.start_session().await.is_ok()
-            {
-                return adapter;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("could not open a tls client session on 127.0.0.1:{port}");
+        start_session_with_retry(
+            || ZenohAdapter::connect_to_tls("127.0.0.1", port, tls.clone()).expect("adapter"),
+            &format!("a tls client session on 127.0.0.1:{port}"),
+        )
+        .await
     }
 
     /// Starts a `zenohd` router that serves local clients over plaintext `tcp/`
@@ -160,42 +164,22 @@ mod zenoh_tls_tests {
     /// enrolled in a platform project: local nodes speak plaintext loopback, and
     /// only the inter-router hop is encrypted.
     async fn start_federated_router(remote_port: u16, upstream_tls: TlsConfig) -> (Messenger, u16) {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
-        let port = listener.local_addr().expect("local addr").port();
-        drop(listener);
-
-        let adapter = ZenohAdapter::with_router(
+        start_router(
             ZenohNetProtocol::Tcp,
-            "127.0.0.1",
-            port,
-            false,
-            SubscriberBufferSizes::default(),
             vec![format!("tls/127.0.0.1:{remote_port}")],
-            Some(upstream_tls),
-            RouterId::generate(),
+            upstream_tls,
         )
-        .expect("build federated router adapter");
-        let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-        messenger
-            .start_router()
-            .await
-            .expect("start federated zenohd router");
-        (messenger, port)
+        .await
     }
 
     /// Opens a plaintext `tcp/` client session to a local router, retrying while
     /// the listener settles.
     async fn open_plaintext_client(port: u16) -> ZenohAdapter {
-        for _ in 0..40 {
-            if let Ok(mut adapter) =
-                ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", port)
-                && adapter.start_session().await.is_ok()
-            {
-                return adapter;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("could not open a plaintext client session on 127.0.0.1:{port}");
+        start_session_with_retry(
+            || ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", port).expect("adapter"),
+            &format!("a plaintext client session on 127.0.0.1:{port}"),
+        )
+        .await
     }
 
     /// Positive path: a TLS router + two TLS clients complete the handshake and
@@ -241,7 +225,7 @@ mod zenoh_tls_tests {
 
     /// Negative path: a client that does NOT trust the router's CA (no
     /// `root_ca_certificate`, so zenoh falls back to system WebPKI roots, which
-    /// do not include the private `minica` CA) cannot establish a usable link —
+    /// do not include the private `minica` CA) cannot establish a usable link:
     /// it must receive nothing, while a properly-trusting publisher's message
     /// flows. Proves cert validation is actually enforced (not bypassed).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -261,7 +245,7 @@ mod zenoh_tls_tests {
         // Confirm the router's TLS listener is actually up *first* (a trusting
         // client opens, retrying while it settles, then is dropped). Otherwise a
         // `start_session` error below could be the router still starting rather
-        // than the untrusted CA being rejected — making a readiness failure look
+        // than the untrusted CA being rejected, making a readiness failure look
         // like the intended negative result. Same retry pattern as the trusted
         // and plaintext opens in this file.
         drop(open_tls_client(port, &trusting_client_tls(&certs)).await);
@@ -269,9 +253,9 @@ mod zenoh_tls_tests {
         let mut subscriber =
             ZenohAdapter::connect_to_tls("127.0.0.1", port, untrusted).expect("build adapter");
         // In client mode `zenoh::open` succeeds even if the link can't be
-        // validated (the failure is async — no data ever flows). The router is
-        // now known to be up, so an error here can only be the untrusted CA — a
-        // strictly stronger negative result.
+        // validated (the failure is async: no data ever flows). The router is
+        // known to be up at this point, so an error here can only be the
+        // untrusted CA, a strictly stronger negative result.
         if subscriber.start_session().await.is_err() {
             return;
         }
@@ -285,7 +269,7 @@ mod zenoh_tls_tests {
             .expect("subscribe (local declare succeeds even with a dead link)");
 
         // A correctly-trusting publisher proves traffic *is* flowing on the
-        // router — so a no-delivery result is the untrusted link's fault, not a
+        // router, so a no-delivery result is the untrusted link's fault, not a
         // dead test.
         let mut publisher = open_tls_client(port, &trusting_client_tls(&certs)).await;
         wait_for_subscriber_discovery().await;
@@ -312,12 +296,7 @@ mod zenoh_tls_tests {
 
     /// The payload `subscription` reads next, within [`RECV_TIMEOUT`].
     async fn next_payload(subscription: &Subscription, label: &str) -> Bytes {
-        tokio::time::timeout(RECV_TIMEOUT, subscription.rx.recv_async())
-            .await
-            .unwrap_or_else(|_| panic!("timed out waiting for {label}"))
-            .expect("subscription channel open")
-            .payload()
-            .to_bytes()
+        next_message(subscription, label).await.payload().to_bytes()
     }
 
     /// How long the inter-router link gets to come up. A link that comes up

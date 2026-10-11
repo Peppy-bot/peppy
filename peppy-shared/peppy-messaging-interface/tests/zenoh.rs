@@ -4,7 +4,8 @@ mod common;
 
 mod zenoh_tests {
     use crate::common::{
-        RECV_TIMEOUT, ZENOH_SERIAL, receiver, sender, wait_for_subscriber_discovery,
+        RECV_TIMEOUT, ZENOH_SERIAL, next_message, receiver, sender, start_session_with_retry,
+        wait_for_subscriber_discovery,
     };
     use bytes::Bytes;
     use config::node::TopicRetention;
@@ -14,32 +15,15 @@ mod zenoh_tests {
     };
     use std::time::{Duration, Instant};
 
-    /// Awaits a single message on `rx` or fails the test on timeout. The
-    /// `label` is included in both timeout and channel-closed panics so test
-    /// failures in CI pinpoint which subscription stalled.
-    async fn recv_or_timeout(
-        rx: &mut flume::Receiver<pmi::TopicMessage>,
-        label: &str,
-    ) -> pmi::TopicMessage {
-        tokio::time::timeout(RECV_TIMEOUT, rx.recv_async())
-            .await
-            .unwrap_or_else(|_| panic!("timed out waiting for message on {label}"))
-            .unwrap_or_else(|_| panic!("channel closed before message on {label}"))
-    }
-
     /// Opens a fresh (non-reconnecting) publisher session against the router at
     /// `host:port`, retrying briefly in case the router is still settling after
     /// a respawn. Panics if it can't connect within the retry budget.
     async fn open_publisher(host: &str, port: u16) -> ZenohAdapter {
-        for _ in 0..40 {
-            if let Ok(mut adapter) = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)
-                && adapter.start_session().await.is_ok()
-            {
-                return adapter;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("could not open a publisher session against {host}:{port}");
+        start_session_with_retry(
+            || ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port).expect("adapter"),
+            &format!("a publisher session against {host}:{port}"),
+        )
+        .await
     }
 
     /// Repeatedly publishes to `topic` and waits briefly for the subscriber to
@@ -81,16 +65,16 @@ mod zenoh_tests {
 
     /// Proves the daemon's in-process recovery path: a reconnecting subscriber
     /// session keeps working after its router process is killed and respawned on
-    /// the same port — i.e. the session reconnects *and re-declares* its
-    /// subscription. This is the half of the router-watchdog fix that the unit
-    /// tests can't cover.
+    /// the same port, i.e. the session reconnects *and re-declares* its
+    /// subscription. The unit tests cannot cover this half of the router
+    /// watchdog's recovery.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn reconnecting_subscriber_recovers_after_router_restart() {
         const TOPIC: &str = "reconnect_topic";
         let _lock = ZENOH_SERIAL.lock().await;
 
         // `instance` owns the zenohd process so we can respawn it on the same
-        // port mid-test. We never open a session on it — only use it to drive
+        // port mid-test. We never open a session on it; we only use it to drive
         // the router lifecycle (stop_router / start_router).
         let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
@@ -99,7 +83,7 @@ mod zenoh_tests {
         let port = instance.port;
 
         // The subscriber session uses the SAME reconnecting config the daemon
-        // uses (`with_session_reconnect`) — this is the behaviour under test.
+        // uses (`with_session_reconnect`): this is the behaviour under test.
         let mut subscriber = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port)
             .expect("subscriber adapter")
             .with_session_reconnect();
@@ -129,11 +113,11 @@ mod zenoh_tests {
                 )
                 .await
                 .expect("baseline publish");
-            let got = recv_or_timeout(&mut subscription.rx, "baseline").await;
+            let got = next_message(&subscription, "baseline").await;
             assert_eq!(got.payload(), &Bytes::from_static(b"before-restart"));
         }
 
-        // Respawn zenohd on the same port — exactly what the watchdog does when
+        // Respawn zenohd on the same port, exactly what the watchdog does when
         // it finds the router wedged.
         instance
             .messenger()
@@ -190,7 +174,7 @@ mod zenoh_tests {
             .start_session()
             .await
             .expect("subscriber start_session");
-        let mut subscription = subscriber
+        let subscription = subscriber
             .subscribe_topic(
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
@@ -218,7 +202,7 @@ mod zenoh_tests {
             )
             .await
             .expect("baseline publish");
-        let baseline = recv_or_timeout(&mut subscription.rx, "baseline").await;
+        let baseline = next_message(&subscription, "baseline").await;
         assert_eq!(baseline.payload(), &Bytes::from_static(b"before-stop"));
         tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -262,83 +246,11 @@ mod zenoh_tests {
         );
     }
 
-    /// Router mode (gossip off → plain client sessions) still delivers, with the
-    /// traffic relayed through the running zenohd router. Positive companion to
-    /// `peers_keep_delivering_after_router_stops`, which proves the peer path;
-    /// here the router is required and kept alive for the whole test.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn router_mode_delivers_through_router() {
-        const TOPIC: &str = "router_mode_topic";
-        let _lock = ZENOH_SERIAL.lock().await;
-
-        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-            .await
-            .expect("Failed to start zenohd process");
-        let host = instance.host.clone();
-        let port = instance.port;
-
-        // gossip=false → plain client sessions with no peer listener, so all
-        // traffic routes through the central router.
-        let mut subscriber = ZenohAdapter::connect_to_with_discovery(
-            ZenohNetProtocol::Tcp,
-            &host,
-            port,
-            Vec::new(),
-            false,
-            SubscriberBufferSizes::default(),
-            None,
-        )
-        .expect("subscriber adapter");
-        subscriber
-            .start_session()
-            .await
-            .expect("subscriber start_session");
-        let mut subscription = subscriber
-            .subscribe_topic(
-                &receiver(TOPIC),
-                SubscriberQoS::Standard,
-                TopicRetention::LiveOnly,
-            )
-            .await
-            .expect("subscribe");
-
-        let mut publisher = ZenohAdapter::connect_to_with_discovery(
-            ZenohNetProtocol::Tcp,
-            &host,
-            port,
-            Vec::new(),
-            false,
-            SubscriberBufferSizes::default(),
-            None,
-        )
-        .expect("publisher adapter");
-        publisher
-            .start_session()
-            .await
-            .expect("publisher start_session");
-
-        wait_for_subscriber_discovery().await;
-        publisher
-            .publish_topic(
-                &sender(TOPIC),
-                Payload::from_bytes(Bytes::from_static(b"router-mode")),
-                PublisherQoS::Standard,
-                true,
-            )
-            .await
-            .expect("publish");
-        let msg = recv_or_timeout(&mut subscription.rx, "router-mode").await;
-        assert_eq!(msg.payload(), &Bytes::from_static(b"router-mode"));
-
-        // Keep the router alive until the end: client-mode delivery depends on it.
-        drop(instance);
-    }
-
     /// Source timestamps must be present on delivered samples in BOTH peer and
     /// router mode. The benchmark's `delivery` measurement reads
     /// `source_timestamp_nanos()` off each sample, so a session that fails to
     /// stamp its outgoing data silently zeroes those rows. `gossip=true`
-    /// exercises the direct peer path (the regression); `gossip=false` the
+    /// exercises the direct peer path; `gossip=false` the
     /// router relay.
     async fn assert_topic_carries_source_timestamp(gossip: bool) {
         const TOPIC: &str = "source_timestamp_topic";
@@ -364,7 +276,7 @@ mod zenoh_tests {
             .start_session()
             .await
             .expect("subscriber start_session");
-        let mut subscription = subscriber
+        let subscription = subscriber
             .subscribe_topic(
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
@@ -398,7 +310,7 @@ mod zenoh_tests {
             )
             .await
             .expect("publish");
-        let msg = recv_or_timeout(&mut subscription.rx, "stamped").await;
+        let msg = next_message(&subscription, "stamped").await;
         assert_eq!(msg.payload(), &Bytes::from_static(b"stamped"));
         assert!(
             msg.source_timestamp_nanos().is_some(),
@@ -410,10 +322,9 @@ mod zenoh_tests {
         drop(instance);
     }
 
-    /// Peer mode (gossip on → direct peer links) stamps outgoing samples. This is
-    /// the regression guard for the peer-mode timestamping fix: before it, the
-    /// peer session enabled timestamping under the wrong role and samples arrived
-    /// unstamped.
+    /// Peer mode (gossip on → direct peer links) stamps outgoing samples under
+    /// the peer role. A peer session that enables timestamping under another
+    /// role delivers unstamped samples, which this test catches.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn peer_mode_samples_carry_source_timestamp() {
         assert_topic_carries_source_timestamp(true).await;
@@ -421,6 +332,9 @@ mod zenoh_tests {
 
     /// Router mode (gossip off → client sessions relayed through zenohd) stamps
     /// outgoing samples too. Companion to the peer-mode guard, pinning parity.
+    /// It is also the positive companion of
+    /// `peers_keep_delivering_after_router_stops`: with gossip off, delivery
+    /// relays through the router, which stays alive for the whole test.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn router_mode_samples_carry_source_timestamp() {
         assert_topic_carries_source_timestamp(false).await;
@@ -459,7 +373,7 @@ mod zenoh_tests {
             .start_session()
             .await
             .expect("subscriber start_session");
-        let mut subscription = subscriber
+        let subscription = subscriber
             .subscribe_topic(
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
@@ -488,7 +402,7 @@ mod zenoh_tests {
                 )
                 .await
                 .expect("publish");
-            let msg = recv_or_timeout(&mut subscription.rx, "custom-buffer").await;
+            let msg = next_message(&subscription, "custom-buffer").await;
             assert_eq!(msg.payload(), &body);
         }
         drop(instance);
@@ -501,7 +415,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start zenohd process");
 
-        // No start_session — publish should fail.
+        // No start_session: publish should fail.
         let payload = Payload::from_bytes(Bytes::from_static(b"This should fail"));
         let result = instance
             .messenger()
@@ -531,7 +445,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start session");
 
-        let mut sub = instance
+        let sub = instance
             .messenger()
             .subscribe_topic(
                 &receiver("basic_topic"),
@@ -555,7 +469,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish");
 
-        let received = recv_or_timeout(&mut sub.rx, "test_basic_publish_subscribe sub").await;
+        let received = next_message(&sub, "test_basic_publish_subscribe sub").await;
         assert_eq!(received.instance_id(), "test_instance");
         assert_eq!(received.core_node(), "test_core_node");
         assert_eq!(received.payload(), &body);
@@ -574,7 +488,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start session");
 
-        let mut sub1 = instance
+        let sub1 = instance
             .messenger()
             .subscribe_topic(
                 &receiver("topic1"),
@@ -583,7 +497,7 @@ mod zenoh_tests {
             )
             .await
             .expect("Failed to subscribe to topic1");
-        let mut sub2 = instance
+        let sub2 = instance
             .messenger()
             .subscribe_topic(
                 &receiver("topic2"),
@@ -619,10 +533,10 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish to topic2");
 
-        let received1 = recv_or_timeout(&mut sub1.rx, "test_multiple_topics sub1").await;
+        let received1 = next_message(&sub1, "test_multiple_topics sub1").await;
         assert_eq!(received1.payload(), &body1);
 
-        let received2 = recv_or_timeout(&mut sub2.rx, "test_multiple_topics sub2").await;
+        let received2 = next_message(&sub2, "test_multiple_topics sub2").await;
         assert_eq!(received2.payload(), &body2);
     }
 
@@ -639,7 +553,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start session");
 
-        let mut sub = instance
+        let sub = instance
             .messenger()
             .subscribe_topic(
                 &receiver("multi_topic"),
@@ -671,8 +585,7 @@ mod zenoh_tests {
         }
 
         for expected in &messages {
-            let received =
-                recv_or_timeout(&mut sub.rx, "test_multiple_messages_same_topic sub").await;
+            let received = next_message(&sub, "test_multiple_messages_same_topic sub").await;
             assert_eq!(received.payload(), expected);
         }
     }
@@ -702,7 +615,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish early message");
 
-        let mut late_sub = instance
+        let late_sub = instance
             .messenger()
             .subscribe_topic(
                 &receiver("late_topic"),
@@ -726,15 +639,15 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish new message");
 
-        let received = recv_or_timeout(&mut late_sub.rx, "test_late_subscription late_sub").await;
+        let received = next_message(&late_sub, "test_late_subscription late_sub").await;
         assert_eq!(received.payload(), &new_body);
     }
 
     /// Action-producer liveliness over real zenoh: a token declared by the
     /// producer session replays as an initial `Alive` to a late watch
     /// (history), a one-shot probe sees it, and closing the producer session
-    /// — the in-process stand-in for hard producer death, since tokens are
-    /// removed identically on close and on transport loss — surfaces as a
+    /// (the in-process stand-in for hard producer death, since tokens are
+    /// removed identically on close and on transport loss) surfaces as a
     /// `Gone` event and an absent probe.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn action_liveliness_token_observed_across_sessions() {
@@ -895,7 +808,7 @@ mod zenoh_tests {
     /// Probe hardening over real zenoh: `ServiceQueryKind::Probe` queries
     /// are answered by the adapter's query dispatch (one Response-kind
     /// reply; sized probes get the requested byte count) and never reach
-    /// the producer's endpoint channel — so a producer whose task is busy
+    /// the producer's endpoint channel, so a producer whose task is busy
     /// in user code (nobody draining the channel) still answers discovery
     /// and liveness probes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -948,7 +861,7 @@ mod zenoh_tests {
             .listen_service(&receiver)
             .await
             .expect("queryable declare should succeed");
-        // Nobody drains `queryable.rx` — the producer is "busy" in user code.
+        // Nobody drains `queryable.rx`: the producer is "busy" in user code.
         wait_for_subscriber_discovery().await;
 
         // Plain (empty-body) probe: one empty Response-kind reply.
@@ -1058,7 +971,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start router session");
 
-        let mut sub = router_instance
+        let sub = router_instance
             .messenger()
             .subscribe_topic(
                 &receiver("connect_test"),
@@ -1081,7 +994,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish from client");
 
-        let received = recv_or_timeout(&mut sub.rx, "test_connect_to_existing_router sub").await;
+        let received = next_message(&sub, "test_connect_to_existing_router sub").await;
         assert_eq!(received.payload(), &body);
     }
 
@@ -1105,7 +1018,7 @@ mod zenoh_tests {
             .await
             .expect("Failed to start session");
 
-        let mut sub = instance
+        let sub = instance
             .messenger()
             .subscribe_topic(
                 &receiver("port_test"),
@@ -1129,11 +1042,8 @@ mod zenoh_tests {
             .await
             .expect("Failed to publish");
 
-        let received = recv_or_timeout(
-            &mut sub.rx,
-            "test_start_router_ephemeral_with_specific_port sub",
-        )
-        .await;
+        let received =
+            next_message(&sub, "test_start_router_ephemeral_with_specific_port sub").await;
         assert_eq!(received.payload(), &body);
     }
 
@@ -1143,16 +1053,15 @@ mod zenoh_tests {
     /// while the router settles.
     async fn open_namespaced(host: &str, port: u16, namespace: &str) -> ZenohAdapter {
         let ns = pmi::Namespace::parse(namespace).expect("valid namespace");
-        for _ in 0..40 {
-            let mut adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)
-                .expect("adapter")
-                .with_namespace(Some(ns.clone()));
-            if adapter.start_session().await.is_ok() {
-                return adapter;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("could not open a namespaced session against {host}:{port}");
+        start_session_with_retry(
+            || {
+                ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)
+                    .expect("adapter")
+                    .with_namespace(Some(ns.clone()))
+            },
+            &format!("a namespaced session against {host}:{port}"),
+        )
+        .await
     }
 
     /// Asserts the subscription receives nothing within a short window.
@@ -1204,7 +1113,7 @@ mod zenoh_tests {
                 )
                 .await
                 .expect("same-namespace publish");
-            let got = recv_or_timeout(&mut subscription.rx, "same-namespace").await;
+            let got = next_message(&subscription, "same-namespace").await;
             assert_eq!(got.payload(), &Bytes::from_static(b"same-namespace"));
         }
 
@@ -1505,7 +1414,7 @@ mod zenoh_tests {
         );
     }
 
-    /// A logged-out (`local`) session and an workspace session sharing one router are
+    /// A logged-out (`local`) session and a workspace session sharing one router are
     /// routing-isolated: `local`'s keys are rewritten to `local/<key>` and the
     /// workspace's to `<workspace>/<key>`, which never intersect. Closes the LAN cross-tenant
     /// leak a "no namespace when logged out" model would leave open.
@@ -1542,11 +1451,11 @@ mod zenoh_tests {
                 )
                 .await
                 .expect("local publish");
-            let got = recv_or_timeout(&mut subscription.rx, "local").await;
+            let got = next_message(&subscription, "local").await;
             assert_eq!(got.payload(), &Bytes::from_static(b"local-payload"));
         }
 
-        // An workspace publisher must NOT reach the `local` subscriber.
+        // A workspace publisher must NOT reach the `local` subscriber.
         {
             let mut workspace_pub = open_namespaced(&host, port, "workspace-x").await;
             wait_for_subscriber_discovery().await;
