@@ -171,9 +171,6 @@ async fn listen_for_node_run_timeout() {
         .expect("failed to start ready service"),
     );
 
-    // Allow the ready service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     // Create a runtime config for the node_run request
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -341,9 +338,6 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
         .expect("node ready service should start"),
     );
 
-    // Allow the ready service to establish its listener.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let markers_present = |feedback: &[NodeRunFeedback]| {
@@ -437,9 +431,6 @@ async fn listen_for_node_run_writes_log_file() {
     );
 
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
-
-    // Allow ready/health services to establish listeners.
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -847,9 +838,6 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     let mut responders = answer_readiness(&started, FIRST_NODE_NAME, FIRST_INSTANCE_ID).await;
     responders.extend(answer_readiness(&started, SECOND_NODE_NAME, SECOND_INSTANCE_ID).await);
 
-    // Allow ready/health services to establish listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     // Create runtime config for first node
     let first_instance_plan = common::default_instance_plan(FIRST_INSTANCE_ID);
 
@@ -973,8 +961,6 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
     );
 
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -1102,8 +1088,6 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
 
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
@@ -1206,9 +1190,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
     // Set up ready/health services for the container instance
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
-
-    // Allow ready/health services to establish listeners.
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Create a runtime config for the node_run request
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
@@ -1394,8 +1375,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     // Set up ready/health services for the container instance. The container
     // will actually launch (auto-create succeeds), so these need to be live.
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -1838,9 +1817,6 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
         .expect("node health service should start"),
     );
 
-    // Allow ready/health services to establish listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
@@ -2011,8 +1987,6 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
         .expect("node health service should start"),
     );
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
@@ -2182,8 +2156,6 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
         .await
         .expect("node health service should start"),
     );
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -2359,8 +2331,6 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
         .expect("node health service should start"),
     );
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
@@ -2520,8 +2490,6 @@ async fn add_panel_node_with_services(
         .await
         .expect("node endpoints service should start"),
     ));
-    // Allow the services to establish their listeners.
-    tokio::time::sleep(Duration::from_millis(50)).await;
     services
 }
 

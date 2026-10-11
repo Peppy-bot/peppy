@@ -225,8 +225,6 @@ async fn node_info_has_instance_ids() {
     responders
         .extend(answer_readiness(&started_core_node, TARGET_NODE_NAME, TARGET_INSTANCE_ID_2).await);
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let instance_plan_1 = common::default_instance_plan(TARGET_INSTANCE_ID_1);
     let start_response_1 = send_node_run_and_wait(
         &started_core_node.caller_handle,
@@ -419,7 +417,6 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
         .await
         .expect("node endpoints service should start"),
     );
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let start_response = send_node_run_and_wait(
         &started_core_node.caller_handle,
