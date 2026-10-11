@@ -6,7 +6,7 @@ use common::{
     send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
     start_core_node_with_mock_messenger_outside_home, write_peppy_json5,
 };
-use core_node_api::encoding::NodeBuildFeedback;
+use core_node_api::encoding::{NodeBuildFeedback, NodeBuildResult};
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use std::path::Path;
 use std::time::Duration;
@@ -303,6 +303,51 @@ wheels = [
         lock,
         "the rewrite touches the staged copy only"
     );
+}
+
+/// Asserts that a build wrote its log under `logs_dir_build()` as
+/// `<name>_<tag>_*.log`, and returns the content of the log.
+fn read_build_log(
+    started_core_node: &common::StartedCoreNode,
+    build_result: &NodeBuildResult,
+    node_name: &str,
+    node_tag: &str,
+) -> String {
+    assert!(
+        !build_result.log_path.as_os_str().is_empty(),
+        "log_path should not be empty"
+    );
+    assert!(
+        build_result.log_path.exists(),
+        "log file should exist at {:?}",
+        build_result.log_path
+    );
+
+    let log_dir = started_core_node.peppy_dirs.logs_dir_build();
+    assert!(
+        build_result.log_path.starts_with(&log_dir),
+        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
+        log_dir,
+        build_result.log_path
+    );
+
+    let log_filename = build_result
+        .log_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("should have log filename");
+    assert!(
+        log_filename.starts_with(&format!("{node_name}_{node_tag}_")),
+        "log filename should start with '<node_name>_<tag>_', got: {}",
+        log_filename
+    );
+    assert!(
+        log_filename.ends_with(".log"),
+        "log filename should end with '.log', got: {}",
+        log_filename
+    );
+
+    std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file")
 }
 
 /// Polls until `pid_file` exists and holds a PID, returning it.
@@ -737,42 +782,12 @@ async fn listen_for_node_build_writes_log_file() {
         build_result.error_message
     );
 
-    assert!(
-        !build_result.log_path.as_os_str().is_empty(),
-        "log_path should not be empty"
+    let log_content = read_build_log(
+        &started_core_node,
+        &build_result,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
     );
-    assert!(
-        build_result.log_path.exists(),
-        "log file should exist at {:?}",
-        build_result.log_path
-    );
-
-    let log_dir = started_core_node.peppy_dirs.logs_dir_build();
-    assert!(
-        build_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
-        log_dir,
-        build_result.log_path
-    );
-
-    let log_filename = build_result
-        .log_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("should have log filename");
-    assert!(
-        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "log filename should start with '<node_name>_<tag>_', got: {}",
-        log_filename
-    );
-    assert!(
-        log_filename.ends_with(".log"),
-        "log filename should end with '.log', got: {}",
-        log_filename
-    );
-
-    let log_content =
-        std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file");
 
     assert!(
         log_content.contains(&format!("[stdout] {}", STDOUT_MARKER)),
@@ -1140,42 +1155,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         "got: {fingerprint}"
     );
 
-    assert!(
-        !build_result.log_path.as_os_str().is_empty(),
-        "log_path should not be empty"
+    let log_content = read_build_log(
+        &started_core_node,
+        &build_result,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
     );
-    assert!(
-        build_result.log_path.exists(),
-        "log file should exist at {:?}",
-        build_result.log_path
-    );
-
-    let log_dir = started_core_node.peppy_dirs.logs_dir_build();
-    assert!(
-        build_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
-        log_dir,
-        build_result.log_path
-    );
-
-    let log_filename = build_result
-        .log_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("should have log filename");
-    assert!(
-        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "log filename should start with '<node_name>_<tag>_', got: {}",
-        log_filename
-    );
-    assert!(
-        log_filename.ends_with(".log"),
-        "log filename should end with '.log', got: {}",
-        log_filename
-    );
-
-    let log_content =
-        std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("[stdout]") || log_content.contains("[stderr]"),
         "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:
