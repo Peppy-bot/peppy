@@ -543,19 +543,26 @@ async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
     );
 }
 
+/// A `build_cmd` that cannot run, or that exits with a failure, fails the
+/// build, and the error names the command.
+#[rstest::rstest]
+#[case::missing_command(
+    r#"["this_command_does_not_exist_12345"]"#,
+    "this_command_does_not_exist_12345"
+)]
+#[case::nonzero_exit(r#"["sh", "-c", "exit 1"]"#, "exit 1")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_build_cmd_failure_fails_build() {
+async fn listen_for_node_build_fails_when_build_cmd_fails(
+    #[case] build_cmd: &str,
+    #[case] failed_command: &str,
+) {
     const TARGET_NODE_NAME: &str = "add_cmd_fail_node";
     const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = node_config_with_build_cmd(
-        TARGET_NODE_NAME,
-        TARGET_NODE_TAG,
-        r#"["this_command_does_not_exist_12345"]"#,
-    );
+    let peppy_json5 = node_config_with_build_cmd(TARGET_NODE_NAME, TARGET_NODE_TAG, build_cmd);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
@@ -580,50 +587,7 @@ async fn listen_for_node_build_cmd_failure_fails_build() {
         build_result
             .error_message
             .as_ref()
-            .is_some_and(|msg| msg.contains("this_command_does_not_exist_12345")),
-        "error message should include the command that failed, got: {:?}",
-        build_result.error_message
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_build_cmd_nonzero_exit_fails_build() {
-    const TARGET_NODE_NAME: &str = "add_cmd_exit_fail_node";
-    const TARGET_NODE_TAG: &str = "v1";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = node_config_with_build_cmd(
-        TARGET_NODE_NAME,
-        TARGET_NODE_TAG,
-        r#"["sh", "-c", "exit 1"]"#,
-    );
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let (node_name, node_tag) =
-        stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
-
-    let build_result =
-        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
-
-    assert!(
-        !build_result.success,
-        "node_build should fail when build_cmd exits with non-zero status"
-    );
-    assert!(
-        build_result
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains("build_cmd failed")),
-        "error message should mention build_cmd failure, got: {:?}",
-        build_result.error_message
-    );
-    assert!(
-        build_result
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains("exit 1")),
+            .is_some_and(|msg| msg.contains(failed_command)),
         "error message should include the command that failed, got: {:?}",
         build_result.error_message
     );
