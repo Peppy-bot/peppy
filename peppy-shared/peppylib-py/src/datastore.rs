@@ -16,10 +16,12 @@ use peppylib::datastore::{DatastoreEntry, StoredValue};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::messaging::{duration_from_secs_f64, encode_err, future_into_py_unit, to_py_err};
+use crate::messaging::{
+    encoded_to_py_bytes, future_into_py_unit, optional_duration_from_secs_f64, to_py_err,
+};
 use crate::runtime::PyNodeRunner;
 
-/// Python wrapper for `core_node_api::encoding::DatastoreStoreResponse` — an
+/// Python wrapper for `core_node_api::encoding::DatastoreStoreResponse`, an
 /// empty ack. Exposes `encode()` so test stubs can produce wire bytes.
 #[pyclass(name = "DatastoreStoreResponse", skip_from_py_object)]
 #[derive(Clone)]
@@ -33,14 +35,15 @@ impl PyDatastoreStoreResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = DatastoreStoreResponse::new()
-            .encode()
-            .map_err(|e| encode_err("DatastoreStoreResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(
+            py,
+            "DatastoreStoreResponse",
+            DatastoreStoreResponse::new().encode(),
+        )
     }
 }
 
-/// Python wrapper for `core_node_api::encoding::DatastoreGetResponse` — used
+/// Python wrapper for `core_node_api::encoding::DatastoreGetResponse`, used
 /// by test stubs to produce capnp wire bytes for the `DATASTORE_GET` service.
 #[pyclass(name = "DatastoreGetResponse", skip_from_py_object)]
 #[derive(Clone)]
@@ -83,15 +86,11 @@ impl PyDatastoreGetResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("DatastoreGetResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "DatastoreGetResponse", self.inner.encode())
     }
 }
 
-/// Python wrapper for `core_node_api::encoding::DatastoreListResponse` — used by
+/// Python wrapper for `core_node_api::encoding::DatastoreListResponse`, used by
 /// test stubs to produce capnp wire bytes for the `DATASTORE_LIST` service.
 /// Construct it from `(key, encoding, last_modified_by)` triples.
 #[pyclass(name = "DatastoreListResponse", skip_from_py_object)]
@@ -118,15 +117,11 @@ impl PyDatastoreListResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("DatastoreListResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "DatastoreListResponse", self.inner.encode())
     }
 }
 
-/// Python wrapper for `core_node_api::encoding::DatastoreRemoveResponse` — used
+/// Python wrapper for `core_node_api::encoding::DatastoreRemoveResponse`, used
 /// by test stubs to produce capnp wire bytes for the `DATASTORE_REMOVE` service.
 #[pyclass(name = "DatastoreRemoveResponse", skip_from_py_object)]
 #[derive(Clone)]
@@ -149,19 +144,15 @@ impl PyDatastoreRemoveResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("DatastoreRemoveResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "DatastoreRemoveResponse", self.inner.encode())
     }
 }
 
-/// Python wrapper for `peppylib::datastore::StoredValue` — the
-/// value returned by [`datastore::get`]: the raw bytes plus their Zenoh-style
+/// Python wrapper for `peppylib::datastore::StoredValue`, the value returned
+/// by [`peppylib::datastore::get`]: the raw bytes plus their Zenoh-style
 /// encoding tag. The `encoding` getter returns a plain `str` (the open set of
 /// tags means an arbitrary value may come back); it compares equal to the
-/// `peppylib.Encoding` members.
+/// `peppylib.datastore.Encoding` members.
 #[pyclass(name = "StoredValue", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyStoredValue {
@@ -192,10 +183,10 @@ impl PyStoredValue {
     }
 }
 
-/// Python wrapper for `peppylib::datastore::DatastoreEntry` — one
-/// key's metadata returned by [`datastore::list`]: its key, the encoding tag of
-/// its value, and the `instance_id` of the node that last wrote it. The value
-/// bytes are not included; fetch them with [`datastore::get`].
+/// Python wrapper for `peppylib::datastore::DatastoreEntry`, the metadata of
+/// one key as returned by [`peppylib::datastore::list`]: its key, the encoding
+/// tag of its value, and the `instance_id` of the node that last wrote it. The
+/// value bytes are not included; fetch them with [`peppylib::datastore::get`].
 #[pyclass(name = "DatastoreEntry", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyDatastoreEntry {
@@ -241,10 +232,8 @@ fn datastore_store<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = response_timeout_secs
-        .map(|s| duration_from_secs_f64("response_timeout_secs", s))
-        .transpose()?;
-    // `future_into_py_unit` resolves to Python `None` — a store that succeeds
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
+    // `future_into_py_unit` resolves to Python `None`: a store that succeeds
     // has nothing to return (see the helper for why a bare `Ok(())` would not).
     future_into_py_unit(py, async move {
         peppylib::datastore::store(&runner, key, value, encoding, timeout)
@@ -267,9 +256,7 @@ fn datastore_get<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = response_timeout_secs
-        .map(|s| duration_from_secs_f64("response_timeout_secs", s))
-        .transpose()?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let value = peppylib::datastore::get(&runner, key, timeout)
             .await
@@ -279,8 +266,8 @@ fn datastore_get<'py>(
 }
 
 /// List the metadata of every key in `node_runner`'s bound core node datastore.
-/// Resolves to a list of `DatastoreEntry` (key, encoding, last_modified_by) —
-/// the value bytes are not included; fetch them with `datastore::get`.
+/// Resolves to a list of `DatastoreEntry` (key, encoding, last_modified_by).
+/// The value bytes are not included; fetch them with `datastore::get`.
 ///
 /// Python equivalent of `peppylib::datastore::list`.
 #[pyfunction]
@@ -291,9 +278,7 @@ fn datastore_list<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = response_timeout_secs
-        .map(|s| duration_from_secs_f64("response_timeout_secs", s))
-        .transpose()?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let entries = peppylib::datastore::list(&runner, timeout)
             .await
@@ -318,9 +303,7 @@ fn datastore_remove<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = response_timeout_secs
-        .map(|s| duration_from_secs_f64("response_timeout_secs", s))
-        .transpose()?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let removed = peppylib::datastore::remove(&runner, key, timeout)
             .await

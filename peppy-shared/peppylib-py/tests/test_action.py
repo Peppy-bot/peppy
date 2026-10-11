@@ -2,7 +2,7 @@
 Tests for peppylib ActionMessenger.
 
 Python equivalent of `action_messenger_communication` in
-crates/peppylib/tests/actions.rs.
+peppy-shared/peppylib-rs/tests/actions.rs.
 """
 
 import asyncio
@@ -32,6 +32,9 @@ NODE_TAG = "v1"
 ACTION_NAME = "test_action"
 GOAL_PAYLOAD = b"goal data"
 GOAL_RESPONSE_PAYLOAD = b"goal accepted"
+FEEDBACK_PAYLOAD = b"50% done"
+RESULT_PAYLOAD = b"action result"
+TEST_PRODUCER = ProducerRef(CORE_NODE, INSTANCE_ID)
 
 
 def wrap_goal_ack(body: bytes, accepted: bool = True, reason: str = "") -> bytes:
@@ -42,14 +45,52 @@ def wrap_goal_ack(body: bytes, accepted: bool = True, reason: str = "") -> bytes
     Mirrors peppylib's Rust wrap_goal_ack and independently pins the layout.
     """
     reason_bytes = reason.encode()
-    return bytes([1 if accepted else 0]) + len(reason_bytes).to_bytes(2, "big") + reason_bytes + body
-FEEDBACK_PAYLOAD = b"50% done"
-RESULT_PAYLOAD = b"action result"
+    return (
+        bytes([1 if accepted else 0])
+        + len(reason_bytes).to_bytes(2, "big")
+        + reason_bytes
+        + body
+    )
+
+
+async def _expose_test_action(server_handle: MessengerHandle) -> ConcurrentAction:
+    """Expose the test action, with feedback, as the test instance of the test
+    node."""
+    return await ConcurrentAction.expose(
+        server_handle,
+        CORE_NODE,
+        INSTANCE_ID,
+        SenderTarget.node(NODE_NAME, NODE_TAG),
+        ACTION_NAME,
+        True,  # has_feedback
+    )
+
+
+async def _send_test_goal(
+    client_handle: MessengerHandle,
+    payload: bytes = GOAL_PAYLOAD,
+    target: ProducerRef = TEST_PRODUCER,
+    timeout_secs: float = 2.0,
+):
+    """Send a goal for the test action to `target`. No caller needs a settle
+    sleep first: send_goal retries a cold-start miss within its timeout until
+    the goal service queryable propagates."""
+    return await ActionMessenger.send_goal(
+        client_handle,
+        CORE_NODE,
+        INSTANCE_ID,
+        SenderTarget.node(NODE_NAME, NODE_TAG),
+        ACTION_NAME,
+        target,
+        payload,
+        QoSProfile.Reliable,
+        timeout_secs,
+    )
 
 
 @pytest.mark.asyncio
 async def test_action_messenger_communication():
-    """Full action lifecycle: goal, feedback, result — driven via ConcurrentAction.
+    """Full action lifecycle (goal, feedback, result) driven via ConcurrentAction.
 
     Using the engine (rather than the raw services) means the result reply is
     framed with the typed result-outcome envelope, so the client gets back a
@@ -60,15 +101,7 @@ async def test_action_messenger_communication():
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
-        action = await ConcurrentAction.expose(
-            server_handle,
-            CORE_NODE,
-            INSTANCE_ID,
-            SenderTarget.node(NODE_NAME, NODE_TAG),
-            ACTION_NAME,
-            True,  # has_feedback
-        )
-
+        action = await _expose_test_action(server_handle)
 
         async def server():
             pending = await action.recv_next_goal()
@@ -79,16 +112,7 @@ async def test_action_messenger_communication():
 
         server_task = asyncio.create_task(server())
 
-        goal_handle = await ActionMessenger.send_goal(
-            client_handle,
-            CORE_NODE,
-            INSTANCE_ID,
-            SenderTarget.node(NODE_NAME, NODE_TAG),
-            ACTION_NAME,
-            ProducerRef(CORE_NODE, INSTANCE_ID),
-            GOAL_PAYLOAD,
-            QoSProfile.Reliable,
-            2.0,)
+        goal_handle = await _send_test_goal(client_handle)
 
         assert goal_handle.accepted
         assert goal_handle.reason is None
@@ -104,7 +128,7 @@ async def test_action_messenger_communication():
 
         assert feedback.payload == FEEDBACK_PAYLOAD
 
-        # Client: request result — typed status + raw body.
+        # Client: request result (typed status + raw body).
         result = await ActionMessenger.request_result(
             client_handle,
             goal_handle,
@@ -125,18 +149,10 @@ async def test_cancel_goal_concurrent_with_feedback():
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
-        action = await ConcurrentAction.expose(
-            server_handle,
-            CORE_NODE,
-            INSTANCE_ID,
-            SenderTarget.node(NODE_NAME, NODE_TAG),
-            ACTION_NAME,
-            True,  # has_feedback
-        )
+        action = await _expose_test_action(server_handle)
 
-
-        # Server: accept the goal and hold it open — never publish feedback and
-        # never complete — so the client's on_next_feedback stays pending while
+        # Server: accept the goal and hold it open (never publish feedback and
+        # never complete), so the client's on_next_feedback stays pending while
         # we fire a cancel concurrently.
         async def server():
             pending = await action.recv_next_goal()
@@ -146,18 +162,9 @@ async def test_cancel_goal_concurrent_with_feedback():
 
         server_task = asyncio.create_task(server())
 
-        goal_handle = await ActionMessenger.send_goal(
-            client_handle,
-            CORE_NODE,
-            INSTANCE_ID,
-            SenderTarget.node(NODE_NAME, NODE_TAG),
-            ACTION_NAME,
-            ProducerRef(CORE_NODE, INSTANCE_ID),
-            GOAL_PAYLOAD,
-            QoSProfile.Reliable,
-            2.0,)
+        goal_handle = await _send_test_goal(client_handle)
 
-        # Start waiting for feedback (will block — server never sends any).
+        # Start waiting for feedback (will block: the server never sends any).
         feedback_task = asyncio.ensure_future(goal_handle.on_next_feedback())
 
         # The cancel of a live goal must resolve promptly to the typed Signalled
@@ -184,26 +191,19 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
 
     Python equivalent of
     `concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned`
-    in crates/peppylib/tests/actions.rs. No session teardown is exposed to
-    Python, so death is simulated by dropping the engine — the sole holder of
-    the producer's liveliness token — while its GoalContext stays referenced:
-    the end-of-stream sentinel is never published (the exact race a SIGKILL /
-    OOM loses), so only the token disappearing can unblock the consumer.
+    in peppy-shared/peppylib-rs/tests/actions.rs. No session teardown is
+    exposed to Python, so death is simulated by dropping the engine (the sole
+    holder of the producer's liveliness token) while its GoalContext stays
+    referenced: the end-of-stream sentinel is never published (the exact race
+    a SIGKILL / OOM loses), so only the token disappearing can unblock the
+    consumer.
     """
 
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
-        action = await ConcurrentAction.expose(
-            server_handle,
-            CORE_NODE,
-            INSTANCE_ID,
-            SenderTarget.node(NODE_NAME, NODE_TAG),
-            ACTION_NAME,
-            True,  # has_feedback
-        )
-
+        action = await _expose_test_action(server_handle)
 
         # Server: accept the goal, emit one feedback, and hand the live
         # GoalContext out. The engine is passed as a parameter (not captured
@@ -218,16 +218,7 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
 
         server_task = asyncio.create_task(server(action))
 
-        goal_handle = await ActionMessenger.send_goal(
-            client_handle,
-            CORE_NODE,
-            INSTANCE_ID,
-            SenderTarget.node(NODE_NAME, NODE_TAG),
-            ACTION_NAME,
-            ProducerRef(CORE_NODE, INSTANCE_ID),
-            GOAL_PAYLOAD,
-            QoSProfile.Reliable,
-            2.0,)
+        goal_handle = await _send_test_goal(client_handle)
 
         assert goal_handle.accepted
         assert goal_handle.reason is None
@@ -240,7 +231,7 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
         )
         assert feedback.payload == FEEDBACK_PAYLOAD
 
-        # Keep the context alive past the engine drop below — its
+        # Keep the context alive past the engine drop below: its
         # abandon-on-drop sentinel must never fire during this test.
         ctx = await asyncio.wait_for(server_task, timeout=2.0)
 
@@ -251,7 +242,7 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
 
         # The drain must fail over to the typed producer-gone error
         # (liveliness DELETE → confirmation probes), surfaced as
-        # ConnectionError — never hang, never the clean-close RuntimeError.
+        # ConnectionError: never hang, never the clean-close RuntimeError.
         with pytest.raises(ConnectionError):
             await asyncio.wait_for(goal_handle.on_next_feedback(), timeout=15.0)
 
@@ -274,16 +265,7 @@ async def test_send_goal_rejects_invalid_timeout():
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
         with pytest.raises(ValueError, match="goal_timeout_secs"):
-            await ActionMessenger.send_goal(
-                client_handle,
-                CORE_NODE,
-                INSTANCE_ID,
-                SenderTarget.node(NODE_NAME, NODE_TAG),
-                ACTION_NAME,
-                ProducerRef(CORE_NODE, INSTANCE_ID),
-                GOAL_PAYLOAD,
-                QoSProfile.Reliable,
-                -1.0,)
+            await _send_test_goal(client_handle, timeout_secs=-1.0)
 
 
 @pytest.mark.asyncio
@@ -299,15 +281,7 @@ async def test_send_goal_honors_target_pair():
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
-        action = await ConcurrentAction.expose(
-            server_handle,
-            CORE_NODE,
-            INSTANCE_ID,
-            SenderTarget.node(NODE_NAME, NODE_TAG),
-            ACTION_NAME,
-            True,  # has_feedback
-        )
-
+        action = await _expose_test_action(server_handle)
 
         async def server():
             pending = await action.recv_next_goal()
@@ -318,16 +292,7 @@ async def test_send_goal_honors_target_pair():
         server_task = asyncio.create_task(server())
 
         # Pinned to the producer's exact pair: the goal goes through.
-        goal_handle = await ActionMessenger.send_goal(
-            client_handle,
-            CORE_NODE,
-            INSTANCE_ID,
-            SenderTarget.node(NODE_NAME, NODE_TAG),
-            ACTION_NAME,
-            ProducerRef(CORE_NODE, INSTANCE_ID),
-            GOAL_PAYLOAD,
-            QoSProfile.Reliable,
-            2.0,)
+        goal_handle = await _send_test_goal(client_handle)
         assert goal_handle.accepted
         assert goal_handle.reason is None
         assert goal_handle.goal_reply_body == GOAL_RESPONSE_PAYLOAD
@@ -337,16 +302,11 @@ async def test_send_goal_honors_target_pair():
         # Pinned to the wrong core_node with the correct instance_id: the
         # pair is honored as a unit, so the producer must be unreachable.
         with pytest.raises(ConnectionError):
-            await ActionMessenger.send_goal(
+            await _send_test_goal(
                 client_handle,
-                CORE_NODE,
-                INSTANCE_ID,
-                SenderTarget.node(NODE_NAME, NODE_TAG),
-                ACTION_NAME,
-                ProducerRef("wrong_core", INSTANCE_ID),
-                GOAL_PAYLOAD,
-                QoSProfile.Reliable,
-                0.5,)
+                target=ProducerRef("wrong_core", INSTANCE_ID),
+                timeout_secs=0.5,
+            )
 
 
 @pytest.mark.asyncio
@@ -380,7 +340,11 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             captured = [None]
 
             async def on_goal(req):
-                publisher, _goal_id, _user_payload = await action.feedback_publisher_factory.declare_from_wire(
+                (
+                    publisher,
+                    _goal_id,
+                    _user_payload,
+                ) = await action.feedback_publisher_factory.declare_from_wire(
                     req.link_id,
                     bytes(req.message.payload),
                 )
@@ -390,9 +354,12 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             await action.goal_service.handle_next_request(on_goal)
             return captured[0]
 
-        native_task = asyncio.ensure_future(goal_handler(native_action, native_goal_response))
-        iface_task = asyncio.ensure_future(goal_handler(iface_action, iface_goal_response))
-
+        native_task = asyncio.ensure_future(
+            goal_handler(native_action, native_goal_response)
+        )
+        iface_task = asyncio.ensure_future(
+            goal_handler(iface_action, iface_goal_response)
+        )
 
         native_goal = await ActionMessenger.send_goal(
             caller_handle,
@@ -433,22 +400,15 @@ async def test_reject_then_accept_through_concurrent_action():
     accepted and its typed result routes back by goal_id.
 
     Python mirror of `concurrent_action_reject_then_accept` in
-    crates/peppylib/tests/actions.rs. Guards the binding's accept/reject mapping
-    and the typed-result framing for the engine path, which the Rust-only tests
-    did not cover from Python.
+    peppy-shared/peppylib-rs/tests/actions.rs. Guards the binding's
+    accept/reject mapping and the typed-result framing for the engine path,
+    which the Rust tests do not cover from Python.
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
-        action = await ConcurrentAction.expose(
-            server_handle,
-            CORE_NODE,
-            INSTANCE_ID,
-            SenderTarget.node(NODE_NAME, NODE_TAG),
-            ACTION_NAME,
-            True,  # has_feedback
-        )
+        action = await _expose_test_action(server_handle)
 
         async def server():
             # First goal is rejected; the second is accepted and completed.
@@ -465,30 +425,15 @@ async def test_reject_then_accept_through_concurrent_action():
 
         server_task = asyncio.create_task(server())
 
-        async def send(payload: bytes):
-            # No settle sleep: send_goal self-retries on a cold-start miss within
-            # its timeout until the goal service queryable propagates.
-            return await ActionMessenger.send_goal(
-                client_handle,
-                CORE_NODE,
-                INSTANCE_ID,
-                SenderTarget.node(NODE_NAME, NODE_TAG),
-                ACTION_NAME,
-                ProducerRef(CORE_NODE, INSTANCE_ID),
-                payload,
-                QoSProfile.Reliable,
-                2.0,
-            )
-
         # A rejected goal still resolves with the server's goal response.
-        goal_a = await send(b"reject")
+        goal_a = await _send_test_goal(client_handle, payload=b"reject")
         assert not goal_a.accepted
         assert goal_a.reason == "resource is busy"
         assert goal_a.goal_reply_body == b"rejected"
 
         # The server kept serving past the rejection: the next goal is accepted
         # and its typed Completed result routes back.
-        goal_b = await send(b"B")
+        goal_b = await _send_test_goal(client_handle, payload=b"B")
         assert goal_b.accepted
         assert goal_b.reason is None
         assert goal_b.goal_reply_body == b"accepted"

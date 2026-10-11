@@ -1,13 +1,13 @@
 """Integration tests for `peppylib.info`.
 
-Python equivalent of `crates/peppylib/tests/core_node/info.rs`.
+Python equivalent of `peppy-shared/peppylib-rs/tests/core_node/info.rs`.
 """
 
 import pytest
 
 from peppylib import ContainerInfo, InfoResponse, info
 
-from .common import spawn_stub_listener, start_router_and_runner, wait_until_reachable
+from .common import call_against_stub_service
 
 
 @pytest.mark.asyncio
@@ -24,16 +24,9 @@ async def test_info_returns_typed_response_fields(tmp_path):
         7447,
     )
 
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        handler = await spawn_stub_listener(server_handle, "info", response.encode())
-        await wait_until_reachable(node_runner.messenger(), "info")
-
-        result = await info(node_runner, 3.0)
-
-        await handler
-    finally:
-        await router.stop()
+    result = await call_against_stub_service(
+        tmp_path, "info", response.encode(), lambda runner: info(runner, 3.0)
+    )
 
     assert result.uptime_secs == 1234
     assert result.core_node_name == "standalone-core"

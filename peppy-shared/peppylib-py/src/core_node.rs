@@ -1,27 +1,17 @@
 //! Python bindings for the `core_node` high-level service wrappers.
 //!
-//! Mirrors `pub use core_node::{info::info, stack};` from
-//! `crates/peppylib/src/lib.rs`: takes a `NodeRunner` directly and returns
-//! fully-typed responses.
+//! Mirrors `peppylib::info` and `peppylib::stack`
+//! (peppy-shared/peppylib-rs/src/lib.rs): takes a `NodeRunner` directly and
+//! returns fully-typed responses.
 
-use std::time::Duration;
-
-use core_node_api::SerializedNodeGraph;
-use core_node_api::encoding::{
-    ContainerInfo, CopyChange, CopyInfo, InfoResponse, StackListResponse,
-};
+use core_node_api::encoding::{ContainerInfo, InfoResponse, StackListResponse};
 use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pythonize::pythonize;
 
-use crate::messaging::{duration_from_secs_f64, encode_err, to_py_err};
+use crate::messaging::{encoded_to_py_bytes, optional_duration_from_secs_f64, to_py_err};
 use crate::runtime::PyNodeRunner;
-
-fn optional_timeout(arg_name: &str, secs: Option<f64>) -> PyResult<Option<Duration>> {
-    secs.map(|s| duration_from_secs_f64(arg_name, s))
-        .transpose()
-}
 
 /// Python wrapper for `core_node_api::encoding::ContainerInfo`.
 #[pyclass(name = "ContainerInfo", from_py_object)]
@@ -142,15 +132,11 @@ impl PyInfoResponse {
     /// Capnp-encode this response into bytes suitable for replying from a stub
     /// service listener.
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("InfoResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "InfoResponse", self.inner.encode())
     }
 }
 
-/// Python wrapper for `core_node_api::encoding::StackListResponse` — used by
+/// Python wrapper for `core_node_api::encoding::StackListResponse`, used by
 /// test stubs to produce capnp wire bytes for the `STACK_LIST` service.
 #[pyclass(name = "StackListResponse", skip_from_py_object)]
 #[derive(Clone)]
@@ -216,36 +202,26 @@ impl PyStackListResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("StackListResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "StackListResponse", self.inner.encode())
     }
 }
 
 /// Python wrapper for `peppylib::stack::StackList`.
 ///
-/// `graph` is returned as a Python dict via `pythonize` — the nested
+/// `graph` is returned as a Python dict via `pythonize`. The nested
 /// `SerializedNodeGraph` types all derive `Serialize`/`Deserialize`, so a
 /// dict/list representation faithfully mirrors the Rust shape without hand-
 /// wrapping six more classes.
 #[pyclass(name = "StackList")]
 pub struct PyStackList {
-    graph: SerializedNodeGraph,
-    copies: Vec<CopyInfo>,
-    copy_change: Option<CopyChange>,
-    shutdown_grace_secs: u64,
-    core_node: String,
-    instance_id: String,
-    host_name: String,
+    inner: peppylib::stack::StackList,
 }
 
 #[pymethods]
 impl PyStackList {
     #[getter]
     fn copies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        Ok(pythonize(py, &self.copies)?)
+        Ok(pythonize(py, &self.inner.copies)?)
     }
 
     /// The join or the removal of a copy that holds the serving daemon's
@@ -253,34 +229,34 @@ impl PyStackList {
     /// copy that joins is in `copies` only once its join ends.
     #[getter]
     fn copy_change<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        Ok(pythonize(py, &self.copy_change)?)
+        Ok(pythonize(py, &self.inner.copy_change)?)
     }
 
     #[getter]
     fn shutdown_grace_secs(&self) -> u64 {
-        self.shutdown_grace_secs
+        self.inner.shutdown_grace_secs
     }
 
     #[getter]
     fn graph<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        pythonize(py, &self.graph).map_err(|e| {
+        pythonize(py, &self.inner.graph).map_err(|e| {
             PyRuntimeError::new_err(format!("failed to convert graph to Python dict: {e}"))
         })
     }
 
     #[getter]
     fn core_node(&self) -> &str {
-        &self.core_node
+        &self.inner.core_node
     }
 
     #[getter]
     fn instance_id(&self) -> &str {
-        &self.instance_id
+        &self.inner.instance_id
     }
 
     #[getter]
     fn host_name(&self) -> &str {
-        &self.host_name
+        &self.inner.host_name
     }
 
     /// Externally visible instance ids for the node identified by
@@ -293,7 +269,8 @@ impl PyStackList {
         node_name: &str,
         node_tag: &str,
     ) -> PyResult<Vec<String>> {
-        self.graph
+        self.inner
+            .graph
             .running_instance_ids_by_node(node_name, node_tag)
             .map(|ids| ids.into_iter().map(str::to_owned).collect())
             .map_err(|err| PyKeyError::new_err(err.to_string()))
@@ -311,7 +288,7 @@ fn info<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = optional_timeout("response_timeout_secs", response_timeout_secs)?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let response = peppylib::info(&runner, timeout).await.map_err(to_py_err)?;
         Ok(PyInfoResponse::from(response))
@@ -329,20 +306,12 @@ fn stack_list<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = optional_timeout("response_timeout_secs", response_timeout_secs)?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let result = peppylib::stack::list(&runner, timeout)
             .await
             .map_err(to_py_err)?;
-        Ok(PyStackList {
-            graph: result.graph,
-            copies: result.copies,
-            copy_change: result.copy_change,
-            shutdown_grace_secs: result.shutdown_grace_secs,
-            core_node: result.core_node,
-            instance_id: result.instance_id,
-            host_name: result.host_name,
-        })
+        Ok(PyStackList { inner: result })
     })
 }
 

@@ -128,10 +128,10 @@ pub struct PyTopicMessenger;
 #[pymethods]
 impl PyTopicMessenger {
     /// Subscribe to a topic from one producer. Pass
-    /// `SenderTarget.node(name, tag)` or `SenderTarget.interface(name, tag)`
+    /// `SenderTarget.node(name, tag)` or `SenderTarget.contract(name, tag)`
     /// to match the publisher's target. `from_producer` is a full
     /// [`ProducerRef`](peppylib::messaging::ProducerRef) identity pinned
-    /// on the wire — only that producer's publishes reach the
+    /// on the wire: only that producer's publishes reach the
     /// subscription. Generated consumed topics never splice this: they go
     /// through `node_runner.subscribe_bound_set(...)`, which follows the
     /// slot's complete bound set for every cardinality.

@@ -1,4 +1,4 @@
-"""Node-invariant test machinery — the Python twin of Rust's ``peppylib::testing``.
+"""Node-invariant test machinery: the Python twin of Rust's ``peppylib::testing``.
 
 Everything here is untyped (``bytes`` in, ``bytes`` out) on purpose: this module
 is the single Python implementation of the semantics that generated per-node
@@ -11,7 +11,7 @@ veneer instead.
 Deliberately not imported by ``peppylib/__init__.py``: the wheel ships it
 inert, and only test code ever imports ``peppylib.testing``.
 
-Semantics mirror ``peppylib-rs/src/testing.rs`` — mirror, not re-design; a
+Semantics mirror ``peppylib-rs/src/testing.rs`` (mirror, not re-design); a
 behavior difference between the two is a bug here, and both sides carry
 equivalent test suites in peppy-shared to surface one early.
 
@@ -33,8 +33,10 @@ import time
 import warnings
 import weakref
 from collections import deque
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Sequence
+from types import TracebackType
+from typing import Any, Protocol, Self
 
 from peppylib import (
     ActionMessenger,
@@ -50,12 +52,16 @@ from peppylib import (
     ServiceMessenger,
     StandaloneConfig,
     TopicMessenger,
-    TopicRetention,
     TopicPublisher,
+    TopicRetention,
     ZenohdInstance,
 )
-from peppylib.clock import ClockRequest, ClockResponse, ClockTick
-from peppylib.messaging.services import ServiceRequestContext, ServiceResponder
+from peppylib.clock import ClockBinding, ClockRequest, ClockResponse, ClockTick
+from peppylib.messaging.services import (
+    ServiceEndpoint,
+    ServiceRequestContext,
+    ServiceResponder,
+)
 
 #: How long readiness waits (subscriber matching, reachability) may take
 #: before failing loudly. Generous on purpose: every wait returns the moment
@@ -65,6 +71,12 @@ READINESS_TIMEOUT = 10.0
 _CONNECT_RETRIES = 5
 _CONNECT_RETRY_DELAY = 0.2
 _REACHABILITY_POLL_INTERVAL = 0.025
+
+#: The exceptions a failed native messaging call raises: peppylib maps every
+#: Rust messaging error to one of these. A mock pump that catches them handles
+#: exactly what its Rust twin handles as an `Err`, and a Rust panic still
+#: surfaces.
+_MESSAGING_ERRORS = (ConnectionError, RuntimeError, TimeoutError, ValueError)
 
 #: The identity segment generated test surfaces pin the node-under-test with;
 #: the Python twin of the Rust runtime's ``STANDALONE_CORE_NODE`` constant, so
@@ -165,14 +177,27 @@ class Mocks:
         Each mock's own ``stop()`` is idempotent, so calling this after
         stopping some by hand is safe; the harness calls it on shutdown."""
         for group in (self.deps, self.pairings, self.observed):
-            for value in vars(group).values():
-                if value is None:
-                    continue
-                if isinstance(value, list):
-                    for mock in value:
-                        await mock.stop()
-                else:
-                    await value.stop()
+            for mock in _started_mocks(group):
+                await mock.stop()
+
+
+class _StoppableMock(Protocol):
+    """What :meth:`Mocks.stop_all` needs of a generated mock."""
+
+    async def stop(self) -> None: ...
+
+
+def _started_mocks(group: object) -> Iterator[_StoppableMock]:
+    """Every mock of one namespace group, in attribute order: a multi-instance
+    slot's list gives each of its members, and a vacant slot (``None``) gives
+    none."""
+    for value in vars(group).values():
+        if value is None:
+            continue
+        if isinstance(value, list):
+            yield from value
+            continue
+        yield value
 
 
 def prepare_test_process() -> None:
@@ -182,7 +207,7 @@ def prepare_test_process() -> None:
       through at least 1.10.0 can deadlock its routing layer under
       peer-session churn on the single-worker default; an operator-provided
       ``ZENOH_RUNTIME`` wins). Must run before the first session or router
-      lazily initializes the native runtime — importing this module (or
+      lazily initializes the native runtime; importing this module (or
       calling :meth:`EphemeralRouter.start`) is early enough for test code.
     - Raises the soft ``nofile`` limit toward the hard limit, best effort:
       parallel routers/sessions can exhaust the macOS default soft limit of
@@ -201,18 +226,18 @@ def prepare_test_process() -> None:
 
 
 # Run at import time so the environment is set before the native runtime can
-# lazily initialize — the Python stand-in for the Rust module's pre-main ctor.
+# lazily initialize: the Python stand-in for the Rust module's pre-main ctor.
 prepare_test_process()
 
 
 # One mesh-serialization lock per event loop (pytest-asyncio gives each test
 # its own loop, and asyncio primitives refuse cross-loop reuse). Sequential
 # tests never overlap meshes anyway; the lock exists for tests that start
-# several routers/harnesses concurrently on one loop — one mesh at a time
+# several routers/harnesses concurrently on one loop. One mesh at a time
 # keeps gossip discovery fast and deterministic.
-_MESH_SERIAL_LOCKS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
-    weakref.WeakKeyDictionary()
-)
+_MESH_SERIAL_LOCKS: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Lock
+] = weakref.WeakKeyDictionary()
 
 
 def _mesh_serial_lock() -> asyncio.Lock:
@@ -236,16 +261,12 @@ async def acquire_mesh_serial() -> asyncio.Lock:
 async def connect_messenger(host: str, port: int) -> MessengerHandle:
     """Open a gossip-peer session against ``host:port``, retrying the
     first-connect races a just-ready router can still lose."""
-    last_error: Exception | None = None
-    for attempt in range(_CONNECT_RETRIES):
+    for _ in range(_CONNECT_RETRIES - 1):
         try:
             return await MessengerHandle.from_host_port(host, port)
-        except Exception as error:  # noqa: BLE001 — retried, then re-raised
-            last_error = error
-            if attempt + 1 < _CONNECT_RETRIES:
-                await asyncio.sleep(_CONNECT_RETRY_DELAY)
-    assert last_error is not None
-    raise last_error
+        except Exception:  # noqa: BLE001, retried; the final attempt below raises
+            await asyncio.sleep(_CONNECT_RETRY_DELAY)
+    return await MessengerHandle.from_host_port(host, port)
 
 
 class EphemeralRouter:
@@ -265,11 +286,11 @@ class EphemeralRouter:
         self._serial = serial
 
     @classmethod
-    async def start(cls) -> "EphemeralRouter":
+    async def start(cls) -> EphemeralRouter:
         return await cls.start_on("127.0.0.1", None)
 
     @classmethod
-    async def start_on(cls, host: str, port: int | None = None) -> "EphemeralRouter":
+    async def start_on(cls, host: str, port: int | None = None) -> EphemeralRouter:
         prepare_test_process()
         serial = await acquire_mesh_serial()
         try:
@@ -282,7 +303,7 @@ class EphemeralRouter:
     @classmethod
     async def start_unserialized(
         cls, host: str = "127.0.0.1", port: int | None = None
-    ) -> "EphemeralRouter":
+    ) -> EphemeralRouter:
         prepare_test_process()
         instance = await ZenohdInstance.start_ephemeral(host, port)
         return cls(instance, None)
@@ -315,11 +336,50 @@ class EphemeralRouter:
         wrapper drops into call sites written against the raw instance."""
         await self.shutdown()
 
-    async def __aenter__(self) -> "EphemeralRouter":
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         await self.shutdown()
+
+
+async def _wait_for_matching_subscriber(
+    messenger: MessengerHandle,
+    as_core_node: str,
+    as_instance_id: str,
+    as_target: SenderTarget,
+    topic: str,
+    link_id: str | None,
+    peer: PeerInfo | None,
+    timeout: float,
+) -> bool:
+    """Wait until a subscriber matching the exact keyexpr that a publisher
+    with this identity emits on is visible, or ``timeout`` elapses: the
+    pairing keyexpr when the publisher addresses ``peer`` from its slot
+    ``link_id``, else the plain one scoped by ``link_id``."""
+    if peer is not None and link_id is not None:
+        return bool(
+            await TopicMessenger.wait_for_pairing_subscriber(
+                messenger,
+                as_core_node,
+                as_instance_id,
+                as_target,
+                link_id,
+                topic,
+                peer,
+                timeout,
+            )
+        )
+    return bool(
+        await TopicMessenger.wait_for_subscriber_with_link_id(
+            messenger, as_core_node, as_instance_id, as_target, topic, timeout, link_id
+        )
+    )
 
 
 class TestTopicPublisher:
@@ -376,9 +436,16 @@ class TestTopicPublisher:
         retention: TopicRetention,
         link_id: str | None = None,
         readiness_timeout: float = READINESS_TIMEOUT,
-    ) -> "TestTopicPublisher":
+    ) -> TestTopicPublisher:
         publisher = await TopicMessenger.declare_publisher(
-            messenger, as_core_node, as_instance_id, as_target, topic, qos, retention, link_id
+            messenger,
+            as_core_node,
+            as_instance_id,
+            as_target,
+            topic,
+            qos,
+            retention,
+            link_id,
         )
         return cls(
             publisher,
@@ -403,12 +470,19 @@ class TestTopicPublisher:
         qos: QoSProfile,
         peer: PeerInfo,
         readiness_timeout: float = READINESS_TIMEOUT,
-    ) -> "TestTopicPublisher":
+    ) -> TestTopicPublisher:
         """Declare a pairing publisher from the mock's slot ``link_id`` to
         ``peer`` (the node under test, on its slot), for a mock playing the
         other end of a pair."""
         publisher = await TopicMessenger.declare_pairing_publisher(
-            messenger, as_core_node, as_instance_id, as_target, link_id, topic, qos, peer
+            messenger,
+            as_core_node,
+            as_instance_id,
+            as_target,
+            link_id,
+            topic,
+            qos,
+            peer,
         )
         return cls(
             publisher,
@@ -426,33 +500,24 @@ class TestTopicPublisher:
         """Wait until a subscriber matching this publisher's exact wire
         identity is visible, or ``timeout`` elapses; marks the publisher
         matched on success so later publishes skip the wait."""
-        if self._peer is not None and self._link_id is not None:
-            matched = await TopicMessenger.wait_for_pairing_subscriber(
-                self._messenger,
-                self._as_core_node,
-                self._as_instance_id,
-                self._as_target,
-                self._link_id,
-                self._topic,
-                self._peer,
-                timeout,
-            )
-        else:
-            matched = await TopicMessenger.wait_for_subscriber_with_link_id(
-                self._messenger,
-                self._as_core_node,
-                self._as_instance_id,
-                self._as_target,
-                self._topic,
-                timeout,
-                self._link_id,
-            )
+        matched = await _wait_for_matching_subscriber(
+            self._messenger,
+            self._as_core_node,
+            self._as_instance_id,
+            self._as_target,
+            self._topic,
+            self._link_id,
+            self._peer,
+            timeout,
+        )
         if matched:
             self._matched = True
-        return bool(matched)
+        return matched
 
     async def publish(self, payload: bytes) -> None:
-        if not self._matched and not await self.wait_for_subscriber(self.readiness_timeout):
+        if not self._matched and not await self.wait_for_subscriber(
+            self.readiness_timeout
+        ):
             raise RuntimeError(
                 f"no subscriber for topic `{self._topic}` (link_id {self._link_id!r}) "
                 f"appeared within {self.readiness_timeout}s: the node under test never "
@@ -525,10 +590,16 @@ async def _wait_reachable(
     """The shared probe loop behind the two ``wait_*_reachable`` helpers:
     poll the matching ``is_reachable`` probe until it answers or ``timeout``
     expires."""
-    probe = ActionMessenger.is_reachable if kind == "action" else ServiceMessenger.is_reachable
+    probe = (
+        ActionMessenger.is_reachable
+        if kind == "action"
+        else ServiceMessenger.is_reachable
+    )
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
-        if await probe(messenger, bound_core_node, as_instance_id, to_target, name, producer):
+        if await probe(
+            messenger, bound_core_node, as_instance_id, to_target, name, producer
+        ):
             return
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError(
@@ -558,9 +629,9 @@ class MockServiceCore:
 
     def __init__(self, service_name: str) -> None:
         self._service_name = service_name
-        self._requests: asyncio.Queue[tuple[ServiceRequestContext, ServiceResponder]] = (
-            asyncio.Queue()
-        )
+        self._requests: asyncio.Queue[
+            tuple[ServiceRequestContext, ServiceResponder]
+        ] = asyncio.Queue()
         self._scripted: deque[bytes] = deque()
         self._captured: list[CapturedServiceRequest] = []
         self._pump: asyncio.Task[None] | None = None
@@ -573,7 +644,7 @@ class MockServiceCore:
         as_instance_id: str,
         as_identity: SenderTarget,
         as_service_name: str,
-    ) -> "MockServiceCore":
+    ) -> MockServiceCore:
         endpoint = await ServiceMessenger.listen(
             messenger, as_core_node, as_instance_id, as_identity, as_service_name
         )
@@ -581,9 +652,19 @@ class MockServiceCore:
         core._pump = asyncio.create_task(core._run_pump(endpoint))
         return core
 
-    async def _run_pump(self, endpoint: Any) -> None:
+    async def _run_pump(self, endpoint: ServiceEndpoint) -> None:
         while True:
-            pair = await endpoint.recv_next_request()
+            # A broken receive stream stops the pump with a warning, as the
+            # Rust core logs and stops, so close() still reports what the test
+            # left dangling instead of raising this error.
+            try:
+                pair = await endpoint.recv_next_request()
+            except _MESSAGING_ERRORS as error:
+                warnings.warn(
+                    f"mock service `{self._service_name}` request pump stopped: {error}",
+                    stacklevel=1,
+                )
+                return
             if pair is None:
                 return
             context, responder = pair
@@ -602,7 +683,7 @@ class MockServiceCore:
                 response = self._scripted.popleft()
                 try:
                     await responder.respond(response)
-                except Exception as error:  # noqa: BLE001 — mock keeps serving
+                except Exception as error:  # noqa: BLE001, mock keeps serving
                     warnings.warn(
                         f"mock service `{self._service_name}` failed to send a scripted "
                         f"response: {error}",
@@ -615,11 +696,11 @@ class MockServiceCore:
         self, timeout: float = READINESS_TIMEOUT
     ) -> tuple[ServiceRequestContext, ServiceResponder]:
         """The next unscripted request, with the responder the test must use
-        to answer it. Errors after ``timeout`` — a node that never called is a
+        to answer it. Errors after ``timeout``: a node that never called is a
         test failure surfaced here, not a hang."""
         try:
             return await asyncio.wait_for(self._requests.get(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise TimeoutError(
                 f"mock service `{self._service_name}` received no request within {timeout}s"
             ) from None
@@ -665,7 +746,9 @@ class MockPendingGoal:
     """A goal received by a :class:`MockActionServerCore`, awaiting the
     test's admission decision."""
 
-    def __init__(self, pending: PendingGoal, live: list[Any]) -> None:
+    def __init__(
+        self, pending: PendingGoal, live: list[weakref.ref[GoalContext]]
+    ) -> None:
         self._pending = pending
         self._live = live
 
@@ -707,7 +790,7 @@ class MockActionServerCore:
     def __init__(self, action_name: str, engine: ConcurrentAction) -> None:
         self._action_name = action_name
         self._engine: ConcurrentAction | None = engine
-        self._live: list[Any] = []
+        self._live: list[weakref.ref[GoalContext]] = []
 
     @classmethod
     async def expose(
@@ -718,9 +801,14 @@ class MockActionServerCore:
         as_identity: SenderTarget,
         as_action_name: str,
         has_feedback: bool,
-    ) -> "MockActionServerCore":
+    ) -> MockActionServerCore:
         engine = await ConcurrentAction.expose(
-            messenger, bound_core_node, as_instance_id, as_identity, as_action_name, has_feedback
+            messenger,
+            bound_core_node,
+            as_instance_id,
+            as_identity,
+            as_action_name,
+            has_feedback,
         )
         return cls(as_action_name, engine)
 
@@ -731,7 +819,7 @@ class MockActionServerCore:
             raise RuntimeError(f"mock action `{self._action_name}` is stopped")
         try:
             pending = await asyncio.wait_for(self._engine.recv_next_goal(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise TimeoutError(
                 f"mock action `{self._action_name}` received no goal within {timeout}s"
             ) from None
@@ -745,7 +833,7 @@ class MockActionServerCore:
         """Simulate this producer disappearing mid-goal, deterministically:
         every live goal context is disarmed (its eventual release emits
         neither the abandon transition nor the feedback-end sentinel), then
-        the engine is released — CPython's refcounting drops it immediately,
+        the engine is released. CPython's refcounting drops it immediately,
         stopping its routing loops and removing the producer liveliness token
         consumers latch on."""
         for ref in self._live:
@@ -823,7 +911,7 @@ class MockClock:
         core_node: str,
         instance_id: str,
         clock: str = "wall",
-    ) -> "MockClock":
+    ) -> MockClock:
         """Serve the clock surface for ``core_node`` (under the harness:
         :data:`STANDALONE_CORE_NODE`) in the shape ``clock`` asks for, one of
         :data:`HARNESS_CLOCKS`."""
@@ -858,11 +946,9 @@ class MockClock:
             )
         return self
 
-    def binding(self) -> Any:
+    def binding(self) -> ClockBinding:
         """The binding the node under test boots with, which the generated
         harness hands to ``StandaloneConfig.with_clock``."""
-        from .clock import ClockBinding
-
         if self._clock == "wall":
             return ClockBinding.wall()
         if self._clock == "consumer":
@@ -894,7 +980,7 @@ class MockClock:
         # saturating arithmetic on the unsigned wire type.
         return max(0, time.time_ns() + self._offset_ns)
 
-    async def _run_pump(self, endpoint: Any) -> None:
+    async def _run_pump(self, endpoint: ServiceEndpoint) -> None:
         while True:
             pair = await endpoint.recv_next_request()
             if pair is None:
@@ -907,7 +993,9 @@ class MockClock:
             try:
                 request = ClockRequest.decode(bytes(context.payload))
             except ValueError as error:
-                await responder.respond_error(f"invalid clock request: {error}")
+                await _send_clock_reply(
+                    responder.respond_error(f"invalid clock request: {error}")
+                )
                 continue
             # Stamp t2 last: the response encode + send happens after this
             # point and is part of the round-trip delay the client measures,
@@ -916,7 +1004,7 @@ class MockClock:
             response = ClockResponse(
                 request.client_send_time, server_recv_time, server_send_time
             )
-            await responder.respond(response.encode())
+            await _send_clock_reply(responder.respond(response.encode()))
 
     async def _run_ticker(self, publisher: TopicPublisher) -> None:
         # Same loop shape as the daemon's wall-mode publisher: SensorData QoS
@@ -944,7 +1032,7 @@ class MockClock:
         """
         if self._domain_publisher is None:
             raise RuntimeError(
-                "tick() drives a node booted clock=\"consumer\"; this harness booted "
+                'tick() drives a node booted clock="consumer"; this harness booted '
                 f'clock="{self._clock}". A wall-time clock ticks itself, and a '
                 "publisher node supplies its own domain"
             )
@@ -998,14 +1086,26 @@ class MockClock:
                 await task
             except asyncio.CancelledError:
                 pass
-            except Exception as error:  # noqa: BLE001 — teardown reports, never raises
+            except Exception as error:  # noqa: BLE001, teardown reports, never raises
                 warnings.warn(f"mock clock task failed: {error}", stacklevel=1)
+
+
+async def _send_clock_reply(reply: Awaitable[None]) -> None:
+    """Await one reply of the mock clock service. A failed send loses that
+    request only, as the Rust core's request loop logs it and keeps serving
+    the next caller."""
+    try:
+        await reply
+    except _MESSAGING_ERRORS as error:
+        warnings.warn(
+            f"mock clock failed to send a clock response: {error}", stacklevel=1
+        )
 
 
 @dataclass
 class PublisherReadiness:
     """One entry of the harness's pre-setup readiness barrier: before the
-    node's ``setup`` runs, the harness waits — on the node's own session —
+    node's ``setup`` runs, the harness waits (on the node's own session)
     until a subscriber matching the exact keyexpr the node's publisher will
     emit on is visible. Without this, the node's very first publish can be
     dropped while its fresh session is still discovering the harness's
@@ -1028,7 +1128,7 @@ class ServiceReadiness:
     services and actions: the node under test is a *fresh caller*, so its very
     first ``poll``/``send_goal`` inside ``setup`` can race gossip discovery of
     a mock queryable that was declared long before the node's session existed.
-    The harness therefore waits — on the node's own session — until each
+    The harness therefore waits (on the node's own session) until each
     mock's queryable answers reachability probes, before ``setup`` runs.
     Mirrors Rust's ``ServiceReadiness``."""
 
@@ -1075,7 +1175,7 @@ class HarnessCore:
         setup: SetupFn,
         parameters: Any = None,
         service_readiness: Sequence[ServiceReadiness] = (),
-    ) -> "HarnessCore":
+    ) -> HarnessCore:
         """Build and start the node under test. ``standalone_config`` must
         already carry the messaging endpoint, instance id, parameters, and one
         seeding call per mock. ``setup`` is the node's real entry point (the
@@ -1099,31 +1199,26 @@ class HarnessCore:
             str(os.fspath(peppy_config_path)), standalone_config
         )
 
+        # The node's own session and identity, which both barriers below
+        # probe from.
+        messenger = node_runner.messenger()
+        core_node = node_runner.bound_core_node()
+        instance_id = node_runner.bound_instance_id()
+
         # Pre-setup readiness barrier: a publisher-side matching wait per
         # observed topic, on the node's session, with the identical keyexpr
         # the node's publisher will use.
         for probe in publisher_readiness:
-            if probe.peer is not None and probe.link_id is not None:
-                matched = await TopicMessenger.wait_for_pairing_subscriber(
-                    node_runner.messenger(),
-                    node_runner.bound_core_node(),
-                    node_runner.bound_instance_id(),
-                    probe.target,
-                    probe.link_id,
-                    probe.topic,
-                    probe.peer,
-                    READINESS_TIMEOUT,
-                )
-            else:
-                matched = await TopicMessenger.wait_for_subscriber_with_link_id(
-                    node_runner.messenger(),
-                    node_runner.bound_core_node(),
-                    node_runner.bound_instance_id(),
-                    probe.target,
-                    probe.topic,
-                    READINESS_TIMEOUT,
-                    probe.link_id,
-                )
+            matched = await _wait_for_matching_subscriber(
+                messenger,
+                core_node,
+                instance_id,
+                probe.target,
+                probe.topic,
+                probe.link_id,
+                probe.peer,
+                READINESS_TIMEOUT,
+            )
             if not matched:
                 raise RuntimeError(
                     f"readiness barrier: the harness subscription for topic "
@@ -1138,9 +1233,9 @@ class HarnessCore:
         for probe in service_readiness:
             await _wait_reachable(
                 probe.kind,
-                node_runner.messenger(),
-                node_runner.bound_core_node(),
-                node_runner.bound_instance_id(),
+                messenger,
+                core_node,
+                instance_id,
                 probe.target,
                 probe.name,
                 probe.producer,
@@ -1175,7 +1270,7 @@ class HarnessCore:
 
     async def shutdown(self) -> None:
         """Converge the node: see the class-level teardown contract. Raises
-        the ``setup`` error if it failed — a test whose node errored during
+        the ``setup`` error if it failed: a test whose node errored during
         setup should fail even when its assertions never noticed."""
         self._node_runner.cancellation_token().cancel()
         grace = self._node_runner.shutdown_grace_secs()
@@ -1185,12 +1280,12 @@ class HarnessCore:
         if task is not None:
             try:
                 await asyncio.wait_for(task, grace)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 # A setup that parks forever without watching the node's
                 # cancellation token; production drops it at shutdown the
                 # same way (wait_for already cancelled it).
                 pass
-            except BaseException as error:  # noqa: BLE001 — re-raised after hooks
+            except BaseException as error:  # noqa: BLE001, re-raised after hooks
                 setup_error = error
         await self._node_runner.run_shutdown_hooks(grace)
         if setup_error is not None:

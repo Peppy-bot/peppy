@@ -1,10 +1,12 @@
-"""Suite for ``peppylib.testing`` — the Python twin of the Rust cores behind
+"""Suite for ``peppylib.testing``, the Python twin of the Rust cores behind
 generated per-node mock/fixtures code (mirrors
 ``peppylib-rs/tests/testing.rs`` case for case, so a semantic difference
 between the two languages surfaces here, not in node suites)."""
 
 import asyncio
 import gc
+import types
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,7 @@ from peppylib import (
     TopicMessenger,
     TopicRetention,
 )
+from peppylib.clock import ClockRequest, ClockResponse
 from peppylib.testing import (
     MOCK_CLOCK_INSTANCE_ID,
     STANDALONE_CORE_NODE,
@@ -127,15 +130,20 @@ async def test_mock_service_core_scripted_then_manual():
 @pytest.mark.asyncio
 async def test_mock_action_stop_yields_producer_gone_deterministically():
     """``stop()`` on a mock action with a live, user-held goal context must
-    surface to the consumer as the producer-gone ``ConnectionError`` — never
-    a clean feedback close and never a hang — because the disarmed context
+    surface to the consumer as the producer-gone ``ConnectionError`` (never
+    a clean feedback close and never a hang), because the disarmed context
     suppresses the drop-time sentinel that would race the liveliness latch."""
     async with await EphemeralRouter.start() as router:
         mock_handle = await router.connect()
         client_handle = await router.connect()
 
         mock = await MockActionServerCore.expose(
-            mock_handle, MOCK_CORE, MOCK_INSTANCE, _node_target("arm_node"), "move_arm", True
+            mock_handle,
+            MOCK_CORE,
+            MOCK_INSTANCE,
+            _node_target("arm_node"),
+            "move_arm",
+            True,
         )
 
         producer = ProducerRef(MOCK_CORE, MOCK_INSTANCE)
@@ -175,7 +183,7 @@ async def test_mock_action_stop_yields_producer_gone_deterministically():
         assert feedback.payload == b"working"
 
         # Stop the mock mid-goal with the context still held (as a test's
-        # MockGoal handle would be) and tear down its session — the
+        # MockGoal handle would be) and tear down its session: the
         # producer-loss shape.
         mock.stop()
         del mock, mock_handle
@@ -185,7 +193,7 @@ async def test_mock_action_stop_yields_producer_gone_deterministically():
             await asyncio.wait_for(goal_handle.on_next_feedback(), timeout=15.0)
 
         # Releasing the disarmed context afterwards is inert: no late
-        # sentinel (nothing to receive it anyway — the session is gone).
+        # sentinel (nothing to receive it anyway: the session is gone).
         del context
         gc.collect()
 
@@ -275,7 +283,9 @@ async def test_topic_publisher_on_a_retaining_topic_serves_a_late_subscription()
 
         late_subscription = await subscribe()
         for subscription in (first_subscription, late_subscription):
-            received = await asyncio.wait_for(subscription.on_next_message(), timeout=5.0)
+            received = await asyncio.wait_for(
+                subscription.on_next_message(), timeout=5.0
+            )
             assert received is not None
             assert received.payload == b"ready"
 
@@ -349,7 +359,9 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
             .with_messaging(router.host, router.port)
             .with_instance_id(instance_id)
         )
-        readiness = [PublisherReadiness(target=_node_target("test_node"), topic="status")]
+        readiness = [
+            PublisherReadiness(target=_node_target("test_node"), topic="status")
+        ]
 
         hook_ran = asyncio.Event()
         async_hook_finished = asyncio.Event()
@@ -418,7 +430,9 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
         assert first.payload == b"alive"
 
         await harness.shutdown()
-        assert hook_ran.is_set(), "shutdown() must run the node's registered shutdown hooks"
+        assert hook_ran.is_set(), (
+            "shutdown() must run the node's registered shutdown hooks"
+        )
         assert async_hook_finished.is_set(), (
             "async shutdown hooks must run on the setup loop, where setup's tasks live"
         )
@@ -440,7 +454,9 @@ async def test_harness_core_shutdown_propagates_setup_error(tmp_path):
         async def setup(params, node_runner):
             raise RuntimeError("setup boom")
 
-        harness = await HarnessCore.start(peppy_config_path, standalone_config, [], setup)
+        harness = await HarnessCore.start(
+            peppy_config_path, standalone_config, [], setup
+        )
         with pytest.raises(RuntimeError, match="setup boom"):
             await harness.shutdown()
 
@@ -548,7 +564,9 @@ async def test_mock_clock_wall_serves_synchronize_ticks_and_scripted_skew(tmp_pa
             # the assertion cannot flake on a slow host.
             hour_ns = 3_600_000_000_000
             clock.set_offset_ns(hour_ns)
-            skewed = await peppy_clock.synchronize(node_runner, response_timeout_secs=5.0)
+            skewed = await peppy_clock.synchronize(
+                node_runner, response_timeout_secs=5.0
+            )
             assert abs(skewed.offset_ns - hour_ns) < hour_ns / 2, (
                 f"expected ~1h offset, got {skewed.offset_ns} ns"
             )
@@ -611,7 +629,9 @@ async def test_mock_clock_consumer_drives_the_nodes_own_clock(tmp_path):
                     # while waiting, so chaining it onto the deadline failure
                     # only buries the message that matters.
                     if asyncio.get_running_loop().time() >= deadline:
-                        raise AssertionError("the tick never reached PeppyClock") from None
+                        raise AssertionError(
+                            "the tick never reached PeppyClock"
+                        ) from None
                     await asyncio.sleep(0.01)
 
             # `0` is the wire's not-ready sentinel; ticking it stores the
@@ -670,13 +690,176 @@ async def test_prepare_test_process_sets_zenoh_runtime():
     peppy_testing.prepare_test_process()
 
 
+# --- Pump failures ------------------------------------------------------------
+#
+# A mock's background pump meets a messaging error only when the transport
+# breaks, which a live mesh does not do on demand. These cases hand the pumps a
+# fake endpoint instead, so each failure happens exactly where the test puts
+# it.
+
+
+def _listen_on(monkeypatch, endpoint) -> None:
+    """Make every ``ServiceMessenger.listen`` of ``peppylib.testing`` return
+    ``endpoint`` instead of declaring a queryable."""
+
+    class _FakeServiceMessenger:
+        @staticmethod
+        async def listen(*_args):
+            return endpoint
+
+    monkeypatch.setattr(peppy_testing, "ServiceMessenger", _FakeServiceMessenger)
+
+
+class _BrokenReceiveEndpoint:
+    """A service endpoint whose receive stream fails on the first request."""
+
+    def __init__(self) -> None:
+        self.failed = asyncio.Event()
+
+    async def recv_next_request(self):
+        self.failed.set()
+        raise RuntimeError("receive stream broke")
+
+
+class _ScriptedRequestsEndpoint:
+    """A service endpoint that delivers the given ``(context, responder)``
+    pairs in order, then reports the listener closed."""
+
+    def __init__(self, pairs) -> None:
+        self._pairs = deque(pairs)
+
+    async def recv_next_request(self):
+        if not self._pairs:
+            return None
+        return self._pairs.popleft()
+
+
+class _ClockRequestContext:
+    def __init__(self, client_send_time: int) -> None:
+        self.payload = ClockRequest(client_send_time).encode()
+
+
+class _RecordingResponder:
+    """A responder that records each response, or fails to send it when
+    ``fails`` is set."""
+
+    def __init__(self, fails: bool = False) -> None:
+        self._fails = fails
+        self.responses: list[bytes] = []
+
+    async def respond(self, payload: bytes) -> None:
+        if self._fails:
+            raise RuntimeError("response send failed")
+        self.responses.append(bytes(payload))
+
+
+@pytest.mark.asyncio
+async def test_mock_service_core_stops_its_pump_on_a_broken_receive_stream(monkeypatch):
+    """A receive error stops the request pump with a warning, as the Rust
+    pump logs and stops, so ``close()`` still runs its teardown checks
+    instead of raising the error."""
+    endpoint = _BrokenReceiveEndpoint()
+    _listen_on(monkeypatch, endpoint)
+    mock = await MockServiceCore.listen(
+        None, MOCK_CORE, MOCK_INSTANCE, _node_target("dep_node"), "get_info"
+    )
+
+    # The pump fails and warns in the same step that sets the event.
+    with pytest.warns(UserWarning, match="request pump stopped: receive stream broke"):
+        await endpoint.failed.wait()
+
+    await mock.close()
+
+
+@pytest.mark.asyncio
+async def test_mock_clock_keeps_serving_after_a_failed_response(monkeypatch):
+    """A response the clock service fails to send loses that request only:
+    the next caller is still answered, as the Rust core's request loop logs
+    the failure and keeps serving."""
+    failing = _RecordingResponder(fails=True)
+    answering = _RecordingResponder()
+    _listen_on(
+        monkeypatch,
+        _ScriptedRequestsEndpoint(
+            [(_ClockRequestContext(1), failing), (_ClockRequestContext(2), answering)]
+        ),
+    )
+
+    clock = await MockClock.start(
+        None, STANDALONE_CORE_NODE, MOCK_CLOCK_INSTANCE_ID, "publisher"
+    )
+    try:
+        # The fake listener closes after its two requests, so the pump returns
+        # by itself: awaiting it is the end of the exchange.
+        with pytest.warns(
+            UserWarning, match="failed to send a clock response: response send failed"
+        ):
+            await clock._pump
+    finally:
+        await clock.close()
+
+    assert failing.responses == []
+    assert len(answering.responses) == 1
+    assert ClockResponse.decode(answering.responses[0]).client_send_time == 2
+
+
+def _fake_connect_attempts(monkeypatch, failures: int) -> tuple[list, list]:
+    """Make ``connect_messenger`` connect through a stand-in whose first
+    ``failures`` connects fail, and record its retry sleeps instead of
+    sleeping. Returns the attempt and sleep records."""
+    attempts = []
+    sleeps = []
+
+    class _FlakyMessengerHandle:
+        @staticmethod
+        async def from_host_port(host, port):
+            attempts.append((host, port))
+            if len(attempts) <= failures:
+                raise RuntimeError(f"connect attempt {len(attempts)} failed")
+            return "handle"
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(peppy_testing, "MessengerHandle", _FlakyMessengerHandle)
+    monkeypatch.setattr(
+        peppy_testing, "asyncio", types.SimpleNamespace(sleep=record_sleep)
+    )
+    return attempts, sleeps
+
+
+@pytest.mark.asyncio
+async def test_connect_messenger_retries_until_a_connect_succeeds(monkeypatch):
+    attempts, sleeps = _fake_connect_attempts(monkeypatch, failures=4)
+
+    handle = await peppy_testing.connect_messenger("127.0.0.1", 7447)
+
+    assert handle == "handle"
+    assert attempts == [("127.0.0.1", 7447)] * 5
+    assert sleeps == [peppy_testing._CONNECT_RETRY_DELAY] * 4
+
+
+@pytest.mark.asyncio
+async def test_connect_messenger_raises_the_last_error_when_every_connect_fails(
+    monkeypatch,
+):
+    attempts, sleeps = _fake_connect_attempts(monkeypatch, failures=5)
+
+    with pytest.raises(RuntimeError, match="^connect attempt 5 failed$"):
+        await peppy_testing.connect_messenger("127.0.0.1", 7447)
+
+    assert len(attempts) == 5
+    assert sleeps == [peppy_testing._CONNECT_RETRY_DELAY] * 4, (
+        "no sleep follows the last attempt"
+    )
+
+
 # --- resolve_node_dir / Mocks ------------------------------------------------
 #
 # Both are Python-only members of `peppylib.testing` (the Rust harness resolves
 # its config path at compile time and drops its mock struct), so unlike every
-# case above these have no counterpart in `peppylib-rs/tests/testing.rs`. They
-# used to be re-emitted into every generated harness, where the only thing that
-# could exercise them was a full node sync.
+# case above these have no counterpart in `peppylib-rs/tests/testing.rs`.
+# Testing them here keeps them covered without a full node sync.
 
 
 def test_resolve_node_dir_prefers_the_explicit_argument(tmp_path):
@@ -709,7 +892,9 @@ def test_resolve_node_dir_walks_up_from_the_working_directory(tmp_path, monkeypa
     (node / "peppy.json5").write_text("{}")
     monkeypatch.chdir(nested)
 
-    resolved = peppy_testing.resolve_node_dir(None, str(tmp_path / "gone"), "peppy.json5")
+    resolved = peppy_testing.resolve_node_dir(
+        None, str(tmp_path / "gone"), "peppy.json5"
+    )
 
     assert Path(resolved).resolve() == node.resolve()
 
@@ -734,7 +919,9 @@ def test_resolve_node_dir_falls_back_to_the_sync_time_path(tmp_path, monkeypatch
     assert resolved == str(node)
 
 
-def test_resolve_node_dir_names_all_three_sources_when_none_resolve(tmp_path, monkeypatch):
+def test_resolve_node_dir_names_all_three_sources_when_none_resolve(
+    tmp_path, monkeypatch
+):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(peppy_testing.os.path, "isfile", lambda path: False)
 
@@ -747,7 +934,9 @@ def test_resolve_node_dir_names_all_three_sources_when_none_resolve(tmp_path, mo
     assert "/gone/node" in message
 
 
-def test_resolve_node_dir_without_a_sync_time_path_still_walks_up(tmp_path, monkeypatch):
+def test_resolve_node_dir_without_a_sync_time_path_still_walks_up(
+    tmp_path, monkeypatch
+):
     node = tmp_path / "node"
     (node / "src").mkdir(parents=True)
     (node / "peppy.json5").write_text("{}")

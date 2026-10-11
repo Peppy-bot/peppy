@@ -13,29 +13,29 @@ publisher is the same fact as being one.
 from __future__ import annotations
 
 from ._peppylib.core_node import (  # type: ignore[import-not-found]
+    ClockBinding,
+    ClockPublisher,
     ClockRequest,
     ClockResponse,
     ClockSubscription,
     ClockSync,
     ClockTick,
-    ClockBinding,
-    ClockPublisher,
     PeppyClock,
-    clock_for_node as for_node,
-    subscribe_clock as subscribe,
     synchronize,
 )
+from ._peppylib.core_node import clock_for_node as for_node
+from ._peppylib.core_node import subscribe_clock as subscribe
 
 __all__ = [
-    "subscribe",
-    "synchronize",
-    "for_node",
-    "PeppyClock",
-    "ClockPublisher",
     "ClockBinding",
-    "ClockSync",
-    "ClockSubscription",
+    "ClockPublisher",
     "ClockRequest",
     "ClockResponse",
+    "ClockSubscription",
+    "ClockSync",
     "ClockTick",
+    "PeppyClock",
+    "for_node",
+    "subscribe",
+    "synchronize",
 ]

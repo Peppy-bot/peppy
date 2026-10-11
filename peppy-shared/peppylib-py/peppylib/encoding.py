@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 
 NANOS_PER_SEC = 1_000_000_000
 
@@ -22,17 +22,14 @@ def convert_time(timestamp: float) -> CapnpTimestamp:
 
     sec = math.floor(value)
     frac = value - sec
-    nsec = int(round(frac * NANOS_PER_SEC))
+    nsec = round(frac * NANOS_PER_SEC)
 
     # Guard against rounding to the next second (e.g. 0.9999999996).
     if nsec >= NANOS_PER_SEC:
         sec += 1
         nsec -= NANOS_PER_SEC
-    elif nsec < 0:
-        sec -= 1
-        nsec += NANOS_PER_SEC
 
-    return CapnpTimestamp(sec=int(sec), nsec=nsec)
+    return CapnpTimestamp(sec=sec, nsec=nsec)
 
 
 def convert_time_from_capnp(sec: int, nsec: int) -> float:

@@ -11,9 +11,9 @@ def test_convert_time_round_trip() -> None:
 
     assert timestamp.sec == 1_700_000_000
     assert timestamp.nsec == 250_000_000
-    assert encoding.convert_time_from_capnp(timestamp.sec, timestamp.nsec) == pytest.approx(
-        original
-    )
+    assert encoding.convert_time_from_capnp(
+        timestamp.sec, timestamp.nsec
+    ) == pytest.approx(original)
 
 
 def test_convert_time_negative_value() -> None:
@@ -21,9 +21,16 @@ def test_convert_time_negative_value() -> None:
 
     assert timestamp.sec == -1
     assert timestamp.nsec == 750_000_000
-    assert encoding.convert_time_from_capnp(timestamp.sec, timestamp.nsec) == pytest.approx(
-        -0.25
-    )
+    assert encoding.convert_time_from_capnp(
+        timestamp.sec, timestamp.nsec
+    ) == pytest.approx(-0.25)
+
+
+def test_convert_time_returns_integer_seconds_and_nanoseconds() -> None:
+    timestamp = encoding.convert_time(1.5)
+
+    assert type(timestamp.sec) is int
+    assert type(timestamp.nsec) is int
 
 
 def test_convert_time_from_capnp_rejects_invalid_nanos() -> None:

@@ -14,12 +14,15 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use tokio::sync::Mutex;
 
-use crate::messaging::{decode_err, duration_from_secs_f64, encode_err, to_py_err};
+use crate::messaging::{
+    decode_err, encoded_to_py_bytes, future_into_py_unit, optional_duration_from_secs_f64,
+    to_py_err,
+};
 use crate::runtime::PyNodeRunner;
 
 /// Request side of the NTP-style 4-timestamp exchange.
 ///
-/// Carries `client_send_time` (`t0`) — the client's local clock just before
+/// Carries `client_send_time` (`t0`), the client's local clock just before
 /// the request goes on the wire. Encoders/decoders use the same capnp wire
 /// schema as the Rust [`ClockRequest`].
 #[pyclass(name = "ClockRequest", skip_from_py_object)]
@@ -49,11 +52,7 @@ impl PyClockRequest {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("ClockRequest", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "ClockRequest", self.inner.encode())
     }
 
     #[staticmethod]
@@ -67,8 +66,8 @@ impl PyClockRequest {
 /// Response side of the NTP-style 4-timestamp exchange.
 ///
 /// Carries the echoed `client_send_time` (`t0`), `server_recv_time` (`t1`),
-/// and `server_send_time` (`t2`). `t3` is the client's local time on receive —
-/// never on the wire.
+/// and `server_send_time` (`t2`). `t3` is the client's local time on receive,
+/// which never goes on the wire.
 #[pyclass(name = "ClockResponse", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyClockResponse {
@@ -106,11 +105,7 @@ impl PyClockResponse {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("ClockResponse", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "ClockResponse", self.inner.encode())
     }
 
     #[staticmethod]
@@ -153,11 +148,7 @@ impl PyClockTick {
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let payload = self
-            .inner
-            .encode()
-            .map_err(|e| encode_err("ClockTick", e))?;
-        Ok(PyBytes::new(py, payload.as_ref()))
+        encoded_to_py_bytes(py, "ClockTick", self.inner.encode())
     }
 
     #[staticmethod]
@@ -171,7 +162,7 @@ impl PyClockTick {
 /// Result of an NTP-style clock-sync exchange.
 ///
 /// Mirrors [`peppylib::clock::ClockSync`]. `synchronize` does not
-/// adjust the local clock — it only measures.
+/// adjust the local clock: it only measures.
 #[pyclass(name = "ClockSync", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyClockSync {
@@ -218,9 +209,7 @@ fn synchronize_clock<'py>(
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
-    let timeout = response_timeout_secs
-        .map(|s| duration_from_secs_f64("response_timeout_secs", s))
-        .transpose()?;
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
         let sync = synchronize(&runner, timeout).await.map_err(to_py_err)?;
         Ok(PyClockSync::from(sync))
@@ -231,7 +220,7 @@ fn synchronize_clock<'py>(
 ///
 /// Wraps the raw [`Subscription`] (not the Rust `ClockSubscription` adapter)
 /// so the Python lock guards the same inner state as
-/// [`crate::messaging::PySubscription`] — no double-mutex layering.
+/// [`crate::messaging::PySubscription`], with no double-mutex layering.
 #[pyclass(name = "ClockSubscription")]
 pub struct PyClockSubscription {
     inner: Arc<Mutex<Subscription>>,
@@ -422,7 +411,7 @@ impl PyClockPublisher {
     /// Commit `time_ns` as the domain's current instant and send it.
     fn publish<'py>(&self, py: Python<'py>, time_ns: u64) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        crate::py_future::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             inner.publish(time_ns).await.map_err(to_py_err)
         })
     }

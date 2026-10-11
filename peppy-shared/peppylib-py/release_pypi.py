@@ -45,7 +45,7 @@ def resolve_version() -> tuple[str, str]:
 
     raw_tag is what the rest of the workspace uses (typically `vX.Y.Z`) and
     is what the Rust build reads via `option_env!("PEPPY_GIT_TAG")`.
-    pep440_version drives the wheel filename — PyPI rejects a leading 'v'.
+    pep440_version drives the wheel filename: PyPI rejects a leading 'v'.
     """
     raw = os.environ.get("PEPPY_GIT_TAG", "").strip()
     if not raw:
@@ -77,7 +77,9 @@ def write_pyproject_with_version(version: str) -> None:
             f"Expected exactly one occurrence of {DYNAMIC_VERSION_LINE!r} in "
             f"{PYPROJECT_FILE.name}; cannot safely patch."
         )
-    PYPROJECT_FILE.write_text(text.replace(DYNAMIC_VERSION_LINE, f'version = "{version}"'))
+    PYPROJECT_FILE.write_text(
+        text.replace(DYNAMIC_VERSION_LINE, f'version = "{version}"')
+    )
 
 
 def raise_fd_limit() -> None:

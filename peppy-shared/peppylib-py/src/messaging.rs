@@ -17,10 +17,11 @@ pub(crate) use target::{PyProducerRef, PySenderTarget};
 
 use config::namespace::Namespace;
 use peppylib::PeppyError;
-use peppylib::messaging::{MessengerHandle, SessionScope};
+use peppylib::messaging::{MessengerHandle, PeerInfo, ProducerRef, SessionScope};
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,6 +34,23 @@ pub(crate) use topics::{
 pub(crate) fn repr_copy(copy: Option<&str>) -> String {
     copy.map(|copy| format!("{copy:?}"))
         .unwrap_or_else(|| "None".to_string())
+}
+
+/// A producer as every repr spells it, the `ProducerRef` constructor call.
+pub(crate) fn repr_producer(producer: &ProducerRef) -> String {
+    format!(
+        "ProducerRef({:?}, {:?})",
+        producer.core_node, producer.instance_id
+    )
+}
+
+/// A peer as every repr spells it, the `PeerInfo` constructor call.
+pub(crate) fn repr_peer_info(peer: &PeerInfo) -> String {
+    format!(
+        "PeerInfo(producer={}, peer_link_id={:?})",
+        repr_producer(&peer.producer),
+        peer.peer_link_id
+    )
 }
 
 /// Convert a `peppylib::error::Error` into an appropriate Python exception.
@@ -79,15 +97,32 @@ pub(crate) fn duration_from_secs_f64(arg_name: &str, secs: f64) -> PyResult<Dura
     })
 }
 
-/// Wrap a `core_node_api::Error` from an `encode()` call as a Python
-/// `RuntimeError` — encode failures indicate an internal/wire-shape bug, not
-/// caller misuse.
-pub(crate) fn encode_err(what: &str, err: core_node_api::Error) -> PyErr {
-    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("failed to encode {what}: {err}"))
+/// [`duration_from_secs_f64`] for an optional seconds argument: `None` stays
+/// `None`.
+pub(crate) fn optional_duration_from_secs_f64(
+    arg_name: &str,
+    secs: Option<f64>,
+) -> PyResult<Option<Duration>> {
+    secs.map(|s| duration_from_secs_f64(arg_name, s))
+        .transpose()
+}
+
+/// Turn the result of an `encode()` call into Python `bytes`. A failure is
+/// raised as a Python `RuntimeError`, because encode failures indicate an
+/// internal or wire-shape bug, not caller misuse.
+pub(crate) fn encoded_to_py_bytes<'py>(
+    py: Python<'py>,
+    what: &str,
+    encoded: core_node_api::Result<core_node_api::Payload>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let payload = encoded.map_err(|err| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("failed to encode {what}: {err}"))
+    })?;
+    Ok(PyBytes::new(py, payload.as_ref()))
 }
 
 /// Wrap a `core_node_api::Error` from a `decode()` call as a Python
-/// `ValueError` — decode failures usually mean the bytes the caller passed in
+/// `ValueError`: decode failures usually mean the bytes the caller passed in
 /// don't match the expected wire schema.
 pub(crate) fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
     PyValueError::new_err(format!("failed to decode {what}: {err}"))
@@ -96,8 +131,8 @@ pub(crate) fn decode_err(what: &str, err: core_node_api::Error) -> PyErr {
 /// Drive a void async binding and resolve it to Python `None`.
 ///
 /// `future_into_py` converts the future's `Ok` value via `IntoPyObject`, and
-/// under PyO3 0.28 a bare `()` converts to an empty tuple rather than `None`,
-/// while `Option::<()>::None` converts to `None`. Routing void async methods
+/// PyO3 converts a bare `()` to an empty tuple rather than `None`, while
+/// `Option::<()>::None` converts to `None`. Routing void async methods
 /// through this helper gives them the Pythonic `None` return. The
 /// `Output = PyResult<()>` bound also means the compiler rejects any non-void
 /// future passed here by mistake.

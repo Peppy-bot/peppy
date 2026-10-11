@@ -113,8 +113,7 @@ def test_peer_info_is_structured_and_hashable():
     assert state_by_peer[same] == "paired"
 
     assert repr(peer) == (
-        'PeerInfo(producer=ProducerRef("core_a", "arm_1"), '
-        'peer_link_id="controller")'
+        'PeerInfo(producer=ProducerRef("core_a", "arm_1"), peer_link_id="controller")'
     )
 
 
@@ -193,8 +192,8 @@ async def test_messenger_communication():
         await asyncio.sleep(0.05)
 
         # Declare the publisher (the only topic-publish path) and publish a
-        # message. Void async bindings resolve to `None` (not the empty tuple a
-        # bare `Ok(())` would yield under PyO3 0.28).
+        # message. Void async bindings resolve to `None` (not the empty tuple
+        # PyO3 converts a bare `Ok(())` to).
         publisher = await TopicMessenger.declare_publisher(
             sender_handle,
             core_node,
@@ -241,7 +240,9 @@ def test_topic_retention_states_a_policy():
     assert repr(TopicRetention.latest(3)) == "TopicRetention.latest(3)"
     assert TopicRetention.latest(0) == TopicRetention.live_only()
 
-    with pytest.raises(ValueError, match="`latest` keeps from 0 to 1024 messages, got 1025"):
+    with pytest.raises(
+        ValueError, match="`latest` keeps from 0 to 1024 messages, got 1025"
+    ):
         TopicRetention.latest(1025)
 
 
@@ -344,8 +345,8 @@ async def test_subscribe_rejects_producer_list():
     """A list of producers raises `TypeError`.
 
     A slot binds exactly one producer; fan-in is N declared slots. The
-    subscribe seam takes a single `ProducerRef`, so a list — even a
-    single-element one — must fail loudly instead of silently degrading.
+    subscribe seam takes a single `ProducerRef`, so a list (even a
+    single-element one) must fail loudly instead of silently degrading.
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         test_id = uuid.uuid4().hex[:8]

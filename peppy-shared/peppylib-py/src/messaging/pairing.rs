@@ -50,10 +50,7 @@ impl PyPeerInfo {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "PeerInfo(producer=ProducerRef({:?}, {:?}), peer_link_id={:?})",
-            self.inner.producer.core_node, self.inner.producer.instance_id, self.inner.peer_link_id
-        )
+        super::repr_peer_info(&self.inner)
     }
 }
 
@@ -100,7 +97,7 @@ impl PyPeerMember {
     fn __repr__(&self) -> String {
         format!(
             "PeerMember(info={}, copy={})",
-            PyPeerInfo::from(self.inner.info.clone()).__repr__(),
+            super::repr_peer_info(&self.inner.info),
             super::repr_copy(self.inner.copy.as_deref())
         )
     }
@@ -226,7 +223,7 @@ impl PyPeerPublisher {
     ) -> PyResult<Bound<'py, PyAny>> {
         let publisher = Arc::clone(&self.inner);
         let peer = peer.inner.clone();
-        crate::py_future::future_into_py(py, async move {
+        super::future_into_py_unit(py, async move {
             publisher
                 .publish_to(&peer, Payload::from(payload))
                 .await

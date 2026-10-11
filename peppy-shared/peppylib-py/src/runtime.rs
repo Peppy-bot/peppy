@@ -1,4 +1,4 @@
-use crate::messaging::{PyBoundMember, PyMessengerHandle, PyProducerRef};
+use crate::messaging::{PyBoundMember, PyMessengerHandle, PyProducerRef, future_into_py_unit};
 use peppylib::runtime::CancellationToken;
 use peppylib::runtime::{NodeBuilder, NodeRunner, Processor, StandaloneConfig};
 use pyo3::exceptions::PyRuntimeError;
@@ -341,7 +341,7 @@ async fn run_python_shutdown_hook(callback: Py<PyAny>, event_loop_slot: SharedEv
 /// loop thread.
 ///
 /// The two closures that run on the event loop thread (the exception handler and
-/// the `run_forever` wrapper) **must** be plain Python functions — not PyO3
+/// the `run_forever` wrapper) **must** be plain Python functions, not PyO3
 /// `PyCFunction` closures.  PyO3 wraps every `PyCFunction` invocation in
 /// `catch_unwind`, and Rust's `catch_unwind` cannot intercept foreign (non-Rust)
 /// exceptions such as those raised by C/C++ extensions (e.g. pycapnp).  If such
@@ -351,7 +351,7 @@ async fn run_python_shutdown_hook(callback: Py<PyAny>, event_loop_slot: SharedEv
 ///
 /// By defining these helpers as pure Python (via `PyModule::from_code`), we keep
 /// `catch_unwind` out of the call path entirely, letting Python's own `try/except
-/// BaseException` handle any exception — foreign or otherwise.
+/// BaseException` handle any exception, foreign or otherwise.
 fn create_event_loop_helpers<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {
     PyModule::from_code(
         py,
@@ -494,9 +494,9 @@ def make_loop_teardown(event_loop, asyncio_mod):
         # stopped separately, by the stop trigger that quiesce fires after the
         # shutdown-hook phase. Because nothing stops the loop here, the future
         # this coroutine completes is set through the ordinary path while the
-        # loop is still running, so it can never be orphaned. Removing the loop
-        # stop from the awaited coroutine is the whole point of splitting drain
-        # from stop. See tests/test_shutdown_drain_deadlock.py.
+        # loop is still running, so it can never be orphaned. Keeping the loop
+        # stop out of the awaited coroutine is why the drain and the stop are
+        # separate. See tests/test_shutdown_drain_deadlock.py.
         pending = _cancel_other_tasks()
         if pending:
             await asyncio_mod.gather(*pending, return_exceptions=True)
@@ -516,11 +516,11 @@ def make_loop_teardown(event_loop, asyncio_mod):
         # (the grace-timeout path, where a slow user hook exhausted the window
         # so the drain hook was abandoned before it cancelled and gathered),
         # then defers loop.stop() one hop so those cancellations run their
-        # finally cleanup before the loop exits. This call_soon(stop) is NOT the
-        # orphaning hazard the old in-drain stop was: nothing awaits a future
-        # across it (quiesce only joins the loop thread), so the batch ordering
-        # here is a best-effort cleanup nicety, not a correctness dependency. No
-        # gather: an uncancellable task must never be able to block the stop.
+        # finally cleanup before the loop exits. Nothing awaits a future across
+        # this call_soon(stop) (quiesce only joins the loop thread), so it
+        # cannot orphan one, and the batch ordering here is a best-effort
+        # cleanup nicety, not a correctness dependency. No gather: an
+        # uncancellable task must never be able to block the stop.
         _cancel_other_tasks()
         event_loop.call_soon(event_loop.stop)
 
@@ -551,7 +551,7 @@ def make_loop_teardown(event_loop, asyncio_mod):
 ///
 /// Creates a dedicated asyncio event loop in a background thread and submits
 /// the setup coroutine. Returns a channel receiver and future handle so the
-/// caller can wait for completion **after releasing the GIL** — the event loop
+/// caller can wait for completion **after releasing the GIL**: the event loop
 /// thread needs the GIL to run the coroutine.
 ///
 /// The event loop stays alive after setup returns so that background tasks
@@ -753,8 +753,8 @@ fn build_async_setup(
     // 10. Build the failure attacher that Phase 3 of `PyNodeBuilder::run`
     //     invokes with the setup return value. The returned tasks are held
     //     for the node's lifetime (to keep them alive), so asyncio's GC-time
-    //     "Task exception was never retrieved" report — and with it the loop
-    //     exception handler that would cancel the node — can never fire for
+    //     "Task exception was never retrieved" report (and with it the loop
+    //     exception handler that would cancel the node) can never fire for
     //     them. Without this watcher, a returned task that dies leaves a
     //     half-alive node that still answers health probes. On a
     //     non-cancelled exception the watcher records the error (re-raised
@@ -793,6 +793,67 @@ fn build_async_setup(
         monitor_disarm: disarm_tx,
         task_failure_attach,
     })
+}
+
+/// Phases 2 and 3 of an async setup that `start_async_setup` started: hand
+/// the loop teardown handle to `loop_shutdown_slot`, await the setup
+/// coroutine (cancelled through `node_runner`'s shutdown hooks when a stop
+/// interrupts it), then record its exception in `setup_error` or keep its
+/// returned value alive in `setup_return`.
+async fn await_async_setup(
+    async_setup: AsyncSetup,
+    node_runner: &Arc<NodeRunner>,
+    loop_shutdown_slot: &Mutex<Option<EventLoopShutdown>>,
+    setup_return: &Mutex<Option<Py<PyAny>>>,
+    setup_error: &SharedPyError,
+) -> peppylib::PeppyResult<()> {
+    // Held until this setup phase ends (any path); dropping it retires the
+    // shutdown monitor, handing the loop teardown to the drain hook.
+    let _monitor_disarm = async_setup.monitor_disarm;
+
+    // Store the loop teardown handle so the main thread can quiesce and join
+    // it after builder.run() returns.
+    if let Ok(mut guard) = loop_shutdown_slot.lock() {
+        *guard = Some(async_setup.event_loop_shutdown);
+    }
+
+    // Phase 2: await with the GIL released so the event loop thread can run
+    // the setup coroutine, and without blocking this tokio worker so the
+    // runner's select still observes shutdown requests and cancellation while
+    // setup is in flight. A stop drops this future here, and the guard cancels
+    // the setup.
+    let cancel_on_stop = CancelSetupOnStop::arm(
+        Arc::clone(node_runner),
+        async_setup.setup_future,
+        async_setup.cancel_setup,
+    );
+    let completed = async_setup.setup_complete_rx.await;
+    let setup_future = cancel_on_stop.disarm();
+    completed.map_err(|_| peppy_io_err("async setup channel closed"))?;
+
+    // Phase 3: check for exceptions and capture the return value (re-acquires
+    // GIL)
+    match Python::try_attach(|py| -> PyResult<()> {
+        let result = setup_future.bind(py).call_method0("result")?;
+        if !result.is_none() {
+            // Watch every returned task: holding them below keeps the GC-time
+            // unretrieved-exception report from ever firing, so this is the
+            // only path that observes their failure.
+            async_setup.task_failure_attach.bind(py).call1((&result,))?;
+            // Store the return value to prevent GC of returned tasks.
+            if let Ok(mut guard) = setup_return.lock() {
+                *guard = Some(result.unbind());
+            }
+        }
+        Ok(())
+    }) {
+        Some(Ok(())) => Ok(()),
+        Some(Err(err)) => {
+            store_python_error(setup_error, err);
+            Err(peppy_io_err("async setup raised an exception"))
+        }
+        None => Err(peppy_io_err("failed to attach to Python GIL")),
+    }
 }
 
 fn store_python_error(error_slot: &SharedPyError, err: PyErr) {
@@ -898,7 +959,7 @@ impl PyCancellationToken {
     /// Mirrors the Rust `CancellationToken::cancelled()` awaitable.
     fn cancelled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let token = self.inner.clone();
-        crate::py_future::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             token.cancelled().await;
             Ok(())
         })
@@ -909,7 +970,7 @@ impl PyCancellationToken {
 #[pyclass(name = "NodeRunner")]
 pub struct PyNodeRunner {
     pub(crate) inner: Arc<NodeRunner>,
-    /// Cached messenger handle — cloning `MessengerHandle` is a cheap `Arc`
+    /// Cached messenger handle. Cloning `MessengerHandle` is a cheap `Arc`
     /// bump, but we avoid re-wrapping it on every `messenger()` call.
     cached_messenger: PyMessengerHandle,
     /// The node's persistent asyncio loop, filled once async setup starts.
@@ -942,8 +1003,9 @@ impl PyNodeRunner {
     /// Build a `NodeRunner` in standalone mode from a peppy.json5 path and a
     /// `StandaloneConfig`. Mirrors the Rust-side
     /// `Processor::new_standalone(...)` + `NodeRunner::new(...)` flow used by
-    /// `crates/peppylib/tests/core_node/common.rs` so Python integration tests
-    /// can stand up a runner without going through `NodeBuilder::run`.
+    /// `peppy-shared/peppylib-rs/tests/core_node/common.rs` so Python
+    /// integration tests can stand up a runner without going through
+    /// `NodeBuilder::run`.
     #[staticmethod]
     fn new_standalone<'py>(
         py: Python<'py>,
@@ -1044,7 +1106,7 @@ impl PyNodeRunner {
             *slot = Some(running.unbind());
         }
         let runner = Arc::clone(&self.inner);
-        crate::py_future::future_into_py(py, async move {
+        future_into_py_unit(py, async move {
             runner.run_shutdown_hooks(grace).await;
             Ok(())
         })
@@ -1706,9 +1768,9 @@ impl PyNodeBuilder {
     /// `peppygen.parameters.Parameters` dataclass instance (hydrated from the
     /// runtime config dict).
     ///
-    /// - **sync** `def setup(params: Parameters, node_runner: NodeRunner): ...` — runs directly.
+    /// - **sync** `def setup(params: Parameters, node_runner: NodeRunner): ...` runs directly.
     /// - **async** `async def setup(params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task] | None: ...`
-    ///   — runs on a persistent asyncio event loop. Return background tasks
+    ///   runs on a persistent asyncio event loop. Return background tasks
     ///   created with `asyncio.create_task()` so the framework holds strong
     ///   references, preventing garbage collection.
     ///
@@ -1741,9 +1803,9 @@ impl PyNodeBuilder {
             // reference to the Python object for the entire node lifetime.
             let setup_return_value: Arc<Mutex<Option<Py<PyAny>>>> = Arc::new(Mutex::new(None));
             let setup_return_for_run = Arc::clone(&setup_return_value);
-            let event_loop_handle: Arc<Mutex<Option<EventLoopShutdown>>> =
+            let loop_shutdown_handle: Arc<Mutex<Option<EventLoopShutdown>>> =
                 Arc::new(Mutex::new(None));
-            let event_loop_for_run = Arc::clone(&event_loop_handle);
+            let loop_shutdown_for_run = Arc::clone(&loop_shutdown_handle);
             // Shared with every PyNodeRunner (and so with every registered
             // shutdown hook); filled by start_async_setup when setup is async.
             let hook_loop_slot: SharedEventLoopSlot = Arc::new(Mutex::new(None));
@@ -1752,7 +1814,7 @@ impl PyNodeBuilder {
                 move |params: serde_json::Value, node_runner: Arc<NodeRunner>| {
                     let setup_error = Arc::clone(&setup_error_for_run);
                     let setup_return = setup_return_for_run;
-                    let event_loop_slot = event_loop_for_run;
+                    let loop_shutdown_slot = loop_shutdown_for_run;
                     let hook_loop_slot = hook_loop_slot;
                     async move {
                         // Phase 1: call setup and start async event loop (holds GIL)
@@ -1782,64 +1844,14 @@ impl PyNodeBuilder {
 
                         match async_handle {
                             Some(Ok(Some(async_setup))) => {
-                                // Held until this setup phase ends (any path);
-                                // dropping it retires the shutdown monitor,
-                                // handing the loop teardown to the drain hook.
-                                let _monitor_disarm = async_setup.monitor_disarm;
-
-                                // Store the loop teardown handle so the main
-                                // thread can quiesce and join it after
-                                // builder.run() returns.
-                                if let Ok(mut guard) = event_loop_slot.lock() {
-                                    *guard = Some(async_setup.event_loop_shutdown);
-                                }
-
-                                // Phase 2: await with the GIL released so the
-                                // event loop thread can run the setup
-                                // coroutine, and without blocking this tokio
-                                // worker so the runner's select still observes
-                                // shutdown requests and cancellation while
-                                // setup is in flight. A stop drops this future
-                                // here, and the guard cancels the setup.
-                                let cancel_on_stop = CancelSetupOnStop::arm(
-                                    Arc::clone(&node_runner),
-                                    async_setup.setup_future,
-                                    async_setup.cancel_setup,
-                                );
-                                let completed = async_setup.setup_complete_rx.await;
-                                let setup_future = cancel_on_stop.disarm();
-                                completed
-                                    .map_err(|_| peppy_io_err("async setup channel closed"))?;
-
-                                // Phase 3: check for exceptions and capture
-                                // the return value (re-acquires GIL)
-                                match Python::try_attach(|py| -> PyResult<()> {
-                                    let result = setup_future.bind(py).call_method0("result")?;
-                                    if !result.is_none() {
-                                        // Watch every returned task: holding
-                                        // them below keeps the GC-time
-                                        // unretrieved-exception report from
-                                        // ever firing, so this is the only
-                                        // path that observes their failure.
-                                        async_setup
-                                            .task_failure_attach
-                                            .bind(py)
-                                            .call1((&result,))?;
-                                        // Store the return value to prevent GC
-                                        // of returned tasks.
-                                        if let Ok(mut guard) = setup_return.lock() {
-                                            *guard = Some(result.unbind());
-                                        }
-                                    }
-                                    Ok(())
-                                }) {
-                                    Some(Ok(())) => Ok(()),
-                                    Some(Err(err)) => {
-                                        store_python_error(&setup_error, err);
-                                        Err(peppy_io_err("async setup raised an exception"))
-                                    }
-                                    None => Err(peppy_io_err("failed to attach to Python GIL")),
-                                }
+                                await_async_setup(
+                                    async_setup,
+                                    &node_runner,
+                                    &loop_shutdown_slot,
+                                    &setup_return,
+                                    &setup_error,
+                                )
+                                .await
                             }
                             Some(Ok(None)) => Ok(()),
                             Some(Err(err)) => {
@@ -1862,7 +1874,7 @@ impl PyNodeBuilder {
             // the only place the loop is stopped, so it runs on every async-setup
             // exit path, including when a slow user hook exhausted the grace
             // window and the drain hook never completed.
-            if let Some(shutdown) = event_loop_handle.lock().ok().and_then(|mut g| g.take()) {
+            if let Some(shutdown) = loop_shutdown_handle.lock().ok().and_then(|mut g| g.take()) {
                 shutdown.quiesce();
             }
 

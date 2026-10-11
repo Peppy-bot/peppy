@@ -11,7 +11,7 @@ fn sender_target_error_to_py(err: SenderTargetError) -> PyErr {
 
 /// Python wrapper for [`SenderTarget`]. Mirrors the Rust API: construct via
 /// the `node(name, tag)` / `contract(name, tag)` static methods. Each
-/// emission addresses either a node or a contract — never both. The wire
+/// emission addresses either a node or a contract, never both. The wire
 /// format embeds a `contract` / `node` discriminator so the two namespaces
 /// cannot collide.
 ///
@@ -120,7 +120,7 @@ impl PySenderTarget {
     }
 }
 
-/// Python wrapper for [`ProducerRef`] — the publisher's full
+/// Python wrapper for [`ProducerRef`], the publisher's full
 /// `(core_node, instance_id)` wire identity. Returned alongside every consumed
 /// message, and accepted by every producer-targeting call site (topic
 /// subscribe, service poll, action send_goal) so a consumer can pass the
@@ -155,11 +155,8 @@ impl PyProducerRef {
         &self.inner.instance_id
     }
 
-    pub(crate) fn __repr__(&self) -> String {
-        format!(
-            "ProducerRef({:?}, {:?})",
-            self.inner.core_node, self.inner.instance_id
-        )
+    fn __repr__(&self) -> String {
+        super::repr_producer(&self.inner)
     }
 }
 

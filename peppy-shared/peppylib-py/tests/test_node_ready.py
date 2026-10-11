@@ -1,12 +1,11 @@
 """
 Tests for peppylib node ready service.
 
-Python equivalent of crates/peppylib/tests/ready_node.rs.
+Python equivalent of peppy-shared/peppylib-rs/tests/ready_node.rs.
 """
 
-import asyncio
-
 import pytest
+from common import TEST_INSTANCE_ID, TEST_NODE_NAME, TEST_NODE_TAG
 
 from peppylib import (
     MessengerHandle,
@@ -17,8 +16,6 @@ from peppylib import (
 )
 from peppylib.config import NODE_READY_SERVICE
 from peppylib.services import NodeReadyService
-
-from common import TEST_INSTANCE_ID, TEST_NODE_NAME, TEST_NODE_TAG
 
 TEST_CORE_NODE_NAME = "test_core_node"
 CALLER_INSTANCE_ID = "caller_instance"
@@ -41,7 +38,6 @@ async def test_ready_node():
             TEST_INSTANCE_ID,
             SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
         )
-
 
         request_payload = b"ready"
 
@@ -69,7 +65,8 @@ async def test_ready_node():
                     NODE_READY_SERVICE,
                     target,
                     request_payload,
-                    2.0,)
+                    2.0,
+                )
             except RuntimeError as exc:
                 pytest.fail(f"[{label}] poll failed: {exc}")
 

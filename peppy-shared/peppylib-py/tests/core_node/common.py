@@ -1,13 +1,15 @@
 """Shared test fixtures for `core_node` integration tests: router/runner
-setup, reachability polling, and a minimal `peppy.json5` writer. Per-test
-modules provide their own stub-listener body because request/response types
-differ per service.
+setup, reachability polling, a single-shot stub service, and a minimal
+`peppy.json5` writer. Per-test modules provide the canned response bytes
+because the response types differ per service.
 
-Python equivalent of `crates/peppylib/tests/core_node/common.rs`.
+Python equivalent of `peppy-shared/peppylib-rs/tests/core_node/common.rs`.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import TypeVar
 
 import pytest
 
@@ -22,11 +24,13 @@ from peppylib import (
 )
 
 CORE_NODE = "standalone-core"
-# Mirrors `core_node_api::names::CORE_NODE_TAG` — the core node always uses
+# Mirrors `core_node_api::names::CORE_NODE_TAG`: the core node always uses
 # this tag on the wire, so reachability probes and stub listeners must too.
 CORE_NODE_TAG = "core"
 CLIENT_INSTANCE = "test_caller"
 SERVER_INSTANCE = "test_server"
+
+_CallResult = TypeVar("_CallResult")
 
 _PEPPY_CONFIG = """{
     peppy_schema: "node/v1",
@@ -65,7 +69,7 @@ async def start_router_and_runner(tmp_path: Path):
     caller uses to spawn its stub listener.
 
     Returns `(router, node_runner, server_handle)`. The caller must hold the
-    router and runner for the duration of the test — dropping them tears down
+    router and runner for the duration of the test; dropping them tears down
     the messaging fabric.
     """
     # `peppylib.testing.EphemeralRouter` also serializes meshes within this
@@ -73,8 +77,8 @@ async def start_router_and_runner(tmp_path: Path):
     router = await peppy_testing.EphemeralRouter.start()
     # The node runner opens its session under a workspace namespace; the standalone
     # config carries no workspace id, so it resolves to the `local`
-    # namespace. The stub server must open under that same namespace — zenoh
-    # sessions only interoperate when their namespaces match — or the runner's
+    # namespace. The stub server must open under that same namespace (zenoh
+    # sessions only interoperate when their namespaces match), or the runner's
     # service queries and topic subscriptions never reach the stub. Passing no
     # workspace id resolves to `local`, matching the runner.
     server_handle = await MessengerHandle.from_host_port_with_namespace(
@@ -110,3 +114,28 @@ async def spawn_stub_listener(server_handle, service_name: str, response_bytes: 
     return asyncio.ensure_future(
         endpoint.handle_next_request(lambda _request: response_bytes)
     )
+
+
+async def call_against_stub_service(
+    tmp_path: Path,
+    service_name: str,
+    response_bytes: bytes,
+    call: Callable[[NodeRunner], Awaitable[_CallResult]],
+) -> _CallResult:
+    """Make one helper call against a single-shot stub of `service_name`.
+
+    Starts a router and a runner, serves `response_bytes` once from a stub
+    listener, waits until the runner reaches it, awaits `call` with the
+    runner, and waits for the stub's handler to finish before the router
+    stops. The stub replies with the canned bytes whatever the request holds,
+    so the caller's assertions check how the helper handles the response.
+    """
+    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
+    try:
+        handler = await spawn_stub_listener(server_handle, service_name, response_bytes)
+        await wait_until_reachable(node_runner.messenger(), service_name)
+        result = await call(node_runner)
+        await handler
+    finally:
+        await router.stop()
+    return result

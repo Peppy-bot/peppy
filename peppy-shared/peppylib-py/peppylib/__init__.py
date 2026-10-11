@@ -3,7 +3,7 @@ peppylib - The Peppy control library
 """
 
 import sys
-from ._version import __version__
+
 from . import encoding
 
 # Force line-buffered stdout/stderr when not connected to a TTY (e.g., when
@@ -17,6 +17,8 @@ if hasattr(sys.stderr, "reconfigure") and not sys.stderr.isatty():
 # Import the native module and register submodules in sys.modules
 # This is required for PyO3 submodules to be importable with dot notation
 from . import _peppylib  # type: ignore[import-not-found]
+
+__version__ = _peppylib.__version__
 
 # Public module aliases
 sys.modules["peppylib.messaging"] = _peppylib.messaging
@@ -36,74 +38,100 @@ sys.modules["peppylib._peppylib.core_node"] = _peppylib.core_node
 # Expose as attribute for `from peppylib import messaging`
 messaging = _peppylib.messaging
 
-# Re-export the Rust-implemented functions/types from the native module
-from ._peppylib.messaging import SenderTarget, ProducerRef, MessengerHandle, TopicMessenger, TopicPublisher, BoundSetSubscription, BoundMember, CopyTag, ZenohdInstance, PeerInfo, PeerMember, PeerSlot, PeerSlotSet, PeerSubscription, PeerPublisher, ObservedSource, ObservationSlot, ObservationSlotSet, ObservedSubscription  # noqa: E402  # type: ignore[import-not-found]
-from ._peppylib.config import QoSProfile, TopicRetention  # noqa: E402  # type: ignore[import-not-found]
-from ._peppylib.messaging.services import ServiceMessenger  # noqa: E402  # type: ignore[import-not-found]
-from ._peppylib.messaging.actions import (  # noqa: E402  # type: ignore[import-not-found]
-    ActionMessenger,
-    ConcurrentAction,
-    PendingGoal,
-    GoalContext,
+# Re-export the Rust-implemented functions/types from the native module, and
+# the namespaced core-node helper modules: `peppylib.datastore`,
+# `peppylib.clock`, `peppylib.stack`. They are imported after the sys.modules
+# aliasing above so their `from ._peppylib.core_node import ...` re-exports
+# resolve.
+from . import clock, datastore, stack
+from ._peppylib.config import (  # type: ignore[import-not-found]
+    QoSProfile,
+    TopicRetention,
 )
-from ._peppylib.runtime import (  # noqa: E402  # type: ignore[import-not-found]
-    NodeBuilder,
-    StandaloneConfig,
-    NodeRunner,
-    CancellationToken,
-)
+
 # `info` is the one core-node helper that stays flat (a single verb-less call),
 # so it and its response types live at the top level. The datastore, clock, and
-# stack helpers are namespaced in their own submodules (imported below).
-from ._peppylib.core_node import (  # noqa: E402  # type: ignore[import-not-found]
+# stack helpers are namespaced in their own submodules (imported above).
+from ._peppylib.core_node import (  # type: ignore[import-not-found]
     ContainerInfo,
     InfoResponse,
     info,
 )
-
-# Namespaced core-node helper modules: `peppylib.datastore`, `peppylib.clock`,
-# `peppylib.stack`. Imported after the sys.modules aliasing above so their
-# `from ._peppylib.core_node import ...` re-exports resolve.
-from . import datastore, clock, stack  # noqa: E402
+from ._peppylib.messaging import (  # type: ignore[import-not-found]
+    BoundMember,
+    BoundSetSubscription,
+    CopyTag,
+    MessengerHandle,
+    ObservationSlot,
+    ObservationSlotSet,
+    ObservedSource,
+    ObservedSubscription,
+    PeerInfo,
+    PeerMember,
+    PeerPublisher,
+    PeerSlot,
+    PeerSlotSet,
+    PeerSubscription,
+    ProducerRef,
+    SenderTarget,
+    TopicMessenger,
+    TopicPublisher,
+    ZenohdInstance,
+)
+from ._peppylib.messaging.actions import (  # type: ignore[import-not-found]
+    ActionMessenger,
+    ConcurrentAction,
+    GoalContext,
+    PendingGoal,
+)
+from ._peppylib.messaging.services import (  # type: ignore[import-not-found]
+    ServiceMessenger,
+)
+from ._peppylib.runtime import (  # type: ignore[import-not-found]
+    CancellationToken,
+    NodeBuilder,
+    NodeRunner,
+    StandaloneConfig,
+)
 
 __all__ = [
-    "SenderTarget",
-    "ProducerRef",
-    "MessengerHandle",
-    "TopicMessenger",
-    "TopicPublisher",
-    "BoundSetSubscription",
+    "ActionMessenger",
     "BoundMember",
+    "BoundSetSubscription",
+    "CancellationToken",
+    "ConcurrentAction",
+    "ContainerInfo",
     "CopyTag",
-    "ZenohdInstance",
+    "GoalContext",
+    "InfoResponse",
+    "MessengerHandle",
+    "NodeBuilder",
+    "NodeRunner",
+    "ObservationSlot",
+    "ObservationSlotSet",
+    "ObservedSource",
+    "ObservedSubscription",
     "PeerInfo",
     "PeerMember",
+    "PeerPublisher",
     "PeerSlot",
     "PeerSlotSet",
     "PeerSubscription",
-    "PeerPublisher",
-    "ObservedSource",
-    "ObservationSlot",
-    "ObservationSlotSet",
-    "ObservedSubscription",
-    "QoSProfile",
-    "TopicRetention",
-    "ServiceMessenger",
-    "ActionMessenger",
-    "ConcurrentAction",
     "PendingGoal",
-    "GoalContext",
-    "NodeBuilder",
+    "ProducerRef",
+    "QoSProfile",
+    "SenderTarget",
+    "ServiceMessenger",
     "StandaloneConfig",
-    "NodeRunner",
-    "CancellationToken",
-    "info",
-    "InfoResponse",
-    "ContainerInfo",
-    "datastore",
-    "clock",
-    "stack",
-    "messaging",
-    "encoding",
+    "TopicMessenger",
+    "TopicPublisher",
+    "TopicRetention",
+    "ZenohdInstance",
     "__version__",
+    "clock",
+    "datastore",
+    "encoding",
+    "info",
+    "messaging",
+    "stack",
 ]

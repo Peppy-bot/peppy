@@ -9,20 +9,20 @@ exposes the same set as Rust, so a node developed in either language runs
 standalone on the same terms.
 
 Python equivalent of the standalone seeding tests in
-crates/peppylib-rs/src/runtime/processor.rs.
+peppy-shared/peppylib-rs/src/runtime/processor.rs.
 """
 
 import asyncio
 import queue
 import tempfile
-import threading
 from pathlib import Path
 
 import pytest
+from common import start_runner_thread
 
-from peppylib import ZenohdInstance
+from peppylib import QoSProfile, ZenohdInstance
 from peppylib.config import NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME
-from peppylib.runtime import NodeBuilder, StandaloneConfig
+from peppylib.runtime import NodeBuilder, NodeRunner, StandaloneConfig
 
 # Every slot kind a launch would resolve, at the cardinalities whose seeding
 # rules differ. Observer slots must also be consumed, which the manifest parser
@@ -89,28 +89,22 @@ def _seeded_config(router) -> StandaloneConfig:
 def _run_standalone(peppy_config_path: str, standalone_config, setup_fn):
     """Run a node on its own thread and hand back its result and error queues."""
     result_queue: queue.Queue = queue.Queue()
-    error_queue: queue.Queue = queue.Queue()
 
     def run_node():
-        try:
+        def wrapped(params, node_runner):
+            try:
+                setup_fn(params, node_runner, result_queue)
+            finally:
+                result_queue.put(("token", node_runner.cancellation_token()))
 
-            def wrapped(params, node_runner):
-                try:
-                    setup_fn(params, node_runner, result_queue)
-                finally:
-                    result_queue.put(("token", node_runner.cancellation_token()))
+        (
+            NodeBuilder()
+            .with_config_path(peppy_config_path)
+            .standalone(standalone_config)
+            .run(wrapped)
+        )
 
-            (
-                NodeBuilder()
-                .with_config_path(peppy_config_path)
-                .standalone(standalone_config)
-                .run(wrapped)
-            )
-        except Exception as e:  # noqa: BLE001 - surfaced through the queue
-            error_queue.put(e)
-
-    thread = threading.Thread(target=run_node, daemon=True)
-    thread.start()
+    thread, error_queue = start_runner_thread(run_node)
     return thread, result_queue, error_queue
 
 
@@ -149,7 +143,9 @@ async def test_standalone_bound_members_carry_their_copy(monkeypatch):
                 results.put(("producers", node_runner.bound_producers("spare_cameras")))
                 results.put(("members", node_runner.bound_members("spare_cameras")))
 
-            thread, results, errors = _run_standalone(peppy_config_path, seeded, setup_fn)
+            thread, results, errors = _run_standalone(
+                peppy_config_path, seeded, setup_fn
+            )
             seen = await _collect(thread, results)
 
     assert errors.empty(), f"Runner error: {errors.get_nowait()}"
@@ -187,8 +183,12 @@ async def test_standalone_seeds_every_slot_kind(monkeypatch):
                 results.put(
                     ("wrist", node_runner.optional_bound_producer("wrist_camera"))
                 )
-                results.put(("spare_cams", node_runner.bound_producers("spare_cameras")))
-                results.put(("spare_members", node_runner.bound_members("spare_cameras")))
+                results.put(
+                    ("spare_cams", node_runner.bound_producers("spare_cameras"))
+                )
+                results.put(
+                    ("spare_members", node_runner.bound_members("spare_cameras"))
+                )
 
                 # Observer slots, each through the accessor its cardinality
                 # declares. A `one` slot answers without an Option.
@@ -241,6 +241,27 @@ async def test_standalone_seeds_every_slot_kind(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_standalone_peer_publisher_publish_to_resolves_to_none(monkeypatch):
+    """A publish to one peer of a seeded multi pairing slot resolves to `None`,
+    like every other void async binding."""
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(SEEDED_SLOTS_CONFIG)
+            node_runner = await NodeRunner.new_standalone(
+                peppy_config_path, _seeded_config(router)
+            )
+            publisher = node_runner.declare_peer_publisher(
+                "limbs", "arm_link", "v1", "joint_commands", QoSProfile.Reliable
+            )
+            peers = publisher.peers()
+            assert [peer.producer.instance_id for peer in peers] == ["left_1", "left_2"]
+
+            assert await publisher.publish_to(peers[0], b"cmd") is None
+
+
+@pytest.mark.asyncio
 async def test_standalone_unseeded_floored_observer_fails_startup(monkeypatch):
     """A `one` observer slot has no empty state, so leaving it unseeded is fatal.
 
@@ -261,7 +282,9 @@ async def test_standalone_unseeded_floored_observer_fails_startup(monkeypatch):
                 .with_peer_pin("arm", "core_x", "arm_1", "controller")
                 .with_bound_producer("main", "core_x", "camera_1")
                 .with_vacant_producer_slot("wrist_camera")
-                .with_observed_source("watched_arms", "core_x", "right_arm", "commander")
+                .with_observed_source(
+                    "watched_arms", "core_x", "right_arm", "commander"
+                )
             )
 
             def setup_fn(params, node_runner, results):  # pragma: no cover

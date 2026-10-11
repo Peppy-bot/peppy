@@ -70,16 +70,12 @@ impl PyObservedSource {
 
     fn __repr__(&self) -> String {
         let peer = match &self.inner.peer {
-            Some(peer) => format!(
-                "PeerInfo(producer=ProducerRef({:?}, {:?}), peer_link_id={:?})",
-                peer.producer.core_node, peer.producer.instance_id, peer.peer_link_id
-            ),
+            Some(peer) => super::repr_peer_info(peer),
             None => "None".to_string(),
         };
         format!(
-            "ObservedSource(producer=ProducerRef({:?}, {:?}), source_link_id={:?}, peer={peer})",
-            self.inner.producer.core_node,
-            self.inner.producer.instance_id,
+            "ObservedSource(producer={}, source_link_id={:?}, peer={peer})",
+            super::repr_producer(&self.inner.producer),
             self.inner.source_link_id
         )
     }

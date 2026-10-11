@@ -1,6 +1,6 @@
 """Round-trip tests for the `clock` capnp wire-type bindings.
 
-These tests don't touch the messenger or a core node — they verify the Rust
+These tests don't touch the messenger or a core node; they verify the Rust
 encode/decode boundary so Python users can rely on `ClockTick.decode(payload)`
 inside a topic subscriber loop and `ClockResponse.decode(payload)` after a
 `ServiceMessenger.poll`.

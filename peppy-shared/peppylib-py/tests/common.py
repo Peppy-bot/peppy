@@ -5,14 +5,18 @@ Shared test helpers and constants for peppylib integration tests.
 import asyncio
 import hashlib
 import json
+import logging
 import queue
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 import peppylib.testing as peppy_testing
 from peppylib import ProducerRef, SenderTarget
+
+logger = logging.getLogger(__name__)
 
 TEST_NODE_NAME = "test_node"
 TEST_NODE_TAG = "v1"
@@ -38,7 +42,7 @@ PEPPY_CONFIG = """{
 # The runtime hydrates the parameters dict into this class via
 # ``peppygen.parameters.Parameters.from_dict``, so any interpreter that calls
 # ``NodeBuilder().run(setup_fn)`` needs a peppygen package containing it.
-PARAMETERS_PY = '''\
+PARAMETERS_PY = """\
 from dataclasses import dataclass
 
 
@@ -51,7 +55,7 @@ class Parameters:
         return cls(
             frequency_hz=data["frequency_hz"],
         )
-'''
+"""
 
 
 def write_peppygen_stub(root: Path) -> None:
@@ -60,6 +64,34 @@ def write_peppygen_stub(root: Path) -> None:
     package_dir.mkdir(parents=True)
     (package_dir / "__init__.py").write_text("")
     (package_dir / "parameters.py").write_text(PARAMETERS_PY)
+
+
+def start_runner_thread(
+    run: Callable[[], None],
+) -> tuple[threading.Thread, queue.Queue]:
+    """Start `run` on a daemon thread and return the thread with the queue that
+    receives the exception `run` raises, if any.
+
+    The node runner blocks its thread, so a test drives it from here and reads
+    a runner failure from the queue (as `wait_for_service` does) instead of
+    losing it with the thread.
+    """
+    error_queue: queue.Queue = queue.Queue()
+
+    def run_and_keep_error() -> None:
+        try:
+            run()
+        except Exception as error:
+            # Whatever the runner raises is the test's to judge, so every
+            # exception goes to the queue. The log keeps its traceback, which
+            # pytest shows for a failing test where the assertion messages
+            # show only the exception's text.
+            logger.exception("the node runner thread raised")
+            error_queue.put(error)
+
+    runner_thread = threading.Thread(target=run_and_keep_error, daemon=True)
+    runner_thread.start()
+    return runner_thread, error_queue
 
 
 def create_codegen_fingerprint(config_path: str, output_path: str) -> None:

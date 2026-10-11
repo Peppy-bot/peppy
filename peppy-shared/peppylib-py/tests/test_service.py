@@ -2,7 +2,7 @@
 Tests for peppylib ServiceMessenger.
 
 Python equivalent of `service_messenger_communication` in
-crates/peppylib/tests/services.rs.
+peppy-shared/peppylib-rs/tests/services.rs.
 """
 
 import asyncio
@@ -46,7 +46,6 @@ async def test_service_messenger_communication():
             SERVICE_NAME,
         )
 
-
         # Spawn the handler so we can poll concurrently
         async def handle():
             await service.handle_next_request(lambda _request: RESPONSE_PAYLOAD)
@@ -62,7 +61,8 @@ async def test_service_messenger_communication():
             SERVICE_NAME,
             ProducerRef(CORE_NODE, INSTANCE_ID),
             REQUEST_PAYLOAD,
-            2.0,)
+            2.0,
+        )
 
         await handler
 
@@ -154,7 +154,8 @@ async def test_service_poll_rejects_invalid_timeout():
                 SERVICE_NAME,
                 ProducerRef(CORE_NODE, INSTANCE_ID),
                 REQUEST_PAYLOAD,
-                -1.0,)
+                -1.0,
+            )
 
 
 @pytest.mark.asyncio
@@ -172,7 +173,6 @@ async def test_service_handler_exception_returns_service_error():
             SERVICE_NAME,
         )
 
-
         def failing_handler(_request):
             raise RuntimeError("handler boom")
 
@@ -187,10 +187,65 @@ async def test_service_handler_exception_returns_service_error():
                 SERVICE_NAME,
                 ProducerRef(CORE_NODE, INSTANCE_ID),
                 REQUEST_PAYLOAD,
-                2.0,)
+                2.0,
+            )
 
         handled = await asyncio.wait_for(handler, timeout=2.0)
         assert handled is True
+
+
+async def _raise_in_async_handler(_request):
+    raise RuntimeError("async handler boom")
+
+
+async def _return_text_from_async_handler(_request):
+    return "not bytes"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("async_handler", "reason"),
+    [
+        (_raise_in_async_handler, "returned error: RuntimeError: async handler boom$"),
+        (
+            _return_text_from_async_handler,
+            "returned error: TypeError: Can't extract `str` to `Vec`$",
+        ),
+    ],
+    ids=["raises", "returns_text"],
+)
+async def test_async_service_handler_failure_returns_service_error(
+    async_handler, reason
+):
+    """An async handler that raises, or resolves to something other than
+    bytes, answers the caller with a service error carrying the reason, as a
+    synchronous handler does."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        service = await ServiceMessenger.listen(
+            server_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            SenderTarget.node(NODE_NAME, NODE_TAG),
+            SERVICE_NAME,
+        )
+        handler = asyncio.ensure_future(service.handle_next_request(async_handler))
+
+        with pytest.raises(RuntimeError, match=reason):
+            await ServiceMessenger.poll(
+                client_handle,
+                CORE_NODE,
+                INSTANCE_ID,
+                SenderTarget.node(NODE_NAME, NODE_TAG),
+                SERVICE_NAME,
+                ProducerRef(CORE_NODE, INSTANCE_ID),
+                REQUEST_PAYLOAD,
+                5.0,
+            )
+
+        assert await handler is True
 
 
 @pytest.mark.asyncio
@@ -225,7 +280,6 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
         iface_handler = asyncio.ensure_future(
             iface_service.handle_next_request(lambda _req: iface_response)
         )
-
 
         # Native poll → native handler.
         from_native = await ServiceMessenger.poll(

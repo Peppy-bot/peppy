@@ -1,6 +1,6 @@
 """Integration tests for `peppylib.stack.list`.
 
-Python equivalent of `crates/peppylib/tests/core_node/stack.rs`.
+Python equivalent of `peppy-shared/peppylib-rs/tests/core_node/stack.rs`.
 """
 
 import json
@@ -10,7 +10,7 @@ import pytest
 from peppylib import stack
 from peppylib.stack import StackListResponse
 
-from .common import spawn_stub_listener, start_router_and_runner, wait_until_reachable
+from .common import call_against_stub_service
 
 
 def _sample_graph_json() -> str:
@@ -44,13 +44,30 @@ def _sample_graph_json() -> str:
 async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
     """`stack.list(...)` returns the graph and the serving daemon's identity."""
     graph_json = _sample_graph_json()
-    copies = [{"name": "alpha", "option": "real", "core_node": "core",
-               "instance_ids": ["alpha_arm_inst"], "selections": ["commander=web"],
-               "set_members": [{"instance_id": "monitor_inst", "link_id": "robots",
-                                "target": "alpha_arm_inst"}]}]
+    copies = [
+        {
+            "name": "alpha",
+            "option": "real",
+            "core_node": "core",
+            "instance_ids": ["alpha_arm_inst"],
+            "selections": ["commander=web"],
+            "set_members": [
+                {
+                    "instance_id": "monitor_inst",
+                    "link_id": "robots",
+                    "target": "alpha_arm_inst",
+                }
+            ],
+        }
+    ]
     copy_change = {"action": "join", "name": "bravo", "option": "so101_sim"}
     response = StackListResponse(
-        graph_json, "core", "gen-1", "robo-a", copies, shutdown_grace_secs=11,
+        graph_json,
+        "core",
+        "gen-1",
+        "robo-a",
+        copies,
+        shutdown_grace_secs=11,
         copy_change=copy_change,
     )
     assert response.copies == copies
@@ -58,18 +75,9 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
     assert response.copy_change == copy_change
     response_bytes = response.encode()
 
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        handler = await spawn_stub_listener(
-            server_handle, "stack_list", response_bytes
-        )
-        await wait_until_reachable(node_runner.messenger(), "stack_list")
-
-        result = await stack.list(node_runner, 3.0)
-
-        await handler
-    finally:
-        await router.stop()
+    result = await call_against_stub_service(
+        tmp_path, "stack_list", response_bytes, lambda runner: stack.list(runner, 3.0)
+    )
 
     graph = result.graph
     assert result.copies == copies
@@ -91,8 +99,8 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
 
 
 def _mixed_state_graph_json() -> str:
-    """Two-node fixture: one mixed running/starting, one starting-only —
-    covers filtering and warmup-vs-missing."""
+    """Two-node fixture: one mixed running/starting, one starting-only.
+    Covers filtering and warmup-vs-missing."""
     router = {
         "name": "router",
         "tag": "v1",
@@ -120,19 +128,16 @@ def _mixed_state_graph_json() -> str:
 
 async def _stack_list_with_mixed_state(tmp_path):
     response_bytes = StackListResponse(
-        _mixed_state_graph_json(), "core", "gen-1", "robo-a", copies=[], shutdown_grace_secs=5
+        _mixed_state_graph_json(),
+        "core",
+        "gen-1",
+        "robo-a",
+        copies=[],
+        shutdown_grace_secs=5,
     ).encode()
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        handler = await spawn_stub_listener(
-            server_handle, "stack_list", response_bytes
-        )
-        await wait_until_reachable(node_runner.messenger(), "stack_list")
-        result = await stack.list(node_runner, 3.0)
-        await handler
-    finally:
-        await router.stop()
-    return result
+    return await call_against_stub_service(
+        tmp_path, "stack_list", response_bytes, lambda runner: stack.list(runner, 3.0)
+    )
 
 
 @pytest.mark.asyncio
@@ -152,7 +157,7 @@ async def test_running_instance_ids_by_node_returns_running_only(tmp_path):
 @pytest.mark.asyncio
 async def test_running_instance_ids_by_node_empty_when_all_starting(tmp_path):
     """A present node with only `starting` instances returns an empty list,
-    not a KeyError — that's how callers tell "warming up" from "not in stack"."""
+    not a KeyError: that's how callers tell "warming up" from "not in stack"."""
     result = await _stack_list_with_mixed_state(tmp_path)
     assert result.running_instance_ids_by_node("warming", "v1") == []
 

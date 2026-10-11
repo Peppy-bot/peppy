@@ -1,12 +1,11 @@
 """
 Tests for peppylib node health service.
 
-Python equivalent of crates/peppylib/tests/node_health_service.rs.
+Python equivalent of peppy-shared/peppylib-rs/tests/node_health_service.rs.
 """
 
-import asyncio
-
 import pytest
+from common import TEST_INSTANCE_ID, TEST_NODE_NAME, TEST_NODE_TAG
 
 from peppylib import (
     MessengerHandle,
@@ -17,8 +16,6 @@ from peppylib import (
 )
 from peppylib.config import NODE_HEALTH_SERVICE
 from peppylib.services import NodeHealthService
-
-from common import TEST_INSTANCE_ID, TEST_NODE_NAME, TEST_NODE_TAG
 
 TEST_CORE_NODE_NAME = "test_core_node"
 CALLER_INSTANCE_ID = "caller_instance"
@@ -38,7 +35,6 @@ async def test_node_health_request_response_roundtrip():
             SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
         )
 
-
         # Build and send the health request
         request_payload = b"health"
 
@@ -50,7 +46,8 @@ async def test_node_health_request_response_roundtrip():
             NODE_HEALTH_SERVICE,
             ProducerRef(TEST_CORE_NODE_NAME, TEST_INSTANCE_ID),
             request_payload,
-            2.0,)
+            2.0,
+        )
 
         # Verify the response
         assert response is not None
