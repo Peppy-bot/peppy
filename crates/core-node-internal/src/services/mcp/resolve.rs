@@ -7,7 +7,7 @@ use crate::services::repo::cache::{
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::mcp_deployment::{
-    McpDeploymentPlan, McpServeSpec, PinnedDocument, plan_deployment,
+    McpDeploymentPlan, McpServeSpec, Pinned, PinnedDocument, PinnedExposure, plan_deployment,
 };
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::repository::{DeploymentPins, DeploymentRoot, ManifestFingerprint, PinnedItem};
@@ -63,8 +63,85 @@ pub(super) fn resolve_cached_document<E: PinnableCacheEntry>(
     Ok(PinnedDocument::new(entry.pin(), content))
 }
 
+/// Why the exposure documents a launcher lists are not in hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExposureDocumentsError {
+    /// This machine's caches do not give a document: it is not cached, or
+    /// the cached file is not readable or drifted from its fingerprint. The
+    /// reason names the document.
+    NotCached(String),
+    /// A document is in hand, and a launch refuses it. The reason names the
+    /// document and says why.
+    Refused(String),
+}
+
+impl std::fmt::Display for ExposureDocumentsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotCached(reason) | Self::Refused(reason) => f.write_str(reason),
+        }
+    }
+}
+
+/// Resolves the exposure documents a launcher lists through this machine's
+/// own cache rules, each beside the pin its winning entry mints and parsed.
+fn resolve_exposure_document_pairs(
+    peppy_dirs: &PeppyDirs,
+    references: &[ExposureRef],
+    on_feedback: &dyn Fn(Report<'_>),
+) -> Result<Vec<(PinnedDocument, PinnedExposure)>, ExposureDocumentsError> {
+    let exposure_entries = repo_cache::load_repo_cache::<McpExposureCacheEntry>(peppy_dirs)
+        .map_err(|e| {
+            ExposureDocumentsError::NotCached(format!("failed to load the exposure cache: {e}"))
+        })?;
+    references
+        .iter()
+        .map(|reference| {
+            let exposure = resolve_cached_document(
+                peppy_dirs,
+                &exposure_entries,
+                &reference.name,
+                &reference.tag,
+                None,
+                on_feedback,
+            )
+            .map_err(ExposureDocumentsError::NotCached)?;
+            let document =
+                PeppyMcpExposureParser::from_content(&exposure.content).map_err(|e| {
+                    ExposureDocumentsError::Refused(format!(
+                        "exposure `{reference}` does not parse: {e}"
+                    ))
+                })?;
+            let parsed = Pinned {
+                pin: exposure.pin.clone(),
+                document,
+            };
+            Ok((exposure, parsed))
+        })
+        .collect()
+}
+
+/// The exposure documents a launcher lists, resolved and parsed with no
+/// contract: what the targets of a deployment
+/// ([`daemon_config::mcp_deployment::DeploymentTargets`]) are read from, so
+/// the launch checks of daemon scopes hold with no contract and no node in
+/// this machine's caches.
+pub fn resolve_exposure_documents(
+    peppy_dirs: &PeppyDirs,
+    references: &[ExposureRef],
+    on_feedback: &dyn Fn(Report<'_>),
+) -> Result<Vec<PinnedExposure>, ExposureDocumentsError> {
+    Ok(
+        resolve_exposure_document_pairs(peppy_dirs, references, on_feedback)?
+            .into_iter()
+            .map(|(_, parsed)| parsed)
+            .collect(),
+    )
+}
+
 /// Resolves the exposures a launcher lists through this machine's own cache
-/// rules, then every contract they reference, and plans the deployment.
+/// rules, then every contract they reference, and plans the deployment. A
+/// daemon target references no contract: this peppy serves its interface.
 ///
 /// A contract is looked up once per identity. An exposure's own `sha256`
 /// pin selects the content for that identity; two exposures pinning one
@@ -75,36 +152,30 @@ pub(crate) fn resolve_exposure_deployment(
     references: &[ExposureRef],
     on_feedback: &dyn Fn(Report<'_>),
 ) -> Result<ResolvedMcpDeployment, String> {
-    let exposure_entries = repo_cache::load_repo_cache::<McpExposureCacheEntry>(peppy_dirs)
-        .map_err(|e| format!("failed to load the exposure cache: {e}"))?;
+    let resolved = resolve_exposure_document_pairs(peppy_dirs, references, on_feedback)
+        .map_err(|e| e.to_string())?;
     let contract_entries = repo_cache::load_contract_cache(peppy_dirs)
         .map_err(|e| format!("failed to load the contract cache: {e}"))?;
 
-    let mut exposures = Vec::with_capacity(references.len());
+    let mut exposures = Vec::with_capacity(resolved.len());
     // Contract identity -> (author pin, the exposure that stated it).
     let mut wanted: BTreeMap<(String, String), (Option<ManifestFingerprint>, String)> =
         BTreeMap::new();
-    for reference in references {
-        let exposure = resolve_cached_document(
-            peppy_dirs,
-            &exposure_entries,
-            &reference.name,
-            &reference.tag,
-            None,
-            on_feedback,
-        )?;
-        let document = PeppyMcpExposureParser::from_content(&exposure.content)
-            .map_err(|e| format!("exposure `{reference}` does not parse: {e}"))?;
-        for (_, target, _) in document.surface.targets() {
-            let key = (
-                target.contract.name.as_str().to_owned(),
-                target.contract.tag.clone(),
-            );
+    for (exposure, parsed) in resolved {
+        let reference = parsed.reference();
+        for contract in parsed
+            .document
+            .surface
+            .targets()
+            .into_iter()
+            .filter_map(|(_, target, _)| target.source.contract())
+        {
+            let key = (contract.name.as_str().to_owned(), contract.tag.clone());
             match wanted.get_mut(&key) {
                 None => {
-                    wanted.insert(key, (target.contract.sha256.clone(), reference.to_string()));
+                    wanted.insert(key, (contract.sha256.clone(), reference.to_string()));
                 }
-                Some((author, by)) => match (&*author, &target.contract.sha256) {
+                Some((author, by)) => match (&*author, &contract.sha256) {
                     (Some(first), Some(second)) if first != second => {
                         return Err(format!(
                             "exposures `{by}` and `{reference}` pin contract `{}:{}` at different \

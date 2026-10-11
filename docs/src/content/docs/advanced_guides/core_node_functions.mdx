@@ -90,10 +90,11 @@ The second argument is a timeout. Rust accepts anything that converts to `Option
 
 ## `stack.list`
 
-`stack.list` returns a `StackList` with six fields:
+`stack.list` returns a `StackList` with seven fields:
 
 - `graph`: the node graph, with every node's metadata and its tracked instances.
 - `copies`: the copies the serving daemon runs.
+- `copy_change`: the join or the removal of a copy that holds the serving daemon's stack now, with its `action` (`join` or `remove`), the copy's `name` and its `option`; none while no such change runs. A copy that joins is in `copies` only once its join ends.
 - `shutdown_grace_secs`: the serving daemon's cooperative shutdown grace.
 - `core_node`: the core-node name of the daemon that served this stack snapshot.
 - `instance_id`: the serving daemon's own generation instance id.

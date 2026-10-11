@@ -104,7 +104,7 @@ enum FeedbackDrainOutcome {
 /// the result (e.g. bringing up a delayed health responder once startup output
 /// has streamed) share one goal-send implementation with the plain wait helper.
 #[allow(clippy::too_many_arguments)]
-async fn send_node_run_goal(
+pub async fn send_node_run_goal(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_plan: config::runtime::NodeInstancePlan,
@@ -194,7 +194,7 @@ async fn drain_node_run_feedback(
 }
 
 /// Fetches the buffered result of a completed `node_run` action and decodes it.
-async fn fetch_node_run_result(
+pub async fn fetch_node_run_result(
     messenger: &MessengerHandle,
     action_handle: &ActionGoalHandle,
     fetch_timeout: Duration,
@@ -786,17 +786,38 @@ pub async fn add_and_build_forking_node(
     node_name: &str,
     node_tag: &str,
 ) -> TempDir {
+    add_and_build_process_node(
+        started,
+        node_name,
+        node_tag,
+        &["sh", "-c", "sleep 1000 & sleep 1000 & wait"],
+    )
+    .await
+}
+
+/// Adds and builds a process node that runs `run_cmd`. Returns the source
+/// dir guard.
+pub async fn add_and_build_process_node(
+    started: &StartedCoreNode,
+    node_name: &str,
+    node_tag: &str,
+    run_cmd: &[&str],
+) -> TempDir {
     let source_dir = tempfile::tempdir().expect("temp source dir");
     let peppy_json5 = r#"{
             peppy_schema: "node/v1",
             manifest: { name: "{NAME}", tag: "{TAG}" },
             execution: {
                 language: "rust",
-                run_cmd: ["sh", "-c", "sleep 1000 & sleep 1000 & wait"]
+                run_cmd: {RUN_CMD}
             }
         }"#
     .replace("{NAME}", node_name)
-    .replace("{TAG}", node_tag);
+    .replace("{TAG}", node_tag)
+    .replace(
+        "{RUN_CMD}",
+        &serde_json::to_string(run_cmd).expect("a run_cmd serializes"),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
