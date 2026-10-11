@@ -23,9 +23,13 @@ pub enum McpCommands {
     /// Print the catalog the server derives for an exposure.
     ///
     /// Resolves `<name>:<tag>` and the contracts it references through the
-    /// local repository caches (run `peppy repo refresh` first) and prints
-    /// the derived catalog as JSON: exactly what a running endpoint for the
-    /// exposure advertises through discovery and the list methods.
+    /// local repository caches (run `peppy repo refresh` first), takes the
+    /// daemon interfaces it references from this peppy, and prints the
+    /// derived catalog as JSON: what a running endpoint for the exposure
+    /// advertises through discovery and the list methods. The schemas of a
+    /// daemon target are the interface's own: a running endpoint narrows them
+    /// with the scope its launcher gives the target, which belongs to an
+    /// instance and not to the exposure.
     Catalog {
         /// The exposure, as `<name>:<tag>`.
         exposure: String,

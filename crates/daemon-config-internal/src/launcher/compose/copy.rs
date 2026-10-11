@@ -215,6 +215,20 @@ fn check_copy_name(name: &Name) -> Result<(), CompositionError> {
 pub const SELF_COPY_NAME_REFUSAL: &str =
     "`self` names the daemon a launch or join targets; give the copy another name";
 
+/// Parses the name a caller gives a copy to join or to remove. A copy's name
+/// is its placement link, so it is held to a core node name's grammar before
+/// it travels as the [`Name`] the goal carries. The CLI's `stack` commands
+/// and the MCP server's daemon bridge parse a copy name with it.
+pub fn parse_copy_name(raw: &str) -> Result<Name, String> {
+    let placement = CoreNodeName::new(raw).map_err(|error| match error {
+        CoreNodeNameError::Reserved => SELF_COPY_NAME_REFUSAL.to_owned(),
+        CoreNodeNameError::Malformed => {
+            format!("a copy's name is its placement link, so it {error}")
+        }
+    })?;
+    Ok(Name::new(placement.into_string()).expect("a core node name is a name"))
+}
+
 /// One copy's selection `own` laid over the stack `stack`: the whole
 /// selection, the fragments the copy pulls in and the constraints that
 /// judge it. A launch, a join and `repo index --check` all derive the
@@ -412,6 +426,7 @@ pub(super) fn compose_copy(
     let owns = |target: &str| minted.values().any(|id| id.as_str() == target);
     let applied: Vec<AppliedAdjustment> =
         rewrite_report(name, expanded.applied, &minted, &rewrite)?;
+    refuse_daemon_scopes(name, &loaded.name, &applied)?;
     let stack_writes = applied
         .iter()
         .filter(|entry| !owns(&entry.target))
@@ -444,6 +459,29 @@ pub(super) fn compose_copy(
         core_nodes,
         applied,
         skipped,
+    })
+}
+
+/// A scope belongs to the stack: a copy's composition that sets one, on
+/// the copy's own instances or on a stack instance, is refused, at launch,
+/// at a join and at a removal alike, since each composes the copy here.
+fn refuse_daemon_scopes(
+    copy: &Name,
+    option: &str,
+    applied: &[AppliedAdjustment],
+) -> Result<(), CompositionError> {
+    let Some((entry, daemon_target)) = applied.iter().find_map(|entry| match &entry.change {
+        AppliedChange::DaemonScope { daemon_target, .. } => Some((entry, daemon_target)),
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    Err(CompositionError::CopySetsDaemonScope {
+        copy: copy.to_string(),
+        option: option.to_owned(),
+        instance: entry.target.clone(),
+        daemon_target: daemon_target.clone(),
+        origin: entry.origin.clone(),
     })
 }
 
@@ -554,7 +592,9 @@ fn rewrite_report(
                 reason,
             };
             match &mut entry.change {
-                AppliedChange::Argument { .. } | AppliedChange::Clock { .. } => {}
+                AppliedChange::Argument { .. }
+                | AppliedChange::Clock { .. }
+                | AppliedChange::DaemonScope { .. } => {}
                 AppliedChange::LinkSet { old, new, .. } => {
                     if let Some(old) = old {
                         rewrite_link(old, rewrite).map_err(collide)?;
@@ -677,6 +717,13 @@ fn apply_write(
         AppliedChange::Clock { new, .. } => {
             instance.framework.clock = Some(new.clone());
         }
+        AppliedChange::DaemonScope {
+            daemon_target, new, ..
+        } => {
+            instance
+                .daemon_scopes
+                .insert(daemon_target.clone(), new.clone());
+        }
     }
     Ok(())
 }
@@ -763,6 +810,22 @@ pub(super) fn attach(
                     )));
                 }
             }
+            // A copy's composition that sets a scope is refused before it
+            // writes anything (`refuse_daemon_scopes`), so a composed copy
+            // carries none: the arm holds the copy to what runs, as every
+            // value write is.
+            AppliedChange::DaemonScope {
+                daemon_target, new, ..
+            } => {
+                let old = running.daemon_scopes.get(daemon_target);
+                if old != Some(new) {
+                    return Err(refusal(format!(
+                        "{field}: {} -> {}",
+                        render_option(old),
+                        render(new)
+                    )));
+                }
+            }
         }
     }
     add_copy(&mut flat, copy)?;
@@ -801,6 +864,11 @@ pub(super) fn against_running(
                 },
                 AppliedChange::Clock { old, .. } => {
                     *old = running.framework.clock.clone();
+                }
+                AppliedChange::DaemonScope {
+                    daemon_target, old, ..
+                } => {
+                    *old = running.daemon_scopes.get(daemon_target).cloned();
                 }
                 AppliedChange::LinkAdded { .. } => {}
             }
@@ -1060,5 +1128,20 @@ mod membership_tests {
         assert_eq!(tag("hub_inst"), None);
         assert_eq!(membership.copy_of("hub_inst"), None);
         assert_eq!(CopyMembership::default().copy_of("alpha_arm_inst"), None);
+    }
+
+    /// A copy name is a core node name, and each refusal says why in the
+    /// words of a copy.
+    #[test]
+    fn a_copy_name_is_parsed_as_a_core_node_name() {
+        assert_eq!(parse_copy_name("bravo_2").unwrap().as_str(), "bravo_2");
+        assert_eq!(parse_copy_name("self").unwrap_err(), SELF_COPY_NAME_REFUSAL);
+        for malformed in ["", "bad/name", &"a".repeat(64)] {
+            let refusal = parse_copy_name(malformed).unwrap_err();
+            assert!(
+                refusal.starts_with("a copy's name is its placement link, so it must be non-empty"),
+                "{malformed:?}: {refusal}"
+            );
+        }
     }
 }
