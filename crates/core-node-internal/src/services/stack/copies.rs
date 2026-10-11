@@ -13,8 +13,8 @@ pub(in crate::services::stack) mod remove;
 
 use super::action::StackChangeContext;
 use super::state::{ActiveLaunch, active_launch};
-use super::{ChangeResult, STACK_QUERY_TIMEOUT};
-use core_node_api::encoding::{LaunchResult, StackListRequest, StackListResponse};
+use super::{ChangeResult, stack_list_on};
+use core_node_api::encoding::LaunchResult;
 
 /// Runs one change over the active launch and writes the record back,
 /// whatever the outcome.
@@ -32,18 +32,4 @@ async fn change_active_launch(
         Ok(()) => LaunchResult::success(ctx.log.path()),
         Err(reason) => LaunchResult::failure(ctx.log.path(), reason),
     }
-}
-
-/// The stack listing of `host`, a participant of the launch.
-async fn stack_list_on(ctx: &StackChangeContext, host: &str) -> ChangeResult<StackListResponse> {
-    peppylib::core_node::transport::poll(
-        &StackListRequest::new(),
-        &ctx.messenger,
-        &ctx.bound_core_node,
-        &ctx.core_instance_id,
-        host,
-        STACK_QUERY_TIMEOUT,
-    )
-    .await
-    .map_err(|error| format!("cannot inspect `{host}`: {error}"))
 }

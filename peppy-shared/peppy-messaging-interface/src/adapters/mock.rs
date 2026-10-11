@@ -160,10 +160,20 @@ pub struct MockAdapter {
     subscriptions: SubscriptionMap,
     declared: MockDeclaredTopics,
     queryables: QueryableMap,
+    /// The keyexpr of each queryable the session declared, in the order it
+    /// declared them, which `queryables` does not keep.
+    queryable_declarations: Arc<Mutex<Vec<String>>>,
     liveliness: LivelinessState,
 }
 
 impl MockAdapter {
+    /// The keyexpr of each queryable the session declared, in the order it
+    /// declared them: a test reads the order in which a node starts to serve
+    /// its services.
+    pub fn queryable_declarations(&self) -> Vec<String> {
+        self.queryable_declarations.lock().unwrap().clone()
+    }
+
     /// Clone of the shared subscription map. Exposed so matching-status
     /// waits (peppylib's `wait_for_matching_subscriber`) can poll for a
     /// subscriber WITHOUT holding the owning messenger's lock: in-process
@@ -205,6 +215,7 @@ impl MessengerBackend for MockAdapter {
         self.subscriptions.lock().unwrap().clear();
         self.declared.lock().unwrap().clear();
         self.queryables.lock().unwrap().clear();
+        self.queryable_declarations.lock().unwrap().clear();
 
         // Mirror Zenoh: closing the session removes every liveliness token
         // it declared, and watchers observe the removals as Gone events. A
@@ -813,6 +824,10 @@ impl MockAdapter {
     fn declare_queryable_keyexpr(&self, declared_keyexpr: String) -> mpsc::Receiver<MockQuery> {
         let (tx, rx) =
             mpsc::channel(SubscriberBufferSizes::default().size_for(SubscriberQoS::Standard));
+        self.queryable_declarations
+            .lock()
+            .unwrap()
+            .push(declared_keyexpr.clone());
         let mut queryables = self.queryables.lock().unwrap();
         queryables.entry(declared_keyexpr).or_default().push(tx);
         rx

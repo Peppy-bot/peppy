@@ -408,6 +408,45 @@ fn consumed_two_services_same_node() {
     assert_artifact_contains(&artifacts, "card_type: String");
 }
 
+/// The deserializer of a consumed service's response builds each nested
+/// object as the struct the module declares for it, named after
+/// `ResponseData`.
+#[test]
+fn consumed_service_builds_nested_response_objects_as_their_declared_structs() {
+    let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+    let response_format: MessageFormat = serde_json5::from_str(
+        r#"{
+          pose: { $type: "object", x: "f64" },
+          corners: { $type: "array", $items: { $type: "object", y: "f64" } },
+        }"#,
+    )
+    .unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_consumed_service(
+            &service,
+            &empty_message_format(),
+            &response_format,
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
+        )
+        .unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub struct ResponseDataPose",
+            "= ResponseDataPose {",
+            "pub struct ResponseDataCornersItem",
+            "(ResponseDataCornersItem {",
+        ],
+    );
+}
+
 #[test]
 fn consumed_service_without_response_payload() {
     let service = r#"

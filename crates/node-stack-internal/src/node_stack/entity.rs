@@ -1153,9 +1153,13 @@ impl NodeEntity {
         endpoints: Vec<InstanceEndpoint>,
     ) -> Result<Child> {
         // Helper: on every error path we must kill the still-running child
-        // before returning, otherwise we leak an untracked OS process. tokio
-        // `Child` does NOT have kill_on_drop set in the spawn helpers.
+        // and every process it forked into its group before returning,
+        // otherwise we leak an untracked OS process. tokio `Child` does NOT
+        // have kill_on_drop set in the spawn helpers.
         async fn kill_child(child: &mut Child) {
+            if let Some(pid) = child.id() {
+                crate::process_group::kill_process_group(pid);
+            }
             let _ = child.start_kill();
             let _ = child.wait().await;
         }
@@ -1246,10 +1250,14 @@ impl NodeEntity {
         }
     }
 
-    /// Phase 2 (failure): kills the spawned child, joins the reader tasks (so
-    /// the stderr buffer flushes), removes the in-flight `Starting` instance
-    /// from the entity's instances list, and returns a formatted error
-    /// message including a stderr tail.
+    /// Phase 2 (failure): kills the process group of the spawned child,
+    /// joins the reader tasks (so the stderr buffer flushes), removes the
+    /// in-flight `Starting` instance from the entity's instances list, and
+    /// returns a formatted error message including a stderr tail.
+    ///
+    /// The caller decides how the instance ends before this: a start given
+    /// up after the ready signal has stopped it through its shutdown request
+    /// already, and the kill here only reaps what is left.
     ///
     /// If a concurrent `push_config` replaced the entity wholesale while the
     /// daemon was running its messenger checks, the instance removal is
