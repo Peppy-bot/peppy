@@ -447,41 +447,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
         "#,
     );
 
-    // Generate peppygen for the uvc_camera node first
-    let uvc_camera_response = poll_core_node(
-        &started_core_node,
-        &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
-    )
-    .await;
-
-    assert!(
-        uvc_camera_response.success,
-        "uvc_camera node_sync should succeed, got error: {}",
-        uvc_camera_response.error_message
-    );
-
-    // Add uvc_camera to the node stack so the brain node can depend on it
-    common::write_peppy_json5(
-        uvc_camera_node_dir.path(),
-        &fs::read_to_string(uvc_camera_node_dir.path().join(NODE_CONFIG_FILE))
-            .expect("failed to read uvc_camera config"),
-    );
-    let add_result = common::send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        uvc_camera_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
-        None,
-    )
-    .await
-    .expect("node_add should succeed");
-
-    assert!(
-        add_result.success,
-        "uvc_camera node_add should succeed, got error: {}",
-        add_result.error_message.unwrap_or_default()
-    );
+    sync_and_add_node(&started_core_node, uvc_camera_node_dir.path()).await;
 
     // The second node depends on the first, and it should work since the first node is now in the node stack
     let brain_node_dir = tempdir().expect("failed to create temp node directory");
@@ -638,39 +604,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
         "#,
     );
 
-    let uvc_camera_response = poll_core_node(
-        &started_core_node,
-        &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
-    )
-    .await;
-
-    assert!(
-        uvc_camera_response.success,
-        "uvc_camera node_sync should succeed, got error: {}",
-        uvc_camera_response.error_message
-    );
-
-    common::write_peppy_json5(
-        uvc_camera_node_dir.path(),
-        &fs::read_to_string(uvc_camera_node_dir.path().join(NODE_CONFIG_FILE))
-            .expect("failed to read uvc_camera config"),
-    );
-    let add_result = common::send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        uvc_camera_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
-        None,
-    )
-    .await
-    .expect("node_add should succeed");
-
-    assert!(
-        add_result.success,
-        "uvc_camera node_add should succeed, got error: {}",
-        add_result.error_message.unwrap_or_default()
-    );
+    sync_and_add_node(&started_core_node, uvc_camera_node_dir.path()).await;
 
     let brain_node_dir = tempdir().expect("failed to create temp node directory");
     common::write_plain_peppy_json5(
@@ -789,39 +723,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
         "#,
     );
 
-    let uvc_camera_response = poll_core_node(
-        &started_core_node,
-        &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
-    )
-    .await;
-
-    assert!(
-        uvc_camera_response.success,
-        "uvc_camera node_sync should succeed, got error: {}",
-        uvc_camera_response.error_message
-    );
-
-    common::write_peppy_json5(
-        uvc_camera_node_dir.path(),
-        &fs::read_to_string(uvc_camera_node_dir.path().join(NODE_CONFIG_FILE))
-            .expect("failed to read uvc_camera config"),
-    );
-    let add_result = common::send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        uvc_camera_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
-        None,
-    )
-    .await
-    .expect("node_add should succeed");
-
-    assert!(
-        add_result.success,
-        "uvc_camera node_add should succeed, got error: {}",
-        add_result.error_message.unwrap_or_default()
-    );
+    sync_and_add_node(&started_core_node, uvc_camera_node_dir.path()).await;
 
     let brain_node_dir = tempdir().expect("failed to create temp node directory");
     common::write_plain_peppy_json5(
@@ -946,39 +848,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
         "#,
     );
 
-    let action_server_response = poll_core_node(
-        &started_core_node,
-        &NodeSyncRequest::new(action_server_node_dir.path(), common::TEST_GIT_HASH, false),
-    )
-    .await;
-
-    assert!(
-        action_server_response.success,
-        "brain node_sync should succeed, got error: {}",
-        action_server_response.error_message
-    );
-
-    common::write_peppy_json5(
-        action_server_node_dir.path(),
-        &fs::read_to_string(action_server_node_dir.path().join(NODE_CONFIG_FILE))
-            .expect("failed to read brain config"),
-    );
-    let add_result = common::send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        action_server_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
-        None,
-    )
-    .await
-    .expect("node_add should succeed");
-
-    assert!(
-        add_result.success,
-        "brain node_add should succeed, got error: {}",
-        add_result.error_message.unwrap_or_default()
-    );
+    sync_and_add_node(&started_core_node, action_server_node_dir.path()).await;
 
     let controller_node_dir = tempdir().expect("failed to create temp node directory");
     common::write_plain_peppy_json5(
@@ -1088,41 +958,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
         "#,
     );
 
-    // Generate peppygen for the uvc_camera node first
-    let response = poll_core_node(
-        &started_core_node,
-        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-    )
-    .await;
-
-    assert!(
-        response.success,
-        "uvc_camera node_sync should succeed, got error: {}",
-        response.error_message
-    );
-
-    // Add uvc_camera to the node stack so the brain node can depend on it
-    common::write_peppy_json5(
-        node_dir.path(),
-        &fs::read_to_string(node_dir.path().join(NODE_CONFIG_FILE))
-            .expect("failed to read uvc_camera config"),
-    );
-    let add_result = common::send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
-        None,
-    )
-    .await
-    .expect("node_add should succeed");
-
-    assert!(
-        add_result.success,
-        "uvc_camera node_add should succeed, got error: {}",
-        add_result.error_message.unwrap_or_default()
-    );
+    sync_and_add_node(&started_core_node, node_dir.path()).await;
 
     // Verify that the generated Rust code includes the parameters modules
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
@@ -1307,6 +1143,39 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
         !peppygen_dir.exists(),
         "peppygen directory should not exist at {}",
         peppygen_dir.display()
+    );
+}
+
+/// Syncs the node at `node_dir`, then adds it to the stack, so that a node
+/// synced after it can depend on it. Panics if either step fails.
+async fn sync_and_add_node(started: &StartedCoreNode, node_dir: &Path) {
+    let response = poll_core_node(
+        started,
+        &NodeSyncRequest::new(node_dir, common::TEST_GIT_HASH, false),
+    )
+    .await;
+    assert!(
+        response.success,
+        "node_sync of {} should succeed, got error: {}",
+        node_dir.display(),
+        response.error_message
+    );
+
+    let add_result = common::send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        node_dir,
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_result.success,
+        "node_add of {} should succeed, got error: {}",
+        node_dir.display(),
+        add_result.error_message.unwrap_or_default()
     );
 }
 
