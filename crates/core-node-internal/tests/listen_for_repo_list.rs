@@ -460,8 +460,7 @@ async fn list_excludes_git_repo() {
 
 /// Two repositories claiming one identity and one repository claiming it
 /// twice are different situations and must be labelled differently.
-/// Reporting a conflict as harmless shadowing is what let the original
-/// defect hide.
+/// Reporting a conflict as harmless shadowing would hide it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
     let started = start_core_node_with_mock_messenger().await;

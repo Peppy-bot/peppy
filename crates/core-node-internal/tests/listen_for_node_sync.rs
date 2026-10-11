@@ -1997,12 +1997,11 @@ async fn include_repositories_true_topic_the_dependency_does_not_emit_fails() {
     );
 }
 
-/// End-to-end regression for the user-reported bug: a `manifest.implements`
-/// slot resolved from a git-sourced contract cache must materialize the repo
-/// checkout before reading the contract manifest. The contract cache
-/// records a *repo-relative* path (e.g. `cameras/depth_camera.json5`), so
-/// without `ensure_checkout` the daemon would have tried to read that path
-/// from the daemon's CWD and failed.
+/// A `manifest.implements` slot resolved from a git-sourced contract cache
+/// materializes the repository checkout before it reads the contract
+/// manifest. The contract cache records a *repo-relative* path (e.g.
+/// `cameras/depth_camera.json5`), which resolves only inside the checkout,
+/// not in the daemon's CWD.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_sync_resolves_git_sourced_implements_contract() {
     let started = start_core_node_with_mock_messenger().await;
@@ -2060,9 +2059,7 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
         )
         .write(&started.peppy_dirs);
 
-    // The node under sync implements the git-sourced contract. Before the
-    // fix, `handle_node_sync_request` errored here
-    // with "failed to read cached contract ... at cameras/depth_camera.json5".
+    // The node under sync implements the git-sourced contract.
     let node_dir = tempdir().expect("node tempdir");
     common::write_plain_peppy_json5(
         node_dir.path(),

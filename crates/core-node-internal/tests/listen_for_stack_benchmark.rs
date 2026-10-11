@@ -99,14 +99,12 @@ async fn stack_benchmark_empty_stack_completes() {
     );
 }
 
-/// A second concurrent benchmark goal while one is in flight is rejected, not
-/// queued; that is the single-goal gate. We approximate this by firing two goals back
-/// to back; at least one must be accepted, and the action must remain healthy.
+/// Two benchmark goals sent one after the other both succeed: the single-goal
+/// gate is released when a run completes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_benchmark_runs_repeatedly() {
     let started = start_core_node_with_mock_messenger().await;
 
-    // Two sequential runs must both succeed (the gate is released between them).
     for _ in 0..2 {
         let goal = StackBenchmarkGoal::new(1, 0, 200);
         let (result, _) = run_benchmark_goal(&started, goal).await;
@@ -185,10 +183,7 @@ async fn stack_benchmark_enumerates_wired_service_edge() {
     );
 }
 
-/// A consumer that wires the *same* interface from the *same* producer via two
-/// distinct `depends_on` links produces two separate rows, identical in
-/// producer/interface but differing only by `link_id`, which the benchmark
-/// carries end to end so the two rows can be told apart.
+/// A consumer that wires `bench_svc` of `bench_provider` through two links.
 fn two_link_consumer_config() -> &'static str {
     r#"{
         peppy_schema: "node/v1",
@@ -208,6 +203,10 @@ fn two_link_consumer_config() -> &'static str {
     }"#
 }
 
+/// A consumer that wires the *same* interface from the *same* producer via two
+/// distinct `depends_on` links produces two separate rows, identical in
+/// producer/interface but differing only by `link_id`, which the benchmark
+/// carries end to end so the two rows can be told apart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_benchmark_distinguishes_edges_by_link_id() {
     let started = start_core_node_with_mock_messenger().await;

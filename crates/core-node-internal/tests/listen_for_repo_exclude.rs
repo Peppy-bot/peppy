@@ -24,10 +24,10 @@ async fn send_repo_exclude(
     .expect("repo_exclude poll should succeed")
 }
 
-/// Pre-writes an empty `repositories.json5` so the exclude handler's
-/// post-response refresh step does not fall back to the default template,
-/// which points at the real user `$HOME` and would make `process_refresh`
-/// walk the entire home directory (causing 5s poll timeouts).
+/// Overwrites the default entries the daemon wrote at start with an empty
+/// `repositories.json5`. The exclude handler re-indexes every repository
+/// before it responds, and the defaults are git hubs that the re-index would
+/// clone over the network.
 fn write_empty_repositories_json5(started: &StartedCoreNode) {
     common::write_repositories_json5(started, "[]");
 }

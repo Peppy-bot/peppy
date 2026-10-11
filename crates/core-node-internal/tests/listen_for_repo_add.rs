@@ -409,9 +409,9 @@ async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
-    // Regression for RepoSource::identity() collapsing git entries by url
-    // alone: adding the same clone URL with different refs must produce two
-    // distinct entries instead of rejecting the second as a duplicate.
+    // Git entries are identified by url and ref together: the same clone URL
+    // with different refs gives two distinct entries, not a duplicate
+    // rejection.
     let started = start_core_node_with_mock_messenger().await;
 
     let resp_main = send_repo_add(

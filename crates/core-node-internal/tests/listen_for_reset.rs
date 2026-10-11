@@ -163,10 +163,10 @@ async fn listen_for_node_reset_clears_node_stack() {
         "node B should be removed from node stack"
     );
 
-    // The reset must terminate the running instance's process, not just drop it
-    // from tracking. Before this fix the OS process was orphaned and stayed
-    // alive after the stack was cleared. `running_a` is still alive here, so the
-    // reset is the only thing that could have killed it.
+    // The reset must terminate the running instance's process, not only drop it
+    // from tracking, or the process outlives the cleared stack as an orphan.
+    // `running_a` is still alive here, so the reset is the only thing that
+    // could have killed it.
     wait_until_process_exits(
         node_a_pid,
         Duration::from_secs(10),
