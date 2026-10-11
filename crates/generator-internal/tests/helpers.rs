@@ -1613,6 +1613,69 @@ pub const CONSUMED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 }
 "#;
 
+/// The consumer side of `enable_camera` of [`EXPOSED_SERVICE_EXAMPLE`],
+/// consumed through the `uvc_camera` slot.
+pub const CONSUMED_SERVICE_EXAMPLE: &str = r#"
+{
+  link_id: "uvc_camera",
+  name: "enable_camera",
+}
+"#;
+
+pub const CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
+{
+  enable: "bool"
+}
+"#;
+
+pub const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
+{
+  healthy: "bool"
+}
+"#;
+
+/// The instance ids of the consumer and the exposer of the single-exposer
+/// service tests.
+pub const SOLE_CONSUMER_INSTANCE_ID: &str = "the_consumer";
+pub const SOLE_EXPOSER_INSTANCE_ID: &str = "the_exposer";
+
+/// One consumed service and the exposed service that answers it, as the
+/// consumer and the exposers of a service communication test declare them.
+pub struct ServicePair {
+    pub consumed: config::node::ConsumedService,
+    pub request_format: MessageFormat,
+    pub response_format: MessageFormat,
+    pub exposed: config::node::NativeExposedService,
+}
+
+impl ServicePair {
+    /// `enable_camera` of [`EXPOSED_SERVICE_EXAMPLE`], consumed through the
+    /// `uvc_camera` slot.
+    pub fn enable_camera() -> Self {
+        Self {
+            consumed: serde_json5::from_str(CONSUMED_SERVICE_EXAMPLE).unwrap(),
+            request_format: serde_json5::from_str(CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap(),
+            response_format: serde_json5::from_str(CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE)
+                .unwrap(),
+            exposed: serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap(),
+        }
+    }
+
+    /// `get_system_status` of [`EXPOSED_SERVICE_NO_REQUEST_EXAMPLE`], which
+    /// declares no request, consumed through the `uvc_camera` slot.
+    pub fn get_system_status() -> Self {
+        Self {
+            consumed: serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_EXAMPLE).unwrap(),
+            request_format: empty_message_format(),
+            response_format: serde_json5::from_str(
+                CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE,
+            )
+            .unwrap(),
+            exposed: serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap(),
+        }
+    }
+}
+
 pub const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
   name: "video_stream",

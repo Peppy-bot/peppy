@@ -1,14 +1,12 @@
 use crate::helpers::{
-    CONSUMED_SERVICE_NO_REQUEST_EXAMPLE, CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE, CapturedChild,
-    ConsumerExposerOutput, DEFAULT_WAIT_TIMEOUT, EXPOSED_SERVICE_EXAMPLE,
-    EXPOSED_SERVICE_NO_REQUEST_EXAMPLE, STUB_PYTHON_NODE_CONFIG, TEST_CORE_NODE,
+    CapturedChild, ConsumerExposerOutput, DEFAULT_WAIT_TIMEOUT, SOLE_CONSUMER_INSTANCE_ID,
+    SOLE_EXPOSER_INSTANCE_ID, STUB_PYTHON_NODE_CONFIG, ServicePair, TEST_CORE_NODE,
     assert_exited_successfully, bind_slot, generate_node_project, init_python_project_venv,
     init_python_user_node, native_dep, python_consumer_stub_node_config, save_runtime_config,
     shut_down_test_node, spawn_python_run, test_node_runtime_config, test_wait_context,
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
-use config::node::{ConsumedService, MessageFormat, NativeExposedService};
 use generator::LanguageGenerator;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
@@ -17,43 +15,6 @@ use tempfile::TempDir;
 const CONSUMER_NODE_NAME: &str = "consumer_node";
 const CONSUMER_INSTANCE_ID: &str = "consumer_instance";
 const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
-
-// --- Services exposes and its corresponding consumer
-
-const CONSUMED_SERVICE_EXAMPLE: &str = r#"
-{
-  link_id: "uvc_camera",
-  name: "enable_camera",
-}
-"#;
-
-const CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
-{
-  enable: "bool"
-}
-"#;
-
-// --- Service without request body
-
-const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
-{
-  healthy: "bool"
-}
-"#;
-
-/// The instance ids of the consumer and the exposer of the single-exposer
-/// service tests.
-const SOLE_CONSUMER_INSTANCE_ID: &str = "the_consumer";
-const SOLE_EXPOSER_INSTANCE_ID: &str = "the_exposer";
-
-/// One consumed service and the exposed service that answers it, as the
-/// consumer and the exposer of a single-exposer test declare them.
-struct ServicePair {
-    consumed: ConsumedService,
-    request_format: MessageFormat,
-    response_format: MessageFormat,
-    exposed: NativeExposedService,
-}
 
 /// Runs one consumer of `service` against its one exposer. The consumer's
 /// `uvc_camera` slot is bound to the exposer, the exposer starts first, and
@@ -217,12 +178,7 @@ async fn run_single_exposer_service_flow(
 async fn services_communication_no_target_instance_id(
     #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
-    let service = ServicePair {
-        consumed: serde_json5::from_str(CONSUMED_SERVICE_EXAMPLE).unwrap(),
-        request_format: serde_json5::from_str(CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap(),
-        response_format: serde_json5::from_str(CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap(),
-        exposed: serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap(),
-    };
+    let service = ServicePair::enable_camera();
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -320,13 +276,7 @@ if __name__ == "__main__":
 async fn services_communication_exposed_service_without_request_body(
     #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
-    let service = ServicePair {
-        consumed: serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_EXAMPLE).unwrap(),
-        request_format: crate::helpers::empty_message_format(),
-        response_format: serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE)
-            .unwrap(),
-        exposed: serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap(),
-    };
+    let service = ServicePair::get_system_status();
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -425,25 +375,20 @@ async fn services_communication_multiple_exposed_instances_bound_slot_routes_to_
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
+    let service = ServicePair::enable_camera();
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
     let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
-    let consumed_service: ConsumedService =
-        serde_json5::from_str(CONSUMED_SERVICE_EXAMPLE).unwrap();
-    let consumed_request_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
-    let consumed_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
     let user_node_consumer = generate_node_project::<generator::PythonGenerator>(
         &temp_dir_consumer,
         &python_consumer_stub_node_config("uvc_camera", "v1", "uvc_camera"),
         |generator| {
             generator
                 .add_consumed_service(
-                    &consumed_service,
-                    &consumed_request_format,
-                    &consumed_response_format,
+                    &service.consumed,
+                    &service.request_format,
+                    &service.response_format,
                     &native_dep("uvc_camera", "v1", "uvc_camera"),
                 )
                 .unwrap();
@@ -498,14 +443,12 @@ if __name__ == "__main__":
     // --- Exposer 1
     let exposer1_instance_id = "exposer1_instance";
     let temp_dir_exposer1 = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
-    let exposed_service: NativeExposedService =
-        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let user_node_exposer1 = generate_node_project::<generator::PythonGenerator>(
         &temp_dir_exposer1,
         STUB_PYTHON_NODE_CONFIG,
         |generator| {
             generator
-                .add_exposed_service(&exposed_service, None)
+                .add_exposed_service(&service.exposed, None)
                 .unwrap();
         },
     );
@@ -554,14 +497,12 @@ if __name__ == "__main__":
     // --- Exposer 2
     let exposer2_instance_id = "exposer2_instance";
     let temp_dir_exposer2 = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
-    let exposed_service2: NativeExposedService =
-        serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let user_node_exposer2 = generate_node_project::<generator::PythonGenerator>(
         &temp_dir_exposer2,
         STUB_PYTHON_NODE_CONFIG,
         |generator| {
             generator
-                .add_exposed_service(&exposed_service2, None)
+                .add_exposed_service(&service.exposed, None)
                 .unwrap();
         },
     );
