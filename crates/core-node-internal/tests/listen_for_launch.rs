@@ -22,9 +22,9 @@ use tempfile::tempdir;
 
 use crate::common::{
     StartedCoreNode, TestPackagesCache, TestRunningInstance, answer_readiness, answer_ready_probe,
-    build_staged_node, commit_path, is_process_running, poll_until, send_node_add_and_wait,
-    spawn_real_running_instance, start_core_node_with_mock_messenger, wait_until_process_exits,
-    write_peppy_json5,
+    build_staged_node, commit_path, is_process_running, path_env_with_dir_first, poll_until,
+    send_node_add_and_wait, spawn_real_running_instance, start_core_node_with_mock_messenger,
+    wait_until_process_exits, write_executable_script, write_peppy_json5,
 };
 
 struct NodeConfigOptions<'a> {
@@ -1606,26 +1606,13 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
 
     // Create a temp bin directory with a `printout` script that sleeps
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
-    let printout_path = bin_dir.path().join("printout");
-    std::fs::write(
-        &printout_path,
+    write_executable_script(
+        bin_dir.path(),
+        "printout",
         "#!/bin/sh
 sleep \"${1:-60}\"
 ",
-    )
-    .expect("failed to write printout script");
-
-    // Make it executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&printout_path)
-            .expect("failed to get printout metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&printout_path, perms)
-            .expect("failed to set printout permissions");
-    }
+    );
 
     // Set up ready/health responders for the instance
     let _responders = answer_readiness(&started_core_node, NODE_NAME, INSTANCE_ID).await;
@@ -1635,9 +1622,7 @@ sleep \"${1:-60}\"
 
     // Pass the bin directory in PATH via env overrides to simulate the caller having an updated
     // PATH without restarting the daemon.
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), current_path);
-    let env_vars = vec![("PATH".to_string(), new_path)];
+    let env_vars = vec![path_env_with_dir_first(bin_dir.path())];
 
     let (_, launch_result) = send_node_launch_and_wait_with_env(
         &started_core_node.caller_handle,

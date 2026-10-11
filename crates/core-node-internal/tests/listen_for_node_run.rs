@@ -3,11 +3,11 @@ mod common;
 use common::{
     AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, answer_health_probes,
     answer_readiness, answer_ready_probe, create_test_node_with_name, fast_health_monitor,
-    instance_state_in_any_state, poll_until, send_node_add_then_build, send_node_run_and_wait,
-    send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
+    instance_state_in_any_state, path_env_with_dir_first, poll_until, send_node_add_then_build,
+    send_node_run_and_wait, send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
     start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, wait_until_action_completes, wait_until_process_exits,
-    write_peppy_json5,
+    write_executable_script, write_peppy_json5,
 };
 use config::runtime::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
@@ -880,28 +880,14 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
 
     // Create a temp bin directory with a `printout` script.
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
-    let printout_path = bin_dir.path().join("printout");
-    std::fs::write(
-        &printout_path,
+    write_executable_script(
+        bin_dir.path(),
+        "printout",
         "#!/bin/sh
 sleep \"${1:-3}\"
 ",
-    )
-    .expect("failed to write printout script");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&printout_path)
-            .expect("failed to get printout metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&printout_path, perms)
-            .expect("failed to set printout permissions");
-    }
-
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), current_path);
-    let env_vars = vec![("PATH".to_string(), new_path)];
+    );
+    let env_vars = vec![path_env_with_dir_first(bin_dir.path())];
 
     // Second attempt with env overrides: printout should be found.
     let start_response = send_node_run_and_wait_with_env(

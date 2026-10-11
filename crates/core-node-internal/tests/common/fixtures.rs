@@ -84,6 +84,30 @@ pub fn write_peppy_json5(dir: &Path, content: &str) {
     config::fingerprint::create_codegen_fingerprint(&config_path, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
+/// Writes the executable script `name` with `contents` into `dir`, for a test
+/// that puts a command of its own on the `PATH` a node runs with.
+pub fn write_executable_script(dir: &Path, name: &str, contents: &str) {
+    let script_path = dir.join(name);
+    std::fs::write(&script_path, contents)
+        .unwrap_or_else(|e| panic!("failed to write script {}: {e}", script_path.display()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|e| panic!("failed to make {} executable: {e}", script_path.display()));
+    }
+}
+
+/// The `PATH` override that puts `dir` ahead of the `PATH` of the test
+/// process, as a caller whose `PATH` gained `dir` sends it to the daemon.
+pub fn path_env_with_dir_first(dir: &Path) -> (String, String) {
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    (
+        "PATH".to_string(),
+        format!("{}:{}", dir.display(), current_path),
+    )
+}
+
 pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_root_name: &str) {
     let bundle_file = std::fs::File::create(archive_path).expect("failed to create bundle file");
     let encoder =

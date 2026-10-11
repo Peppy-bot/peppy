@@ -2,9 +2,9 @@ mod common;
 
 use common::{
     NodeAddSource, acquire_container_test_guard, archive_contains_entry, entity_artifact_path,
-    read_file_from_archive, send_node_add_and_wait, send_node_build_and_wait,
-    send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
-    start_core_node_with_mock_messenger_outside_home, write_peppy_json5,
+    path_env_with_dir_first, read_file_from_archive, send_node_add_and_wait,
+    send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
+    start_core_node_with_mock_messenger_outside_home, write_executable_script, write_peppy_json5,
 };
 use core_node_api::encoding::{NodeBuildFeedback, NodeBuildResult};
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
@@ -794,29 +794,14 @@ async fn listen_for_node_build_uses_env_overrides_for_path() {
 
     // Create a temp bin directory with a `printout` script.
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
-    let printout_path = bin_dir.path().join("printout");
-    std::fs::write(
-        &printout_path,
+    write_executable_script(
+        bin_dir.path(),
+        "printout",
         "#!/bin/sh
 echo \"$@\"
 ",
-    )
-    .expect("failed to write printout script");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&printout_path)
-            .expect("failed to get printout metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&printout_path, perms)
-            .expect("failed to set printout permissions");
-    }
-
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), current_path);
-    let env_vars = vec![("PATH".to_string(), new_path)];
+    );
+    let env_vars = vec![path_env_with_dir_first(bin_dir.path())];
 
     // Re-stage the node and rebuild with the PATH override.
     stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
