@@ -101,10 +101,11 @@ async fn handle_node_stop_request(
                 &messenger,
                 &core_node_node,
                 &core_instance_id,
-                node_stack,
+                Arc::clone(&node_stack),
                 &relationships,
             ),
             &ownership.stack.cancellation(),
+            crate::services::node::gate::reset_drain_budget(node_stack.shutdown_grace()),
             || {
                 NodeStopResponse::failure("node stop cancelled by stack reset")
                     .encode()
@@ -346,7 +347,7 @@ async fn send_shutdown_signal(
 /// force-kill (the node ignored the cooperative shutdown) is distinguishable
 /// from a clean graceful exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StopOutcome {
+pub(super) enum StopOutcome {
     /// The node exited on its own within the grace period.
     Graceful,
     /// The node did not exit in time and its process group was SIGKILLed.
@@ -363,7 +364,11 @@ enum StopOutcome {
 /// exited gracefully or had to be force-killed. Takes NO lock: the caller
 /// resolves the [`DoomedInstance`] fields and `graceful_budget` up front, so
 /// nothing is held across an await.
-async fn force_stop_instance(
+///
+/// `node_run` stops a starting instance the same way when it gives up its
+/// start after the ready signal: the node answers the shutdown request from
+/// then on, so its shutdown hooks run.
+pub(super) async fn force_stop_instance(
     messenger: &MessengerHandle,
     core_node_node: &str,
     core_instance_id: &str,
@@ -452,50 +457,65 @@ async fn force_stop_instances(
     })
     .await;
 
-    // Phase 2 (force): SIGKILL each recorded process group. We deliberately do
-    // not pre-check whether the leader is still alive before killing: a process
-    // group can outlive its leader (the leader exits but a descendant it spawned
-    // keeps running), and the negative-pid kill reaches the whole group (each
-    // node is spawned as a group leader), so descendants die too. An already-dead
-    // group yields ESRCH, which kill_process_group ignores.
-    //
-    // We do take one snapshot here purely to classify which nodes are still
-    // alive (i.e. ignored the cooperative shutdown) so the user is warned that
-    // they were force-killed rather than having exited gracefully.
+    // One snapshot classifies which nodes are still alive (i.e. ignored the
+    // cooperative shutdown) so the user is warned that they were force-killed
+    // rather than having exited gracefully.
     let mut snapshot = sysinfo::System::new();
     refresh_pids(&mut snapshot, &doomed_pids(doomed));
-    let mut guest_kill_keys: Vec<String> = Vec::new();
     let outcomes = doomed
         .iter()
         .map(|d| {
             let Some(pid) = d.pid else {
                 return StopOutcome::NoProcess; // Nothing to force-kill or reap.
             };
-            let outcome = if pid_running_in(&snapshot, pid) {
-                warn!(
-                    "Node instance '{}' did not exit within its {}s cooperative shutdown \
-                     window ({}s grace + runtime teardown); force-killing its process group \
-                     (pid {})",
-                    d.instance_id.as_str(),
-                    deadline.as_secs(),
-                    graceful_budget.as_secs(),
-                    pid
-                );
-                StopOutcome::ForceKilled
-            } else {
+            if !pid_running_in(&snapshot, pid) {
                 debug!(
                     "Node instance '{}' exited gracefully within the grace period",
                     d.instance_id.as_str()
                 );
-                StopOutcome::Graceful
-            };
-            kill_process_group(pid);
-            if d.is_container {
-                guest_kill_keys.push(d.instance_id.as_str().to_owned());
+                return StopOutcome::Graceful;
             }
-            outcome
+            warn!(
+                "Node instance '{}' did not exit within its {}s cooperative shutdown \
+                 window ({}s grace + runtime teardown); force-killing its process group \
+                 (pid {})",
+                d.instance_id.as_str(),
+                deadline.as_secs(),
+                graceful_budget.as_secs(),
+                pid
+            );
+            StopOutcome::ForceKilled
         })
         .collect();
+
+    kill_process_groups(doomed).await;
+
+    outcomes
+}
+
+/// The force phases of a stop, alone: SIGKILLs the process group of every
+/// instance, reaches the in-VM group of a container instance on macOS, and
+/// waits a bounded time for the killed groups to be reaped. The second half of
+/// [`force_stop_instances`], and the whole of how `node_run` ends a start it
+/// gives up before the ready signal, when the node does not listen for the
+/// shutdown request yet, or once the leader process of the node exited.
+pub(super) async fn kill_process_groups(doomed: &[DoomedInstance]) {
+    // Phase 2 (force): SIGKILL each recorded process group. We deliberately do
+    // not pre-check whether the leader is still alive before killing: a process
+    // group can outlive its leader (the leader exits but a descendant it spawned
+    // keeps running), and the negative-pid kill reaches the whole group (each
+    // node is spawned as a group leader), so descendants die too. An already-dead
+    // group yields ESRCH, which kill_process_group ignores.
+    let mut guest_kill_keys: Vec<String> = Vec::new();
+    for d in doomed {
+        let Some(pid) = d.pid else {
+            continue; // Nothing to force-kill or reap.
+        };
+        kill_process_group(pid);
+        if d.is_container {
+            guest_kill_keys.push(d.instance_id.as_str().to_owned());
+        }
+    }
 
     // Phase 2b (macOS): for container nodes the host group kill above only
     // reached the `limactl` client; the workload runs inside the Lima VM. Reach
@@ -523,8 +543,6 @@ async fn force_stop_instances(
     // still alive so they don't briefly linger as zombies parented to it; any
     // straggler reparents to init/launchd and is reaped there.
     let _ = tokio::time::timeout(TEARDOWN_REAP_BUDGET, wait_until_all_gone(doomed)).await;
-
-    outcomes
 }
 
 /// If the Peppy shutdown service could not be delivered to a container node,
@@ -680,27 +698,82 @@ pub(crate) async fn stop_named_instances(
     relationships: &RelationshipCoordinators,
     ids: &[Name],
 ) {
-    let graph = node_stack.to_serialized_graph();
-    for id in ids.iter().rev() {
-        let running = graph.nodes.iter().find(|node| {
-            node.instances
-                .iter()
-                .any(|instance| instance.instance_id == id.as_str())
-        });
-        if let Some(node) = running {
-            stop_instances(
-                messenger,
-                core_node,
-                root_id,
-                node_stack,
-                &node.name,
-                &node.tag,
-                std::slice::from_ref(id),
-            )
-            .await;
-        }
-        relationships.tear_down_instance(id.as_str()).await;
+    for instance in named_instances(node_stack, ids) {
+        stop_named_instance(
+            messenger,
+            core_node,
+            root_id,
+            node_stack,
+            relationships,
+            &instance,
+        )
+        .await;
     }
+}
+
+/// One id a stop of named instances takes, with the node `name:tag` of the
+/// instance the stack holds under it, when it holds one.
+pub(crate) struct NamedInstance<'a> {
+    pub(crate) id: &'a Name,
+    node: Option<(String, String)>,
+}
+
+impl NamedInstance<'_> {
+    /// Whether the stack holds the instance, so that its stop stops one.
+    pub(crate) fn is_on_stack(&self) -> bool {
+        self.node.is_some()
+    }
+}
+
+/// Each of `ids`, the last first, with the node of the instance the stack
+/// holds under it, all read from one snapshot of the stack: the order and
+/// the instances of a stop of named instances.
+pub(crate) fn named_instances<'a>(
+    node_stack: &NodeStack,
+    ids: &'a [Name],
+) -> Vec<NamedInstance<'a>> {
+    let graph = node_stack.to_serialized_graph();
+    ids.iter()
+        .rev()
+        .map(|id| NamedInstance {
+            id,
+            node: graph
+                .nodes
+                .iter()
+                .find(|node| {
+                    node.instances
+                        .iter()
+                        .any(|instance| instance.instance_id == id.as_str())
+                })
+                .map(|node| (node.name.clone(), node.tag.clone())),
+        })
+        .collect()
+}
+
+/// Stops one instance of [`named_instances`]: the instance the stack holds,
+/// then its entries in the relationship registries, where a start that never
+/// came still registered it.
+pub(crate) async fn stop_named_instance(
+    messenger: &MessengerHandle,
+    core_node: &str,
+    root_id: &str,
+    node_stack: &Arc<NodeStack>,
+    relationships: &RelationshipCoordinators,
+    instance: &NamedInstance<'_>,
+) {
+    if let Some((name, tag)) = &instance.node {
+        stop_instances(
+            messenger,
+            core_node,
+            root_id,
+            node_stack,
+            name,
+            tag,
+            std::slice::from_ref(instance.id),
+        )
+        .await;
+    }
+    relationships.tear_down_instance(instance.id.as_str()).await;
 }
 
 /// Cooperative-then-force stop of `doomed` (see [`force_stop_instances`]),
@@ -767,19 +840,22 @@ pub(crate) fn teardown_timeout(shutdown_grace: Duration) -> Duration {
 /// A non-root node instance to terminate: the routing identity + process info
 /// needed to stop one instance. Fed to [`force_stop_instances`] in a batch by
 /// [`teardown_all_instances`] and [`stop_instances`] (the `node add` overwrite
-/// path), and one at a time by [`force_stop_instance`] (`peppy node stop`).
-struct DoomedInstance {
-    node_name: String,
-    node_tag: String,
-    instance_id: Name,
-    pid: Option<u32>,
+/// path), and one at a time by [`force_stop_instance`] (`peppy node stop`, and
+/// `node_run` giving up a start after the ready signal) and
+/// [`kill_process_groups`] (`node_run` giving up a start before it, or one
+/// whose leader process exited).
+pub(super) struct DoomedInstance {
+    pub(super) node_name: String,
+    pub(super) node_tag: String,
+    pub(super) instance_id: Name,
+    pub(super) pid: Option<u32>,
     /// `true` when this instance is a container node. On macOS the workload runs
     /// inside the Lima VM, so host process-group signals only reach the
     /// `limactl` client; the stop path also signals the in-VM group keyed by
     /// `instance_id` (SIGTERM after a failed shutdown request, SIGKILL in the
     /// force phase). Always `false` for process nodes (the host group kill
     /// covers them) and a no-op for containers on Linux.
-    is_container: bool,
+    pub(super) is_container: bool,
 }
 
 /// Force every non-root node out of the stack on a catchable daemon shutdown
@@ -899,6 +975,15 @@ fn refresh_pids(system: &mut sysinfo::System, pids: &[sysinfo::Pid]) {
         true,
         sysinfo::ProcessRefreshKind::nothing(),
     );
+}
+
+/// Whether the process `pid` runs: present and not a zombie. It reads the
+/// process table and reaps nothing, so a child of the daemon that exited
+/// stays a zombie, which holds its pid, until the daemon reaps it.
+pub(super) fn process_runs(pid: u32) -> bool {
+    let mut system = sysinfo::System::new();
+    refresh_pids(&mut system, &[sysinfo::Pid::from_u32(pid)]);
+    pid_running_in(&system, pid)
 }
 
 /// Whether `pid` is present and not a zombie in an already-refreshed `system`.

@@ -351,7 +351,7 @@ mod tests {
     use super::*;
     use crate::{
         error::Error,
-        node::{ContainerConfig, EndpointKind, EndpointLabel},
+        node::{ContainerConfig, EndpointKind, EndpointLabel, SetupTimeout},
     };
     use tempfile::NamedTempFile;
 
@@ -1517,6 +1517,96 @@ mod tests {
                 .contains("endpoints"),
             "an empty declaration set stays off the wire"
         );
+    }
+
+    /// A manifest whose `execution` block holds `setup_key`, a line such as
+    /// `setup_timeout_secs: 180,` or nothing.
+    fn config_with_setup_key(setup_key: &str) -> String {
+        format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{ name: "robot_initializer", tag: "v1" }},
+                execution: {{
+                    language: "rust",
+                    run_cmd: ["./bin"],
+                    {setup_key}
+                }},
+            }}"#
+        )
+    }
+
+    #[test]
+    fn a_declared_setup_budget_is_the_setup_budget_of_the_node() {
+        for secs in [1, 180, 540] {
+            let config = NodeConfigParser::from_content(&config_with_setup_key(&format!(
+                "setup_timeout_secs: {secs},"
+            )))
+            .expect("a budget in range parses");
+            let declared = SetupTimeout::from_secs(secs).expect("in range");
+            assert_eq!(config.execution.setup_timeout_secs, Some(declared));
+            assert_eq!(config.execution.setup_timeout(), declared);
+        }
+    }
+
+    #[test]
+    fn a_node_without_a_setup_budget_gets_the_default_setup_budget() {
+        let config = NodeConfigParser::from_content(&config_with_setup_key(""))
+            .expect("the manifest parses");
+        assert_eq!(config.execution.setup_timeout_secs, None);
+        assert_eq!(config.execution.setup_timeout(), SetupTimeout::DEFAULT);
+        assert_eq!(config.execution.setup_timeout().as_secs(), 15);
+    }
+
+    #[test]
+    fn a_setup_budget_outside_the_range_is_refused_with_the_key_and_the_range() {
+        for (written, shown) in [
+            ("0", "0"),
+            ("541", "541"),
+            ("-5", "-5"),
+            ("2.5", "2.5"),
+            ("\"180\"", "\"180\""),
+        ] {
+            let error = NodeConfigParser::from_content(&config_with_setup_key(&format!(
+                "setup_timeout_secs: {written},"
+            )))
+            .expect_err("a budget outside the range must be refused");
+            assert!(
+                matches!(
+                    &error,
+                    Error::Parsing(ParsingError::SetupTimeoutOutOfRange { written: refused })
+                        if refused == shown
+                ),
+                "{written}: {error:?}"
+            );
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "Node config `execution.setup_timeout_secs` is {shown}; the setup budget \
+                     is a whole number of seconds from 1 to 540"
+                )
+            );
+        }
+    }
+
+    /// The serialized manifest holds the key only when the node declares it,
+    /// so the fingerprint of a manifest without the key does not change.
+    #[test]
+    fn the_setup_budget_is_serialized_only_when_declared() {
+        let declared =
+            NodeConfigParser::from_content(&config_with_setup_key("setup_timeout_secs: 180,"))
+                .expect("parses");
+        let json = serde_json::to_string(&declared.execution).expect("serializes");
+        assert!(json.contains(r#""setup_timeout_secs":180"#), "{json}");
+        let restored: Execution = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(
+            restored.setup_timeout_secs,
+            declared.execution.setup_timeout_secs
+        );
+
+        let undeclared =
+            NodeConfigParser::from_content(&config_with_setup_key("")).expect("parses");
+        let json = serde_json::to_string(&undeclared.execution).expect("serializes");
+        assert!(!json.contains("setup_timeout_secs"), "{json}");
     }
 
     #[test]
