@@ -170,7 +170,7 @@ impl StderrTail {
     }
 
     /// Appends `line`. When the tail is full, the oldest line is dropped.
-    fn push(&self, line: &str) {
+    pub(crate) fn push(&self, line: &str) {
         let mut lines = self.0.lock();
         if lines.len() == STDERR_TAIL_LINES {
             lines.pop_front();

@@ -1,21 +1,24 @@
-//! Validation of an exposure against its contracts, and the catalog it
-//! derives.
+//! Validation of an exposure against its contracts and daemon interfaces,
+//! and the catalog it derives.
 //!
-//! [`build_exposure_bundle`] is a pure function: the exposure document and
-//! the resolved contracts go in, the validated exposure (the bundle beside
-//! the contract member behind each of its entries) or the full list of
-//! violations comes out. It runs identically in a hub's index check, when a
-//! server starts, and in tests; resolving contract bytes out of the
-//! repository machinery is the caller's job.
+//! [`build_exposure_bundle`] is a pure function: the exposure document, the
+//! resolved contracts and the daemon interfaces go in, the validated
+//! exposure (the bundle beside the member behind each of its entries) or the
+//! full list of violations comes out. It runs identically in a hub's index
+//! check, when a server starts, and in tests; resolving contract bytes out of
+//! the repository machinery, and the interfaces out of the ones peppy
+//! serves, is the caller's job. A member of a contract and a member of an
+//! interface go through one derivation.
 
 use crate::bundle::{
-    BundleContractPin, BundleIdentity, BundleServer, BundleSurface, CallRecordEntry, DescribeEntry,
-    EXPOSURE_BUNDLE_FORMAT, ExposureBundle, ListEntry, PictureEntry, ResourceEntry,
-    ResourcePolicies, RobotCatalog, RobotContractPin, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
+    BundleContractPin, BundleDaemonTarget, BundleIdentity, BundleServer, BundleSurface,
+    CallRecordEntry, DescribeEntry, EXPOSURE_BUNDLE_FORMAT, ExposureBundle, ListEntry,
+    PictureEntry, ResourceEntry, ResourcePolicies, RobotCatalog, RobotContractPin,
+    SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
 };
 use crate::document::{
     ArgumentName, ExposureSurface, McpExposure, PictureTool, ROBOT_ARGUMENT, RobotSurface,
-    ServiceExposure, TopicExposure,
+    ServiceExposure, TargetSource, TopicExposure,
 };
 use crate::policy::{GoalBound, ImageFieldMap, ImageRepresentation};
 use crate::schema::{
@@ -32,6 +35,15 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 
+/// The members a contract or a daemon interface declares, in the contract
+/// format.
+#[derive(Debug, Clone, Copy)]
+pub struct DeclaredMembers<'a> {
+    pub topics: &'a [NativeEmittedTopic],
+    pub services: &'a [NativeExposedService],
+    pub actions: &'a [NativeExposedAction],
+}
+
 /// One contract as resolved for validation: its identity, the fingerprint of
 /// the exact bytes it was parsed from (so pin equality is checked against
 /// content rather than trust), and the members it declares.
@@ -40,9 +52,17 @@ pub struct ResolvedContract<'a> {
     pub name: &'a str,
     pub tag: &'a str,
     pub sha256: &'a ManifestFingerprint,
-    pub topics: &'a [NativeEmittedTopic],
-    pub services: &'a [NativeExposedService],
-    pub actions: &'a [NativeExposedAction],
+    pub members: DeclaredMembers<'a>,
+}
+
+/// One daemon interface as this peppy serves it: its identity and the
+/// members it declares. It carries no fingerprint, because an interface is
+/// compiled into peppy and never pinned.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedInterface<'a> {
+    pub name: &'a str,
+    pub tag: &'a str,
+    pub members: DeclaredMembers<'a>,
 }
 
 /// The verdict when an exposure does not validate: every violation found,
@@ -54,7 +74,10 @@ pub struct ExposureValidationError {
 
 impl fmt::Display for ExposureValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "the exposure does not validate against its contracts:")?;
+        write!(
+            f,
+            "the exposure does not validate against its contracts and daemon interfaces:"
+        )?;
         for violation in &self.violations {
             write!(f, "\n  - {violation}")?;
         }
@@ -64,29 +87,38 @@ impl fmt::Display for ExposureValidationError {
 
 impl std::error::Error for ExposureValidationError {}
 
-/// The contract member behind one catalog entry, as validation resolved
-/// it: the slot the entry's target became, and the member it selects as
-/// the contract declares it.
+/// Where the member behind one catalog entry comes from.
 #[derive(Debug, Clone, PartialEq)]
-pub struct BoundMember<M> {
+pub enum MemberSource {
     /// The contract slot behind the entry's target; its `link_id` is the
     /// entry's `target`.
-    pub slot: BundleContractPin,
+    Slot(BundleContractPin),
+    /// The daemon interface behind the entry's target, which the daemon
+    /// that started the server serves.
+    Daemon(BundleDaemonTarget),
+}
+
+/// The member behind one catalog entry, as validation resolved it: the
+/// source the entry's target draws from, and the member it selects as that
+/// source declares it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundMember<M> {
+    pub source: MemberSource,
     pub member: M,
 }
 
 impl<M: Clone> BoundMember<M> {
-    fn new(slot: &BundleContractPin, member: &M) -> Self {
+    fn new(source: &MemberSource, member: &M) -> Self {
         Self {
-            slot: slot.clone(),
+            source: source.clone(),
             member: member.clone(),
         }
     }
 }
 
-/// A validated exposure: its bundle, and behind each entry the contract
-/// member validation checked it against, so a server binds an entry to
-/// that member rather than looking it up again by name.
+/// A validated exposure: its bundle, and behind each entry the member
+/// validation checked it against, so a server binds an entry to that member
+/// rather than looking it up again by name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatedExposure {
     pub bundle: ExposureBundle,
@@ -114,20 +146,24 @@ impl ValidatedExposure {
     }
 }
 
-/// Validate `exposure` against `contracts` and derive its bundle.
+/// Validate `exposure` against `contracts` and `interfaces` and derive its
+/// bundle.
 ///
-/// Validation succeeds only when every selected member exists in its
-/// referenced contract with the expected kind, every message definition
-/// translates under the canonical schema mapping, representation policies
-/// name real members with the right types, `restrict` bounds fit their
-/// members, size limits hold wherever a payload has a finite maximum, and
-/// every author pin matches the resolved contract's bytes. The bundle's
+/// Validation succeeds only when every selected member exists in the
+/// contract or daemon interface its target references, with the expected
+/// kind, every message definition translates under the canonical schema
+/// mapping, representation policies name real members with the right types,
+/// `restrict` bounds fit their members, size limits hold wherever a payload
+/// has a finite maximum, every author pin matches the resolved contract's
+/// bytes, and every daemon target sits on a fixed surface. The bundle's
 /// contract pins carry the resolved fingerprints, which is what a pin-less
-/// reference is validated against. A topic that declares a `picture` adds
-/// its picture tool to the bundle beside its resource.
+/// reference is validated against; its daemon targets carry the interface
+/// each one names. A topic that declares a `picture` adds its picture tool to
+/// the bundle beside its resource.
 pub fn build_exposure_bundle(
     exposure: &McpExposure,
     contracts: &[ResolvedContract<'_>],
+    interfaces: &[ResolvedInterface<'_>],
 ) -> Result<ValidatedExposure, ExposureValidationError> {
     let mut violations = Vec::new();
 
@@ -143,14 +179,28 @@ pub fn build_exposure_bundle(
             ));
         }
     }
+    let mut interfaces_by_identity: BTreeMap<(&str, &str), &ResolvedInterface<'_>> =
+        BTreeMap::new();
+    for resolved in interfaces {
+        if interfaces_by_identity
+            .insert((resolved.name, resolved.tag), resolved)
+            .is_some()
+        {
+            violations.push(format!(
+                "daemon interface `{}:{}` was provided more than once",
+                resolved.name, resolved.tag
+            ));
+        }
+    }
 
     let robots = match &exposure.surface {
         ExposureSurface::Fixed { .. } => None,
         ExposureSurface::PerRobot { robots, .. } => Some(robots),
     };
-    // Each target's slot with the argument its calls name a member by, which
-    // only a per-robot surface's slot carries.
+    // Each contract target's slot with the argument its calls name a member
+    // by, which only a per-robot surface's slot carries.
     let mut pins: Vec<(BundleContractPin, Option<String>)> = Vec::new();
+    let mut daemon_targets: Vec<BundleDaemonTarget> = Vec::new();
     let mut resources = Vec::new();
     let mut resource_members = Vec::new();
     let mut tools = Vec::new();
@@ -160,32 +210,58 @@ pub fn build_exposure_bundle(
     let mut pictures = Vec::new();
 
     for (target_name, target, argument) in exposure.surface.targets() {
-        let reference = &target.contract;
-        let contract_label = format!("{}:{}", reference.name, reference.tag);
-
-        let Some(contract) = by_identity.get(&(reference.name.as_str(), reference.tag.as_str()))
-        else {
-            violations.push(format!(
-                "target `{target_name}` references contract `{contract_label}`, which was not \
-                 provided"
-            ));
-            continue;
-        };
-        if let Some(pinned) = &reference.sha256
-            && contract.sha256 != pinned
-        {
-            violations.push(format!(
-                "target `{target_name}` pins contract `{contract_label}` at sha256 `{pinned}`, \
-                 but the resolved document's bytes fingerprint to `{}`",
-                contract.sha256
-            ));
-            continue;
-        }
-        let slot = BundleContractPin {
-            name: reference.name.as_str().to_string(),
-            tag: reference.tag.clone(),
-            sha256: contract.sha256.to_string(),
-            link_id: target_name.clone(),
+        let source_label = target.source.to_string();
+        let (source, members) = match &target.source {
+            TargetSource::Contract(reference) => {
+                let Some(contract) =
+                    by_identity.get(&(reference.name.as_str(), reference.tag.as_str()))
+                else {
+                    violations.push(format!(
+                        "target `{target_name}` references {source_label}, which was not provided"
+                    ));
+                    continue;
+                };
+                if let Some(pinned) = &reference.sha256
+                    && contract.sha256 != pinned
+                {
+                    violations.push(format!(
+                        "target `{target_name}` pins {source_label} at sha256 `{pinned}`, but the \
+                         resolved document's bytes fingerprint to `{}`",
+                        contract.sha256
+                    ));
+                    continue;
+                }
+                let slot = BundleContractPin {
+                    name: reference.name.as_str().to_string(),
+                    tag: reference.tag.clone(),
+                    sha256: contract.sha256.to_string(),
+                    link_id: target_name.clone(),
+                };
+                (MemberSource::Slot(slot), contract.members)
+            }
+            TargetSource::Daemon(reference) => {
+                if robots.is_some() {
+                    violations.push(format!(
+                        "target `{target_name}` names {source_label} on a per-robot surface; a \
+                         daemon target belongs in an exposure without `robots`"
+                    ));
+                    continue;
+                }
+                let Some(interface) =
+                    interfaces_by_identity.get(&(reference.name.as_str(), reference.tag.as_str()))
+                else {
+                    violations.push(format!(
+                        "target `{target_name}` references {source_label}, which was not provided"
+                    ));
+                    continue;
+                };
+                let daemon = BundleDaemonTarget {
+                    target: target_name.clone(),
+                    name: reference.name.as_str().to_string(),
+                    tag: reference.tag.clone(),
+                };
+                (MemberSource::Daemon(daemon), interface.members)
+            }
         };
         // The arguments the server adds to every call on this target: the
         // robot's name on a per-robot surface, and the member's name on a
@@ -198,13 +274,13 @@ pub fn build_exposure_bundle(
             .collect();
 
         for topic in &target.topics {
-            let Some(declared) = find_topic(contract, &topic.member) else {
+            let Some(declared) = find_topic(&members, &topic.member) else {
                 violations.push(missing_member_violation(
                     target_name,
                     MemberKind::Topic,
                     &topic.member,
-                    &contract_label,
-                    contract,
+                    &source_label,
+                    &members,
                 ));
                 continue;
             };
@@ -213,18 +289,18 @@ pub fn build_exposure_bundle(
                     pictures.push(picture_entry(picture, &entry, &routing));
                 }
                 resources.push(entry);
-                resource_members.push(BoundMember::new(&slot, declared));
+                resource_members.push(BoundMember::new(&source, declared));
             }
         }
 
         for service in &target.services {
-            let Some(declared) = find_service(contract, &service.member) else {
+            let Some(declared) = find_service(&members, &service.member) else {
                 violations.push(missing_member_violation(
                     target_name,
                     MemberKind::Service,
                     &service.member,
-                    &contract_label,
-                    contract,
+                    &source_label,
+                    &members,
                 ));
                 continue;
             };
@@ -239,19 +315,19 @@ pub fn build_exposure_bundle(
                     &mut violations,
                 ) {
                     tools.push(entry);
-                    tool_members.push(BoundMember::new(&slot, declared));
+                    tool_members.push(BoundMember::new(&source, declared));
                 }
             }
         }
 
         for action in &target.actions {
-            let Some(declared) = find_action(contract, &action.member) else {
+            let Some(declared) = find_action(&members, &action.member) else {
                 violations.push(missing_member_violation(
                     target_name,
                     MemberKind::Action,
                     &action.member,
-                    &contract_label,
-                    contract,
+                    &source_label,
+                    &members,
                 ));
                 continue;
             };
@@ -264,8 +340,8 @@ pub fn build_exposure_bundle(
             if progress_without_feedback {
                 violations.push(format!(
                     "{context}: `progress_timeout_ms` bounds the goal by the signs of progress its \
-                     feedback carries, and contract `{contract_label}` declares no \
-                     `feedback_topic` for the action; bound the goal with `deadline_ms`"
+                     feedback carries, and {source_label} declares no `feedback_topic` for the \
+                     action; bound the goal with `deadline_ms`"
                 ));
             }
             let goal_request = derive_schema(
@@ -337,14 +413,18 @@ pub fn build_exposure_bundle(
                 output_schema,
                 feedback_schema,
             });
-            task_members.push(BoundMember::new(&slot, declared));
+            task_members.push(BoundMember::new(&source, declared));
         }
-        pins.push((slot, argument.map(ToString::to_string)));
+        match source {
+            MemberSource::Slot(slot) => pins.push((slot, argument.map(ToString::to_string))),
+            MemberSource::Daemon(daemon) => daemon_targets.push(daemon),
+        }
     }
 
     let surface = match robots {
         None => BundleSurface::Fixed {
             contracts: pins.into_iter().map(|(pin, _)| pin).collect(),
+            daemon_targets,
         },
         Some(robots) => BundleSurface::PerRobot {
             robots: robot_catalog(robots, &tools, &mut violations),
@@ -920,47 +1000,44 @@ impl MemberKind {
     }
 }
 
-fn find_topic<'a>(contract: &ResolvedContract<'a>, member: &str) -> Option<&'a NativeEmittedTopic> {
-    contract.topics.iter().find(|t| t.name == member)
+fn find_topic<'a>(members: &DeclaredMembers<'a>, member: &str) -> Option<&'a NativeEmittedTopic> {
+    members.topics.iter().find(|t| t.name == member)
 }
 
 fn find_service<'a>(
-    contract: &ResolvedContract<'a>,
+    members: &DeclaredMembers<'a>,
     member: &str,
 ) -> Option<&'a NativeExposedService> {
-    contract.services.iter().find(|s| s.name == member)
+    members.services.iter().find(|s| s.name == member)
 }
 
-fn find_action<'a>(
-    contract: &ResolvedContract<'a>,
-    member: &str,
-) -> Option<&'a NativeExposedAction> {
-    contract.actions.iter().find(|a| a.name == member)
+fn find_action<'a>(members: &DeclaredMembers<'a>, member: &str) -> Option<&'a NativeExposedAction> {
+    members.actions.iter().find(|a| a.name == member)
 }
 
-/// The names a contract declares under one member kind.
-fn member_names<'a>(contract: &ResolvedContract<'a>, kind: MemberKind) -> Vec<&'a str> {
+/// The names a source declares under one member kind.
+fn member_names<'a>(members: &DeclaredMembers<'a>, kind: MemberKind) -> Vec<&'a str> {
     match kind {
-        MemberKind::Topic => contract.topics.iter().map(|t| t.name.as_str()).collect(),
-        MemberKind::Service => contract.services.iter().map(|s| s.name.as_str()).collect(),
-        MemberKind::Action => contract.actions.iter().map(|a| a.name.as_str()).collect(),
+        MemberKind::Topic => members.topics.iter().map(|t| t.name.as_str()).collect(),
+        MemberKind::Service => members.services.iter().map(|s| s.name.as_str()).collect(),
+        MemberKind::Action => members.actions.iter().map(|a| a.name.as_str()).collect(),
     }
 }
 
-/// Name the missing member, list what the contract does declare of that
+/// Name the missing member, list what the source does declare of that
 /// kind, and point at the right section when a member of the same name
 /// exists under another kind.
 fn missing_member_violation(
     target_name: &str,
     kind: MemberKind,
     member: &str,
-    contract_label: &str,
-    contract: &ResolvedContract<'_>,
+    source_label: &str,
+    members: &DeclaredMembers<'_>,
 ) -> String {
-    let declared = member_names(contract, kind);
+    let declared = member_names(members, kind);
     let mut message = format!(
-        "target `{target_name}` selects {} member `{member}`, but contract `{contract_label}` \
-         declares no such {}",
+        "target `{target_name}` selects {} member `{member}`, but {source_label} declares no \
+         such {}",
         kind.singular(),
         kind.singular()
     );
@@ -977,7 +1054,7 @@ fn missing_member_violation(
         if other == kind {
             continue;
         }
-        if member_names(contract, other).contains(&member) {
+        if member_names(members, other).contains(&member) {
             message.push_str(&format!(
                 "; a {} with that name exists, select it under `{}`",
                 other.singular(),

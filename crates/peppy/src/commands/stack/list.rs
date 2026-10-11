@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::commands::{CALLER_INSTANCE_ID, DomainLabels};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node_api::encoding::{LaunchIdentity, StackListRequest};
+use core_node_api::encoding::{CopyAction, CopyChange, LaunchIdentity, StackListRequest};
 use core_node_api::{InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode};
 use futures::future::join_all;
 
@@ -37,6 +37,8 @@ struct StackSection {
     pub reservation: Option<LaunchIdentity>,
     /// The copies joined onto this daemon's slice, as it reports them.
     pub copies: Vec<core_node_api::encoding::CopyInfo>,
+    /// The join or the removal of a copy that holds this daemon's stack now.
+    pub copy_change: Option<CopyChange>,
     pub outcome: std::result::Result<(Vec<SerializedNode>, Vec<SerializedEdge>), String>,
 }
 
@@ -151,6 +153,7 @@ async fn collect_sections(ctx: &Arc<AppContext>) -> Result<Vec<StackSection>> {
                     launch: response.launch,
                     reservation: response.reservation,
                     copies: response.copies,
+                    copy_change: response.copy_change,
                     outcome: crate::commands::parse_stack_graph(&response.graph_json)
                         .map(|mut graph| {
                             sort_graph(&mut graph.nodes, &mut graph.edges);
@@ -166,6 +169,7 @@ async fn collect_sections(ctx: &Arc<AppContext>) -> Result<Vec<StackSection>> {
                     launch: None,
                     reservation: None,
                     copies: Vec::new(),
+                    copy_change: None,
                     outcome: Err(error.to_string()),
                 },
             }
@@ -187,7 +191,8 @@ fn failed_names(sections: &[StackSection]) -> Vec<String> {
 }
 
 /// The report as one JSON document: one entry per core node carrying the
-/// section's identity facts, its `launch` and `reservation`, and either
+/// section's identity facts, its `launch` and `reservation`, its `copies`
+/// and `copy_change`, and either
 /// the `stack` graph (`nodes` and `edges`, exactly as the daemon
 /// serialized them) or the query `error`; exactly one of the two is null.
 fn render_stack_json(sections: &[StackSection]) -> String {
@@ -216,6 +221,7 @@ fn render_stack_json(sections: &[StackSection]) -> String {
                 "launch": launch_json(&section.launch),
                 "reservation": launch_json(&section.reservation),
                 "copies": section.copies,
+                "copy_change": section.copy_change,
                 "stack": stack,
                 "error": error,
             })
@@ -364,7 +370,18 @@ fn format_stack_list(
                 );
             }
         }
-        if !section.copies.is_empty() {
+        if let Some(change) = &section.copy_change {
+            let moves = match change.action {
+                CopyAction::Join => "joins",
+                CopyAction::Remove => "leaves",
+            };
+            let _ = writeln!(
+                body,
+                "Copy {} of {} {moves} the stack now",
+                change.name, change.option
+            );
+        }
+        if !section.copies.is_empty() || section.copy_change.is_some() {
             let _ = writeln!(body);
         }
         match &section.outcome {
@@ -1191,6 +1208,7 @@ mod tests {
             launch: None,
             reservation: None,
             copies: Vec::new(),
+            copy_change: None,
             outcome: Ok((
                 vec![node(core_node, "v1", NodeStage::Root, vec![])],
                 Vec::new(),
@@ -1222,6 +1240,7 @@ mod tests {
             launch: None,
             reservation: Some(LaunchIdentity::new("launch-2", "cn-coordinator")),
             copies: Vec::new(),
+            copy_change: None,
             outcome: Err("query timed out".to_string()),
         };
 
@@ -1351,6 +1370,38 @@ mod tests {
             out.contains("Copy bravo of openarm_v2 on jetson-2") && !out.contains("jetson-2:"),
             "a copy with no selection of its own ends at its host:\n{out}"
         );
+        assert!(!out.contains("the stack now"), "no change runs:\n{out}");
+    }
+
+    #[test]
+    fn the_copy_change_names_its_copy_and_what_it_does() {
+        for (action, line) in [
+            (
+                CopyAction::Join,
+                "Copy charlie of so101_sim joins the stack now",
+            ),
+            (
+                CopyAction::Remove,
+                "Copy charlie of so101_sim leaves the stack now",
+            ),
+        ] {
+            let section = StackSection {
+                copy_change: Some(CopyChange {
+                    action,
+                    name: config::runtime::Name::new("charlie").unwrap(),
+                    option: "so101_sim".to_string(),
+                }),
+                ..successful_section("cn-coordinator", "robo-a")
+            };
+            let out = format_stack_list(std::slice::from_ref(&section), false, None);
+            assert!(out.contains(line), "got:\n{out}");
+            let json: serde_json::Value =
+                serde_json::from_str(&render_stack_json(&[section])).unwrap();
+            assert_eq!(
+                json["core_nodes"][0]["copy_change"],
+                serde_json::json!({ "action": action.as_str(), "name": "charlie", "option": "so101_sim" })
+            );
+        }
     }
 
     #[test]
@@ -1474,6 +1525,7 @@ mod tests {
             launch: None,
             reservation: None,
             copies: Vec::new(),
+            copy_change: None,
             outcome: Err("daemon disappeared".to_string()),
         }];
         let out = format_stack_list(&sections, false, None);

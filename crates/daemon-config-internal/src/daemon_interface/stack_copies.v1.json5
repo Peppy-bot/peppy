@@ -1,0 +1,116 @@
+// The copies of the running launch: list them, add one, remove one. The
+// peppy daemon that started the MCP server serves this interface, and no
+// node implements it. The scope that the launcher gives the target limits
+// every member to the options it names.
+{
+  peppy_schema: "contract/v1",
+  manifest: { name: "stack_copies", tag: "v1" },
+  interfaces: {
+    services: [
+      {
+        // The options of the scope, the copies of these options on the
+        // stack, in name order, and the addition or removal of a copy of one
+        // of them that runs now.
+        name: "list",
+        response_message_format: {
+          options: {
+            $type: "array",
+            $items: {
+              $type: "object",
+              // The launcher option, the value `join` takes.
+              option: "string",
+              // The one-line description the scope gives the option.
+              description: "string",
+            },
+          },
+          copies: {
+            $type: "array",
+            $items: {
+              $type: "object",
+              // The copy's name: the prefix of its instance ids.
+              name: "string",
+              // The launcher option the copy runs.
+              option: "string",
+            },
+          },
+          // The most copies of the scope's options on the stack: `join`
+          // refuses when the stack holds this many.
+          max_copies: "u16",
+          // The addition or removal of a copy of a scoped option that runs on
+          // the stack now; absent while none runs. A copy that joins is in
+          // `copies` only once its join ends.
+          change: {
+            $type: "object",
+            $optional: true,
+            // join or remove.
+            action: "string",
+            name: "string",
+            option: "string",
+          },
+        },
+      },
+    ],
+    actions: [
+      {
+        // Adds a copy of an option, as `peppy stack join OPTION:NAME` does
+        // with no other argument: the option's entry in the launcher decides
+        // the copy's selection. Refused when the option is not in the scope,
+        // when a copy on the stack has the name, when the stack holds
+        // max_copies copies of the scope's options, and while another stack
+        // change or node operation runs on the daemon. A failed join is
+        // undone. A cancel stops the wait and not the join.
+        name: "join",
+        goal_service: {
+          request_message_format: {
+            name: "string",
+            option: "string",
+          },
+        },
+        // One message per line of the join's log, in order.
+        feedback_topic: {
+          qos_profile: "standard",
+          message_format: {
+            // launch, add, build or run.
+            step: "string",
+            line: "string",
+          },
+        },
+        result_service: {
+          response_message_format: {
+            // False when the join ran and failed; message says why and
+            // names the log files.
+            success: "bool",
+            message: "string",
+          },
+        },
+      },
+      {
+        // Stops and removes a copy, as `peppy stack remove NAME` does.
+        // Refused when no copy of a scoped option has the name, and while
+        // another stack change or node operation runs on the daemon. A
+        // cancel stops the wait and not the removal.
+        name: "remove",
+        goal_service: {
+          request_message_format: {
+            name: "string",
+          },
+        },
+        // One message per line of the removal's log, in order: one at
+        // least for each instance it stops.
+        feedback_topic: {
+          qos_profile: "standard",
+          message_format: {
+            step: "string",
+            line: "string",
+          },
+        },
+        result_service: {
+          response_message_format: {
+            success: "bool",
+            message: "string",
+          },
+        },
+      },
+    ],
+  },
+}
