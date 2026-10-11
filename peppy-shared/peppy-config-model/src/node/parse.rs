@@ -1582,15 +1582,13 @@ mod tests {
             ("2.5", "2.5"),
             ("\"180\"", "\"180\""),
         ] {
-            let error = NodeConfigParser::from_content(&config_with_setup_key(&format!(
+            let error = parse_error(&config_with_setup_key(&format!(
                 "setup_timeout_secs: {written},"
-            )))
-            .expect_err("a budget outside the range must be refused");
+            )));
             assert!(
                 matches!(
                     &error,
-                    Error::Parsing(ParsingError::SetupTimeoutOutOfRange { written: refused })
-                        if refused == shown
+                    ParsingError::SetupTimeoutOutOfRange { written: refused } if refused == shown
                 ),
                 "{written}: {error:?}"
             );
