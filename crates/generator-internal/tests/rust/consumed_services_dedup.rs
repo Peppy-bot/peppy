@@ -2,19 +2,15 @@
 //! producer node, so two consumers depending on services that share a
 //! `name` but come from different producer nodes don't collide.
 //!
-//! Concretely, `add_consumed_service` ([rust.rs `add_consumed_service`])
-//! registers each schema under
-//! `method_label = "poll_{producer_node}_{service_name}"`, NOT under the
-//! bare `service_name`, so the cross-producer same-service-name scenario
+//! Concretely, `RustGenerator::add_consumed_service` registers each schema
+//! under `method_label = "poll_{producer_node}_{service_name}"`, NOT under
+//! the bare `service_name`, so the cross-producer same-service-name scenario
 //! produces two distinct capnp files (one per producer) and the consumers'
 //! deserializers can each reference their own producer's exact message
 //! shape, even when the two producers' formats diverge.
 //!
-//! Today this works. This test pins that down. If a future refactor ever
-//! drops the producer-node prefix from the service schema key (making
-//! consumed_service susceptible to the same dedup divergence that bit
-//! consumed_topic), the assertion on the per-producer capnp file pair, or
-//! the build itself, will fail.
+//! If the schema key loses the producer-node prefix, the assertion on the
+//! per-producer capnp file pair, or the build itself, fails.
 //!
 //! The Python counterpart lives in
 //! `tests/python/consumed_services_dedup.rs`.
@@ -133,11 +129,9 @@ fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
         rear_module.display()
     );
 
-    // The producer-node-scoped schema keys must yield distinct capnp files
-    // for each producer. If both producers ever shared a single capnp file,
-    // one consumer's payload shape would lose to the other's; this is the
-    // file-level evidence that the dedup bug from consumed_topic doesn't
-    // apply here.
+    // The producer-node-scoped schema keys give each producer its own capnp
+    // files. If both producers shared one file, one consumer's payload shape
+    // would replace the other's.
     let capnp_dir = peppygen_dir.join("src/capnp");
     let front_request_capnp = capnp_dir.join("poll_uvc_camera_enable_message.capnp");
     let front_response_capnp = capnp_dir.join("poll_uvc_camera_enable_response_message.capnp");

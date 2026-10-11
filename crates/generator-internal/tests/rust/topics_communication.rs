@@ -128,7 +128,6 @@ async fn run_emitter_and_receiver(
         save_runtime_config(&receiver_runtime_config, temp_dir_proj2.path());
 
     init_cargo_user_node(&user_node_receiver);
-    // TODO: An exit signal should be sent to the receiver to terminate the process
     let receiver_main = r#"
 use peppygen::NodeBuilder;
 use peppygen::consumed_topics::uvc_camera::video_stream::subscribe;
@@ -201,7 +200,6 @@ fn main() -> Result<()> {
         save_runtime_config(&emitter_runtime_config, temp_dir_proj1.path());
 
     init_cargo_user_node(&user_node_emitter);
-    // TODO: An exit signal should be sent to the emitter to terminate the process
     let live_emitter_main = r#"
 use peppygen::emitted_topics::video_stream;
 use peppygen::NodeBuilder;

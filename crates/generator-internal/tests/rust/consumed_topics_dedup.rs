@@ -46,10 +46,10 @@ const LEFT_CONSUMER: &str = r#"{ link_id: "left_arm", name: "joint_states" }"#;
 const RIGHT_CONSUMER: &str = r#"{ link_id: "right_arm", name: "joint_states" }"#;
 
 /// User crate `main.rs` that explicitly names both per-link consumer modules.
-/// The references aren't strictly necessary to catch the bug (the generated
-/// `peppygen` lib will fail to compile on its own), but they document what
-/// the test is exercising and mirror the explicit-probe style of the Python
-/// counterpart.
+/// The references aren't strictly necessary to catch a cross-slot struct
+/// mix-up (the generated `peppygen` lib fails to compile on its own), but
+/// they document what the test is exercising and mirror the explicit-probe
+/// style of the Python counterpart.
 const USER_MAIN: &str = r#"
 use peppygen::consumed_topics::left_arm::joint_states as left_arm_joint_states;
 use peppygen::consumed_topics::right_arm::joint_states as right_arm_joint_states;

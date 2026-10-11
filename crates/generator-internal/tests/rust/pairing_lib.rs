@@ -1,9 +1,9 @@
 //! Generate-and-compile fixture for pairing peer modules (Rust): a synthetic
 //! two-role pairing (`arm_link/v1`, roles controller/arm) generates
 //! `paired_topics/<link_id>/<topic>` modules for both directions, and a user node
-//! exercising the full generated surface — slot consts, `paired()` /
+//! exercising the full generated surface (slot consts, `paired()` /
 //! `wait_paired()`, the slot-scoped publisher, and the pin-following
-//! subscription — must compile against the real peppylib. This is the
+//! subscription) must compile against the real peppylib. This is the
 //! type-level proof that the generated seams line up with
 //! `peppylib::runtime::{subscribe_peer, NodeRunner::peer}`.
 

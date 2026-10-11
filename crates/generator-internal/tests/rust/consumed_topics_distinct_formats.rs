@@ -5,13 +5,14 @@
 //! so each slot writes its own file from its own format and the per-slot
 //! decode code always matches the schema it reads.
 //!
-//! Before per-slot keying both slots resolved `on_next_video_stream_message`;
-//! the first registration owned the file and every later slot was handed the
-//! first struct while its decode code was still generated from its own
-//! format. Declaring the rgbd slot after the rgb one produced
-//! `error[E0599]: no method named get_align_mode` on the shared reader and the
-//! node did not build; the other order built but read the rgb slot through a
-//! schema with a field it never sets. Both declaration orders are covered.
+//! Keyed by topic name alone, both slots would resolve
+//! `on_next_video_stream_message`: the first registration would own the file
+//! and every later slot would get the first struct while its decode code is
+//! generated from its own format. Declaring the rgbd slot after the rgb one
+//! would then fail with `error[E0599]: no method named get_align_mode` on the
+//! shared reader and the node would not build; the other order would build
+//! but read the rgb slot through a schema with a field it never sets. Both
+//! declaration orders are covered.
 //!
 //! This is the Rust counterpart of `tests/python/consumed_topics_distinct_formats.rs`.
 

@@ -200,10 +200,6 @@ async fn actions_preserve_result_field_order() {
     );
 
     init_python_user_node(&producer_dir);
-    // Construct `ResultResponse` with keyword arguments so this source
-    // compiles regardless of how the generated constructor orders its
-    // positional parameters. The bug we're catching is on the wire, not
-    // in the class layout.
     let producer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
