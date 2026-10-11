@@ -501,9 +501,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         responders.extend(answer_readiness(&started_core_node, node, instance_id).await);
     }
 
-    // Allow listeners to establish.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let (_goal_response, result) = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -586,9 +583,6 @@ async fn listen_for_launch_configuration_succeed() {
     ] {
         responders.extend(answer_readiness(&started_core_node, node, instance_id).await);
     }
-
-    // Allow listeners to establish.
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, LAUNCHER_EXAMPLE1).expect("failed to write launch file");
@@ -800,7 +794,6 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
 
     let mut responders = answer_readiness(&started_core_node, BRAIN_NODE, "the_brain").await;
     responders.extend(answer_readiness(&started_core_node, ARM_NODE, "the_arm").await);
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Real peppy_launcher.json5 file exercising both the long-form and the
     // `name:tag` shorthand.
@@ -1120,7 +1113,6 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
 
     let mut responders = answer_readiness(&started_core_node, "node_a", "a1").await;
     responders.extend(answer_readiness(&started_core_node, "node_b", "b1").await);
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let launch_a = r#"
     { peppy_schema: "launcher/v1", deployments: [ { source: { name: "node_a:v1" }, instances: [ { instance_id: "a1" } ] } ] }
@@ -1598,9 +1590,6 @@ sleep \"${1:-60}\"
     // Set up ready/health responders for the instance
     let _responders = answer_readiness(&started_core_node, NODE_NAME, INSTANCE_ID).await;
 
-    // Allow listeners to establish.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     // Pass the bin directory in PATH via env overrides to simulate the caller having an updated
     // PATH without restarting the daemon.
     let env_vars = vec![path_env_with_dir_first(bin_dir.path())];
@@ -1664,9 +1653,6 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
 
     let _responders = answer_readiness(&started_core_node, NODE_NAME, INSTANCE_ID).await;
 
-    // Allow listeners to establish.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     // The caller environment carries the same key with a different value, so a
     // matching probe can only come from the instance's own declaration.
     let (_goal_response, result) = send_node_launch_and_wait_with_env(
@@ -1722,7 +1708,6 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
 
     let _responders =
         answer_readiness(&started_core_node, ROBOT_NODE_NAME, "main_robot_brain").await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Launcher file references the node by its `name:tag` in the nodes cache.
     let launcher_json5 = format!(

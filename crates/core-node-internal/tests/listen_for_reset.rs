@@ -329,7 +329,6 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     // Mocks satisfy the readiness gate so the real node_run path commits the
     // instance and spawns its exit watcher.
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
     let start_response = send_node_run_and_wait(
