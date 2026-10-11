@@ -562,131 +562,8 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
-    common::write_plain_peppy_json5(
-        uvc_camera_node_dir.path(),
-        r#"
-        {
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "uvc_camera",
-                tag: "v1",
-                labels: ["camera"],
-            },
-            interfaces: {
-                topics: {
-                    emits: [],
-                },
-                services: {
-                    exposes: [
-                      {
-                        name: "enable_camera",
-                        request_message_format: {
-                          enable: "bool",
-                        },
-                      }
-                    ],
-                },
-                actions: {
-                    exposes: [],
-                },
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["true"],
-                run_cmd: ["sleep", "10"],
-            },
-        }
-        "#,
-    );
-
-    sync_and_add_node(&started_core_node, uvc_camera_node_dir.path()).await;
-
-    let brain_node_dir = tempdir().expect("failed to create temp node directory");
-    common::write_plain_peppy_json5(
-        brain_node_dir.path(),
-        r#"
-        {
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "my_robot_brain",
-                tag: "v1",
-                labels: ["brain"],
-                depends_on: {
-                    nodes: [
-                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
-                    ]
-                },
-            },
-            interfaces: {
-                topics: {
-                    emits: [],
-                },
-                services: {
-                    exposes: [],
-                    consumes: [
-                        {
-                          link_id: "uvc_camera",
-                          name: "enable_camera",
-                        }
-                    ],
-                },
-                actions: {
-                    exposes: [],
-                },
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["true"],
-                run_cmd: ["sleep", "10"],
-            },
-        }
-        "#,
-    );
-
-    let brain_response = poll_core_node(
-        &started_core_node,
-        &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
-    )
-    .await;
-
-    assert!(
-        brain_response.success,
-        "my_robot_brain node_sync should succeed, got error: {}",
-        brain_response.error_message
-    );
-
-    let brain_peppygen_dir = brain_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
-    assert!(
-        brain_peppygen_dir.exists(),
-        "peppygen directory should exist at {}",
-        brain_peppygen_dir.display()
-    );
-
-    let consumed_service_path = brain_peppygen_dir
-        .join("src")
-        .join("consumed_services")
-        .join("uvc_camera")
-        .join("enable_camera.rs");
-    assert!(
-        consumed_service_path.exists(),
-        "peppygen uvc_camera/enable_camera.rs should exist at {}",
-        consumed_service_path.display()
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
-    common::write_plain_peppy_json5(
-        uvc_camera_node_dir.path(),
-        r#"
+/// A `uvc_camera:v1` that emits the `video_stream` topic.
+const CAMERA_EMITS_VIDEO_STREAM: &str = r#"
         {
             peppy_schema: "node/v1",
             manifest: {
@@ -720,15 +597,10 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                 run_cmd: ["sleep", "10"],
             },
         }
-        "#,
-    );
+        "#;
 
-    sync_and_add_node(&started_core_node, uvc_camera_node_dir.path()).await;
-
-    let brain_node_dir = tempdir().expect("failed to create temp node directory");
-    common::write_plain_peppy_json5(
-        brain_node_dir.path(),
-        r#"
+/// A brain that consumes `video_stream` from `uvc_camera:v1`.
+const BRAIN_CONSUMES_VIDEO_STREAM: &str = r#"
         {
             peppy_schema: "node/v1",
             manifest: {
@@ -764,48 +636,84 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                 run_cmd: ["sleep", "10"],
             },
         }
-        "#,
-    );
+        "#;
 
-    let brain_response = poll_core_node(
-        &started_core_node,
-        &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
-    )
-    .await;
+/// A `uvc_camera:v1` that exposes the `enable_camera` service.
+const CAMERA_EXPOSES_ENABLE_CAMERA: &str = r#"
+        {
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "uvc_camera",
+                tag: "v1",
+                labels: ["camera"],
+            },
+            interfaces: {
+                topics: {
+                    emits: [],
+                },
+                services: {
+                    exposes: [
+                      {
+                        name: "enable_camera",
+                        request_message_format: {
+                          enable: "bool",
+                        },
+                      }
+                    ],
+                },
+                actions: {
+                    exposes: [],
+                },
+            },
+            execution: {
+                language: "rust",
+                build_cmd: ["true"],
+                run_cmd: ["sleep", "10"],
+            },
+        }
+        "#;
 
-    assert!(
-        brain_response.success,
-        "my_robot_brain node_sync should succeed, got error: {}",
-        brain_response.error_message
-    );
+/// A brain that consumes `enable_camera` from `uvc_camera:v1`.
+const BRAIN_CONSUMES_ENABLE_CAMERA: &str = r#"
+        {
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "my_robot_brain",
+                tag: "v1",
+                labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
+                    ]
+                },
+            },
+            interfaces: {
+                topics: {
+                    emits: [],
+                },
+                services: {
+                    exposes: [],
+                    consumes: [
+                        {
+                          link_id: "uvc_camera",
+                          name: "enable_camera",
+                        }
+                    ],
+                },
+                actions: {
+                    exposes: [],
+                },
+            },
+            execution: {
+                language: "rust",
+                build_cmd: ["true"],
+                run_cmd: ["sleep", "10"],
+            },
+        }
+        "#;
 
-    let brain_peppygen_dir = brain_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
-    assert!(
-        brain_peppygen_dir.exists(),
-        "peppygen directory should exist at {}",
-        brain_peppygen_dir.display()
-    );
-
-    let consumed_topic_path = brain_peppygen_dir
-        .join("src")
-        .join("consumed_topics")
-        .join("uvc_camera")
-        .join("video_stream.rs");
-    assert!(
-        consumed_topic_path.exists(),
-        "peppygen uvc_camera/video_stream.rs should exist at {}",
-        consumed_topic_path.display()
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let action_server_node_dir = tempdir().expect("failed to create temp node directory");
-    common::write_plain_peppy_json5(
-        action_server_node_dir.path(),
-        r#"
+/// A `brain:v1` that exposes the `move_arm` action.
+const BRAIN_EXPOSES_MOVE_ARM: &str = r#"
         {
             peppy_schema: "node/v1",
             manifest: {
@@ -845,15 +753,10 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                 run_cmd: ["sleep", "10"],
             },
         }
-        "#,
-    );
+        "#;
 
-    sync_and_add_node(&started_core_node, action_server_node_dir.path()).await;
-
-    let controller_node_dir = tempdir().expect("failed to create temp node directory");
-    common::write_plain_peppy_json5(
-        controller_node_dir.path(),
-        r#"
+/// A controller that consumes `move_arm` from `brain:v1`.
+const CONTROLLER_CONSUMES_MOVE_ARM: &str = r#"
         {
             peppy_schema: "node/v1",
             manifest: {
@@ -889,37 +792,63 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                 run_cmd: ["sleep", "10"],
             },
         }
-        "#,
-    );
+        "#;
 
-    let controller_response = poll_core_node(
+/// A node that consumes a topic, a service or an action of a node on the
+/// stack gets the generated client module for it.
+#[rstest::rstest]
+#[case::topic(
+    CAMERA_EMITS_VIDEO_STREAM,
+    BRAIN_CONSUMES_VIDEO_STREAM,
+    "src/consumed_topics/uvc_camera/video_stream.rs"
+)]
+#[case::service(
+    CAMERA_EXPOSES_ENABLE_CAMERA,
+    BRAIN_CONSUMES_ENABLE_CAMERA,
+    "src/consumed_services/uvc_camera/enable_camera.rs"
+)]
+#[case::action(
+    BRAIN_EXPOSES_MOVE_ARM,
+    CONTROLLER_CONSUMES_MOVE_ARM,
+    "src/consumed_actions/brain/move_arm.rs"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_generates_rust_consumed_interfaces(
+    #[case] provider_config: &str,
+    #[case] consumer_config: &str,
+    #[case] generated_file: &str,
+) {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let provider_node_dir = tempdir().expect("failed to create temp node directory");
+    common::write_plain_peppy_json5(provider_node_dir.path(), provider_config);
+    sync_and_add_node(&started_core_node, provider_node_dir.path()).await;
+
+    let consumer_node_dir = tempdir().expect("failed to create temp node directory");
+    common::write_plain_peppy_json5(consumer_node_dir.path(), consumer_config);
+    let consumer_response = poll_core_node(
         &started_core_node,
-        &NodeSyncRequest::new(controller_node_dir.path(), common::TEST_GIT_HASH, false),
+        &NodeSyncRequest::new(consumer_node_dir.path(), common::TEST_GIT_HASH, false),
     )
     .await;
-
     assert!(
-        controller_response.success,
-        "controller node_sync should succeed, got error: {}",
-        controller_response.error_message
+        consumer_response.success,
+        "consumer node_sync should succeed, got error: {}",
+        consumer_response.error_message
     );
 
-    let controller_peppygen_dir = controller_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    let consumer_peppygen_dir = consumer_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     assert!(
-        controller_peppygen_dir.exists(),
+        consumer_peppygen_dir.exists(),
         "peppygen directory should exist at {}",
-        controller_peppygen_dir.display()
+        consumer_peppygen_dir.display()
     );
 
-    let consumed_action_path = controller_peppygen_dir
-        .join("src")
-        .join("consumed_actions")
-        .join("brain")
-        .join("move_arm.rs");
+    let generated_path = consumer_peppygen_dir.join(generated_file);
     assert!(
-        consumed_action_path.exists(),
-        "peppygen brain/move_arm.rs should exist at {}",
-        consumed_action_path.display()
+        generated_path.exists(),
+        "peppygen {generated_file} should exist at {}",
+        generated_path.display()
     );
 }
 
