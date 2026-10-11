@@ -1,5 +1,5 @@
-use super::discovery::discover_producer;
-use super::{DISCOVERY_TIMEOUT, MessengerHandle, generate_short_id};
+use super::discovery::{budget_left_after_discovery, discover_producer};
+use super::{MessengerHandle, generate_short_id};
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;
 use crate::runtime::{TaskHandle, spawn};
@@ -15,7 +15,7 @@ use tokio::{
 };
 use tracing::{error, warn};
 
-/// Outcome of running a user service handler — either a payload to surface
+/// Outcome of running a user service handler: either a payload to surface
 /// to the caller as a normal response, or a UTF-8 reason that the
 /// framework wraps as `Error::ServiceError`. Splitting the outcome at this
 /// layer lets the producer reply with the right `ServiceReplyKind` on the
@@ -47,6 +47,28 @@ async fn deliver_outcome(responder: ServiceResponder, outcome: HandlerOutcome) -
     }
 }
 
+/// Runs `handler` on one request and replies to its caller. A failed reply
+/// is logged and swallowed, so a single bad client cannot end the serving
+/// loop.
+async fn answer_request<F, Fut>(
+    handler: F,
+    context: ServiceRequestContext,
+    responder: ServiceResponder,
+) where
+    F: FnOnce(ServiceRequestContext) -> Fut,
+    Fut: std::future::Future<Output = Result<Payload>>,
+{
+    let request_id = context.request_id().to_string();
+    let outcome = run_handler(handler, context).await;
+    if let Err(err) = deliver_outcome(responder, outcome).await {
+        warn!(
+            %err,
+            %request_id,
+            "failed to send service response; dropping request"
+        );
+    }
+}
+
 pub struct ServiceMessenger;
 
 /// Producer scope of a [`ServiceMessenger::poll`] / [`ServiceMessenger::is_reachable`]
@@ -63,7 +85,7 @@ pub enum ServiceTarget<'a> {
     Any,
     /// Scope to producers hosted by this core node, leaving the instance
     /// slot wildcarded. For callers that know which core node must answer
-    /// but cannot know the producer's per-boot instance_id — e.g.
+    /// but cannot know the producer's per-boot instance_id, e.g.
     /// `node_stop`, whose service root (node name + tag) is not unique
     /// across daemons. `poll` still discovers, but only among that core
     /// node's producers.
@@ -106,11 +128,11 @@ impl ServiceTarget<'_> {
 
 /// Server-side endpoint for a single service. Wraps the per-link-id queryable
 /// fan-in produced by [`pmi::MessengerBackend::listen_service`]: each inbound
-/// request carries its own [`ResponseToken`], so responding no longer needs
+/// request carries its own [`ResponseToken`], so responding does not take
 /// the central messenger mutex.
 ///
 /// `_messenger` is kept solely to anchor the underlying Zenoh session's
-/// lifetime — the queryable's inbound callback (and the flume sender feeding
+/// lifetime: the queryable's inbound callback (and the flume sender feeding
 /// `queryable.rx`) lives in the session's queryable registry, so once every
 /// strong reference to the messenger drops the session disappears and the
 /// channel closes mid-flight.
@@ -130,7 +152,7 @@ impl ServiceEndpoint {
 
 /// Handle returned by [`ServiceEndpoint::recv_next_request`] that must be used
 /// to send the response back to the caller. Wraps the inbound query's
-/// [`ResponseToken`] — `respond` issues a single reply on it.
+/// [`ResponseToken`]: `respond` issues a single reply on it.
 pub struct ServiceResponder {
     token: ResponseToken,
 }
@@ -139,8 +161,7 @@ impl ServiceResponder {
     /// Send the regular response payload for this request. The reply
     /// carries `ServiceReplyKind::Response` on the attachment; the
     /// payload bytes are opaque to the framework and round-trip
-    /// unchanged — including the legacy byte-prefix patterns that the
-    /// previous protocol used as sentinels.
+    /// unchanged.
     pub async fn respond(self, payload: Payload) -> Result<()> {
         self.token
             .respond_response(payload.into_inner().into())
@@ -172,34 +193,32 @@ impl ServiceEndpoint {
         &mut self,
     ) -> Result<Option<(ServiceRequestContext, ServiceResponder)>> {
         loop {
-            match self.next_request().await {
-                Ok((context, token)) => {
-                    // ACK reply before invoking the user handler. The caller's
-                    // poll loop uses this to distinguish ServiceUnreachable
-                    // (no ACK at all) from ServiceTimeout (ACK but no handler
-                    // response within the timeout). The ACK kind lives on
-                    // the reply attachment — the user payload is never
-                    // touched.
-                    if let Err(err) = token.respond_ack().await {
-                        warn!(
-                            %err,
-                            request_id = %context.request_id(),
-                            "failed to send service ACK; dropping request and continuing"
-                        );
-                        continue;
-                    }
-                    return Ok(Some((context, ServiceResponder { token })));
-                }
+            let (context, token) = match self.next_request().await {
+                Ok(request) => request,
                 Err(Error::ServiceRequestStreamClosed) => return Ok(None),
                 Err(err) => return Err(err),
+            };
+            // ACK reply before invoking the user handler. The caller's poll
+            // loop uses this to distinguish ServiceUnreachable (no ACK at
+            // all) from ServiceTimeout (ACK but no handler response within
+            // the timeout). The ACK kind lives on the reply attachment, so
+            // the user payload is never touched.
+            if let Err(err) = token.respond_ack().await {
+                warn!(
+                    %err,
+                    request_id = %context.request_id(),
+                    "failed to send service ACK; dropping request and continuing"
+                );
+                continue;
             }
+            return Ok(Some((context, ServiceResponder { token })));
         }
     }
 
     /// Handles a single incoming request using the provided callback.
     ///
     /// Returns `Ok(true)` after attempting to process a request (even if
-    /// sending the response failed — that failure is logged and swallowed so
+    /// sending the response failed: that failure is logged and swallowed so
     /// a single bad client cannot bubble out as a hard error), or `Ok(false)`
     /// when the subscription stream has closed.
     pub async fn handle_next_request<F, Fut>(&mut self, handler: F) -> Result<bool>
@@ -210,15 +229,7 @@ impl ServiceEndpoint {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(false);
         };
-        let request_id = context.request_id().to_string();
-        let outcome = run_handler(handler, context).await;
-        if let Err(err) = deliver_outcome(responder, outcome).await {
-            warn!(
-                %err,
-                %request_id,
-                "failed to send service response; dropping request"
-            );
-        }
+        answer_request(handler, context, responder).await;
         Ok(true)
     }
 
@@ -231,15 +242,7 @@ impl ServiceEndpoint {
         Fut: std::future::Future<Output = Result<Payload>>,
     {
         while let Some((context, responder)) = self.recv_next_request().await? {
-            let request_id = context.request_id().to_string();
-            let outcome = run_handler(&mut handler, context).await;
-            if let Err(err) = deliver_outcome(responder, outcome).await {
-                warn!(
-                    %err,
-                    %request_id,
-                    "failed to send service response; dropping request"
-                );
-            }
+            answer_request(&mut handler, context, responder).await;
         }
         Ok(())
     }
@@ -266,45 +269,39 @@ impl ServiceEndpoint {
 
     async fn next_request(&mut self) -> Result<(ServiceRequestContext, ResponseToken)> {
         loop {
-            match self.queryable.rx.recv_async().await {
-                Ok(incoming) => {
-                    match incoming.kind {
-                        ServiceQueryKind::Probe => {
-                            // Probes are answered by the transport adapter's
-                            // query dispatch (see pmi's zenoh/mock adapters)
-                            // and must never reach this channel: answering
-                            // them here would starve discovery and liveness
-                            // whenever user code holds this recv loop.
-                            // Defensive drop so a misbehaving adapter can't
-                            // wedge the request loop in release builds.
-                            debug_assert!(
-                                false,
-                                "ServiceQueryKind::Probe leaked past the adapter dispatch"
-                            );
-                            warn!(
-                                link_id = %incoming.link_id,
-                                "dropping probe that leaked past the adapter dispatch"
-                            );
-                            continue;
-                        }
-                        ServiceQueryKind::UserRequest => {
-                            let topic_message = TopicMessage::from_parts(
-                                incoming.caller_core,
-                                incoming.caller_inst,
-                                incoming.payload,
-                            );
-
-                            let request_id = generate_short_id("request");
-                            let context = ServiceRequestContext::new(
-                                topic_message,
-                                request_id,
-                                incoming.link_id,
-                            );
-                            return Ok((context, incoming.token));
-                        }
-                    }
+            let Ok(incoming) = self.queryable.rx.recv_async().await else {
+                return Err(Error::ServiceRequestStreamClosed);
+            };
+            match incoming.kind {
+                ServiceQueryKind::Probe => {
+                    // Probes are answered by the transport adapter's query
+                    // dispatch (see pmi's zenoh/mock adapters) and must never
+                    // reach this channel: answering them here would starve
+                    // discovery and liveness whenever user code holds this
+                    // recv loop. Defensive drop so a misbehaving adapter
+                    // can't wedge the request loop in release builds.
+                    debug_assert!(
+                        false,
+                        "ServiceQueryKind::Probe leaked past the adapter dispatch"
+                    );
+                    warn!(
+                        link_id = %incoming.link_id,
+                        "dropping probe that leaked past the adapter dispatch"
+                    );
+                    continue;
                 }
-                Err(_) => return Err(Error::ServiceRequestStreamClosed),
+                ServiceQueryKind::UserRequest => {
+                    let topic_message = TopicMessage::from_parts(
+                        incoming.caller_core,
+                        incoming.caller_inst,
+                        incoming.payload,
+                    );
+
+                    let request_id = generate_short_id("request");
+                    let context =
+                        ServiceRequestContext::new(topic_message, request_id, incoming.link_id);
+                    return Ok((context, incoming.token));
+                }
             }
         }
     }
@@ -313,7 +310,7 @@ impl ServiceEndpoint {
 pub struct ServiceRequestContext {
     message: Message,
     request_id: String,
-    /// Producer-side link_id that received this request — whichever bound
+    /// Producer-side link_id that received this request: whichever bound
     /// link_id's queryable yielded the inbound query. Surfaced so action
     /// goal handlers can scope per-goal feedback under the link_id the
     /// consumer actually targeted.
@@ -383,8 +380,8 @@ impl ServiceMessenger {
     /// matcher unifies the two.
     ///
     /// `target` scopes which producer answers.
-    /// [`ServiceTarget::Producer`] — a dep slot bound to exactly one
-    /// producer, or an infra caller that already knows the full address —
+    /// [`ServiceTarget::Producer`] (a dep slot bound to exactly one
+    /// producer, or an infra caller that already knows the full address)
     /// addresses that producer directly:
     /// **no discovery probe is issued and no discovery timeout applies**;
     /// the call has the caller's whole `response_timeout` to itself.
@@ -423,35 +420,13 @@ impl ServiceMessenger {
                     to_target.clone(),
                     to_service_name,
                 )?;
-                // Discovery is capped at DISCOVERY_TIMEOUT or the caller's
-                // response budget, whichever is shorter; a tight
-                // `response_timeout` still fails fast against unreachable
-                // targets, while a generous one lets peer-mode gossip discovery
-                // settle (see `discover_producer`).
-                let discovery_timeout = response_timeout
-                    .map(|t| t.min(DISCOVERY_TIMEOUT))
-                    .unwrap_or(DISCOVERY_TIMEOUT);
-                discover_producer(messenger, &probe_sender, discovery_timeout).await?
+                discover_producer(messenger, &probe_sender, response_timeout).await?
             }
         };
 
-        // Discovery counts against the caller's single end-to-end budget;
-        // pass only the remaining slice to `poll_service` so a tight
-        // `response_timeout` can't be silently doubled by a slow probe.
-        let elapsed = started_at.elapsed();
-        let remaining_budget = match response_timeout {
-            Some(total) => {
-                let remaining = total.saturating_sub(elapsed);
-                if remaining.is_zero() {
-                    return Err(Error::ServiceTimeout {
-                        instance_id: Some(resolved.instance_id.clone()),
-                        service_name: to_service_name.to_string(),
-                    });
-                }
-                Some(remaining)
-            }
-            None => None,
-        };
+        let remaining_budget = response_timeout
+            .map(|total| budget_left_after_discovery(total, started_at, &resolved, to_service_name))
+            .transpose()?;
 
         let sender = ServiceTarget::Producer(&resolved).wire_sender(
             bound_core_node,
@@ -505,8 +480,8 @@ impl ServiceMessenger {
     /// `request_size`/`response_size` make the probe carry a real-payload-sized
     /// body and ask the producer to reply with `response_size` bytes, so the
     /// round-trip reflects serializing+moving real-sized messages rather than an
-    /// empty sentinel — still without running the handler. Pass `0`/`0` to fall
-    /// back to the old empty probe.
+    /// empty sentinel, still without running the handler. Pass `0`/`0` for an
+    /// empty probe.
     ///
     /// Returns `(elapsed, response_bytes_received)` on a clean reply, where
     /// `response_bytes_received` is the actual reply payload length (lets the

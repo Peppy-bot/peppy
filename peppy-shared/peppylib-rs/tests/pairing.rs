@@ -140,10 +140,7 @@ async fn expect_message(
             .expect("subscription should not close");
     assert_eq!(
         peer,
-        PeerInfo {
-            producer: ProducerRef::new(CORE, expected_peer),
-            peer_link_id: ARM_SLOT_LINK_ID.to_string(),
-        },
+        pin_to(expected_peer),
         "every message is tagged with the full identity of the paired peer"
     );
     assert_eq!(&*message.payload_bytes(), expected_payload);
@@ -187,7 +184,7 @@ async fn live_pair_starts_delivery_without_resubscribe() {
     let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
     let publisher = declare_peer_publisher(&peer_handle, "arm_1").await;
 
-    // Pair live — the subscription object predates the pair (the lazy story).
+    // Pair live: the subscription object predates the pair (the lazy story).
     tx.send(paired_with(1, &["arm_1"])).expect("watch send");
     wait_for_peer_wire_sub(&peer_handle, "arm_1").await;
 
@@ -335,32 +332,33 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
     .await
     .expect("peer_update listener should register");
 
-    // The "daemon" delivers a pair to the node's slot.
     let node_ref = ProducerRef::new(CORE, CONSUMER_INSTANCE);
+    let deliver = async |caller_core: &str, request: &PeerUpdateRequest| {
+        let reply = ServiceMessenger::poll(
+            &daemon_handle,
+            caller_core,
+            "daemon",
+            node_identity.clone(),
+            PEER_UPDATE_SERVICE,
+            ServiceTarget::Producer(&node_ref),
+            request.encode().expect("encode"),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("every peer_update delivery gets a reply");
+        SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response")
+    };
+
+    // The "daemon" delivers a pair to the node's slot.
     let request = PeerUpdateRequest {
         link_id: "arm".to_string(),
         sequence: 7,
         members: vec![PeerMember {
-            info: PeerInfo {
-                producer: ProducerRef::new(CORE, "arm_1"),
-                peer_link_id: "controller".to_string(),
-            },
+            info: pin_to("arm_1"),
             copy: Some("alpha".to_string()),
         }],
     };
-    let reply = ServiceMessenger::poll(
-        &daemon_handle,
-        CORE,
-        "daemon",
-        node_identity.clone(),
-        PEER_UPDATE_SERVICE,
-        ServiceTarget::Producer(&node_ref),
-        request.encode().expect("encode"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("peer_update delivery should succeed");
-    let response = SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response");
+    let response = deliver(CORE, &request).await;
     assert!(response.accepted, "delivery rejected: {}", response.message);
     assert_eq!(slot_rx.borrow().members, request.members);
     assert_eq!(slot_rx.borrow().sequence, 7);
@@ -371,19 +369,7 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
         sequence: 6,
         members: Vec::new(),
     };
-    let reply = ServiceMessenger::poll(
-        &daemon_handle,
-        CORE,
-        "daemon",
-        node_identity.clone(),
-        PEER_UPDATE_SERVICE,
-        ServiceTarget::Producer(&node_ref),
-        stale.encode().expect("encode"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("stale delivery still gets a reply");
-    let response = SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response");
+    let response = deliver(CORE, &stale).await;
     assert!(!response.accepted);
     assert!(response.stale_sequence);
     assert_eq!(slot_rx.borrow().sequence, 7, "stale must not roll back");
@@ -396,19 +382,7 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
         sequence: 99,
         members: Vec::new(),
     };
-    let reply = ServiceMessenger::poll(
-        &daemon_handle,
-        "foreign_core",
-        "daemon",
-        node_identity,
-        PEER_UPDATE_SERVICE,
-        ServiceTarget::Producer(&node_ref),
-        foreign.encode().expect("encode"),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("foreign delivery still gets a reply");
-    let response = SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response");
+    let response = deliver("foreign_core", &foreign).await;
     assert!(!response.accepted, "foreign core_node must be rejected");
     assert!(!response.stale_sequence);
     assert_eq!(

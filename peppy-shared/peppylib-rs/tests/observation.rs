@@ -42,15 +42,21 @@ fn member(instance_id: &str, generation: u64) -> ObservedMemberState {
     member_on_link(instance_id, SOURCE_SLOT_LINK_ID, generation)
 }
 
+/// The source slot `source_link_id` of `instance_id`, observed whole: every
+/// pair it publishes to, not one pinned peer.
+fn source_on_link(instance_id: &str, source_link_id: &str) -> ObservedSource {
+    ObservedSource {
+        producer: ProducerRef::new(CORE, instance_id),
+        source_link_id: source_link_id.to_string(),
+        peer: None,
+    }
+}
+
 /// A member observed through `source_link_id`, for slots whose members share
 /// one instance and differ only in the source slot they publish under.
 fn member_on_link(instance_id: &str, source_link_id: &str, generation: u64) -> ObservedMemberState {
     ObservedMemberState {
-        source: ObservedSource {
-            producer: ProducerRef::new(CORE, instance_id),
-            source_link_id: source_link_id.to_string(),
-            peer: None,
-        },
+        source: source_on_link(instance_id, source_link_id),
         source_generation: generation,
         source_live: true,
     }
@@ -145,11 +151,7 @@ async fn expect_message(
 ) {
     expect_message_from_source(
         subscription,
-        &ObservedSource {
-            producer: ProducerRef::new(CORE, expected_producer),
-            source_link_id: SOURCE_SLOT_LINK_ID.to_string(),
-            peer: None,
-        },
+        &source_on_link(expected_producer, SOURCE_SLOT_LINK_ID),
         expected_payload,
     )
     .await
@@ -208,9 +210,8 @@ async fn expect_message_after_redeclare(
     }
     // The loop may have queued copies behind the one that arrived; drop them so
     // the next expectation reads a message it actually caused.
-    while tokio::time::timeout(Duration::from_millis(50), subscription.on_next_message())
-        .await
-        .is_ok()
+    while let Ok(Some(_)) =
+        tokio::time::timeout(Duration::from_millis(50), subscription.on_next_message()).await
     {}
 }
 
@@ -369,11 +370,7 @@ async fn members_sharing_one_instance_are_told_apart_by_source_link_id() {
         .expect("publish");
     expect_message_from_source(
         &mut subscription,
-        &ObservedSource {
-            producer: ProducerRef::new(CORE, "backbone_1"),
-            source_link_id: "left_arm".to_string(),
-            peer: None,
-        },
+        &source_on_link("backbone_1", "left_arm"),
         b"left setpoints",
     )
     .await;
@@ -384,11 +381,7 @@ async fn members_sharing_one_instance_are_told_apart_by_source_link_id() {
         .expect("publish");
     expect_message_from_source(
         &mut subscription,
-        &ObservedSource {
-            producer: ProducerRef::new(CORE, "backbone_1"),
-            source_link_id: "right_arm".to_string(),
-            peer: None,
-        },
+        &source_on_link("backbone_1", "right_arm"),
         b"right setpoints",
     )
     .await;

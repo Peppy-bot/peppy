@@ -1,4 +1,4 @@
-//! Suite for `peppylib::testing` — the node-invariant cores behind generated
+//! Suite for `peppylib::testing`, the node-invariant cores behind generated
 //! per-node mock/fixtures code. Mock semantics (scripted vs. manual service
 //! responses, deterministic action producer-loss, lazy first-publish
 //! readiness, the harness barrier and teardown convergence) are proven HERE,
@@ -12,14 +12,15 @@ use std::time::Duration;
 use config::node::{QoSProfile, TopicRetention};
 use peppylib::PeppyError;
 use peppylib::messaging::{
-    ActionMessenger, FeedbackBuffer, NonEmptyPayload, ProducerRef, SenderTarget, ServiceMessenger,
-    ServiceTarget, TopicMessenger,
+    ActionMessenger, FeedbackBuffer, NonEmptyPayload, PeerInfo, ProducerRef, SenderTarget,
+    ServiceMessenger, ServiceTarget, TopicMessenger,
 };
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use peppylib::testing::{
     EphemeralRouter, HarnessClock, HarnessCore, MOCK_CLOCK_INSTANCE_ID, MockActionServerCore,
-    MockClock, MockServiceCore, PublisherReadiness, STANDALONE_CORE_NODE, TestTopicPublisher,
-    wait_action_reachable, wait_service_reachable,
+    MockClock, MockServiceCore, PublisherReadiness, STANDALONE_CORE_NODE, ServiceReadiness,
+    ServiceReadinessKind, TestTopicPublisher, subscribe_peer_pinned, wait_action_reachable,
+    wait_service_reachable,
 };
 use peppylib::types::Payload;
 use tempfile::TempDir;
@@ -149,8 +150,8 @@ async fn mock_service_core_scripted_then_manual() {
 
 /// The deterministic producer-loss contract: `stop()` on a mock action server
 /// with a live, user-held goal context must surface to the consumer as the
-/// typed `ActionFeedbackProducerGone` — never as a clean feedback close and
-/// never as a hang — because the disarmed context suppresses the drop-time
+/// typed `ActionFeedbackProducerGone`, never as a clean feedback close and
+/// never as a hang, because the disarmed context suppresses the drop-time
 /// sentinel that would otherwise race the liveliness latch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_action_stop_yields_producer_gone_deterministically() {
@@ -184,7 +185,7 @@ async fn mock_action_stop_yields_producer_gone_deterministically() {
     .expect("mock action should become reachable");
 
     // `send_goal` resolves only once the server answers admission, so it must
-    // run concurrently with the mock's `next_goal` → `accept` below — exactly
+    // run concurrently with the mock's `next_goal` → `accept` below: exactly
     // the shape a node's consumed-action call has against a live server.
     let client_for_task = client_handle.clone();
     let goal_task = tokio::spawn(async move {
@@ -231,7 +232,7 @@ async fn mock_action_stop_yields_producer_gone_deterministically() {
     assert_eq!(first.payload().as_ref(), b"working");
 
     // Stop the mock mid-goal with the context still held (as a test's MockGoal
-    // handle would be) and tear down its session — the producer-loss shape.
+    // handle would be) and tear down its session: the producer-loss shape.
     mock.stop();
     drop(mock_handle);
 
@@ -246,7 +247,7 @@ async fn mock_action_stop_yields_producer_gone_deterministically() {
     }
 
     // Dropping the disarmed context afterwards is inert: no panic, no late
-    // sentinel (nothing to receive it anyway — the session is gone).
+    // sentinel (the session is gone, so nothing could receive it anyway).
     drop(context);
 
     router.shutdown().await.expect("router shutdown");
@@ -393,7 +394,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
     // The harness-side observation subscription exists before the node does;
     // the barrier below is what guarantees the node's session has discovered
     // it before setup's first publish.
-    let node_producer = ProducerRef::new("standalone-core", instance_id);
+    let node_producer = ProducerRef::new(STANDALONE_CORE_NODE, instance_id);
     let mut status_sub = TopicMessenger::subscribe(
         &observer_handle,
         CALLER_CORE,
@@ -420,7 +421,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
     // A mock service declared before the node exists: the reachability half
     // of the barrier must make it visible to the node's session pre-setup.
     let mock_handle = router.connect().await.expect("mock session");
-    let mock_service = peppylib::testing::MockServiceCore::listen(
+    let mock_service = MockServiceCore::listen(
         &mock_handle,
         "mock-core",
         "mock-1",
@@ -429,11 +430,11 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
     )
     .await
     .expect("mock service listens");
-    let service_readiness = [peppylib::testing::ServiceReadiness {
+    let service_readiness = [ServiceReadiness {
         target: node_target("dep_node"),
         name: "get_info".to_string(),
-        producer: peppylib::messaging::ProducerRef::new("mock-core", "mock-1"),
-        kind: peppylib::testing::ServiceReadinessKind::Service,
+        producer: ProducerRef::new("mock-core", "mock-1"),
+        kind: ServiceReadinessKind::Service,
     }];
 
     let hook_ran = Arc::new(AtomicBool::new(false));
@@ -565,6 +566,49 @@ async fn harness_core_shutdown_propagates_setup_error() {
     router.shutdown().await.expect("router shutdown");
 }
 
+/// A setup that panics: what a node whose entry point hits a bug looks like
+/// to its harness.
+async fn panicking_setup(
+    _params: EmptyParameters,
+    _node_runner: Arc<NodeRunner>,
+) -> peppylib::PeppyResult<()> {
+    panic!("setup panics on purpose");
+}
+
+/// A setup panic is not swallowed by teardown either: `shutdown()` turns the
+/// panicked task into an error naming the panic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn harness_core_shutdown_reports_a_setup_panic() {
+    let router = EphemeralRouter::start().await.expect("start router");
+    let temp_dir = TempDir::new().expect("temp dir");
+    let peppy_config_path = write_peppy_config(&temp_dir);
+
+    let standalone_config = StandaloneConfig::new()
+        .with_messaging(router.host(), router.port())
+        .with_instance_id("panicking_setup_instance");
+
+    let harness = HarnessCore::start::<EmptyParameters, _, _>(
+        peppy_config_path,
+        standalone_config,
+        &[],
+        &[],
+        panicking_setup,
+    )
+    .await
+    .expect("harness start itself should succeed");
+
+    let err = harness
+        .shutdown()
+        .await
+        .expect_err("shutdown must report the setup panic");
+    assert!(
+        err.to_string().contains("the node's setup task panicked"),
+        "expected the setup panic, got: {err}"
+    );
+
+    router.shutdown().await.expect("router shutdown");
+}
+
 /// The statically pinned peer subscription matches a pairing publisher
 /// exactly (producer identity, pairing target, producer-side link_id, and
 /// the mock's own slot as the recipient), so a mock peer receives what the
@@ -577,7 +621,7 @@ async fn subscribe_peer_pinned_receives_slot_scoped_publishes() {
     let mock_handle = router.connect().await.expect("mock session");
 
     let pairing = SenderTarget::pairing("arm_link", "v1").expect("pairing target");
-    let mut subscription = peppylib::testing::subscribe_peer_pinned(
+    let mut subscription = subscribe_peer_pinned(
         &mock_handle,
         "mock-core",
         "mock-arm",
@@ -601,7 +645,7 @@ async fn subscribe_peer_pinned_receives_slot_scoped_publishes() {
         "arm",
         "joint_commands",
         QoSProfile::Reliable,
-        peppylib::messaging::PeerInfo {
+        PeerInfo {
             producer: ProducerRef::new("mock-core", "mock-arm"),
             peer_link_id: "controller".to_string(),
         },

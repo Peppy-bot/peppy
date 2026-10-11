@@ -1,9 +1,8 @@
-// The test-environment machinery this module used to define inline (the
-// pre-main ZENOH_RUNTIME ctor, the fd-limit FFI, the mesh-serialization
-// mutex, the ephemeral router context) now ships once in `crate::testing`
-// (enabled for this crate's own tests via the cyclic self-dev-dependency),
-// where generated node test code shares it. These tests double as the
-// regression net for those helpers.
+// The test-environment machinery (the pre-main ZENOH_RUNTIME ctor, the
+// fd-limit FFI, the mesh-serialization mutex, the ephemeral router context)
+// lives in `crate::testing`, enabled for this crate's tests by the cyclic
+// self-dev-dependency and shared with generated node test code. These tests
+// are also the regression net for those helpers.
 
 use crate::types::Payload;
 use config::node::{QoSProfile, TopicRetention};
@@ -22,15 +21,13 @@ use crate::messaging::{
 };
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
-/// invalid names — tests use known-good values only.
+/// invalid names; tests use known-good values only.
 fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, "v1").expect("test node target")
 }
 
-/// Declares a publisher and publishes a single payload. The publisher is the
-/// only topic-publish path, so a test that publishes once just declares then
-/// publishes; the arguments mirror the old one-shot emit.
-#[allow(clippy::too_many_arguments)]
+/// Declares a publisher and publishes one payload, for a test that publishes
+/// once.
 async fn publish_once(
     messenger: &MessengerHandle,
     as_core_node: &str,
@@ -52,6 +49,32 @@ async fn publish_once(
     )
     .await?;
     publisher.publish(payload).await
+}
+
+/// Waits until `handle`'s session sees a subscriber for the topic it is about
+/// to publish on. Peer-mode discovery is not instantaneous, so a first publish
+/// sent before the match propagates can be dropped. The arguments mirror the
+/// publish that follows.
+async fn wait_for_matched_subscriber(
+    handle: &MessengerHandle,
+    core_node: &str,
+    instance_id: &str,
+    node_name: &str,
+    topic: &str,
+) {
+    assert!(
+        TopicMessenger::wait_for_subscriber(
+            handle,
+            core_node,
+            instance_id,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable"),
+        "a subscriber must be matched before publishing"
+    );
 }
 
 #[derive(Clone)]
@@ -84,8 +107,8 @@ impl ActionClientCase {
 /// which owns every router/test-environment semantic these tests rely on: the
 /// pre-main ZENOH_RUNTIME worker ctor, the fd-limit raise, the per-process
 /// mesh-serialization guard (held for this context's lifetime), the zenoh-open
-/// readiness probe, and connect retries. Kept as a local name so the ~40 tests
-/// below read unchanged and panic with the same messages they always did.
+/// readiness probe, and connect retries. Each setup failure panics with a
+/// message that names the failed step.
 struct TestRouterContext {
     router: crate::testing::EphemeralRouter,
 }
@@ -158,19 +181,14 @@ async fn topic_publish_subscribe_target_scoped() {
     let emitter_handle = router.messenger().await;
     // Deterministically wait for the subscriber before the first publish so it
     // is not dropped during peer-mode discovery propagation.
-    assert!(
-        TopicMessenger::wait_for_subscriber(
-            &emitter_handle,
-            emitter_core_node,
-            emitter_instance_id,
-            test_node_target(node_name),
-            topic,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("subscriber should become reachable"),
-        "a subscriber must be matched before publishing"
-    );
+    wait_for_matched_subscriber(
+        &emitter_handle,
+        emitter_core_node,
+        emitter_instance_id,
+        node_name,
+        topic,
+    )
+    .await;
     publish_once(
         &emitter_handle,
         emitter_core_node,
@@ -251,19 +269,14 @@ async fn topic_publish_subscribe_with_from_instance_id() {
     let emitter_handle1 = router.messenger().await;
     // Deterministically wait for the matching subscriber (subscription2) before
     // the first publish so it is not dropped during peer-mode discovery.
-    assert!(
-        TopicMessenger::wait_for_subscriber(
-            &emitter_handle1,
-            emitter_core_node,
-            emitter_instance_id2,
-            test_node_target(node_name),
-            topic,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("subscriber should become reachable"),
-        "a subscriber must be matched before publishing"
-    );
+    wait_for_matched_subscriber(
+        &emitter_handle1,
+        emitter_core_node,
+        emitter_instance_id2,
+        node_name,
+        topic,
+    )
+    .await;
     publish_once(
         &emitter_handle1,
         emitter_core_node,
@@ -352,19 +365,14 @@ async fn topic_publish_subscribe_with_from_core_node() {
     let emitter_handle1 = router.messenger().await;
     // Deterministically wait for the matching subscriber (subscription2) before
     // the first publish so it is not dropped during peer-mode discovery.
-    assert!(
-        TopicMessenger::wait_for_subscriber(
-            &emitter_handle1,
-            emitter_core_node2,
-            emitter_instance_id,
-            test_node_target(node_name),
-            topic,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("subscriber should become reachable"),
-        "a subscriber must be matched before publishing"
-    );
+    wait_for_matched_subscriber(
+        &emitter_handle1,
+        emitter_core_node2,
+        emitter_instance_id,
+        node_name,
+        topic,
+    )
+    .await;
     publish_once(
         &emitter_handle1,
         emitter_core_node2,
@@ -401,7 +409,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
 /// Fan-in is N declared slots, each wire-pinned to its own producer: a
 /// consumer wanting P1 and P2 holds two subscriptions, and each surfaces
 /// only its bound producer's messages. A third producer P3 of the same
-/// `(name, tag)` reaches neither — there is no wildcard fallback and no
+/// `(name, tag)` reaches neither: there is no wildcard fallback and no
 /// in-process filtering; the wire pin is the whole mechanism.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn per_slot_pinned_subscriptions_isolate_producers() {
@@ -451,19 +459,7 @@ async fn per_slot_pinned_subscriptions_isolate_producers() {
     // during peer-mode discovery propagation. Each pinned subscription has
     // its own producer keyexpr, so wait on both.
     for producer in [p1, p2] {
-        assert!(
-            TopicMessenger::wait_for_subscriber(
-                &emitter_handle,
-                core,
-                producer,
-                test_node_target(node_name),
-                topic,
-                Duration::from_secs(5),
-            )
-            .await
-            .expect("subscriber should become reachable"),
-            "a subscriber must be matched before publishing"
-        );
+        wait_for_matched_subscriber(&emitter_handle, core, producer, node_name, topic).await;
     }
 
     for (producer, body) in [
@@ -562,19 +558,7 @@ async fn bound_set_subscription_merges_bound_producers_and_excludes_unbound() {
 
     let emitter_handle = router.messenger().await;
     for producer in [front, rear] {
-        assert!(
-            TopicMessenger::wait_for_subscriber(
-                &emitter_handle,
-                core,
-                producer,
-                test_node_target(node_name),
-                topic,
-                Duration::from_secs(5),
-            )
-            .await
-            .expect("subscriber should become reachable"),
-            "a subscriber must be matched before publishing"
-        );
+        wait_for_matched_subscriber(&emitter_handle, core, producer, node_name, topic).await;
     }
 
     for (producer, body) in [
@@ -661,19 +645,7 @@ async fn bound_set_subscription_preserves_per_producer_order_and_is_fair() {
 
     let emitter_handle = router.messenger().await;
     for producer in [busy, quiet] {
-        assert!(
-            TopicMessenger::wait_for_subscriber(
-                &emitter_handle,
-                core,
-                producer,
-                test_node_target(node_name),
-                topic,
-                Duration::from_secs(5),
-            )
-            .await
-            .expect("subscriber should become reachable"),
-            "a subscriber must be matched before publishing"
-        );
+        wait_for_matched_subscriber(&emitter_handle, core, producer, node_name, topic).await;
     }
 
     // Queue a large backlog from the busy producer first, then one message
@@ -809,19 +781,7 @@ async fn bound_set_subscription_empty_set_pends_until_shutdown_and_drains_before
     .expect("the bound producers declare their subscriptions");
 
     let emitter_handle = router.messenger().await;
-    assert!(
-        TopicMessenger::wait_for_subscriber(
-            &emitter_handle,
-            core,
-            front,
-            test_node_target(node_name),
-            topic,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("subscriber should become reachable"),
-        "a subscriber must be matched before publishing"
-    );
+    wait_for_matched_subscriber(&emitter_handle, core, front, node_name, topic).await;
     publish_once(
         &emitter_handle,
         core,
@@ -890,45 +850,45 @@ async fn topic_publish_reliable_5000hz_messages() {
 
     // Deterministically wait for the subscriber before the publish loop so the
     // first messages are not dropped during peer-mode discovery propagation.
-    assert!(
-        TopicMessenger::wait_for_subscriber(
-            &sender_handle,
-            emitter_core_node,
-            emitter_instance_id,
-            test_node_target(node_name),
-            topic,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("subscriber should become reachable"),
-        "a subscriber must be matched before publishing"
-    );
+    wait_for_matched_subscriber(
+        &sender_handle,
+        emitter_core_node,
+        emitter_instance_id,
+        node_name,
+        topic,
+    )
+    .await;
 
-    // Drain concurrently with publishing. Peer mode removes the router buffer
-    // that used to sit between publisher and subscriber, so publishing all
-    // messages before draining would block a Reliable (Block-congestion)
-    // publisher once the subscriber's bounded channel fills. A real stream is
-    // drained continuously, so emit in a background task while the main task
+    // Drain concurrently with publishing. In peer mode no router buffer sits
+    // between publisher and subscriber, so publishing all messages before
+    // draining would block a Reliable (Block-congestion) publisher once the
+    // subscriber's bounded channel fills. A real stream is drained
+    // continuously, so emit in a background task while the main task
     // receives.
+    let publisher = TopicMessenger::declare_publisher(
+        &sender_handle,
+        emitter_core_node,
+        emitter_instance_id,
+        test_node_target(node_name),
+        None,
+        topic,
+        qos,
+        TopicRetention::LiveOnly,
+    )
+    .await
+    .expect("Should declare the publisher");
     let emit_ids = message_ids.clone();
     let emitter = tokio::spawn(async move {
         for &message_id in &emit_ids {
             let payload = Payload::from(message_id.to_le_bytes().to_vec());
-            publish_once(
-                &sender_handle,
-                emitter_core_node,
-                emitter_instance_id,
-                test_node_target(node_name),
-                topic,
-                qos.clone(),
-                payload,
-            )
-            .await
-            .expect("Should send the payload");
+            publisher
+                .publish(payload)
+                .await
+                .expect("Should send the payload");
         }
     });
 
-    // Identity check runs once on the first received message — the wire-format
+    // Identity check runs once on the first received message: the wire-format
     // contract is pinned in `pmi::wire::zenoh_format::tests`, so this loop only needs
     // to verify peppylib-level addressing and ordering.
     let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
@@ -1048,7 +1008,7 @@ async fn service_communication_poll_no_instance_id_target() {
     // Second listener with the same service shape. Discovery sends a probe
     // to both listeners; the probe is auto-replied in the request loop
     // before the user handler runs, so the winner is whichever probe reply
-    // reaches the caller first — a race with no inherent ordering.
+    // reaches the caller first, a race with no inherent ordering.
     // Whichever listener loses, its user handler simply never executes.
     let listener_core_node2 = "listener_core_node2";
     let listener_instance_id2 = "listener_instance2";
@@ -1328,13 +1288,49 @@ async fn service_communication_poll_specific_instance_id() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_poll_wrong_node() {
+    let listener = ProducerRef::new("listener_core_node", "listener_instance");
+    // A wrong instance_id on the listener's real core_node.
+    let pinned = ProducerRef::new(&listener.core_node, "wrong_node");
+    assert_poll_to_absent_producer_is_unreachable(
+        &listener,
+        pinned,
+        Duration::from_millis(1500),
+        Duration::from_secs(1),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn service_communication_poll_wrong_core_node() {
+    let listener = ProducerRef::new("listener_core_node", "listener_instance");
+    // The listener's real instance_id on a wrong core_node.
+    let pinned = ProducerRef::new("wrong_core_node", &listener.instance_id);
+    assert_poll_to_absent_producer_is_unreachable(
+        &listener,
+        pinned,
+        Duration::from_millis(500),
+        Duration::from_millis(200),
+    )
+    .await;
+}
+
+/// Starts a `camera` listener at `listener` exposing `enable_camera`, then
+/// polls the service pinned to `pinned`, a pair that matches the listener in
+/// one half only. The poll must fail as unreachable, naming the pinned
+/// instance_id, and the listener's handler must never run. `listener_wait`
+/// bounds how long the listener waits for a request, and `poll_timeout` is
+/// the poll's budget.
+async fn assert_poll_to_absent_producer_is_unreachable(
+    listener: &ProducerRef,
+    pinned: ProducerRef,
+    listener_wait: Duration,
+    poll_timeout: Duration,
+) {
     let router = TestRouterContext::start().await;
 
     // Listener instance
     let listener_node_name = "camera";
     let listener_service_name = "enable_camera";
-    let listener_instance_id = "listener_instance";
-    let listener_core_node = "listener_core_node";
 
     // Caller instance
     const CALLER_INSTANCE_ID: &str = "caller_instance";
@@ -1344,8 +1340,7 @@ async fn service_communication_poll_wrong_node() {
     let call_count = Arc::new(AtomicUsize::new(0));
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
-    let service_wait_timeout = Duration::from_millis(1500);
-    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
+    let service_task_timeout = listener_wait + Duration::from_millis(500);
     let service_ready_timeout = Duration::from_secs(1);
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
@@ -1353,8 +1348,8 @@ async fn service_communication_poll_wrong_node() {
         let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            listener_core_node,
-            listener_instance_id,
+            &listener.core_node,
+            &listener.instance_id,
             test_node_target(listener_node_name),
             listener_service_name,
         )
@@ -1368,21 +1363,21 @@ async fn service_communication_poll_wrong_node() {
                 let response_payload = Payload::from_static(b"ack");
                 async move {
                     // This closure should never be called in this test since
-                    // we're targeting the wrong node
+                    // we're targeting a producer that does not exist
                     call_count.fetch_add(1, Ordering::SeqCst);
                     Ok(response_payload)
                 }
             });
 
             service_ready_tx.send(()).unwrap();
-            let handled = tokio::time::timeout(service_wait_timeout, handler).await;
+            let handled = tokio::time::timeout(listener_wait, handler).await;
 
-            // The service is targeted at the wrong node, so the user handler
-            // must never run. A correct run either leaves the handler parked
-            // until `service_wait_timeout` fires (`Err(Elapsed)`) or finds the
+            // The poll targets a producer that does not exist, so the user
+            // handler must never run. A correct run either leaves the handler
+            // parked until `listener_wait` fires (`Err(Elapsed)`) or finds the
             // request stream already closed (`Ok(false)`); both mean no request
-            // was delivered. Only `Ok(true)` — a request actually reaching the
-            // handler — is a failure. `call_count == 0` below is the
+            // was delivered. Only `Ok(true)` (a request actually reaching the
+            // handler) is a failure. `call_count == 0` below is the
             // authoritative guarantee that nothing was processed.
             match handled {
                 Err(_) | Ok(Ok(false)) | Ok(Err(_)) => {}
@@ -1400,149 +1395,10 @@ async fn service_communication_poll_wrong_node() {
         .expect("service should signal readiness before timeout")
         .expect("service should signal readiness");
 
-    // The caller node has its own scope (emulates a separate node running on a different instance)
-    {
-        let caller_handle = router.messenger().await;
-        let err = {
-            let result = ServiceMessenger::poll(
-                &caller_handle,
-                CALLER_CORE_NODE,
-                CALLER_INSTANCE_ID,
-                test_node_target(listener_node_name),
-                listener_service_name,
-                // Use a wrong instance_id here (the core_node is the real one)
-                ServiceTarget::Producer(&ProducerRef::new(listener_core_node, "wrong_node")),
-                request_payload.clone(),
-                Duration::from_secs(1),
-            )
-            .await;
-
-            let Err(err) = result else {
-                panic!("service call should fail when targeting the wrong node");
-            };
-
-            err
-        };
-
-        let Error::ServiceUnreachable {
-            instance_id: err_instance_id,
-            service_name: err_service_name,
-        } = &err
-        else {
-            panic!(
-                "expected ServiceUnreachable error, received unexpected error: {:?}",
-                err
-            );
-        };
-
-        assert_eq!(err_instance_id.as_deref(), Some("wrong_node"));
-        assert_eq!(err_service_name.as_str(), listener_service_name);
-        assert_eq!(
-            call_count.load(Ordering::SeqCst),
-            0,
-            "service should not be called when targeting the wrong instance"
-        );
-    }
-
-    tokio::time::timeout(service_task_timeout, service_task)
-        .await
-        .expect("service task should finish within timeout")
-        .expect("service task panicked")
-        .expect("service task returned error");
-
-    // Authoritative check that the user handler never ran — independent of
-    // whether the listener timed out or its stream closed first. Asserting only
-    // after the service task has joined guarantees the handler future is fully
-    // resolved, so a late increment cannot slip past this check.
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
-        0,
-        "service callback should not have been called"
-    );
-
-    tokio::time::timeout(service_task_timeout, router.shutdown())
-        .await
-        .expect("router shutdown timed out");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn service_communication_poll_wrong_core_node() {
-    let router = TestRouterContext::start().await;
-
-    // Listener instance
-    let listener_node_name = "camera";
-    let listener_service_name = "enable_camera";
-    let listener_instance_id = "listener_instance";
-    let listener_core_node = "listener_core_node";
-
-    // Caller instance
-    const CALLER_INSTANCE_ID: &str = "caller_instance";
-    const CALLER_CORE_NODE: &str = "caller_core_node";
-
-    let request_payload = Payload::from_static(b"enable=true");
-
-    let call_count = Arc::new(AtomicUsize::new(0));
-
-    let (service_ready_tx, service_ready_rx) = oneshot::channel();
-    let service_wait_timeout = Duration::from_millis(500);
-    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
-    let service_ready_timeout = Duration::from_secs(1);
-
-    // The exposed service has its own dedicated scope (emulates running on its own instance)
-    let service_task = {
-        let service_expose_handle = router.messenger().await;
-        let mut service = ServiceMessenger::listen(
-            &service_expose_handle,
-            listener_core_node,
-            listener_instance_id,
-            test_node_target(listener_node_name),
-            listener_service_name,
-        )
-        .await
-        .expect("service should start");
-
-        let call_count = Arc::clone(&call_count);
-
-        tokio::spawn(async move {
-            let handler = service.handle_next_request(|_request| {
-                let response_payload = Payload::from_static(b"ack");
-                async move {
-                    // This closure should never be called in this test since
-                    // we're targeting the wrong node
-                    call_count.fetch_add(1, Ordering::SeqCst);
-                    Ok(response_payload)
-                }
-            });
-
-            service_ready_tx.send(()).unwrap();
-            let handled = tokio::time::timeout(service_wait_timeout, handler).await;
-
-            // The service is targeted at the wrong node, so the user handler
-            // must never run. A correct run either leaves the handler parked
-            // until `service_wait_timeout` fires (`Err(Elapsed)`) or finds the
-            // request stream already closed (`Ok(false)`); both mean no request
-            // was delivered. Only `Ok(true)` — a request actually reaching the
-            // handler — is a failure. `call_count == 0` below is the
-            // authoritative guarantee that nothing was processed.
-            match handled {
-                Err(_) | Ok(Ok(false)) | Ok(Err(_)) => {}
-                Ok(Ok(true)) => {
-                    panic!("service handler processed a request despite the wrong target")
-                }
-            }
-
-            Ok::<(), Error>(())
-        })
-    };
-
-    // The caller node has its own scope (emulates a separate node running on a different instance)
+    // The caller node has its own scope (emulates a separate node running on a
+    // different instance). The poll retries a cold-start miss itself, so it
+    // follows the readiness signal at once.
     let err = {
-        tokio::time::timeout(service_ready_timeout, service_ready_rx)
-            .await
-            .expect("service should signal readiness before timeout")
-            .expect("service should signal readiness");
-
-        // No settle sleep: the poll below self-retries on a cold-start miss.
         let caller_handle = router.messenger().await;
         let result = ServiceMessenger::poll(
             &caller_handle,
@@ -1550,15 +1406,17 @@ async fn service_communication_poll_wrong_core_node() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            // Pin a producer on the wrong core_node (the instance_id is the real one)
-            ServiceTarget::Producer(&ProducerRef::new("wrong_core_node", listener_instance_id)),
+            ServiceTarget::Producer(&pinned),
             request_payload.clone(),
-            Duration::from_millis(200),
+            poll_timeout,
         )
         .await;
 
         let Err(err) = result else {
-            panic!("service call should fail when targeting the wrong core node");
+            panic!(
+                "service call should fail when targeting the absent producer `{}/{}`",
+                pinned.core_node, pinned.instance_id
+            );
         };
 
         err
@@ -1576,8 +1434,16 @@ async fn service_communication_poll_wrong_core_node() {
     };
 
     // The pinned target's instance_id travels in the error
-    assert_eq!(err_instance_id.as_deref(), Some(listener_instance_id));
+    assert_eq!(
+        err_instance_id.as_deref(),
+        Some(pinned.instance_id.as_str())
+    );
     assert_eq!(err_service_name.as_str(), listener_service_name);
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        0,
+        "service should not be called when targeting the wrong instance"
+    );
 
     tokio::time::timeout(service_task_timeout, service_task)
         .await
@@ -1585,9 +1451,10 @@ async fn service_communication_poll_wrong_core_node() {
         .expect("service task panicked")
         .expect("service task returned error");
 
-    // Authoritative check that the user handler never ran for the wrong core
-    // node — independent of whether the listener timed out or its stream
-    // closed first.
+    // Authoritative check that the user handler never ran, independent of
+    // whether the listener timed out or its stream closed first. Asserting only
+    // after the service task has joined guarantees the handler future is fully
+    // resolved, so a late increment cannot slip past this check.
     assert_eq!(
         call_count.load(Ordering::SeqCst),
         0,
@@ -1602,7 +1469,7 @@ async fn service_communication_poll_wrong_core_node() {
 /// `ServiceTarget::CoreNode` scopes discovery to one core node: with two
 /// listeners exposing the SAME service shape (same node name + tag + service)
 /// on DIFFERENT core nodes, a core-node-scoped poll must always be answered
-/// by the listener on that core node — the foreign one can never win the
+/// by the listener on that core node. The foreign one can never win the
 /// discovery probe because the scoped selector never matches its queryable.
 /// With `ServiceTarget::Any` this would be a wire-level race either listener
 /// could win (see `service_communication_poll_no_instance_id_target`).
@@ -1798,7 +1665,7 @@ async fn sized_probe_gets_sized_reply_without_running_the_handler() {
             });
             ready_tx.send(()).unwrap();
             // A probe is auto-answered inside the request loop, so the handler
-            // never fires — it parks until the timeout.
+            // never fires; it parks until the timeout.
             let _ = tokio::time::timeout(wait, handler).await;
             Ok::<(), Error>(())
         })
@@ -1862,7 +1729,7 @@ async fn service_communication_fails_service_timeouts() {
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
     // Gate that holds back the *second* request's response. The listener ACKs
     // that request (which tells the caller it is reachable) and then parks on
-    // this gate, emitting no response until the main task fires it — which it
+    // this gate, emitting no response until the main task fires it, which it
     // does only after observing the `ServiceTimeout`. The response is absent
     // for the entire failure budget, so the caller deterministically times out
     // waiting for it; the budget only needs to outlast a single ACK round-trip.
@@ -1915,7 +1782,7 @@ async fn service_communication_fails_service_timeouts() {
             }
 
             // Second request: the framework auto-ACKs the moment the request
-            // arrives — that ACK is what makes the caller classify the outcome
+            // arrives; that ACK is what makes the caller classify the outcome
             // as `ServiceTimeout` rather than `ServiceUnreachable`. The handler
             // then parks on the release gate and emits no response until the
             // main task fires it, after the timeout has been observed.
@@ -2157,10 +2024,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
     // Caller core node (shared by all callers)
     const CALLER_CORE_NODE: &str = "caller_core_node";
 
-    // Peer-mode sessions are heavier than the old client sessions: each caller
-    // opens its own peer that forms direct links and discovers via gossip, so
-    // many fresh peers connecting at once is far more load than the client/router
-    // star. Keep the concurrency modest; this still exercises many unique
+    // Each caller opens its own peer-mode session, which forms direct links
+    // and discovers through gossip, so many fresh peers connecting at once is
+    // heavy load. Keep the concurrency modest; this still exercises many unique
     // concurrent request/response pairs across independent caller sessions.
     let caller_count = 20;
     let requests_per_caller = 5;
@@ -2238,7 +2104,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
             caller_requests.push((caller_name, requests));
         }
 
-        let mut rng = rand::rng();
+        // Fixed seed so a failure reproduces the same request order run to
+        // run.
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
         caller_requests.shuffle(&mut rng);
 
         let mut handles = Vec::with_capacity(caller_count);
@@ -2323,43 +2191,63 @@ async fn single_service_communication_multiple_polls_and_callers() {
     router.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn action_communication_no_instance_id_target() {
-    let router = TestRouterContext::start().await;
+/// One goal exchange between a caller and an action server stand-in that
+/// answers exactly one goal: the goal and its ack, one feedback update, and
+/// the result.
+struct OneGoalExchange {
+    node_name: &'static str,
+    action_name: &'static str,
+    listener: ProducerRef,
+    caller: ProducerRef,
+    goal: Payload,
+    goal_response: Payload,
+    feedback: Payload,
+    result: Payload,
+}
 
-    // Listener instance
-    let listener_node_name = "controller";
-    let listener_action_name = "move_right_arm";
-    const LISTENER_CORE_NODE: &str = "listener_core_node";
-    const LISTENER_INSTANCE_ID: &str = "listener_instance";
+impl OneGoalExchange {
+    /// The `move_right_arm` exchange of the action tests, served at `listener`.
+    fn move_right_arm(listener: ProducerRef) -> Self {
+        Self {
+            node_name: "controller",
+            action_name: "move_right_arm",
+            listener,
+            caller: ProducerRef::new("caller_core_node", "caller_instance"),
+            goal: Payload::from_static(b"arm=right;pos=1,2,3"),
+            goal_response: Payload::from_static(b"accepted"),
+            feedback: Payload::from_static(b"progress=50"),
+            result: Payload::from_static(b"done"),
+        }
+    }
 
-    // Caller instance
-    const CALLER_CORE_NODE: &str = "caller_core_node";
-    const CALLER_INSTANCE_ID: &str = "caller_instance";
-
-    let goal_payload = Payload::from_static(b"arm=right;pos=1,2,3");
-    let goal_response_payload = Payload::from_static(b"accepted");
-    let feedback_payload = Payload::from_static(b"progress=50");
-    let result_payload = Payload::from_static(b"done");
-
-    // Launch a background task that plays the role of the action server.
-    let (action_ready_tx, action_ready_rx) = oneshot::channel();
-
-    let server_task = {
-        let expected_goal_payload = goal_payload.clone();
-        let expected_goal_response_payload = goal_response_payload.clone();
-        let feedback_payload_server = feedback_payload.clone();
-        let result_payload_server = result_payload.clone();
+    /// Spawns the action server stand-in at `listener`. It checks the caller
+    /// and the goal, acks the goal, publishes one feedback update and answers
+    /// one result request. It signals `ready_tx` once both handlers are set
+    /// up.
+    async fn spawn_server(
+        &self,
+        router: &TestRouterContext,
+        ready_tx: oneshot::Sender<()>,
+    ) -> tokio::task::JoinHandle<Result<(), Error>> {
+        let node_name = self.node_name;
+        let action_name = self.action_name;
+        let listener = self.listener.clone();
+        let caller_for_goal = self.caller.clone();
+        let caller_for_result = self.caller.clone();
+        let expected_goal_payload = self.goal.clone();
+        let expected_goal_response_payload = self.goal_response.clone();
+        let feedback_payload_server = self.feedback.clone();
+        let result_payload_server = self.result.clone();
 
         let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
             let mut action = ActionMessenger::expose(
                 &action_handle,
-                LISTENER_CORE_NODE,
-                LISTENER_INSTANCE_ID,
-                test_node_target(listener_node_name),
-                listener_action_name,
+                &listener.core_node,
+                &listener.instance_id,
+                test_node_target(node_name),
+                action_name,
             )
             .await
             .expect("action should start");
@@ -2379,8 +2267,8 @@ async fn action_communication_no_instance_id_target() {
                         .declare_from_wire("_", request.message().payload().into_inner())
                         .await
                         .expect("declare from wire");
-                    assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
-                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
+                    assert_eq!(request.message().core_node(), caller_for_goal.core_node);
+                    assert_eq!(request.message().instance_id(), caller_for_goal.instance_id);
                     assert_eq!(declared.user_payload, expected_goal_payload.as_ref());
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
                         let _ = tx.send(declared.publisher);
@@ -2397,9 +2285,12 @@ async fn action_communication_no_instance_id_target() {
             let result_handler = action.result_service.handle_next_request(move |request| {
                 let response_payload = result_payload_server.clone();
                 async move {
-                    assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
-                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    // Result requests now carry the goal_id envelope (empty body).
+                    assert_eq!(request.message().core_node(), caller_for_result.core_node);
+                    assert_eq!(
+                        request.message().instance_id(),
+                        caller_for_result.instance_id
+                    );
+                    // A result request carries the goal_id envelope with an empty body.
                     let request_payload = request.message().payload();
                     let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
                         .expect("result request must carry a goal_id envelope");
@@ -2416,7 +2307,7 @@ async fn action_communication_no_instance_id_target() {
             });
 
             // Signal ready after handler is set up
-            action_ready_tx.send(()).unwrap();
+            ready_tx.send(()).unwrap();
 
             // From this point on, wait for the client to send a goal request
             let handled_goal = tokio::time::timeout(Duration::from_secs(5), goal_handler)
@@ -2452,24 +2343,27 @@ async fn action_communication_no_instance_id_target() {
 
             Ok::<(), Error>(())
         })
-    };
+    }
 
-    action_ready_rx
-        .await
-        .expect("action server should signal readiness");
-
-    // The caller node has its own scope (emulates a separate node running on a different instance)
-    {
+    /// Sends the goal as `caller` to `target` (any producer when `None`), and
+    /// checks that the ack, the feedback update and the result all come from
+    /// `listener` with the expected payloads.
+    async fn send_goal_and_check_replies(
+        &self,
+        router: &TestRouterContext,
+        target: Option<&ProducerRef>,
+    ) {
+        // The caller node has its own scope (emulates a separate node running on a different instance)
         let caller_handle = router.messenger().await;
 
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
-            CALLER_CORE_NODE,
-            CALLER_INSTANCE_ID,
-            test_node_target(listener_node_name),
-            listener_action_name,
-            None, // No target producer
-            goal_payload,
+            &self.caller.core_node,
+            &self.caller.instance_id,
+            test_node_target(self.node_name),
+            self.action_name,
+            target,
+            self.goal.clone(),
             QoSProfile::Reliable,
             FeedbackBuffer::KeepLatest,
             Duration::from_millis(1000),
@@ -2477,9 +2371,12 @@ async fn action_communication_no_instance_id_target() {
         .await
         .expect("caller should send goal");
 
-        assert_eq!(goal_handle.goal_reply().core_node, LISTENER_CORE_NODE);
-        assert_eq!(goal_handle.goal_reply().instance_id, LISTENER_INSTANCE_ID);
-        assert_eq!(goal_handle.goal_reply().body, goal_response_payload);
+        assert_eq!(goal_handle.goal_reply().core_node, self.listener.core_node);
+        assert_eq!(
+            goal_handle.goal_reply().instance_id,
+            self.listener.instance_id
+        );
+        assert_eq!(goal_handle.goal_reply().body, self.goal_response);
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
@@ -2487,9 +2384,9 @@ async fn action_communication_no_instance_id_target() {
             .await
             .expect("caller should receive feedback");
 
-        assert_eq!(feedback_message.payload(), &feedback_payload);
-        assert_eq!(feedback_message.core_node(), LISTENER_CORE_NODE);
-        assert_eq!(feedback_message.instance_id(), LISTENER_INSTANCE_ID);
+        assert_eq!(feedback_message.payload(), &self.feedback);
+        assert_eq!(feedback_message.core_node(), self.listener.core_node);
+        assert_eq!(feedback_message.instance_id(), self.listener.instance_id);
 
         // Finally, request the result using the same handle and ensure the server replies.
         let result_response = ActionMessenger::request_result(
@@ -2501,10 +2398,30 @@ async fn action_communication_no_instance_id_target() {
         .expect("caller should receive result");
 
         assert_eq!(result_response.status, ResultStatus::Completed);
-        assert_eq!(result_response.body, result_payload);
-        assert_eq!(result_response.core_node, LISTENER_CORE_NODE);
-        assert_eq!(result_response.instance_id, LISTENER_INSTANCE_ID);
+        assert_eq!(result_response.body, self.result);
+        assert_eq!(result_response.core_node, self.listener.core_node);
+        assert_eq!(result_response.instance_id, self.listener.instance_id);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn action_communication_no_instance_id_target() {
+    let router = TestRouterContext::start().await;
+    let exchange = OneGoalExchange::move_right_arm(ProducerRef::new(
+        "listener_core_node",
+        "listener_instance",
+    ));
+
+    // Launch a background task that plays the role of the action server.
+    let (action_ready_tx, action_ready_rx) = oneshot::channel();
+    let server_task = exchange.spawn_server(&router, action_ready_tx).await;
+
+    action_ready_rx
+        .await
+        .expect("action server should signal readiness");
+
+    // No target producer
+    exchange.send_goal_and_check_replies(&router, None).await;
 
     server_task
         .await
@@ -2518,24 +2435,11 @@ async fn action_communication_no_instance_id_target() {
 async fn action_communication_with_instance_id_target() {
     let router = TestRouterContext::start().await;
 
-    // Listener instance
-    let listener_node_name = "controller";
-    let listener_action_name = "move_right_arm";
-
     const LISTENER_CORE_NODE1: &str = "listener_core_node1";
     const LISTENER_INSTANCE_ID1: &str = "listener_instance1";
 
-    const LISTENER_CORE_NODE2: &str = "listener_core_node2";
-    const LISTENER_INSTANCE_ID2: &str = "listener_instance2";
-
-    // Caller instance
-    const CALLER_CORE_NODE: &str = "caller_core_node";
-    const CALLER_INSTANCE_ID: &str = "caller_instance";
-
-    let goal_payload = Payload::from_static(b"arm=right;pos=1,2,3");
-    let goal_response_payload = Payload::from_static(b"accepted");
-    let feedback_payload = Payload::from_static(b"progress=50");
-    let result_payload = Payload::from_static(b"done");
+    let listener2 = ProducerRef::new("listener_core_node2", "listener_instance2");
+    let exchange = OneGoalExchange::move_right_arm(listener2.clone());
 
     let call_count = Arc::new(AtomicUsize::new(0));
 
@@ -2544,7 +2448,9 @@ async fn action_communication_with_instance_id_target() {
 
     // This listener should not receive any message
     let server_task1 = {
-        let expected_goal_response_payload = goal_response_payload.clone();
+        let listener_node_name = exchange.node_name;
+        let listener_action_name = exchange.action_name;
+        let expected_goal_response_payload = exchange.goal_response.clone();
 
         let action_handle = router.messenger().await;
 
@@ -2591,169 +2497,15 @@ async fn action_communication_with_instance_id_target() {
         })
     };
 
-    let server_task2 = {
-        let expected_goal_payload = goal_payload.clone();
-        let expected_goal_response_payload = goal_response_payload.clone();
-        let feedback_payload_server = feedback_payload.clone();
-        let result_payload_server = result_payload.clone();
-
-        let action_handle = router.messenger().await;
-
-        tokio::spawn(async move {
-            let mut action = ActionMessenger::expose(
-                &action_handle,
-                LISTENER_CORE_NODE2,
-                LISTENER_INSTANCE_ID2,
-                test_node_target(listener_node_name),
-                listener_action_name,
-            )
-            .await
-            .expect("action should start");
-
-            let (publisher_tx, publisher_rx) =
-                tokio::sync::oneshot::channel::<crate::messaging::ActionFeedbackPublisher>();
-            let publisher_tx = std::sync::Mutex::new(Some(publisher_tx));
-            let factory_for_handler = action.feedback_publisher_factory.clone();
-
-            // The factory unwraps the envelope and declares a per-goal
-            // publisher in one async call via declare_from_wire.
-            let goal_handler = action.goal_service.handle_next_request(move |request| {
-                let factory = factory_for_handler.clone();
-                let publisher_tx = std::sync::Mutex::new(publisher_tx.lock().unwrap().take());
-                async move {
-                    let declared = factory
-                        .declare_from_wire("_", request.message().payload().into_inner())
-                        .await
-                        .expect("declare from wire");
-                    assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
-                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    assert_eq!(declared.user_payload, expected_goal_payload.as_ref());
-                    if let Some(tx) = publisher_tx.lock().unwrap().take() {
-                        let _ = tx.send(declared.publisher);
-                    }
-                    super::actions::wrap_goal_ack(
-                        true,
-                        None,
-                        expected_goal_response_payload.as_ref(),
-                    )
-                }
-            });
-
-            // Create the result handler future
-            let result_handler = action.result_service.handle_next_request(move |request| {
-                let response_payload = result_payload_server.clone();
-                async move {
-                    assert_eq!(request.message().core_node(), CALLER_CORE_NODE);
-                    assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
-                    // Result requests now carry the goal_id envelope (empty body).
-                    let request_payload = request.message().payload();
-                    let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
-                        .expect("result request must carry a goal_id envelope");
-                    assert!(!goal_id.is_empty(), "result request must carry a goal_id");
-                    assert!(body.is_empty(), "result request body must be empty");
-
-                    // This test drives the result service directly, so it frames
-                    // the reply with the engine's result-outcome envelope itself.
-                    Ok(super::actions::wrap_result_outcome(
-                        ResultStatus::Completed,
-                        response_payload.as_ref(),
-                    ))
-                }
-            });
-
-            // Signal ready after handler is set up
-            action_ready_tx.send(()).unwrap();
-
-            // From this point on, wait for the client to send a goal request
-            let handled_goal = tokio::time::timeout(Duration::from_secs(5), goal_handler)
-                .await
-                .expect("timed out waiting for goal request")
-                .expect("action should receive goal request");
-
-            assert!(
-                handled_goal,
-                "goal subscription closed before handling request"
-            );
-
-            let feedback_publisher = publisher_rx
-                .await
-                .expect("server should have captured publisher");
-            feedback_publisher
-                .publish(
-                    crate::messaging::NonEmptyPayload::try_new(feedback_payload_server.clone())
-                        .expect("test feedback payload is non-empty"),
-                )
-                .await
-                .expect("action should publish feedback");
-
-            let handled_result = tokio::time::timeout(Duration::from_secs(5), result_handler)
-                .await
-                .expect("timed out waiting for goal request")
-                .expect("action should receive goal request");
-
-            assert!(
-                handled_result,
-                "result subscription closed before handling request"
-            );
-
-            Ok::<(), Error>(())
-        })
-    };
+    let server_task2 = exchange.spawn_server(&router, action_ready_tx).await;
 
     action_ready_rx
         .await
         .expect("action server should signal readiness");
 
-    // The caller node has its own scope (emulates a separate node running on a different instance)
-    {
-        let caller_handle = router.messenger().await;
-
-        let mut goal_handle = ActionMessenger::send_goal(
-            &caller_handle,
-            CALLER_CORE_NODE,
-            CALLER_INSTANCE_ID,
-            test_node_target(listener_node_name),
-            listener_action_name,
-            Some(&ProducerRef::new(
-                LISTENER_CORE_NODE2,
-                LISTENER_INSTANCE_ID2,
-            )),
-            goal_payload,
-            QoSProfile::Reliable,
-            FeedbackBuffer::KeepLatest,
-            Duration::from_millis(1000),
-        )
-        .await
-        .expect("caller should send goal");
-
-        assert_eq!(goal_handle.goal_reply().core_node, LISTENER_CORE_NODE2);
-        assert_eq!(goal_handle.goal_reply().instance_id, LISTENER_INSTANCE_ID2);
-        assert_eq!(goal_handle.goal_reply().body, goal_response_payload);
-
-        // Consume one feedback update from the action server.
-        let feedback_message = goal_handle
-            .on_next_feedback()
-            .await
-            .expect("caller should receive feedback");
-
-        assert_eq!(feedback_message.payload(), &feedback_payload);
-        assert_eq!(feedback_message.core_node(), LISTENER_CORE_NODE2);
-        assert_eq!(feedback_message.instance_id(), LISTENER_INSTANCE_ID2);
-
-        // Finally, request the result using the same handle and ensure the server replies.
-        let result_response = ActionMessenger::request_result(
-            &caller_handle,
-            &goal_handle,
-            Duration::from_millis(500),
-        )
-        .await
-        .expect("caller should receive result");
-
-        assert_eq!(result_response.status, ResultStatus::Completed);
-        assert_eq!(result_response.body, result_payload);
-        assert_eq!(result_response.core_node, LISTENER_CORE_NODE2);
-        assert_eq!(result_response.instance_id, LISTENER_INSTANCE_ID2);
-    }
+    exchange
+        .send_goal_and_check_replies(&router, Some(&listener2))
+        .await;
 
     server_task1
         .await
@@ -2901,7 +2653,7 @@ async fn action_communication_goal_cancelled() {
 
             assert_eq!(cancel_context.message().core_node(), CALLER_CORE_NODE);
             assert_eq!(cancel_context.message().instance_id(), CALLER_INSTANCE_ID);
-            // Cancel requests now carry the goal_id envelope (empty body).
+            // A cancel request carries the goal_id envelope with an empty body.
             let cancel_payload = cancel_context.message().payload();
             let (goal_id, body) = super::unwrap_goal_payload(cancel_payload.as_ref())
                 .expect("cancel request must carry a goal_id envelope");
@@ -3153,7 +2905,7 @@ async fn single_action_communication_multiple_polls() {
             for _ in 0..client_total {
                 let handler = result_service
                     .spawn_next_request_handler(move |request| async move {
-                        // Result requests now carry the goal_id envelope (empty body).
+                        // A result request carries the goal_id envelope with an empty body.
                         let request_payload = request.message().payload();
                         let (goal_id, body) = super::unwrap_goal_payload(request_payload.as_ref())
                             .expect("result request must carry a goal_id envelope");
@@ -3190,7 +2942,8 @@ async fn single_action_communication_multiple_polls() {
 
     let total_clients = cases.len();
     let mut shuffled_cases = cases.as_ref().clone();
-    let mut rng = rand::rng();
+    // Fixed seed so a failure reproduces the same client order run to run.
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0FFEE);
     shuffled_cases.shuffle(&mut rng);
 
     let mut client_handles = Vec::with_capacity(total_clients);
@@ -3281,7 +3034,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     // Two producer processes expose the same action and a consumer sends
     // a wildcard goal (the infra discover-then-pin path; generated dep
     // slots always pin). With discover-then-pin, only ONE producer's goal
-    // handler must run — the one that responds first to the discovery
+    // handler must run: the one that responds first to the discovery
     // probe. The loser sees the probe (filtered internally, no handler
     // invocation) but never sees the real goal. The subsequent
     // `cancel_goal` also targets only the winner because the wire sender
@@ -3477,10 +3230,9 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
 
 /// A FULL-wildcard `poll` (`target: None`) issued against two producers
 /// that share an `instance_id` but live on different `core_node`s must
-/// run discover-then-pin so exactly ONE handler runs. The pre-`ProducerRef`
-/// half-pinned shape (core_node wildcard + instance_id pin) is
-/// unrepresentable now that producer identity travels as a full
-/// `(core_node, instance_id)` pair.
+/// run discover-then-pin so exactly ONE handler runs. A half-pinned shape
+/// (core_node wildcard plus instance_id pin) is unrepresentable, because
+/// producer identity travels as a full `(core_node, instance_id)` pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_communication_poll_full_wildcard_discovers() {
     let router = TestRouterContext::start().await;
@@ -3576,7 +3328,7 @@ async fn service_communication_poll_full_wildcard_discovers() {
             CALLER_INSTANCE_ID,
             test_node_target(listener_node_name),
             listener_service_name,
-            ServiceTarget::Any, // full-wildcard target — must trigger discovery
+            ServiceTarget::Any, // full-wildcard target: must trigger discovery
             request_payload.clone(),
             Duration::from_secs(1),
         )
@@ -3619,10 +3371,10 @@ async fn service_communication_poll_full_wildcard_discovers() {
 /// Action mirror of [`service_communication_poll_full_wildcard_discovers`]:
 /// a FULL-wildcard `send_goal` (`target: None`) against two producers
 /// sharing an `instance_id` on different `core_node`s must run
-/// discover-then-pin so exactly ONE goal handler runs — both executing
-/// would violate the safety contract for actions with side effects. The
-/// pre-`ProducerRef` half-pinned shape (core_node wildcard + instance_id
-/// pin) is unrepresentable now that producer identity travels as a full
+/// discover-then-pin so exactly ONE goal handler runs; both executing
+/// would violate the safety contract for actions with side effects. A
+/// half-pinned shape (core_node wildcard plus instance_id pin) is
+/// unrepresentable, because producer identity travels as a full
 /// `(core_node, instance_id)` pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn action_send_goal_full_wildcard_discovers() {
@@ -3722,7 +3474,7 @@ async fn action_send_goal_full_wildcard_discovers() {
         "caller_inst",
         action_target,
         action_name,
-        None, // full-wildcard target — must trigger discovery
+        None, // full-wildcard target: must trigger discovery
         Payload::from_static(b"go"),
         QoSProfile::Reliable,
         FeedbackBuffer::KeepLatest,
@@ -3874,7 +3626,7 @@ async fn service_poll_same_core_distinct_instances_pinned_routes_to_pinned() {
 /// not parked in the service recv loop for a window longer than
 /// `DISCOVERY_TIMEOUT` (exactly like a generated node whose accept-loop
 /// is executing user work between `recv` parks). A pinned poll with a
-/// caller budget much larger than the busy window must still succeed —
+/// caller budget much larger than the busy window must still succeed:
 /// the call may not die at a discovery cliff the caller never asked for.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn service_poll_same_core_pinned_producer_busy_waits_caller_budget() {
@@ -4072,8 +3824,8 @@ async fn action_send_goal_same_core_distinct_instances_pinned_routes_to_pinned()
 }
 
 /// Action mirror of
-/// [`service_poll_same_core_pinned_producer_busy_waits_caller_budget`] —
-/// this is the exact shape of the bimanual `fire_goal` timeout from the
+/// [`service_poll_same_core_pinned_producer_busy_waits_caller_budget`].
+/// This is the exact shape of the bimanual `fire_goal` timeout from the
 /// field: the pinned arm is alive but mid-work (not parked in
 /// `recv_next_goal`), and the pinned goal must wait out the caller's own
 /// `goal_timeout` rather than failing at a 2s discovery cliff.
@@ -4109,7 +3861,7 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
             ready_tx.send(()).unwrap();
 
             // Busy: exactly what a generated accept-loop looks like while
-            // user code executes a goal — the queryable exists, but nothing
+            // user code executes a goal: the queryable exists, but nothing
             // is parked in the goal recv loop.
             tokio::time::sleep(busy_window).await;
 
@@ -4165,15 +3917,14 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
     router.shutdown().await;
 }
 
-/// Acceptance criterion 1, observed on the wire rather than by reading
-/// code: a fully pinned `ServiceMessenger::poll` and
-/// `ActionMessenger::send_goal` issue ZERO discovery probes, while a
-/// `None`-target call issues at least one.
+/// A fully pinned `ServiceMessenger::poll` and `ActionMessenger::send_goal`
+/// issue ZERO discovery probes, while a `None`-target call issues at least
+/// one.
 ///
 /// Mechanism: a raw zenoh client session declares a `**` queryable that
 /// never replies. Every peppy service query is sent with
 /// `QueryTarget::All` + `ConsolidationMode::None`, so each query is
-/// delivered to every matching queryable — replying or not — and the
+/// delivered to every matching queryable (replying or not), and the
 /// watcher observes exactly the queries the caller puts on the wire.
 /// Dropping the query without replying finalizes it for the watcher, so
 /// the watched calls are not delayed. The mandatory query attachment is
@@ -4354,7 +4105,7 @@ async fn pinned_calls_issue_zero_probes() {
     };
 
     // Open the caller before the settle so the fresh peer has time to learn
-    // both the producers' queryables and the watcher's `**` interest —
+    // both the producers' queryables and the watcher's `**` interest;
     // otherwise its first queries would not be routed to the watcher and
     // the meaningfulness guard below would fail.
     let caller_handle = router.messenger().await;
@@ -4517,12 +4268,11 @@ async fn pinned_calls_issue_zero_probes() {
     router.shutdown().await;
 }
 
-/// Acceptance criterion 2 — the cross-core same-`instance_id` leak is
-/// closed: topic subscriptions pin the full `(core_node, instance_id)`
-/// pair on the wire, never `instance_id` alone. Two producers share
-/// `instance_id` "inst1" on different core_nodes; the subscription bound
-/// to `(core_a, inst1)` must never surface core_b's publishes even though
-/// they carry the same instance_id on the same topic.
+/// Topic subscriptions pin the full `(core_node, instance_id)` pair on the
+/// wire, never `instance_id` alone. Two producers share `instance_id`
+/// "inst1" on different core_nodes; the subscription bound to
+/// `(core_a, inst1)` must never surface core_b's publishes even though they
+/// carry the same instance_id on the same topic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn topic_pinned_subscription_compares_full_pairs() {
     let router = TestRouterContext::start().await;
@@ -4554,32 +4304,37 @@ async fn topic_pinned_subscription_compares_full_pairs() {
 
     // Emit loops: each producer publishes every 50ms until stopped, so the
     // assertions below never depend on a single publish surviving
-    // peer-mode discovery propagation.
-    let stop_emitters = Arc::new(tokio::sync::Notify::new());
+    // peer-mode discovery propagation. The stop is a cancellation token
+    // because it stays set: an emitter task that the scheduler first runs
+    // after the stop still sees it and ends.
+    let stop_emitters = crate::runtime::CancellationToken::new();
     let spawn_emitter = |handle: MessengerHandle, core: &'static str, payload: Payload| {
-        let stop = Arc::clone(&stop_emitters);
+        let stop = stop_emitters.clone();
         let qos = qos.clone();
         tokio::spawn(async move {
+            let publisher = TopicMessenger::declare_publisher(
+                &handle,
+                core,
+                shared_inst,
+                test_node_target(node_name),
+                None,
+                topic,
+                qos,
+                TopicRetention::LiveOnly,
+            )
+            .await
+            .expect("declare should succeed");
             let mut ticker = tokio::time::interval(Duration::from_millis(50));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            let stop_notified = stop.notified();
-            tokio::pin!(stop_notified);
             loop {
                 tokio::select! {
                     biased;
-                    _ = stop_notified.as_mut() => break,
+                    _ = stop.cancelled() => break,
                     _ = ticker.tick() => {
-                        publish_once(
-                            &handle,
-                            core,
-                            shared_inst,
-                            test_node_target(node_name),
-                            topic,
-                            qos.clone(),
-                            payload.clone(),
-                        )
-                        .await
-                        .expect("emit should succeed");
+                        publisher
+                            .publish(payload.clone())
+                            .await
+                            .expect("emit should succeed");
                     }
                 }
             }
@@ -4588,7 +4343,7 @@ async fn topic_pinned_subscription_compares_full_pairs() {
     let emitter_a = spawn_emitter(router.messenger().await, core_a, payload_a.clone());
     let emitter_b = spawn_emitter(router.messenger().await, core_b, payload_b.clone());
 
-    // Both wire slots are pinned to (core_a, inst1) — every delivered
+    // Both wire slots are pinned to (core_a, inst1): every delivered
     // message must carry that pair even though core_b publishes the same
     // instance_id on the same topic throughout.
     for _ in 0..3 {
@@ -4607,7 +4362,7 @@ async fn topic_pinned_subscription_compares_full_pairs() {
 
     // Stop the emit loops before tearing the router down so no emit races
     // the shutdown.
-    stop_emitters.notify_waiters();
+    stop_emitters.cancel();
     emitter_a.await.expect("emitter A panicked");
     emitter_b.await.expect("emitter B panicked");
 
@@ -4618,7 +4373,7 @@ async fn topic_pinned_subscription_compares_full_pairs() {
 /// NOT parked in its service recv loop (busy in user code, exactly like a
 /// generated accept-loop between `recv` parks) must still answer probes
 /// within the probe budget, because the pmi transport adapter answers
-/// `ServiceQueryKind::Probe` queries in its dispatch callback — never the
+/// `ServiceQueryKind::Probe` queries in its dispatch callback, never in the
 /// endpoint recv loop. The busy window (3s) exceeds both `PROBE_TIMEOUT`
 /// (500ms) and `DISCOVERY_TIMEOUT` (2s): if probes were answered by the
 /// recv loop, both probe calls below would starve inside the window.
@@ -4652,7 +4407,7 @@ async fn probes_answered_while_pinned_producer_is_busy() {
 
             ready_tx.send(()).unwrap();
             // Busy: the queryable is declared, but nobody is parked in the
-            // recv loop — only the adapter can answer wire traffic.
+            // recv loop; only the adapter can answer wire traffic.
             tokio::time::sleep(busy_window).await;
 
             let handler = service.handle_next_request(|_request| {
@@ -4722,7 +4477,7 @@ async fn probes_answered_while_pinned_producer_is_busy() {
     );
 
     // The pinned user request still reaches the handler once the producer
-    // wakes — the adapter's probe path and the user path stay independent.
+    // wakes: the adapter's probe path and the user path stay independent.
     let response = ServiceMessenger::poll(
         &caller_handle,
         "caller_core_node",

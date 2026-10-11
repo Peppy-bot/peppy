@@ -1,9 +1,7 @@
-use super::discovery::discover_producer;
+use super::discovery::{budget_left_after_discovery, discover_producer};
 use super::generate_short_id;
 use super::topics::Subscription;
-use super::{
-    DISCOVERY_TIMEOUT, MessengerHandle, ServiceEndpoint, ServiceResponder, TopicPublisher,
-};
+use super::{MessengerHandle, ServiceEndpoint, ServiceResponder, TopicPublisher};
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;
 use crate::runtime::{CancellationToken, TaskHandle, spawn};
@@ -21,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex as TokioMutex, Notify};
 // tokio's clock so the retention/eviction timeouts run on virtual time under
 // `#[tokio::test(start_paused = true)]`; in a normal runtime it reads the real
-// monotonic clock, so production behavior is unchanged.
+// monotonic clock.
 use tokio::time::{Duration, Instant};
 use tracing::warn;
 
@@ -196,11 +194,11 @@ fn goal_ack_error(reason: impl Into<String>) -> Error {
 /// exactly the fields the contract declares. Symmetric counterpart of
 /// [`unwrap_goal_ack`].
 ///
-/// Breaking wire change: producers and consumers must run the same peppylib
-/// generation. A pre-envelope producer's raw reply can decode as a
-/// plausible-but-wrong ack (a capnp segment table starts with 0x00, reading
-/// as a rejection), so mixed versions are unsupported; upgrade all nodes of
-/// a deployment together, as peppy releases already require.
+/// Producers and consumers must run the same peppylib generation: a goal
+/// reply without this envelope (a raw capnp message) can decode as a
+/// plausible-but-wrong ack, because a capnp segment table starts with 0x00,
+/// which reads as a rejection. Mixed versions are unsupported; upgrade all
+/// nodes of a deployment together, as peppy releases require.
 pub fn wrap_goal_ack(accepted: bool, reason: Option<&str>, body: &[u8]) -> Result<Payload> {
     let reason = reason.unwrap_or("");
     if reason.len() > u16::MAX as usize {
@@ -279,8 +277,9 @@ fn is_safe_goal_id(goal_id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// Re-exported from `core-node-api` so callers can use the existing
-/// `peppylib::messaging::NonEmptyPayload` import path.
+/// Re-exported from `core-node-api` so the payload type that
+/// [`ActionFeedbackPublisher::publish`] takes sits beside it in
+/// `peppylib::messaging`.
 pub use core_node_api::{EmptyPayloadError, NonEmptyPayload};
 
 /// Per-goal feedback publisher used by action servers. The end-of-stream
@@ -399,8 +398,8 @@ impl ActionFeedbackPublisherFactory {
 // The end-of-stream sentinel only reaches the consumer while the producer's
 // session is alive to publish it. A producer that dies hard (SIGKILL, OOM,
 // runtime teardown winning the race against `GoalContext::Drop`'s spawned
-// cleanup) never sends it, and the consumer's feedback subscription — pinned
-// to the dead `instance_id` — would otherwise wait forever. Every exposed
+// cleanup) never sends it, and the consumer's feedback subscription (pinned
+// to the dead `instance_id`) would otherwise wait forever. Every exposed
 // action therefore advertises a transport liveliness token
 // (see `MessengerHandle::expose_action`), and every goal handle watches the
 // pinned producer's token so `on_next_feedback` can fail over to
@@ -428,8 +427,8 @@ const LIVELINESS_RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
 const PRODUCER_GONE_CONFIRM_PROBES: usize = 2;
 
 /// `true` once the producer is confirmed absent: every confirmation probe
-/// found no token. Any probe that sees the token — or errors, e.g. while the
-/// consumer's own session is closing — aborts the confirmation, so a flap
+/// found no token. Any probe that sees the token (or errors, e.g. while the
+/// consumer's own session is closing) aborts the confirmation, so a flap
 /// or an inconclusive probe never fabricates a producer death.
 async fn confirm_producer_gone(messenger: &MessengerHandle, sender: &ActionWireSender) -> bool {
     for _ in 0..PRODUCER_GONE_CONFIRM_PROBES {
@@ -462,7 +461,7 @@ async fn run_producer_liveliness_watch(
     // Initial resolve: the producer answered the goal request moments ago,
     // so its token is expected to replay as an immediate `Alive` (the watch
     // subscribes with history). Seeing nothing inside the window means the
-    // producer died in the gap — confirm by probing rather than trusting
+    // producer died in the gap: confirm by probing rather than trusting
     // propagation timing.
     match tokio::time::timeout(LIVELINESS_RESOLVE_TIMEOUT, watch.rx.recv_async()).await {
         Ok(Ok(LivelinessEvent::Alive(()))) => {}
@@ -603,8 +602,8 @@ impl ActionGoalHandle {
     /// Returns `Err(Error::ActionFeedbackProducerGone)` when the producer
     /// instance this goal is pinned to disappears without publishing the
     /// sentinel (process killed, OOM, runtime teardown losing the cleanup
-    /// race). Buffered feedback — including a sentinel that did make it
-    /// out — is always drained before the producer-gone error surfaces, so
+    /// race). Buffered feedback (including a sentinel that did make it
+    /// out) is always drained before the producer-gone error surfaces, so
     /// a graceful close keeps reporting `ActionFeedbackChannelClosed`.
     pub async fn on_next_feedback(&mut self) -> Result<Message> {
         let msg = tokio::select! {
@@ -715,13 +714,13 @@ impl ActionMessenger {
     /// action's **goal service** (actions are built on the goal/cancel/result
     /// services). As with [`Self::is_reachable`], the probe is auto-handled by
     /// the shared service request loop, so **no `PendingGoal` is created and the
-    /// action engine never runs** — this measures only the messaging/routing
+    /// action engine never runs**: this measures only the messaging/routing
     /// path. Clock-independent (single-clock round-trip).
     ///
     /// `request_size`/`response_size` make the probe carry a real-payload-sized
     /// goal body and ask the producer to reply with `response_size` bytes (the
     /// goal request/response sizes), so the round-trip reflects real-sized
-    /// messages — still without creating a goal or running the action.
+    /// messages, still without creating a goal or running the action.
     ///
     /// Returns `(elapsed, response_bytes_received)` on a clean reply; propagates
     /// the error otherwise.
@@ -769,8 +768,8 @@ impl ActionMessenger {
     /// in [`Self::expose`].
     ///
     /// `target` is the producer's full `(core_node, instance_id)` wire
-    /// address. `Some(target)` — a dep slot bound to exactly one
-    /// producer, or an infra caller that already knows the full address —
+    /// address. `Some(target)` (a dep slot bound to exactly one
+    /// producer, or an infra caller that already knows the full address)
     /// addresses that producer directly: **no discovery probe is issued
     /// and no discovery timeout applies**; the goal request has the
     /// caller's whole `goal_timeout` to itself.
@@ -814,12 +813,7 @@ impl ActionMessenger {
                     to_target.clone(),
                     to_action_name,
                 )?;
-                // Cap discovery at DISCOVERY_TIMEOUT or the caller's goal budget,
-                // whichever is shorter: a tight `goal_timeout` still fails fast
-                // against unreachable producers, while a generous one lets
-                // peer-mode gossip discovery settle (see `discover_producer`).
-                let discovery_timeout = goal_timeout.min(DISCOVERY_TIMEOUT);
-                discover_producer(messenger, &probe_sender.goal_service(), discovery_timeout)
+                discover_producer(messenger, &probe_sender.goal_service(), Some(goal_timeout))
                     .await?
             }
         };
@@ -847,16 +841,8 @@ impl ActionMessenger {
         let producer_gone =
             ProducerGoneWatch::spawn(liveliness_watch, messenger.clone(), sender.clone());
 
-        // Discovery counts against the caller's single end-to-end budget;
-        // pass only the remaining slice to `poll_service` so a tight
-        // `goal_timeout` can't be silently doubled by a slow probe.
-        let remaining_goal_budget = goal_timeout.saturating_sub(started_at.elapsed());
-        if remaining_goal_budget.is_zero() {
-            return Err(Error::ServiceTimeout {
-                instance_id: Some(resolved.instance_id.clone()),
-                service_name: to_action_name.to_string(),
-            });
-        }
+        let remaining_goal_budget =
+            budget_left_after_discovery(goal_timeout, started_at, &resolved, to_action_name)?;
         let goal_response = messenger
             .poll_service(
                 &sender.goal_service(),
@@ -947,7 +933,7 @@ impl ActionMessenger {
         .await
     }
 
-    /// [`request_result`](Self::request_result), reduced to the body — the
+    /// [`request_result`](Self::request_result), reduced to the body: the
     /// terminal outcomes that carry no body become typed errors rather than an
     /// empty [`Payload`] the caller has to notice.
     ///
@@ -998,7 +984,6 @@ impl ActionMessenger {
         goal_id: &str,
         result_timeout: Duration,
     ) -> Result<ActionResultReply> {
-        let action_name = sender.to_action_name().to_string();
         let payload = wrap_goal_payload(goal_id, &[])?;
         let message = match messenger_handle
             .poll_service(
@@ -1011,22 +996,8 @@ impl ActionMessenger {
         {
             Ok(message) => message,
             Err(err) => {
-                let err = Self::map_result_error(err, &action_name);
-                if matches!(
-                    err,
-                    Error::ActionResultTimeout { .. } | Error::ActionResultUnreachable { .. }
-                ) {
-                    // An inconclusive probe (`Err`) must not fabricate an
-                    // Abandoned outcome — only a confirmed-absent token does.
-                    let alive = messenger_handle
-                        .probe_action_producer(sender, LIVELINESS_PROBE_TIMEOUT)
-                        .await
-                        .unwrap_or(true);
-                    if !alive {
-                        return Ok(abandoned_reply(sender));
-                    }
-                }
-                return Err(err);
+                let err = Self::map_result_error(err, sender.to_action_name());
+                return Self::resolve_failed_result_poll(messenger_handle, sender, err).await;
             }
         };
         let instance_id = message.instance_id().to_string();
@@ -1041,6 +1012,34 @@ impl ActionMessenger {
             instance_id,
             core_node,
         })
+    }
+
+    /// Resolves a result poll that failed with `err`. A transport miss is
+    /// followed by the producer-disappearance probe: a producer whose token
+    /// is confirmed gone resolves the goal to a typed Abandoned reply, and
+    /// every other failure stays `err`.
+    async fn resolve_failed_result_poll(
+        messenger_handle: &MessengerHandle,
+        sender: &ActionWireSender,
+        err: Error,
+    ) -> Result<ActionResultReply> {
+        let is_transport_miss = matches!(
+            err,
+            Error::ActionResultTimeout { .. } | Error::ActionResultUnreachable { .. }
+        );
+        if !is_transport_miss {
+            return Err(err);
+        }
+        // An inconclusive probe (`Err`) must not fabricate an Abandoned
+        // outcome: only a confirmed-absent token does.
+        let is_alive = messenger_handle
+            .probe_action_producer(sender, LIVELINESS_PROBE_TIMEOUT)
+            .await
+            .unwrap_or(true);
+        if is_alive {
+            return Err(err);
+        }
+        Ok(abandoned_reply(sender))
     }
 
     fn map_result_error(err: Error, action_name: &str) -> Error {
@@ -1063,9 +1062,8 @@ impl ActionMessenger {
 // ---------------------------------------------------------------------------
 
 /// The outcome of a cancel request, carried in the cancel reply
-/// (`ActionCancelResponse.state`). Replaces the old `accepted` / `error_message`
-/// pair: the typed state subsumes both. There is no "no active goal" variant —
-/// an unknown `goal_id` is [`Unknown`](CancelState::Unknown), and a goal that
+/// (`ActionCancelResponse.state`). There is no "no active goal" variant: an
+/// unknown `goal_id` is [`Unknown`](CancelState::Unknown), and a goal that
 /// already finished is [`AlreadyTerminal`](CancelState::AlreadyTerminal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -1096,7 +1094,7 @@ impl CancelState {
 /// Rust and Python servers.
 ///
 /// The single `state` field is positionally wire-compatible with the codegen's
-/// per-action `CancelResponse` reader — see `schemas/action_cancel.capnp` and
+/// per-action `CancelResponse` reader. See `schemas/action_cancel.capnp` and
 /// `cancel_action_response_format()` in generator-internal.
 pub fn encode_cancel_ack(state: CancelState) -> Result<Payload> {
     let mut builder = ::capnp::message::Builder::new_default();
@@ -1160,7 +1158,7 @@ fn encode_result_outcome(outcome: &GoalOutcome) -> Payload {
 /// from accept until it reaches a terminal outcome; result polls park their
 /// responders in `Pending` and are drained on the transition to `Terminal`.
 enum GoalState {
-    /// The worker is running. `waiters` is a `Vec` — not a single slot — because
+    /// The worker is running. `waiters` is a `Vec`, not a single slot, because
     /// a relay may poll twice and several clients may race one `goal_id`.
     Pending { waiters: Vec<ServiceResponder> },
     /// Terminal: the result stays fetchable until `evict_at`, after which the
@@ -1314,6 +1312,52 @@ fn goal_id_from_request(payload: &[u8]) -> Result<String> {
     Ok(goal_id.to_string())
 }
 
+/// The goal sub-service a background loop of [`ConcurrentAction`] serves.
+#[derive(Clone, Copy)]
+enum GoalRequestService {
+    Cancel,
+    Result,
+}
+
+/// Waits for the next request on `service` that carries a `goal_id`, and
+/// returns that `goal_id` with the request's responder. A request without a
+/// goal envelope is answered with an error and skipped. `None` ends the
+/// calling loop: `stop` fired, the request stream closed, or receiving failed
+/// (logged).
+async fn next_goal_request(
+    service: &mut ServiceEndpoint,
+    stop: &CancellationToken,
+    kind: GoalRequestService,
+) -> Option<(String, ServiceResponder)> {
+    loop {
+        let next = tokio::select! {
+            _ = stop.cancelled() => return None,
+            next = service.recv_next_request() => next,
+        };
+        let (context, responder) = match next {
+            Ok(Some(pair)) => pair,
+            Ok(None) => return None,
+            Err(err) => {
+                match kind {
+                    GoalRequestService::Cancel => warn!(%err, "action cancel loop stopped"),
+                    GoalRequestService::Result => warn!(%err, "action result loop stopped"),
+                }
+                return None;
+            }
+        };
+
+        let Ok(goal_id) = goal_id_from_request(context.message().payload_bytes().as_ref()) else {
+            let reason = match kind {
+                GoalRequestService::Cancel => "malformed cancel request payload",
+                GoalRequestService::Result => "malformed result request payload",
+            };
+            let _ = responder.respond_error(reason.to_string()).await;
+            continue;
+        };
+        return Some((goal_id, responder));
+    }
+}
+
 /// Background loop: routes each incoming cancel request to the matching live
 /// goal's [`CancellationToken`] and replies with a typed [`CancelState`]. There
 /// is no "no active goal" reply: a live goal is `Signalled`, an
@@ -1325,30 +1369,9 @@ async fn run_cancel_loop(
     tombstones: Tombstones,
     stop: CancellationToken,
 ) {
-    loop {
-        let next = tokio::select! {
-            _ = stop.cancelled() => return,
-            next = cancel_service.recv_next_request() => next,
-        };
-        let (context, responder) = match next {
-            Ok(Some(pair)) => pair,
-            Ok(None) => return,
-            Err(err) => {
-                warn!(%err, "action cancel loop stopped");
-                return;
-            }
-        };
-
-        let goal_id = match goal_id_from_request(context.message().payload_bytes().as_ref()) {
-            Ok(goal_id) => goal_id,
-            Err(_) => {
-                let _ = responder
-                    .respond_error("malformed cancel request payload".to_string())
-                    .await;
-                continue;
-            }
-        };
-
+    while let Some((goal_id, responder)) =
+        next_goal_request(&mut cancel_service, &stop, GoalRequestService::Cancel).await
+    {
         // Clone the token + terminal flag out under the lock, then fire + respond
         // without holding the registry lock across the network reply.
         let found = registry
@@ -1397,12 +1420,69 @@ async fn act_on_slot(slot: &GoalSlot, responder: ServiceResponder) -> ResultAct 
     }
 }
 
+/// Where [`route_result_poll`] sends a result poll.
+enum ResultPollRoute {
+    /// The goal has a slot: [`act_on_slot`] answers or parks the poll.
+    Slot(GoalSlot, ServiceResponder),
+    /// The goal was evicted: the poll gets `Expired` now.
+    Expired(ServiceResponder),
+    /// The poll waits in `PendingWaiters` until `accept` adopts it, or was
+    /// dropped because they are full.
+    ParkedOrDropped,
+}
+
+/// Routes a result poll for `goal_id` under the `std` locks. It is
+/// synchronous, so the caller can only await on the route after every `std`
+/// lock is released.
+fn route_result_poll(
+    goal_id: &str,
+    responder: ServiceResponder,
+    registry: &GoalRegistry,
+    pending_waiters: &PendingWaiters,
+    tombstones: &Tombstones,
+) -> ResultPollRoute {
+    // Clone the slot out under the std lock (dropped at the `;`): the registry
+    // lock is released before `pending_waiters` is taken below.
+    let slot = registry.lock().unwrap().get(goal_id).cloned();
+    if let Some(slot) = slot {
+        return ResultPollRoute::Slot(slot, responder);
+    }
+
+    // No slot: the poll beat `accept`, is for an evicted goal (tombstone), or
+    // for a never-existed goal_id. Decide while holding `pending_waiters`,
+    // re-reading the registry under it so a concurrent `accept` that just
+    // inserted the slot (and whose adoption pass therefore missed this poll)
+    // cannot orphan it.
+    let mut pending = pending_waiters.lock().unwrap();
+    let slot_now = registry.lock().unwrap().get(goal_id).cloned();
+    if let Some(slot) = slot_now {
+        return ResultPollRoute::Slot(slot, responder);
+    }
+    if tombstones.lock().unwrap().contains(goal_id) {
+        return ResultPollRoute::Expired(responder);
+    }
+    let total: usize = pending.values().map(Vec::len).sum();
+    if total >= PENDING_WAITERS_CAP {
+        // Overflow: drop the responder; the client falls back to its own
+        // timeout.
+        return ResultPollRoute::ParkedOrDropped;
+    }
+    pending
+        .entry(goal_id.to_string())
+        .or_default()
+        .push(PendingWaiter {
+            responder,
+            deadline: Instant::now() + PENDING_WAITER_MAX_PARK,
+        });
+    ResultPollRoute::ParkedOrDropped
+}
+
 /// Background loop: routes each incoming result request to the matching goal.
 /// A `Pending` goal parks the responder until it reaches a terminal state; a
 /// `Terminal` goal replies inline with its typed outcome; a poll that arrived
 /// before `accept` parks in `PendingWaiters` to be adopted at registration; a
 /// poll for an evicted goal replies `Expired`. There is no "no active goal"
-/// reply — a poll always parks for a definitive answer or resolves to a typed
+/// reply: a poll always parks for a definitive answer or resolves to a typed
 /// terminal outcome.
 async fn run_result_loop(
     mut result_service: ServiceEndpoint,
@@ -1411,68 +1491,22 @@ async fn run_result_loop(
     tombstones: Tombstones,
     stop: CancellationToken,
 ) {
-    loop {
-        let next = tokio::select! {
-            _ = stop.cancelled() => return,
-            next = result_service.recv_next_request() => next,
-        };
-        let (context, responder) = match next {
-            Ok(Some(pair)) => pair,
-            Ok(None) => return,
-            Err(err) => {
-                warn!(%err, "action result loop stopped");
-                return;
+    while let Some((goal_id, responder)) =
+        next_goal_request(&mut result_service, &stop, GoalRequestService::Result).await
+    {
+        let route = route_result_poll(
+            &goal_id,
+            responder,
+            &registry,
+            &pending_waiters,
+            &tombstones,
+        );
+        let act = match route {
+            ResultPollRoute::Slot(slot, responder) => act_on_slot(&slot, responder).await,
+            ResultPollRoute::Expired(responder) => {
+                Some((responder, wrap_result_outcome(ResultStatus::Expired, &[])))
             }
-        };
-
-        let goal_id = match goal_id_from_request(context.message().payload_bytes().as_ref()) {
-            Ok(goal_id) => goal_id,
-            Err(_) => {
-                let _ = responder
-                    .respond_error("malformed result request payload".to_string())
-                    .await;
-                continue;
-            }
-        };
-
-        // Clone the slot out under the std lock (dropped at the `;`); never hold
-        // the registry lock across `.await`.
-        let slot = registry.lock().unwrap().get(&goal_id).cloned();
-
-        let act = match slot {
-            Some(slot) => act_on_slot(&slot, responder).await,
-            None => {
-                // No slot: the poll beat `accept`, is for an evicted goal
-                // (tombstone), or for a never-existed goal_id. Decide while
-                // holding `pending_waiters`, re-reading the registry under it so
-                // a concurrent `accept` that just inserted the slot (and whose
-                // adoption pass therefore missed this poll) cannot orphan it.
-                let pending = pending_waiters.lock().unwrap();
-                let slot_now = registry.lock().unwrap().get(&goal_id).cloned();
-                if let Some(slot) = slot_now {
-                    drop(pending);
-                    act_on_slot(&slot, responder).await
-                } else if tombstones.lock().unwrap().contains(&goal_id) {
-                    Some((responder, wrap_result_outcome(ResultStatus::Expired, &[])))
-                } else {
-                    let mut pending = pending;
-                    let total: usize = pending.values().map(Vec::len).sum();
-                    if total >= PENDING_WAITERS_CAP {
-                        // Overflow: drop the responder; the client falls back to
-                        // its own timeout.
-                        None
-                    } else {
-                        pending
-                            .entry(goal_id.clone())
-                            .or_default()
-                            .push(PendingWaiter {
-                                responder,
-                                deadline: Instant::now() + PENDING_WAITER_MAX_PARK,
-                            });
-                        None
-                    }
-                }
-            }
+            ResultPollRoute::ParkedOrDropped => None,
         };
 
         if let Some((responder, payload)) = act {
@@ -1762,7 +1796,7 @@ impl PendingGoal {
         // Adopt any result polls that parked before this slot existed. The
         // registry insert above is visible to a concurrent `run_result_loop`
         // before this drain, and that loop re-reads the registry under the
-        // `pending_waiters` lock — so an early poll either parked here (and we
+        // `pending_waiters` lock, so an early poll either parked here (and we
         // adopt it now) or sees the slot and parks in it directly. Never orphaned.
         let adopted = self.pending_waiters.lock().unwrap().remove(&self.goal_id);
         if let Some(adopted) = adopted
@@ -1897,7 +1931,7 @@ impl GoalContext {
     /// ([`crate::PeppyError::ActionFeedbackProducerGone`]); an armed drop
     /// would race a clean feedback-end sentinel against that latch (the
     /// consumer's feedback drain polls `biased`), making producer-loss
-    /// nondeterministic. Gated behind the `testing` feature on purpose — a
+    /// nondeterministic. Gated behind the `testing` feature on purpose: a
     /// production node calling this would silently break the `Abandoned`
     /// transition its consumers rely on.
     #[cfg(feature = "testing")]
@@ -1950,8 +1984,8 @@ impl Drop for GoalContext {
         // client draining feedback breaks out instead of hanging forever.
         // `transition_terminal` / `publish_end` are async, so run them on the
         // captured runtime handle (works even when `Drop` runs off-runtime, e.g.
-        // via Python's GC). The slot is NOT removed here — the sweeper owns
-        // eviction — so a poll that arrives between this spawn and its execution
+        // via Python's GC). The slot is NOT removed here (the sweeper owns
+        // eviction), so a poll that arrives between this spawn and its execution
         // still sees `Pending`, parks, and is woken by the transition.
         let slot = self.slot.clone();
         let grace = self.result_retention_grace;
@@ -1969,20 +2003,21 @@ impl Drop for GoalContext {
 mod envelope_tests {
     use super::*;
 
-    fn assert_envelope_error(result: Result<Payload>) {
+    /// Asserts that `result` is the `InternalEncodingError` of the envelope
+    /// `expected_identifier`, with a reason that contains
+    /// `expected_reason_fragment`.
+    fn assert_encoding_error<T>(
+        result: Result<T>,
+        expected_identifier: &str,
+        expected_reason_fragment: &str,
+    ) {
         match result {
-            Err(Error::InternalEncodingError { identifier, .. }) => {
-                assert_eq!(identifier, "action_goal_envelope");
-            }
-            Err(other) => panic!("expected InternalEncodingError, got {other:?}"),
-            Ok(_) => panic!("expected error, got Ok"),
-        }
-    }
-
-    fn assert_unwrap_error(result: Result<(&str, &[u8])>) {
-        match result {
-            Err(Error::InternalEncodingError { identifier, .. }) => {
-                assert_eq!(identifier, "action_goal_envelope");
+            Err(Error::InternalEncodingError { identifier, reason }) => {
+                assert_eq!(identifier, expected_identifier);
+                assert!(
+                    reason.contains(expected_reason_fragment),
+                    "reason {reason:?} should contain {expected_reason_fragment:?}"
+                );
             }
             Err(other) => panic!("expected InternalEncodingError, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),
@@ -2059,13 +2094,11 @@ mod envelope_tests {
     #[test]
     fn goal_ack_wrap_rejects_oversized_reason() {
         let oversized = "r".repeat(u16::MAX as usize + 1);
-        match wrap_goal_ack(false, Some(&oversized), b"") {
-            Err(Error::InternalEncodingError { identifier, reason }) => {
-                assert_eq!(identifier, "action_goal_ack_envelope");
-                assert!(reason.contains("exceeds wire limit"));
-            }
-            other => panic!("expected InternalEncodingError, got {other:?}"),
-        }
+        assert_encoding_error(
+            wrap_goal_ack(false, Some(&oversized), b""),
+            "action_goal_ack_envelope",
+            "exceeds wire limit",
+        );
     }
 
     #[test]
@@ -2079,16 +2112,11 @@ mod envelope_tests {
     }
 
     fn assert_goal_ack_unwrap_error(wire: &[u8], expected_reason_fragment: &str) {
-        match unwrap_goal_ack(wire) {
-            Err(Error::InternalEncodingError { identifier, reason }) => {
-                assert_eq!(identifier, "action_goal_ack_envelope");
-                assert!(
-                    reason.contains(expected_reason_fragment),
-                    "reason {reason:?} should contain {expected_reason_fragment:?}"
-                );
-            }
-            other => panic!("expected InternalEncodingError, got {other:?}"),
-        }
+        assert_encoding_error(
+            unwrap_goal_ack(wire),
+            "action_goal_ack_envelope",
+            expected_reason_fragment,
+        );
     }
 
     #[test]
@@ -2119,34 +2147,39 @@ mod envelope_tests {
 
     #[test]
     fn unwrap_result_outcome_rejects_empty_wire() {
-        match unwrap_result_outcome(&[]) {
-            Err(Error::InternalEncodingError { identifier, .. }) => {
-                assert_eq!(identifier, "action_result_outcome_envelope");
-            }
-            other => panic!("expected InternalEncodingError, got {other:?}"),
-        }
+        assert_encoding_error(
+            unwrap_result_outcome(&[]),
+            "action_result_outcome_envelope",
+            "wire payload is empty",
+        );
     }
 
     #[test]
     fn unwrap_result_outcome_rejects_unknown_tag() {
-        match unwrap_result_outcome(&[0xFF, 1, 2, 3]) {
-            Err(Error::InternalEncodingError { identifier, reason }) => {
-                assert_eq!(identifier, "action_result_outcome_envelope");
-                assert!(reason.contains("unknown result status tag"));
-            }
-            other => panic!("expected InternalEncodingError, got {other:?}"),
-        }
+        assert_encoding_error(
+            unwrap_result_outcome(&[0xFF, 1, 2, 3]),
+            "action_result_outcome_envelope",
+            "unknown result status tag",
+        );
     }
 
     #[test]
     fn wrap_rejects_empty_goal_id() {
-        assert_envelope_error(wrap_goal_payload("", b"payload"));
+        assert_encoding_error(
+            wrap_goal_payload("", b"payload"),
+            "action_goal_envelope",
+            "goal_id must be non-empty",
+        );
     }
 
     #[test]
     fn wrap_rejects_goal_id_over_255_bytes() {
         let oversized = "a".repeat(256);
-        assert_envelope_error(wrap_goal_payload(&oversized, b"payload"));
+        assert_encoding_error(
+            wrap_goal_payload(&oversized, b"payload"),
+            "action_goal_envelope",
+            "exceeds wire limit",
+        );
     }
 
     #[test]
@@ -2160,24 +2193,40 @@ mod envelope_tests {
 
     #[test]
     fn unwrap_rejects_empty_wire() {
-        assert_unwrap_error(unwrap_goal_payload(&[]));
+        assert_encoding_error(
+            unwrap_goal_payload(&[]),
+            "action_goal_envelope",
+            "wire payload is empty",
+        );
     }
 
     #[test]
     fn unwrap_rejects_zero_length_prefix() {
-        assert_unwrap_error(unwrap_goal_payload(&[0x00]));
+        assert_encoding_error(
+            unwrap_goal_payload(&[0x00]),
+            "action_goal_envelope",
+            "goal_id is empty",
+        );
     }
 
     #[test]
     fn unwrap_rejects_truncated_wire() {
         // Declares a 5-byte goal_id but only provides 1 byte after the length prefix.
-        assert_unwrap_error(unwrap_goal_payload(&[0x05, b'a']));
+        assert_encoding_error(
+            unwrap_goal_payload(&[0x05, b'a']),
+            "action_goal_envelope",
+            "too short for declared goal_id_len",
+        );
     }
 
     #[test]
     fn unwrap_rejects_non_utf8_goal_id() {
         // 0xFF / 0xFE form an invalid UTF-8 sequence.
-        assert_unwrap_error(unwrap_goal_payload(&[0x02, 0xFF, 0xFE, b'p']));
+        assert_encoding_error(
+            unwrap_goal_payload(&[0x02, 0xFF, 0xFE, b'p']),
+            "action_goal_envelope",
+            "not valid UTF-8",
+        );
     }
 
     fn empty_registry() -> GoalRegistry {
@@ -2272,5 +2321,159 @@ mod envelope_tests {
             "a slot whose state is locked must be skipped and retried next tick"
         );
         assert!(!tombstones.lock().unwrap().contains("busy"));
+    }
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+    use futures::poll;
+    use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+
+    const CORE: &str = "engine_core";
+    const PRODUCER: &str = "engine_producer";
+    const ACTION: &str = "engine_action";
+
+    fn target() -> SenderTarget {
+        SenderTarget::node("engine_node", "v1").unwrap()
+    }
+
+    /// A [`ConcurrentAction`] on a mock session, with a caller-side sender
+    /// pinned to it.
+    async fn expose_mock_action() -> (MessengerHandle, ConcurrentAction, ActionWireSender) {
+        let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
+        messenger.start_session().await.unwrap();
+        let handle = MessengerHandle::from_shared(Arc::new(TokioMutex::new(messenger)));
+        let action = ConcurrentAction::expose(&handle, CORE, PRODUCER, target(), ACTION, false)
+            .await
+            .unwrap();
+        let sender = ActionWireSender::new(
+            CORE,
+            "engine_caller",
+            Some(&ProducerRef::new(CORE, PRODUCER)),
+            target(),
+            ACTION,
+        )
+        .unwrap();
+        (handle, action, sender)
+    }
+
+    async fn send_malformed_request(
+        handle: &MessengerHandle,
+        service: &pmi::ServiceWireSender,
+    ) -> Error {
+        handle
+            .poll_service(service, Payload::new(), ServiceQueryKind::UserRequest, None)
+            .await
+            .unwrap_err()
+    }
+
+    /// A result poll that misses against a producer that is still alive stays
+    /// an error: the follow-up liveliness probe finds the producer's token, so
+    /// no Abandoned outcome is synthesized for a goal that is still running.
+    /// The mock delivers the ACK of the poll, so the miss is a timeout.
+    #[tokio::test(start_paused = true)]
+    async fn a_result_poll_that_misses_against_a_live_producer_stays_a_timeout() {
+        let (handle, mut action, sender) = expose_mock_action().await;
+        let goal_service = sender.goal_service();
+        let goal_id = "running_goal";
+        let (goal_reply, context) = tokio::join!(
+            handle.poll_service(
+                &goal_service,
+                wrap_goal_payload(goal_id, &[]).unwrap(),
+                ServiceQueryKind::UserRequest,
+                None,
+            ),
+            async {
+                let pending = action.recv_next_goal().await.unwrap().unwrap();
+                pending.accept(Payload::new()).await.unwrap()
+            },
+        );
+        goal_reply.unwrap();
+
+        // The goal never completes while `context` lives, so the poll parks
+        // until its budget runs out.
+        let result = ActionMessenger::request_result_with_sender(
+            &handle,
+            &sender,
+            goal_id,
+            Duration::from_millis(300),
+        )
+        .await;
+        match result {
+            Err(Error::ActionResultTimeout {
+                instance_id,
+                action_name,
+            }) => {
+                assert_eq!(instance_id.as_deref(), Some(PRODUCER));
+                assert_eq!(action_name, ACTION);
+            }
+            Err(other) => panic!("expected a result timeout, got {other:?}"),
+            Ok(reply) => panic!(
+                "a live producer must not resolve to a reply, got {:?}",
+                reply.status
+            ),
+        }
+        drop(context);
+    }
+
+    #[tokio::test]
+    async fn malformed_cancel_and_result_requests_get_an_error_and_the_loops_keep_serving() {
+        let (handle, _action, sender) = expose_mock_action().await;
+        for (service, expected_reason) in [
+            (sender.cancel_service(), "malformed cancel request payload"),
+            (sender.result_service(), "malformed result request payload"),
+        ] {
+            // The second request is answered only if the loop kept serving
+            // after it answered the first.
+            for _ in 0..2 {
+                match send_malformed_request(&handle, &service).await {
+                    Error::ServiceError { reason, .. } => assert_eq!(reason, expected_reason),
+                    other => panic!("expected the malformed-request error, got {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_result_poll_that_arrives_before_accept_resolves_with_the_goal() {
+        let (handle, mut action, sender) = expose_mock_action().await;
+        let result_service = sender.result_service();
+        let goal_service = sender.goal_service();
+        let goal_id = "early_goal";
+        let mut early_poll = Box::pin(handle.poll_service(
+            &result_service,
+            wrap_goal_payload(goal_id, &[]).unwrap(),
+            ServiceQueryKind::UserRequest,
+            None,
+        ));
+        assert!(poll!(early_poll.as_mut()).is_pending());
+        // The result loop routes requests in order, so the answer to a later
+        // request proves that it has routed the early poll.
+        send_malformed_request(&handle, &result_service).await;
+        assert!(action.pending_waiters.lock().unwrap().contains_key(goal_id));
+
+        let mut goal_call = Box::pin(handle.poll_service(
+            &goal_service,
+            wrap_goal_payload(goal_id, &[]).unwrap(),
+            ServiceQueryKind::UserRequest,
+            None,
+        ));
+        assert!(poll!(goal_call.as_mut()).is_pending());
+        let pending = action.recv_next_goal().await.unwrap().unwrap();
+        assert_eq!(pending.goal_id(), goal_id);
+        let context = pending.accept(Payload::new()).await.unwrap();
+        assert!(!action.pending_waiters.lock().unwrap().contains_key(goal_id));
+        goal_call.await.unwrap();
+        context
+            .complete(Payload::from_static(b"early result"))
+            .await
+            .unwrap();
+
+        let reply = early_poll.await.unwrap();
+        let reply_bytes = reply.payload_bytes();
+        let (status, body) = unwrap_result_outcome(reply_bytes.as_ref()).unwrap();
+        assert_eq!(status, ResultStatus::Completed);
+        assert_eq!(body, b"early result");
     }
 }

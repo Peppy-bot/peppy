@@ -1,5 +1,32 @@
 pub mod transport;
 
+use std::time::Duration;
+
+/// How long a wrapper waits for its core node's reply when the caller gives
+/// no timeout.
+const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Polls a core-node service on `node_runner`'s bound core node, as that
+/// node: the routing every high-level wrapper (`info`, `clock`, `datastore`,
+/// `stack`) shares. `None` waits [`DEFAULT_RESPONSE_TIMEOUT`].
+pub(crate) async fn poll_bound_core_node<R: core_node_api::ServiceRequest>(
+    node_runner: &crate::runtime::NodeRunner,
+    request: &R,
+    response_timeout: Option<Duration>,
+) -> crate::error::Result<R::Response> {
+    let processor = node_runner.processor();
+    let core_node = processor.bound_core_node();
+    transport::poll(
+        request,
+        node_runner.messenger(),
+        core_node,
+        processor.bound_instance_id(),
+        core_node,
+        response_timeout.unwrap_or(DEFAULT_RESPONSE_TIMEOUT),
+    )
+    .await
+}
+
 /// Subscribes to a periodic core-node-published topic (e.g. `clock`,
 /// `daemon_heartbeat`) on `node_runner`'s bound core node, keyed the same way
 /// the daemon publishes it: the target's name segment says which daemon's

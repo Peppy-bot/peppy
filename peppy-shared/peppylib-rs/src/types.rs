@@ -81,17 +81,6 @@ pub(crate) enum TryRecvError {
     Disconnected,
 }
 
-impl std::fmt::Display for TryRecvError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TryRecvError::Empty => write!(f, "channel is empty"),
-            TryRecvError::Disconnected => write!(f, "channel is disconnected"),
-        }
-    }
-}
-
-impl std::error::Error for TryRecvError {}
-
 impl From<flume::TryRecvError> for TryRecvError {
     fn from(err: flume::TryRecvError) -> Self {
         match err {

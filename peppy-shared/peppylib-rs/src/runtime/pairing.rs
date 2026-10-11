@@ -60,17 +60,12 @@ impl PeerSlot {
     /// Panics if the slot holds more than one pair, which a scalar slot
     /// cannot: reading a multi slot through this accessor is stale codegen.
     pub fn paired_member(&self) -> Option<PeerMember> {
-        let state = self.watch_rx.borrow();
-        match state.members.as_slice() {
-            [] => None,
-            [sole] => Some(sole.clone()),
-            _ => pairing_shape_panic(&self.link_id, "paired()", self.cardinality.as_str()),
-        }
+        self.sole_member("paired_member()")
     }
 
     /// The currently paired peer, or `None` while the slot is unpaired.
     pub fn paired(&self) -> Option<PeerInfo> {
-        self.paired_member().map(|member| member.info)
+        self.sole_member("paired()").map(|member| member.info)
     }
 
     /// Waits until the slot is paired and returns the peer. Returns
@@ -78,13 +73,25 @@ impl PeerSlot {
     /// down while waiting (the slot channel closed).
     pub async fn wait_paired(&mut self) -> Result<PeerInfo> {
         loop {
-            if let Some(peer) = self.paired() {
-                return Ok(peer);
+            if let Some(member) = self.sole_member("wait_paired()") {
+                return Ok(member.info);
             }
             self.watch_rx
                 .changed()
                 .await
                 .map_err(|_| Error::PairingSlotClosed)?;
+        }
+    }
+
+    /// The one pair the slot holds, or `None` while unpaired. A slot holding
+    /// several pairs panics with the name of the `accessor` the caller used,
+    /// so the message points at the call that read the slot.
+    fn sole_member(&self, accessor: &str) -> Option<PeerMember> {
+        let state = self.watch_rx.borrow();
+        match state.members.as_slice() {
+            [] => None,
+            [sole] => Some(sole.clone()),
+            _ => pairing_shape_panic(&self.link_id, accessor, self.cardinality.as_str()),
         }
     }
 }
@@ -215,11 +222,7 @@ pub async fn subscribe_peer(
     qos: QoSProfile,
 ) -> Result<PeerSubscription> {
     let processor = node_runner.processor();
-    let watch_rx = processor
-        .peer_set_watch(link_id)
-        .ok_or_else(|| Error::UnknownPairingSlot {
-            link_id: link_id.to_string(),
-        })?;
+    let watch_rx = node_runner.peer_set_watch(link_id)?;
     let target = SenderTarget::pairing(pairing_name, pairing_tag)?;
     subscribe_peer_with_watch(
         node_runner.messenger().clone(),
@@ -310,9 +313,15 @@ impl PeerPublisher {
     /// peer new to the set gets one.
     async fn publisher_for(&self, peer: &PeerInfo) -> Result<TopicPublisher> {
         let mut declared = self.declared.lock().await;
-        let peers: Vec<PeerInfo> = self.watch_rx.borrow().peers().cloned().collect();
-        declared.retain(|(known, _)| peers.contains(known));
-        if !peers.contains(peer) {
+        // Both checks read one snapshot of the slot through the watch guard,
+        // which ends with this block: it must not live across the declare
+        // below, because the guard is not Send and holds the watch read lock.
+        let is_paired = {
+            let state = self.watch_rx.borrow();
+            declared.retain(|(known, _)| state.peers().any(|held| held == known));
+            state.peers().any(|held| held == peer)
+        };
+        if !is_paired {
             return Err(Error::PeerNotPaired {
                 link_id: self.link_id.clone(),
                 peer: format!(
@@ -382,11 +391,7 @@ pub fn declare_peer_publisher(
     qos: QoSProfile,
 ) -> Result<PeerPublisher> {
     let processor = node_runner.processor();
-    let watch_rx = processor
-        .peer_set_watch(link_id)
-        .ok_or_else(|| Error::UnknownPairingSlot {
-            link_id: link_id.to_string(),
-        })?;
+    let watch_rx = node_runner.peer_set_watch(link_id)?;
     let target = SenderTarget::pairing(pairing_name, pairing_tag)?;
     Ok(declare_peer_publisher_with_watch(
         node_runner.messenger().clone(),
@@ -430,7 +435,7 @@ pub fn declare_peer_publisher_with_watch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use futures::FutureExt;
 
     fn member(instance: &str) -> PeerMember {
         PeerMember {
@@ -467,6 +472,22 @@ mod tests {
     }
 
     #[tokio::test]
+    #[should_panic(expected = "which `paired_member()` cannot read")]
+    async fn paired_member_on_a_slot_holding_several_pairs_names_itself() {
+        let (_tx, rx) = watch::channel(state(1, vec![member("arm_1"), member("arm_2")]));
+        let slot = PeerSlot::new("arms", Cardinality::ZeroOrMore, rx);
+        let _ = slot.paired_member();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "which `wait_paired()` cannot read")]
+    async fn wait_paired_on_a_slot_holding_several_pairs_names_itself() {
+        let (_tx, rx) = watch::channel(state(1, vec![member("arm_1"), member("arm_2")]));
+        let mut slot = PeerSlot::new("arms", Cardinality::ZeroOrMore, rx);
+        let _ = slot.wait_paired().await;
+    }
+
+    #[tokio::test]
     async fn a_set_lists_its_pairs_in_order() {
         let (tx, rx) = watch::channel(PeerSetState::empty());
         let set = PeerSlotSet::new(rx);
@@ -499,8 +520,9 @@ mod tests {
     async fn wait_paired_returns_immediately_when_already_paired() {
         let (_tx, rx) = watch::channel(state(1, vec![member("arm_1")]));
         let mut slot = PeerSlot::new("arm", Cardinality::One, rx);
-        let peer = tokio::time::timeout(Duration::from_millis(100), slot.wait_paired())
-            .await
+        let peer = slot
+            .wait_paired()
+            .now_or_never()
             .expect("no wait needed")
             .expect("paired");
         assert_eq!(peer, member("arm_1").info);
@@ -533,7 +555,6 @@ mod tests {
     /// converge task agree on the followed set.
     #[test]
     fn is_followed_agrees_with_desired() {
-        use crate::runtime::slot_stream::FollowedSlot;
         let state = PeerSetState::seeded(vec![member("arm_1"), member("arm_2")]);
         let desired = PeerFollow::desired(&state);
         assert_eq!(desired.len(), 2);

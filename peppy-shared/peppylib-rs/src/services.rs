@@ -23,8 +23,7 @@ pub(crate) async fn listen_for_echo_service(
     core_node: &str,
     instance_id: &str,
     as_identity: SenderTarget,
-    service_name: &str,
-    log_label: &'static str,
+    service_name: &'static str,
 ) -> PeppyResult<TaskHandle<PeppyResult<()>>> {
     let mut endpoint =
         ServiceMessenger::listen(messenger, core_node, instance_id, as_identity, service_name)
@@ -32,7 +31,7 @@ pub(crate) async fn listen_for_echo_service(
 
     let handle = crate::runtime::spawn(async move {
         endpoint
-            .handle_requests(|context| handle_echo_request(context, log_label))
+            .handle_requests(|context| handle_echo_request(context, service_name))
             .await
     });
     Ok(handle)
@@ -40,13 +39,12 @@ pub(crate) async fn listen_for_echo_service(
 
 async fn handle_echo_request(
     context: ServiceRequestContext,
-    log_label: &str,
+    service_name: &str,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
-    debug!("Received `{log_label}` request from {sender_instance_id}");
+    debug!("Received `{service_name}` request from {sender_instance_id}");
 
     // Echo service validates connectivity, not message structure.
-    // Health and ready services share this handler for simplicity.
     let payload = context.message().payload();
     Ok(payload)
 }

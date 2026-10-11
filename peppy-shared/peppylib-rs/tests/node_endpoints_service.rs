@@ -1,17 +1,15 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, TEST_CORE_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
-    test_node_target,
+    TEST_CORE_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server, test_node_target,
 };
 use peppylib::{
     encoding::endpoints::{NodeEndpointsRequest, NodeEndpointsResponse},
-    messaging::{MessengerHandle, ProducerRef, ServiceMessenger, ServiceTarget},
+    messaging::{MessengerHandle, NODE_ENDPOINTS_SERVICE, ServiceTarget},
     runtime::{AnnouncedEndpoint, EndpointBinding},
     services::endpoints::listen_for_node_endpoints,
 };
 use std::sync::Arc;
-use std::time::Duration;
 
 fn announced(label: &str, scheme: &str, address: &str, path: &str) -> AnnouncedEndpoint {
     AnnouncedEndpoint {
@@ -45,27 +43,17 @@ async fn node_endpoints_request_response_roundtrip() {
     .await
     .expect("failed to start endpoints service");
 
-    // Allow the service to fully establish its listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     let request_payload = NodeEndpointsRequest::new()
         .encode()
         .expect("failed to encode endpoints request");
-    let response = ServiceMessenger::poll(
-        &client.caller_handle,
-        &client.core_node_name,
-        CALLER_INSTANCE_ID,
-        test_node_target(TEST_NODE_NAME),
-        peppylib::messaging::NODE_ENDPOINTS_SERVICE,
-        ServiceTarget::Producer(&ProducerRef::new(
-            client.core_node_name.as_str(),
-            client.instance_id.as_str(),
-        )),
-        request_payload,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("caller should receive response");
+    let response = client
+        .poll_test_node(
+            NODE_ENDPOINTS_SERVICE,
+            ServiceTarget::Producer(&client.producer()),
+            request_payload,
+        )
+        .await
+        .expect("caller should receive response");
 
     let decoded = NodeEndpointsResponse::decode(&response.payload())
         .expect("should decode endpoints response");

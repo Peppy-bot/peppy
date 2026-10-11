@@ -7,28 +7,21 @@ use config::runtime::{
 use core_node_api::encoding::{ClockResponse, ClockTick};
 use core_node_api::{ServiceId, TopicId, names};
 use peppylib::clock;
-use peppylib::messaging::{MessengerHandle, SenderTarget, ServiceMessenger, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, SenderTarget, TopicMessenger};
 use peppylib::testing::EphemeralRouter;
 use tempfile::TempDir;
 
 use super::common::{
-    CORE_NODE, SERVER_INSTANCE, publish_once, start_router_and_runner, test_node_target,
-    wait_for_topic_subscriber, wait_until_reachable,
+    CORE_NODE, SERVER_INSTANCE, listen_as_core_node, publish_once, start_router_and_runner,
+    start_router_and_runner_with_clock, test_node_target, wait_for_topic_subscriber,
+    wait_until_reachable,
 };
 
 /// Spins up a single-shot `clock` service listener that returns `response`
 /// verbatim. The handler decodes the inbound `ClockRequest` to assert wire
 /// shape, even though it ignores the value.
 async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockResponse) {
-    let mut endpoint = ServiceMessenger::listen(
-        &server,
-        CORE_NODE,
-        SERVER_INSTANCE,
-        test_node_target(CORE_NODE),
-        ServiceId::Clock.name(),
-    )
-    .await
-    .expect("listen should succeed");
+    let mut endpoint = listen_as_core_node(&server, ServiceId::Clock).await;
 
     tokio::spawn(async move {
         endpoint
@@ -77,7 +70,7 @@ async fn synchronize_returns_typed_clock_sync() {
 async fn subscribe_clock_yields_typed_ticks() {
     let (_router, _temp_dir, node_runner, server) = start_router_and_runner().await;
 
-    // Subscribe via the high-level helper *before* publishing — otherwise the
+    // Subscribe via the high-level helper *before* publishing. Otherwise the
     // first tick can land before zenoh discovery routes the subscription, and
     // the test races against propagation. With the subscription up first, any
     // tick published after the await point is delivered.
@@ -133,33 +126,6 @@ fn domain(incarnation: u64) -> ClockDomainId {
 
 fn source_ref() -> ProducerRef {
     ProducerRef::new(CORE_NODE, SOURCE_INSTANCE)
-}
-
-/// A standalone runner bound to `clock`, the daemon-less spelling of the
-/// binding a launch or a `peppy node run` would have stamped on it.
-async fn start_runner_with_clock(
-    clock: ClockBinding,
-) -> (
-    EphemeralRouter,
-    TempDir,
-    peppylib::runtime::NodeRunner,
-    MessengerHandle,
-) {
-    let router = EphemeralRouter::start().await.expect("start zenoh router");
-    let observer = router.connect().await.expect("observer handle");
-    let temp_dir = TempDir::new().expect("temp dir should be created");
-    let peppy_config_path = super::common::write_standalone_peppy_config(&temp_dir);
-    let standalone_config = peppylib::runtime::StandaloneConfig::new()
-        .with_messaging(router.host(), router.port())
-        .with_instance_id(super::common::CLIENT_INSTANCE)
-        .with_clock(clock);
-    let processor =
-        peppylib::runtime::Processor::new_standalone(&peppy_config_path, &standalone_config)
-            .expect("standalone processor");
-    let node_runner = peppylib::runtime::NodeRunner::new(processor)
-        .await
-        .expect("node runner");
-    (router, temp_dir, node_runner, observer)
 }
 
 /// Publishes one tick on `domain`'s stream as the instance that supplies it,
@@ -221,7 +187,7 @@ async fn wait_for_now_ns(clock: &clock::PeppyClock) -> Option<u64> {
 async fn a_consumer_reads_the_ticks_of_its_domain() {
     const SIM_NS: u64 = 42_000_000_000;
     let (_router, _dir, runner, observer) =
-        start_runner_with_clock(ClockBinding::consumer(domain(1), source_ref())).await;
+        start_router_and_runner_with_clock(ClockBinding::consumer(domain(1), source_ref())).await;
 
     let clock = clock::for_node(&runner).await.expect("build the clock");
     assert!(
@@ -248,7 +214,7 @@ async fn a_consumer_reads_the_ticks_of_its_domain() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_consumer_of_an_earlier_lifetime_reads_nothing_from_the_replacement() {
     let (_router, _dir, runner, observer) =
-        start_runner_with_clock(ClockBinding::consumer(domain(1), source_ref())).await;
+        start_router_and_runner_with_clock(ClockBinding::consumer(domain(1), source_ref())).await;
 
     let clock = clock::for_node(&runner).await.expect("build the clock");
 
@@ -269,7 +235,7 @@ async fn a_consumer_of_an_earlier_lifetime_reads_nothing_from_the_replacement() 
 async fn a_publisher_reads_its_committed_time_and_its_domain_carries_it() {
     const SIM_NS: u64 = 7_000_000_000;
     let (_router, _dir, runner, _observer) =
-        start_runner_with_clock(ClockBinding::publisher(domain(1))).await;
+        start_router_and_runner_with_clock(ClockBinding::publisher(domain(1))).await;
 
     let publisher = clock::ClockPublisher::for_node(&runner)
         .await
@@ -324,7 +290,7 @@ async fn an_instance_named_no_domain_cannot_publish() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_consumer_cannot_publish_its_domain() {
     let (_router, _dir, runner, _observer) =
-        start_runner_with_clock(ClockBinding::consumer(domain(1), source_ref())).await;
+        start_router_and_runner_with_clock(ClockBinding::consumer(domain(1), source_ref())).await;
 
     let publisher = clock::ClockPublisher::for_node(&runner)
         .await
@@ -343,7 +309,8 @@ async fn a_consumer_cannot_publish_its_domain() {
 async fn a_wall_subscription_reads_only_its_daemons_ticks() {
     const WALL_NS: u64 = 1_700_000_000_123_456_789;
     const DOMAIN_NS: u64 = 42_000_000_000;
-    let (_router, _dir, runner, observer) = start_runner_with_clock(ClockBinding::Wall).await;
+    let (_router, _dir, runner, observer) =
+        start_router_and_runner_with_clock(ClockBinding::Wall).await;
 
     let mut ticks = clock::subscribe(&runner).await.expect("subscribe");
 

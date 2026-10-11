@@ -15,7 +15,7 @@
 //! supplies only that follow rule; the convergence, the fair merge across
 //! members, and the stale filter live in the engine.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::messaging::{
     MessengerHandle, NonEmptyObservedSources, ObservationState, ObservedSource, ProducerRef,
     SenderTarget, Subscription, TopicMessenger,
@@ -82,8 +82,7 @@ impl ObservationSlot {
 
     /// The observed source of a `zero_or_one` slot, or `None` where the
     /// deployment wrote it vacant. Purely local configuration state; there is no
-    /// health-derived helper, because a third node's health is not knowable here
-    /// (see the design's "Generated observer API").
+    /// health-derived helper, because a third node's health is not knowable here.
     ///
     /// Generated `source()` module functions of `zero_or_one` slots call this; a
     /// `one` slot reads [`Self::sole_source`] instead, which has no empty case.
@@ -305,12 +304,7 @@ pub async fn subscribe_observed(
     qos: QoSProfile,
 ) -> Result<ObservedTopicSubscription> {
     let processor = node_runner.processor();
-    let watch_rx =
-        processor
-            .observation_slot_watch(link_id)
-            .ok_or_else(|| Error::UnknownObservationSlot {
-                link_id: link_id.to_string(),
-            })?;
+    let watch_rx = node_runner.observation_slot_watch(link_id)?;
     let target = SenderTarget::pairing(pairing_name, pairing_tag)?;
     subscribe_observed_with_watch(
         node_runner.messenger().clone(),
@@ -551,7 +545,6 @@ mod tests {
     /// read-time filter and its converge task agree on the followed set.
     #[test]
     fn is_followed_agrees_with_desired() {
-        use crate::runtime::slot_stream::FollowedSlot;
         let state = ObservationState::seeded(vec![member("arm_1", 1), member("arm_2", 1)]);
         let desired = ObservedFollow::desired(&state);
         assert_eq!(desired.len(), 2);

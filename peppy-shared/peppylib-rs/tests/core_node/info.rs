@@ -3,26 +3,16 @@ use std::time::Duration;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{ContainerInfo, InfoRequest, InfoResponse};
 use peppylib::info;
-use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::messaging::MessengerHandle;
 use peppylib::runtime::NodeRunner;
 use peppylib::testing::EphemeralRouter;
 use tempfile::TempDir;
 
-use super::common::{
-    CORE_NODE, SERVER_INSTANCE, start_router_and_runner, test_node_target, wait_until_reachable,
-};
+use super::common::{listen_as_core_node, start_router_and_runner, wait_until_reachable};
 
 /// Spins up a single-shot `INFO` listener that returns `response` verbatim.
 async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
-    let mut endpoint = ServiceMessenger::listen(
-        &server,
-        CORE_NODE,
-        SERVER_INSTANCE,
-        test_node_target(CORE_NODE),
-        ServiceId::Info.name(),
-    )
-    .await
-    .expect("listen should succeed");
+    let mut endpoint = listen_as_core_node(&server, ServiceId::Info).await;
 
     tokio::spawn(async move {
         endpoint
@@ -38,8 +28,8 @@ async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
 
 /// Spawns the stub listener for `response` on a shared router/runner, and
 /// waits for reachability. The router and temp dir are returned so callers
-/// hold them for the duration of the test — dropping them tears down the
-/// messaging fabric / config file.
+/// hold them for the duration of the test: dropping them tears down the
+/// messaging fabric and the config file.
 async fn setup_stub(response: InfoResponse) -> (EphemeralRouter, TempDir, NodeRunner) {
     let (router, temp_dir, node_runner, server) = start_router_and_runner().await;
     spawn_stub_listener(server, response).await;

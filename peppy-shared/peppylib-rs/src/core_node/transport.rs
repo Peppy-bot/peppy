@@ -6,12 +6,12 @@
 //! pairing a request/goal codec with its response type and wire id. The
 //! generic [`poll`] and [`send_goal`] here are bounded on those impls, so a
 //! method added to the registry is callable through this module with no
-//! per-method wrapper — and a wrong request/response pairing is
+//! per-method wrapper, and a wrong request/response pairing is
 //! unrepresentable rather than merely tested for.
 //!
 //! The exclusions are declared in the registry itself and get no impl:
 //! `SpawnedNode`-hosted services (their queryable doesn't live under the
-//! daemon's service root) and `routing: bespoke` entries — of those,
+//! daemon's service root) and `routing: bespoke` entries. Of those,
 //! `node_stop` keeps the hand-written [`poll_node_stop`] below.
 
 use std::time::Duration;
@@ -34,7 +34,7 @@ pub const DAEMON_GOAL_FEEDBACK: FeedbackBuffer = FeedbackBuffer::KeepAll;
 
 /// Routing parameters for a single service poll. Bundled into a struct so
 /// [`poll_core_node_service`] doesn't need a `clippy::too_many_arguments`
-/// escape hatch — the helper otherwise reaches 9 positional args.
+/// escape hatch: the helper otherwise reaches 9 positional args.
 ///
 /// Control-plane calls always discover (no producer pin at the messenger):
 /// the daemon's services listen under a random per-boot instance_id no
@@ -60,19 +60,6 @@ struct ServiceRoute<'a> {
     target: ServiceTarget<'a>,
 }
 
-/// Routing parameters for a single goal send. Same rationale as
-/// [`ServiceRoute`].
-struct GoalRoute<'a> {
-    messenger: &'a MessengerHandle,
-    as_core_node: &'a str,
-    as_instance_id: &'a str,
-    action_name: &'a str,
-    /// Core node whose daemon hosts the action; used only to build the
-    /// `SenderTarget` service root. `None` falls back to the caller's own
-    /// core_node.
-    to_core_node: Option<&'a str>,
-}
-
 async fn poll_core_node_service<Response>(
     route: ServiceRoute<'_>,
     request_payload: Payload,
@@ -91,27 +78,6 @@ async fn poll_core_node_service<Response>(
     )
     .await?;
     decode_response(response.payload_bytes().as_ref()).map_err(Into::into)
-}
-
-async fn send_core_node_goal(
-    route: GoalRoute<'_>,
-    goal_payload: Payload,
-    goal_timeout: Duration,
-) -> Result<ActionGoalHandle> {
-    let to_core = route.to_core_node.unwrap_or(route.as_core_node);
-    ActionMessenger::send_goal(
-        route.messenger,
-        route.as_core_node,
-        route.as_instance_id,
-        SenderTarget::node(to_core, names::CORE_NODE_TAG)?,
-        route.action_name,
-        None,
-        goal_payload,
-        QoSProfile::default(),
-        DAEMON_GOAL_FEEDBACK,
-        goal_timeout,
-    )
-    .await
 }
 
 /// Polls a daemon-hosted core-node service. The request codec's
@@ -145,6 +111,10 @@ pub async fn poll<R: ServiceRequest>(
 /// Sends a goal to a daemon-hosted core-node action. The goal codec's
 /// [`ActionGoal`] impl (emitted by the registry) supplies the wire name:
 /// `send_goal(&LaunchGoal { … }, …)` starts a `stack_launch`.
+///
+/// `to_core_node` is the core node whose daemon hosts the action, used only
+/// to build the `SenderTarget` service root; `None` targets the caller's own
+/// core node, `as_core_node`.
 pub async fn send_goal<G: ActionGoal>(
     goal: &G,
     messenger: &MessengerHandle,
@@ -153,15 +123,18 @@ pub async fn send_goal<G: ActionGoal>(
     to_core_node: Option<&str>,
     goal_timeout: Duration,
 ) -> Result<ActionGoalHandle> {
-    send_core_node_goal(
-        GoalRoute {
-            messenger,
-            as_core_node,
-            as_instance_id,
-            action_name: G::ID.name(),
-            to_core_node,
-        },
-        goal.encode_goal()?,
+    let goal_payload = goal.encode_goal()?;
+    let to_core_node = to_core_node.unwrap_or(as_core_node);
+    ActionMessenger::send_goal(
+        messenger,
+        as_core_node,
+        as_instance_id,
+        SenderTarget::node(to_core_node, names::CORE_NODE_TAG)?,
+        G::ID.name(),
+        None,
+        goal_payload,
+        QoSProfile::default(),
+        DAEMON_GOAL_FEEDBACK,
         goal_timeout,
     )
     .await
@@ -176,8 +149,8 @@ pub async fn send_goal<G: ActionGoal>(
 /// service root alone cannot pin the route: on a multi-daemon network a
 /// wildcard discovery could be won by a same-named listener on a foreign
 /// core node, which would answer "unknown instance" while the right reply
-/// is dropped. The discovery is therefore scoped to `scope_core_node` —
-/// the core node hosting the instance to stop — which pins the route for
+/// is dropped. The discovery is therefore scoped to `scope_core_node`
+/// (the core node hosting the instance to stop), which pins the route for
 /// both daemon-hosted and per-instance listeners.
 ///
 /// The two core-node parameters play distinct roles: `bound_core_node` is
@@ -210,12 +183,6 @@ pub async fn poll_node_stop(
     .await
 }
 
-// The goal-result fetch that used to live here is
-// `ActionMessenger::request_result_body` (`messaging/actions.rs`): it touches
-// no capnp type, so it belongs beside `request_result` and `ResultStatus`
-// rather than in this capnp-to-messenger shim, and every peppylib user reaches
-// it without importing the core-node transport.
-//
 // The feedback DRAIN deliberately stays with each caller: a CLI bounds it by
 // the user's `--idle-timeout`, while a coordinator relaying a peer's output
 // into a launch stream bounds it by that launch's own budget. Those policies

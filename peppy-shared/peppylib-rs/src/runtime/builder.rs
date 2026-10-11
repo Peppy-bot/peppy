@@ -63,8 +63,8 @@ pub enum PinnedInstance {
 /// Configuration for standalone execution.
 ///
 /// All fields are optional with sensible defaults:
-/// - `messaging_host`: DEFAULT_ZENOH_HOST ("127.0.0.1")
-/// - `messaging_port`: DEFAULT_ZENOH_PORT (7448)
+/// - `messaging_host`: DEFAULT_MESSAGING_HOST ("127.0.0.1")
+/// - `messaging_port`: DEFAULT_MESSAGING_PORT (7448)
 /// - `instance_id`: "standalone"
 /// - `node_name`: from peppy.json5 manifest
 /// - `parameters`: empty (must be provided if node requires them)
@@ -76,9 +76,9 @@ pub struct StandaloneConfig {
     pub node_name: Option<String>,
     /// Instance ID (defaults to "standalone")
     pub instance_id: Option<String>,
-    /// Messaging host (defaults to DEFAULT_ZENOH_HOST)
+    /// Messaging host (defaults to DEFAULT_MESSAGING_HOST)
     pub messaging_host: Option<String>,
-    /// Messaging port (defaults to DEFAULT_ZENOH_PORT)
+    /// Messaging port (defaults to DEFAULT_MESSAGING_PORT)
     pub messaging_port: Option<u16>,
     /// Daemon-less stand-in for a launcher's `framework.clock`: the one clock
     /// this node reads, and its role in that clock's domain. Lands verbatim in
@@ -431,7 +431,7 @@ where
 
     /// Initialize and return context for manual async execution.
     ///
-    /// Parses and validates parameters eagerly — any type mismatch or missing
+    /// Parses and validates parameters eagerly: any type mismatch or missing
     /// field is reported immediately rather than being deferred to
     /// [`NodeContext::parameters`].
     ///
@@ -450,7 +450,7 @@ where
     /// in-process against their own router and must not be redirected to a
     /// daemon by an environment variable inherited from the invoking shell.
     pub fn init_standalone(self) -> Result<NodeContext<Params>> {
-        if std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok() {
+        if is_launched_by_daemon() {
             tracing::warn!(
                 "{} is set but ignored: init_standalone always runs standalone \
                  (a test harness must not be hijacked into daemon mode by an \
@@ -508,12 +508,20 @@ where
         // Daemon mode takes precedence: the CLI sets PEPPY_RUNTIME_CONFIG when it
         // launches a node. This lets a node specify .standalone(config) as a
         // fallback while still running in daemon mode when launched by the CLI.
-        if std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok() {
+        if is_launched_by_daemon() {
             return ExecutionMode::Daemon;
         }
 
         ExecutionMode::Standalone(Box::new(self.standalone_config.clone().unwrap_or_default()))
     }
+}
+
+/// Whether the CLI launched this node. The CLI sets `PEPPY_RUNTIME_CONFIG`
+/// for every node it spawns, and any value counts: a value that is not UTF-8
+/// still selects daemon mode, where reading the launch-config path reports
+/// it, instead of the node silently running standalone.
+fn is_launched_by_daemon() -> bool {
+    std::env::var_os(config::consts::RUNTIME_CONFIG_VAR_NAME).is_some()
 }
 
 impl<Params> Default for NodeBuilder<Params>
@@ -528,7 +536,7 @@ where
 /// Initialized node context for manual async execution.
 ///
 /// Returned by `NodeBuilder::init()`. Parameters are parsed eagerly
-/// during construction — call [`take_parameters`](Self::take_parameters) to
+/// during construction. Call [`take_parameters`](Self::take_parameters) to
 /// take the already-validated, typed parameters.
 pub struct NodeContext<Params> {
     processor: Processor,
@@ -564,7 +572,7 @@ where
     /// Take the parsed parameters.
     ///
     /// Returns the parameters that were parsed and validated during
-    /// [`NodeBuilder::init`]. Can only be called once — subsequent calls
+    /// [`NodeBuilder::init`]. Can only be called once; subsequent calls
     /// return [`Error::ParametersAlreadyTaken`].
     pub fn take_parameters(&mut self) -> Result<Params> {
         self.params.take().ok_or(Error::ParametersAlreadyTaken)
@@ -683,15 +691,11 @@ where
             .await;
 
             // Every exit path converges here: graceful stop, signal, daemon
-            // loss, setup error, service failure. Cancel the token (idempotent)
-            // so user tasks observe shutdown, then await registered cleanup
-            // bounded by the daemon's grace window: the window the daemon waits
-            // before SIGKILL on stop paths, and the only bound at all on the
-            // daemon-death path, where nothing is left to force-kill us.
-            cancellation_token.cancel();
-            node_runner
-                .run_shutdown_hooks(node_runner.processor().shutdown_grace())
-                .await;
+            // loss, setup error, service failure. The grace window is the
+            // daemon's: the window the daemon waits before SIGKILL on stop
+            // paths, and the only bound at all on the daemon-death path, where
+            // nothing is left to force-kill us.
+            converge_on_shutdown(&node_runner, &cancellation_token).await;
             run_result
         })
     }
@@ -737,16 +741,22 @@ where
         }
         .await;
 
-        // Same convergence as daemon mode: cancel (idempotent), then await
-        // registered cleanup bounded by the grace window (built-in default in
-        // standalone mode, since there is no daemon to resolve it from).
+        // Same convergence as daemon mode, with the built-in default grace
+        // window, since there is no daemon to resolve it from.
         info!("Shutting down...");
-        cancellation_token.cancel();
-        node_runner
-            .run_shutdown_hooks(node_runner.processor().shutdown_grace())
-            .await;
+        converge_on_shutdown(&node_runner, &cancellation_token).await;
         run_result
     }
+}
+
+/// The shutdown step that ends every run, in daemon and in standalone mode.
+/// Cancels the token (idempotent) so user tasks observe shutdown, then awaits
+/// the registered cleanup bounded by the processor's shutdown grace.
+async fn converge_on_shutdown(node_runner: &NodeRunner, cancellation_token: &CancellationToken) {
+    cancellation_token.cancel();
+    node_runner
+        .run_shutdown_hooks(node_runner.processor().shutdown_grace())
+        .await;
 }
 
 /// Bridges process signals into the runtime's cancellation token so every stop
@@ -927,7 +937,7 @@ async fn run_post_setup_services(
     };
 
     // `node_health` stays in post-setup on purpose: many tests use
-    // `wait_for_health` as a "setup completed" signal — they spawn a
+    // `wait_for_health` as a "setup completed" signal: they spawn a
     // consumer, wait for its health endpoint, and only then send shutdown,
     // relying on health reachability to imply that the consumer's
     // `setup_fn` already produced its observable output (e.g. the printed

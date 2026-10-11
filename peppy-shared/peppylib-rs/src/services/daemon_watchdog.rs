@@ -12,7 +12,7 @@
 //! (SIGKILL / OOM / crash) where the daemon runs no cleanup. A daemon that
 //! returns within the grace period resumes heart-beating on the same
 //! machine-deterministic core-node key, each beat resets the window, and the
-//! node survives the restart — which is what lets peer-mode nodes ride out a
+//! node survives the restart, which is what lets peer-mode nodes ride out a
 //! brief daemon outage.
 
 use std::future::Future;
@@ -58,38 +58,36 @@ pub async fn spawn_daemon_watchdog(
 /// the window; a `grace`-long silence cancels the token (triggering the node's
 /// clean shutdown) and exits. Also exits promptly if some other path cancels
 /// the token (e.g. an explicit `SHUTDOWN_SERVICE`) so the task does not linger.
-/// Returns `Ok(())` in every case — the loop ending is not itself an error.
+/// Returns `Ok(())` in every case: the loop ending is not itself an error.
 async fn run_watchdog<S: BeatSource>(
     mut source: S,
     grace: Duration,
     cancellation_token: CancellationToken,
 ) -> Result<()> {
     loop {
-        tokio::select! {
+        let beat = tokio::select! {
             biased;
             // Another shutdown path already fired; stop watching.
-            _ = cancellation_token.cancelled() => break,
-            res = tokio::time::timeout(grace, source.next_beat()) => {
-                match res {
-                    // A beat arrived: the window resets on the next iteration.
-                    Ok(Some(())) => {}
-                    // Source closed (session gone); let other paths handle it.
-                    Ok(None) => break,
-                    // No beat for the whole grace period: presume the daemon is
-                    // gone for good and trigger a clean node shutdown.
-                    Err(_elapsed) => {
-                        tracing::warn!(
-                            "No daemon heartbeat for {grace:?}; shutting down node to avoid \
-                             orphaning after an uncatchable daemon death"
-                        );
-                        cancellation_token.cancel();
-                        break;
-                    }
-                }
+            _ = cancellation_token.cancelled() => return Ok(()),
+            beat = tokio::time::timeout(grace, source.next_beat()) => beat,
+        };
+        match beat {
+            // A beat arrived: the window resets on the next iteration.
+            Ok(Some(())) => {}
+            // Source closed (session gone); let other paths handle it.
+            Ok(None) => return Ok(()),
+            // No beat for the whole grace period: presume the daemon is
+            // gone for good and trigger a clean node shutdown.
+            Err(_elapsed) => {
+                tracing::warn!(
+                    "No daemon heartbeat for {grace:?}; shutting down node to avoid \
+                     orphaning after an uncatchable daemon death"
+                );
+                cancellation_token.cancel();
+                return Ok(());
             }
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -105,6 +103,14 @@ mod tests {
         }
     }
 
+    /// A source whose session is gone: `next_beat` reports it closed at once.
+    struct ClosedSource;
+    impl BeatSource for ClosedSource {
+        async fn next_beat(&mut self) -> Option<()> {
+            None
+        }
+    }
+
     /// A source that yields a beat every `every`.
     struct PeriodicBeats {
         every: Duration,
@@ -116,7 +122,7 @@ mod tests {
         }
     }
 
-    /// With no beats, the watchdog cancels the token — but not before the grace
+    /// With no beats, the watchdog cancels the token, but not before the grace
     /// period elapses (a beat-less node must wait the full window).
     #[tokio::test(start_paused = true)]
     async fn fires_after_grace_with_no_beats() {
@@ -181,5 +187,24 @@ mod tests {
 
         token.cancel();
         handle.await.expect("join").expect("watchdog ok");
+    }
+
+    /// A closed source ends the watchdog without cancelling the token: losing
+    /// the session is not proof that the daemon died, and the paths that own
+    /// the session handle its loss.
+    #[tokio::test(start_paused = true)]
+    async fn exits_without_firing_when_the_source_closes() {
+        let token = CancellationToken::new();
+        let handle = spawn(run_watchdog(
+            ClosedSource,
+            Duration::from_secs(3600),
+            token.clone(),
+        ));
+
+        handle.await.expect("join").expect("watchdog ok");
+        assert!(
+            !token.is_cancelled(),
+            "a closed source must not trigger a node shutdown"
+        );
     }
 }

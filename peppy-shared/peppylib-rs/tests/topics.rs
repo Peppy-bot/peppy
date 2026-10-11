@@ -79,7 +79,7 @@ async fn topic_messenger_communication() {
 /// Proves a NODE session keeps receiving after the router process is killed and
 /// respawned on the same port. The subscriber is created via the node-path
 /// `connect(..).reconnecting()`, so this exercises the actual reconnecting
-/// config that `NodeRunner` gives every node — confirming a watchdog
+/// config that `NodeRunner` gives every node, confirming that a watchdog
 /// router-respawn doesn't knock running nodes off the bus.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn node_session_recovers_after_router_restart() {
@@ -143,7 +143,7 @@ async fn node_session_recovers_after_router_restart() {
         assert_eq!(msg.payload(), &Payload::from_static(b"before-restart"));
     }
 
-    // Kill + respawn zenohd on the same port — exactly what the watchdog does.
+    // Kill and respawn zenohd on the same port, exactly as the watchdog does.
     instance
         .messenger()
         .stop_router()
@@ -204,12 +204,12 @@ async fn node_session_recovers_after_router_restart() {
 /// Bidirectional explicit bindings at the wire layer: two consumers each
 /// subscribe to the other's topic through their slot's one bound producer,
 /// exactly as a generated consumed-topic module does. The controller wants
-/// two arms, so it declares two slots — one pinned subscription per slot,
+/// two arms, so it declares two slots: one pinned subscription per slot,
 /// never one subscription over several producers. Messages flow
 /// independently in both directions, and a producer that joins *after* the
 /// consumer is already listening is received because its slot was BOUND up
-/// front — a wire pin does not require the producer to exist at subscribe
-/// time. A producer that was never bound is dropped — there is no wildcard
+/// front: a wire pin does not require the producer to exist at subscribe
+/// time. A producer that was never bound is dropped; there is no wildcard
 /// fallback. This is the runtime counterpart to the launch-time binding
 /// materialization checked in `crates/peppy/tests/stack_launch.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -388,8 +388,8 @@ async fn bidirectional_bound_topics_with_late_bound_producer() {
     // An UNBOUND robot_arm (arm_3) publishing the same topic must never
     // reach the consumer on either slot: explicit bindings are the whole
     // contract, with no wildcard fallback. Stronger still, no subscription
-    // matches arm_3 on the wire at all — both of the consumer's
-    // subscriptions pin another producer's keyexpr — so the publisher sees
+    // matches arm_3 on the wire at all (both of the consumer's
+    // subscriptions pin another producer's keyexpr), so the publisher sees
     // no matching subscriber.
     let unbound_arm_handle = MessengerHandle::connect(&host, port)
         .await

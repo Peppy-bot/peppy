@@ -10,10 +10,10 @@ use pmi::{
 use std::sync::Arc;
 
 /// A consumer-side topic subscription. Producer selection happens entirely
-/// on the wire — a dep-slot subscription pins the bound producer's full
+/// on the wire: a dep-slot subscription pins the bound producer's full
 /// `(core_node, instance_id)` pair in the keyexpr, and infra subscriptions
-/// deliberately wildcard it — so every message the wire delivers surfaces
-/// to user code; there is no in-process producer filtering.
+/// deliberately wildcard it. So every message the wire delivers surfaces to
+/// user code; there is no in-process producer filtering.
 pub struct Subscription {
     inner: pmi::Subscription,
 }
@@ -48,13 +48,13 @@ pub struct TopicMessenger;
 
 impl TopicMessenger {
     /// Subscribe to a topic published by a specific target. `from_target`
-    /// filters on the publisher's identity — consumer dep slots always
+    /// filters on the publisher's identity: consumer dep slots always
     /// know the producer's node / interface target; a stream with no
     /// target to consult is an infra topic and goes through
     /// [`Self::subscribe_target_scoped`].
     /// `from_producer` is one producer: its full `(core_node, instance_id)`
     /// pair is pinned on the wire, so only that producer's publishes ever
-    /// reach this subscription. There is no separate core_node parameter —
+    /// reach this subscription. There is no separate core_node parameter:
     /// producer identity always travels as the whole pair. Generated
     /// consumed topics never splice this: they go through
     /// [`crate::runtime::subscribe_bound_set`], which follows the slot's
@@ -449,8 +449,8 @@ fn pairing_sender(
 
 /// Lock-free per-topic publisher returned by
 /// [`TopicMessenger::declare_publisher`]. Wraps a [`pmi::MessengerPublisher`]
-/// so `publish` skips the central `Arc<Mutex<Messenger>>` lock — callers in a
-/// publish loop don't contend with all other messenger operations.
+/// so `publish` skips the central `Arc<Mutex<Messenger>>` lock, and callers in
+/// a publish loop do not contend with all other messenger operations.
 ///
 /// Cloneable so action handlers (e.g. feedback streams) can hand the same
 /// publisher to multiple background tasks; clones share the same underlying

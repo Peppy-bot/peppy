@@ -1,3 +1,6 @@
+#[path = "common.rs"]
+mod shared;
+
 #[path = "core_node/common.rs"]
 mod common;
 

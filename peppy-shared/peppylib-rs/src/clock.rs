@@ -2,7 +2,7 @@
 //!
 //! Performs an NTP-style 4-timestamp exchange with the core node and returns
 //! the offset of the local clock relative to the core node's clock plus the
-//! round-trip delay. `synchronize` does not adjust the local clock — it only
+//! round-trip delay. `synchronize` does not adjust the local clock: it only
 //! measures. Callers that want a "core-node-aligned" timestamp use
 //! `local_now() + sync.offset_ns`.
 //!
@@ -20,15 +20,13 @@ use config::runtime::{ClockBinding, ClockDomainId, ClockRole, ProducerRef};
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
 use core_node_api::{TopicId, names};
 
-use crate::core_node::transport::poll;
+use crate::core_node::poll_bound_core_node;
 use crate::error::{Error, Result};
 use crate::messaging::{
     SenderTarget, ServiceRequestContext, Subscription, TopicMessenger, TopicPublisher,
 };
 use crate::runtime::{NodeRunner, TaskHandle, spawn};
 use crate::types::Payload;
-
-const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Failures observable from a [`ClockSource`]. Wall mode propagates a system
 /// clock error; sim mode reports a missing first tick.
@@ -91,39 +89,34 @@ pub fn handle_clock_request(
 ) -> Result<Payload> {
     // Stamp t1 first: every line after this point inflates server processing
     // time and corrupts the offset estimate the client computes.
-    let server_recv_time = source.now_ns().map_err(|e| Error::InvalidServiceRequest {
-        identifier: context.message().instance_id().to_string(),
-        reason: e.to_string(),
-    })?;
-    let instance_id = context.message().instance_id().to_string();
-    handle_clock_request_inner(source, &context, server_recv_time).map_err(|e| {
-        Error::InvalidServiceRequest {
-            identifier: instance_id,
-            reason: e.to_string(),
-        }
-    })
-}
-
-fn handle_clock_request_inner(
-    source: &dyn ClockSource,
-    context: &ServiceRequestContext,
-    server_recv_time: u64,
-) -> Result<Payload> {
-    let request = ClockRequest::decode(context.message().payload_bytes().as_ref())?;
+    let server_recv_time = source
+        .now_ns()
+        .map_err(|e| invalid_clock_request(&context, e))?;
+    let request = ClockRequest::decode(context.message().payload_bytes().as_ref())
+        .map_err(|e| invalid_clock_request(&context, e))?;
 
     // Stamp t2 last: the response encode + send happens after this point and
     // is part of the round-trip delay the client measures, not server time.
-    let server_send_time = source.now_ns().map_err(|e| Error::InvalidServiceRequest {
-        identifier: context.message().instance_id().to_string(),
-        reason: e.to_string(),
-    })?;
+    let server_send_time = source
+        .now_ns()
+        .map_err(|e| invalid_clock_request(&context, e))?;
 
     ClockResponse::new(request.client_send_time, server_recv_time, server_send_time)
         .encode()
-        .map_err(Into::into)
+        .map_err(|e| invalid_clock_request(&context, e))
 }
 
-/// Wall-clock "now" in nanoseconds since the UNIX epoch — the canonical reader
+/// The refusal of a `clock` request, attributed to the calling instance. It
+/// is built only on a failure, so the success path does not build the
+/// instance id between the t1 and t2 stamps.
+fn invalid_clock_request(context: &ServiceRequestContext, error: impl std::fmt::Display) -> Error {
+    Error::InvalidServiceRequest {
+        identifier: context.message().instance_id().to_string(),
+        reason: error.to_string(),
+    }
+}
+
+/// Wall-clock "now" in nanoseconds since the UNIX epoch, the canonical reader
 /// on the publish/poll paths and in tests. Returns an error if the system clock
 /// is set before the epoch; saturates to `u64::MAX` if the timestamp would
 /// overflow `u64` (post-year-2554, unreachable in practice).
@@ -152,20 +145,9 @@ pub async fn synchronize(
     node_runner: &NodeRunner,
     response_timeout: Option<Duration>,
 ) -> Result<ClockSync> {
-    let timeout = response_timeout.unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
-    let processor = node_runner.processor();
-    let core_node = processor.bound_core_node();
-
     let t0 = wall_now_ns()?;
-    let response = poll(
-        &ClockRequest::new(t0),
-        node_runner.messenger(),
-        core_node,
-        processor.bound_instance_id(),
-        core_node,
-        timeout,
-    )
-    .await?;
+    let response =
+        poll_bound_core_node(node_runner, &ClockRequest::new(t0), response_timeout).await?;
     let t3 = wall_now_ns()?;
 
     let (offset_ns, round_trip_delay_ns) =
@@ -457,15 +439,22 @@ impl ClockPublisher {
 
 fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
     // i128 widening: subtracting two u64s can underflow, and the standard NTP
-    // formula sums two such differences before halving — we need headroom.
+    // formula sums two such differences before halving, so it needs headroom.
     // t1/t2 come from an unauthenticated peer, so saturate (don't wrap) on the
-    // narrow back to i64/u64 — a misbehaving server could otherwise flip signs.
-    let i = |x: u64| x as i128;
-    let offset = ((i(t1) - i(t0)) + (i(t2) - i(t3))) / 2;
-    let delay = (i(t3) - i(t0)) - (i(t2) - i(t1));
+    // narrow back to i64/u64: a misbehaving server could otherwise flip signs.
+    let (t0, t1, t2, t3) = (
+        i128::from(t0),
+        i128::from(t1),
+        i128::from(t2),
+        i128::from(t3),
+    );
+    let offset = ((t1 - t0) + (t2 - t3)) / 2;
+    let delay = (t3 - t0) - (t2 - t1);
 
-    let offset = i64::try_from(offset).unwrap_or(if offset > 0 { i64::MAX } else { i64::MIN });
-    let delay = u64::try_from(delay.max(0)).unwrap_or(u64::MAX);
+    // Each clamp bounds its value to the range of the target type, so the
+    // casts that follow are lossless.
+    let offset = offset.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+    let delay = delay.clamp(0, i128::from(u64::MAX)) as u64;
     (offset, delay)
 }
 
@@ -485,7 +474,7 @@ mod tests {
     #[test]
     fn wall_now_ns_is_past_2020_and_non_decreasing() {
         // Deterministic without sleeping: assert only invariants true of any
-        // real clock — a timestamp past 2020-01-01 (1_577_836_800 s) and a
+        // real clock: a timestamp past 2020-01-01 (1_577_836_800 s) and a
         // monotonic-ish non-regression between two back-to-back reads.
         const Y2020_NS: u64 = 1_577_836_800_000_000_000;
         let first = wall_now_ns().expect("clock read");
@@ -568,6 +557,105 @@ mod clock_source_tests {
 }
 
 #[cfg(test)]
+mod clock_request_tests {
+    use super::*;
+    use bytes::Bytes;
+    use std::sync::atomic::AtomicUsize;
+
+    const CALLER_INSTANCE: &str = "caller_inst";
+
+    /// Answers its first `ready_reads` reads with `100 + read index` and every
+    /// later read with `NotReady`, so a test picks which stamp fails.
+    struct ClockReadyFor {
+        ready_reads: usize,
+        reads: AtomicUsize,
+    }
+
+    impl ClockReadyFor {
+        fn new(ready_reads: usize) -> Self {
+            Self {
+                ready_reads,
+                reads: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl ClockSource for ClockReadyFor {
+        fn now_ns(&self) -> std::result::Result<u64, ClockSourceError> {
+            let read = self.reads.fetch_add(1, Ordering::Relaxed);
+            if read >= self.ready_reads {
+                return Err(ClockSourceError::NotReady);
+            }
+            Ok(100 + read as u64)
+        }
+    }
+
+    fn clock_request_context(payload: Bytes) -> ServiceRequestContext {
+        ServiceRequestContext::new(
+            pmi::TopicMessage::from_parts(
+                "caller_core".to_string(),
+                CALLER_INSTANCE.to_string(),
+                payload,
+            ),
+            "request".to_string(),
+            "_".to_string(),
+        )
+    }
+
+    fn encoded_clock_request(client_send_time: u64) -> Bytes {
+        ClockRequest::new(client_send_time)
+            .encode()
+            .expect("clock request encodes")
+            .into_inner()
+    }
+
+    fn assert_invalid_request_from_caller(result: Result<Payload>, expected_reason: &str) {
+        match result {
+            Err(Error::InvalidServiceRequest { identifier, reason }) => {
+                assert_eq!(identifier, CALLER_INSTANCE);
+                assert_eq!(reason, expected_reason);
+            }
+            other => panic!("expected InvalidServiceRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_ready_clock_answers_with_both_server_stamps() {
+        let source = ClockReadyFor::new(2);
+        let payload =
+            handle_clock_request(&source, clock_request_context(encoded_clock_request(7)))
+                .expect("a ready clock answers");
+        let response = ClockResponse::decode(payload.as_ref()).expect("response decodes");
+        assert_eq!(response, ClockResponse::new(7, 100, 101));
+    }
+
+    #[test]
+    fn a_clock_not_ready_at_the_receive_stamp_names_the_clock_error() {
+        let source = ClockReadyFor::new(0);
+        let result = handle_clock_request(&source, clock_request_context(encoded_clock_request(7)));
+        assert_invalid_request_from_caller(result, &ClockSourceError::NotReady.to_string());
+    }
+
+    #[test]
+    fn a_clock_not_ready_at_the_send_stamp_names_the_clock_error_once() {
+        let source = ClockReadyFor::new(1);
+        let result = handle_clock_request(&source, clock_request_context(encoded_clock_request(7)));
+        assert_invalid_request_from_caller(result, &ClockSourceError::NotReady.to_string());
+    }
+
+    #[test]
+    fn an_undecodable_request_names_the_decode_error() {
+        let source = ClockReadyFor::new(2);
+        let garbage = Bytes::from_static(b"\x01");
+        let decode_error = ClockRequest::decode(garbage.as_ref())
+            .expect_err("one byte is no capnp message")
+            .to_string();
+        let result = handle_clock_request(&source, clock_request_context(garbage));
+        assert_invalid_request_from_caller(result, &decode_error);
+    }
+}
+
+#[cfg(test)]
 mod compute_sync_tests {
     use super::compute_sync;
 
@@ -612,7 +700,7 @@ mod compute_sync_tests {
     #[test]
     fn compute_sync_clamps_offset_overflow() {
         // Adversarial peer returns t1 = t2 = u64::MAX with a normal local clock.
-        // Raw offset is ~u64::MAX (≈1.8e19), well above i64::MAX (≈9.2e18) —
+        // Raw offset is ~u64::MAX (≈1.8e19), well above i64::MAX (≈9.2e18):
         // narrowing without clamping would wrap to a negative value.
         let (offset, _) = compute_sync(0, u64::MAX, u64::MAX, 0);
         assert_eq!(offset, i64::MAX);
@@ -621,8 +709,24 @@ mod compute_sync_tests {
     #[test]
     fn compute_sync_clamps_delay_overflow() {
         // delay = (t3 - t0) - (t2 - t1) = u64::MAX - (-u64::MAX) = 2*u64::MAX
-        // in i128 — exceeds u64::MAX, so saturate rather than wrap.
+        // in i128, which exceeds u64::MAX, so saturate rather than wrap.
         let (_, delay) = compute_sync(0, u64::MAX, 0, u64::MAX);
         assert_eq!(delay, u64::MAX);
+    }
+
+    #[test]
+    fn compute_sync_clamps_negative_offset_overflow() {
+        // A peer stamping t1 = t2 = 0 against a local clock at u64::MAX gives
+        // a raw offset of -u64::MAX, below i64::MIN.
+        let (offset, _) = compute_sync(u64::MAX, 0, 0, u64::MAX);
+        assert_eq!(offset, i64::MIN);
+    }
+
+    #[test]
+    fn compute_sync_clamps_negative_delay_to_zero() {
+        // A peer claiming more processing time (t2 - t1) than the whole round
+        // trip (t3 - t0) gives a negative raw delay.
+        let (_, delay) = compute_sync(0, 0, u64::MAX, 0);
+        assert_eq!(delay, 0);
     }
 }

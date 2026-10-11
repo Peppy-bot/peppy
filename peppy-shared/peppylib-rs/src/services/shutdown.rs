@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, oneshot};
 use tracing::debug;
 
-use crate::messaging::{SenderTarget, ServiceRequestContext};
-use crate::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use crate::messaging::{SHUTDOWN_SERVICE, SenderTarget, ServiceRequestContext};
+use crate::{MessengerHandle, PeppyResult, ServiceMessenger};
 
 /// Receiver for shutdown signals. When a shutdown request is received by the service,
 /// this receiver will complete.
@@ -15,16 +15,16 @@ type ShutdownSender = Arc<Mutex<Option<oneshot::Sender<()>>>>;
 
 pub async fn listen_for_shutdown(
     messenger: &MessengerHandle,
-    core_node_node: &str,
+    core_node: &str,
     instance_id: &str,
     as_identity: SenderTarget,
 ) -> PeppyResult<(TaskHandle<PeppyResult<()>>, ShutdownReceiver)> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
-        core_node_node,
+        core_node,
         instance_id,
         as_identity,
-        super::super::messaging::SHUTDOWN_SERVICE,
+        SHUTDOWN_SERVICE,
     )
     .await?;
 
@@ -48,24 +48,13 @@ async fn handle_shutdown_request(
     shutdown_tx: ShutdownSender,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
-    handle_shutdown_request_inner(&context, shutdown_tx)
-        .await
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.to_string(),
-            reason: e.to_string(),
-        })
-}
-
-async fn handle_shutdown_request_inner(
-    context: &ServiceRequestContext,
-    shutdown_tx: ShutdownSender,
-) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
     debug!("Received `shutdown` request from {sender_instance_id}");
 
-    // Send shutdown signal to the caller (mandatory_services)
+    // Fire the receiver that the node runtime awaits, during setup and in
+    // `run_post_setup_services` (runtime/builder.rs). Only the first request
+    // finds the sender; later ones just echo.
     if let Some(tx) = shutdown_tx.lock().await.take() {
         let _ = tx.send(());
     }

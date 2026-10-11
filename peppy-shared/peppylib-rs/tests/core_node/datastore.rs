@@ -21,14 +21,13 @@ use core_node_api::encoding::{
     DatastoreStoreResponse,
 };
 use peppylib::datastore::{self, DatastoreEntry, Encoding, StoredValue};
-use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::messaging::MessengerHandle;
 use peppylib::runtime::NodeRunner;
 use peppylib::testing::EphemeralRouter;
 use tempfile::TempDir;
 
 use super::common::{
-    CLIENT_INSTANCE, CORE_NODE, SERVER_INSTANCE, start_router_and_runner, test_node_target,
-    wait_until_reachable,
+    CLIENT_INSTANCE, listen_as_core_node, start_router_and_runner, wait_until_reachable,
 };
 
 /// Shared `key -> (value, encoding, last_modified_by)` map behind the stub's
@@ -42,15 +41,7 @@ type StubStore = Arc<Mutex<HashMap<String, (Vec<u8>, String, String)>>>;
 async fn spawn_datastore_stub(server: MessengerHandle) {
     let store: StubStore = Arc::new(Mutex::new(HashMap::new()));
 
-    let mut store_endpoint = ServiceMessenger::listen(
-        &server,
-        CORE_NODE,
-        SERVER_INSTANCE,
-        test_node_target(CORE_NODE),
-        ServiceId::DatastoreStore.name(),
-    )
-    .await
-    .expect("listen datastore_store should succeed");
+    let mut store_endpoint = listen_as_core_node(&server, ServiceId::DatastoreStore).await;
     let store_map = Arc::clone(&store);
     tokio::spawn(async move {
         store_endpoint
@@ -58,7 +49,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
                 let store_map = Arc::clone(&store_map);
                 async move {
                     // The writer's instance_id rides in the wire envelope, not
-                    // the payload — read it the same way the real daemon does.
+                    // the payload: read it the same way the real daemon does.
                     let last_modified_by = request.message().instance_id().to_owned();
                     let payload = request.message().payload();
                     let req = DatastoreStoreRequest::decode(payload.as_ref())
@@ -76,15 +67,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
             .expect("handle datastore_store requests should succeed");
     });
 
-    let mut get_endpoint = ServiceMessenger::listen(
-        &server,
-        CORE_NODE,
-        SERVER_INSTANCE,
-        test_node_target(CORE_NODE),
-        ServiceId::DatastoreGet.name(),
-    )
-    .await
-    .expect("listen datastore_get should succeed");
+    let mut get_endpoint = listen_as_core_node(&server, ServiceId::DatastoreGet).await;
     let get_map = Arc::clone(&store);
     tokio::spawn(async move {
         get_endpoint
@@ -109,15 +92,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
             .expect("handle datastore_get requests should succeed");
     });
 
-    let mut list_endpoint = ServiceMessenger::listen(
-        &server,
-        CORE_NODE,
-        SERVER_INSTANCE,
-        test_node_target(CORE_NODE),
-        ServiceId::DatastoreList.name(),
-    )
-    .await
-    .expect("listen datastore_list should succeed");
+    let mut list_endpoint = listen_as_core_node(&server, ServiceId::DatastoreList).await;
     let list_map = Arc::clone(&store);
     tokio::spawn(async move {
         list_endpoint
@@ -148,15 +123,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
             .expect("handle datastore_list requests should succeed");
     });
 
-    let mut remove_endpoint = ServiceMessenger::listen(
-        &server,
-        CORE_NODE,
-        SERVER_INSTANCE,
-        test_node_target(CORE_NODE),
-        ServiceId::DatastoreRemove.name(),
-    )
-    .await
-    .expect("listen datastore_remove should succeed");
+    let mut remove_endpoint = listen_as_core_node(&server, ServiceId::DatastoreRemove).await;
     let remove_map = Arc::clone(&store);
     tokio::spawn(async move {
         remove_endpoint

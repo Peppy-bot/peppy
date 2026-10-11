@@ -3,12 +3,25 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use peppylib::{CoreNodePresence, CoreNodePresenceMessenger, LivelinessEvent, MessengerHandle};
+use peppylib::{
+    CoreNodePresence, CoreNodePresenceMessenger, LivelinessEvent, LivelinessWatch, MessengerHandle,
+};
 use pmi::ZenohAdapter;
 
 use common::get_client_server;
 
 const TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The next event of `watch`, which must arrive within `timeout`.
+async fn next_presence_event(
+    watch: &LivelinessWatch<CoreNodePresence>,
+    timeout: Duration,
+) -> LivelinessEvent<CoreNodePresence> {
+    tokio::time::timeout(timeout, watch.rx.recv_async())
+        .await
+        .expect("a presence event arrives in time")
+        .expect("the presence watch is open")
+}
 
 #[tokio::test]
 async fn presence_facade_declares_watches_and_lists_with_name_filtering() {
@@ -23,10 +36,7 @@ async fn presence_facade_declares_watches_and_lists_with_name_filtering() {
         .expect("watch core-a");
 
     assert_eq!(
-        tokio::time::timeout(TIMEOUT, watch.rx.recv_async())
-            .await
-            .expect("history event timeout")
-            .expect("history event channel"),
+        next_presence_event(&watch, TIMEOUT).await,
         LivelinessEvent::Alive(CoreNodePresence::new("core-a", "instance-1"))
     );
 
@@ -38,10 +48,7 @@ async fn presence_facade_declares_watches_and_lists_with_name_filtering() {
         .expect("declare other presence");
 
     assert_eq!(
-        tokio::time::timeout(TIMEOUT, watch.rx.recv_async())
-            .await
-            .expect("live event timeout")
-            .expect("live event channel"),
+        next_presence_event(&watch, TIMEOUT).await,
         LivelinessEvent::Alive(CoreNodePresence::new("core-a", "instance-2"))
     );
 
@@ -66,10 +73,7 @@ async fn presence_facade_declares_watches_and_lists_with_name_filtering() {
 
     drop(first);
     assert_eq!(
-        tokio::time::timeout(TIMEOUT, watch.rx.recv_async())
-            .await
-            .expect("gone event timeout")
-            .expect("gone event channel"),
+        next_presence_event(&watch, TIMEOUT).await,
         LivelinessEvent::Gone(CoreNodePresence::new("core-a", "instance-1"))
     );
 
@@ -119,10 +123,7 @@ async fn presence_facade_round_trips_over_zenoh() {
         .expect("declare second daemon");
 
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(5), watch.rx.recv_async())
-            .await
-            .expect("alive event timeout")
-            .expect("alive event channel"),
+        next_presence_event(&watch, Duration::from_secs(5)).await,
         LivelinessEvent::Alive(CoreNodePresence::new("core-a", "instance-1"))
     );
 
@@ -132,10 +133,7 @@ async fn presence_facade_round_trips_over_zenoh() {
 
     drop(first);
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(5), watch.rx.recv_async())
-            .await
-            .expect("gone event timeout")
-            .expect("gone event channel"),
+        next_presence_event(&watch, Duration::from_secs(5)).await,
         LivelinessEvent::Gone(CoreNodePresence::new("core-a", "instance-1"))
     );
 

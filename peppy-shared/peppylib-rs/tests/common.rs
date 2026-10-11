@@ -1,17 +1,21 @@
 #![allow(dead_code)]
 
 use config::node::{QoSProfile, TopicRetention};
-use peppylib::messaging::{MessengerHandle, PeerInfo, SenderTarget, TopicMessenger};
+use peppylib::messaging::{
+    MessengerHandle, PeerInfo, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget,
+    TopicMessenger,
+};
 use peppylib::types::Payload;
+use peppylib::{Message, PeppyResult};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
 /// Deterministically wait until `publisher`'s session sees a subscriber for the
-/// topic it is about to publish on, replacing a fixed "settle for zenoh
-/// discovery" sleep. The arguments mirror the subsequent publish.
-/// Panics if no subscriber routes within 2s.
+/// topic it is about to publish on. Peer-mode discovery is not instantaneous,
+/// so a publish sent before routing completes can be dropped. The arguments
+/// mirror the subsequent publish. Panics if no subscriber routes within 2s.
 pub async fn wait_for_topic_subscriber(
     publisher: &MessengerHandle,
     core_node: &str,
@@ -170,15 +174,14 @@ pub const TEST_INSTANCE_ID: &str = "test_instance";
 pub const TEST_NODE_TAG: &str = "v1";
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
-/// invalid names — tests use known-good values only.
+/// invalid names: tests use known-good values only.
 pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
 
 /// Declares a publisher and publishes a single payload. The publisher is the
 /// only topic-publish path, so a test that publishes once just declares then
-/// publishes; the arguments mirror the old one-shot emit.
-#[allow(clippy::too_many_arguments)]
+/// publishes; the arguments mirror the publisher declaration, then the payload.
 pub async fn publish_once(
     messenger: &MessengerHandle,
     core_node: &str,
@@ -207,6 +210,34 @@ pub struct CoreNodeClient {
     pub caller_handle: MessengerHandle,
     pub core_node_name: String,
     pub instance_id: String,
+}
+
+impl CoreNodeClient {
+    /// The test node's instance, as the producer a pinned call addresses.
+    pub fn producer(&self) -> ProducerRef {
+        ProducerRef::new(self.core_node_name.as_str(), self.instance_id.as_str())
+    }
+
+    /// Calls `service` of the test node as `CALLER_INSTANCE_ID`, addressed
+    /// through `target`, with a 2 s budget.
+    pub async fn poll_test_node(
+        &self,
+        service: &str,
+        target: ServiceTarget<'_>,
+        request: Payload,
+    ) -> PeppyResult<Message> {
+        ServiceMessenger::poll(
+            &self.caller_handle,
+            &self.core_node_name,
+            CALLER_INSTANCE_ID,
+            test_node_target(TEST_NODE_NAME),
+            service,
+            target,
+            request,
+            Duration::from_secs(2),
+        )
+        .await
+    }
 }
 
 /// Creates a shared mock messenger and returns a client with a MessengerHandle.

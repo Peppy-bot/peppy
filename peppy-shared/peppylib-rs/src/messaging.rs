@@ -70,9 +70,10 @@ use crate::types::{Message, Payload};
 use config::node::{QoSProfile, TopicRetention};
 use pmi::{
     ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    Namespace, PresenceScope, PublisherQoS, Segment, ServiceQueryKind, ServiceReplyKind,
-    ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription as PmiSubscription,
-    TopicWireReceiver, TopicWireSender, ZenohAdapter, ZenohNetProtocol,
+    Namespace, PresenceScope, PublisherQoS, ReplyStream, Segment, ServiceQueryKind, ServiceReply,
+    ServiceReplyKind, ServiceWireReceiver, ServiceWireSender, SubscriberQoS,
+    Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender, ZenohAdapter,
+    ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -95,7 +96,7 @@ pub const NODE_READY_SERVICE: &str = "node_ready";
 pub const NODE_ENDPOINTS_SERVICE: &str = "node_endpoints";
 pub const SHUTDOWN_SERVICE: &str = "shutdown";
 /// Framework service every node exposes: the daemon delivers absolute
-/// pairing-slot state (pair, re-pin, clear) over it. Registered pre-setup —
+/// pairing-slot state (pair, re-pin, clear) over it. Registered pre-setup:
 /// a node may block in its `setup_fn` forever, and pairing delivery must not
 /// depend on user code. Triggers no user code.
 pub const PEER_UPDATE_SERVICE: &str = "peer_update";
@@ -118,10 +119,10 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Budget for the wildcard discover-then-pin step of core-node infra calls
 /// (capped by the caller's own timeout). Larger than [`PROBE_TIMEOUT`]
 /// because a freshly-connected peer learns producers' queryables via gossip,
-/// which is not instantaneous like the old client/router star —
-/// `discover_producer` re-probes within this budget so a discovery-scoped
-/// `poll` waits for discovery to settle instead of failing the moment it
-/// runs ahead of it.
+/// which is not instantaneous: `poll_service` re-issues the discovery probe
+/// of `discover_producer` within this budget, so a discovery-scoped `poll`
+/// waits for discovery to settle instead of failing the moment it runs
+/// ahead of it.
 pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
@@ -217,8 +218,8 @@ pub enum SessionScope<'a> {
 }
 
 /// Fluent builder for opening a [`MessengerHandle`] session, returned by
-/// [`MessengerHandle::connect`]. Await it directly — it implements
-/// [`IntoFuture`](std::future::IntoFuture) — to perform the connect. Every
+/// [`MessengerHandle::connect`]. Await it directly (it implements
+/// [`IntoFuture`](std::future::IntoFuture)) to perform the connect. Every
 /// builder method is infallible; the only failure point is the awaited connect,
 /// which yields `Result<MessengerHandle>`.
 pub struct MessengerConnect {
@@ -364,6 +365,77 @@ fn service_deadline_passed(deadline: Option<Instant>) -> bool {
     deadline.is_some_and(|deadline| Instant::now() >= deadline)
 }
 
+/// The call never reached the producer of `sender`'s service.
+fn service_unreachable(sender: &ServiceWireSender) -> Error {
+    Error::ServiceUnreachable {
+        instance_id: sender.target_instance_id().map(str::to_string),
+        service_name: sender.to_service_name().to_string(),
+    }
+}
+
+/// The producer of `sender`'s service acknowledged the call but sent no
+/// terminal reply in time.
+fn service_timed_out(sender: &ServiceWireSender) -> Error {
+    Error::ServiceTimeout {
+        instance_id: sender.target_instance_id().map(str::to_string),
+        service_name: sender.to_service_name().to_string(),
+    }
+}
+
+/// How one service query attempt ends when it ends without an error.
+enum QueryAttempt {
+    /// The first `Response` or `HandlerError` of the attempt.
+    Terminal(ServiceReply),
+    /// The query finalized with no reply and no `Ack` before it, so the
+    /// target was never reached and the caller may issue the query again.
+    NotReached,
+}
+
+/// Receives the replies of one query attempt up to its first terminal reply,
+/// skipping the `Ack` that the producer sends before its handler runs. An
+/// `Ack` proves the target was reached, so after one a deadline expiry or a
+/// closed stream is a `ServiceTimeout`; before one a deadline expiry is
+/// `ServiceUnreachable`.
+async fn receive_terminal_reply(
+    replies: &mut ReplyStream,
+    deadline: Option<Instant>,
+    sender: &ServiceWireSender,
+) -> Result<QueryAttempt> {
+    let mut received_ack = false;
+    loop {
+        let received = within_service_deadline(deadline, replies.rx.recv())
+            .await
+            .ok_or_else(|| {
+                if received_ack {
+                    service_timed_out(sender)
+                } else {
+                    service_unreachable(sender)
+                }
+            })?;
+
+        // `None`: the query finalized with no reply.
+        let Some(reply) = received else {
+            if received_ack {
+                return Err(service_timed_out(sender));
+            }
+            return Ok(QueryAttempt::NotReached);
+        };
+        match reply.kind() {
+            ServiceReplyKind::Ack => {
+                received_ack = true;
+                tracing::trace!(
+                    service_name = %sender.to_service_name(),
+                    target_instance_id = ?sender.target_instance_id(),
+                    "service request acknowledged"
+                );
+            }
+            ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
+                return Ok(QueryAttempt::Terminal(reply));
+            }
+        }
+    }
+}
+
 impl MessengerHandle {
     /// Build a handle from an already-shared `pmi::Messenger`. This is the
     /// escape hatch for consumers that construct and own the messenger
@@ -374,7 +446,7 @@ impl MessengerHandle {
     }
 
     /// Pre-bind a per-topic publisher. Locks the messenger once at
-    /// declaration to extract the per-adapter handle, then never again — the
+    /// declaration to extract the per-adapter handle, then never again: the
     /// returned [`pmi::MessengerPublisher`] holds its own state (an
     /// `Arc<zenoh::Session>` clone or `Arc<Mutex<HashMap>>` clones for the
     /// mock) and `publish` skips the central messenger mutex.
@@ -450,10 +522,7 @@ impl MessengerHandle {
 
     async fn new_session(adapter: ZenohAdapter) -> Result<Messenger> {
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-        messenger
-            .start_session()
-            .await
-            .map_err(Error::PeppyMessagingInterface)?;
+        messenger.start_session().await?;
 
         Ok(messenger)
     }
@@ -480,8 +549,8 @@ impl MessengerHandle {
     /// Both backends wait outside the central messenger lock (mirroring
     /// [`probe_action_producer`](Self::probe_action_producer)): a wait bounded
     /// only by `timeout` held under it would starve every other messenger
-    /// call — including, in mock tests that share the handle between
-    /// publisher and subscriber, the very subscribe being awaited.
+    /// call. In mock tests that share the handle between publisher and
+    /// subscriber, that includes the very subscribe being awaited.
     pub(crate) async fn wait_for_matching_subscriber(
         &self,
         sender: &TopicWireSender,
@@ -492,9 +561,7 @@ impl MessengerHandle {
             match &messenger.adapter {
                 #[cfg(feature = "zenoh")]
                 MessengerAdapter::Zenoh(adapter) => {
-                    let wait = adapter
-                        .topic_subscriber_wait(sender)
-                        .map_err(Error::PeppyMessagingInterface)?;
+                    let wait = adapter.topic_subscriber_wait(sender)?;
                     drop(messenger);
                     return wait
                         .resolve(timeout)
@@ -522,10 +589,7 @@ impl MessengerHandle {
     ) -> Result<ServiceEndpoint> {
         let queryable = {
             let messenger = self.messenger.lock().await;
-            messenger
-                .listen_service(recv)
-                .await
-                .map_err(Error::PeppyMessagingInterface)?
+            messenger.listen_service(recv).await?
         };
         Ok(ServiceEndpoint::new(Arc::clone(&self.messenger), queryable))
     }
@@ -538,17 +602,6 @@ impl MessengerHandle {
         response_timeout: impl Into<Option<Duration>>,
     ) -> Result<Message> {
         let response_timeout: Option<Duration> = response_timeout.into();
-
-        let to_service_name = sender.to_service_name().to_string();
-        let target_instance_id = sender.target_instance_id().map(str::to_string);
-        let unreachable = || Error::ServiceUnreachable {
-            instance_id: target_instance_id.clone(),
-            service_name: to_service_name.clone(),
-        };
-        let timed_out = || Error::ServiceTimeout {
-            instance_id: target_instance_id.clone(),
-            service_name: to_service_name.clone(),
-        };
 
         // Re-issue the query (cheap `Bytes` clone per attempt) on a cold-start
         // miss; see the retry rationale below.
@@ -570,18 +623,18 @@ impl MessengerHandle {
         // Ack arrives the target is reachable, so a later miss is a genuine
         // `ServiceTimeout`, never a retry. This adds no happy-path overhead:
         // retries only fire on an actual cold-start miss.
-        let reply = 'attempts: loop {
-            let mut response_subscription = {
+        let reply = loop {
+            let mut replies = {
                 let messenger = within_service_deadline(deadline, self.messenger.lock())
                     .await
-                    .ok_or_else(unreachable)?;
+                    .ok_or_else(|| service_unreachable(sender))?;
                 // A query is issued only while the caller still waits for it. A
                 // lock acquired past the deadline (a contended lock, a retry
                 // backoff that ran late) would otherwise put a request on the
                 // wire that the producer executes while this caller reports it
                 // as unreachable.
                 if service_deadline_passed(deadline) {
-                    return Err(unreachable());
+                    return Err(service_unreachable(sender));
                 }
                 let attempt_timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
                 within_service_deadline(
@@ -594,55 +647,24 @@ impl MessengerHandle {
                     ),
                 )
                 .await
-                .ok_or_else(unreachable)?
+                .ok_or_else(|| service_unreachable(sender))?
                 .map_err(Error::PeppyMessagingInterface)?
             };
 
-            let mut received_ack = false;
-            loop {
-                let received = within_service_deadline(deadline, response_subscription.rx.recv())
-                    .await
-                    .ok_or_else(|| {
-                        if received_ack {
-                            timed_out()
-                        } else {
-                            unreachable()
-                        }
-                    })?;
-
-                match received {
-                    Some(reply) => match reply.kind() {
-                        ServiceReplyKind::Ack => {
-                            received_ack = true;
-                            tracing::trace!(
-                                service_name = %to_service_name,
-                                ?target_instance_id,
-                                "service request acknowledged"
-                            );
-                            continue;
-                        }
-                        ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
-                            break 'attempts reply;
-                        }
-                    },
-                    // Query finalized with no reply.
-                    None => {
-                        if received_ack {
-                            return Err(timed_out());
-                        }
-                        // Cold-start retry only makes sense against a bounded
-                        // budget. With no timeout there is nothing to bound the
-                        // retry, so fail fast rather than re-probing forever.
-                        let Some(deadline) = deadline else {
-                            return Err(unreachable());
-                        };
-                        let remaining = deadline.saturating_duration_since(Instant::now());
-                        if remaining.is_zero() {
-                            return Err(unreachable());
-                        }
-                        sleep(COLD_START_BACKOFF.min(remaining)).await;
-                        continue 'attempts;
+            match receive_terminal_reply(&mut replies, deadline, sender).await? {
+                QueryAttempt::Terminal(reply) => break reply,
+                QueryAttempt::NotReached => {
+                    // Cold-start retry only makes sense against a bounded
+                    // budget. With no timeout there is nothing to bound the
+                    // retry, so fail fast rather than re-probing forever.
+                    let Some(deadline) = deadline else {
+                        return Err(service_unreachable(sender));
+                    };
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(service_unreachable(sender));
                     }
+                    sleep(COLD_START_BACKOFF.min(remaining)).await;
                 }
             }
         };
@@ -656,8 +678,8 @@ impl MessengerHandle {
                     Err(_) => "service returned a non-UTF8 error payload".to_string(),
                 };
                 Err(Error::ServiceError {
-                    instance_id: target_instance_id,
-                    service_name: to_service_name,
+                    instance_id: sender.target_instance_id().map(str::to_string),
+                    service_name: sender.to_service_name().to_string(),
                     reason,
                 })
             }
@@ -673,14 +695,14 @@ impl MessengerHandle {
 
         // Advertise this producer instance's liveliness for the lifetime of
         // the action endpoint. The transport removes the token when the
-        // producing session dies — gracefully or by hard process death — so
+        // producing session dies (gracefully or by hard process death), so
         // consumers can detect a producer that vanished without closing its
         // goals (see `ActionGoalHandle::on_next_feedback`).
         let liveliness_token = self.declare_action_liveliness(recv).await?;
 
         // Per-goal feedback uses `Important` (Block on congestion, DataHigh
         // priority) rather than `Standard`. The publisher is declared inside
-        // the goal handler — the moment a fast server's first feedback
+        // the goal handler: the moment a fast server's first feedback
         // publish fires, the local routing tables may not yet have the client's
         // subscription propagated through the router. Empirically, `Standard`
         // (Drop, Data) loses the first publish in tight in-process tests;
@@ -749,10 +771,7 @@ impl MessengerHandle {
     ) -> Result<bool> {
         let probe = {
             let messenger = self.messenger.lock().await;
-            messenger
-                .probe_action_producer(sender, timeout)
-                .await
-                .map_err(Error::PeppyMessagingInterface)?
+            messenger.probe_action_producer(sender, timeout).await?
         };
         Ok(probe.resolve().await)
     }
@@ -793,8 +812,7 @@ impl MessengerHandle {
             let messenger = self.messenger.lock().await;
             messenger
                 .list_core_node_presence(PresenceScope::Session, core_node, timeout)
-                .await
-                .map_err(Error::PeppyMessagingInterface)?
+                .await?
         };
         list.collect().await.map_err(Error::PeppyMessagingInterface)
     }
