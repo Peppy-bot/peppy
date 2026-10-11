@@ -12,6 +12,20 @@ use config::runtime::Name;
 use core_node_api::encoding::StackResetRequest;
 use std::time::Duration;
 
+/// The instance id of the stack's root, which is the core node itself. A
+/// reset keeps it.
+fn root_instance_id(node_stack: &node_stack::NodeStack) -> String {
+    node_stack
+        .root()
+        .read()
+        .instances()
+        .first()
+        .expect("root should have exactly one instance")
+        .instance_id()
+        .as_str()
+        .to_owned()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_reset_clears_node_stack() {
     const TARGET_NODE_A_NAME: &str = "resettable_node_a";
@@ -23,15 +37,7 @@ async fn listen_for_node_reset_clears_node_stack() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
-    let root_instance_id_before = node_stack
-        .root()
-        .read()
-        .instances()
-        .first()
-        .expect("root should have exactly one instance")
-        .instance_id()
-        .as_str()
-        .to_owned();
+    let root_instance_id_before = root_instance_id(&node_stack);
 
     let source_dir_a = tempfile::tempdir().expect("failed to create temp source dir");
     let source_dir_b = tempfile::tempdir().expect("failed to create temp source dir");
@@ -177,14 +183,8 @@ async fn listen_for_node_reset_clears_node_stack() {
         started_core_node.core_node_tag,
         "root node tag should be preserved"
     );
-    let root_instance_id_after = root_guard
-        .instances()
-        .first()
-        .expect("root should have exactly one instance")
-        .instance_id()
-        .as_str()
-        .to_owned();
     drop(root_guard);
+    let root_instance_id_after = root_instance_id(&node_stack);
     assert_eq!(
         root_instance_id_after, root_instance_id_before,
         "root instance id should be preserved"
@@ -269,30 +269,14 @@ async fn listen_for_node_reset_is_idempotent() {
     let node_stack = started_core_node.node_stack.clone();
     assert_eq!(node_stack.len(), 1, "only root should exist initially");
 
-    let root_instance_id_before = node_stack
-        .root()
-        .read()
-        .instances()
-        .first()
-        .expect("root should have exactly one instance")
-        .instance_id()
-        .as_str()
-        .to_owned();
+    let root_instance_id_before = root_instance_id(&node_stack);
 
     let response = poll_core_node(&started_core_node, &StackResetRequest::new()).await;
 
     assert!(response.success, "node_reset should succeed");
     assert_eq!(node_stack.len(), 1, "only root should remain after reset");
 
-    let root_instance_id_after = node_stack
-        .root()
-        .read()
-        .instances()
-        .first()
-        .expect("root should have exactly one instance")
-        .instance_id()
-        .as_str()
-        .to_owned();
+    let root_instance_id_after = root_instance_id(&node_stack);
     assert_eq!(
         root_instance_id_after, root_instance_id_before,
         "root instance id should be preserved"
