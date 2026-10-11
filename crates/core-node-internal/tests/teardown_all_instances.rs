@@ -12,14 +12,13 @@
 mod common;
 
 use common::{
-    add_and_build_forking_node, children_of, is_process_running, poll_until,
-    spawn_real_starting_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
-    wait_until_process_exits,
+    add_and_build_forking_node, is_process_running, spawn_real_starting_instance,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger, wait_for_forked_grandchildren,
+    wait_until_grandchildren_exit,
 };
 use config::runtime::Name;
 use peppylib::messaging::MessengerHandle;
 use std::sync::Arc;
-use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn teardown_force_kills_whole_process_group() {
@@ -41,14 +40,7 @@ async fn teardown_force_kills_whole_process_group() {
     // Drop the guard's stop-on-drop so only `teardown_all_instances` kills it.
     std::mem::forget(running);
 
-    // Wait for the two grandchildren to appear, then snapshot their pids.
-    poll_until(
-        Duration::from_secs(5),
-        "expected the node to fork two grandchildren",
-        || (children_of(node_pid).len() >= 2).then_some(()),
-    )
-    .await;
-    let grandchildren = children_of(node_pid);
+    let grandchildren = wait_for_forked_grandchildren(node_pid).await;
     assert!(
         is_process_running(node_pid),
         "node process {node_pid} should be running before teardown"
@@ -71,14 +63,7 @@ async fn teardown_force_kills_whole_process_group() {
         !is_process_running(node_pid),
         "node process {node_pid} should be gone after teardown"
     );
-    for &gc in &grandchildren {
-        wait_until_process_exits(
-            gc,
-            Duration::from_secs(5),
-            &format!("grandchild {gc} should be gone after teardown (group kill)"),
-        )
-        .await;
-    }
+    wait_until_grandchildren_exit(&grandchildren, "teardown").await;
 
     // The core (root) node, i.e. this test process, must be untouched.
     assert!(
@@ -134,14 +119,7 @@ async fn teardown_force_kills_instance_still_in_starting() {
         );
     }
 
-    // Wait for the two grandchildren to appear, then snapshot their pids.
-    poll_until(
-        Duration::from_secs(5),
-        "expected the node to fork two grandchildren",
-        || (children_of(node_pid).len() >= 2).then_some(()),
-    )
-    .await;
-    let grandchildren = children_of(node_pid);
+    let grandchildren = wait_for_forked_grandchildren(node_pid).await;
     assert!(
         is_process_running(node_pid),
         "Starting node {node_pid} should be running before teardown"
@@ -156,14 +134,7 @@ async fn teardown_force_kills_instance_still_in_starting() {
         !is_process_running(node_pid),
         "Starting node {node_pid} should be gone after teardown"
     );
-    for &gc in &grandchildren {
-        wait_until_process_exits(
-            gc,
-            Duration::from_secs(5),
-            &format!("grandchild {gc} should be gone after teardown (group kill)"),
-        )
-        .await;
-    }
+    wait_until_grandchildren_exit(&grandchildren, "teardown").await;
 
     // Drop the guard explicitly (its best-effort group kill is now a no-op).
     drop(starting);

@@ -75,6 +75,35 @@ pub fn children_of(parent_pid: u32) -> Vec<u32> {
         .collect()
 }
 
+/// Polls until the node process `node_pid` has the two children that a node
+/// from [`add_and_build_forking_node`](super::add_and_build_forking_node)
+/// forks, and returns their pids.
+pub async fn wait_for_forked_grandchildren(node_pid: u32) -> Vec<u32> {
+    poll_until(
+        Duration::from_secs(5),
+        "expected the node to fork two grandchildren",
+        || {
+            let children = children_of(node_pid);
+            (children.len() >= 2).then_some(children)
+        },
+    )
+    .await
+}
+
+/// Polls until every process in `grandchildren` has exited, each within 5 s.
+/// `killed_by` names the action whose group kill must have reaped them, for
+/// the timeout message.
+pub async fn wait_until_grandchildren_exit(grandchildren: &[u32], killed_by: &str) {
+    for &grandchild in grandchildren {
+        wait_until_process_exits(
+            grandchild,
+            Duration::from_secs(5),
+            &format!("grandchild {grandchild} should be gone after {killed_by} (group kill)"),
+        )
+        .await;
+    }
+}
+
 /// The state of an instance regardless of lifecycle stage, including terminal
 /// (`Finished`/`Failed`) instances that the `Running`-only
 /// `NodeStack::find_by_instance_id` does not return. Lets a test observe the

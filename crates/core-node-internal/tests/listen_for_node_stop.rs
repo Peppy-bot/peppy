@@ -2,11 +2,12 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node,
-    answer_readiness, build_staged_node, children_of, create_test_node_with_name,
+    answer_readiness, build_staged_node, create_test_node_with_name,
     install_kill_on_shutdown_listener, instance_state_in_any_state, is_process_running, poll_until,
     send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
     spawn_real_stuck_instance, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger, wait_until_process_exits, write_peppy_json5,
+    start_core_node_with_real_messenger, wait_for_forked_grandchildren,
+    wait_until_grandchildren_exit, wait_until_process_exits, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node::force_kill_deadline;
@@ -383,14 +384,7 @@ async fn node_stop_force_kills_whole_process_group() {
     // Drop the guard's stop-on-drop so only node_stop (the SUT) kills it.
     std::mem::forget(running);
 
-    // Wait for the two grandchildren to appear, then snapshot their pids.
-    poll_until(
-        Duration::from_secs(5),
-        "expected the node to fork two grandchildren",
-        || (children_of(node_pid).len() >= 2).then_some(()),
-    )
-    .await;
-    let grandchildren = children_of(node_pid);
+    let grandchildren = wait_for_forked_grandchildren(node_pid).await;
     assert!(
         is_process_running(node_pid),
         "node process {node_pid} should be running before stop"
@@ -445,14 +439,7 @@ async fn node_stop_force_kills_whole_process_group() {
         &format!("node process {node_pid} should be gone after node_stop"),
     )
     .await;
-    for &gc in &grandchildren {
-        wait_until_process_exits(
-            gc,
-            Duration::from_secs(5),
-            &format!("grandchild {gc} should be gone after node_stop (group kill)"),
-        )
-        .await;
-    }
+    wait_until_grandchildren_exit(&grandchildren, "node_stop").await;
 
     // The instance must be removed from the registry (find_by_instance_id
     // returns Some only for Running instances).

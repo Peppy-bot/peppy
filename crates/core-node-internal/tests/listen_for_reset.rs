@@ -2,11 +2,11 @@ mod common;
 
 use common::{
     NodeRunTestTimeouts, add_and_build_forking_node, answer_readiness, build_staged_node,
-    children_of, install_kill_on_shutdown_listener, instance_state_in_any_state,
-    is_process_running, poll_core_node, poll_core_node_with_timeout, poll_until,
-    send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
-    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
-    wait_until_process_exits, write_peppy_json5,
+    install_kill_on_shutdown_listener, instance_state_in_any_state, is_process_running,
+    poll_core_node, poll_core_node_with_timeout, send_node_add_and_wait, send_node_add_then_build,
+    send_node_run_and_wait, spawn_real_running_instance, spawn_real_stuck_instance,
+    start_core_node_with_mock_messenger, wait_for_forked_grandchildren,
+    wait_until_grandchildren_exit, wait_until_process_exits, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::StackResetRequest;
@@ -218,13 +218,7 @@ async fn node_reset_force_kills_whole_process_group() {
     // success path the reset already reaped everything, so the guard's
     // stop-on-drop is a harmless no-op.
 
-    poll_until(
-        Duration::from_secs(5),
-        "expected the node to fork two grandchildren",
-        || (children_of(node_pid).len() >= 2).then_some(()),
-    )
-    .await;
-    let grandchildren = children_of(node_pid);
+    let grandchildren = wait_for_forked_grandchildren(node_pid).await;
     assert!(
         is_process_running(node_pid),
         "node process {node_pid} should be running before reset"
@@ -260,14 +254,7 @@ async fn node_reset_force_kills_whole_process_group() {
         &format!("node process {node_pid} should be gone after reset"),
     )
     .await;
-    for &gc in &grandchildren {
-        wait_until_process_exits(
-            gc,
-            Duration::from_secs(5),
-            &format!("grandchild {gc} should be gone after reset (group kill)"),
-        )
-        .await;
-    }
+    wait_until_grandchildren_exit(&grandchildren, "reset").await;
 
     // The root/core node, which is this test process, must be untouched.
     assert!(
