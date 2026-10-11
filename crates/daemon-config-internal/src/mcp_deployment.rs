@@ -244,7 +244,7 @@ impl DeploymentTargets {
     /// names; every target that does not is reported at once.
     pub fn of(exposures: &[PinnedExposure]) -> Result<Self, McpDeploymentError> {
         let mut ordered: Vec<&PinnedExposure> = exposures.iter().collect();
-        ordered.sort_by_key(|exposure| exposure.reference());
+        ordered.sort_by_cached_key(|exposure| exposure.reference());
         let mut named: BTreeMap<&str, (&TargetSource, String)> = BTreeMap::new();
         let mut targets = Self::default();
         let mut unserved: Vec<ExposureViolations> = Vec::new();
