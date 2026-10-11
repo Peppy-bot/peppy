@@ -11542,7 +11542,7 @@ fn deserialize_request(payload: &[u8]) -> crate::Result<RequestData> {
                 format!("field '{}' in {}: {}", "type", context, source),
             )
         })?;
-    let type__1 = text_2
+    let type_1 = text_2
         .to_str()
         .map_err(|source| {
             #[allow(clippy::all)]
@@ -11853,7 +11853,7 @@ fn deserialize_request(payload: &[u8]) -> crate::Result<RequestData> {
     let points_41 = result_40;
     Ok(RequestData {
         max_speed: max_speed_0,
-        type_: type__1,
+        type_: type_1,
         payload: payload_3,
         stamp: stamp_5,
         note: note_opt_8,
@@ -12383,7 +12383,7 @@ fn deseralize_payload(payload: &[u8]) -> crate::Result<Message> {
                 format!("field '{}' in {}: {}", "type", context, source),
             )
         })?;
-    let type__1 = text_2
+    let type_1 = text_2
         .to_str()
         .map_err(|source| {
             #[allow(clippy::all)]
@@ -12694,7 +12694,7 @@ fn deseralize_payload(payload: &[u8]) -> crate::Result<Message> {
     let points_41 = result_40;
     Ok(Message {
         max_speed: max_speed_0,
-        type_: type__1,
+        type_: type_1,
         payload: payload_3,
         stamp: stamp_5,
         note: note_opt_8,
@@ -13059,7 +13059,7 @@ fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData> {
                 format!("field '{}' in {}: {}", "type", context, source),
             )
         })?;
-    let type__1 = text_2
+    let type_1 = text_2
         .to_str()
         .map_err(|source| {
             #[allow(clippy::all)]
@@ -13162,11 +13162,11 @@ fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData> {
             )
         })?
         .to_owned();
-    let frame_17 = RichServiceResponsePoseFrame {
+    let frame_17 = ResponseDataPoseFrame {
         id: id_14,
         name: name_15,
     };
-    let pose_18 = RichServiceResponsePose {
+    let pose_18 = ResponseDataPose {
         x: x_12,
         frame: frame_17,
     };
@@ -13182,7 +13182,7 @@ fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData> {
                 )
             })?;
         let gain_21 = reader_20.reborrow().get_gain();
-        let calibration_22 = RichServiceResponseCalibration {
+        let calibration_22 = ResponseDataCalibration {
             gain: gain_21,
         };
         Some(calibration_22)
@@ -13362,7 +13362,7 @@ fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData> {
             })?
             .to_owned();
         result_40
-            .push(RichServiceResponsePointsItem {
+            .push(ResponseDataPointsItem {
                 x: x_43,
                 tag: tag_44,
             });
@@ -13370,7 +13370,7 @@ fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData> {
     let points_41 = result_40;
     Ok(ResponseData {
         max_speed: max_speed_0,
-        type_: type__1,
+        type_: type_1,
         payload: payload_3,
         stamp: stamp_5,
         note: note_opt_8,
@@ -13607,7 +13607,7 @@ fn deserialize_feedback_payload(payload: &[u8]) -> crate::Result<FeedbackMessage
                 format!("field '{}' in {}: {}", "type", context, source),
             )
         })?;
-    let type__1 = text_2
+    let type_1 = text_2
         .to_str()
         .map_err(|source| {
             #[allow(clippy::all)]
@@ -13962,7 +13962,7 @@ fn deserialize_feedback_payload(payload: &[u8]) -> crate::Result<FeedbackMessage
     let points_41 = result_40;
     Ok(FeedbackMessage {
         max_speed: max_speed_0,
-        type_: type__1,
+        type_: type_1,
         payload: payload_3,
         stamp: stamp_5,
         note: note_opt_8,
@@ -14132,7 +14132,7 @@ fn deseralize_payload(payload: &[u8]) -> crate::Result<Message> {
                 format!("field '{}' in {}: {}", "type", context, source),
             )
         })?;
-    let type__1 = text_2
+    let type_1 = text_2
         .to_str()
         .map_err(|source| {
             #[allow(clippy::all)]
@@ -14443,7 +14443,7 @@ fn deseralize_payload(payload: &[u8]) -> crate::Result<Message> {
     let points_41 = result_40;
     Ok(Message {
         max_speed: max_speed_0,
-        type_: type__1,
+        type_: type_1,
         payload: payload_3,
         stamp: stamp_5,
         note: note_opt_8,
@@ -14753,7 +14753,7 @@ pub mod rich_service {
                     format!("field '{}' in {}: {}", "type", context, source),
                 )
             })?;
-        let type__1 = text_2
+        let type_1 = text_2
             .to_str()
             .map_err(|source| {
                 #[allow(clippy::all)]
@@ -15066,7 +15066,7 @@ pub mod rich_service {
         let points_41 = result_40;
         Ok(Request {
             max_speed: max_speed_0,
-            type_: type__1,
+            type_: type_1,
             payload: payload_3,
             stamp: stamp_5,
             note: note_opt_8,
@@ -15690,7 +15690,7 @@ fn deserialize_message(payload: &[u8]) -> crate::Result<Message> {
                 format!("field '{}' in {}: {}", "type", context, source),
             )
         })?;
-    let type__1 = text_2
+    let type_1 = text_2
         .to_str()
         .map_err(|source| {
             #[allow(clippy::all)]
@@ -16001,7 +16001,7 @@ fn deserialize_message(payload: &[u8]) -> crate::Result<Message> {
     let points_41 = result_40;
     Ok(Message {
         max_speed: max_speed_0,
-        type_: type__1,
+        type_: type_1,
         payload: payload_3,
         stamp: stamp_5,
         note: note_opt_8,
@@ -16179,7 +16179,7 @@ fn deserialize_response(payload: &[u8]) -> crate::Result<Response> {
                 format!("field '{}' in {}: {}", "type", context, source),
             )
         })?;
-    let type__1 = text_2
+    let type_1 = text_2
         .to_str()
         .map_err(|source| {
             #[allow(clippy::all)]
@@ -16490,7 +16490,7 @@ fn deserialize_response(payload: &[u8]) -> crate::Result<Response> {
     let points_41 = result_40;
     Ok(Response {
         max_speed: max_speed_0,
-        type_: type__1,
+        type_: type_1,
         payload: payload_3,
         stamp: stamp_5,
         note: note_opt_8,
@@ -16717,7 +16717,7 @@ fn deserialize_feedback(payload: &[u8]) -> crate::Result<Feedback> {
                 format!("field '{}' in {}: {}", "type", context, source),
             )
         })?;
-    let type__1 = text_2
+    let type_1 = text_2
         .to_str()
         .map_err(|source| {
             #[allow(clippy::all)]
@@ -17028,7 +17028,7 @@ fn deserialize_feedback(payload: &[u8]) -> crate::Result<Feedback> {
     let points_41 = result_40;
     Ok(Feedback {
         max_speed: max_speed_0,
-        type_: type__1,
+        type_: type_1,
         payload: payload_3,
         stamp: stamp_5,
         note: note_opt_8,

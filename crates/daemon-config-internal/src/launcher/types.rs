@@ -524,6 +524,7 @@ impl DeploymentInstance {
             env_vars: BTreeMap::new(),
             framework: FrameworkOverrides::default(),
             links: BTreeMap::new(),
+            daemon_scopes: BTreeMap::new(),
             core_node: None,
         }
     }
@@ -975,6 +976,22 @@ pub struct DeploymentInstance {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub links: BTreeMap<String, LinkValue>,
+    /// The scope of each daemon target the instance serves, keyed by target
+    /// name: what a client of the target may do through the daemon
+    /// interface it names. A daemon target takes no link; the daemon that
+    /// started the server serves it, within this scope.
+    ///
+    /// The launch parser does not know which targets are daemon targets, so
+    /// a scope is a free value here. The launch, each join and `peppy stack
+    /// resolve` parse it into its interface's scope type once the exposure
+    /// deployments are resolved, before anything starts. A scope belongs to
+    /// the stack: a copy's composition writes none.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_daemon_scopes",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub daemon_scopes: BTreeMap<String, serde_json::Value>,
     /// Which declared core node link this instance is placed on, i.e. which
     /// machine it runs on once `--place` has bound that link to a real core
     /// node.
@@ -1044,6 +1061,26 @@ where
         out.insert(key, value);
     }
     Ok(out)
+}
+
+/// The per-instance `daemon_scopes` map: each key names a target, so it says
+/// something. Which keys name daemon targets, and whether each value parses
+/// into its interface's scope type, is checked once the exposure
+/// deployments are resolved.
+fn deserialize_daemon_scopes<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let scopes = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    if scopes.keys().any(|target| target.trim().is_empty()) {
+        return Err(de::Error::custom(
+            "`daemon_scopes` names an empty target; each key names a daemon target of the \
+             instance's exposures",
+        ));
+    }
+    Ok(scopes)
 }
 
 /// The per-instance `env_vars` map. Every entry is checked here rather than at

@@ -1396,7 +1396,7 @@ impl LanguageGenerator for RustGenerator {
                 let field_context_expr = quote!(context.clone());
                 let (response_statements, response_inits) = deserialize_format_fields(
                     response_format,
-                    &response_struct_name,
+                    &response_data_ident.to_string(),
                     &field_context_expr,
                 )?;
 

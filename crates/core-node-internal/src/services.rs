@@ -85,7 +85,9 @@ pub fn current_host_name() -> String {
 
 pub struct CoreNodeArguments {
     pub node_startup_timeout: Duration,
-    pub node_start_health_timeout: Duration,
+    /// The default setup budget: how long the daemon waits for the setup of an
+    /// instance whose node declares no `execution.setup_timeout_secs`.
+    pub default_setup_timeout: config::node::SetupTimeout,
     pub health_monitor: HealthMonitorPolicy,
     pub clock_publish_interval: Duration,
     /// Cadence of the daemon-liveness heartbeat (small and fixed; the
@@ -114,11 +116,11 @@ impl CoreNodeArguments {
             },
         );
         params.insert(
-            "node_start_health_timeout_ms".to_string(),
+            "default_setup_timeout_ms".to_string(),
             ParameterSpec::Primitive {
                 kind: TypeToken::U64,
                 default: Some(DefaultValue::UInt(
-                    self.node_start_health_timeout.as_millis() as u64,
+                    self.default_setup_timeout.as_duration().as_millis() as u64,
                 )),
             },
         );
@@ -170,7 +172,7 @@ pub struct CoreNode {
     peppy_dirs: PeppyDirs,
     start_time: Instant,
     node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
+    default_setup_timeout: config::node::SetupTimeout,
     health_monitor: HealthMonitorPolicy,
     clock_publish_interval: Duration,
     heartbeat_interval: Duration,
@@ -327,7 +329,7 @@ impl CoreNode {
         };
 
         let node_startup_timeout = arguments.node_startup_timeout;
-        let node_start_health_timeout = arguments.node_start_health_timeout;
+        let default_setup_timeout = arguments.default_setup_timeout;
         let health_monitor = arguments.health_monitor;
         let clock_publish_interval = arguments.clock_publish_interval;
         let heartbeat_interval = arguments.heartbeat_interval;
@@ -349,6 +351,7 @@ impl CoreNode {
                 run_cmd: None,
                 container: None,
                 endpoints: Default::default(),
+                setup_timeout_secs: None,
             },
             interfaces: Default::default(),
         };
@@ -377,7 +380,7 @@ impl CoreNode {
             peppy_dirs,
             start_time: Instant::now(),
             node_startup_timeout,
-            node_start_health_timeout,
+            default_setup_timeout,
             health_monitor,
             clock_publish_interval,
             heartbeat_interval,
@@ -704,7 +707,7 @@ impl CoreNode {
                 stack::StackChangeDefaults {
                     timeouts: stack::StackChangeTimeouts {
                         node_startup: self.node_startup_timeout,
-                        node_start_health: self.node_start_health_timeout,
+                        default_setup: self.default_setup_timeout,
                         health_monitor: self.health_monitor,
                     },
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(
@@ -757,7 +760,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 node::NodeRunServiceConfig {
                     node_startup_timeout: self.node_startup_timeout,
-                    node_start_health_timeout: self.node_start_health_timeout,
+                    default_setup_timeout: self.default_setup_timeout,
                     peppy_dirs: self.peppy_dirs.clone(),
                     health_monitor: self.health_monitor,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(

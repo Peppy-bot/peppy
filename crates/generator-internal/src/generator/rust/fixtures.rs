@@ -15,6 +15,7 @@ use super::super::testgen::{
     DepLinkSpec, EmittedSpec, ExposedActionSpec, ExposedServiceSpec, FIXTURE_CORE_NODE,
     FIXTURE_INSTANCE_ID, ObservedLinkSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
+use super::identifiers::suffixed_rust_identifier;
 use super::mock::{
     CodecSpec, build_local_message_with_deserializer, build_local_struct_with_deserializer,
     build_struct_deserializer, build_struct_serializer, production_module, target_expr,
@@ -1116,7 +1117,7 @@ fn render_dep_harness_parts(
                 "Leave the `{link_id}` dependency slot vacant (its cardinality admits \
                  an empty binding)."
             );
-            let vacant_field = declare_vacant_knob(parts, &field, vacant_doc);
+            let vacant_field = declare_vacant_knob(parts, link_id, vacant_doc);
             mocks.fields.push(quote!(pub #field: Option<#module::Mock>));
             parts.mock_starts.push(quote! {
                 let #field = if config.#vacant_field {
@@ -1137,27 +1138,29 @@ fn render_dep_harness_parts(
                     );
                 }
             });
-            parts.service_readiness.push(quote! {
-                if !config.#vacant_field {
-                    #( #entries )*
-                }
-            });
+            if !entries.is_empty() {
+                parts.service_readiness.push(quote! {
+                    if !config.#vacant_field {
+                        #( #entries )*
+                    }
+                });
+            }
             mocks.inits.push(field);
         }
         Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
-            let count_field = Ident::new(&format!("{field}_instances"), Span::call_site());
+            let count_field = suffixed_rust_identifier(link_id, "instances");
             let default_count = default_instance_count(spec.cardinality);
             let count_doc = format!(
                 "How many mock producer instances to start and bind for the \
                  `{link_id}` dependency slot."
             );
-            let ids_field = Ident::new(&format!("{field}_instance_ids"), Span::call_site());
+            let ids_field = suffixed_rust_identifier(link_id, "instance_ids");
             let ids_doc = format!(
                 "Explicit instance ids for the `{link_id}` mock producers, \
                  overriding `{count_field}` when non-empty. For nodes that \
                  classify producers by instance name."
             );
-            let ids_local = Ident::new(&format!("{field}_member_ids"), Span::call_site());
+            let ids_local = suffixed_rust_identifier(link_id, "member_ids");
             parts.config_fields.push(quote! {
                 #[doc = #count_doc]
                 pub #count_field: usize
@@ -1267,7 +1270,7 @@ fn render_pairing_harness_parts(
                      `None`, its publishes on this slot are no-ops, and the \
                      still-started mock's subscriptions stay silent."
                 );
-                let vacant_field = declare_vacant_knob(parts, &field, vacant_doc);
+                let vacant_field = declare_vacant_knob(parts, link_id, vacant_doc);
                 parts.seeding.push(quote! {
                     if !config.#vacant_field {
                         #seed_pin
@@ -1281,20 +1284,20 @@ fn render_pairing_harness_parts(
                 .extend(readiness_of(quote!(#module::peer_info())));
         }
         Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
-            let count_field = Ident::new(&format!("{field}_instances"), Span::call_site());
+            let count_field = suffixed_rust_identifier(link_id, "instances");
             let default_count = default_instance_count(spec.cardinality);
             let count_doc = format!(
                 "How many mock peers to pair into the `{link_id}` pairing slot, \
                  each under its own instance id and outside any copy."
             );
-            let members_field = Ident::new(&format!("{field}_members"), Span::call_site());
+            let members_field = suffixed_rust_identifier(link_id, "members");
             let members_doc = format!(
                 "Explicit mock peers for the `{link_id}` pairing slot, each with \
                  the copy it belongs to, overriding `{count_field}` when non-empty. \
                  For nodes that group pairs by copy or classify peers by instance \
                  name."
             );
-            let members_local = Ident::new(&format!("{field}_member_specs"), Span::call_site());
+            let members_local = suffixed_rust_identifier(link_id, "member_specs");
             parts.config_fields.push(quote! {
                 #[doc = #count_doc]
                 pub #count_field: usize
@@ -1393,7 +1396,7 @@ fn render_observed_harness_parts(
                 "Leave the `{link_id}` observer slot empty (its cardinality \
                  admits an empty set)."
             );
-            let vacant_field = declare_vacant_knob(parts, &field, vacant_doc);
+            let vacant_field = declare_vacant_knob(parts, link_id, vacant_doc);
             mocks.fields.push(quote!(pub #field: Option<#module::Mock>));
             parts.mock_starts.push(quote! {
                 let #field = if config.#vacant_field {
@@ -1415,17 +1418,17 @@ fn render_observed_harness_parts(
             mocks.inits.push(field);
         }
         Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
-            let count_field = Ident::new(&format!("{field}_instances"), Span::call_site());
+            let count_field = suffixed_rust_identifier(link_id, "instances");
             let default_count = default_instance_count(spec.cardinality);
             let count_doc =
                 format!("How many mock sources to start for the `{link_id}` observer slot.");
-            let ids_field = Ident::new(&format!("{field}_instance_ids"), Span::call_site());
+            let ids_field = suffixed_rust_identifier(link_id, "instance_ids");
             let ids_doc = format!(
                 "Explicit instance ids for the `{link_id}` mock sources, \
                  overriding `{count_field}` when non-empty. For nodes that \
                  classify sources by instance name."
             );
-            let ids_local = Ident::new(&format!("{field}_member_ids"), Span::call_site());
+            let ids_local = suffixed_rust_identifier(link_id, "member_ids");
             parts.config_fields.push(quote! {
                 #[doc = #count_doc]
                 pub #count_field: usize
@@ -1469,10 +1472,10 @@ fn render_observed_harness_parts(
     }
 }
 
-/// Declares the `<field>_vacant` knob of a slot whose cardinality admits an
+/// Declares the `<link_id>_vacant` knob of a slot whose cardinality admits an
 /// empty set: a `Config` field documented by `doc`, false by default.
-fn declare_vacant_knob(parts: &mut HarnessParts, field: &Ident, doc: String) -> Ident {
-    let vacant_field = Ident::new(&format!("{field}_vacant"), Span::call_site());
+fn declare_vacant_knob(parts: &mut HarnessParts, link_id: &str, doc: String) -> Ident {
+    let vacant_field = suffixed_rust_identifier(link_id, "vacant");
     parts.config_fields.push(quote! {
         #[doc = #doc]
         pub #vacant_field: bool

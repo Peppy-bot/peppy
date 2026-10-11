@@ -8,12 +8,14 @@ use super::launch::process_launch;
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
-use crate::services::node::gate::{Admission, ConcurrencyGate, finish_on_reset};
+use crate::services::node::gate::{
+    Admission, ConcurrencyGate, finish_on_reset, reset_drain_budget,
+};
 use crate::services::node::{DaemonDefaults, HealthMonitorPolicy, RelationshipCoordinators};
 use core_node_api::ActionId;
 use core_node_api::encoding::{
-    LaunchGoal, LaunchGoalResponse, LaunchResult, StackBudgets, StackBuildGoal, StackJoinGoal,
-    StackRemoveGoal,
+    CopyAction, CopyChange, DEFAULT_IDLE_TIMEOUT_SECS, LaunchGoal, LaunchGoalResponse,
+    LaunchResult, StackBudgets, StackBuildGoal, StackJoinGoal, StackRemoveGoal,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -111,14 +113,14 @@ impl StackRequest {
         }
     }
 
-    /// The budgets the request runs under; a removal adds no node and runs
-    /// under the defaults.
+    /// The budgets the request runs under: the ones its goal carries, or
+    /// [`REMOVAL_BUDGETS`] for a removal, whose goal carries none.
     fn budgets(&self) -> StackBudgets {
         match self {
             Self::Launch(goal) => goal.budgets.clone(),
             Self::Build(goal) => goal.launch().budgets.clone(),
             Self::Join(goal) => goal.budgets.clone(),
-            Self::Remove(_) => StackBudgets::default(),
+            Self::Remove(_) => REMOVAL_BUDGETS,
         }
     }
 
@@ -132,6 +134,26 @@ impl StackRequest {
         }
     }
 
+    /// The change of one copy the request makes, which `stack list` reports
+    /// while the request holds the stack: the join of a copy, or the removal
+    /// of a copy that `active` holds. A launch and a build change no single
+    /// copy.
+    fn copy_change(&self, active: Option<&ActiveLaunch>) -> Option<CopyChange> {
+        match self {
+            Self::Join(goal) => Some(CopyChange {
+                action: CopyAction::Join,
+                name: goal.name.clone(),
+                option: goal.option.clone(),
+            }),
+            Self::Remove(goal) => Some(CopyChange {
+                action: CopyAction::Remove,
+                name: goal.name.clone(),
+                option: active?.copy_option(&goal.name)?.to_owned(),
+            }),
+            Self::Launch(_) | Self::Build(_) => None,
+        }
+    }
+
     fn process(self, ctx: StackChangeContext) -> futures::future::BoxFuture<'static, LaunchResult> {
         match self {
             Self::Launch(goal) => process_launch(goal, ctx).boxed(),
@@ -141,6 +163,17 @@ impl StackRequest {
         }
     }
 }
+
+/// What a removal runs under. A removal adds, builds and starts no node, so
+/// it reads none of these phase budgets; it has no overall deadline and
+/// forwards no environment.
+const REMOVAL_BUDGETS: StackBudgets = StackBudgets {
+    env_vars: Vec::new(),
+    node_add_idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
+    node_build_idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
+    node_run_idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
+    max_timeout_secs: None,
+};
 
 /// Per-phase idle timeouts, sourced from the goal's budgets. Each phase's clock resets
 /// only on genuine subprocess/git/http activity (see `spawn_feedback_forwarder`).
@@ -164,7 +197,8 @@ impl IdleTimeouts {
 #[derive(Clone, Copy)]
 pub(crate) struct StackChangeTimeouts {
     pub node_startup: Duration,
-    pub node_start_health: Duration,
+    /// The setup budget of an instance whose node declares none.
+    pub default_setup: config::node::SetupTimeout,
     pub health_monitor: HealthMonitorPolicy,
 }
 
@@ -410,7 +444,13 @@ async fn handle_stack_request(
         action.id().name()
     );
 
-    let launch_id = goal.launch_id(action_context.slice_ownership.active.lock().as_ref());
+    let (launch_id, copy_change) = {
+        let active = action_context.slice_ownership.active.lock();
+        (
+            goal.launch_id(active.as_ref()),
+            goal.copy_change(active.as_ref()),
+        )
+    };
     let log = match ActionLog::for_stack_action(
         &action_context.peppy_dirs,
         action_context.node_stack.log_exporter().clone(),
@@ -433,6 +473,12 @@ async fn handle_stack_request(
         log_path.display()
     );
 
+    // Reported before the reply, so a client that hears the acceptance finds
+    // the change in `stack list`. A goal that is not accepted drops the hold,
+    // which clears it.
+    if let Some(change) = copy_change {
+        mutation.report(change);
+    }
     // `accept` registers the per-goal context before replying accepted.
     let Some(goal_ctx) = accept_goal(pending, encode_accepted(action, &log_path)).await else {
         gate.clear_running();
@@ -495,7 +541,10 @@ async fn handle_stack_request(
         // SDK's retention window for a result that never arrives. Releasing the
         // gate on panic is handled by `slot` above. Mirrors the panic handling
         // in `run_node_run` / `run_node_add` / `run_node_build`.
-        let work = finish_on_reset(goal.process(ctx), &cancellation, || {
+        // A change starts instances, and a reset that cancels one of their
+        // starts waits for its cooperative stop.
+        let drain_budget = reset_drain_budget(ctx.node_stack.shutdown_grace());
+        let work = finish_on_reset(goal.process(ctx), &cancellation, drain_budget, || {
             LaunchResult::failure(
                 log_for_task.path(),
                 "stack operation cancelled by stack reset",

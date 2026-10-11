@@ -23,7 +23,7 @@ mod report;
 mod select;
 
 pub use check::check_composition;
-pub use copy::{CopyInstance, CopyMembership, CopyRecord, SELF_COPY_NAME_REFUSAL};
+pub use copy::{CopyInstance, CopyMembership, CopyRecord, SELF_COPY_NAME_REFUSAL, parse_copy_name};
 pub use error::CompositionError;
 pub use prepared::{ComposedJoin, ComposedLaunch, JoinRequest, PreparedLauncher, RunningStack};
 pub use report::{AppliedChange, CompositionReport, SkipReason, SkippedAdjustment};

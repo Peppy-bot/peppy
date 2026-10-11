@@ -445,6 +445,50 @@ async def test_harness_core_shutdown_propagates_setup_error(tmp_path):
             await harness.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_harness_core_node_reads_the_setup_budget_of_its_manifest(tmp_path):
+    """The node under the harness, like a standalone node, reads the setup
+    budget its manifest declares, and the default setup budget without one."""
+    from peppylib import NodeRunner
+
+    async with await EphemeralRouter.start() as router:
+        peppy_config_path = tmp_path / "peppy.json5"
+        peppy_config_path.write_text(
+            """{
+    peppy_schema: "node/v1",
+    manifest: { name: "test_node", tag: "v1" },
+    execution: {
+        language: "python",
+        run_cmd: ["uv", "run"],
+        setup_timeout_secs: 180,
+    },
+}"""
+        )
+        standalone_config = (
+            StandaloneConfig()
+            .with_messaging(router.host, router.port)
+            .with_instance_id("setup_budget_instance")
+        )
+
+        async def setup(params, node_runner):
+            return []
+
+        harness = await HarnessCore.start(
+            peppy_config_path, standalone_config, [], setup
+        )
+        try:
+            assert harness.node_runner.setup_timeout_secs() == 180
+        finally:
+            await harness.shutdown()
+
+        undeclared_dir = tmp_path / "undeclared"
+        undeclared_dir.mkdir()
+        undeclared = await NodeRunner.new_standalone(
+            str(_write_peppy_config(undeclared_dir)), standalone_config
+        )
+        assert undeclared.setup_timeout_secs() == 15
+
+
 async def _standalone_node_runner(router, tmp_path, clock_binding):
     """A standalone ``NodeRunner`` against ``router``, exactly what a
     harness-booted node's runtime looks like to ``peppylib.clock``."""
