@@ -2,7 +2,7 @@ use crate::internal::node::TypeToken;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-// A flexible value to hold arbitrary JSON5 content (runtime values only)
+/// A flexible value to hold arbitrary JSON5 content (runtime values only).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(untagged)]
 pub enum AnyType {
@@ -63,10 +63,10 @@ impl AnyType {
                 AnyType::Int(_) | AnyType::UInt(_) => Ok(()),
                 other => Err(mismatch(other.type_name())),
             },
-            TypeToken::U8 => check_unsigned_range(self, 0, u8::MAX as u64, path, token),
-            TypeToken::U16 => check_unsigned_range(self, 0, u16::MAX as u64, path, token),
-            TypeToken::U32 => check_unsigned_range(self, 0, u32::MAX as u64, path, token),
-            TypeToken::U64 => check_unsigned_range(self, 0, u64::MAX, path, token),
+            TypeToken::U8 => check_unsigned_range(self, u8::MAX as u64, path, token),
+            TypeToken::U16 => check_unsigned_range(self, u16::MAX as u64, path, token),
+            TypeToken::U32 => check_unsigned_range(self, u32::MAX as u64, path, token),
+            TypeToken::U64 => check_unsigned_range(self, u64::MAX, path, token),
             TypeToken::I8 => check_signed_range(self, i8::MIN as i64, i8::MAX as i64, path, token),
             TypeToken::I16 => {
                 check_signed_range(self, i16::MIN as i64, i16::MAX as i64, path, token)
@@ -94,7 +94,6 @@ impl AnyType {
 
 fn check_unsigned_range(
     value: &AnyType,
-    min: u64,
     max: u64,
     path: &str,
     token: &TypeToken,
@@ -110,10 +109,10 @@ fn check_unsigned_range(
             });
         }
     };
-    if v < min || v > max {
+    if v > max {
         return Err(TypeMismatch {
             path: path.to_string(),
-            expected: format!("{} in [{}, {}]", type_token_name(token), min, max),
+            expected: format!("{} in [0, {}]", type_token_name(token), max),
             actual: format!("{}", v),
         });
     }
@@ -237,7 +236,7 @@ impl Serialize for DefaultValue {
 ///   both produce [`ParameterSpec::Group`].
 ///
 /// `$default` is type- and range-checked against `$type` before this value can
-/// be constructed, and is permitted only on `Primitive` — never on arrays or
+/// be constructed, and is permitted only on `Primitive`, never on arrays or
 /// groups. This is what makes the schema "parse, don't validate".
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParameterSpec {
@@ -257,7 +256,7 @@ impl ParameterSpec {
     /// synthesizing `Group`s from their leaves' defaults.
     ///
     /// Arrays cannot carry defaults, so a missing array always reports as
-    /// missing. Returns `None` if any reachable leaf lacks a default — in that
+    /// missing. Returns `None` if any reachable leaf lacks a default; in that
     /// case the caller should surface a missing-parameter error naming the
     /// missing path.
     fn synthesize_default(&self, path: &str, missing: &mut Vec<String>) -> Option<AnyType> {
@@ -277,11 +276,7 @@ impl ParameterSpec {
                 let mut out = BTreeMap::new();
                 let mut all_present = true;
                 for (k, sub) in map {
-                    let sub_path = if path.is_empty() {
-                        k.clone()
-                    } else {
-                        format!("{path}.{k}")
-                    };
+                    let sub_path = join_field_path(path, k);
                     match sub.synthesize_default(&sub_path, missing) {
                         Some(v) => {
                             out.insert(k.clone(), v);
@@ -358,8 +353,12 @@ impl<'de> Deserialize<'de> for ParameterSpec {
 fn parameter_spec_from_any(value: AnyType, path: &str) -> Result<ParameterSpec, String> {
     match value {
         AnyType::String(name) => {
-            let kind = parse_type_token(&name)
-                .ok_or_else(|| format!("at `{path}`: unknown primitive type `{name}`"))?;
+            let kind = parse_type_token(&name).ok_or_else(|| {
+                format!(
+                    "at `{}`: unknown primitive type `{name}`",
+                    display_path(path)
+                )
+            })?;
             Ok(ParameterSpec::Primitive {
                 kind,
                 default: None,
@@ -457,28 +456,7 @@ fn parse_array_spec(map: BTreeMap<String, AnyType>, path: &str) -> Result<Parame
                 items = Some(value);
             }
             "$length" => {
-                let len = match value {
-                    AnyType::UInt(u) => usize::try_from(u).map_err(|_| {
-                        format!(
-                            "at `{}`: `$length` value {u} does not fit in usize on this target",
-                            display_path(path)
-                        )
-                    })?,
-                    AnyType::Int(i) if i >= 0 => usize::try_from(i).map_err(|_| {
-                        format!(
-                            "at `{}`: `$length` value {i} does not fit in usize on this target",
-                            display_path(path)
-                        )
-                    })?,
-                    other => {
-                        return Err(format!(
-                            "at `{}`: `$length` must be a non-negative integer, got {}",
-                            display_path(path),
-                            other.type_name()
-                        ));
-                    }
-                };
-                length = Some(len);
+                length = Some(parse_array_length(value, path)?);
             }
             "$default" => {
                 return Err(format!(
@@ -513,11 +491,33 @@ fn parse_array_spec(map: BTreeMap<String, AnyType>, path: &str) -> Result<Parame
             display_path(path)
         )
     })?;
-    let item_path = format!("{}[]", if path.is_empty() { "<root>" } else { path });
+    let item_path = format!("{}[]", display_path(path));
     let item_spec = parameter_spec_from_any(items, &item_path)?;
     Ok(ParameterSpec::Array {
         items: Box::new(item_spec),
         length,
+    })
+}
+
+/// Parses the `$length` of an array spec: a non-negative integer that fits
+/// in `usize` on this target.
+fn parse_array_length(value: AnyType, path: &str) -> Result<usize, String> {
+    let length: u64 = match value {
+        AnyType::UInt(u) => u,
+        AnyType::Int(i) if i >= 0 => i as u64,
+        other => {
+            return Err(format!(
+                "at `{}`: `$length` must be a non-negative integer, got {}",
+                display_path(path),
+                other.type_name()
+            ));
+        }
+    };
+    usize::try_from(length).map_err(|_| {
+        format!(
+            "at `{}`: `$length` value {length} does not fit in usize on this target",
+            display_path(path)
+        )
     })
 }
 
@@ -552,11 +552,7 @@ fn parse_explicit_group(
                 ));
             }
             field => {
-                let sub_path = if path.is_empty() {
-                    field.to_string()
-                } else {
-                    format!("{path}.{field}")
-                };
+                let sub_path = join_field_path(path, field);
                 let parsed = parameter_spec_from_any(value, &sub_path)?;
                 out.insert(field.to_string(), parsed);
             }
@@ -575,11 +571,7 @@ fn parse_group_object(map: BTreeMap<String, AnyType>, path: &str) -> Result<Para
                 display_path(path)
             ));
         }
-        let sub_path = if path.is_empty() {
-            key.clone()
-        } else {
-            format!("{path}.{key}")
-        };
+        let sub_path = join_field_path(path, &key);
         let parsed = parameter_spec_from_any(value, &sub_path)?;
         out.insert(key, parsed);
     }
@@ -609,10 +601,10 @@ fn parse_default_value(kind: &TypeToken, raw: AnyType, path: &str) -> Result<Def
         TypeToken::Time => Err(format!(
             "at `{display}`: `$default` is not supported for type `time`"
         )),
-        TypeToken::U8 => bounded_uint_default(raw, 0, u8::MAX as u64, "u8", display),
-        TypeToken::U16 => bounded_uint_default(raw, 0, u16::MAX as u64, "u16", display),
-        TypeToken::U32 => bounded_uint_default(raw, 0, u32::MAX as u64, "u32", display),
-        TypeToken::U64 => bounded_uint_default(raw, 0, u64::MAX, "u64", display),
+        TypeToken::U8 => bounded_uint_default(raw, u8::MAX as u64, "u8", display),
+        TypeToken::U16 => bounded_uint_default(raw, u16::MAX as u64, "u16", display),
+        TypeToken::U32 => bounded_uint_default(raw, u32::MAX as u64, "u32", display),
+        TypeToken::U64 => bounded_uint_default(raw, u64::MAX, "u64", display),
         TypeToken::I8 => bounded_int_default(raw, i8::MIN as i64, i8::MAX as i64, "i8", display),
         TypeToken::I16 => {
             bounded_int_default(raw, i16::MIN as i64, i16::MAX as i64, "i16", display)
@@ -651,7 +643,6 @@ fn parse_default_value(kind: &TypeToken, raw: AnyType, path: &str) -> Result<Def
 
 fn bounded_uint_default(
     raw: AnyType,
-    min: u64,
     max: u64,
     name: &str,
     display: &str,
@@ -671,9 +662,9 @@ fn bounded_uint_default(
             ));
         }
     };
-    if v < min || v > max {
+    if v > max {
         return Err(format!(
-            "at `{display}`: `$default` value {v} is outside the range of `{name}` [{min}, {max}]"
+            "at `{display}`: `$default` value {v} is outside the range of `{name}` [0, {max}]"
         ));
     }
     Ok(DefaultValue::UInt(v))
@@ -764,64 +755,45 @@ fn display_path(path: &str) -> &str {
     if path.is_empty() { "<root>" } else { path }
 }
 
+/// The dot-path of `field` inside `parent`. A field at the root (empty
+/// `parent`) is its own path.
+pub(crate) fn join_field_path(parent: &str, field: &str) -> String {
+    if parent.is_empty() {
+        return field.to_owned();
+    }
+    format!("{parent}.{field}")
+}
+
 /// Type alias for parameter type specifications declared in `peppy.json5`.
 ///
-/// Each key is a parameter name and each value is a typed [`ParameterSpec`]
-/// — either a primitive leaf (with optional `$default`) or a nested group.
+/// Each key is a parameter name and each value is a typed [`ParameterSpec`]:
+/// a primitive leaf (with optional `$default`), an array, or a nested group.
 pub type ParameterSchema = BTreeMap<String, ParameterSpec>;
 
-/// Unvalidated node arguments deserialized from a runtime or deployment config.
+/// Fills the fields of one group from its schema (`path` is empty at the
+/// schema root): a supplied field gets its own missing children filled, and
+/// a missing field is synthesized from its `$default`s. Required leaves with
+/// no default are appended to `missing` as dot-paths.
 ///
-/// Use [`RawNodeArguments::into_resolved`] to validate against a
-/// [`ParameterSchema`] and obtain a [`NodeArguments`] value.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(transparent)]
-pub(crate) struct RawNodeArguments(BTreeMap<String, AnyType>);
-
-impl RawNodeArguments {
-    /// Validate these raw arguments against a [`ParameterSchema`] and produce
-    /// a [`NodeArguments`] value.
-    ///
-    /// Behavior:
-    /// 1. For every schema key missing from the arguments, synthesize from
-    ///    `$default` if the entire subtree has defaults; otherwise collect a
-    ///    missing-parameter error naming the leaf path that has no default.
-    ///    Partially supplied groups have their missing children synthesized
-    ///    from `$default` recursively.
-    /// 2. Validate every supplied value against its declared type, with strict
-    ///    per-width range checks for integer types.
-    /// 3. Reject any argument key not declared in the schema.
-    fn into_resolved(
-        mut self,
-        schema: &ParameterSchema,
-    ) -> Result<NodeArguments, NodeArgumentsError> {
-        // 1. Fill defaults for any keys missing from the supplied arguments,
-        //    recursing into supplied groups to fill their missing children too.
-        let mut missing: Vec<String> = Vec::new();
-        for (key, spec) in schema {
-            match self.0.get_mut(key) {
-                Some(value) => merge_defaults(value, spec, key, &mut missing),
-                None => {
-                    if let Some(default_value) = spec.synthesize_default(key, &mut missing) {
-                        self.0.insert(key.clone(), default_value);
-                    }
+/// The daemon ([`apply_parameter_defaults`]) and the node
+/// ([`validate_node_arguments`]) both fill defaults through this function, so
+/// both fill them the same way.
+fn fill_group_defaults(
+    values: &mut BTreeMap<String, AnyType>,
+    fields: &ParameterSchema,
+    path: &str,
+    missing: &mut Vec<String>,
+) {
+    for (key, spec) in fields {
+        let field_path = join_field_path(path, key);
+        match values.get_mut(key) {
+            Some(value) => merge_defaults(value, spec, &field_path, missing),
+            None => {
+                if let Some(synthesized) = spec.synthesize_default(&field_path, missing) {
+                    values.insert(key.clone(), synthesized);
                 }
             }
         }
-        if !missing.is_empty() {
-            return Err(NodeArgumentsError::MissingParameters(missing));
-        }
-
-        // 2. Validate every supplied value against its declared spec.
-        for (key, value) in &self.0 {
-            let spec = schema
-                .get(key)
-                .ok_or_else(|| NodeArgumentsError::UnknownParameter { key: key.clone() })?;
-            validate_value_against_spec(value, spec, key)
-                .map_err(NodeArgumentsError::TypeMismatch)?;
-        }
-
-        Ok(NodeArguments(self.0))
     }
 }
 
@@ -844,21 +816,7 @@ fn merge_defaults(
 ) {
     match (spec, value) {
         (ParameterSpec::Group(fields), AnyType::Object(map)) => {
-            for (key, sub_spec) in fields {
-                let sub_path = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{path}.{key}")
-                };
-                match map.get_mut(key) {
-                    Some(child) => merge_defaults(child, sub_spec, &sub_path, missing),
-                    None => {
-                        if let Some(synthesized) = sub_spec.synthesize_default(&sub_path, missing) {
-                            map.insert(key.clone(), synthesized);
-                        }
-                    }
-                }
-            }
+            fill_group_defaults(map, fields, path, missing);
         }
         (ParameterSpec::Array { items, .. }, AnyType::Array(arr)) => {
             for (i, elem) in arr.iter_mut().enumerate() {
@@ -919,8 +877,9 @@ fn validate_value_against_spec(
                     });
                 }
             }
-            // Validate each declared field — defaults have already been filled
-            // in by `into_resolved`, so any missing key here is a true error.
+            // Validate each declared field. Defaults have already been filled
+            // in by `validate_node_arguments`, so any missing key here is a true
+            // error.
             for (k, sub_spec) in fields {
                 let sub_path = format!("{path}.{k}");
                 match map.get(k) {
@@ -939,24 +898,11 @@ fn validate_value_against_spec(
     }
 }
 
-impl<const N: usize> From<[(String, AnyType); N]> for RawNodeArguments {
-    fn from(arr: [(String, AnyType); N]) -> Self {
-        Self(BTreeMap::from(arr))
-    }
-}
-
-impl From<BTreeMap<String, AnyType>> for RawNodeArguments {
-    fn from(map: BTreeMap<String, AnyType>) -> Self {
-        Self(map)
-    }
-}
-
 /// Node arguments that have passed validation against the manifest spec.
 ///
-/// This type cannot be constructed directly — it is only produced by
-/// [`RawNodeArguments::into_resolved`]. The inner data is not accessible;
-/// consumers must parse into a typed struct via
-/// [`peppylib::config::deserialize_parameters`].
+/// Only [`validate_node_arguments`] constructs this type, and its inner map
+/// is private: peppylib serializes it and parses the values into the node's
+/// typed parameter struct.
 #[derive(Clone, Debug, Serialize)]
 pub struct NodeArguments(BTreeMap<String, AnyType>);
 
@@ -994,17 +940,39 @@ impl std::fmt::Display for NodeArgumentsError {
 
 impl std::error::Error for NodeArgumentsError {}
 
-/// Validates a `BTreeMap<String, AnyType>` against a [`ParameterSchema`] and
-/// produces a [`NodeArguments`] value.
+/// Validates `arguments` against a [`ParameterSchema`] and produces a
+/// [`NodeArguments`] value.
 ///
-/// Use this when arguments are constructed programmatically (e.g. from a
-/// deserialized runtime config) rather than parsed from a raw string.
+/// Behavior:
+/// 1. For every schema key missing from the arguments, synthesize from
+///    `$default` if the entire subtree has defaults; otherwise collect a
+///    missing-parameter error naming the leaf path that has no default.
+///    Partially supplied groups have their missing children synthesized
+///    from `$default` recursively.
+/// 2. Validate every supplied value against its declared type, with strict
+///    per-width range checks for integer types.
+/// 3. Reject any argument key not declared in the schema.
 pub fn validate_node_arguments(
-    arguments: BTreeMap<String, AnyType>,
+    mut arguments: BTreeMap<String, AnyType>,
     schema: &ParameterSchema,
 ) -> Result<NodeArguments, NodeArgumentsError> {
-    let raw = RawNodeArguments::from(arguments);
-    raw.into_resolved(schema)
+    // 1. Fill defaults for any keys missing from the supplied arguments,
+    //    recursing into supplied groups to fill their missing children too.
+    let mut missing: Vec<String> = Vec::new();
+    fill_group_defaults(&mut arguments, schema, "", &mut missing);
+    if !missing.is_empty() {
+        return Err(NodeArgumentsError::MissingParameters(missing));
+    }
+
+    // 2. Validate every supplied value against its declared spec.
+    for (key, value) in &arguments {
+        let spec = schema
+            .get(key)
+            .ok_or_else(|| NodeArgumentsError::UnknownParameter { key: key.clone() })?;
+        validate_value_against_spec(value, spec, key).map_err(NodeArgumentsError::TypeMismatch)?;
+    }
+
+    Ok(NodeArguments(arguments))
 }
 
 /// Fill any keys missing from `arguments` with values synthesized from the
@@ -1025,16 +993,7 @@ pub fn apply_parameter_defaults(
     // visible to the caller when we end up returning a non-empty `missing`.
     let mut staged = arguments.clone();
     let mut missing = Vec::new();
-    for (key, spec) in schema {
-        match staged.get_mut(key) {
-            Some(value) => merge_defaults(value, spec, key, &mut missing),
-            None => {
-                if let Some(value) = spec.synthesize_default(key, &mut missing) {
-                    staged.insert(key.clone(), value);
-                }
-            }
-        }
-    }
+    fill_group_defaults(&mut staged, schema, "", &mut missing);
     if missing.is_empty() {
         *arguments = staged;
     }
@@ -1101,6 +1060,14 @@ mod tests {
 
     fn schema(s: &str) -> ParameterSchema {
         json5(s)
+    }
+
+    /// Parses `source` as a parameter spec, which must be rejected, and
+    /// returns the error message.
+    fn spec_error(source: &str) -> String {
+        serde_json5::from_str::<ParameterSpec>(source)
+            .expect_err("the spec must be rejected")
+            .to_string()
     }
 
     // ---- Shorthand and long-form parsing ----
@@ -1225,89 +1192,77 @@ mod tests {
 
     #[test]
     fn default_type_mismatch_at_parse_time() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "u16", $default: "thirty" }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "u16", $default: "thirty" }"#);
         assert!(err.contains("$default"), "got: {err}");
         assert!(err.contains("u16"), "got: {err}");
     }
 
     #[test]
     fn default_out_of_range_u8() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "u8", $default: 300 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "u8", $default: 300 }"#);
         assert!(err.contains("u8"), "got: {err}");
         assert!(err.contains("300"), "got: {err}");
     }
 
     #[test]
     fn default_out_of_range_i16() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "i16", $default: 70000 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "i16", $default: 70000 }"#);
         assert!(err.contains("i16"), "got: {err}");
     }
 
     #[test]
     fn default_negative_for_unsigned() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "u32", $default: -1 }"#);
-        assert!(result.is_err());
+        spec_error(r#"{ $type: "u32", $default: -1 }"#);
     }
 
     #[test]
     fn default_on_group_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ width: "u16", $default: 5 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ width: "u16", $default: 5 }"#);
         assert!(err.contains("$default"), "got: {err}");
     }
 
     #[test]
     fn optional_on_parameter_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "string", $optional: true }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "string", $optional: true }"#);
         assert!(err.contains("$optional"), "got: {err}");
         assert!(err.contains("$default"), "got: {err}");
     }
 
     #[test]
     fn unknown_dollar_key_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "string", $frobnicate: 1 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "string", $frobnicate: 1 }"#);
         assert!(err.contains("$frobnicate"), "got: {err}");
     }
 
     #[test]
     fn unknown_type_rejected() {
-        let result: Result<ParameterSpec, _> = serde_json5::from_str(r#""qubit""#);
-        assert!(result.is_err());
+        spec_error(r#""qubit""#);
+    }
+
+    #[test]
+    fn unknown_shorthand_type_names_the_root_path() {
+        let err = spec_error(r#""qubit""#);
+        assert!(
+            err.contains("at `<root>`: unknown primitive type `qubit`"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn type_object_with_extra_field_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "u16", whatever: 1 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "u16", whatever: 1 }"#);
         assert!(err.contains("whatever"), "got: {err}");
     }
 
     #[test]
     fn default_on_bytes_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "bytes", $default: "abc" }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "bytes", $default: "abc" }"#);
         assert!(err.contains("bytes"), "got: {err}");
     }
 
     #[test]
     fn default_on_time_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "time", $default: 1 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "time", $default: 1 }"#);
         assert!(err.contains("time"), "got: {err}");
     }
 
@@ -1339,26 +1294,20 @@ mod tests {
 
     #[test]
     fn f32_default_rejects_int_above_lossless_range() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "f32", $default: 16777217 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "f32", $default: 16777217 }"#);
         assert!(err.contains("f32"), "got: {err}");
         assert!(err.contains("lossless"), "got: {err}");
     }
 
     #[test]
     fn f32_default_rejects_negative_int_below_lossless_range() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "f32", $default: -16777217 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "f32", $default: -16777217 }"#);
         assert!(err.contains("f32"), "got: {err}");
     }
 
     #[test]
     fn f32_default_rejects_float_overflow() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "f32", $default: 1e100 }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "f32", $default: 1e100 }"#);
         assert!(err.contains("f32"), "got: {err}");
         assert!(err.contains("range"), "got: {err}");
     }
@@ -1390,8 +1339,8 @@ mod tests {
     #[test]
     fn runtime_f32_rejects_int_above_lossless_range() {
         let s = schema(r#"{ gain: "f32" }"#);
-        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Int(16777217))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("gain".to_string(), AnyType::Int(16777217))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("f32"), "got: {msg}");
     }
@@ -1399,20 +1348,20 @@ mod tests {
     #[test]
     fn runtime_f32_rejects_float_overflow() {
         let s = schema(r#"{ gain: "f32" }"#);
-        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Float(1e100))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(1e100))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
     }
 
     #[test]
     fn runtime_f32_rejects_non_finite_float() {
         let s = schema(r#"{ gain: "f32" }"#);
-        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Float(f64::INFINITY))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(f64::INFINITY))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
 
-        let raw_nan = RawNodeArguments::from([("gain".to_string(), AnyType::Float(f64::NAN))]);
-        assert!(raw_nan.into_resolved(&s).is_err());
+        let raw_nan = BTreeMap::from([("gain".to_string(), AnyType::Float(f64::NAN))]);
+        assert!(validate_node_arguments(raw_nan, &s).is_err());
     }
 
     #[test]
@@ -1427,9 +1376,9 @@ mod tests {
             AnyType::UInt(16777216),
             AnyType::UInt(0),
         ] {
-            let raw = RawNodeArguments::from([("gain".to_string(), value.clone())]);
+            let raw = BTreeMap::from([("gain".to_string(), value.clone())]);
             assert!(
-                raw.into_resolved(&s).is_ok(),
+                validate_node_arguments(raw, &s).is_ok(),
                 "expected {value:?} to validate against f32"
             );
         }
@@ -1438,8 +1387,8 @@ mod tests {
     #[test]
     fn runtime_f64_accepts_value_above_f32_range() {
         let s = schema(r#"{ gain: "f64" }"#);
-        let raw = RawNodeArguments::from([("gain".to_string(), AnyType::Float(1e100))]);
-        assert!(raw.into_resolved(&s).is_ok());
+        let raw = BTreeMap::from([("gain".to_string(), AnyType::Float(1e100))]);
+        assert!(validate_node_arguments(raw, &s).is_ok());
     }
 
     // ---- Array parameter parsing ----
@@ -1472,10 +1421,31 @@ mod tests {
     }
 
     #[test]
+    fn array_length_must_be_a_non_negative_integer() {
+        for source in [
+            r#"{ $type: "array", $items: "u8", $length: -1 }"#,
+            r#"{ $type: "array", $items: "u8", $length: "3" }"#,
+        ] {
+            let err = spec_error(source);
+            assert!(
+                err.contains("at `<root>`: `$length` must be a non-negative integer"),
+                "{source} got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn array_item_errors_name_the_item_path() {
+        let err = spec_error(r#"{ $type: "array", $items: "u17" }"#);
+        assert!(
+            err.contains("at `<root>[]`: unknown primitive type `u17`"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn array_default_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "array", $items: "string", $default: ["a"] }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "array", $items: "string", $default: ["a"] }"#);
         assert!(err.contains("$default"), "got: {err}");
         assert!(err.contains("array"), "got: {err}");
     }
@@ -1504,21 +1474,19 @@ mod tests {
 
     #[test]
     fn explicit_object_with_default_rejected() {
-        let result: Result<ParameterSpec, _> =
-            serde_json5::from_str(r#"{ $type: "object", x: "u8", $default: {} }"#);
-        let err = result.unwrap_err().to_string();
+        let err = spec_error(r#"{ $type: "object", x: "u8", $default: {} }"#);
         assert!(err.contains("$default"), "got: {err}");
         assert!(err.contains("object"), "got: {err}");
     }
 
     #[test]
-    fn into_resolved_validates_array_items() {
+    fn validate_node_arguments_checks_array_items() {
         let s = schema(r#"{ tags: { $type: "array", $items: "string" } }"#);
-        let raw = RawNodeArguments::from([(
+        let raw = BTreeMap::from([(
             "tags".to_string(),
             AnyType::Array(vec![AnyType::String("a".into()), AnyType::Int(1)]),
         )]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("tags[1]"), "got: {msg}");
     }
@@ -1546,13 +1514,13 @@ mod tests {
         assert_eq!(spec, reparsed);
     }
 
-    // ---- Runtime defaulting via into_resolved ----
+    // ---- Runtime defaulting via validate_node_arguments ----
 
     #[test]
     fn missing_leaf_with_default_is_synthesized() {
         let s = schema(r#"{ name: { $type: "string", $default: "world" } }"#);
-        let raw = RawNodeArguments::from(BTreeMap::new());
-        let args = raw.into_resolved(&s).unwrap();
+        let raw = BTreeMap::new();
+        let args = validate_node_arguments(raw, &s).unwrap();
         assert_eq!(
             args.0.get("name"),
             Some(&AnyType::String("world".to_string()))
@@ -1562,8 +1530,8 @@ mod tests {
     #[test]
     fn missing_leaf_without_default_errors() {
         let s = schema(r#"{ name: "string" }"#);
-        let raw = RawNodeArguments::from(BTreeMap::new());
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::new();
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let NodeArgumentsError::MissingParameters(keys) = err else {
             panic!("unexpected error: {err:?}");
         };
@@ -1573,9 +1541,8 @@ mod tests {
     #[test]
     fn user_value_overrides_default() {
         let s = schema(r#"{ name: { $type: "string", $default: "world" } }"#);
-        let raw =
-            RawNodeArguments::from([("name".to_string(), AnyType::String("override".to_string()))]);
-        let args = raw.into_resolved(&s).unwrap();
+        let raw = BTreeMap::from([("name".to_string(), AnyType::String("override".to_string()))]);
+        let args = validate_node_arguments(raw, &s).unwrap();
         assert_eq!(
             args.0.get("name"),
             Some(&AnyType::String("override".to_string()))
@@ -1592,8 +1559,8 @@ mod tests {
                 }
             }"#,
         );
-        let raw = RawNodeArguments::from(BTreeMap::new());
-        let args = raw.into_resolved(&s).unwrap();
+        let raw = BTreeMap::new();
+        let args = validate_node_arguments(raw, &s).unwrap();
         let AnyType::Object(device) = args.0.get("device").unwrap() else {
             panic!("expected synthesized object");
         };
@@ -1615,9 +1582,8 @@ mod tests {
                 }
             }"#,
         );
-        let raw =
-            RawNodeArguments::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
-        let args = raw.into_resolved(&s).unwrap();
+        let raw = BTreeMap::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
+        let args = validate_node_arguments(raw, &s).unwrap();
         let AnyType::Object(device) = args.0.get("device").unwrap() else {
             panic!("expected device object");
         };
@@ -1637,14 +1603,14 @@ mod tests {
                 }
             }"#,
         );
-        let raw = RawNodeArguments::from([(
+        let raw = BTreeMap::from([(
             "device".to_string(),
             AnyType::Object(BTreeMap::from([(
                 "path".to_string(),
                 AnyType::String("/dev/video1".into()),
             )])),
         )]);
-        let args = raw.into_resolved(&s).unwrap();
+        let args = validate_node_arguments(raw, &s).unwrap();
         let AnyType::Object(device) = args.0.get("device").unwrap() else {
             panic!("expected device object");
         };
@@ -1668,9 +1634,8 @@ mod tests {
                 }
             }"#,
         );
-        let raw =
-            RawNodeArguments::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let NodeArgumentsError::MissingParameters(keys) = err else {
             panic!("unexpected error: {err:?}");
         };
@@ -1689,14 +1654,14 @@ mod tests {
                 }
             }"#,
         );
-        let raw = RawNodeArguments::from([(
+        let raw = BTreeMap::from([(
             "video".to_string(),
             AnyType::Object(BTreeMap::from([(
                 "resolution".to_string(),
                 AnyType::Object(BTreeMap::from([("width".to_string(), AnyType::UInt(640))])),
             )])),
         )]);
-        let args = raw.into_resolved(&s).unwrap();
+        let args = validate_node_arguments(raw, &s).unwrap();
         let AnyType::Object(video) = args.0.get("video").unwrap() else {
             panic!("expected video object");
         };
@@ -1757,8 +1722,8 @@ mod tests {
                 }
             }"#,
         );
-        let raw = RawNodeArguments::from(BTreeMap::new());
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::new();
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let NodeArgumentsError::MissingParameters(keys) = err else {
             panic!("unexpected error: {err:?}");
         };
@@ -1768,17 +1733,16 @@ mod tests {
     #[test]
     fn user_supplied_value_type_mismatch_errors() {
         let s = schema(r#"{ fps: "u16" }"#);
-        let raw =
-            RawNodeArguments::from([("fps".to_string(), AnyType::String("not a number".into()))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("fps".to_string(), AnyType::String("not a number".into()))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
     }
 
     #[test]
     fn user_supplied_uint_out_of_range_errors() {
         let s = schema(r#"{ count: "u8" }"#);
-        let raw = RawNodeArguments::from([("count".to_string(), AnyType::Int(300))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("count".to_string(), AnyType::Int(300))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("u8"), "got: {msg}");
     }
@@ -1786,19 +1750,39 @@ mod tests {
     #[test]
     fn user_supplied_negative_for_unsigned_errors() {
         let s = schema(r#"{ count: "u32" }"#);
-        let raw = RawNodeArguments::from([("count".to_string(), AnyType::Int(-1))]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let raw = BTreeMap::from([("count".to_string(), AnyType::Int(-1))]);
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         assert!(matches!(err, NodeArgumentsError::TypeMismatch(_)));
+    }
+
+    #[test]
+    fn unsigned_range_errors_name_the_range() {
+        let default_err = spec_error(r#"{ $type: "u8", $default: 300 }"#);
+        assert!(
+            default_err.contains("`$default` value 300 is outside the range of `u8` [0, 255]"),
+            "got: {default_err}"
+        );
+
+        let s = schema(r#"{ count: "u8" }"#);
+        let err = validate_node_arguments(
+            BTreeMap::from([("count".to_string(), AnyType::UInt(300))]),
+            &s,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "type mismatch at `count`: expected `u8 in [0, 255]`, got `300`"
+        );
     }
 
     #[test]
     fn unknown_argument_key_errors() {
         let s = schema(r#"{ name: "string" }"#);
-        let raw = RawNodeArguments::from([
+        let raw = BTreeMap::from([
             ("name".to_string(), AnyType::String("a".into())),
             ("extra".to_string(), AnyType::String("b".into())),
         ]);
-        let err = raw.into_resolved(&s).unwrap_err();
+        let err = validate_node_arguments(raw, &s).unwrap_err();
         assert!(matches!(err, NodeArgumentsError::UnknownParameter { .. }));
     }
 

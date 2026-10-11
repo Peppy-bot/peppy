@@ -13,7 +13,7 @@
 //!   fixed layout needs items of one fixed width.
 
 use super::types::{MessageFormat, SchemaType};
-use crate::common::type_token_name;
+use crate::common::{join_field_path, type_token_name};
 
 /// Payload field names reserved by transport metadata.
 const RESERVED_FIELD_NAMES: &[&str] = &["instance_id"];
@@ -51,11 +51,7 @@ fn check_field_names<'a>(
     parent_path: &str,
 ) -> Result<(), FormatRuleViolation> {
     for (field_name, schema) in fields {
-        let path = if parent_path.is_empty() {
-            field_name.clone()
-        } else {
-            format!("{parent_path}.{field_name}")
-        };
+        let path = join_field_path(parent_path, field_name);
         if RESERVED_FIELD_NAMES.contains(&field_name.as_str()) {
             return Err(FormatRuleViolation::ReservedFieldName {
                 field: field_name.clone(),

@@ -3,13 +3,13 @@
 //! `stack benchmark` uses this to send service/action probes carrying a payload
 //! of the message's real size, so the round-trip reflects real serialization +
 //! transport instead of an empty sentinel. Fixed-shape messages size (closely)
-//! exactly; variable-length fields — `string`, `bytes`, and unbounded arrays
-//! (no `$length`) — cannot be known from the schema, so they contribute only
+//! exactly. Variable-length fields (`string`, `bytes`, and unbounded arrays
+//! with no `$length`) cannot be known from the schema, so they contribute only
 //! their fixed pointer overhead and flag the estimate as a lower bound.
 //!
 //! The numbers approximate Cap'n Proto's framed layout (the wire codec): a
 //! word-aligned data section, an 8-byte pointer per variable/composite field,
-//! and a small framing constant. Exactness is not important — the benchmark
+//! and a small framing constant. Exactness is not important: the benchmark
 //! sends that many opaque bytes, so only the order of magnitude (a few bytes vs
 //! a few MB) matters.
 
@@ -33,26 +33,26 @@ const POINTER_BYTES: usize = 8;
 
 /// Lower-bound serialized size of `format`. See the module docs for the model.
 pub fn estimate_serialized_size(format: &MessageFormat) -> MessageSizeEstimate {
-    let mut acc = Acc::default();
+    let mut tally = SizeTally::default();
     for schema in format.0.values() {
-        size_of_schema(schema, &mut acc);
+        size_of_schema(schema, &mut tally);
     }
     MessageSizeEstimate {
-        bytes: round_up_8(acc.bytes).saturating_add(FRAMING_OVERHEAD),
-        has_variable: acc.has_variable,
+        bytes: round_up_8(tally.bytes).saturating_add(FRAMING_OVERHEAD),
+        has_variable: tally.has_variable,
     }
 }
 
 #[derive(Default)]
-struct Acc {
+struct SizeTally {
     bytes: usize,
     has_variable: bool,
 }
 
 /// Byte width of a fixed-size primitive. `string`/`bytes` are 0 here and handled
 /// as variable (pointer + flag) by the caller.
-fn primitive_bytes(t: &TypeToken) -> usize {
-    match t {
+fn primitive_bytes(token: &TypeToken) -> usize {
+    match token {
         TypeToken::Bool | TypeToken::U8 | TypeToken::I8 => 1,
         TypeToken::U16 | TypeToken::I16 => 2,
         TypeToken::U32 | TypeToken::I32 | TypeToken::F32 => 4,
@@ -61,36 +61,38 @@ fn primitive_bytes(t: &TypeToken) -> usize {
     }
 }
 
-fn size_of_schema(schema: &SchemaType, acc: &mut Acc) {
+fn size_of_schema(schema: &SchemaType, tally: &mut SizeTally) {
     match schema {
-        SchemaType::Type(t) | SchemaType::Primitive(PrimitiveSchema { kind: t, .. }) => match t {
-            TypeToken::String | TypeToken::Bytes => {
-                acc.bytes = acc.bytes.saturating_add(POINTER_BYTES);
-                acc.has_variable = true;
+        SchemaType::Type(token) | SchemaType::Primitive(PrimitiveSchema { kind: token, .. }) => {
+            match token {
+                TypeToken::String | TypeToken::Bytes => {
+                    tally.bytes = tally.bytes.saturating_add(POINTER_BYTES);
+                    tally.has_variable = true;
+                }
+                fixed => tally.bytes = tally.bytes.saturating_add(primitive_bytes(fixed)),
             }
-            fixed => acc.bytes = acc.bytes.saturating_add(primitive_bytes(fixed)),
-        },
+        }
         SchemaType::Array(ArraySchema { items, length, .. }) => {
-            acc.bytes = acc.bytes.saturating_add(POINTER_BYTES); // list pointer
+            tally.bytes = tally.bytes.saturating_add(POINTER_BYTES); // list pointer
             match length {
                 Some(len) => {
-                    let mut item = Acc::default();
+                    let mut item = SizeTally::default();
                     size_of_schema(items, &mut item);
-                    acc.bytes = acc.bytes.saturating_add(len.saturating_mul(item.bytes));
-                    acc.has_variable |= item.has_variable;
+                    tally.bytes = tally.bytes.saturating_add(len.saturating_mul(item.bytes));
+                    tally.has_variable |= item.has_variable;
                 }
                 // Unbounded array: the element count is a runtime property.
-                None => acc.has_variable = true,
+                None => tally.has_variable = true,
             }
         }
         SchemaType::Object(ObjectSchema { fields, .. }) => {
-            acc.bytes = acc.bytes.saturating_add(POINTER_BYTES); // struct pointer
-            let mut inner = Acc::default();
+            tally.bytes = tally.bytes.saturating_add(POINTER_BYTES); // struct pointer
+            let mut inner = SizeTally::default();
             for field in fields.values() {
                 size_of_schema(field, &mut inner);
             }
-            acc.bytes = acc.bytes.saturating_add(round_up_8(inner.bytes));
-            acc.has_variable |= inner.has_variable;
+            tally.bytes = tally.bytes.saturating_add(round_up_8(inner.bytes));
+            tally.has_variable |= inner.has_variable;
         }
     }
 }

@@ -117,8 +117,8 @@ impl Ord for Name {
 }
 
 /// Fully-qualified producer address. The wire addresses a producer by the
-/// `(core_node, instance_id)` pair — `instance_id` alone is only unique
-/// within one stack, while the pair is unique across the whole mesh — so
+/// `(core_node, instance_id)` pair (`instance_id` alone is only unique
+/// within one stack, while the pair is unique across the whole mesh), so
 /// every reference to a producer below the validator carries both halves.
 /// The validator stamps `core_node` when it materializes bindings (the
 /// `validate_bindings` pass in the peppy `daemon-config` crate); after
@@ -429,8 +429,8 @@ pub struct NodeInstanceConfig {
     pub framework: ResolvedFramework,
     /// The pre-resolved producer for every `link_id` declared in the
     /// consumer manifest's `depends_on.{nodes,contracts}`. Built by the
-    /// validator from the launcher / CLI binding map — each target stamped
-    /// with the launching daemon's `core_node` — so the spawned node does
+    /// validator from the launcher / CLI binding map, each target stamped
+    /// with the launching daemon's `core_node`, so the spawned node does
     /// no re-resolution work and always holds a wire-complete producer
     /// address. Empty when the manifest has no `depends_on` entries.
     /// Read by the generated subscribe / poll / send_goal call sites via
@@ -574,26 +574,6 @@ pub struct ResolvedFramework {
     pub clock: ClockBinding,
 }
 
-fn default_true() -> bool {
-    true
-}
-
-fn default_standard_buffer_size() -> usize {
-    crate::peppy_config::DEFAULT_STANDARD_BUFFER_SIZE
-}
-
-fn default_high_throughput_buffer_size() -> usize {
-    crate::peppy_config::DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE
-}
-
-fn default_daemon_grace_secs() -> u64 {
-    crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS
-}
-
-fn default_shutdown_grace_secs() -> u64 {
-    crate::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
-}
-
 /// Node lifecycle settings the daemon resolves and ships to each spawned node.
 /// `daemon_grace_secs` is the grace period the node's daemon-liveness watchdog
 /// waits, after the daemon's heartbeat goes silent, before shutting itself
@@ -605,25 +585,26 @@ fn default_shutdown_grace_secs() -> u64 {
 /// `setup_timeout_secs` is the setup budget of the instance: how long the
 /// daemon waits for its setup to end once it answers ready, which the daemon
 /// resolves from the node's manifest.
+///
+/// `#[serde(default)]` fills any field a partial block omits from the
+/// `Default` impl, so a partial block and an absent one agree.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct LifecycleRuntimeConfig {
-    #[serde(default = "default_daemon_grace_secs")]
     pub daemon_grace_secs: u64,
-    #[serde(default = "default_shutdown_grace_secs")]
     pub shutdown_grace_secs: u64,
     /// Left out when it is the default setup budget, so the configuration of
     /// an instance with the default budget stays byte-identical, and a node
     /// built with a peppylib that does not know the field still reads it.
-    #[serde(default, skip_serializing_if = "SetupTimeout::is_default")]
+    #[serde(skip_serializing_if = "SetupTimeout::is_default")]
     pub setup_timeout_secs: SetupTimeout,
 }
 
 impl Default for LifecycleRuntimeConfig {
     fn default() -> Self {
         Self {
-            daemon_grace_secs: default_daemon_grace_secs(),
-            shutdown_grace_secs: default_shutdown_grace_secs(),
+            daemon_grace_secs: crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS,
+            shutdown_grace_secs: crate::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
             setup_timeout_secs: SetupTimeout::DEFAULT,
         }
     }
@@ -647,22 +628,21 @@ impl LifecycleRuntimeConfig {
 /// concern rather than a discovery one, but co-locating them keeps a single
 /// struct (and a single serialized block) travelling the daemon-to-node path,
 /// since this is already the value threaded into the node's session at startup.
+///
+/// `#[serde(default)]` fills any field a partial block omits from the
+/// `Default` impl, so a partial block and an absent one agree.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct DiscoveryConfig {
     /// Gossip seed endpoints (full Zenoh endpoints, e.g. `"tcp/127.0.0.1:7448"`).
     /// Empty means "derive the router endpoint from `messaging_host:messaging_port`".
-    #[serde(default)]
     pub seed_peers: Vec<String>,
     /// Enable gossip so peers form direct links. Setting this to `false` forces
-    /// all traffic through the router (a rollback switch without a rebuild).
-    #[serde(default = "default_true")]
+    /// all traffic through the router (a switch that needs no rebuild).
     pub gossip: bool,
     /// Subscriber channel buffer for the `Standard` QoS tier (in-flight messages).
-    #[serde(default = "default_standard_buffer_size")]
     pub standard_buffer_size: usize,
     /// Subscriber channel buffer for the `HighThroughput` QoS tier (e.g. sensor data).
-    #[serde(default = "default_high_throughput_buffer_size")]
     pub high_throughput_buffer_size: usize,
     /// Workspace namespace stamped by the daemon so each spawned node opens
     /// its session under the same namespace as the daemon (routing context
@@ -670,7 +650,7 @@ pub struct DiscoveryConfig {
     /// to the constant `local` namespace at session open. Typed: an invalid
     /// value fails runtime-config parsing instead of leaking toward a live
     /// session. Omitted from serialized configs when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<crate::internal::namespace::Namespace>,
 }
 
@@ -692,9 +672,9 @@ impl DiscoveryConfig {
     }
 }
 
-/// This class is generated by the peppy daemon and then passed to each respective peppy node instances spawned by it
-/// through `PEPPY_RUNTIME_CONFIG` env var. It's then deserialized in the process runtime to understand
-/// how to communicate with the rest of the system.
+/// The configuration the peppy daemon generates for each node instance it
+/// spawns, passed through the `PEPPY_RUNTIME_CONFIG` env var. The node runtime
+/// deserializes it to learn how to communicate with the rest of the system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
@@ -704,14 +684,15 @@ pub struct RuntimeConfig {
     pub node_tag: Name,
     pub bound_core_node: Name,
     pub node_instance: NodeInstanceConfig,
-    /// Peer-discovery settings. Defaulted (and omitted from serialized configs)
-    /// for the common case, so launch configs written before this field existed
-    /// still parse.
+    /// Peer-discovery settings. Defaulted, and omitted from serialized configs
+    /// when they hold the default, so a config without a `discovery` block
+    /// parses.
     #[serde(default, skip_serializing_if = "DiscoveryConfig::is_default")]
     pub discovery: DiscoveryConfig,
-    /// Node lifecycle settings (daemon-liveness grace period). Defaulted and
-    /// omitted from serialized configs for the common case, so launch configs
-    /// written before this field existed still parse byte-identically.
+    /// Node lifecycle settings (daemon-liveness and shutdown grace periods,
+    /// and the setup budget). Defaulted, and omitted from serialized configs
+    /// when they hold the default, so a config without a `lifecycle` block
+    /// parses.
     #[serde(default, skip_serializing_if = "LifecycleRuntimeConfig::is_default")]
     pub lifecycle: LifecycleRuntimeConfig,
 }
@@ -751,18 +732,12 @@ impl RuntimeConfig {
         Ok(path.to_path_buf())
     }
 
+    /// Fingerprints the config file at `peppy_config` the way the codegen
+    /// writer does, so a node can compare the result with the fingerprint
+    /// stored next to its generated code.
     pub fn generate_peppy_config_fingerprint(peppy_config: impl AsRef<Path>) -> Result<String> {
-        use sha2::{Digest, Sha256};
-        let config_path = peppy_config.as_ref();
-        let content = std::fs::read(config_path)?;
-        let hash = Sha256::digest(&content);
-        Ok(hash
-            .iter()
-            .fold(String::with_capacity(hash.len() * 2), |mut acc, b| {
-                use std::fmt::Write;
-                let _ = write!(acc, "{:02x}", b);
-                acc
-            }))
+        let content = fs::read(peppy_config.as_ref())?;
+        Ok(crate::fingerprint::fingerprint_for_bytes(&content))
     }
 }
 
@@ -783,14 +758,14 @@ mod tests {
 
     #[test]
     fn name_validation() {
-        assert!(Name::new("robot").is_ok());
-        assert!(Name::new("camera_v1").is_ok());
-
-        assert!(Name::new("").is_err()); // empty not permitted
-        assert!(Name::new("/").is_err()); // slash not permitted
-        assert!(Name::new("/robot").is_err()); // slash not permitted
-        assert!(Name::new("Robot").is_ok()); // capital now allowed
-        assert!(Name::new("robot$cam").is_err()); // special
+        // Capital letters, digits, `_` and `-` are allowed.
+        for valid in ["robot", "camera_v1", "Robot", "node", "my_node-1", "Node"] {
+            assert!(Name::new(valid).is_ok(), "{valid:?} should be accepted");
+        }
+        // Empty, a slash anywhere, and other special characters are refused.
+        for invalid in ["", "/", "/robot", "node/", "robot$cam", "node@!"] {
+            assert!(Name::new(invalid).is_err(), "{invalid:?} should be refused");
+        }
     }
 
     #[test]
@@ -803,47 +778,49 @@ mod tests {
         }
     }
 
-    fn runtime_config_from_json(instance_id: &str) -> Result<RuntimeConfig> {
-        let json = r#"{
-            messaging_host: "$MESSAGING_HOST",
-            messaging_port: $MESSAGING_PORT,
-            node_instance: {
-                instance_id: "$INSTANCE_ID"
-            },
-            node_name: "camera",
-            node_tag: "v1",
-            bound_core_node: "core_node"
-        }"#;
+    /// The `node_instance` block of the `camera_front` instance most tests
+    /// configure.
+    const CAMERA_FRONT_INSTANCE: &str = r#"{ instance_id: "camera_front" }"#;
 
-        let populated = json
-            .replace("$INSTANCE_ID", instance_id)
-            .replace("$MESSAGING_HOST", "127.0.0.1")
-            .replace("$MESSAGING_PORT", "7448");
-        serde_json5::from_str(&populated).map_err(|err| Error::Parsing(err.into()))
+    /// The JSON5 of a runtime config for a `camera:v1` node bound to
+    /// `core_node`, with `node_instance` as given and `extra_fields` written
+    /// after the required keys.
+    fn runtime_config_json5(node_instance: &str, extra_fields: &str) -> String {
+        format!(
+            r#"{{
+                messaging_host: "127.0.0.1",
+                messaging_port: 7448,
+                node_instance: {node_instance},
+                node_name: "camera",
+                node_tag: "v1",
+                bound_core_node: "core_node",
+                {extra_fields}
+            }}"#
+        )
+    }
+
+    fn runtime_config_from_json(instance_id: &str) -> Result<RuntimeConfig> {
+        let node_instance = format!(r#"{{ instance_id: "{instance_id}" }}"#);
+        serde_json5::from_str(&runtime_config_json5(&node_instance, ""))
+            .map_err(|err| Error::Parsing(err.into()))
     }
 
     /// A clock binding round-trips through serialize/deserialize, and a
     /// runtime config carrying no `framework` key reads as wall time.
     #[test]
     fn resolved_framework_round_trip_and_wall_default() {
-        let simulated: RuntimeConfig = serde_json5::from_str(
+        let simulated: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
             r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: {
-                    instance_id: "camera_front",
-                    framework: { clock: { sim: {
-                        domain: { name: "robot", core_node: "cn-sim", incarnation: 7 },
-                        role: { consumer: {
-                            publisher: { core_node: "cn-sim", instance_id: "sim_inst" }
-                        } },
-                    } } }
-                },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node"
+                instance_id: "camera_front",
+                framework: { clock: { sim: {
+                    domain: { name: "robot", core_node: "cn-sim", incarnation: 7 },
+                    role: { consumer: {
+                        publisher: { core_node: "cn-sim", instance_id: "sim_inst" }
+                    } },
+                } } }
             }"#,
-        )
+            "",
+        ))
         .unwrap();
         let clock = simulated.node_instance.framework.clock.clone();
         assert_eq!(clock.label(), "robot@cn-sim");
@@ -946,21 +923,20 @@ mod tests {
         );
     }
 
-    /// A launch config written before `lifecycle` existed parses with the
-    /// default grace period, an explicit block round-trips, and a default
-    /// lifecycle is omitted from the serialized form so existing configs stay
-    /// byte-identical.
+    /// A runtime config without a `lifecycle` block parses with the default
+    /// grace periods, an explicit block round-trips, and a default lifecycle is
+    /// omitted from the serialized form.
     #[test]
     fn lifecycle_config_default_and_round_trip() {
-        let legacy = runtime_config_from_json("camera_front").unwrap();
-        assert_eq!(legacy.lifecycle, LifecycleRuntimeConfig::default());
+        let bare = runtime_config_from_json("camera_front").unwrap();
+        assert_eq!(bare.lifecycle, LifecycleRuntimeConfig::default());
         assert_eq!(
-            legacy.lifecycle.daemon_grace_secs,
+            bare.lifecycle.daemon_grace_secs,
             crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS
         );
 
         // Default lifecycle is skipped on serialize.
-        let serialized = serde_json5::to_string(&legacy).unwrap();
+        let serialized = serde_json5::to_string(&bare).unwrap();
         assert!(
             !serialized.contains("lifecycle"),
             "default lifecycle should not be serialized: {serialized}"
@@ -968,17 +944,10 @@ mod tests {
 
         // A partial lifecycle block fills the missing field from its default
         // and an explicit block round-trips.
-        let custom: RuntimeConfig = serde_json5::from_str(
-            r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: { instance_id: "camera_front" },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                lifecycle: { daemon_grace_secs: 42 }
-            }"#,
-        )
+        let custom: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
+            CAMERA_FRONT_INSTANCE,
+            "lifecycle: { daemon_grace_secs: 42 }",
+        ))
         .unwrap();
         assert_eq!(custom.lifecycle.daemon_grace_secs, 42);
         assert_eq!(
@@ -989,17 +958,10 @@ mod tests {
             serde_json5::from_str(&serde_json5::to_string(&custom).unwrap()).unwrap();
         assert_eq!(reparsed.lifecycle, custom.lifecycle);
 
-        let custom_shutdown: RuntimeConfig = serde_json5::from_str(
-            r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: { instance_id: "camera_front" },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                lifecycle: { shutdown_grace_secs: 7 }
-            }"#,
-        )
+        let custom_shutdown: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
+            CAMERA_FRONT_INSTANCE,
+            "lifecycle: { shutdown_grace_secs: 7 }",
+        ))
         .unwrap();
         assert_eq!(custom_shutdown.lifecycle.shutdown_grace_secs, 7);
         let reparsed: RuntimeConfig =
@@ -1011,16 +973,9 @@ mod tests {
     fn runtime_config_with_lifecycle(
         lifecycle: &str,
     ) -> std::result::Result<RuntimeConfig, String> {
-        serde_json5::from_str(&format!(
-            r#"{{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: {{ instance_id: "robot_initializer_inst" }},
-                node_name: "robot_initializer",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                lifecycle: {lifecycle}
-            }}"#
+        serde_json5::from_str(&runtime_config_json5(
+            CAMERA_FRONT_INSTANCE,
+            &format!("lifecycle: {lifecycle}"),
         ))
         .map_err(|error| error.to_string())
     }
@@ -1074,40 +1029,31 @@ mod tests {
         }
     }
 
-    /// A launch config written before `discovery` existed (no `discovery` key)
-    /// parses with the gossip-on default, an explicit discovery block
-    /// round-trips, and a default discovery is omitted from the serialized form
-    /// so existing configs stay byte-identical.
+    /// A runtime config without a `discovery` block parses with the gossip-on
+    /// default, an explicit block round-trips, and a default discovery is
+    /// omitted from the serialized form.
     #[test]
     fn discovery_config_default_and_round_trip() {
-        let legacy = runtime_config_from_json("camera_front").unwrap();
-        assert_eq!(legacy.discovery, DiscoveryConfig::default());
-        assert!(legacy.discovery.gossip);
-        assert!(legacy.discovery.seed_peers.is_empty());
-        // A launch config written before the buffer fields existed still parses
-        // and gets the built-in defaults.
-        assert_eq!(legacy.discovery.standard_buffer_size, 128);
-        assert_eq!(legacy.discovery.high_throughput_buffer_size, 1024);
+        let bare = runtime_config_from_json("camera_front").unwrap();
+        assert_eq!(bare.discovery, DiscoveryConfig::default());
+        assert!(bare.discovery.gossip);
+        assert!(bare.discovery.seed_peers.is_empty());
+        // A config without the buffer fields gets the built-in defaults.
+        assert_eq!(bare.discovery.standard_buffer_size, 128);
+        assert_eq!(bare.discovery.high_throughput_buffer_size, 1024);
 
         // Default discovery is skipped on serialize.
-        let serialized = serde_json5::to_string(&legacy).unwrap();
+        let serialized = serde_json5::to_string(&bare).unwrap();
         assert!(
             !serialized.contains("discovery"),
             "default discovery should not be serialized: {serialized}"
         );
 
         // A discovery block that omits the buffer keys still parses (defaults).
-        let no_buffers: RuntimeConfig = serde_json5::from_str(
-            r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: { instance_id: "camera_front" },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                discovery: { seed_peers: ["tcp/10.0.0.2:7448"], gossip: false }
-            }"#,
-        )
+        let no_buffers: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
+            CAMERA_FRONT_INSTANCE,
+            r#"discovery: { seed_peers: ["tcp/10.0.0.2:7448"], gossip: false }"#,
+        ))
         .unwrap();
         assert_eq!(
             no_buffers.discovery.seed_peers,
@@ -1118,22 +1064,15 @@ mod tests {
         assert_eq!(no_buffers.discovery.high_throughput_buffer_size, 1024);
 
         // Explicit buffer sizes round-trip.
-        let custom: RuntimeConfig = serde_json5::from_str(
-            r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: { instance_id: "camera_front" },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                discovery: {
-                    seed_peers: ["tcp/10.0.0.2:7448"],
-                    gossip: false,
-                    standard_buffer_size: 64,
-                    high_throughput_buffer_size: 4096
-                }
+        let custom: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
+            CAMERA_FRONT_INSTANCE,
+            r#"discovery: {
+                seed_peers: ["tcp/10.0.0.2:7448"],
+                gossip: false,
+                standard_buffer_size: 64,
+                high_throughput_buffer_size: 4096
             }"#,
-        )
+        ))
         .unwrap();
         assert_eq!(custom.discovery.standard_buffer_size, 64);
         assert_eq!(custom.discovery.high_throughput_buffer_size, 4096);
@@ -1150,17 +1089,10 @@ mod tests {
         );
 
         // An explicit namespace round-trips and is emitted on serialize.
-        let with_namespace: RuntimeConfig = serde_json5::from_str(
-            r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: { instance_id: "camera_front" },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                discovery: { namespace: "550e8400-e29b-41d4-a716-446655440000" }
-            }"#,
-        )
+        let with_namespace: RuntimeConfig = serde_json5::from_str(&runtime_config_json5(
+            CAMERA_FRONT_INSTANCE,
+            r#"discovery: { namespace: "550e8400-e29b-41d4-a716-446655440000" }"#,
+        ))
         .unwrap();
         assert_eq!(
             with_namespace
@@ -1179,20 +1111,45 @@ mod tests {
         assert_eq!(reparsed.discovery, with_namespace.discovery);
     }
 
+    /// Every field a partial `discovery` or `lifecycle` block omits takes the
+    /// value of the struct's `Default`, so a partial block and an absent one
+    /// agree; an unknown key is still refused.
+    #[test]
+    fn partial_blocks_fill_every_omitted_field_from_default() {
+        let empty: DiscoveryConfig = serde_json5::from_str("{}").unwrap();
+        assert_eq!(empty, DiscoveryConfig::default());
+        let namespace_only: DiscoveryConfig =
+            serde_json5::from_str(r#"{ namespace: "550e8400-e29b-41d4-a716-446655440000" }"#)
+                .unwrap();
+        assert_eq!(
+            DiscoveryConfig {
+                namespace: None,
+                ..namespace_only
+            },
+            DiscoveryConfig::default()
+        );
+        assert!(serde_json5::from_str::<DiscoveryConfig>("{ multicast: true }").is_err());
+
+        let empty: LifecycleRuntimeConfig = serde_json5::from_str("{}").unwrap();
+        assert_eq!(empty, LifecycleRuntimeConfig::default());
+        assert_eq!(
+            empty,
+            LifecycleRuntimeConfig {
+                daemon_grace_secs: crate::peppy_config::DEFAULT_DAEMON_GRACE_SECS,
+                shutdown_grace_secs: crate::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
+                setup_timeout_secs: SetupTimeout::DEFAULT,
+            }
+        );
+        assert!(serde_json5::from_str::<LifecycleRuntimeConfig>("{ grace: 1 }").is_err());
+    }
+
     #[test]
     fn runtime_config_rejects_an_invalid_namespace() {
         assert!(
-            serde_json5::from_str::<RuntimeConfig>(
-                r#"{
-                    messaging_host: "127.0.0.1",
-                    messaging_port: 7448,
-                    node_instance: { instance_id: "camera_front" },
-                    node_name: "camera",
-                    node_tag: "v1",
-                    bound_core_node: "core_node",
-                    discovery: { namespace: "**" }
-                }"#,
-            )
+            serde_json5::from_str::<RuntimeConfig>(&runtime_config_json5(
+                CAMERA_FRONT_INSTANCE,
+                r#"discovery: { namespace: "**" }"#,
+            ))
             .is_err(),
             "an invalid namespace must fail runtime-config parsing"
         );
@@ -1551,16 +1508,31 @@ mod tests {
 
     #[test]
     fn rejects_invalid_instance_id() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("peppy_launcher.json5");
-
-        let err = runtime_config_from_json("bad id!")
-            .and_then(|config| config.save_json5_launch_config(&path))
-            .unwrap_err();
+        let err = runtime_config_from_json("bad id!").unwrap_err();
         assert!(
             matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref msg)) if msg.contains("Invalid name"))
                 || matches!(err, Error::Parsing(ParsingError::InvalidName(_, _))),
             "expected parsing error about invalid name, got: {err}"
+        );
+    }
+
+    /// A node compares this fingerprint with the one the codegen writer
+    /// stored, so both must be the lowercase SHA-256 hex of the file bytes.
+    #[test]
+    fn the_peppy_config_fingerprint_is_the_one_the_codegen_writer_stores() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("peppy.json5");
+        fs::write(&path, b"abc").unwrap();
+
+        let fingerprint = RuntimeConfig::generate_peppy_config_fingerprint(&path).unwrap();
+        assert_eq!(
+            fingerprint,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        crate::fingerprint::generate_node_config_fingerprint(&path, "peppygen").unwrap();
+        assert_eq!(
+            fingerprint,
+            crate::fingerprint::read_codegen_fingerprint(&path, "peppygen").unwrap()
         );
     }
 

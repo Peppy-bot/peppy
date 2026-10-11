@@ -4,7 +4,7 @@
 //! node stack, code-generation) can run the same checks without
 //! depending on a runtime crate.
 //!
-//! The validator is structural — it does not care which crate orchestrates
+//! The validator is structural: it does not care which crate orchestrates
 //! the lookup. Callers supply a closure that resolves a `(name, tag)`
 //! pair to a [`NodeConfig`] from whatever store they own (an in-memory
 //! graph, a working stack snapshot, a parsed launcher batch, etc.).
@@ -55,7 +55,7 @@ pub fn node_implements(node: &NodeConfig, name: &str, tag: &str) -> bool {
 /// One resolved contract-implementation dependency edge: `consumer` declares
 /// `depends_on.contracts` for `contract`, and `provider` declares that
 /// contract in `manifest.implements`. Distinct from a direct node dependency
-/// (captured by [`collect_dependency_specs`]) — contract deps are deliberately
+/// (captured by [`collect_dependency_specs`]): contract deps are deliberately
 /// kept out of the node-dependency DAG, so this is the only place they surface
 /// for display/measurement purposes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,20 +82,17 @@ pub fn collect_contract_implementation_edges(
             continue;
         };
         for dep in &depends_on.contracts {
-            let contract_name = dep.name.as_str();
-            let contract_tag = dep.tag.as_str();
-            for provider in configs {
-                if node_implements(provider, contract_name, contract_tag) {
-                    edges.push(ContractImplementationEdge {
-                        consumer_name: consumer.manifest.name.as_str().to_owned(),
-                        consumer_tag: consumer.manifest.tag.clone(),
-                        provider_name: provider.manifest.name.as_str().to_owned(),
-                        provider_tag: provider.manifest.tag.clone(),
-                        contract_name: contract_name.to_owned(),
-                        contract_tag: contract_tag.to_owned(),
-                    });
-                }
-            }
+            let providers = configs
+                .iter()
+                .filter(|provider| node_implements(provider, dep.name.as_str(), &dep.tag));
+            edges.extend(providers.map(|provider| ContractImplementationEdge {
+                consumer_name: consumer.manifest.name.as_str().to_owned(),
+                consumer_tag: consumer.manifest.tag.clone(),
+                provider_name: provider.manifest.name.as_str().to_owned(),
+                provider_tag: provider.manifest.tag.clone(),
+                contract_name: dep.name.as_str().to_owned(),
+                contract_tag: dep.tag.clone(),
+            }));
         }
     }
     edges
@@ -146,8 +143,8 @@ pub fn validate_dependency_specs(
 ) -> Vec<ParsingError> {
     let mut errors = Vec::new();
 
-    // Build link_id → (name, tag, resolved_config) lookup from depends_on.nodes
-    let mut resolved_deps: HashMap<String, (String, String, NodeConfig)> = HashMap::new();
+    // Build the link_id lookup of the depends_on.nodes entries that resolve.
+    let mut resolved_deps: HashMap<&str, ResolvedDependency<'_>> = HashMap::new();
 
     // Phase 1: Validate all declared dependency nodes exist
     if let Some(depends_on) = &manifest.depends_on {
@@ -168,56 +165,44 @@ pub fn validate_dependency_specs(
                 continue;
             };
             resolved_deps.insert(
-                dep.link_id.clone(),
-                (
-                    dep.name.as_str().to_owned(),
-                    dep.tag.clone(),
-                    dependency_config,
-                ),
+                dep.link_id.as_str(),
+                ResolvedDependency {
+                    name: dep.name.as_str(),
+                    tag: &dep.tag,
+                    config: dependency_config,
+                },
             );
         }
     }
 
-    // Collect all declared link_ids so we can distinguish "declared but unresolved"
-    // (a reported MissingDependency, an admitted absence, or a contract-backed
-    // dep whose members resolve at node add/sync) from "never declared" (typo).
-    let declared_link_ids: HashSet<&str> = manifest
-        .depends_on
-        .as_ref()
-        .map(|d| {
-            d.nodes
-                .iter()
-                .map(|n| n.link_id.as_str())
-                .chain(d.contracts.iter().map(|i| i.link_id.as_str()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // A pairing slot (participant or observer) is a legal target for
-    // `topics.consumes`: a participant names the counterpart role's topics it
-    // wants a module for, an observer names the observed role's own topics.
-    // Neither is ever legal for `services.consumes` or `actions.consumes`,
-    // because a pairing document declares topics only. Kept separate from
-    // `declared_link_ids` so a service or action naming one gets a dedicated
-    // error rather than `UndeclaredLinkId`, and so a topic naming one skips the
-    // node-dependency exposure check that cannot apply to it. The topic
-    // direction (counterpart vs observed role) is resolved against the pairing
-    // document at node add/sync, not here.
-    let pairing_link_ids: HashSet<&str> = manifest
-        .depends_on
-        .as_ref()
-        .map(|d| d.pairing_link_ids().collect())
-        .unwrap_or_default();
-
-    // Implements slots are produced, not consumed — a consumed item naming
-    // one gets a dedicated error too. Parse-time validation already rejects
-    // this for configs that went through `NodeConfigParser`, but this
-    // validator also runs on programmatically assembled configs.
-    let implements_link_ids: HashSet<&str> = manifest
-        .implements
-        .iter()
-        .map(|e| e.link_id.as_str())
-        .collect();
+    let links = DeclaredLinks {
+        resolved_dependencies: resolved_deps,
+        dependency_link_ids: manifest
+            .depends_on
+            .as_ref()
+            .map(|d| {
+                d.nodes
+                    .iter()
+                    .map(|n| n.link_id.as_str())
+                    .chain(d.contracts.iter().map(|i| i.link_id.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        pairing_link_ids: manifest
+            .depends_on
+            .as_ref()
+            .map(|d| d.pairing_link_ids().collect())
+            .unwrap_or_default(),
+        implements_link_ids: manifest
+            .implements
+            .iter()
+            .map(|e| e.link_id.as_str())
+            .collect(),
+    };
+    let dependant = Dependant {
+        name: dependant_name,
+        tag: dependant_tag,
+    };
 
     // Phase 2: Validate consumed interfaces reference valid link_ids
     // and that the dependency exposes the required interface
@@ -231,12 +216,8 @@ pub fn validate_dependency_specs(
                 .consumed(kind)
                 .map(|(link_id, name, _)| (link_id, name)),
             kind,
-            &resolved_deps,
-            &declared_link_ids,
-            &pairing_link_ids,
-            &implements_link_ids,
-            dependant_name,
-            dependant_tag,
+            &links,
+            &dependant,
             &mut errors,
         );
     }
@@ -244,49 +225,64 @@ pub fn validate_dependency_specs(
     errors
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct InterfaceRequirement {
-    kind: InterfaceKind,
-    name: String,
+/// A `depends_on.nodes` entry whose config resolved, read by the exposure
+/// check of the interfaces consumed through its link_id.
+struct ResolvedDependency<'a> {
+    name: &'a str,
+    tag: &'a str,
+    config: NodeConfig,
 }
 
-impl InterfaceRequirement {
-    fn new(kind: InterfaceKind, name: &str) -> Self {
-        Self {
-            kind,
-            name: name.trim().to_owned(),
-        }
-    }
+/// The link_ids a manifest declares, grouped by what a consumed item that
+/// names one of them is checked against.
+struct DeclaredLinks<'a> {
+    /// The `depends_on.nodes` entries that resolve, by link_id.
+    resolved_dependencies: HashMap<&'a str, ResolvedDependency<'a>>,
+    /// Every `depends_on.nodes` and `depends_on.contracts` link_id, so the
+    /// check can tell "declared but unresolved" (a reported
+    /// MissingDependency, an admitted absence, or a contract-backed dep whose
+    /// members resolve at node add/sync) from "never declared" (typo).
+    dependency_link_ids: HashSet<&'a str>,
+    /// The pairing slots (participant or observer), a legal target for
+    /// `topics.consumes`: a participant names the counterpart role's topics
+    /// it wants a module for, an observer names the observed role's own
+    /// topics. Neither is ever legal for `services.consumes` or
+    /// `actions.consumes`, because a pairing document declares topics only.
+    /// Kept apart from `dependency_link_ids` so a service or action naming
+    /// one gets a dedicated error rather than `UndeclaredLinkId`, and so a
+    /// topic naming one skips the node-dependency exposure check that cannot
+    /// apply to it. The topic direction (counterpart vs observed role) is
+    /// resolved against the pairing document at node add/sync, not here.
+    pairing_link_ids: HashSet<&'a str>,
+    /// The implements slots, which are produced, not consumed, so a consumed
+    /// item naming one gets a dedicated error too. Parse-time validation
+    /// already rejects this for configs that went through
+    /// `NodeConfigParser`, but this validator also runs on programmatically
+    /// assembled configs.
+    implements_link_ids: HashSet<&'a str>,
+}
 
-    fn kind(&self) -> InterfaceKind {
-        self.kind
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
+/// The node whose consumed interfaces are validated, as its errors name it.
+struct Dependant<'a> {
+    name: &'a str,
+    tag: &'a str,
 }
 
 /// Validates a set of consumed interfaces, checking that each `link_id` is declared
 /// and that the referenced dependency exposes the required interface.
-#[allow(clippy::too_many_arguments)]
 fn validate_consumed_items<'a>(
     items: impl Iterator<Item = (&'a str, &'a str)>,
     kind: InterfaceKind,
-    resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
-    declared_link_ids: &HashSet<&str>,
-    pairing_link_ids: &HashSet<&str>,
-    implements_link_ids: &HashSet<&str>,
-    dependant_name: &str,
-    dependant_tag: &str,
+    links: &DeclaredLinks<'_>,
+    dependant: &Dependant<'_>,
     errors: &mut Vec<ParsingError>,
 ) {
     for (link_id, name) in items {
-        if pairing_link_ids.contains(link_id) {
+        if links.pairing_link_ids.contains(link_id) {
             if kind != InterfaceKind::Topic {
                 errors.push(ParsingError::ConsumedItemReferencesPairingLinkId {
-                    dependant: dependant_name.to_owned(),
-                    dependant_tag: dependant_tag.to_owned(),
+                    dependant: dependant.name.to_owned(),
+                    dependant_tag: dependant.tag.to_owned(),
                     link_id: link_id.to_owned(),
                     section: kind.consumed_section().to_owned(),
                 });
@@ -295,36 +291,28 @@ fn validate_consumed_items<'a>(
             // node add/sync, not against a node dependency.
             continue;
         }
-        if implements_link_ids.contains(link_id) {
+        if links.implements_link_ids.contains(link_id) {
             errors.push(ParsingError::ConsumedItemReferencesImplementsLinkId {
                 link_id: link_id.to_owned(),
             });
             continue;
         }
-        if !resolved_deps.contains_key(link_id) {
-            if !declared_link_ids.contains(link_id) {
+        let Some(dependency) = links.resolved_dependencies.get(link_id) else {
+            if !links.dependency_link_ids.contains(link_id) {
                 errors.push(ParsingError::UndeclaredLinkId {
-                    dependant: dependant_name.to_owned(),
-                    dependant_tag: dependant_tag.to_owned(),
+                    dependant: dependant.name.to_owned(),
+                    dependant_tag: dependant.tag.to_owned(),
                     link_id: link_id.to_owned(),
                 });
             }
             continue;
-        }
-        validate_consumed_interface(
-            link_id,
-            name,
-            kind,
-            resolved_deps,
-            dependant_name,
-            dependant_tag,
-            errors,
-        );
+        };
+        validate_consumed_interface(link_id, name, kind, dependency, dependant, errors);
     }
 }
 
-/// Validates that a consumed interface's `link_id` resolves to a dependency
-/// that natively exposes the required interface. Node dependencies expose
+/// Validates that the dependency a consumed interface's `link_id` resolves to
+/// natively exposes the required interface. Node dependencies expose
 /// native interfaces only: a name the producer provides solely as part of an
 /// implemented contract gets a dedicated error pointing at
 /// `depends_on.contracts` instead of a generic "not exposed".
@@ -332,30 +320,19 @@ fn validate_consumed_interface(
     link_id: &str,
     interface_name: &str,
     kind: InterfaceKind,
-    resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
-    dependant_name: &str,
-    dependant_tag: &str,
+    dependency: &ResolvedDependency<'_>,
+    dependant: &Dependant<'_>,
     errors: &mut Vec<ParsingError>,
 ) {
-    let Some((dep_name, dep_tag, dep_config)) = resolved_deps.get(link_id) else {
-        // The link_id doesn't map to any resolved dependency.
-        // This path is only reached when the dependency was declared but did
-        // not resolve (reported as MissingDependency in Phase 1, or admitted
-        // absent by the policy).
-        // Undeclared link_ids are caught before this function is called.
-        return;
-    };
-
-    let requirement = InterfaceRequirement::new(kind, interface_name);
-    match find_exposure(dep_config, &requirement) {
+    match find_exposure(&dependency.config, kind, interface_name.trim()) {
         Exposure::Native => {}
         Exposure::ContractBackedOnly(entry) => {
             errors.push(ParsingError::ConsumedInterfaceOnlyContractBacked(Box::new(
                 ConsumedInterfaceOnlyContractBacked {
-                    dependant: dependant_name.to_owned(),
-                    dependant_tag: dependant_tag.to_owned(),
-                    dependency: dep_name.clone(),
-                    dependency_tag: dep_tag.clone(),
+                    dependant: dependant.name.to_owned(),
+                    dependant_tag: dependant.tag.to_owned(),
+                    dependency: dependency.name.to_owned(),
+                    dependency_tag: dependency.tag.to_owned(),
                     interface_kind: kind.label().to_owned(),
                     interface_name: interface_name.to_owned(),
                     link_id: link_id.to_owned(),
@@ -366,10 +343,10 @@ fn validate_consumed_interface(
         }
         Exposure::None => {
             errors.push(ParsingError::MissingInterface(Box::new(MissingInterface {
-                dependant: dependant_name.to_owned(),
-                dependant_tag: dependant_tag.to_owned(),
-                dependency: dep_name.clone(),
-                dependency_tag: dep_tag.clone(),
+                dependant: dependant.name.to_owned(),
+                dependant_tag: dependant.tag.to_owned(),
+                dependency: dependency.name.to_owned(),
+                dependency_tag: dependency.tag.to_owned(),
                 interface_kind: kind.label().to_owned(),
                 interface_name: interface_name.to_owned(),
             })));
@@ -386,45 +363,32 @@ enum Exposure<'a> {
     None,
 }
 
-fn find_exposure<'a>(node: &'a NodeConfig, requirement: &InterfaceRequirement) -> Exposure<'a> {
-    let (native_match, contract_link_id) = scan_entries(
-        node.interfaces.produced(requirement.kind()),
-        requirement.name(),
-    );
-
-    if native_match {
-        return Exposure::Native;
-    }
-    if let Some(link_id) = contract_link_id
-        && let Some(entry) = node
-            .manifest
-            .implements
-            .iter()
-            .find(|e| e.link_id == link_id)
-    {
-        return Exposure::ContractBackedOnly(entry);
-    }
-    Exposure::None
-}
-
-/// Scans produced entries of one kind for `name`: returns whether a native
-/// entry matches, and the link_id of a matching contract-backed entry (if
-/// any) for the dedicated-error payload.
-fn scan_entries<'a>(
-    entries: impl Iterator<Item = (Option<&'a str>, &'a str)>,
-    name: &str,
-) -> (bool, Option<&'a str>) {
+/// Scans the produced entries of `kind` for `name`. A matching native entry
+/// wins at once; otherwise the link_id of the last matching contract-backed
+/// entry names the implements slot for the dedicated-error payload.
+fn find_exposure<'a>(node: &'a NodeConfig, kind: InterfaceKind, name: &str) -> Exposure<'a> {
     let mut contract_link_id = None;
-    for (link_id, entry_name) in entries {
+    for (link_id, entry_name) in node.interfaces.produced(kind) {
         if entry_name.trim() != name {
             continue;
         }
-        match link_id {
-            None => return (true, None),
-            Some(id) => contract_link_id = Some(id),
-        }
+        let Some(link_id) = link_id else {
+            return Exposure::Native;
+        };
+        contract_link_id = Some(link_id);
     }
-    (false, contract_link_id)
+    let Some(link_id) = contract_link_id else {
+        return Exposure::None;
+    };
+    match node
+        .manifest
+        .implements
+        .iter()
+        .find(|entry| entry.link_id == link_id)
+    {
+        Some(entry) => Exposure::ContractBackedOnly(entry),
+        None => Exposure::None,
+    }
 }
 
 #[cfg(test)]
@@ -434,6 +398,23 @@ mod tests {
 
     fn parse(content: &str) -> NodeConfig {
         NodeConfigParser::from_content(content).expect("parse node config")
+    }
+
+    /// Validates `node`'s dependencies as its own caller would, naming the
+    /// node by its manifest name and tag.
+    fn dependency_errors(
+        node: &NodeConfig,
+        policy: MissingDependencyPolicy,
+        resolve: impl Fn(&str, &str) -> Option<NodeConfig>,
+    ) -> Vec<ParsingError> {
+        validate_dependency_specs(
+            &node.manifest,
+            &node.interfaces,
+            node.manifest.name.as_str(),
+            &node.manifest.tag,
+            policy,
+            resolve,
+        )
     }
 
     /// A node that implements the `uvc_camera:v1` contract (the provider).
@@ -512,14 +493,10 @@ mod tests {
         let node = node_with_pairing(
             r#"{ topics: { consumes: [ { link_id: "controller", name: "joint_commands" } ] } }"#,
         );
-        let errors = validate_dependency_specs(
-            &node.manifest,
-            &node.interfaces,
-            "robot_arm",
-            "v1",
-            MissingDependencyPolicy::RequireResolvable,
-            |_, _| None,
-        );
+        let errors =
+            dependency_errors(&node, MissingDependencyPolicy::RequireResolvable, |_, _| {
+                None
+            });
         assert!(
             errors.is_empty(),
             "a pairing-backed consumed topic must not be reported here: {errors:?}"
@@ -541,14 +518,10 @@ mod tests {
             ),
         ] {
             let node = node_with_pairing(interfaces);
-            let errors = validate_dependency_specs(
-                &node.manifest,
-                &node.interfaces,
-                "robot_arm",
-                "v1",
-                MissingDependencyPolicy::RequireResolvable,
-                |_, _| None,
-            );
+            let errors =
+                dependency_errors(&node, MissingDependencyPolicy::RequireResolvable, |_, _| {
+                    None
+                });
             assert_eq!(errors.len(), 1, "errors: {errors:?}");
             assert!(
                 matches!(
@@ -597,14 +570,10 @@ mod tests {
                     }}
                 }}"#
             ));
-            let errors = validate_dependency_specs(
-                &node.manifest,
-                &node.interfaces,
-                "lerobot_recorder",
-                "v1",
-                MissingDependencyPolicy::RequireResolvable,
-                |_, _| None,
-            );
+            let errors =
+                dependency_errors(&node, MissingDependencyPolicy::RequireResolvable, |_, _| {
+                    None
+                });
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
@@ -735,11 +704,8 @@ mod tests {
     fn node_dep_consumer_of_native_interface_passes() {
         let consumer = node_dep_consumer("debug_stream");
         let producer = hybrid_producer();
-        let errors = validate_dependency_specs(
-            &consumer.manifest,
-            &consumer.interfaces,
-            "consumer",
-            "v1",
+        let errors = dependency_errors(
+            &consumer,
             MissingDependencyPolicy::RequireResolvable,
             |name, _| (name == "hybrid").then(|| producer.clone()),
         );
@@ -750,11 +716,8 @@ mod tests {
     fn node_dep_consumer_of_contract_backed_only_interface_gets_dedicated_error() {
         let consumer = node_dep_consumer("video_stream");
         let producer = hybrid_producer();
-        let errors = validate_dependency_specs(
-            &consumer.manifest,
-            &consumer.interfaces,
-            "consumer",
-            "v1",
+        let errors = dependency_errors(
+            &consumer,
             MissingDependencyPolicy::RequireResolvable,
             |name, _| (name == "hybrid").then(|| producer.clone()),
         );
@@ -774,11 +737,8 @@ mod tests {
     fn node_dep_consumer_of_missing_interface_still_gets_missing_interface() {
         let consumer = node_dep_consumer("nonexistent");
         let producer = hybrid_producer();
-        let errors = validate_dependency_specs(
-            &consumer.manifest,
-            &consumer.interfaces,
-            "consumer",
-            "v1",
+        let errors = dependency_errors(
+            &consumer,
             MissingDependencyPolicy::RequireResolvable,
             |name, _| (name == "hybrid").then(|| producer.clone()),
         );
@@ -808,11 +768,8 @@ mod tests {
             }"#,
         );
         let consumer = node_dep_consumer("video_stream");
-        let errors = validate_dependency_specs(
-            &consumer.manifest,
-            &consumer.interfaces,
-            "consumer",
-            "v1",
+        let errors = dependency_errors(
+            &consumer,
             MissingDependencyPolicy::RequireResolvable,
             |name, _| (name == "hybrid").then(|| producer.clone()),
         );
@@ -837,21 +794,6 @@ mod tests {
                 }}
             }}"#
         ))
-    }
-
-    fn optional_dep_errors(
-        consumer: &NodeConfig,
-        policy: MissingDependencyPolicy,
-        resolve: impl Fn(&str, &str) -> Option<NodeConfig>,
-    ) -> Vec<ParsingError> {
-        validate_dependency_specs(
-            &consumer.manifest,
-            &consumer.interfaces,
-            "panel",
-            "v1",
-            policy,
-            resolve,
-        )
     }
 
     #[track_caller]
@@ -880,7 +822,7 @@ mod tests {
         let policy = MissingDependencyPolicy::AllowAbsentWhenSlotAdmitsEmpty;
         for cardinality in ["zero_or_more", "zero_or_one"] {
             let consumer = optional_dep_consumer(cardinality);
-            let errors = optional_dep_errors(&consumer, policy, |_, _| None);
+            let errors = dependency_errors(&consumer, policy, |_, _| None);
             assert!(
                 errors.is_empty(),
                 "an absent `{cardinality}` dependency is the admitted empty set: {errors:?}"
@@ -888,7 +830,7 @@ mod tests {
         }
         for cardinality in ["one", "one_or_more"] {
             let consumer = optional_dep_consumer(cardinality);
-            let errors = optional_dep_errors(&consumer, policy, |_, _| None);
+            let errors = dependency_errors(&consumer, policy, |_, _| None);
             assert_sole_missing_recorder(cardinality, &errors);
         }
     }
@@ -900,7 +842,7 @@ mod tests {
     fn require_resolvable_reports_absent_dependencies_of_every_cardinality() {
         for cardinality in ["one", "zero_or_one", "one_or_more", "zero_or_more"] {
             let consumer = optional_dep_consumer(cardinality);
-            let errors = optional_dep_errors(
+            let errors = dependency_errors(
                 &consumer,
                 MissingDependencyPolicy::RequireResolvable,
                 |_, _| None,
@@ -916,7 +858,7 @@ mod tests {
     fn admitted_absence_policy_still_validates_a_resolved_dependency() {
         let consumer = optional_dep_consumer("zero_or_more");
         let recorder_without_finish = unrelated();
-        let errors = optional_dep_errors(
+        let errors = dependency_errors(
             &consumer,
             MissingDependencyPolicy::AllowAbsentWhenSlotAdmitsEmpty,
             |name, _| (name == "recorder").then(|| recorder_without_finish.clone()),

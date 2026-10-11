@@ -8,7 +8,8 @@ mod setup_timeout;
 mod types;
 mod validation;
 
-// Re-export functions
+// Public items of the node modules, which the `node` module of the crate root
+// re-exports.
 pub use format_rules::FormatRuleViolation;
 pub use message_size::{MessageSizeEstimate, estimate_serialized_size};
 pub use parse::{NodeConfigParser, load_standalone_node_config};

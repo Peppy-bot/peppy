@@ -303,10 +303,10 @@ fn write_labeled_lists(
     Ok(())
 }
 
-/// Writes `items` separated by `separator`. The one renderer for the
-/// `, `-separated set-diffs and the `; `-separated aggregates every Tier B
-/// mismatch in this module — and the sync-side errors that carry them —
-/// render themselves as.
+/// Writes `items` separated by `separator`. Every Tier B mismatch in this
+/// module, and every sync-side error that carries one, renders its
+/// `, `-separated set-diffs and `; `-separated aggregates through this
+/// function.
 pub fn write_joined<T: std::fmt::Display>(
     f: &mut std::fmt::Formatter<'_>,
     items: &[T],
@@ -323,7 +323,7 @@ pub fn write_joined<T: std::fmt::Display>(
 
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
-    // -- General yaml syntax
+    // -- Reading and JSON5 syntax
     #[error("Cannot read {0}: {1}")]
     CannotRead(String, std::io::ErrorKind),
     #[error("Cannot parse configuration: {0}")]
@@ -426,10 +426,8 @@ pub enum ParsingError {
         link_id: String,
         section: String,
     },
-    /// Boxed payload for the same reason as
-    /// [`ParsingError::BindingTargetMismatch`]: keeps the variant's
-    /// String-heavy struct from inflating `ParsingError`'s size past the
-    /// `clippy::result_large_err` threshold.
+    /// Boxed so the String-heavy payload does not inflate `ParsingError`
+    /// past the `clippy::result_large_err` threshold.
     #[error(transparent)]
     MissingInterface(Box<MissingInterface>),
 

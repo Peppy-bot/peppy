@@ -92,8 +92,6 @@ pub struct NodeConfig {
     pub execution: Execution,
 }
 
-// NodeInfo is not part of the new schema; manifest/config/instances carry this information.
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TypeToken {
@@ -303,9 +301,9 @@ pub enum ArrayKind {
 pub struct ObjectSchema {
     #[serde(rename = "$type")]
     pub kind: ObjectKind,
-    #[serde(default, flatten)]
+    #[serde(flatten)]
     pub fields: IndexMap<String, SchemaType>,
-    #[serde(rename = "$optional", default, skip_serializing_if = "is_false")]
+    #[serde(rename = "$optional", skip_serializing_if = "is_false")]
     pub optional: bool,
 }
 
@@ -408,7 +406,7 @@ impl SchemaType {
         match self {
             SchemaType::Type(token) => Some(token),
             SchemaType::Primitive(schema) => Some(&schema.kind),
-            _ => None,
+            SchemaType::Array(_) | SchemaType::Object(_) => None,
         }
     }
 }
@@ -485,8 +483,8 @@ pub type LinkedAction = LinkedEntry<Box<ActionRefinement>>;
 
 // Every refinement block is boxed. A block holds one `IndexMap` per format it
 // names, which is wider than the whole entry it hangs off, and it is absent on
-// nearly every entry: inlining it would grow each of these entries — resident
-// per node config and cloned per dependency lookup — several times over to
+// nearly every entry: inlining it would grow each of these entries (resident
+// per node config and cloned per dependency lookup) several times over to
 // carry a `None`. `ExposedAction::Native` is boxed for the same reason.
 
 /// One document-backed produced entry, tagged with the section it is
@@ -596,7 +594,7 @@ pub enum ExposedAction {
 
 /// Generates the shared surface of one produced-entry enum: accessors,
 /// `Serialize`, and the discriminating `Deserialize`. The native shape
-/// fields are declared once here — the raw mirror struct, the
+/// fields are declared once here: the raw mirror struct, the
 /// inline-shape reject list, and the `Native` constructor are all derived
 /// from that single list, so they cannot drift apart. Each field's mode
 /// picks how a missing value materializes on a native entry: `default`
@@ -1203,7 +1201,8 @@ pub struct ContractDependency {
 /// `depends_on.{nodes,contracts,pairings}` link_ids. `sha256` optionally pins
 /// the contract document, with the same semantics as
 /// [`ContractDependency::sha256`]. Shape-identical to [`ContractDependency`]
-/// but deliberately a distinct type — the two point in opposite directions.
+/// but deliberately a distinct type, because the two point in opposite
+/// directions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ImplementsEntry {
@@ -1246,7 +1245,7 @@ pub struct PairingParticipantDependency {
     /// Size constraint on the slot's set of pairs. Same four spellings and the
     /// same default as [`NodeDependency::cardinality`]. Serialized only when
     /// set so a manifest that omits it round-trips byte-identical.
-    #[serde(default, skip_serializing_if = "Cardinality::is_one")]
+    #[serde(skip_serializing_if = "Cardinality::is_one")]
     pub cardinality: Cardinality,
 }
 
@@ -1283,7 +1282,7 @@ pub struct PairingObserverDependency {
     /// and the same default as [`NodeDependency::cardinality`]; the per-kind
     /// difference is that an observed set changes while the node runs, so only
     /// the count the planner accepts is validated.
-    #[serde(default, skip_serializing_if = "Cardinality::is_one")]
+    #[serde(skip_serializing_if = "Cardinality::is_one")]
     pub cardinality: Cardinality,
 }
 
@@ -1504,7 +1503,7 @@ pub struct EndpointDeclaration {
     pub kind: EndpointKind,
     /// Non-empty prose saying what the endpoint serves, for the reader of
     /// the manifest. It stays in the manifest: the daemon reports an
-    /// endpoint by label and kind, and no listing carries this text today.
+    /// endpoint by label and kind, and no listing carries this text.
     pub description: String,
 }
 
@@ -1559,7 +1558,6 @@ where
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Execution {
     pub language: PeppygenLanguage,
-    #[serde(default)]
     pub parameters: ParameterSchema,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_cmd: Option<Vec<String>>,
@@ -1569,14 +1567,14 @@ pub struct Execution {
     pub container: Option<ContainerConfig>,
     /// The sockets this node binds during setup, keyed by label. Empty for a
     /// node that serves nothing.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub endpoints: EndpointDeclarations,
     /// The setup budget the node declares: how long the daemon waits for its
     /// setup to end once it answers ready. `None` for a node that declares
     /// none, which gets the default setup budget. Left out of the serialized
     /// manifest when `None`, so the fingerprint of a manifest without the
     /// key does not change.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub setup_timeout_secs: Option<SetupTimeout>,
 }
 
@@ -1664,8 +1662,8 @@ pub struct Manifest {
 
 // The blocked-mount-path list and predicate live in the sibling `mount_policy`
 // module so this crate (config-parse-time validation) and `containers` (Lima YAML
-// mutation) share one source of truth. Re-exported so
-// `config::node::is_blocked_mount_source` stays part of this crate's public API.
+// mutation) share one source of truth. Re-exported as
+// `config::node::is_blocked_mount_source`, part of this crate's public API.
 pub use super::mount_policy::is_blocked_mount_source;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1686,17 +1684,16 @@ pub struct ContainerConfig {
 ///
 /// Returns the dot-path portion of each reference (e.g., `"device_path"` or
 /// `"video.device_path"`).
-pub fn extract_parameter_refs(mount_path: &str) -> Vec<&str> {
+fn extract_parameter_refs(mount_path: &str) -> Vec<&str> {
     let mut refs = Vec::new();
     let mut remaining = mount_path;
     while let Some(start) = remaining.find("${parameters:") {
         let after_prefix = &remaining[start + "${parameters:".len()..];
-        if let Some(end) = after_prefix.find('}') {
-            refs.push(&after_prefix[..end]);
-            remaining = &after_prefix[end + 1..];
-        } else {
+        let Some(end) = after_prefix.find('}') else {
             break;
-        }
+        };
+        refs.push(&after_prefix[..end]);
+        remaining = &after_prefix[end + 1..];
     }
     refs
 }
@@ -1713,7 +1710,7 @@ impl ContainerConfig {
             return Ok(());
         };
         for mount in mount_paths {
-            // Parse "host_path:container_path[:options]" — only validate the source (host) path.
+            // Parse "host_path:container_path[:options]" and validate only the source (host) path.
             let src = mount.split(':').next().unwrap_or(mount);
             // Skip blocked-path check when the source contains parameter references
             // (the actual path is resolved at runtime).
@@ -1754,7 +1751,7 @@ impl ContainerConfig {
                         kind: TypeToken::String,
                         ..
                     }) => {
-                        // Valid — string-typed parameter.
+                        // Valid: a string-typed parameter.
                     }
                     Some(spec) => {
                         return Err((
@@ -1794,35 +1791,17 @@ pub struct Interfaces {
 
 impl Interfaces {
     /// The produced (emits/exposes) entries of `kind`, projected to
-    /// `(link_id, name)` pairs — the shared traversal used by parse-time
+    /// `(link_id, name)` pairs: the shared traversal used by parse-time
     /// and plan-phase validation. Only the requested kind's section
     /// contributes entries; the chain over all three exists to give the
     /// arms a single concrete iterator type.
     pub fn produced(&self, kind: InterfaceKind) -> impl Iterator<Item = (Option<&str>, &str)> {
-        let topics: &[EmittedTopic] = match kind {
-            InterfaceKind::Topic => self
-                .topics
-                .as_ref()
-                .and_then(|t| t.emits.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
-        let services: &[ExposedService] = match kind {
-            InterfaceKind::Service => self
-                .services
-                .as_ref()
-                .and_then(|s| s.exposes.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
-        let actions: &[ExposedAction] = match kind {
-            InterfaceKind::Action => self
-                .actions
-                .as_ref()
-                .and_then(|a| a.exposes.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
+        let (topics, services, actions): (&[EmittedTopic], &[ExposedService], &[ExposedAction]) =
+            match kind {
+                InterfaceKind::Topic => (self.emitted_topics(), &[], &[]),
+                InterfaceKind::Service => (&[], self.exposed_services(), &[]),
+                InterfaceKind::Action => (&[], &[], self.exposed_actions()),
+            };
         topics
             .iter()
             .map(|e| (e.link_id(), e.name()))
@@ -1831,34 +1810,16 @@ impl Interfaces {
     }
 
     /// The consumed entries of `kind`, projected to `(link_id, name,
-    /// refines)` — `refines` says the entry carries a `refine` block, which
+    /// refines)`, where `refines` says the entry carries a `refine` block, which
     /// parse-time validation checks against the slot it names. Same shape as
     /// [`Interfaces::produced`].
     pub fn consumed(&self, kind: InterfaceKind) -> impl Iterator<Item = (&str, &str, bool)> {
-        let topics: &[ConsumedTopic] = match kind {
-            InterfaceKind::Topic => self
-                .topics
-                .as_ref()
-                .and_then(|t| t.consumes.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
-        let services: &[ConsumedService] = match kind {
-            InterfaceKind::Service => self
-                .services
-                .as_ref()
-                .and_then(|s| s.consumes.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
-        let actions: &[ConsumedAction] = match kind {
-            InterfaceKind::Action => self
-                .actions
-                .as_ref()
-                .and_then(|a| a.consumes.as_deref())
-                .unwrap_or_default(),
-            _ => &[],
-        };
+        let (topics, services, actions): (&[ConsumedTopic], &[ConsumedService], &[ConsumedAction]) =
+            match kind {
+                InterfaceKind::Topic => (self.consumed_topics(), &[], &[]),
+                InterfaceKind::Service => (&[], self.consumed_services(), &[]),
+                InterfaceKind::Action => (&[], &[], self.consumed_actions()),
+            };
         topics
             .iter()
             .map(|c| (c.link_id.as_str(), c.name.as_str(), c.refine.is_some()))
@@ -1875,37 +1836,22 @@ impl Interfaces {
     }
 
     /// The natively-declared entries of `topics.emits`: the node owns these
-    /// shapes. Document-backed entries are skipped — their shapes live in the
+    /// shapes. Document-backed entries are skipped: their shapes live in the
     /// contract or pairing document the entry's slot resolves to.
     pub fn native_emits(&self) -> impl Iterator<Item = &NativeEmittedTopic> {
-        self.topics
-            .as_ref()
-            .and_then(|t| t.emits.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|e| e.as_native())
+        self.emitted_topics().iter().filter_map(|e| e.as_native())
     }
 
     /// The natively-declared entries of `services.exposes`. Same
     /// native-only contract as [`Interfaces::native_emits`].
     pub fn native_service_exposes(&self) -> impl Iterator<Item = &NativeExposedService> {
-        self.services
-            .as_ref()
-            .and_then(|s| s.exposes.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|e| e.as_native())
+        self.exposed_services().iter().filter_map(|e| e.as_native())
     }
 
     /// The natively-declared entries of `actions.exposes`. Same
     /// native-only contract as [`Interfaces::native_emits`].
     pub fn native_action_exposes(&self) -> impl Iterator<Item = &NativeExposedAction> {
-        self.actions
-            .as_ref()
-            .and_then(|a| a.exposes.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|e| e.as_native())
+        self.exposed_actions().iter().filter_map(|e| e.as_native())
     }
 
     /// Every document-backed produced entry across the three sections,
@@ -1917,30 +1863,65 @@ impl Interfaces {
     /// partition the stream by looking each `link_id` up in the manifest.
     pub fn linked_entries(&self) -> impl Iterator<Item = LinkedMember<'_>> {
         let topics = self
-            .topics
-            .as_ref()
-            .and_then(|t| t.emits.as_deref())
-            .unwrap_or_default()
+            .emitted_topics()
             .iter()
             .filter_map(|e| e.as_linked())
             .map(LinkedMember::Topic);
         let services = self
-            .services
-            .as_ref()
-            .and_then(|s| s.exposes.as_deref())
-            .unwrap_or_default()
+            .exposed_services()
             .iter()
             .filter_map(|e| e.as_linked())
             .map(LinkedMember::Service);
         let actions = self
-            .actions
-            .as_ref()
-            .and_then(|a| a.exposes.as_deref())
-            .unwrap_or_default()
+            .exposed_actions()
             .iter()
             .filter_map(|e| e.as_linked())
             .map(LinkedMember::Action);
         topics.chain(services).chain(actions)
+    }
+
+    /// The `topics.emits` entries, empty when the section or the list is
+    /// absent. The five accessors below read their sections the same way.
+    fn emitted_topics(&self) -> &[EmittedTopic] {
+        self.topics
+            .as_ref()
+            .and_then(|topics| topics.emits.as_deref())
+            .unwrap_or_default()
+    }
+
+    fn consumed_topics(&self) -> &[ConsumedTopic] {
+        self.topics
+            .as_ref()
+            .and_then(|topics| topics.consumes.as_deref())
+            .unwrap_or_default()
+    }
+
+    fn exposed_services(&self) -> &[ExposedService] {
+        self.services
+            .as_ref()
+            .and_then(|services| services.exposes.as_deref())
+            .unwrap_or_default()
+    }
+
+    fn consumed_services(&self) -> &[ConsumedService] {
+        self.services
+            .as_ref()
+            .and_then(|services| services.consumes.as_deref())
+            .unwrap_or_default()
+    }
+
+    fn exposed_actions(&self) -> &[ExposedAction] {
+        self.actions
+            .as_ref()
+            .and_then(|actions| actions.exposes.as_deref())
+            .unwrap_or_default()
+    }
+
+    fn consumed_actions(&self) -> &[ConsumedAction] {
+        self.actions
+            .as_ref()
+            .and_then(|actions| actions.consumes.as_deref())
+            .unwrap_or_default()
     }
 }
 
@@ -2202,35 +2183,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn name_validation() {
-        assert!(Name::new("node").is_ok());
-        assert!(Name::new("my_node-1").is_ok());
-
-        assert!(Name::new("").is_err()); // empty not permitted
-        assert!(Name::new("Node").is_ok()); // capital letters allowed
-        assert!(Name::new("node/").is_err()); // slash not allowed
-        assert!(Name::new("node@!").is_err()); // specials not allowed
-    }
-
-    #[test]
-    fn blocked_mount_source_matches_top_level_and_private_aliases() {
-        // Exact top-level system mounts are blocked.
-        assert!(is_blocked_mount_source("/"));
-        assert!(is_blocked_mount_source("/etc"));
-        assert!(is_blocked_mount_source("/usr"));
-        // macOS `/private/X` aliases map back onto the blocked root.
-        assert!(is_blocked_mount_source("/private/tmp"));
-        assert!(is_blocked_mount_source("/private/var"));
-        // Subdirectories of a blocked root are allowed.
-        assert!(!is_blocked_mount_source("/tmp/my_app"));
-        assert!(!is_blocked_mount_source("/etc/myconf"));
-        assert!(!is_blocked_mount_source("/home/user/project"));
-        // Unrelated roots and non-root `/private` subpaths are fine.
-        assert!(!is_blocked_mount_source("/data"));
-        assert!(!is_blocked_mount_source("/private/tmp/sub"));
-    }
-
-    #[test]
     fn extract_parameter_refs_pulls_each_dot_path() {
         // No references -> empty.
         assert!(extract_parameter_refs("/data/output").is_empty());
@@ -2281,9 +2233,10 @@ mod tests {
 
     #[test]
     fn consumed_topic_rejects_external_shape() {
-        // External consumed topics were removed. An entry with an inline
-        // message_format and no link_id must fail to parse as a consumed topic
-        // (message_format is an unknown field, link_id is required).
+        // A consumed topic always names the slot it consumes from. An entry
+        // with an inline message_format and no link_id must fail to parse as
+        // a consumed topic (message_format is an unknown field, link_id is
+        // required).
         let external_shape =
             r#"{ name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
         assert!(
@@ -2555,16 +2508,6 @@ mod tests {
     }
 
     #[test]
-    fn array_schema_requires_type_field() {
-        let json5 = r#"{
-            image: { $items: "u8", $length: 3 }
-        }"#;
-
-        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
-        assert!(parsed.is_err(), "array without type should fail parsing");
-    }
-
-    #[test]
     fn object_fields_can_be_arrays() {
         let json5 = r#"{
             header: {
@@ -2603,9 +2546,11 @@ mod tests {
         assert_eq!(inner.fields["value"], SchemaType::Type(TypeToken::U32));
     }
 
+    /// Array items can be objects, with the item `$type: "object"` written out
+    /// or left implied.
     #[test]
     fn array_items_can_be_objects() {
-        let json5 = r#"{
+        let with_object_type = r#"{
             frames: {
                 $type: "array",
                 $items: {
@@ -2625,41 +2570,7 @@ mod tests {
                 },
             }
         }"#;
-
-        let parsed: MessageFormat = serde_json5::from_str(json5).expect("should parse");
-        let SchemaType::Array(frames_arr) = &parsed.0["frames"] else {
-            panic!("expected Array");
-        };
-        assert!(frames_arr.length.is_none());
-
-        let SchemaType::Object(frame_obj) = frames_arr.items.as_ref() else {
-            panic!("expected Object items");
-        };
-        assert_eq!(
-            frame_obj.fields["name"],
-            SchemaType::Type(TypeToken::String)
-        );
-        assert_eq!(
-            frame_obj.fields["parent"],
-            SchemaType::Type(TypeToken::String)
-        );
-
-        let SchemaType::Array(pos) = &frame_obj.fields["position"] else {
-            panic!("expected Array for position");
-        };
-        assert_eq!(*pos.items, SchemaType::Type(TypeToken::I32));
-        assert_eq!(pos.length, Some(3));
-
-        let SchemaType::Array(orient) = &frame_obj.fields["orientation"] else {
-            panic!("expected Array for orientation");
-        };
-        assert_eq!(*orient.items, SchemaType::Type(TypeToken::I32));
-        assert_eq!(orient.length, Some(4));
-    }
-
-    #[test]
-    fn array_items_can_be_objects_without_object_type() {
-        let json5 = r#"{
+        let without_object_type = r#"{
             frames: {
                 $type: "array",
                 $items: {
@@ -2680,35 +2591,43 @@ mod tests {
             }
         }"#;
 
-        let parsed: MessageFormat = serde_json5::from_str(json5).expect("should parse");
-        let SchemaType::Array(frames_arr) = &parsed.0["frames"] else {
-            panic!("expected Array");
-        };
-        assert!(frames_arr.length.is_none());
+        for (case, json5) in [
+            ("with object type", with_object_type),
+            ("without object type", without_object_type),
+        ] {
+            let parsed: MessageFormat = serde_json5::from_str(json5)
+                .unwrap_or_else(|error| panic!("{case}: should parse: {error}"));
+            let SchemaType::Array(frames_arr) = &parsed.0["frames"] else {
+                panic!("{case}: expected Array");
+            };
+            assert!(frames_arr.length.is_none(), "{case}");
 
-        let SchemaType::Object(frame_obj) = frames_arr.items.as_ref() else {
-            panic!("expected Object items");
-        };
-        assert_eq!(
-            frame_obj.fields["name"],
-            SchemaType::Type(TypeToken::String)
-        );
-        assert_eq!(
-            frame_obj.fields["parent"],
-            SchemaType::Type(TypeToken::String)
-        );
+            let SchemaType::Object(frame_obj) = frames_arr.items.as_ref() else {
+                panic!("{case}: expected Object items");
+            };
+            assert_eq!(
+                frame_obj.fields["name"],
+                SchemaType::Type(TypeToken::String),
+                "{case}"
+            );
+            assert_eq!(
+                frame_obj.fields["parent"],
+                SchemaType::Type(TypeToken::String),
+                "{case}"
+            );
 
-        let SchemaType::Array(pos) = &frame_obj.fields["position"] else {
-            panic!("expected Array for position");
-        };
-        assert_eq!(*pos.items, SchemaType::Type(TypeToken::I32));
-        assert_eq!(pos.length, Some(3));
+            let SchemaType::Array(pos) = &frame_obj.fields["position"] else {
+                panic!("{case}: expected Array for position");
+            };
+            assert_eq!(*pos.items, SchemaType::Type(TypeToken::I32), "{case}");
+            assert_eq!(pos.length, Some(3), "{case}");
 
-        let SchemaType::Array(orient) = &frame_obj.fields["orientation"] else {
-            panic!("expected Array for orientation");
-        };
-        assert_eq!(*orient.items, SchemaType::Type(TypeToken::I32));
-        assert_eq!(orient.length, Some(4));
+            let SchemaType::Array(orient) = &frame_obj.fields["orientation"] else {
+                panic!("{case}: expected Array for orientation");
+            };
+            assert_eq!(*orient.items, SchemaType::Type(TypeToken::I32), "{case}");
+            assert_eq!(orient.length, Some(4), "{case}");
+        }
     }
 
     #[test]
@@ -2877,81 +2796,75 @@ mod tests {
         assert!(feedback.message_format.0.contains_key("current_position"));
     }
 
+    /// Schemas that `MessageFormat` refuses: an array without `$type`,
+    /// `$optional` below the root, and arrays of arrays.
     #[test]
-    fn object_field_rejects_optional() {
-        let json5 = r#"{
-            header: {
-                $type: "object",
-                debug: { 
-                  $type: "string", 
-                  $optional: true 
-                }
-            }
-        }"#;
-
-        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
-        assert!(
-            parsed.is_err(),
-            "optional on nested object field should fail"
-        );
-    }
-
-    #[test]
-    fn array_items_rejects_optional() {
-        let json5 = r#"{
-            values: { 
-              $type: "array", 
-              $items: { 
-                $type: "u8", 
-                $optional: true 
-              }
-            }
-        }"#;
-
-        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
-        assert!(parsed.is_err(), "optional on array items should fail");
-    }
-
-    #[test]
-    fn array_items_rejects_nested_arrays() {
-        let json5 = r#"{
-            data: {
-              $type: "array", 
-              $items: {
-                $type: "array", 
-                $items: "u8" 
-              }
-            }
-        }"#;
-
-        let result: Result<MessageFormat, _> = serde_json5::from_str(json5);
-        assert!(
-            result.is_err(),
-            "nested arrays (arrays of arrays) should fail"
-        );
-    }
-
-    #[test]
-    fn deeply_nested_rejects_optional() {
-        let json5 = r#"{
-            frames: {
-                $type: "array",
-                $items: {
-                    $type: "object",
-                    name: "string",
-                    debug: {
-                      $type: "string",
-                      $optional: true 
+    fn message_format_rejects_invalid_schemas() {
+        for (json5, reason) in [
+            (
+                r#"{
+                    image: { $items: "u8", $length: 3 }
+                }"#,
+                "array without type should fail parsing",
+            ),
+            (
+                r#"{
+                    header: {
+                        $type: "object",
+                        debug: {
+                          $type: "string",
+                          $optional: true
+                        }
                     }
-                }
-            }
-        }"#;
-
-        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
-        assert!(
-            parsed.is_err(),
-            "optional on field inside array-of-objects should fail"
-        );
+                }"#,
+                "optional on nested object field should fail",
+            ),
+            (
+                r#"{
+                    values: {
+                      $type: "array",
+                      $items: {
+                        $type: "u8",
+                        $optional: true
+                      }
+                    }
+                }"#,
+                "optional on array items should fail",
+            ),
+            (
+                r#"{
+                    data: {
+                      $type: "array",
+                      $items: {
+                        $type: "array",
+                        $items: "u8"
+                      }
+                    }
+                }"#,
+                "nested arrays (arrays of arrays) should fail",
+            ),
+            (
+                r#"{
+                    frames: {
+                        $type: "array",
+                        $items: {
+                            $type: "object",
+                            name: "string",
+                            debug: {
+                              $type: "string",
+                              $optional: true
+                            }
+                        }
+                    }
+                }"#,
+                "optional on field inside array-of-objects should fail",
+            ),
+        ] {
+            assert!(
+                serde_json5::from_str::<MessageFormat>(json5).is_err(),
+                "{reason}"
+            );
+        }
     }
 
     #[test]
@@ -3008,41 +2921,19 @@ mod tests {
     }
 
     #[test]
-    fn depends_on_contracts_requires_name() {
-        let json5 = r#"{
-            nodes: [],
-            contracts: [{ tag: "v1", link_id: "depth_camera" }]
-        }"#;
-        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
-    }
-
-    #[test]
-    fn depends_on_contracts_requires_tag() {
-        let json5 = r#"{
-            nodes: [],
-            contracts: [{ name: "depth_camera", link_id: "depth_camera" }]
-        }"#;
-        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
-    }
-
-    #[test]
-    fn depends_on_contracts_requires_link_id() {
-        let json5 = r#"{
-            nodes: [],
-            contracts: [{ name: "depth_camera", tag: "v1" }]
-        }"#;
-        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
-    }
-
-    #[test]
-    fn depends_on_contracts_rejects_unknown_fields() {
-        let json5 = r#"{
-            nodes: [],
-            contracts: [
-                { name: "depth_camera", tag: "v1", link_id: "depth_camera", extra: "bad" }
-            ]
-        }"#;
-        assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
+    fn depends_on_contracts_rejects_incomplete_or_unknown_entries() {
+        for entry in [
+            r#"{ tag: "v1", link_id: "depth_camera" }"#,
+            r#"{ name: "depth_camera", link_id: "depth_camera" }"#,
+            r#"{ name: "depth_camera", tag: "v1" }"#,
+            r#"{ name: "depth_camera", tag: "v1", link_id: "depth_camera", extra: "bad" }"#,
+        ] {
+            let json5 = format!(r#"{{ nodes: [], contracts: [{entry}] }}"#);
+            assert!(
+                serde_json5::from_str::<DependsOn>(&json5).is_err(),
+                "contracts entry should be rejected: {entry}"
+            );
+        }
     }
 
     #[test]
@@ -3440,16 +3331,6 @@ mod tests {
     }
 
     #[test]
-    fn manifest_without_depends_on() {
-        let json5 = r#"{
-            name: "simple_node",
-            tag: "v1"
-        }"#;
-        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
-        assert!(manifest.depends_on.is_none());
-    }
-
-    #[test]
     fn manifest_with_implements_full() {
         let json5 = r#"{
             name: "camera_node",
@@ -3477,13 +3358,6 @@ mod tests {
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert!(manifest.implements[0].sha256.is_none());
-    }
-
-    #[test]
-    fn manifest_without_implements_defaults_empty() {
-        let json5 = r#"{ name: "plain_node", tag: "v1" }"#;
-        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
-        assert!(manifest.implements.is_empty());
     }
 
     #[test]
@@ -3517,8 +3391,9 @@ mod tests {
 
     #[test]
     fn interfaces_rejects_conforms_to_as_unknown_field() {
-        // The old field is not recognized at all — plain serde unknown-field
-        // rejection is the intended UX (no alias, no friendlier error).
+        // `conforms_to` is not a field of `interfaces`: plain serde
+        // unknown-field rejection is the intended UX (no alias, no friendlier
+        // error).
         let json5 = r#"{
             conforms_to: [
                 { name: "depth_camera", tag: "v1" }
@@ -3666,6 +3541,111 @@ mod tests {
         assert_eq!(action, reparsed);
     }
 
+    /// Each accessor of `Interfaces` reads its own section, keeps declaration
+    /// order, and reads an absent section or list as empty.
+    #[test]
+    fn interfaces_accessors_read_each_section() {
+        let interfaces: Interfaces = serde_json5::from_str(
+            r#"{
+                topics: {
+                    emits: [
+                        { name: "native_topic", message_format: { x: "f64" } },
+                        { link_id: "cam", name: "linked_topic" },
+                    ],
+                    consumes: [{ link_id: "dep", name: "consumed_topic" }],
+                },
+                services: {
+                    exposes: [
+                        { link_id: "cam", name: "linked_service" },
+                        {
+                            name: "native_service",
+                            request_message_format: { id: "u8" },
+                            response_message_format: { ok: "bool" },
+                        },
+                    ],
+                    consumes: [{ link_id: "dep", name: "consumed_service" }],
+                },
+                actions: {
+                    exposes: [
+                        {
+                            name: "native_action",
+                            result_service: { response_message_format: { ok: "bool" } },
+                        },
+                        { link_id: "arm", name: "linked_action" },
+                    ],
+                },
+            }"#,
+        )
+        .expect("interfaces parse");
+
+        let produced = |kind| interfaces.produced(kind).collect::<Vec<_>>();
+        assert_eq!(
+            produced(InterfaceKind::Topic),
+            [(None, "native_topic"), (Some("cam"), "linked_topic")]
+        );
+        assert_eq!(
+            produced(InterfaceKind::Service),
+            [(Some("cam"), "linked_service"), (None, "native_service")]
+        );
+        assert_eq!(
+            produced(InterfaceKind::Action),
+            [(None, "native_action"), (Some("arm"), "linked_action")]
+        );
+
+        let consumed = |kind| interfaces.consumed(kind).collect::<Vec<_>>();
+        assert_eq!(
+            consumed(InterfaceKind::Topic),
+            [("dep", "consumed_topic", false)]
+        );
+        assert_eq!(
+            consumed(InterfaceKind::Service),
+            [("dep", "consumed_service", false)]
+        );
+        assert_eq!(consumed(InterfaceKind::Action), []);
+
+        let native_emits: Vec<&str> = interfaces.native_emits().map(|e| e.name.as_str()).collect();
+        assert_eq!(native_emits, ["native_topic"]);
+        let native_services: Vec<&str> = interfaces
+            .native_service_exposes()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(native_services, ["native_service"]);
+        let native_actions: Vec<&str> = interfaces
+            .native_action_exposes()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(native_actions, ["native_action"]);
+
+        let linked: Vec<(InterfaceKind, String, String)> = interfaces
+            .linked_entries()
+            .map(|member| {
+                let link_id = member.link_id().to_owned();
+                (member.kind(), link_id, member.name().to_owned())
+            })
+            .collect();
+        let expected = [
+            (InterfaceKind::Topic, "cam", "linked_topic"),
+            (InterfaceKind::Service, "cam", "linked_service"),
+            (InterfaceKind::Action, "arm", "linked_action"),
+        ]
+        .map(|(kind, link_id, name)| (kind, link_id.to_owned(), name.to_owned()));
+        assert_eq!(linked, expected);
+
+        let empty = Interfaces::default();
+        for kind in [
+            InterfaceKind::Topic,
+            InterfaceKind::Service,
+            InterfaceKind::Action,
+        ] {
+            assert_eq!(empty.produced(kind).count(), 0);
+            assert_eq!(empty.consumed(kind).count(), 0);
+        }
+        assert_eq!(empty.native_emits().count(), 0);
+        assert_eq!(empty.native_service_exposes().count(), 0);
+        assert_eq!(empty.native_action_exposes().count(), 0);
+        assert_eq!(empty.linked_entries().count(), 0);
+    }
+
     #[test]
     fn depends_on_rejects_unknown_fields() {
         let json5 = r#"{
@@ -3678,6 +3658,8 @@ mod tests {
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
     }
 
+    /// A manifest of only a name and a tag parses, with no `depends_on` and an
+    /// empty `implements`.
     #[test]
     fn manifest_parses_minimal() {
         let json5 = r#"{
@@ -3687,6 +3669,8 @@ mod tests {
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert_eq!(manifest.name.as_str(), "simple_node");
         assert_eq!(manifest.tag, "v1");
+        assert!(manifest.depends_on.is_none());
+        assert!(manifest.implements.is_empty());
     }
 
     #[test]
@@ -3701,7 +3685,7 @@ mod tests {
     }
 
     /// A node-shaped document that mislabels itself as a launcher must
-    /// be rejected — the schema field is the source of truth, not just
+    /// be rejected: the schema field is the source of truth, not just
     /// the field names.
     #[test]
     fn node_config_rejects_non_node_schema() {

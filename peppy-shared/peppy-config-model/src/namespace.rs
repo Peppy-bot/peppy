@@ -18,7 +18,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use zenoh_keyexpr::OwnedNonWildKeyExpr;
+use zenoh_keyexpr::nonwild_keyexpr;
 
 /// Namespace used whenever the machine is not enrolled in a project. An
 /// unenrolled daemon never federates, so `local` never reaches the platform
@@ -76,13 +76,13 @@ impl Namespace {
                 message: "namespace must be a single chunk (must not contain '/')".to_owned(),
             });
         }
-        match OwnedNonWildKeyExpr::try_from(s.to_owned()) {
-            Ok(_) => Ok(Self(s.to_owned())),
-            Err(err) => Err(InvalidNamespace {
+        if let Err(err) = nonwild_keyexpr::new(s) {
+            return Err(InvalidNamespace {
                 value: s.to_owned(),
                 message: err.to_string(),
-            }),
+            });
         }
+        Ok(Self(s.to_owned()))
     }
 
     /// Whether this is the unenrolled [`LOCAL_NAMESPACE`]. This is the
@@ -149,6 +149,21 @@ mod tests {
                 Namespace::parse(bad).is_err(),
                 "{bad:?} must be rejected as a namespace"
             );
+        }
+    }
+
+    /// A zenoh session config holds its namespace as an
+    /// `OwnedNonWildKeyExpr`, so a rejected namespace carries the error that
+    /// zenoh gives for the same value.
+    #[test]
+    fn an_invalid_namespace_carries_the_zenoh_key_expression_error() {
+        for bad in ["", "a*", "$*", "**"] {
+            let error = Namespace::parse(bad).unwrap_err();
+            let zenoh_error = zenoh_keyexpr::OwnedNonWildKeyExpr::try_from(bad.to_owned())
+                .unwrap_err()
+                .to_string();
+            assert_eq!(error.value(), bad);
+            assert_eq!(error.message, zenoh_error, "{bad:?}");
         }
     }
 
