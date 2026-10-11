@@ -12,13 +12,24 @@ use peppylib::clock::wall_now_ns;
 use peppylib::messaging::TopicMessenger;
 use std::time::Duration;
 
-/// Polls the core-node service that `request` belongs to on the started core
-/// node, with the shared test caller identity and 5-second timeout, and
-/// returns the decoded response. Panics on any transport or decode failure;
-/// the daemon's services should always answer a well-formed request.
+/// [`poll_core_node_with_timeout`] with the 5-second timeout that a request
+/// the daemon answers without long work needs.
 pub async fn poll_core_node<R: ServiceRequest>(
     started: &StartedCoreNode,
     request: &R,
+) -> R::Response {
+    poll_core_node_with_timeout(started, request, Duration::from_secs(5)).await
+}
+
+/// Polls the core-node service that `request` belongs to on the started core
+/// node, with the shared test caller identity, and returns the decoded
+/// response. Panics on any transport or decode failure, or when no response
+/// arrives within `timeout`; the daemon's services should always answer a
+/// well-formed request.
+pub async fn poll_core_node_with_timeout<R: ServiceRequest>(
+    started: &StartedCoreNode,
+    request: &R,
+    timeout: Duration,
 ) -> R::Response {
     peppylib::core_node::transport::poll(
         request,
@@ -26,7 +37,7 @@ pub async fn poll_core_node<R: ServiceRequest>(
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         &started.core_node_name,
-        Duration::from_secs(5),
+        timeout,
     )
     .await
     .unwrap_or_else(|e| panic!("{} poll should succeed: {e}", R::ID.name()))

@@ -1,26 +1,10 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger,
-    write_repositories_json5,
+    StartedCoreNode, poll_core_node, start_core_node_with_mock_messenger, write_repositories_json5,
 };
 use core_node::repositories_list_path;
-use core_node_api::encoding::{GitRepoRef, RepoAddRequest, RepoAddResponse};
-use peppylib::core_node::transport::poll;
-use std::time::Duration;
-
-async fn send_repo_add(started: &StartedCoreNode, request: &RepoAddRequest) -> RepoAddResponse {
-    poll(
-        request,
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("repo_add poll should succeed")
-}
+use core_node_api::encoding::{GitRepoRef, RepoAddRequest};
 
 /// Assert the most recently appended repo got the next-available id:
 /// exactly `max(other_ids) + 1`. Avoids hardcoding a specific value, which
@@ -47,7 +31,7 @@ fn assert_last_got_next_id(repos: &[serde_json::Value]) {
 async fn listen_for_repo_add_second_git_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
@@ -71,7 +55,7 @@ async fn listen_for_repo_add_second_git_succeed() {
 async fn listen_for_repo_add_git_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git(
             "https://github.com/example/repo.git",
@@ -97,7 +81,7 @@ async fn listen_for_repo_add_git_succeed() {
 async fn listen_for_repo_add_fs_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = send_repo_add(&started, &RepoAddRequest::new_fs("/tmp/my-local-repo")).await;
+    let resp = poll_core_node(&started, &RepoAddRequest::new_fs("/tmp/my-local-repo")).await;
     assert!(resp.success, "repo_add should succeed");
 
     let repos_path = repositories_list_path(&started.peppy_dirs);
@@ -119,11 +103,11 @@ async fn listen_for_repo_add_duplicate_fails() {
         RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead);
 
     // First add should succeed
-    let resp = send_repo_add(&started, &request).await;
+    let resp = poll_core_node(&started, &request).await;
     assert!(resp.success);
 
     // Second add of the same URL should fail
-    let resp = send_repo_add(&started, &request).await;
+    let resp = poll_core_node(&started, &request).await;
     assert!(!resp.success, "duplicate add should fail");
     assert!(
         resp.error_message.contains("already exists"),
@@ -145,7 +129,7 @@ async fn listen_for_repo_add_fails_when_duplicate_ids_in_file() {
         ]"#,
     );
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/new.git", GitRepoRef::RemoteHead),
     )
@@ -171,7 +155,7 @@ async fn listen_for_repo_add_assigns_id_after_manual_entry() {
         r#"[{ "id": 42, "type": "fs", "path": "/manual-repo" }]"#,
     );
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
@@ -212,7 +196,7 @@ async fn listen_for_repo_add_top_assigns_min_minus_one() {
         ]"#,
     );
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead)
             .with_top(true),
@@ -244,7 +228,7 @@ async fn listen_for_repo_add_top_sorts_first() {
         ]"#,
     );
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead)
             .with_top(true),
@@ -271,7 +255,7 @@ async fn listen_for_repo_add_top_on_empty_uses_default_floor() {
     let started = start_core_node_with_mock_messenger().await;
     write_repositories_json5(&started, "[]");
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
             .with_top(true),
@@ -296,7 +280,7 @@ async fn listen_for_repo_add_no_top_on_empty_uses_default_floor() {
     let started = start_core_node_with_mock_messenger().await;
     write_repositories_json5(&started, "[]");
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead),
     )
@@ -321,7 +305,7 @@ async fn listen_for_repo_add_top_fails_when_min_is_zero() {
 
     write_repositories_json5(&started, r#"[{ "id": 0, "type": "fs", "path": "/a" }]"#);
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
             .with_top(true),
@@ -341,7 +325,7 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
 
     write_repositories_json5(&started, r#"[{ "id": 1000, "type": "fs", "path": "/a" }]"#);
 
-    let resp1 = send_repo_add(
+    let resp1 = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/first.git", GitRepoRef::RemoteHead)
             .with_top(true),
@@ -349,7 +333,7 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
     .await;
     assert!(resp1.success);
 
-    let resp2 = send_repo_add(
+    let resp2 = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/second.git", GitRepoRef::RemoteHead)
             .with_top(true),
@@ -387,7 +371,7 @@ async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
 
     write_repositories_json5(&started, r#"[{ "id": 1000, "type": "fs", "path": "/a" }]"#);
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
             .with_top(false),
@@ -414,7 +398,7 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
     // rejection.
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp_main = send_repo_add(
+    let resp_main = poll_core_node(
         &started,
         &RepoAddRequest::new_git(
             "https://github.com/example/repo.git",
@@ -424,7 +408,7 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
     .await;
     assert!(resp_main.success, "first add should succeed");
 
-    let resp_dev = send_repo_add(
+    let resp_dev = poll_core_node(
         &started,
         &RepoAddRequest::new_git(
             "https://github.com/example/repo.git",
@@ -464,7 +448,7 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
 async fn listen_for_repo_add_explicit_id_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_fs("/tmp/private-hub").with_id(2000),
     )
@@ -494,7 +478,7 @@ async fn listen_for_repo_add_explicit_id_collision_fails() {
 
     // 1000 is the id of the first bundled default; claiming it would merge
     // the new repository's entries under that default's owner.
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_fs("/tmp/private-hub").with_id(1000),
     )
@@ -520,7 +504,7 @@ async fn listen_for_repo_add_explicit_id_collision_fails() {
 async fn listen_for_repo_add_explicit_id_with_top_fails() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_fs("/tmp/private-hub")
             .with_id(2000)
@@ -558,7 +542,7 @@ async fn listen_for_repo_add_explicit_id_out_of_range_fails() {
     let started = start_core_node_with_mock_messenger().await;
 
     for id in [u64::MAX, u64::from(u32::MAX)] {
-        let resp = send_repo_add(
+        let resp = poll_core_node(
             &started,
             &RepoAddRequest::new_fs("/tmp/far-hub").with_id(id),
         )
@@ -590,7 +574,7 @@ async fn listen_for_repo_add_derived_id_out_of_range_fails() {
             &format!(r#"[{{ "id": {existing_id}, "type": "fs", "path": "/a" }}]"#),
         );
 
-        let resp = send_repo_add(
+        let resp = poll_core_node(
             &started,
             &RepoAddRequest::new_fs("/tmp/far-hub").with_top(top),
         )

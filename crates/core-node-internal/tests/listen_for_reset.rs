@@ -1,15 +1,15 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node, answer_readiness,
-    build_staged_node, children_of, install_kill_on_shutdown_listener, instance_state_in_any_state,
-    is_process_running, poll_until, send_node_add_and_wait, send_node_add_then_build,
-    send_node_run_and_wait, spawn_real_running_instance, spawn_real_stuck_instance,
-    start_core_node_with_mock_messenger, wait_until_process_exits, write_peppy_json5,
+    NodeRunTestTimeouts, add_and_build_forking_node, answer_readiness, build_staged_node,
+    children_of, install_kill_on_shutdown_listener, instance_state_in_any_state,
+    is_process_running, poll_core_node, poll_core_node_with_timeout, poll_until,
+    send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
+    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    wait_until_process_exits, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::StackResetRequest;
-use peppylib::core_node::transport::poll;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -131,16 +131,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     );
     drop(entity_a);
 
-    let reset_response = poll(
-        &StackResetRequest::new(),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_reset request should complete");
+    let reset_response = poll_core_node(&started_core_node, &StackResetRequest::new()).await;
 
     assert!(
         reset_response.success,
@@ -248,16 +239,12 @@ async fn node_reset_force_kills_whole_process_group() {
     // The reset request waits out the stuck node's cooperative window, then
     // force-kills its group, so the client timeout must exceed
     // force_kill_deadline(grace) + reap. Default grace is 5s.
-    let reset_response = poll(
+    let reset_response = poll_core_node_with_timeout(
+        &started_core_node,
         &StackResetRequest::new(),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
         Duration::from_secs(30),
     )
-    .await
-    .expect("node_reset request should complete");
+    .await;
     assert!(
         reset_response.success,
         "node_reset should succeed, got error: {:?}",
@@ -305,16 +292,7 @@ async fn listen_for_node_reset_is_idempotent() {
         .as_str()
         .to_owned();
 
-    let response = poll(
-        &StackResetRequest::new(),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_reset request should complete");
+    let response = poll_core_node(&started_core_node, &StackResetRequest::new()).await;
 
     assert!(response.success, "node_reset should succeed");
     assert_eq!(node_stack.len(), 1, "only root should remain after reset");
@@ -414,16 +392,9 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     let _kill_on_shutdown =
         install_kill_on_shutdown_listener(&started, TARGET_NODE_NAME, &instance_id, pid).await;
 
-    let reset_response = poll(
-        &StackResetRequest::new(),
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        Duration::from_secs(30),
-    )
-    .await
-    .expect("node_reset request should complete");
+    let reset_response =
+        poll_core_node_with_timeout(&started, &StackResetRequest::new(), Duration::from_secs(30))
+            .await;
     assert!(
         reset_response.success,
         "node_reset should succeed, got error: {:?}",

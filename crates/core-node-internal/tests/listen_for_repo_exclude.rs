@@ -1,28 +1,10 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger,
+    StartedCoreNode, poll_core_node, start_core_node_with_mock_messenger,
     write_excluded_repositories_json5,
 };
-use core_node_api::encoding::{GitRepoRef, RepoExcludeRequest, RepoExcludeResponse};
-use peppylib::core_node::transport::poll;
-use std::time::Duration;
-
-async fn send_repo_exclude(
-    started: &StartedCoreNode,
-    request: &RepoExcludeRequest,
-) -> RepoExcludeResponse {
-    poll(
-        request,
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("repo_exclude poll should succeed")
-}
+use core_node_api::encoding::{GitRepoRef, RepoExcludeRequest};
 
 /// Overwrites the default entries the daemon wrote at start with an empty
 /// `repositories.json5`. The exclude handler re-indexes every repository
@@ -37,7 +19,7 @@ async fn exclude_git_without_ref_succeed() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
-    let resp = send_repo_exclude(
+    let resp = poll_core_node(
         &started,
         &RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
@@ -70,7 +52,7 @@ async fn exclude_git_succeed() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
-    let resp = send_repo_exclude(
+    let resp = poll_core_node(
         &started,
         &RepoExcludeRequest::new_git(
             "https://github.com/example/repo.git",
@@ -101,7 +83,7 @@ async fn exclude_fs_succeed() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
-    let resp = send_repo_exclude(&started, &RepoExcludeRequest::new_fs("/tmp/my-local-repo")).await;
+    let resp = poll_core_node(&started, &RepoExcludeRequest::new_fs("/tmp/my-local-repo")).await;
     assert!(resp.success, "repo_exclude should succeed");
 
     let repos_path = started
@@ -128,11 +110,11 @@ async fn exclude_duplicate_fails() {
         RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead);
 
     // First exclude should succeed
-    let resp = send_repo_exclude(&started, &request).await;
+    let resp = poll_core_node(&started, &request).await;
     assert!(resp.success);
 
     // Second exclude of the same URL should fail
-    let resp = send_repo_exclude(&started, &request).await;
+    let resp = poll_core_node(&started, &request).await;
     assert!(!resp.success, "duplicate exclude should fail");
     assert!(
         resp.error_message.contains("already exists"),
@@ -154,7 +136,7 @@ async fn exclude_fails_when_duplicate_ids_in_file() {
         ]"#,
     );
 
-    let resp = send_repo_exclude(
+    let resp = poll_core_node(
         &started,
         &RepoExcludeRequest::new_git("https://example.com/new.git", GitRepoRef::RemoteHead),
     )
@@ -181,7 +163,7 @@ async fn exclude_assigns_id_after_manual_entry() {
         r#"[{ "id": 42, "type": "fs", "path": "/manual-repo" }]"#,
     );
 
-    let resp = send_repo_exclude(
+    let resp = poll_core_node(
         &started,
         &RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )

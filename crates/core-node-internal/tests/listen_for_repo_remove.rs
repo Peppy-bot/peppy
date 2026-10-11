@@ -1,32 +1,14 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, StartedCoreNode, create_node_dir, start_core_node_with_mock_messenger,
-    write_packages_cache, write_repositories_json5,
+    create_node_dir, poll_core_node, start_core_node_with_mock_messenger, write_packages_cache,
+    write_repositories_json5,
 };
 use core_node::{
     contracts_repo_cache_path, launchers_repo_cache_path, nodes_repo_cache_path,
     pairings_repo_cache_path, repositories_list_path,
 };
-use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
-use peppylib::core_node::transport::poll;
-use std::time::Duration;
-
-async fn send_repo_remove(
-    started: &StartedCoreNode,
-    request: &RepoRemoveRequest,
-) -> RepoRemoveResponse {
-    poll(
-        request,
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("repo_remove poll should succeed")
-}
+use core_node_api::encoding::RepoRemoveRequest;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remove_fs_repo_succeeds() {
@@ -38,7 +20,7 @@ async fn remove_fs_repo_succeeds() {
         &format!(r#"[{{ "id": 1, "type": "fs", "path": "{repo_path}" }}]"#),
     );
 
-    let resp = send_repo_remove(&started, &RepoRemoveRequest::new(1)).await;
+    let resp = poll_core_node(&started, &RepoRemoveRequest::new(1)).await;
     assert!(resp.success, "repo_remove should succeed");
     assert!(resp.error_message.is_empty());
 
@@ -103,7 +85,7 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
     );
 
     // Remove the git repo by its id (2)
-    let resp = send_repo_remove(&started, &RepoRemoveRequest::new(2)).await;
+    let resp = poll_core_node(&started, &RepoRemoveRequest::new(2)).await;
     assert!(
         resp.success,
         "repo_remove should succeed, got error: {}",
@@ -150,7 +132,7 @@ async fn remove_nonexistent_id_fails() {
         r#"[{ "id": 1, "type": "fs", "path": "/tmp/existing-repo" }]"#,
     );
 
-    let resp = send_repo_remove(&started, &RepoRemoveRequest::new(999)).await;
+    let resp = poll_core_node(&started, &RepoRemoveRequest::new(999)).await;
     assert!(!resp.success, "repo_remove should fail for unknown id");
     assert!(
         resp.error_message.contains("not found"),
@@ -172,7 +154,7 @@ async fn remove_from_empty_repos_fails() {
 
     write_repositories_json5(&started, "[]");
 
-    let resp = send_repo_remove(&started, &RepoRemoveRequest::new(1)).await;
+    let resp = poll_core_node(&started, &RepoRemoveRequest::new(1)).await;
     assert!(!resp.success, "repo_remove should fail on empty list");
     assert!(
         resp.error_message.contains("not found"),
@@ -194,7 +176,7 @@ async fn remove_fails_when_duplicate_ids_in_file() {
         ]"#,
     );
 
-    let resp = send_repo_remove(&started, &RepoRemoveRequest::new(1)).await;
+    let resp = poll_core_node(&started, &RepoRemoveRequest::new(1)).await;
     assert!(
         !resp.success,
         "repo_remove should fail when duplicate ids exist"
@@ -221,7 +203,7 @@ async fn remove_verifies_id_on_manually_added_entry() {
     );
 
     // Remove the middle entry by its specific id
-    let resp = send_repo_remove(&started, &RepoRemoveRequest::new(20)).await;
+    let resp = poll_core_node(&started, &RepoRemoveRequest::new(20)).await;
     assert!(
         resp.success,
         "repo_remove should succeed, got error: {}",
