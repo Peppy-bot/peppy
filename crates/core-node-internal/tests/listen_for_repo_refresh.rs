@@ -23,6 +23,35 @@ struct RefreshTestResult {
     result: RepoRefreshResult,
 }
 
+impl RefreshTestResult {
+    /// The `Discovered` feedback lines, in arrival order.
+    fn discovered(&self) -> Vec<&RepoRefreshFeedback> {
+        self.feedbacks
+            .iter()
+            .filter(|feedback| matches!(feedback, RepoRefreshFeedback::Discovered { .. }))
+            .collect()
+    }
+
+    /// The `Excluded` feedback lines, in arrival order.
+    fn excluded(&self) -> Vec<&RepoRefreshFeedback> {
+        self.feedbacks
+            .iter()
+            .filter(|feedback| matches!(feedback, RepoRefreshFeedback::Excluded { .. }))
+            .collect()
+    }
+
+    /// The item names of the `Discovered` feedback lines, in arrival order.
+    fn discovered_names(&self) -> Vec<&str> {
+        self.feedbacks
+            .iter()
+            .filter_map(|feedback| match feedback {
+                RepoRefreshFeedback::Discovered { item_name, .. } => Some(item_name.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
 /// Send a refresh goal and wait for the result. The server publishes feedback
 /// with wildcards at caller positions, so a concrete caller identity still
 /// receives feedback over a real messenger; the mock adapter just doesn't
@@ -99,11 +128,7 @@ async fn refresh_fs_discovers_nodes() {
         "should find exactly 1 node"
     );
 
-    let discovered: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
+    let discovered = result.discovered();
     assert_eq!(discovered.len(), 1, "should receive 1 discovered feedback");
     let RepoRefreshFeedback::Discovered {
         item_name,
@@ -138,14 +163,7 @@ async fn refresh_multiple_nodes() {
         "should find exactly 2 nodes"
     );
 
-    let names: Vec<&str> = result
-        .feedbacks
-        .iter()
-        .filter_map(|f| match f {
-            RepoRefreshFeedback::Discovered { item_name, .. } => Some(item_name.as_str()),
-            _ => None,
-        })
-        .collect();
+    let names = result.discovered_names();
     assert_eq!(names.len(), 2, "should receive 2 discovered feedbacks");
     assert!(names.contains(&"node_a"), "should contain node_a");
     assert!(names.contains(&"node_b"), "should contain node_b");
@@ -177,11 +195,7 @@ async fn refresh_deduplication() {
         "dup_node:v1 should appear exactly once"
     );
 
-    let discovered: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
+    let discovered = result.discovered();
     assert_eq!(
         discovered.len(),
         1,
@@ -378,14 +392,7 @@ async fn refresh_cache_includes_duplicates() {
 
     // Feedback is emitted once per unique (name, tag); the second
     // repo's shared_node is silently cached but not re-announced.
-    let feedback_names: Vec<&str> = result
-        .feedbacks
-        .iter()
-        .filter_map(|f| match f {
-            RepoRefreshFeedback::Discovered { item_name, .. } => Some(item_name.as_str()),
-            _ => None,
-        })
-        .collect();
+    let feedback_names = result.discovered_names();
     assert_eq!(
         feedback_names.len(),
         2,
@@ -543,16 +550,8 @@ async fn refresh_excludes_fs_repo_with_feedback() {
         "only node_a should be counted"
     );
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
-        .collect();
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
+    let excluded_feedbacks = result.excluded();
+    let discovered_feedbacks = result.discovered();
 
     assert_eq!(
         excluded_feedbacks.len(),
@@ -609,22 +608,14 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
         "only keep_node should be found"
     );
 
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
+    let discovered_feedbacks = result.discovered();
     assert_eq!(discovered_feedbacks.len(), 1);
     let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
         unreachable!()
     };
     assert_eq!(item_name, "keep_node");
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
-        .collect();
+    let excluded_feedbacks = result.excluded();
     assert_eq!(
         excluded_feedbacks.len(),
         1,
@@ -673,22 +664,14 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
         "only keep_node should be counted"
     );
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
-        .collect();
+    let excluded_feedbacks = result.excluded();
     assert_eq!(
         excluded_feedbacks.len(),
         2,
         "should receive 2 excluded feedbacks (repo-level + subdirectory)"
     );
 
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
+    let discovered_feedbacks = result.discovered();
     assert_eq!(discovered_feedbacks.len(), 1);
     let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
         unreachable!()
@@ -752,22 +735,14 @@ async fn refresh_excludes_git_repo() {
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
-        .collect();
+    let excluded_feedbacks = result.excluded();
     assert_eq!(excluded_feedbacks.len(), 1);
     let RepoRefreshFeedback::Excluded { source_type, .. } = excluded_feedbacks[0] else {
         unreachable!()
     };
     assert_eq!(*source_type, RepoSourceKind::Git);
 
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
+    let discovered_feedbacks = result.discovered();
     assert_eq!(discovered_feedbacks.len(), 1);
     let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
         unreachable!()
