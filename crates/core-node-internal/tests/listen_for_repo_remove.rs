@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    create_node_dir, poll_core_node, start_core_node_with_mock_messenger, write_packages_cache,
-    write_repositories_json5,
+    TestPackagesCache, create_node_dir, poll_core_node, read_json5_array,
+    start_core_node_with_mock_messenger, write_repositories_json5,
 };
 use core_node::{
     contracts_repo_cache_path, launchers_repo_cache_path, nodes_repo_cache_path,
@@ -25,10 +25,7 @@ async fn remove_fs_repo_succeeds() {
     assert!(resp.error_message.is_empty());
 
     // Verify the entry was removed from repositories.json5
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
     assert!(repos.is_empty(), "repos should be empty after removal");
 
     // Cache refresh is triggered for all repo types (including fs) and
@@ -67,22 +64,9 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
     );
 
     // Pre-populate stale cache with nodes from the git repo
-    write_packages_cache(
-        &started,
-        &serde_json::to_string(&serde_json::json!([{
-            "node_name": "git_sensor",
-            "node_tag": "v1",
-            "sha256": common::seeded_sha("git_sensor:v1"),
-            "origin": common::git_origin(
-                git_url,
-                "main",
-                "nodes/git_sensor/peppy.json5",
-                "git_sensor:v1",
-            ),
-            "links": common::empty_links(),
-        }]))
-        .unwrap(),
-    );
+    TestPackagesCache::new()
+        .git_entry("git_sensor", "v1", git_url, "main", "nodes/git_sensor")
+        .write(&started.peppy_dirs);
 
     // Remove the git repo by its id (2)
     let resp = poll_core_node(&started, &RepoRemoveRequest::new(2)).await;
@@ -93,10 +77,7 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
     );
 
     // Verify the git entry was removed from repositories.json5
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
     assert_eq!(repos.len(), 1, "only the fs entry should remain");
     assert_eq!(repos[0]["type"], "fs");
 
@@ -107,9 +88,7 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
         cache_path.exists(),
         "nodes.json5 cache should exist after refresh"
     );
-    let cache_content = std::fs::read_to_string(&cache_path).expect("read cache file");
-    let cached: Vec<serde_json::Value> =
-        serde_json5::from_str(&cache_content).expect("parse cache as JSON5");
+    let cached = read_json5_array(&cache_path);
     assert!(
         !cached
             .iter()
@@ -141,10 +120,7 @@ async fn remove_nonexistent_id_fails() {
     );
 
     // Verify the original repos file is unchanged
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
     assert_eq!(repos.len(), 1, "repos should be unchanged");
 }
 
@@ -211,10 +187,7 @@ async fn remove_verifies_id_on_manually_added_entry() {
     );
 
     // Verify the correct entry was removed and ids are preserved
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
     assert_eq!(repos.len(), 2, "two entries should remain");
     assert_eq!(repos[0]["id"], 10);
     assert_eq!(repos[0]["path"], "/repo-a");

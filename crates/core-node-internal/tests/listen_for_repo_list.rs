@@ -1,8 +1,9 @@
 mod common;
 
 use common::{
-    StartedCoreNode, create_node_dir, poll_core_node, start_core_node_with_mock_messenger,
-    write_excluded_repositories_json5, write_packages_cache, write_repositories_json5,
+    StartedCoreNode, create_node_dir, poll_core_node, read_json5_array,
+    start_core_node_with_mock_messenger, write_excluded_repositories_json5, write_packages_cache,
+    write_repositories_json5,
 };
 use config::consts::NODE_CONFIG_FILE;
 use core_node::repositories_list_path;
@@ -72,9 +73,7 @@ async fn list_default_repos_creates_repositories_file() {
         "repositories.json5 should be created with default entries on core node startup"
     );
 
-    let content = std::fs::read_to_string(&repos_path).expect("read created file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse created file");
+    let repos = read_json5_array(&repos_path);
     // Don't pin the count; the shipped defaults grow over time. Just
     // verify the canonical nodes-hub entry is there.
     let nodes_hub = repos

@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    StartedCoreNode, poll_core_node, start_core_node_with_mock_messenger,
-    write_excluded_repositories_json5,
+    StartedCoreNode, excluded_repositories_path, poll_core_node, read_json5_array,
+    start_core_node_with_mock_messenger, write_excluded_repositories_json5,
 };
 use core_node_api::encoding::{GitRepoRef, RepoExcludeRequest};
 
@@ -28,13 +28,7 @@ async fn exclude_git_without_ref_succeed() {
     assert!(resp.error_message.is_empty());
 
     // Verify the file was created with the new entry
-    let repos_path = started
-        .peppy_dirs
-        .conf_dir()
-        .join("excluded_repositories.json5");
-    let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 1);
     let entry = &repos[0];
@@ -62,13 +56,7 @@ async fn exclude_git_succeed() {
     .await;
     assert!(resp.success, "repo_exclude should succeed");
 
-    let repos_path = started
-        .peppy_dirs
-        .conf_dir()
-        .join("excluded_repositories.json5");
-    let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 1);
     let entry = &repos[0];
@@ -86,13 +74,7 @@ async fn exclude_fs_succeed() {
     let resp = poll_core_node(&started, &RepoExcludeRequest::new_fs("/tmp/my-local-repo")).await;
     assert!(resp.success, "repo_exclude should succeed");
 
-    let repos_path = started
-        .peppy_dirs
-        .conf_dir()
-        .join("excluded_repositories.json5");
-    let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 1);
     let entry = &repos[0];
@@ -170,13 +152,7 @@ async fn exclude_assigns_id_after_manual_entry() {
     .await;
     assert!(resp.success, "repo_exclude should succeed");
 
-    let repos_path = started
-        .peppy_dirs
-        .conf_dir()
-        .join("excluded_repositories.json5");
-    let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 2);
 

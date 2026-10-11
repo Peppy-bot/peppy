@@ -490,18 +490,32 @@ pub fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
 
 /// Writes a repositories.json5 file in the conf_dir of `peppy_dirs`.
 pub fn write_repositories_json5_in(peppy_dirs: &PeppyDirs, content: &str) {
-    let conf_dir = peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
+    std::fs::create_dir_all(peppy_dirs.conf_dir()).expect("create conf dir");
+    std::fs::write(core_node::repositories_list_path(peppy_dirs), content)
+        .expect("write repos file");
+}
+
+/// The excluded_repositories.json5 file in the conf_dir of `peppy_dirs`.
+pub fn excluded_repositories_path(peppy_dirs: &PeppyDirs) -> PathBuf {
+    peppy_dirs.conf_dir().join("excluded_repositories.json5")
 }
 
 /// Writes an excluded_repositories.json5 file in the conf_dir of the started
 /// core node.
 pub fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("excluded_repositories.json5"), content)
+    std::fs::create_dir_all(started.peppy_dirs.conf_dir()).expect("create conf dir");
+    std::fs::write(excluded_repositories_path(&started.peppy_dirs), content)
         .expect("write excluded repos file");
+}
+
+/// Reads the JSON5 array at `path`, the shape of the repository lists and the
+/// repository caches the daemon writes. Panics when the file cannot be read or
+/// does not hold an array.
+pub fn read_json5_array(path: &Path) -> Vec<serde_json::Value> {
+    let content = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    serde_json5::from_str(&content)
+        .unwrap_or_else(|e| panic!("failed to parse {} as a JSON5 array: {e}", path.display()))
 }
 
 /// Writes a nodes.json5 cache file in the cache_dir of the started core node.

@@ -1,7 +1,8 @@
 mod common;
 
 use common::{
-    StartedCoreNode, poll_core_node, start_core_node_with_mock_messenger, write_repositories_json5,
+    StartedCoreNode, poll_core_node, read_json5_array, start_core_node_with_mock_messenger,
+    write_repositories_json5,
 };
 use core_node::repositories_list_path;
 use core_node_api::encoding::{GitRepoRef, RepoAddRequest};
@@ -39,10 +40,7 @@ async fn listen_for_repo_add_second_git_succeed() {
     assert!(resp.success, "repo_add should succeed");
     assert!(resp.error_message.is_empty());
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     // Last entry is the one we just added, with the next available id
     let last = repos.last().unwrap();
@@ -65,10 +63,7 @@ async fn listen_for_repo_add_git_succeed() {
     .await;
     assert!(resp.success, "repo_add should succeed");
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let last = repos.last().unwrap();
     assert_eq!(last["type"], "git");
@@ -84,10 +79,7 @@ async fn listen_for_repo_add_fs_succeed() {
     let resp = poll_core_node(&started, &RepoAddRequest::new_fs("/tmp/my-local-repo")).await;
     assert!(resp.success, "repo_add should succeed");
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let last = repos.last().unwrap();
     assert_eq!(last["type"], "fs");
@@ -162,10 +154,7 @@ async fn listen_for_repo_add_assigns_id_after_manual_entry() {
     .await;
     assert!(resp.success, "repo_add should succeed");
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 2);
 
@@ -204,10 +193,7 @@ async fn listen_for_repo_add_top_assigns_min_minus_one() {
     .await;
     assert!(resp.success, "repo_add with top should succeed");
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let added = repos
         .iter()
@@ -236,10 +222,7 @@ async fn listen_for_repo_add_top_sorts_first() {
     .await;
     assert!(resp.success);
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     // Lower id = higher priority once the list is sorted on read.
     let lowest = repos
@@ -263,10 +246,7 @@ async fn listen_for_repo_add_top_on_empty_uses_default_floor() {
     .await;
     assert!(resp.success);
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 1);
     assert_eq!(
@@ -287,10 +267,7 @@ async fn listen_for_repo_add_no_top_on_empty_uses_default_floor() {
     .await;
     assert!(resp.success);
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 1);
     assert_eq!(
@@ -341,10 +318,7 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
     .await;
     assert!(resp2.success);
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let first = repos
         .iter()
@@ -379,10 +353,7 @@ async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
     .await;
     assert!(resp.success);
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let added = repos
         .iter()
@@ -422,10 +393,7 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
         resp_dev.error_message
     );
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let git_entries: Vec<&serde_json::Value> = repos
         .iter()
@@ -455,10 +423,7 @@ async fn listen_for_repo_add_explicit_id_succeed() {
     .await;
     assert!(resp.success, "repo_add with explicit id should succeed");
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let added = repos
         .iter()
@@ -490,10 +455,7 @@ async fn listen_for_repo_add_explicit_id_collision_fails() {
         resp.error_message
     );
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
     assert!(
         repos.iter().all(|e| e["path"] != "/tmp/private-hub"),
         "refused entry must not be persisted"
@@ -524,10 +486,7 @@ async fn listen_for_repo_add_explicit_id_with_top_fails() {
 /// no entry for `path`: a refused add leaves the file readable and does not
 /// persist the refused entry.
 fn assert_repos_file_lacks_path(started: &StartedCoreNode, path: &str) {
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("repos file must stay readable");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
     assert!(
         repos.iter().all(|e| e["path"] != path),
         "refused entry must not be persisted: {repos:?}"

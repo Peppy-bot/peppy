@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, StartedCoreNode, create_node_dir, minimal_peppy_json5,
+    CALLER_INSTANCE_ID, StartedCoreNode, create_node_dir, minimal_peppy_json5, read_json5_array,
     start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
     write_excluded_repositories_json5, write_repositories_json5, write_repositories_json5_in,
 };
@@ -353,9 +353,7 @@ async fn refresh_cache_written() {
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(cache_path.exists(), "cache file should exist");
 
-    let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse cache JSON5");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(entries.len(), 2, "cache should contain 2 nodes (FS + git)");
 
     let fs_entry = entries
@@ -455,8 +453,7 @@ async fn refresh_cache_includes_duplicates() {
     // Cache keeps both `shared_node` entries (no `duplicate` flag; the
     // `sha256` field tells them apart for users who need to pick one).
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(
         entries.len(),
         3,
@@ -577,8 +574,7 @@ async fn refresh_reports_unreadable_repos_without_failing() {
     );
 
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&cache_path).expect("the node cache is published");
-    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["node_name"], "reachable_node");
 }
@@ -829,8 +825,7 @@ async fn refresh_excluded_repos_not_in_cache() {
     assert_eq!(result.result.total_nodes_found, 1);
 
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(
         entries.len(),
         1,
@@ -949,9 +944,7 @@ async fn refresh_discovers_contracts() {
 
     let cache_path = contracts_repo_cache_path(&started.peppy_dirs);
     assert!(cache_path.exists(), "contracts cache should be written");
-    let content = std::fs::read_to_string(&cache_path).expect("read contracts cache");
-    let entries: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse contracts cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["contract_name"], "uvc_camera");
     assert_eq!(entries[0]["tag"], "v1");
@@ -1021,9 +1014,7 @@ async fn refresh_discovers_nodes() {
 
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(cache_path.exists(), "nodes cache should be written");
-    let content = std::fs::read_to_string(&cache_path).expect("read nodes cache");
-    let entries: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse nodes cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["node_name"], "my_sensor");
     assert_eq!(entries[0]["node_tag"], "v1");
@@ -1103,9 +1094,7 @@ async fn refresh_discovers_launchers() {
 
     let cache_path = launchers_repo_cache_path(&started.peppy_dirs);
     assert!(cache_path.exists(), "launchers cache should be written");
-    let content = std::fs::read_to_string(&cache_path).expect("read launchers cache");
-    let entries: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse launchers cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["launcher_name"], "openarm01_teleop");
     assert_eq!(entries[0]["origin"]["source_type"], "fs");
