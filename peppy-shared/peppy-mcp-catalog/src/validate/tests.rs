@@ -1407,13 +1407,27 @@ fn daemon_recorder_exposure(member: &str, bound: &str) -> String {
     )
 }
 
-fn validate_daemon(exposure_json5: &str, interface: &Fixture) -> ValidatedExposure {
+/// The verdict of validating `exposure_json5` against the `interface`
+/// fixture served as a daemon interface, with no contract.
+fn daemon_validation_result(
+    exposure_json5: &str,
+    interface: &Fixture,
+) -> Result<ValidatedExposure, ExposureValidationError> {
     build_exposure_bundle(
         &parse_exposure(exposure_json5),
         &[],
         &[interface.interface()],
     )
-    .expect("exposure validates")
+}
+
+fn validate_daemon(exposure_json5: &str, interface: &Fixture) -> ValidatedExposure {
+    daemon_validation_result(exposure_json5, interface).expect("exposure validates")
+}
+
+fn daemon_violations_of(exposure_json5: &str, interface: &Fixture) -> Vec<String> {
+    daemon_validation_result(exposure_json5, interface)
+        .expect_err("expected the exposure to be refused")
+        .violations
 }
 
 #[test]
@@ -1457,16 +1471,10 @@ fn a_daemon_target_derives_its_entries_as_a_contract_target_does() {
 #[test]
 fn a_daemon_target_follows_the_member_rules_of_a_contract_target() {
     let recording = fixture(RECORDING_CONTRACT);
-    let violations = build_exposure_bundle(
-        &parse_exposure(&daemon_recorder_exposure(
-            "no_such_action",
-            "deadline_ms: 60000",
-        )),
-        &[],
-        &[recording.interface()],
-    )
-    .expect_err("the interface declares no such action")
-    .violations;
+    let violations = daemon_violations_of(
+        &daemon_recorder_exposure("no_such_action", "deadline_ms: 60000"),
+        &recording,
+    );
     assert_eq!(violations.len(), 1, "{violations:?}");
     assert!(
         violations[0].contains(
@@ -1476,16 +1484,10 @@ fn a_daemon_target_follows_the_member_rules_of_a_contract_target() {
         "{violations:?}"
     );
 
-    let violations = build_exposure_bundle(
-        &parse_exposure(&daemon_recorder_exposure(
-            "finish_session",
-            "progress_timeout_ms: 60000",
-        )),
-        &[],
-        &[recording.interface()],
-    )
-    .expect_err("a progress window needs a feedback topic")
-    .violations;
+    let violations = daemon_violations_of(
+        &daemon_recorder_exposure("finish_session", "progress_timeout_ms: 60000"),
+        &recording,
+    );
     assert!(
         violations[0]
             .contains("daemon interface `episode_recording:v1` declares no `feedback_topic`"),

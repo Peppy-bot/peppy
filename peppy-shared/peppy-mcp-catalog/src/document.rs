@@ -2416,13 +2416,8 @@ mod tests {
 
     #[test]
     fn the_member_rules_hold_for_a_daemon_target() {
-        let empty = r#"{
-            peppy_schema: "mcp_exposure/v1",
-            manifest: { name: "framework_controls", tag: "v1" },
-            server: { title: "Stack" },
-            targets: { stack: { daemon: { name: "stack_copies", tag: "v1" } } },
-        }"#;
-        assert!(parse_err(empty).contains("target `stack` selects no members"));
+        let empty = with_targets(&format!("stack: {{ {STACK_COPIES} }},"));
+        assert!(parse_err(&empty).contains("target `stack` selects no members"));
 
         let twice = daemon_document(STACK_COPIES).replace(
             "services: [",
