@@ -1,5 +1,7 @@
 #[path = "helpers.rs"]
 mod helpers;
+#[path = "support/implements_fixtures.rs"]
+mod implements_fixtures;
 
 #[path = "python/actions_communication.rs"]
 mod actions_communication;

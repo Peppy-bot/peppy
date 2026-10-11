@@ -195,6 +195,33 @@ const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2: &str = r#"
 }
 "#;
 
+/// The messages of the `move_arm` action of [`SUBSCRIBED_ACTION_EXAMPLE1`]:
+/// a goal request, a goal response, feedback and a result.
+fn move_arm_action_messages() -> ConsumedActionMessage {
+    ConsumedActionMessage {
+        goal_request: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap()),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
+        feedback: Some(serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap()),
+        result_response: Some(
+            serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap(),
+        ),
+    }
+}
+
+/// The messages of the `rotate_servo_clockwise` action of
+/// [`SUBSCRIBED_ACTION_EXAMPLE2`]: a goal without a request, a goal
+/// response, feedback and a result.
+fn rotate_servo_action_messages() -> ConsumedActionMessage {
+    ConsumedActionMessage {
+        goal_request: None,
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
+        feedback: Some(serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap()),
+        result_response: Some(
+            serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap(),
+        ),
+    }
+}
+
 #[test]
 fn exposed_action() {
     let action: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
@@ -509,18 +536,7 @@ fn expose_two_actions() {
 #[test]
 fn consumed_action() {
     let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
-    let goal_request_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
-    let feedback_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
-    let result_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
-    let format = ConsumedActionMessage {
-        goal_request: Some(goal_request_format),
-        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(feedback_format),
-        result_response: Some(result_response_format),
-    };
+    let format = move_arm_action_messages();
 
     let mut generator = RustGenerator::new();
     generator
@@ -701,14 +717,7 @@ fn consumed_action() {
 #[test]
 fn consumed_action_via_contract_origin_targets_contract() {
     let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
-    let format = ConsumedActionMessage {
-        goal_request: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap()),
-        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap()),
-        result_response: Some(
-            serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap(),
-        ),
-    };
+    let format = move_arm_action_messages();
 
     let mut generator = RustGenerator::new();
     generator
@@ -753,32 +762,12 @@ fn consumed_action_via_contract_origin_targets_contract() {
 fn consumed_two_actions_same_node() {
     let move_arm_action: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
-    let move_arm_goal_request: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
-    let move_arm_feedback: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
-    let move_arm_result_response: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
-    let move_arm_messages = ConsumedActionMessage {
-        goal_request: Some(move_arm_goal_request),
-        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(move_arm_feedback),
-        result_response: Some(move_arm_result_response),
-    };
+    let move_arm_messages = move_arm_action_messages();
 
     // Both subscriptions target the same source node ("brain"), so link_id must match.
     let rotate_action: ConsumedAction =
         serde_json5::from_str(r#"{ link_id: "brain", name: "rotate_servo_clockwise" }"#).unwrap();
-    let rotate_feedback: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap();
-    let rotate_result_response: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
-    let rotate_messages = ConsumedActionMessage {
-        goal_request: None,
-        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(rotate_feedback),
-        result_response: Some(rotate_result_response),
-    };
+    let rotate_messages = rotate_servo_action_messages();
 
     let mut generator = RustGenerator::new();
     generator
@@ -1062,31 +1051,11 @@ fn clippy_single_exposed_action_without_goal_request() {
 
     let consumed_action1: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
-    let consumed_action1_goal_request: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
-    let consumed_action1_feedback: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
-    let consumed_action1_result_response: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
-    let consumed_action1_messages = ConsumedActionMessage {
-        goal_request: Some(consumed_action1_goal_request),
-        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(consumed_action1_feedback),
-        result_response: Some(consumed_action1_result_response),
-    };
+    let consumed_action1_messages = move_arm_action_messages();
 
     let consumed_action2: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
-    let consumed_action2_feedback: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap();
-    let consumed_action2_result_response: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
-    let consumed_action2_messages = ConsumedActionMessage {
-        goal_request: None,
-        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(consumed_action2_feedback),
-        result_response: Some(consumed_action2_result_response),
-    };
+    let consumed_action2_messages = rotate_servo_action_messages();
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_action(&action, None).unwrap();
@@ -1104,15 +1073,7 @@ fn clippy_single_exposed_action_without_goal_request() {
             &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_clippy(&output_dir);
 
@@ -1147,31 +1108,11 @@ fn compile_lib_with_exposed_and_consumed_actions() {
 
     let consumed_action1: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
-    let consumed_action1_goal_request: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
-    let consumed_action1_feedback: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
-    let consumed_action1_result_response: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
-    let consumed_action1_messages = ConsumedActionMessage {
-        goal_request: Some(consumed_action1_goal_request),
-        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(consumed_action1_feedback),
-        result_response: Some(consumed_action1_result_response),
-    };
+    let consumed_action1_messages = move_arm_action_messages();
 
     let consumed_action2: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
-    let consumed_action2_feedback: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap();
-    let consumed_action2_result_response: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
-    let consumed_action2_messages = ConsumedActionMessage {
-        goal_request: None,
-        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(consumed_action2_feedback),
-        result_response: Some(consumed_action2_result_response),
-    };
+    let consumed_action2_messages = rotate_servo_action_messages();
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_action(&action1, None).unwrap();
@@ -1190,15 +1131,7 @@ fn compile_lib_with_exposed_and_consumed_actions() {
             &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_cargo_build(&output_dir);
     run_clippy(&output_dir);
@@ -1294,15 +1227,7 @@ fn clippy_consumed_action_empty_goal_request() {
             &native_dep("robot", "v1", "robot"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_clippy(&output_dir);
 }

@@ -18,7 +18,7 @@
 use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage, TopicRetention};
-use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant};
 use std::fs;
 use tempfile::TempDir;
 
@@ -46,10 +46,10 @@ const LEFT_CONSUMER: &str = r#"{ link_id: "left_arm", name: "joint_states" }"#;
 const RIGHT_CONSUMER: &str = r#"{ link_id: "right_arm", name: "joint_states" }"#;
 
 /// User crate `main.rs` that explicitly names both per-link consumer modules.
-/// The references aren't strictly necessary to catch the bug (the generated
-/// `peppygen` lib will fail to compile on its own), but they document what
-/// the test is exercising and mirror the explicit-probe style of the Python
-/// counterpart.
+/// The references aren't strictly necessary to catch a cross-slot struct
+/// mix-up (the generated `peppygen` lib fails to compile on its own), but
+/// they document what the test is exercising and mirror the explicit-probe
+/// style of the Python counterpart.
 const USER_MAIN: &str = r#"
 use peppygen::consumed_topics::left_arm::joint_states as left_arm_joint_states;
 use peppygen::consumed_topics::right_arm::joint_states as right_arm_joint_states;
@@ -65,8 +65,8 @@ fn main() {}
 
 #[test]
 fn rust_handles_two_consumed_topics_sharing_topic_name() {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let user_node_dir = temp_dir.path().join("user_node");
     fs::create_dir_all(&user_node_dir).expect("failed to create user_node directory");
 
@@ -95,17 +95,8 @@ fn rust_handles_two_consumed_topics_sharing_topic_name() {
         }),
     ];
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        &user_node_dir,
-        interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, &user_node_dir, interfaces)
+        .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let left_module = peppygen_dir.join("src/consumed_topics/left_arm/joint_states.rs");
@@ -122,9 +113,8 @@ fn rust_handles_two_consumed_topics_sharing_topic_name() {
     );
 
     helpers::init_cargo_user_node(&user_node_dir);
-    let src_dir = user_node_dir.join("src");
-    fs::create_dir_all(&src_dir).expect("failed to create src dir");
-    fs::write(src_dir.join("main.rs"), USER_MAIN).expect("failed to write user main.rs");
+    fs::write(user_node_dir.join("src").join("main.rs"), USER_MAIN)
+        .expect("failed to write user main.rs");
 
     helpers::compile_project(&user_node_dir);
 }

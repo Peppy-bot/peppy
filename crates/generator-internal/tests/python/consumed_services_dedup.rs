@@ -4,16 +4,13 @@
 //! Locks down the per-producer scoping of consumed-service cap'n proto
 //! schemas: two consumed services sharing a `name` but coming from
 //! different producer nodes must produce two distinct capnp files (one
-//! per producer), not a single deduplicated one. That's why the
-//! consumed-topic divergence bug doesn't apply here even when the two
-//! producers expose services with completely different message formats.
+//! per producer), not a single deduplicated one, so the two producers'
+//! formats stay apart even when they differ completely.
 
-use crate::helpers::{
-    init_python_project_venv, init_python_user_node, native_dep, run_uv, test_peppy_dirs,
-};
+use crate::helpers::{generate_test_peppygen_lib, native_dep, run_python_check};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedService, MessageFormat, PeppygenLanguage};
-use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant};
 use std::fs;
 use tempfile::TempDir;
 
@@ -112,8 +109,8 @@ print(f"front={front_struct} rear={rear_struct}")
 
 #[test]
 fn python_cross_producer_same_service_name_keeps_schemas_separate() {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let user_node_dir = temp_dir.path().join("user_node");
     fs::create_dir_all(&user_node_dir).expect("failed to create user_node directory");
 
@@ -143,17 +140,8 @@ fn python_cross_producer_same_service_name_keeps_schemas_separate() {
         }),
     ];
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &user_node_dir,
-        interfaces,
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &user_node_dir, interfaces)
+        .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let front_module = peppygen_dir.join("peppygen/consumed_services/front_cam/enable.py");
@@ -205,17 +193,9 @@ fn python_cross_producer_same_service_name_keeps_schemas_separate() {
         "rear request capnp should encode `intensity`, got:\n{rear_request_text}"
     );
 
-    init_python_user_node(&user_node_dir);
-    init_python_project_venv(&user_node_dir);
-
-    let output = run_uv(&user_node_dir, &["run", "python", "-c", PYTHON_PROBE]);
-
-    assert!(
-        output.status.success(),
-        "Python probe failed for cross-producer same-service-name scenario.\n\
-         stdout:\n{}\n\
-         stderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    run_python_check(
+        &user_node_dir,
+        PYTHON_PROBE,
+        "Python probe for the cross-producer same-service-name scenario",
     );
 }

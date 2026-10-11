@@ -1,53 +1,14 @@
 //! Generator-level test that a node exposing the same action `move_arm` both
 //! natively and via two contract-backed slots (`arm:v1`, `arm:v2`, each with a
 //! `ContractOrigin`) produces distinct generated files AND each
-//! `ActionMessenger::expose` call inside those files passes the matching
-//! `contract_name`/`contract_tag` literals.
+//! `peppylib::messaging::ConcurrentAction::expose` call inside those files
+//! passes the matching `contract_name`/`contract_tag` literals.
 
-use crate::helpers::{prepare_directories, test_peppy_dirs};
-use config::node::{
-    GoalServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, SchemaType,
-    TypeToken,
-};
-use generator::{
-    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, NodeTree,
-    generate_peppygen_lib,
-};
-use indexmap::IndexMap;
+use crate::helpers::{generate_test_peppygen_lib, prepare_directories};
+use crate::implements_fixtures::{contract_backed_action, make_move_arm_action};
+use config::node::PeppygenLanguage;
 use std::fs;
 use tempfile::TempDir;
-
-fn make_action(marker: &str) -> NativeExposedAction {
-    let mut req: IndexMap<String, SchemaType> = IndexMap::new();
-    req.insert(marker.to_string(), SchemaType::Type(TypeToken::I32));
-    let mut resp: IndexMap<String, SchemaType> = IndexMap::new();
-    resp.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
-    NativeExposedAction {
-        name: "move_arm".to_string(),
-        goal_service: Some(GoalServiceEndpoint {
-            request_message_format: Some(MessageFormat(req)),
-            response_message_format: Some(MessageFormat(resp)),
-        }),
-        feedback_topic: None,
-        result_service: None,
-    }
-}
-
-fn contract_backed(
-    link_id: &str,
-    name: &str,
-    tag: &str,
-    action: NativeExposedAction,
-) -> DeploymentInterface {
-    DeploymentInterface::new(InterfaceVariant::ExposedAction {
-        action,
-        origin: Some(ContractOrigin {
-            link_id: link_id.to_string(),
-            contract_name: name.to_string(),
-            contract_tag: tag.to_string(),
-        }),
-    })
-}
 
 const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
@@ -78,37 +39,28 @@ const NODE_CONFIG: &str = r#"{
 /// One native `move_arm` action plus two contract-backed `arm:v1`/`arm:v2`
 /// slots each exposing an action named `move_arm`. Verifies:
 ///   1. Contract-backed artifacts nest under
-///      `exposed_actions/{contract_name}/{contract_tag}/move_arm.rs` while the
-///      native artifact stays flat at `exposed_actions/move_arm.rs`.
+///      `exposed_actions/{link_id}/move_arm.rs` while the native artifact
+///      stays flat at `exposed_actions/move_arm.rs`.
 ///   2. The category `exposed_actions.rs` lists the native leaf and one
 ///      module entry per implemented contract.
-///   3. Each leaf calls `peppylib::ActionMessenger::expose` with the matching
-///      sender target: `SenderTarget::contract("name", "tag")?` for contract-backed
-///      leaves and `SenderTarget::node("name", "tag")?` for the native leaf.
+///   3. Each leaf calls `peppylib::messaging::ConcurrentAction::expose` with
+///      the matching sender target: `SenderTarget::contract("name", "tag")?`
+///      for contract-backed leaves and `SenderTarget::node("name", "tag")?`
+///      for the native leaf.
 ///   4. Per-interface marker fields land in the right file.
 #[test]
 fn nests_contract_backed_actions_under_link_id() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("arm_v1", "arm", "v1", make_action("arm_v1_marker")),
-        contract_backed("arm_v2", "arm", "v2", make_action("arm_v2_marker")),
+        contract_backed_action("arm_v1", "arm", "v1", make_move_arm_action("arm_v1_marker")),
+        contract_backed_action("arm_v2", "arm", "v2", make_move_arm_action("arm_v2_marker")),
     ];
 
-    let peppy_dirs = test_peppy_dirs();
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        &user_node,
-        extras,
-        "test-hash",
-        &peppy_dirs,
-        CrateDeployMode::default(),
-        Some(&peppy_node_config),
-        NodeTree::Source,
-    )
-    .expect("generation should succeed");
+    generate_test_peppygen_lib(PeppygenLanguage::Rust, &user_node, extras)
+        .expect("generation should succeed");
 
     let src = user_node
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)

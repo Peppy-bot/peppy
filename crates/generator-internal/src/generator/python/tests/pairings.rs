@@ -1,4 +1,4 @@
-//! Python template snapshots for peer (pairing) topics — twins of the Rust
+//! Python template snapshots for peer (pairing) topics, twins of the Rust
 //! suite: slot-scoped publisher (`link_id=LINK_ID`), the pairing wire
 //! target, the `subscribe_peer` seam, `paired()`/`wait_paired()`, and no
 //! binding-slot involvement.

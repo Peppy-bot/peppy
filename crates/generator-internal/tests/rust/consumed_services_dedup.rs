@@ -2,26 +2,22 @@
 //! producer node, so two consumers depending on services that share a
 //! `name` but come from different producer nodes don't collide.
 //!
-//! Concretely, `add_consumed_service` ([rust.rs `add_consumed_service`])
-//! registers each schema under
-//! `method_label = "poll_{producer_node}_{service_name}"`, NOT under the
-//! bare `service_name`, so the cross-producer same-service-name scenario
+//! Concretely, `RustGenerator::add_consumed_service` registers each schema
+//! under `method_label = "poll_{producer_node}_{service_name}"`, NOT under
+//! the bare `service_name`, so the cross-producer same-service-name scenario
 //! produces two distinct capnp files (one per producer) and the consumers'
 //! deserializers can each reference their own producer's exact message
 //! shape, even when the two producers' formats diverge.
 //!
-//! Today this works. This test pins that down. If a future refactor ever
-//! drops the producer-node prefix from the service schema key (making
-//! consumed_service susceptible to the same dedup divergence that bit
-//! consumed_topic), the assertion on the per-producer capnp file pair, or
-//! the build itself, will fail.
+//! If the schema key loses the producer-node prefix, the assertion on the
+//! per-producer capnp file pair, or the build itself, fails.
 //!
 //! The Python counterpart lives in
 //! `tests/python/consumed_services_dedup.rs`.
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedService, MessageFormat, PeppygenLanguage};
-use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant};
 use std::fs;
 use tempfile::TempDir;
 
@@ -76,8 +72,8 @@ fn main() {}
 
 #[test]
 fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let user_node_dir = temp_dir.path().join("user_node");
     fs::create_dir_all(&user_node_dir).expect("failed to create user_node directory");
 
@@ -97,27 +93,18 @@ fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
             service: front_service,
             request_format: parse_fmt(FRONT_REQUEST_FORMAT),
             response_format: parse_fmt(FRONT_RESPONSE_FORMAT),
-            dependency: helpers::native_dep("uvc_camera", "v1", "uvc_camera"),
+            dependency: helpers::native_dep("uvc_camera", "v1", "front_cam"),
         }),
         DeploymentInterface::new(InterfaceVariant::ConsumedService {
             service: rear_service,
             request_format: parse_fmt(REAR_REQUEST_FORMAT),
             response_format: parse_fmt(REAR_RESPONSE_FORMAT),
-            dependency: helpers::native_dep("rtsp_camera", "v1", "rtsp_camera"),
+            dependency: helpers::native_dep("rtsp_camera", "v1", "rear_cam"),
         }),
     ];
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        &user_node_dir,
-        interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, &user_node_dir, interfaces)
+        .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let front_module = peppygen_dir.join("src/consumed_services/front_cam/enable.rs");
@@ -132,12 +119,21 @@ fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
         "rear consumer module missing at {}",
         rear_module.display()
     );
+    // Each module polls through the slot its consumed service names, the
+    // slot the manifest declares and the runtime binds.
+    for (module, link_id) in [(&front_module, "front_cam"), (&rear_module, "rear_cam")] {
+        let code = fs::read_to_string(module).expect("read consumer module");
+        let link_id_const = format!("const LINK_ID: &str = \"{link_id}\";");
+        assert!(
+            code.contains(&link_id_const),
+            "{} must declare `{link_id_const}`, got:\n{code}",
+            module.display()
+        );
+    }
 
-    // The producer-node-scoped schema keys must yield distinct capnp files
-    // for each producer. If both producers ever shared a single capnp file,
-    // one consumer's payload shape would lose to the other's; this is the
-    // file-level evidence that the dedup bug from consumed_topic doesn't
-    // apply here.
+    // The producer-node-scoped schema keys give each producer its own capnp
+    // files. If both producers shared one file, one consumer's payload shape
+    // would replace the other's.
     let capnp_dir = peppygen_dir.join("src/capnp");
     let front_request_capnp = capnp_dir.join("poll_uvc_camera_enable_message.capnp");
     let front_response_capnp = capnp_dir.join("poll_uvc_camera_enable_response_message.capnp");
@@ -176,9 +172,8 @@ fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
     );
 
     helpers::init_cargo_user_node(&user_node_dir);
-    let src_dir = user_node_dir.join("src");
-    fs::create_dir_all(&src_dir).expect("failed to create src dir");
-    fs::write(src_dir.join("main.rs"), USER_MAIN).expect("failed to write user main.rs");
+    fs::write(user_node_dir.join("src").join("main.rs"), USER_MAIN)
+        .expect("failed to write user main.rs");
 
     // Build must succeed: each consumer references a struct that the
     // capnp file for its own producer actually defines.

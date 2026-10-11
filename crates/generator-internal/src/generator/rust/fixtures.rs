@@ -13,21 +13,21 @@
 
 use super::super::testgen::{
     DepLinkSpec, EmittedSpec, ExposedActionSpec, ExposedServiceSpec, FIXTURE_CORE_NODE,
-    FIXTURE_INSTANCE_ID, TargetSpec, TestGenRegistry, claim_sanitized_name,
+    FIXTURE_INSTANCE_ID, ObservedLinkSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
 use super::identifiers::suffixed_rust_identifier;
 use super::mock::{
-    CodecSpec, build_local_message_with_deserializer, build_struct_deserializer,
-    build_struct_serializer, production_module, target_expr,
+    CodecSpec, build_local_message_with_deserializer, build_local_struct_with_deserializer,
+    build_struct_deserializer, build_struct_serializer, production_module, target_expr,
 };
 use super::scaffold::sanitize_rust_module_name;
 use super::topics::{qos_profile_tokens, retention_tokens};
 use super::{
-    GenerationContext, RustGenerator, build_deserialize_fn, collect_function_params,
-    deserialize_format_fields, map_message_format, prefixed_ident, render_tokens,
+    ResultDecoder, ResultOutcomeTokens, RustGenerator, build_result_outcome, identifiers,
+    render_tokens,
 };
 use crate::error::Result;
-use crate::generator::naming::{non_empty_str, to_camel_case};
+use crate::generator::naming::{claim_sanitized_name, sanitize_node_display_name, to_camel_case};
 use crate::generator::types::{InterfaceArtifact, InterfaceKind, scoped_schema_key};
 use config::node::Cardinality;
 use proc_macro2::{Ident, Span, TokenStream};
@@ -112,7 +112,7 @@ fn render_emitted_topic(
     spec: &EmittedSpec,
 ) -> Result<(InterfaceArtifact, EmittedMember)> {
     let topic_name = spec.name.as_str();
-    let fn_name = prefixed_ident("", non_empty_str(topic_name), "topic").to_string();
+    let fn_name = identifiers::rust_identifier_or(topic_name, "topic");
     let schema_key = scoped_schema_key(spec.origin.as_ref(), &fn_name);
     let schema_prefix = to_camel_case(&fn_name);
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
@@ -197,14 +197,10 @@ fn render_emitted_topic(
         None => topic_name.to_string(),
     };
     let field = Ident::new(&sanitize_rust_module_name(&field_name), Span::call_site());
-    let production_path = {
-        let segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
-        production_module("fixtures", &{
-            let mut all = vec!["emitted_topics"];
-            all.extend(segments);
-            all
-        })
-    };
+    // The module path already starts with the `emitted_topics` category, so
+    // it is the whole path of this module under `crate::fixtures`.
+    let segments: Vec<&str> = module_path.iter().map(String::as_str).collect();
+    let production_path = production_module("fixtures", &segments);
     Ok((
         InterfaceArtifact {
             module_path,
@@ -231,7 +227,7 @@ fn render_exposed_service(
     spec: &ExposedServiceSpec,
 ) -> Result<InterfaceArtifact> {
     let service_name = spec.name.as_str();
-    let fn_name = prefixed_ident("", non_empty_str(service_name), "service").to_string();
+    let fn_name = identifiers::rust_identifier_or(service_name, "service");
     let request_key = scoped_schema_key(spec.origin.as_ref(), &fn_name);
     let response_key = scoped_schema_key(spec.origin.as_ref(), &format!("{fn_name}_response"));
     let schema_prefix = to_camel_case(&fn_name);
@@ -242,12 +238,8 @@ fn render_exposed_service(
         Some(origin) => module_path.extend(origin.module_path_for(service_name)),
         None => module_path.push(service_name.to_string()),
     }
-    let production = {
-        let segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
-        let mut all = vec!["exposed_services"];
-        all.extend(segments);
-        production_module_raw(&all)
-    };
+    let surface_segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
+    let production = production_module("exposed_services", &surface_segments);
 
     let serialize_ident = Ident::new("serialize_request", Span::call_site());
     let deserialize_ident = Ident::new("deserialize_response", Span::call_site());
@@ -361,12 +353,6 @@ fn render_exposed_service(
     })
 }
 
-/// Path to a production module from raw segments (first segment is the
-/// category, the rest are sanitized).
-fn production_module_raw(segments: &[&str]) -> TokenStream {
-    production_module(segments[0], &segments[1..])
-}
-
 // ---------------------------------------------------------------------------
 // exposed actions
 // ---------------------------------------------------------------------------
@@ -378,7 +364,7 @@ fn render_exposed_action(
     spec: &ExposedActionSpec,
 ) -> Result<InterfaceArtifact> {
     let action_name = spec.name.as_str();
-    let base_name = prefixed_ident("", non_empty_str(action_name), "action").to_string();
+    let base_name = identifiers::rust_identifier_or(action_name, "action");
     let goal_key = scoped_schema_key(spec.origin.as_ref(), &format!("{base_name}_goal"));
     let goal_response_key =
         scoped_schema_key(spec.origin.as_ref(), &format!("{base_name}_goal_response"));
@@ -394,14 +380,10 @@ fn render_exposed_action(
     let mut module_path = vec!["exposed_actions".to_string()];
     match &spec.origin {
         Some(origin) => module_path.extend(origin.module_path_for(action_name)),
-        None => module_path.push(sanitize_display(action_name)),
+        None => module_path.push(sanitize_node_display_name(action_name)),
     }
-    let production = {
-        let segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
-        let mut all = vec!["exposed_actions"];
-        all.extend(segments);
-        production_module_raw(&all)
-    };
+    let surface_segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
+    let production = production_module("exposed_actions", &surface_segments);
 
     let mut reexports: Vec<TokenStream> = Vec::new();
     let mut codecs: Vec<TokenStream> = Vec::new();
@@ -470,42 +452,19 @@ fn render_exposed_action(
     // Feedback: fixtures deserialize; production defines no struct.
     let feedback_method = match &spec.feedback {
         Some(format) => {
-            let fn_ident = Ident::new("deserialize_feedback", Span::call_site());
-            let artifacts = map_message_format(&feedback_key, Some(format))?
-                .expect("non-empty message format maps to schema artifacts");
-            let mut context = GenerationContext::default();
-            let feedback_ident = Ident::new("Feedback", Span::call_site());
-            let params =
-                collect_function_params(Some(&artifacts), None, "Feedback", &mut context, None)?;
-            let fields: Vec<(Ident, TokenStream)> = params
-                .iter()
-                .map(|param| (param.ident.clone(), param.ty.clone()))
-                .collect();
-            context.add_struct(feedback_ident, fields);
-            extra_items.extend(context.into_tokens());
-
-            let info = generator.register_schema(
-                &feedback_key,
-                &format!("{action_prefix}Feedback"),
-                &artifacts,
+            let feedback = build_local_struct_with_deserializer(
+                generator,
+                CodecSpec {
+                    schema_key: &feedback_key,
+                    struct_prefix: &format!("{action_prefix}Feedback"),
+                    format,
+                    context_label: &format!("fixtures {action_name} feedback"),
+                },
+                "Feedback",
+                &Ident::new("deserialize_feedback", Span::call_site()),
             )?;
-            let reader_type = info.reader_type_tokens();
-            let context_expr = {
-                let label = format!("fixtures {action_name} feedback");
-                quote!(String::from(#label))
-            };
-            let (field_statements, field_inits, _) =
-                deserialize_format_fields(format, "Feedback", &context_expr)?;
-            let return_ty = quote!(Feedback);
-            let result_expr = quote!(Feedback { #(#field_inits),* });
-            codecs.push(build_deserialize_fn(
-                &fn_ident,
-                &reader_type,
-                &context_expr,
-                &return_ty,
-                &field_statements,
-                &result_expr,
-            ));
+            extra_items.extend(feedback.struct_items);
+            codecs.push(feedback.deserializer);
             quote! {
                 /// Receives the next decoded feedback message for this goal.
                 ///
@@ -524,82 +483,37 @@ fn render_exposed_action(
     };
 
     // Result: fixtures deserialize; production defines no struct.
-    let (outcome_variants, decode_result) = match &spec.result {
+    let result_decoder = match &spec.result {
         Some(format) => {
+            let data_name = "ResultData";
             let fn_ident = Ident::new("deserialize_result", Span::call_site());
-            let artifacts = map_message_format(&result_key, Some(format))?
-                .expect("non-empty message format maps to schema artifacts");
-            let mut context = GenerationContext::default();
-            let result_ident = Ident::new("ResultData", Span::call_site());
-            let params =
-                collect_function_params(Some(&artifacts), None, "ResultData", &mut context, None)?;
-            let fields: Vec<(Ident, TokenStream)> = params
-                .iter()
-                .map(|param| (param.ident.clone(), param.ty.clone()))
-                .collect();
-            context.add_struct(result_ident, fields);
-            extra_items.extend(context.into_tokens());
-
-            let info = generator.register_schema(
-                &result_key,
-                &format!("{action_prefix}ResultResponse"),
-                &artifacts,
-            )?;
-            let reader_type = info.reader_type_tokens();
-            let context_expr = {
-                let label = format!("fixtures {action_name} result");
-                quote!(String::from(#label))
-            };
-            let (field_statements, field_inits, _) =
-                deserialize_format_fields(format, "ResultData", &context_expr)?;
-            let return_ty = quote!(ResultData);
-            let result_expr = quote!(ResultData { #(#field_inits),* });
-            codecs.push(build_deserialize_fn(
+            let result = build_local_struct_with_deserializer(
+                generator,
+                CodecSpec {
+                    schema_key: &result_key,
+                    struct_prefix: &format!("{action_prefix}ResultResponse"),
+                    format,
+                    context_label: &format!("fixtures {action_name} result"),
+                },
+                data_name,
                 &fn_ident,
-                &reader_type,
-                &context_expr,
-                &return_ty,
-                &field_statements,
-                &result_expr,
-            ));
-            (
-                quote! {
-                    Completed(ResultData),
-                    Cancelled(ResultData),
-                    Abandoned,
-                    Expired,
-                },
-                quote! {
-                    let outcome = match reply.status {
-                        peppylib::messaging::ResultStatus::Completed => {
-                            ResultOutcome::Completed(deserialize_result(reply.body.as_ref())?)
-                        }
-                        peppylib::messaging::ResultStatus::Cancelled => {
-                            ResultOutcome::Cancelled(deserialize_result(reply.body.as_ref())?)
-                        }
-                        peppylib::messaging::ResultStatus::Abandoned => ResultOutcome::Abandoned,
-                        peppylib::messaging::ResultStatus::Expired => ResultOutcome::Expired,
-                    };
-                },
-            )
+            )?;
+            extra_items.extend(result.struct_items);
+            codecs.push(result.deserializer);
+            Some(ResultDecoder {
+                data_ident: Ident::new(data_name, Span::call_site()),
+                deserialize_fn_ident: fn_ident,
+            })
         }
-        None => (
-            quote! {
-                Completed,
-                Cancelled,
-                Abandoned,
-                Expired,
-            },
-            quote! {
-                let outcome = match reply.status {
-                    peppylib::messaging::ResultStatus::Completed => ResultOutcome::Completed,
-                    peppylib::messaging::ResultStatus::Cancelled => ResultOutcome::Cancelled,
-                    peppylib::messaging::ResultStatus::Abandoned => ResultOutcome::Abandoned,
-                    peppylib::messaging::ResultStatus::Expired => ResultOutcome::Expired,
-                };
-            },
-        ),
+        None => None,
     };
+    let ResultOutcomeTokens {
+        variants: outcome_variants,
+        decode: decode_result,
+    } = build_result_outcome(
+        &Ident::new("ResultOutcome", Span::call_site()),
+        result_decoder.as_ref(),
+    );
 
     let doc = format!(
         "Identity-explicit caller for the node's exposed action `{action_name}`: drives \
@@ -750,13 +664,30 @@ fn render_exposed_action(
     })
 }
 
-fn sanitize_display(name: &str) -> String {
-    crate::generator::naming::sanitize_node_display_name(name)
-}
-
 // ---------------------------------------------------------------------------
 // harness
 // ---------------------------------------------------------------------------
+
+/// The pieces of the harness that every slot contributes to, in slot
+/// order: the `Config` knobs and their defaults, the mock starts, the
+/// seeding calls and the readiness statements.
+#[derive(Default)]
+struct HarnessParts {
+    config_fields: Vec<TokenStream>,
+    config_defaults: Vec<TokenStream>,
+    mock_starts: Vec<TokenStream>,
+    seeding: Vec<TokenStream>,
+    publisher_readiness: Vec<TokenStream>,
+    service_readiness: Vec<TokenStream>,
+}
+
+/// The started mocks of one slot kind: the fields of its mocks struct and
+/// the locals that initialize them.
+#[derive(Default)]
+struct MockGroup {
+    fields: Vec<TokenStream>,
+    inits: Vec<Ident>,
+}
 
 fn render_harness(
     registry: &TestGenRegistry,
@@ -764,285 +695,19 @@ fn render_harness(
     node_tag: &str,
     emitted_members: &[EmittedMember],
 ) -> Result<String> {
-    let mut config_fields: Vec<TokenStream> = Vec::new();
-    let mut config_defaults: Vec<TokenStream> = Vec::new();
-    let mut dep_mock_fields: Vec<TokenStream> = Vec::new();
-    let mut pairing_mock_fields: Vec<TokenStream> = Vec::new();
-    let mut observed_mock_fields: Vec<TokenStream> = Vec::new();
-    let mut mock_starts: Vec<TokenStream> = Vec::new();
-    let mut dep_mock_inits: Vec<Ident> = Vec::new();
-    let mut pairing_mock_inits: Vec<Ident> = Vec::new();
-    let mut observed_mock_inits: Vec<Ident> = Vec::new();
-    let mut seeding: Vec<TokenStream> = Vec::new();
-    let mut publisher_readiness: Vec<TokenStream> = Vec::new();
-    let mut service_readiness: Vec<TokenStream> = Vec::new();
+    let mut parts = HarnessParts::default();
+    let mut dep_mocks = MockGroup::default();
+    let mut pairing_mocks = MockGroup::default();
+    let mut observed_mocks = MockGroup::default();
 
     for (link_id, spec) in &registry.deps {
-        render_dep_harness_parts(
-            link_id,
-            spec,
-            &mut config_fields,
-            &mut config_defaults,
-            &mut dep_mock_fields,
-            &mut mock_starts,
-            &mut dep_mock_inits,
-            &mut seeding,
-            &mut service_readiness,
-        );
+        render_dep_harness_parts(link_id, spec, &mut parts, &mut dep_mocks);
     }
-
     for (link_id, spec) in &registry.pairings {
-        let field = Ident::new(&sanitize_rust_module_name(link_id), Span::call_site());
-        let module = production_module("mock", &["pairings", link_id]);
-        let pairing_target = target_expr(&TargetSpec::Pairing {
-            name: spec.pairing_name.clone(),
-            tag: spec.pairing_tag.clone(),
-        });
-        // The mock subscribes to every topic the node emits on this slot;
-        // barrier on each, addressed to the mock's identity, so the node's
-        // first publish routes.
-        let readiness_of = |peer: TokenStream| -> Vec<TokenStream> {
-            spec.node_emits
-                .iter()
-                .map(|topic| {
-                    let topic_name = topic.name.as_str();
-                    quote! {
-                        publisher_readiness.push(peppylib::testing::PublisherReadiness {
-                            target: #pairing_target,
-                            link_id: Some(#link_id.to_string()),
-                            peer: Some(#peer),
-                            topic: #topic_name.to_string(),
-                        });
-                    }
-                })
-                .collect()
-        };
-        match spec.cardinality {
-            Cardinality::One | Cardinality::ZeroOrOne => {
-                pairing_mock_fields.push(quote!(pub #field: #module::Mock));
-                mock_starts.push(quote! {
-                    let #field = #module::Mock::start(&router, &instance_id).await?;
-                });
-                pairing_mock_inits.push(field.clone());
-                let seed_pin = quote! {
-                    standalone = standalone.with_peer_pin(
-                        #link_id,
-                        #module::MOCK_CORE_NODE,
-                        #module::MOCK_INSTANCE_ID,
-                        #module::PEER_LINK_ID,
-                    );
-                };
-                if spec.cardinality == Cardinality::ZeroOrOne {
-                    // The mock still starts when vacant: its pinned subscription is
-                    // what resolves the publisher-readiness barrier, and an unpaired
-                    // node's publishes on the slot are legal no-ops, so only the
-                    // pin seeding is withheld.
-                    let vacant_field = suffixed_rust_identifier(link_id, "vacant");
-                    let vacant_doc = format!(
-                        "Boot with the `zero_or_one` pairing slot `{link_id}` unpaired: \
-                         the peer pin is not seeded, so the node's `paired()` stays \
-                         `None`, its publishes on this slot are no-ops, and the \
-                         still-started mock's subscriptions stay silent."
-                    );
-                    config_fields.push(quote! {
-                        #[doc = #vacant_doc]
-                        pub #vacant_field: bool
-                    });
-                    config_defaults.push(quote!(#vacant_field: false));
-                    seeding.push(quote! {
-                        if !config.#vacant_field {
-                            #seed_pin
-                        }
-                    });
-                } else {
-                    seeding.push(seed_pin);
-                }
-                publisher_readiness.extend(readiness_of(quote!(#module::peer_info())));
-            }
-            Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
-                let count_field = suffixed_rust_identifier(link_id, "instances");
-                let default_count: usize = match spec.cardinality {
-                    Cardinality::OneOrMore => 1,
-                    _ => 0,
-                };
-                let count_doc = format!(
-                    "How many mock peers to pair into the `{link_id}` pairing slot, \
-                     each under its own instance id and outside any copy."
-                );
-                let members_field = suffixed_rust_identifier(link_id, "members");
-                let members_doc = format!(
-                    "Explicit mock peers for the `{link_id}` pairing slot, each with \
-                     the copy it belongs to, overriding `{count_field}` when non-empty. \
-                     For nodes that group pairs by copy or classify peers by instance \
-                     name."
-                );
-                let members_local = suffixed_rust_identifier(link_id, "member_specs");
-                config_fields.push(quote! {
-                    #[doc = #count_doc]
-                    pub #count_field: usize
-                });
-                config_fields.push(quote! {
-                    #[doc = #members_doc]
-                    pub #members_field: Vec<PeerMemberSpec>
-                });
-                config_defaults.push(quote!(#count_field: #default_count));
-                config_defaults.push(quote!(#members_field: Vec::new()));
-                pairing_mock_fields.push(quote!(pub #field: Vec<#module::Mock>));
-                mock_starts.push(quote! {
-                    let #members_local: Vec<PeerMemberSpec> = if config.#members_field.is_empty() {
-                        (0..config.#count_field)
-                            .map(|index| PeerMemberSpec {
-                                instance_id: format!("{}-{}", #module::MOCK_INSTANCE_ID, index),
-                                copy: None,
-                            })
-                            .collect()
-                    } else {
-                        config.#members_field.clone()
-                    };
-                    let mut #field = Vec::new();
-                    for member in &#members_local {
-                        #field.push(
-                            #module::Mock::start_as(&router, &member.instance_id, &instance_id)
-                                .await?,
-                        );
-                    }
-                });
-                seeding.push(quote! {
-                    for member in &#members_local {
-                        standalone = match &member.copy {
-                            Some(copy) => standalone.with_peer_pin_in_copy(
-                                #link_id,
-                                #module::MOCK_CORE_NODE,
-                                member.instance_id.clone(),
-                                #module::PEER_LINK_ID,
-                                copy.clone(),
-                            ),
-                            None => standalone.with_peer_pin(
-                                #link_id,
-                                #module::MOCK_CORE_NODE,
-                                member.instance_id.clone(),
-                                #module::PEER_LINK_ID,
-                            ),
-                        };
-                    }
-                });
-                let per_member = readiness_of(quote!(#module::peer_info_for(&member.instance_id)));
-                if !per_member.is_empty() {
-                    publisher_readiness.push(quote! {
-                        for member in &#members_local {
-                            #( #per_member )*
-                        }
-                    });
-                }
-                pairing_mock_inits.push(field.clone());
-            }
-        }
+        render_pairing_harness_parts(link_id, spec, &mut parts, &mut pairing_mocks);
     }
-
     for (link_id, spec) in &registry.observed {
-        let field = Ident::new(&sanitize_rust_module_name(link_id), Span::call_site());
-        let module = production_module("mock", &["observed", link_id]);
-        match spec.cardinality {
-            Cardinality::One => {
-                observed_mock_fields.push(quote!(pub #field: #module::Mock));
-                mock_starts.push(quote! {
-                    let #field = #module::Mock::start(&router).await?;
-                });
-                seeding.push(quote! {
-                    standalone = standalone.with_observed_source(
-                        #link_id,
-                        #module::MOCK_CORE_NODE,
-                        #module::MOCK_INSTANCE_ID,
-                        #module::SOURCE_LINK_ID,
-                    );
-                });
-                observed_mock_inits.push(field);
-            }
-            Cardinality::ZeroOrOne => {
-                let vacant_field = suffixed_rust_identifier(link_id, "vacant");
-                let vacant_doc = format!(
-                    "Leave the `{link_id}` observer slot empty (its cardinality \
-                     admits an empty set)."
-                );
-                config_fields.push(quote! {
-                    #[doc = #vacant_doc]
-                    pub #vacant_field: bool
-                });
-                config_defaults.push(quote!(#vacant_field: false));
-                observed_mock_fields.push(quote!(pub #field: Option<#module::Mock>));
-                mock_starts.push(quote! {
-                    let #field = if config.#vacant_field {
-                        None
-                    } else {
-                        Some(#module::Mock::start(&router).await?)
-                    };
-                });
-                seeding.push(quote! {
-                    if !config.#vacant_field {
-                        standalone = standalone.with_observed_source(
-                            #link_id,
-                            #module::MOCK_CORE_NODE,
-                            #module::MOCK_INSTANCE_ID,
-                            #module::SOURCE_LINK_ID,
-                        );
-                    }
-                });
-                observed_mock_inits.push(field);
-            }
-            Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
-                let count_field = suffixed_rust_identifier(link_id, "instances");
-                let default_count: usize = match spec.cardinality {
-                    Cardinality::OneOrMore => 1,
-                    _ => 0,
-                };
-                let count_doc =
-                    format!("How many mock sources to start for the `{link_id}` observer slot.");
-                let ids_field = suffixed_rust_identifier(link_id, "instance_ids");
-                let ids_doc = format!(
-                    "Explicit instance ids for the `{link_id}` mock sources, \
-                     overriding `{count_field}` when non-empty. For nodes that \
-                     classify sources by instance name."
-                );
-                let ids_local = suffixed_rust_identifier(link_id, "member_ids");
-                config_fields.push(quote! {
-                    #[doc = #count_doc]
-                    pub #count_field: usize
-                });
-                config_fields.push(quote! {
-                    #[doc = #ids_doc]
-                    pub #ids_field: Vec<String>
-                });
-                config_defaults.push(quote!(#count_field: #default_count));
-                config_defaults.push(quote!(#ids_field: Vec::new()));
-                observed_mock_fields.push(quote!(pub #field: Vec<#module::Mock>));
-                mock_starts.push(quote! {
-                    let #ids_local: Vec<String> = if config.#ids_field.is_empty() {
-                        (0..config.#count_field)
-                            .map(|index| format!("{}-{}", #module::MOCK_INSTANCE_ID, index))
-                            .collect()
-                    } else {
-                        config.#ids_field.clone()
-                    };
-                    let mut #field = Vec::new();
-                    for member_instance_id in &#ids_local {
-                        #field.push(
-                            #module::Mock::start_as(&router, member_instance_id).await?,
-                        );
-                    }
-                });
-                seeding.push(quote! {
-                    for member_instance_id in &#ids_local {
-                        standalone = standalone.with_observed_source(
-                            #link_id,
-                            #module::MOCK_CORE_NODE,
-                            member_instance_id.clone(),
-                            #module::SOURCE_LINK_ID,
-                        );
-                    }
-                });
-                observed_mock_inits.push(field);
-            }
-        }
+        render_observed_harness_parts(link_id, spec, &mut parts, &mut observed_mocks);
     }
 
     // Emitted-topic subscriptions: opened on the fixture session before the
@@ -1060,7 +725,7 @@ fn render_harness(
             let #field = #module::subscribe(&session, &instance_id).await?;
         });
         emitted_inits.push(field);
-        publisher_readiness.push(quote! {
+        parts.publisher_readiness.push(quote! {
             publisher_readiness.push(peppylib::testing::PublisherReadiness {
                 target: #target,
                 link_id: None,
@@ -1069,6 +734,27 @@ fn render_harness(
             });
         });
     }
+
+    let HarnessParts {
+        config_fields,
+        config_defaults,
+        mock_starts,
+        seeding,
+        publisher_readiness,
+        service_readiness,
+    } = parts;
+    let MockGroup {
+        fields: dep_mock_fields,
+        inits: dep_mock_inits,
+    } = dep_mocks;
+    let MockGroup {
+        fields: pairing_mock_fields,
+        inits: pairing_mock_inits,
+    } = pairing_mocks;
+    let MockGroup {
+        fields: observed_mock_fields,
+        inits: observed_mock_inits,
+    } = observed_mocks;
 
     // Every publisher readiness statement pushes onto the list, so a node
     // with none (it emits nothing, on its own surface or a pairing slot)
@@ -1365,17 +1051,14 @@ fn render_harness(
     Ok(render_tokens(tokens))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The harness parts of one dependency slot: its mock (one, an optional
+/// one or a set, per the slot's cardinality), the binding seeded for it and
+/// the readiness of every service and action the mock serves.
 fn render_dep_harness_parts(
     link_id: &str,
     spec: &DepLinkSpec,
-    config_fields: &mut Vec<TokenStream>,
-    config_defaults: &mut Vec<TokenStream>,
-    dep_mock_fields: &mut Vec<TokenStream>,
-    mock_starts: &mut Vec<TokenStream>,
-    dep_mock_inits: &mut Vec<Ident>,
-    seeding: &mut Vec<TokenStream>,
-    service_readiness: &mut Vec<TokenStream>,
+    parts: &mut HarnessParts,
+    mocks: &mut MockGroup,
 ) {
     let field = Ident::new(&sanitize_rust_module_name(link_id), Span::call_site());
     let module = production_module("mock", &["deps", link_id]);
@@ -1400,8 +1083,6 @@ fn render_dep_harness_parts(
                 )
             }))
             .map(|(name, kind)| {
-                let target = target.clone();
-                let instance_expr = instance_expr.clone();
                 quote! {
                     service_readiness.push(peppylib::testing::ServiceReadiness {
                         target: #target,
@@ -1416,11 +1097,11 @@ fn render_dep_harness_parts(
 
     match spec.cardinality {
         Cardinality::One => {
-            dep_mock_fields.push(quote!(pub #field: #module::Mock));
-            mock_starts.push(quote! {
+            mocks.fields.push(quote!(pub #field: #module::Mock));
+            parts.mock_starts.push(quote! {
                 let #field = #module::Mock::start(&router).await?;
             });
-            seeding.push(quote! {
+            parts.seeding.push(quote! {
                 standalone = standalone.with_bound_producer(
                     #link_id,
                     #module::MOCK_CORE_NODE,
@@ -1428,22 +1109,17 @@ fn render_dep_harness_parts(
                 );
             });
             let entries = per_instance_readiness(quote!(#module::MOCK_INSTANCE_ID));
-            service_readiness.push(quote! { #( #entries )* });
-            dep_mock_inits.push(field);
+            parts.service_readiness.push(quote! { #( #entries )* });
+            mocks.inits.push(field);
         }
         Cardinality::ZeroOrOne => {
-            let vacant_field = suffixed_rust_identifier(link_id, "vacant");
             let vacant_doc = format!(
                 "Leave the `{link_id}` dependency slot vacant (its cardinality admits \
                  an empty binding)."
             );
-            config_fields.push(quote! {
-                #[doc = #vacant_doc]
-                pub #vacant_field: bool
-            });
-            config_defaults.push(quote!(#vacant_field: false));
-            dep_mock_fields.push(quote!(pub #field: Option<#module::Mock>));
-            mock_starts.push(quote! {
+            let vacant_field = declare_vacant_knob(parts, link_id, vacant_doc);
+            mocks.fields.push(quote!(pub #field: Option<#module::Mock>));
+            parts.mock_starts.push(quote! {
                 let #field = if config.#vacant_field {
                     None
                 } else {
@@ -1451,7 +1127,7 @@ fn render_dep_harness_parts(
                 };
             });
             let entries = per_instance_readiness(quote!(#module::MOCK_INSTANCE_ID));
-            seeding.push(quote! {
+            parts.seeding.push(quote! {
                 if config.#vacant_field {
                     standalone = standalone.with_vacant_producer_slot(#link_id);
                 } else {
@@ -1463,20 +1139,17 @@ fn render_dep_harness_parts(
                 }
             });
             if !entries.is_empty() {
-                service_readiness.push(quote! {
+                parts.service_readiness.push(quote! {
                     if !config.#vacant_field {
                         #( #entries )*
                     }
                 });
             }
-            dep_mock_inits.push(field);
+            mocks.inits.push(field);
         }
         Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
             let count_field = suffixed_rust_identifier(link_id, "instances");
-            let default_count: usize = match spec.cardinality {
-                Cardinality::OneOrMore => 1,
-                _ => 0,
-            };
+            let default_count = default_instance_count(spec.cardinality);
             let count_doc = format!(
                 "How many mock producer instances to start and bind for the \
                  `{link_id}` dependency slot."
@@ -1488,18 +1161,20 @@ fn render_dep_harness_parts(
                  classify producers by instance name."
             );
             let ids_local = suffixed_rust_identifier(link_id, "member_ids");
-            config_fields.push(quote! {
+            parts.config_fields.push(quote! {
                 #[doc = #count_doc]
                 pub #count_field: usize
             });
-            config_fields.push(quote! {
+            parts.config_fields.push(quote! {
                 #[doc = #ids_doc]
                 pub #ids_field: Vec<String>
             });
-            config_defaults.push(quote!(#count_field: #default_count));
-            config_defaults.push(quote!(#ids_field: Vec::new()));
-            dep_mock_fields.push(quote!(pub #field: Vec<#module::Mock>));
-            mock_starts.push(quote! {
+            parts
+                .config_defaults
+                .push(quote!(#count_field: #default_count));
+            parts.config_defaults.push(quote!(#ids_field: Vec::new()));
+            mocks.fields.push(quote!(pub #field: Vec<#module::Mock>));
+            parts.mock_starts.push(quote! {
                 let #ids_local: Vec<String> = if config.#ids_field.is_empty() {
                     (0..config.#count_field)
                         .map(|index| format!("{}-{}", #module::MOCK_INSTANCE_ID, index))
@@ -1513,7 +1188,7 @@ fn render_dep_harness_parts(
                 }
             });
             let entries = per_instance_readiness(quote!(member_instance_id));
-            seeding.push(quote! {
+            parts.seeding.push(quote! {
                 for member_instance_id in &#ids_local {
                     standalone = standalone.with_bound_producer(
                         #link_id,
@@ -1523,14 +1198,297 @@ fn render_dep_harness_parts(
                 }
             });
             if !entries.is_empty() {
-                service_readiness.push(quote! {
+                parts.service_readiness.push(quote! {
                     for member_instance_id in &#ids_local {
                         let member_instance_id = member_instance_id.as_str();
                         #( #entries )*
                     }
                 });
             }
-            dep_mock_inits.push(field);
+            mocks.inits.push(field);
         }
+    }
+}
+
+/// The harness parts of one pairing slot: its mock peer (one, or one per
+/// member of a multi slot), the peer pins seeded for it and the readiness
+/// of every topic the node emits on the slot.
+fn render_pairing_harness_parts(
+    link_id: &str,
+    spec: &PairingLinkSpec,
+    parts: &mut HarnessParts,
+    mocks: &mut MockGroup,
+) {
+    let field = Ident::new(&sanitize_rust_module_name(link_id), Span::call_site());
+    let module = production_module("mock", &["pairings", link_id]);
+    let pairing_target = target_expr(&TargetSpec::Pairing {
+        name: spec.pairing_name.clone(),
+        tag: spec.pairing_tag.clone(),
+    });
+    // The mock subscribes to every topic the node emits on this slot;
+    // barrier on each, addressed to the mock's identity, so the node's
+    // first publish routes.
+    let readiness_of = |peer: TokenStream| -> Vec<TokenStream> {
+        spec.node_emits
+            .iter()
+            .map(|topic| {
+                let topic_name = topic.name.as_str();
+                quote! {
+                    publisher_readiness.push(peppylib::testing::PublisherReadiness {
+                        target: #pairing_target,
+                        link_id: Some(#link_id.to_string()),
+                        peer: Some(#peer),
+                        topic: #topic_name.to_string(),
+                    });
+                }
+            })
+            .collect()
+    };
+    match spec.cardinality {
+        Cardinality::One | Cardinality::ZeroOrOne => {
+            mocks.fields.push(quote!(pub #field: #module::Mock));
+            parts.mock_starts.push(quote! {
+                let #field = #module::Mock::start(&router, &instance_id).await?;
+            });
+            mocks.inits.push(field.clone());
+            let seed_pin = quote! {
+                standalone = standalone.with_peer_pin(
+                    #link_id,
+                    #module::MOCK_CORE_NODE,
+                    #module::MOCK_INSTANCE_ID,
+                    #module::PEER_LINK_ID,
+                );
+            };
+            if spec.cardinality == Cardinality::ZeroOrOne {
+                // The mock still starts when vacant: its pinned subscription is
+                // what resolves the publisher-readiness barrier, and an unpaired
+                // node's publishes on the slot are legal no-ops, so only the
+                // pin seeding is withheld.
+                let vacant_doc = format!(
+                    "Boot with the `zero_or_one` pairing slot `{link_id}` unpaired: \
+                     the peer pin is not seeded, so the node's `paired()` stays \
+                     `None`, its publishes on this slot are no-ops, and the \
+                     still-started mock's subscriptions stay silent."
+                );
+                let vacant_field = declare_vacant_knob(parts, link_id, vacant_doc);
+                parts.seeding.push(quote! {
+                    if !config.#vacant_field {
+                        #seed_pin
+                    }
+                });
+            } else {
+                parts.seeding.push(seed_pin);
+            }
+            parts
+                .publisher_readiness
+                .extend(readiness_of(quote!(#module::peer_info())));
+        }
+        Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
+            let count_field = suffixed_rust_identifier(link_id, "instances");
+            let default_count = default_instance_count(spec.cardinality);
+            let count_doc = format!(
+                "How many mock peers to pair into the `{link_id}` pairing slot, \
+                 each under its own instance id and outside any copy."
+            );
+            let members_field = suffixed_rust_identifier(link_id, "members");
+            let members_doc = format!(
+                "Explicit mock peers for the `{link_id}` pairing slot, each with \
+                 the copy it belongs to, overriding `{count_field}` when non-empty. \
+                 For nodes that group pairs by copy or classify peers by instance \
+                 name."
+            );
+            let members_local = suffixed_rust_identifier(link_id, "member_specs");
+            parts.config_fields.push(quote! {
+                #[doc = #count_doc]
+                pub #count_field: usize
+            });
+            parts.config_fields.push(quote! {
+                #[doc = #members_doc]
+                pub #members_field: Vec<PeerMemberSpec>
+            });
+            parts
+                .config_defaults
+                .push(quote!(#count_field: #default_count));
+            parts
+                .config_defaults
+                .push(quote!(#members_field: Vec::new()));
+            mocks.fields.push(quote!(pub #field: Vec<#module::Mock>));
+            parts.mock_starts.push(quote! {
+                let #members_local: Vec<PeerMemberSpec> = if config.#members_field.is_empty() {
+                    (0..config.#count_field)
+                        .map(|index| PeerMemberSpec {
+                            instance_id: format!("{}-{}", #module::MOCK_INSTANCE_ID, index),
+                            copy: None,
+                        })
+                        .collect()
+                } else {
+                    config.#members_field.clone()
+                };
+                let mut #field = Vec::new();
+                for member in &#members_local {
+                    #field.push(
+                        #module::Mock::start_as(&router, &member.instance_id, &instance_id)
+                            .await?,
+                    );
+                }
+            });
+            parts.seeding.push(quote! {
+                for member in &#members_local {
+                    standalone = match &member.copy {
+                        Some(copy) => standalone.with_peer_pin_in_copy(
+                            #link_id,
+                            #module::MOCK_CORE_NODE,
+                            member.instance_id.clone(),
+                            #module::PEER_LINK_ID,
+                            copy.clone(),
+                        ),
+                        None => standalone.with_peer_pin(
+                            #link_id,
+                            #module::MOCK_CORE_NODE,
+                            member.instance_id.clone(),
+                            #module::PEER_LINK_ID,
+                        ),
+                    };
+                }
+            });
+            let per_member = readiness_of(quote!(#module::peer_info_for(&member.instance_id)));
+            if !per_member.is_empty() {
+                parts.publisher_readiness.push(quote! {
+                    for member in &#members_local {
+                        #( #per_member )*
+                    }
+                });
+            }
+            mocks.inits.push(field.clone());
+        }
+    }
+}
+
+/// The harness parts of one observer slot: its mock sources (one, an
+/// optional one or a set, per the slot's cardinality) and the observed
+/// sources seeded for them.
+fn render_observed_harness_parts(
+    link_id: &str,
+    spec: &ObservedLinkSpec,
+    parts: &mut HarnessParts,
+    mocks: &mut MockGroup,
+) {
+    let field = Ident::new(&sanitize_rust_module_name(link_id), Span::call_site());
+    let module = production_module("mock", &["observed", link_id]);
+    match spec.cardinality {
+        Cardinality::One => {
+            mocks.fields.push(quote!(pub #field: #module::Mock));
+            parts.mock_starts.push(quote! {
+                let #field = #module::Mock::start(&router).await?;
+            });
+            parts.seeding.push(quote! {
+                standalone = standalone.with_observed_source(
+                    #link_id,
+                    #module::MOCK_CORE_NODE,
+                    #module::MOCK_INSTANCE_ID,
+                    #module::SOURCE_LINK_ID,
+                );
+            });
+            mocks.inits.push(field);
+        }
+        Cardinality::ZeroOrOne => {
+            let vacant_doc = format!(
+                "Leave the `{link_id}` observer slot empty (its cardinality \
+                 admits an empty set)."
+            );
+            let vacant_field = declare_vacant_knob(parts, link_id, vacant_doc);
+            mocks.fields.push(quote!(pub #field: Option<#module::Mock>));
+            parts.mock_starts.push(quote! {
+                let #field = if config.#vacant_field {
+                    None
+                } else {
+                    Some(#module::Mock::start(&router).await?)
+                };
+            });
+            parts.seeding.push(quote! {
+                if !config.#vacant_field {
+                    standalone = standalone.with_observed_source(
+                        #link_id,
+                        #module::MOCK_CORE_NODE,
+                        #module::MOCK_INSTANCE_ID,
+                        #module::SOURCE_LINK_ID,
+                    );
+                }
+            });
+            mocks.inits.push(field);
+        }
+        Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
+            let count_field = suffixed_rust_identifier(link_id, "instances");
+            let default_count = default_instance_count(spec.cardinality);
+            let count_doc =
+                format!("How many mock sources to start for the `{link_id}` observer slot.");
+            let ids_field = suffixed_rust_identifier(link_id, "instance_ids");
+            let ids_doc = format!(
+                "Explicit instance ids for the `{link_id}` mock sources, \
+                 overriding `{count_field}` when non-empty. For nodes that \
+                 classify sources by instance name."
+            );
+            let ids_local = suffixed_rust_identifier(link_id, "member_ids");
+            parts.config_fields.push(quote! {
+                #[doc = #count_doc]
+                pub #count_field: usize
+            });
+            parts.config_fields.push(quote! {
+                #[doc = #ids_doc]
+                pub #ids_field: Vec<String>
+            });
+            parts
+                .config_defaults
+                .push(quote!(#count_field: #default_count));
+            parts.config_defaults.push(quote!(#ids_field: Vec::new()));
+            mocks.fields.push(quote!(pub #field: Vec<#module::Mock>));
+            parts.mock_starts.push(quote! {
+                let #ids_local: Vec<String> = if config.#ids_field.is_empty() {
+                    (0..config.#count_field)
+                        .map(|index| format!("{}-{}", #module::MOCK_INSTANCE_ID, index))
+                        .collect()
+                } else {
+                    config.#ids_field.clone()
+                };
+                let mut #field = Vec::new();
+                for member_instance_id in &#ids_local {
+                    #field.push(
+                        #module::Mock::start_as(&router, member_instance_id).await?,
+                    );
+                }
+            });
+            parts.seeding.push(quote! {
+                for member_instance_id in &#ids_local {
+                    standalone = standalone.with_observed_source(
+                        #link_id,
+                        #module::MOCK_CORE_NODE,
+                        member_instance_id.clone(),
+                        #module::SOURCE_LINK_ID,
+                    );
+                }
+            });
+            mocks.inits.push(field);
+        }
+    }
+}
+
+/// Declares the `<link_id>_vacant` knob of a slot whose cardinality admits an
+/// empty set: a `Config` field documented by `doc`, false by default.
+fn declare_vacant_knob(parts: &mut HarnessParts, link_id: &str, doc: String) -> Ident {
+    let vacant_field = suffixed_rust_identifier(link_id, "vacant");
+    parts.config_fields.push(quote! {
+        #[doc = #doc]
+        pub #vacant_field: bool
+    });
+    parts.config_defaults.push(quote!(#vacant_field: false));
+    vacant_field
+}
+
+/// How many mocks a multi-instance slot starts when the test names none:
+/// one for a `one_or_more` slot, none for a `zero_or_more` slot.
+fn default_instance_count(cardinality: Cardinality) -> usize {
+    match cardinality {
+        Cardinality::OneOrMore => 1,
+        _ => 0,
     }
 }

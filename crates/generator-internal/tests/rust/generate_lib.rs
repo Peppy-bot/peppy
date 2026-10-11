@@ -7,6 +7,7 @@ use daemon_config::consts::PEPPYLIB_OUTPUT_PATH;
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use generator::{NodeTree, generate_peppygen_lib};
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
 use crate::helpers;
@@ -52,40 +53,53 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   },
 }"#;
 
+/// The manifest of a Rust node named `name` that declares no interfaces and
+/// no dependencies.
+fn minimal_rust_node_config(name: &str) -> String {
+    format!(
+        r#"{{
+  peppy_schema: "node/v1",
+  manifest: {{
+    name: "{name}",
+    tag: "v1"
+  }},
+  execution: {{
+    language: "rust",
+    run_cmd: ["./target/debug/{name}"]
+  }}
+}}"#
+    )
+}
+
+/// The vendored crates whose deployment the copy-mode and symlink-mode tests
+/// check, so that both modes are checked on the same crates.
+const CHECKED_VENDORED_CRATES: [&str; 3] = [
+    "peppylib",
+    "peppy-messaging-interface",
+    "peppy-config-model",
+];
+
+/// The directory, relative to the node directory, that holds the vendored
+/// crates side by side.
+fn vendored_libs_dir() -> &'static Path {
+    Path::new(PEPPYLIB_OUTPUT_PATH)
+        .parent()
+        .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory")
+}
+
 #[test]
 fn generate_peppygen_lib_minimal_config() {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
-    // Minimal config with no interfaces
-    let minimal_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "minimal_node",
-        tag: "v1"
-      },
-      execution: {
-        language: "rust",
-        run_cmd: ["./target/debug/minimal_node"]
-      }
-    }"#;
-
     let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
-    fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
+    fs::write(&config_path, minimal_rust_node_config("minimal_node"))
+        .expect("failed to write peppy.json5");
 
     // Generate should succeed even with no interfaces
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate library for minimal config");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, node_dir, Vec::new())
+        .expect("failed to generate library for minimal config");
 
     // Verify the generated library exists
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
@@ -99,23 +113,13 @@ fn generate_peppygen_lib_minimal_config() {
 /// `Symlink` mode produces symlinks.
 #[test]
 fn generate_peppygen_lib_copy_mode_deploys_real_dirs() {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
-    let minimal_config = r#"{
-      peppy_schema: "node/v1",
-      manifest: {
-        name: "copy_node",
-        tag: "v1"
-      },
-      execution: {
-        language: "rust",
-        run_cmd: ["./target/debug/copy_node"]
-      }
-    }"#;
     let config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
-    fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
+    fs::write(&config_path, minimal_rust_node_config("copy_node"))
+        .expect("failed to write peppy.json5");
 
     generate_peppygen_lib(
         PeppygenLanguage::Rust,
@@ -129,15 +133,8 @@ fn generate_peppygen_lib_copy_mode_deploys_real_dirs() {
     )
     .expect("failed to generate library in Copy mode");
 
-    let libs_dir = std::path::Path::new(PEPPYLIB_OUTPUT_PATH)
-        .parent()
-        .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory");
-    for crate_name in [
-        "peppylib",
-        "peppy-messaging-interface",
-        "peppy-config-model",
-    ] {
-        let dest = node_dir.join(libs_dir).join(crate_name);
+    for crate_name in CHECKED_VENDORED_CRATES {
+        let dest = node_dir.join(vendored_libs_dir()).join(crate_name);
         let meta = dest.symlink_metadata().unwrap_or_else(|e| {
             panic!("{crate_name} should be deployed at {}: {e}", dest.display())
         });
@@ -244,15 +241,8 @@ fn generate_peppygen_lib_cargo() {
     );
 
     // Verify the Rust crate symlinks exist.
-    let libs_dir = std::path::Path::new(PEPPYLIB_OUTPUT_PATH)
-        .parent()
-        .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory");
-    for crate_name in [
-        "peppylib",
-        "peppy-messaging-interface",
-        "peppy-config-model",
-    ] {
-        let link = node_dir.join(libs_dir).join(crate_name);
+    for crate_name in CHECKED_VENDORED_CRATES {
+        let link = node_dir.join(vendored_libs_dir()).join(crate_name);
         let meta = link.symlink_metadata().unwrap_or_else(|e| {
             panic!(
                 "{crate_name} symlink should exist at {}: {e}",
@@ -308,21 +298,12 @@ fn generate_peppygen_lib_emits_clock_module() {
 
 #[test]
 fn generate_peppygen_lib_missing_config() {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
     // Try to generate without a peppy.json5 - should fail
-    let result = generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    );
+    let result = helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, node_dir, Vec::new());
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }
 
@@ -331,8 +312,8 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
     const EXPOSED_NODE_NAME: &str = "topic_exposer";
     const CONSUMER_NODE_NAME: &str = "topic_consumer";
 
-    let exposed_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let exposed_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
@@ -364,17 +345,8 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        exposed_node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for exposed node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, exposed_node_dir, Vec::new())
+        .expect("failed to generate peppygen lib for exposed node");
 
     let exposed_peppygen_dir = exposed_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
@@ -385,24 +357,15 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
         exposed_peppygen_dir.display()
     );
 
-    let consumer_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let consumer_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
-    let consumer_config = r#"{
-          peppy_schema: "node/v1",
-          manifest: {
-            name: "{CONSUMER_NODE_NAME}",
-            tag: "v1",
-          },
-          execution: {
-            language: "rust",
-            run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
-          }
-        }"#
-    .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
-    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
-        .expect("failed to write consumer peppy.json5");
+    fs::write(
+        consumer_node_dir.join(NODE_CONFIG_FILE),
+        minimal_rust_node_config(CONSUMER_NODE_NAME),
+    )
+    .expect("failed to write consumer peppy.json5");
 
     let consumed_topic: ConsumedTopic = serde_json5::from_str(&format!(
         r#"{{
@@ -422,15 +385,10 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
         dependency: helpers::native_dep(EXPOSED_NODE_NAME, "v1", EXPOSED_NODE_NAME),
     })];
 
-    generate_peppygen_lib(
+    helpers::generate_test_peppygen_lib(
         PeppygenLanguage::Rust,
         consumer_node_dir,
         expected_interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -449,8 +407,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
     const EXPOSED_NODE_NAME: &str = "service_exposer";
     const CONSUMER_NODE_NAME: &str = "service_consumer";
 
-    let exposed_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let exposed_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
@@ -485,17 +443,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        exposed_node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for exposed node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, exposed_node_dir, Vec::new())
+        .expect("failed to generate peppygen lib for exposed node");
 
     let exposed_peppygen_dir = exposed_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
@@ -506,24 +455,15 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         exposed_peppygen_dir.display()
     );
 
-    let consumer_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let consumer_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
-    let consumer_config = r#"{
-          peppy_schema: "node/v1",
-          manifest: {
-            name: "{CONSUMER_NODE_NAME}",
-            tag: "v1",
-          },
-          execution: {
-            language: "rust",
-            run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
-          }
-        }"#
-    .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
-    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
-        .expect("failed to write consumer peppy.json5");
+    fs::write(
+        consumer_node_dir.join(NODE_CONFIG_FILE),
+        minimal_rust_node_config(CONSUMER_NODE_NAME),
+    )
+    .expect("failed to write consumer peppy.json5");
 
     let consumed_service: ConsumedService = serde_json5::from_str(&format!(
         r#"{{
@@ -548,15 +488,10 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         },
     )];
 
-    generate_peppygen_lib(
+    helpers::generate_test_peppygen_lib(
         PeppygenLanguage::Rust,
         consumer_node_dir,
         consumed_interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -582,8 +517,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
     const EXPOSED_NODE_NAME: &str = "action_exposer";
     const CONSUMER_NODE_NAME: &str = "action_consumer";
 
-    let exposed_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let exposed_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
     let exposed_config = r#"{
@@ -630,17 +565,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        exposed_node_dir,
-        Vec::new(),
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for exposed node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, exposed_node_dir, Vec::new())
+        .expect("failed to generate peppygen lib for exposed node");
 
     let exposed_peppygen_dir = exposed_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
@@ -669,24 +595,15 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         "goal response schema should exactly match response_message_format"
     );
 
-    let consumer_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let consumer_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
-    let consumer_config = r#"{
-          peppy_schema: "node/v1",
-          manifest: {
-            name: "{CONSUMER_NODE_NAME}",
-            tag: "v1",
-          },
-          execution: {
-            language: "rust",
-            run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
-          }
-        }"#
-    .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
-    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
-        .expect("failed to write consumer peppy.json5");
+    fs::write(
+        consumer_node_dir.join(NODE_CONFIG_FILE),
+        minimal_rust_node_config(CONSUMER_NODE_NAME),
+    )
+    .expect("failed to write consumer peppy.json5");
 
     let consumed_action: ConsumedAction = serde_json5::from_str(&format!(
         r#"{{
@@ -719,15 +636,10 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         dependency: helpers::native_dep(EXPOSED_NODE_NAME, "v1", EXPOSED_NODE_NAME),
     })];
 
-    generate_peppygen_lib(
+    helpers::generate_test_peppygen_lib(
         PeppygenLanguage::Rust,
         consumer_node_dir,
         consumed_interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -753,8 +665,8 @@ fn generate_peppygen_rust_lib_renders_optional_accessor_for_a_zero_or_one_contra
     const CONTRACT_NAME: &str = "depth_camera";
     const LINK_ID: &str = "wrist_camera";
 
-    let consumer_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let consumer_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
     fs::write(
         consumer_node_dir.join(NODE_CONFIG_FILE),
@@ -787,17 +699,8 @@ fn generate_peppygen_rust_lib_renders_optional_accessor_for_a_zero_or_one_contra
         ),
     })];
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        consumer_node_dir,
-        interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib for consumer node");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, consumer_node_dir, interfaces)
+        .expect("failed to generate peppygen lib for consumer node");
 
     let leaf = consumer_node_dir
         .join(PEPPYGEN_OUTPUT_PATH)

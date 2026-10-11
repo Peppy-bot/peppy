@@ -14,6 +14,7 @@ mod services;
 mod topics;
 pub(crate) mod type_mapping;
 
+pub(crate) use parameters::join_parameter_path;
 pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
@@ -23,8 +24,7 @@ use super::types::{
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
-    non_empty_str, resolve_schema_file_stem, sanitize_component, sanitize_node_display_name,
-    to_camel_case,
+    resolve_schema_file_stem, sanitize_component, sanitize_node_display_name, to_camel_case,
 };
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
@@ -43,7 +43,10 @@ use actions::{
     build_goal_context_publish_feedback, build_goal_context_struct, build_goal_decision_enum,
     build_handle_goal_next_request,
 };
-use context::{GenerationContext, collect_function_params, map_message_format};
+use context::{
+    GenerationContext, add_response_struct, build_fields_from_params, collect_function_params,
+    map_declared_message_format, map_message_format,
+};
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
 use serialization::{
     MessageEncodingSpec, build_serialize_payload, generate_assignments_for_format,
@@ -51,7 +54,7 @@ use serialization::{
 };
 use services::{
     ExposedServiceMethodSpec, ServiceResponseSpec, build_exposed_service_method,
-    build_request_struct_with_name_and_impl, build_response_payload_tokens,
+    build_request_struct, build_response_payload_tokens, build_result_expr_from_values,
     deserialize_fields_from_format,
 };
 use topics::{
@@ -60,7 +63,7 @@ use topics::{
     build_peer_topic_publisher, build_peer_topic_subscription, build_topic_publisher,
     consumed_to_target_expression,
 };
-use type_mapping::{render_tokens, unused_params_stmt};
+use type_mapping::render_tokens;
 
 /// Rust-specific implementation of the interface generator.
 #[derive(Default)]
@@ -74,16 +77,6 @@ pub struct RustGenerator {
 impl RustGenerator {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    fn make_artifact(
-        &self,
-        leaf_name: &str,
-        origin: Option<&ContractOrigin>,
-        kind: InterfaceKind,
-        code_output: String,
-    ) -> InterfaceArtifact {
-        InterfaceArtifact::for_leaf(origin, leaf_name, kind, code_output)
     }
 
     /// Sets the node parameters for code generation.
@@ -103,8 +96,8 @@ impl RustGenerator {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
+    #[cfg(test)]
+    fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         self.sections
     }
 
@@ -160,6 +153,8 @@ impl RustGenerator {
         })
     }
 
+    /// [`Self::prepare_declared_message_encoding`] for a format that may be
+    /// absent: an absent format has no encoding.
     fn prepare_message_encoding(
         &mut self,
         schema_key: &str,
@@ -170,17 +165,29 @@ impl RustGenerator {
         let Some(artifacts) = artifacts else {
             return Ok(None);
         };
+        self.prepare_declared_message_encoding(schema_key, struct_prefix, artifacts, params)
+            .map(Some)
+    }
 
+    /// Registers the schema of a declared message format and builds the
+    /// assignments that serialize `params` into it.
+    fn prepare_declared_message_encoding(
+        &mut self,
+        schema_key: &str,
+        struct_prefix: &str,
+        artifacts: &CapnpSchemaArtifacts,
+        params: &[FunctionParam],
+    ) -> Result<MessageEncodingSpec> {
         let schema_info = self.register_schema(schema_key, struct_prefix, artifacts)?;
         let builder_ident = Ident::new("root", Span::call_site());
         let assignments =
             generate_assignments_for_format(&builder_ident, artifacts.message_format(), params)?;
 
-        Ok(Some(MessageEncodingSpec {
+        Ok(MessageEncodingSpec {
             builder_type: schema_info.builder_type_tokens(),
             assignments,
             reader_type: schema_info.reader_type_tokens(),
-        }))
+        })
     }
 
     /// Builds the fire_goal method for consumed actions using ActionMessenger::send_goal
@@ -200,132 +207,118 @@ impl RustGenerator {
         let response_artifacts =
             map_message_format(&format!("{schema_key}_response"), response_format)?;
 
-        // Build GoalRequest struct if there's request data
-        let goal_request_ident = Ident::new("GoalRequest", Span::call_site());
-        if let Some(ref artifacts) = request_artifacts {
-            let params = collect_function_params(
-                Some(artifacts),
-                None,
-                &format!("{action_struct_name}Goal"),
-                context,
-                None,
-            )?;
-            let fields: Vec<(Ident, TokenStream)> = params
-                .iter()
-                .map(|p| (p.ident.clone(), p.ty.clone()))
-                .collect();
-            context.add_struct(goal_request_ident.clone(), fields);
-        }
+        // A goal with request data takes a `GoalRequest` argument and
+        // serializes it; a goal without one sends an empty payload.
+        let (request_param, goal_payload_tokens) = match &request_artifacts {
+            Some(artifacts) => {
+                let goal_request_ident = Ident::new("GoalRequest", Span::call_site());
+                let params = collect_function_params(
+                    Some(artifacts),
+                    &format!("{action_struct_name}Goal"),
+                    context,
+                )?;
+                context.add_struct(
+                    goal_request_ident.clone(),
+                    build_fields_from_params(&params),
+                );
 
-        // Build GoalResponseData struct
+                let schema_info = self.register_schema(
+                    schema_key,
+                    &format!("{action_struct_name}GoalMessage"),
+                    artifacts,
+                )?;
+                let builder_type = schema_info.builder_type_tokens();
+
+                let request_ident = Ident::new("request", Span::call_site());
+                let assignments = generate_assignments_from_struct(
+                    &Ident::new("root", Span::call_site()),
+                    artifacts.message_format(),
+                    &request_ident,
+                )?;
+
+                let error_context = quote!(format!(
+                    "fire_goal {} {}",
+                    TARGET_NODE_NAME, TARGET_ACTION_NAME
+                ));
+                let serialize_block =
+                    build_serialize_payload(&builder_type, &[], &assignments, &error_context);
+                (
+                    quote!(request: #goal_request_ident,),
+                    quote! { let goal_payload = #serialize_block; },
+                )
+            }
+            None => (
+                quote!(),
+                quote! {
+                    let goal_payload = peppylib::Payload::new();
+                },
+            ),
+        };
+
         let goal_response_data_ident = Ident::new("GoalResponseData", Span::call_site());
         let has_goal_response_data = response_artifacts.is_some();
 
-        // Build goal payload encoding (shared between both branches)
-        let goal_payload_tokens = if let Some(ref request_artifacts) = request_artifacts {
-            let schema_info = self.register_schema(
-                schema_key,
-                &format!("{action_struct_name}GoalMessage"),
-                request_artifacts,
-            )?;
-            let builder_type = schema_info.builder_type_tokens();
-
-            let request_ident = Ident::new("request", Span::call_site());
-            let assignments = generate_assignments_from_struct(
-                &Ident::new("root", Span::call_site()),
-                request_format.expect("request_format should be Some when artifacts exist"),
-                &request_ident,
-            )?;
-
-            let error_context = quote!(format!(
-                "fire_goal {} {}",
-                TARGET_NODE_NAME, TARGET_ACTION_NAME
-            ));
-            let serialize_block =
-                build_serialize_payload(&builder_type, &[], &assignments, &error_context);
-            quote! { let goal_payload = #serialize_block; }
-        } else {
-            quote! {
-                let goal_payload = peppylib::Payload::new();
-            }
-        };
-
-        let request_param = if request_format.is_some() {
-            quote!(request: #goal_request_ident,)
-        } else {
-            quote!()
-        };
-
-        // Build response-specific parts (struct definition, deserializer, result expression)
+        // The response-specific parts: the GoalResponseData struct, its
+        // deserializer, and the `data` binding and field of the returned
+        // handle.
         let mut helper_items = Vec::new();
-        let response_handling = if let Some(ref response_artifacts) = response_artifacts {
-            let _response_params = collect_function_params(
-                None,
-                Some(response_artifacts),
-                &format!("{action_struct_name}GoalResponse"),
-                context,
-                Some(&goal_response_data_ident),
-            )?;
+        let (data_binding, data_field) = match &response_artifacts {
+            Some(response_artifacts) => {
+                add_response_struct(context, response_artifacts, &goal_response_data_ident)?;
 
-            // Build deserializer helper
-            let response_schema_key = format!("{schema_key}_response");
-            let response_schema = self.register_schema(
-                &response_schema_key,
-                "GoalResponseMessage",
-                response_artifacts,
-            )?;
-            let reader_type = response_schema.reader_type_tokens();
+                // Build deserializer helper
+                let response_schema_key = format!("{schema_key}_response");
+                let response_schema = self.register_schema(
+                    &response_schema_key,
+                    "GoalResponseMessage",
+                    response_artifacts,
+                )?;
+                let reader_type = response_schema.reader_type_tokens();
 
-            let response_format = response_artifacts.message_format();
-            let context_expr = quote!(format!(
-                "{} {} GoalResponse",
-                TARGET_NODE_NAME, TARGET_ACTION_NAME
-            ));
-            let (response_statements, response_inits, _) =
-                deserialize_format_fields(response_format, "GoalResponseData", &context_expr)?;
+                let response_format = response_artifacts.message_format();
+                let context_expr = quote!(format!(
+                    "{} {} GoalResponse",
+                    TARGET_NODE_NAME, TARGET_ACTION_NAME
+                ));
+                let (response_statements, response_inits) =
+                    deserialize_format_fields(response_format, "GoalResponseData", &context_expr)?;
 
-            let deserialize_helper = build_deserialize_fn(
-                &Ident::new("deserialize_goal_response", Span::call_site()),
-                &reader_type,
-                &context_expr,
-                &quote!(#goal_response_data_ident),
-                &response_statements,
-                &quote!(#goal_response_data_ident { #( #response_inits ),* }),
-            );
-            helper_items.push(deserialize_helper);
+                let deserialize_helper = build_deserialize_fn(
+                    &Ident::new("deserialize_goal_response", Span::call_site()),
+                    &reader_type,
+                    &context_expr,
+                    &quote!(#goal_response_data_ident),
+                    &response_statements,
+                    &quote!(#goal_response_data_ident { #( #response_inits ),* }),
+                );
+                helper_items.push(deserialize_helper);
 
-            quote! {
-                let reply = action_handle.goal_reply();
-                let accepted = reply.accepted;
-                let reason = reply.reason.clone();
                 // An empty body means no response was supplied (a declared
                 // response serializes to a non-empty capnp message), which
                 // only a reject can produce.
-                let data = if reply.body.is_empty() {
-                    None
-                } else {
-                    Some(deserialize_goal_response(reply.body.as_ref())?)
+                let data_binding = quote! {
+                    let data = if reply.body.is_empty() {
+                        None
+                    } else {
+                        Some(deserialize_goal_response(reply.body.as_ref())?)
+                    };
                 };
-                Ok(Self {
-                    messenger: node_runner.messenger().clone(),
-                    inner: action_handle,
-                    accepted,
-                    reason,
-                    data,
-                })
+                (data_binding, quote!(data,))
             }
-        } else {
-            quote! {
-                let reply = action_handle.goal_reply();
-                let accepted = reply.accepted;
-                let reason = reply.reason.clone();
-                Ok(Self {
-                    messenger: node_runner.messenger().clone(),
-                    inner: action_handle,
-                    accepted,
-                    reason,
-                })
-            }
+            None => (TokenStream::new(), TokenStream::new()),
+        };
+        let response_handling = quote! {
+            let reply = action_handle.goal_reply();
+            let accepted = reply.accepted;
+            let reason = reply.reason.clone();
+            #data_binding
+            Ok(Self {
+                messenger: node_runner.messenger().clone(),
+                inner: action_handle,
+                accepted,
+                reason,
+                #data_field
+            })
         };
 
         // The `to_target` matches the producer's emission shape: a dependency
@@ -382,16 +375,15 @@ impl RustGenerator {
 
     /// Builds the consumed action `get_result` method and its supporting types.
     ///
-    /// `get_result` returns a typed [`ResultResponse`] carrying a `ResultOutcome`
+    /// `get_result` returns a typed `ResultResponse` carrying a `ResultOutcome`
     /// enum (Completed/Cancelled with the decoded result data, or the empty
     /// Abandoned/Expired terminal states). The engine frames the reply as a
-    /// [`peppylib::messaging::ResultStatus`] tag plus the raw body, stripped by
+    /// `peppylib::messaging::ResultStatus` tag plus the raw body, stripped by
     /// `ActionMessenger::request_result` into a typed reply, so this only needs
     /// to decode the body for the data-bearing variants.
     fn build_consumed_action_get_result_method(
         &mut self,
         context: &mut GenerationContext,
-        action_struct_name: &str,
         result_artifacts: Option<CapnpSchemaArtifacts>,
         result_schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
@@ -410,114 +402,72 @@ impl RustGenerator {
             }
         };
 
-        let method_tokens = if let Some(result_artifacts) = result_artifacts {
-            // Defines `ResultResponseData` (+ ctor) in the context.
-            let _params = collect_function_params(
-                None,
-                Some(&result_artifacts),
-                &format!("{action_struct_name}ResultResponse"),
-                context,
-                Some(&data_ident),
-            )?;
+        let decoder = match result_artifacts {
+            Some(result_artifacts) => {
+                add_response_struct(context, &result_artifacts, &data_ident)?;
 
-            let response_schema = self.register_schema(
-                result_schema_key,
-                "ResultResponseMessage",
-                &result_artifacts,
-            )?;
-            let reader_type = response_schema.reader_type_tokens();
-            let response_format = result_artifacts.message_format();
-            let context_expr = quote!(format!(
-                "{} {} {}",
-                TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse"
-            ));
-            let (statements, inits, _) =
-                deserialize_format_fields(response_format, "ResultResponseData", &context_expr)?;
-            helper_items.push(build_deserialize_fn(
-                &Ident::new("deserialize_result_response", Span::call_site()),
-                &reader_type,
-                &context_expr,
-                &quote!(#data_ident),
-                &statements,
-                &quote!(#data_ident { #( #inits ),* }),
-            ));
-
-            helper_items.push(quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub enum #outcome_ident {
-                    Completed(#data_ident),
-                    Cancelled(#data_ident),
-                    Abandoned,
-                    Expired,
-                }
-            });
-            helper_items.push(response_struct);
-
-            quote! {
-                pub async fn get_result(
-                    &self,
-                    timeout: std::time::Duration,
-                ) -> crate::Result<#response_ident> {
-                    let reply = peppylib::ActionMessenger::request_result(
-                        &self.messenger,
-                        &self.inner,
-                        timeout,
-                    )
-                    .await?;
-                    let outcome = match reply.status {
-                        peppylib::messaging::ResultStatus::Completed => {
-                            #outcome_ident::Completed(deserialize_result_response(reply.body.as_ref())?)
-                        }
-                        peppylib::messaging::ResultStatus::Cancelled => {
-                            #outcome_ident::Cancelled(deserialize_result_response(reply.body.as_ref())?)
-                        }
-                        peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
-                        peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
-                    };
-                    Ok(#response_ident {
-                        instance_id: reply.instance_id,
-                        core_node: reply.core_node,
-                        outcome,
-                    })
-                }
+                let response_schema = self.register_schema(
+                    result_schema_key,
+                    "ResultResponseMessage",
+                    &result_artifacts,
+                )?;
+                let reader_type = response_schema.reader_type_tokens();
+                let response_format = result_artifacts.message_format();
+                let context_expr = quote!(format!(
+                    "{} {} {}",
+                    TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse"
+                ));
+                let (statements, inits) = deserialize_format_fields(
+                    response_format,
+                    "ResultResponseData",
+                    &context_expr,
+                )?;
+                let deserialize_fn_ident =
+                    Ident::new("deserialize_result_response", Span::call_site());
+                helper_items.push(build_deserialize_fn(
+                    &deserialize_fn_ident,
+                    &reader_type,
+                    &context_expr,
+                    &quote!(#data_ident),
+                    &statements,
+                    &quote!(#data_ident { #( #inits ),* }),
+                ));
+                Some(ResultDecoder {
+                    data_ident,
+                    deserialize_fn_ident,
+                })
             }
-        } else {
-            helper_items.push(quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub enum #outcome_ident {
-                    Completed,
-                    Cancelled,
-                    Abandoned,
-                    Expired,
-                }
-            });
-            helper_items.push(response_struct);
+            None => None,
+        };
 
-            quote! {
-                pub async fn get_result(
-                    &self,
-                    timeout: std::time::Duration,
-                ) -> crate::Result<#response_ident> {
-                    let reply = peppylib::ActionMessenger::request_result(
-                        &self.messenger,
-                        &self.inner,
-                        timeout,
-                    )
-                    .await?;
-                    let outcome = match reply.status {
-                        peppylib::messaging::ResultStatus::Completed => #outcome_ident::Completed,
-                        peppylib::messaging::ResultStatus::Cancelled => #outcome_ident::Cancelled,
-                        peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
-                        peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
-                    };
-                    Ok(#response_ident {
-                        instance_id: reply.instance_id,
-                        core_node: reply.core_node,
-                        outcome,
-                    })
-                }
+        let ResultOutcomeTokens { variants, decode } =
+            build_result_outcome(&outcome_ident, decoder.as_ref());
+        helper_items.push(quote! {
+            #[derive(Debug, Clone)]
+            #[allow(dead_code)]
+            pub enum #outcome_ident {
+                #variants
+            }
+        });
+        helper_items.push(response_struct);
+
+        let method_tokens = quote! {
+            pub async fn get_result(
+                &self,
+                timeout: std::time::Duration,
+            ) -> crate::Result<#response_ident> {
+                let reply = peppylib::ActionMessenger::request_result(
+                    &self.messenger,
+                    &self.inner,
+                    timeout,
+                )
+                .await?;
+                #decode
+                Ok(#response_ident {
+                    instance_id: reply.instance_id,
+                    core_node: reply.core_node,
+                    outcome,
+                })
             }
         };
 
@@ -595,30 +545,23 @@ impl RustGenerator {
         action_struct_name: &str,
         schema_key: &str,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
-        let format_artifacts = map_message_format(schema_key, Some(format))?
-            .expect("feedback format should always yield encoding artifacts");
+        let format_artifacts = map_declared_message_format(schema_key, format)?;
 
         let struct_prefix = format!("{action_struct_name}Feedback");
         let schema_struct_name = format!("{struct_prefix}Message");
         let struct_ident = Ident::new("FeedbackMessage", Span::call_site());
 
-        let params = collect_function_params(
-            Some(&format_artifacts),
-            None,
-            &schema_struct_name,
-            context,
-            None,
+        let params =
+            collect_function_params(Some(&format_artifacts), &schema_struct_name, context)?;
+
+        context.add_struct(struct_ident.clone(), build_fields_from_params(&params));
+
+        let encoding = self.prepare_declared_message_encoding(
+            schema_key,
+            &struct_prefix,
+            &format_artifacts,
+            &params,
         )?;
-
-        let fields: Vec<(Ident, TokenStream)> = params
-            .iter()
-            .map(|param| (param.ident.clone(), param.ty.clone()))
-            .collect();
-        context.add_struct(struct_ident.clone(), fields);
-
-        let encoding = self
-            .prepare_message_encoding(schema_key, &struct_prefix, Some(&format_artifacts), &params)?
-            .expect("feedback encoding spec should exist");
         let reader_type = encoding.reader_type.clone();
 
         let helper_fn_ident = Ident::new("deserialize_feedback_payload", Span::call_site());
@@ -634,21 +577,13 @@ impl RustGenerator {
             &schema_struct_name,
             &feedback_context_expr,
         )?;
-        let field_inits: Vec<TokenStream> = params
-            .iter()
-            .zip(value_idents.iter())
-            .map(|(param, value_ident)| {
-                let field_ident = &param.ident;
-                quote!(#field_ident: #value_ident)
-            })
-            .collect();
         let helper_tokens = build_deserialize_fn(
             &helper_fn_ident,
             &reader_type,
             &feedback_context_expr,
             &quote!(#struct_ident),
             &field_statements,
-            &quote!(#struct_ident { #( #field_inits ),* }),
+            &build_result_expr_from_values(&params, &value_idents, Some(&struct_ident)),
         );
 
         let method_ident = Ident::new("on_next_feedback_message", Span::call_site());
@@ -675,6 +610,73 @@ impl RustGenerator {
     }
 }
 
+/// The struct an action's result reply decodes into and the generated
+/// function that decodes it from the reply body.
+struct ResultDecoder {
+    data_ident: Ident,
+    deserialize_fn_ident: Ident,
+}
+
+/// The variants of a `ResultOutcome` enum and the `let outcome = match ...;`
+/// statement that maps a result reply's `ResultStatus` onto them.
+struct ResultOutcomeTokens {
+    variants: TokenStream,
+    decode: TokenStream,
+}
+
+/// Builds the `ResultOutcome` mapping shared by the production `get_result`
+/// and the fixture caller of an exposed action. With a `decoder`, the
+/// completed and cancelled outcomes carry the decoded result data; without
+/// one, every outcome is a unit variant. Abandoned and expired outcomes
+/// never carry data.
+fn build_result_outcome(
+    outcome_ident: &Ident,
+    decoder: Option<&ResultDecoder>,
+) -> ResultOutcomeTokens {
+    let Some(ResultDecoder {
+        data_ident,
+        deserialize_fn_ident,
+    }) = decoder
+    else {
+        return ResultOutcomeTokens {
+            variants: quote! {
+                Completed,
+                Cancelled,
+                Abandoned,
+                Expired,
+            },
+            decode: quote! {
+                let outcome = match reply.status {
+                    peppylib::messaging::ResultStatus::Completed => #outcome_ident::Completed,
+                    peppylib::messaging::ResultStatus::Cancelled => #outcome_ident::Cancelled,
+                    peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
+                    peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
+                };
+            },
+        };
+    };
+    ResultOutcomeTokens {
+        variants: quote! {
+            Completed(#data_ident),
+            Cancelled(#data_ident),
+            Abandoned,
+            Expired,
+        },
+        decode: quote! {
+            let outcome = match reply.status {
+                peppylib::messaging::ResultStatus::Completed => {
+                    #outcome_ident::Completed(#deserialize_fn_ident(reply.body.as_ref())?)
+                }
+                peppylib::messaging::ResultStatus::Cancelled => {
+                    #outcome_ident::Cancelled(#deserialize_fn_ident(reply.body.as_ref())?)
+                }
+                peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
+                peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
+            };
+        },
+    }
+}
+
 struct SchemaInfo {
     file_stem: String,
     struct_module: String,
@@ -694,7 +696,57 @@ impl SchemaInfo {
     }
 }
 
+/// The name of the struct a topic subscription decodes into, also the prefix
+/// of the structs nested in it.
+const SUBSCRIBED_MESSAGE_STRUCT_NAME: &str = "Message";
+
+/// The `Message` struct a topic subscription decodes into: the context that
+/// holds it and its nested structs, its fields as parameters, the name of
+/// the helper that decodes it and the encoding registered for its schema.
+struct SubscribedMessage {
+    context: GenerationContext,
+    params: Vec<FunctionParam>,
+    struct_ident: Ident,
+    helper_fn_ident: Ident,
+    encoding: MessageEncodingSpec,
+}
+
 impl RustGenerator {
+    /// Prepares the [`SubscribedMessage`] of a topic schema. The bound-set
+    /// and the pairing consumers both build their subscription on it, so a
+    /// topic decodes into the same struct through the same helper whichever
+    /// way it is consumed.
+    fn prepare_subscribed_message(
+        &mut self,
+        schema_key: &str,
+        struct_prefix: &str,
+        format_artifacts: &CapnpSchemaArtifacts,
+    ) -> Result<SubscribedMessage> {
+        let mut context = GenerationContext::default();
+        let params = collect_function_params(
+            Some(format_artifacts),
+            SUBSCRIBED_MESSAGE_STRUCT_NAME,
+            &mut context,
+        )?;
+
+        let struct_ident = Ident::new(SUBSCRIBED_MESSAGE_STRUCT_NAME, Span::call_site());
+        context.add_struct(struct_ident.clone(), build_fields_from_params(&params));
+
+        let encoding = self.prepare_declared_message_encoding(
+            schema_key,
+            struct_prefix,
+            format_artifacts,
+            &params,
+        )?;
+        Ok(SubscribedMessage {
+            context,
+            params,
+            struct_ident,
+            helper_fn_ident: Ident::new("deseralize_payload", Span::call_site()),
+            encoding,
+        })
+    }
+
     /// Shared consume-side scaffold for peer and observer pairing topics. The
     /// two modes differ only in their module header, subscription runtime, and
     /// artifact classification.
@@ -704,7 +756,6 @@ impl RustGenerator {
         peer: &crate::generator::types::PeerContext,
         kind: PairTopicConsumerKind,
     ) -> Result<()> {
-        let topic_component = sanitize_component(topic.name.as_str());
         let schema_key =
             crate::generator::naming::peer_schema_key(&peer.link_id, topic.name.as_str());
         let struct_prefix = to_camel_case(&schema_key);
@@ -715,41 +766,16 @@ impl RustGenerator {
                 topic: topic.name.clone(),
             })?;
 
-        let mut context = GenerationContext::default();
-        let message_struct_name = String::from("Message");
-        let params = collect_function_params(
-            Some(&format_artifacts),
-            None,
-            &message_struct_name,
-            &mut context,
-            None,
-        )?;
-        let encoding_params = params.clone();
-
-        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
-        let args_fields = params
-            .iter()
-            .map(|param| (param.ident.clone(), param.ty.clone()))
-            .collect();
-        context.add_struct(args_struct_ident.clone(), args_fields);
-
-        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
-        let encoding = self
-            .prepare_message_encoding(
-                &schema_key,
-                &struct_prefix,
-                Some(&format_artifacts),
-                &encoding_params,
-            )?
-            .expect("message encoding spec should exist when message format is provided");
+        let message =
+            self.prepare_subscribed_message(&schema_key, &struct_prefix, &format_artifacts)?;
         let spec = PeerTopicSubscriptionSpec {
-            helper_fn_ident: &helper_fn_ident,
-            args_struct_ident: &args_struct_ident,
-            params: &params,
+            helper_fn_ident: &message.helper_fn_ident,
+            args_struct_ident: &message.struct_ident,
+            params: &message.params,
             artifacts: &format_artifacts,
-            encoding: &encoding,
+            encoding: &message.encoding,
             qos_profile: &topic.qos_profile,
-            struct_prefix: &message_struct_name,
+            struct_prefix: SUBSCRIBED_MESSAGE_STRUCT_NAME,
         };
         let (header_tokens, method_tokens, artifact_kind) = match kind {
             PairTopicConsumerKind::Peer => (
@@ -763,13 +789,26 @@ impl RustGenerator {
                 InterfaceKind::ObservedTopic,
             ),
         };
-        let mut items = context.into_tokens();
+        let mut items = message.context.into_tokens();
         items.push(method_tokens);
         let rendered = render_tokens(quote! {
             #header_tokens
             #( #items )*
         });
+        self.push_pair_topic_section(topic, peer, artifact_kind, rendered)
+    }
 
+    /// Pushes the module of a pairing topic at `[link_id, leaf]`, where the leaf
+    /// is the topic name sanitized into a Rust module name, after checking that
+    /// no other pairing artifact of the node already sits there.
+    fn push_pair_topic_section(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &crate::generator::types::PeerContext,
+        kind: InterfaceKind,
+        code: String,
+    ) -> Result<()> {
+        let topic_component = sanitize_component(topic.name.as_str());
         let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
         crate::generator::types::ensure_no_peer_collision(
             &self.sections,
@@ -779,8 +818,8 @@ impl RustGenerator {
         )?;
         self.push_section(InterfaceArtifact {
             module_path,
-            kind: artifact_kind,
-            code_output: rendered,
+            kind,
+            code_output: code,
         });
         Ok(())
     }
@@ -793,8 +832,7 @@ impl LanguageGenerator for RustGenerator {
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         self.testgen.record_emitted_topic(topic, origin);
-        let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
-        let fn_name_str = fn_name.to_string();
+        let fn_name_str = identifiers::rust_identifier_or(topic.name.as_str(), "topic");
 
         let schema_prefix = to_camel_case(&fn_name_str);
         let struct_prefix = String::from("Message");
@@ -802,13 +840,8 @@ impl LanguageGenerator for RustGenerator {
         let mut context = GenerationContext::default();
         let scoped_key = scoped_schema_key(origin, &fn_name_str);
         let format_artifacts = map_message_format(&scoped_key, topic.message_format.as_ref())?;
-        let params = collect_function_params(
-            format_artifacts.as_ref(),
-            None,
-            &struct_prefix,
-            &mut context,
-            None,
-        )?;
+        let params =
+            collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
         let encoding = self.prepare_message_encoding(
             &scoped_key,
             &schema_prefix,
@@ -830,9 +863,9 @@ impl LanguageGenerator for RustGenerator {
             module_label = String::from("topic");
         }
 
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&module_label),
+        self.push_section(InterfaceArtifact::for_leaf(
             origin,
+            &sanitize_node_display_name(&module_label),
             InterfaceKind::EmittedTopic,
             rendered,
         ));
@@ -845,13 +878,9 @@ impl LanguageGenerator for RustGenerator {
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         self.testgen.record_exposed_service(service, origin);
-        let fn_name = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
-        let fn_name_str = fn_name.to_string();
+        let fn_name_str = identifiers::rust_identifier_or(service.name.as_str(), "service");
         let struct_prefix = to_camel_case(&fn_name_str);
         let generic_response_ident = Ident::new("Response", Span::call_site());
-        let generic_handler_ident = Ident::new("handle_next_request", Span::call_site());
-        let generic_helper_ident = Ident::new("handle_request_payload", Span::call_site());
-        let generic_deserializer_ident = Ident::new("deserialize_request", Span::call_site());
 
         let mut context = GenerationContext::default();
         let request_format = non_empty_message_format(service.request_message_format.as_ref());
@@ -862,12 +891,13 @@ impl LanguageGenerator for RustGenerator {
             &scoped_response_key,
             service.response_message_format.as_ref(),
         )?;
+        if let Some(response_artifacts) = response_artifacts.as_ref() {
+            add_response_struct(&mut context, response_artifacts, &generic_response_ident)?;
+        }
         let wire_params = collect_function_params(
             request_wire_artifacts.as_ref(),
-            response_artifacts.as_ref(),
             &struct_prefix,
             &mut context,
-            Some(&generic_response_ident),
         )?;
         let encoding = self.prepare_message_encoding(
             &scoped_request_key,
@@ -876,23 +906,19 @@ impl LanguageGenerator for RustGenerator {
             &wire_params,
         )?;
 
-        let handler_params = wire_params.clone();
-
-        let request_data_struct_ident = if let Some((ident, tokens)) =
-            build_request_struct_with_name_and_impl("RequestData", &handler_params, false)
-        {
-            context.add_private_struct(tokens);
-            Some(ident)
-        } else {
-            None
-        };
+        let request_data_struct_ident =
+            if let Some((ident, tokens)) = build_request_struct("RequestData", &wire_params) {
+                context.add_private_struct(tokens);
+                Some(ident)
+            } else {
+                None
+            };
 
         let request_struct_ident = Ident::new("Request", Span::call_site());
         context.add_metadata_struct(
             request_struct_ident.clone(),
             request_data_struct_ident.as_ref(),
         );
-        let request_struct_ident = Some(request_struct_ident);
 
         let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
@@ -902,7 +928,6 @@ impl LanguageGenerator for RustGenerator {
                 format: return_artifacts.message_format(),
                 struct_ident: generic_response_ident.clone(),
                 builder_type: schema_info.builder_type_tokens(),
-                include_service_instance_id: false,
             })
         } else {
             None
@@ -910,16 +935,11 @@ impl LanguageGenerator for RustGenerator {
 
         let (method_token, helper_tokens) =
             build_exposed_service_method(&ExposedServiceMethodSpec {
-                fn_name: &fn_name,
-                handler_fn_name_override: Some(&generic_handler_ident),
-                handler_helper_name_override: Some(&generic_helper_ident),
-                request_deserializer_name_override: Some(&generic_deserializer_ident),
-                wire_params: &wire_params,
-                handler_params: &handler_params,
+                params: &wire_params,
                 encoding: encoding.as_ref(),
                 request_format,
                 struct_prefix: &struct_prefix,
-                request_struct: request_struct_ident.as_ref(),
+                request_struct: &request_struct_ident,
                 request_data_struct: request_data_struct_ident.as_ref(),
                 response_spec: response_spec.as_ref(),
                 origin,
@@ -944,9 +964,9 @@ impl LanguageGenerator for RustGenerator {
             #( #service_tokens )*
         };
         let rendered = render_tokens(tokens);
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&module_label),
+        self.push_section(InterfaceArtifact::for_leaf(
             origin,
+            &sanitize_node_display_name(&module_label),
             InterfaceKind::ExposedService,
             rendered,
         ));
@@ -959,13 +979,10 @@ impl LanguageGenerator for RustGenerator {
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
         self.testgen.record_exposed_action(action, origin);
-        let base_ident = prefixed_ident("", non_empty_str(&action.name), "action");
-        let base_name = base_ident.to_string();
+        let base_name = identifiers::rust_identifier_or(&action.name, "action");
         let action_prefix = to_camel_case(&base_name);
 
         let mut context = GenerationContext::default();
-        // Methods on `impl ActionHandle` (expose + handle_goal_next_request).
-        let mut action_handle_methods: Vec<TokenStream> = Vec::new();
         // Methods on `impl GoalContext` (request/goal_id/cancel_signal/... plus
         // publish_feedback and complete/complete_cancelled when applicable).
         let mut goal_context_methods: Vec<TokenStream> = Vec::new();
@@ -980,8 +997,9 @@ impl LanguageGenerator for RustGenerator {
         // Every action is goal-driven in the concurrent model: clients fire a
         // goal, the server accepts/rejects and (when accepted) drives it through
         // a GoalContext. An absent `goal_service` simply means the goal carries
-        // no request/response payload.
-        {
+        // no request/response payload. The block yields the
+        // `handle_goal_next_request` method of `impl ActionHandle`.
+        let handle_goal_method = {
             let goal_service = action.goal_service.as_ref();
             let label = format!("{base_name}_goal");
             let schema_struct_prefix = format!("{action_prefix}Goal");
@@ -998,19 +1016,24 @@ impl LanguageGenerator for RustGenerator {
             )?;
 
             // Generates `GoalResponse` (+ `new`) when there is a response, and
-            // returns the request params used to build `GoalRequestData`. The
+            // collects the request params used to build `GoalRequestData`. The
             // request's nested message structs are defined under this prefix.
             let goal_struct_prefix = "Goal";
+            if let Some(response_artifacts) = response_artifacts.as_ref() {
+                add_response_struct(
+                    &mut context,
+                    response_artifacts,
+                    &Ident::new("GoalResponse", Span::call_site()),
+                )?;
+            }
             let goal_data_params = collect_function_params(
                 request_artifacts.as_ref(),
-                response_artifacts.as_ref(),
                 goal_struct_prefix,
                 &mut context,
-                None,
             )?;
 
             let goal_request_data_struct = if let Some((ident, tokens)) =
-                build_request_struct_with_name_and_impl("GoalRequestData", &goal_data_params, false)
+                build_request_struct("GoalRequestData", &goal_data_params)
             {
                 context.add_private_struct(tokens);
                 Some(ident)
@@ -1065,7 +1088,6 @@ impl LanguageGenerator for RustGenerator {
                     format: return_artifacts.message_format(),
                     struct_ident: Ident::new("GoalResponse", Span::call_site()),
                     builder_type: schema_info.builder_type_tokens(),
-                    include_service_instance_id: false,
                 };
                 let response_ident = Ident::new("response", Span::call_site());
                 let error_context =
@@ -1074,17 +1096,16 @@ impl LanguageGenerator for RustGenerator {
                     &spec,
                     &response_ident,
                     &error_context,
-                    None,
                 )?)
             } else {
                 None
             };
 
-            action_handle_methods.push(build_handle_goal_next_request(
+            build_handle_goal_next_request(
                 goal_request_data_struct.is_some(),
                 response_serialization,
-            ));
-        }
+            )
+        };
 
         // Every action hands out a GoalContext with these base methods.
         goal_context_methods.push(build_goal_context_base_methods());
@@ -1096,27 +1117,15 @@ impl LanguageGenerator for RustGenerator {
             let feedback_schema_key =
                 scoped_schema_key(origin, &format!("emit_{base_name}_feedback"));
             let format_artifacts =
-                map_message_format(&feedback_schema_key, Some(&feedback.message_format))?;
-            let params = collect_function_params(
-                format_artifacts.as_ref(),
-                None,
+                map_declared_message_format(&feedback_schema_key, &feedback.message_format)?;
+            let params =
+                collect_function_params(Some(&format_artifacts), &struct_prefix, &mut context)?;
+            let encoding = self.prepare_declared_message_encoding(
+                &feedback_schema_key,
                 &struct_prefix,
-                &mut context,
-                None,
+                &format_artifacts,
+                &params,
             )?;
-            let encoding = self
-                .prepare_message_encoding(
-                    &feedback_schema_key,
-                    &struct_prefix,
-                    format_artifacts.as_ref(),
-                    &params,
-                )?
-                .ok_or_else(|| Error::InvariantViolation {
-                    context: format!(
-                        "feedback topic `{}` parsed with a message format but produced no encoding",
-                        action.name
-                    ),
-                })?;
 
             goal_context_methods.push(build_goal_context_publish_feedback(
                 &params, &encoding, &label,
@@ -1135,10 +1144,8 @@ impl LanguageGenerator for RustGenerator {
             // The result-response fields become `complete(fields…)` parameters.
             let result_params = collect_function_params(
                 response_artifacts.as_ref(),
-                None,
                 &schema_struct_prefix,
                 &mut context,
-                None,
             )?;
             let encoding = self.prepare_message_encoding(
                 &scoped_result_key,
@@ -1161,10 +1168,6 @@ impl LanguageGenerator for RustGenerator {
             ));
         }
 
-        if action_handle_methods.is_empty() {
-            return Ok(());
-        }
-
         let action_handle_struct = build_action_handle_struct();
         let goal_context_struct = build_goal_context_struct();
         let expose_method = build_action_expose_method(has_feedback, origin);
@@ -1177,7 +1180,7 @@ impl LanguageGenerator for RustGenerator {
         items.push(quote! {
             impl ActionHandle {
                 #expose_method
-                #( #action_handle_methods )*
+                #handle_goal_method
             }
         });
         items.push(quote! {
@@ -1191,9 +1194,9 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        self.push_section(self.make_artifact(
-            &sanitize_node_display_name(&action.name),
+        self.push_section(InterfaceArtifact::for_leaf(
             origin,
+            &sanitize_node_display_name(&action.name),
             InterfaceKind::ExposedAction,
             rendered,
         ));
@@ -1233,49 +1236,22 @@ impl LanguageGenerator for RustGenerator {
         let schema_key =
             crate::generator::naming::consumed_topic_schema_key(node_name, topic.name.as_str());
 
-        let format_artifacts = map_message_format(&schema_key, Some(&arguments))?
-            .expect("message encoding spec should exist when message format is provided");
+        let format_artifacts = map_declared_message_format(&schema_key, &arguments)?;
 
-        let mut context = GenerationContext::default();
-        let message_struct_name = String::from("Message");
-        let params = collect_function_params(
-            Some(&format_artifacts),
-            None,
-            &message_struct_name,
-            &mut context,
-            None,
-        )?;
-        let encoding_params = params.clone();
-
-        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
-        let args_fields: Vec<(Ident, TokenStream)> = params
-            .iter()
-            .map(|param| (param.ident.clone(), param.ty.clone()))
-            .collect();
-        context.add_struct(args_struct_ident.clone(), args_fields);
-
-        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
-
-        let encoding = self
-            .prepare_message_encoding(
-                &schema_key,
-                &struct_prefix,
-                Some(&format_artifacts),
-                &encoding_params,
-            )?
-            .expect("message encoding spec should exist when message format is provided");
+        let message =
+            self.prepare_subscribed_message(&schema_key, &struct_prefix, &format_artifacts)?;
         let method_tokens = build_consumed_topic_subscription(ConsumedTopicSubscriptionSpec {
-            helper_fn_ident: &helper_fn_ident,
-            args_struct_ident: &args_struct_ident,
-            params: &params,
+            helper_fn_ident: &message.helper_fn_ident,
+            args_struct_ident: &message.struct_ident,
+            params: &message.params,
             artifacts: &format_artifacts,
-            encoding: &encoding,
+            encoding: &message.encoding,
             topic,
             retention,
-            struct_prefix: &message_struct_name,
+            struct_prefix: SUBSCRIBED_MESSAGE_STRUCT_NAME,
             dependency,
         })?;
-        let mut items = context.into_tokens();
+        let mut items = message.context.into_tokens();
         items.push(method_tokens);
 
         let tokens: TokenStream = quote! {
@@ -1328,13 +1304,11 @@ impl LanguageGenerator for RustGenerator {
         let mut context = GenerationContext::default();
         let response_data_ident = Ident::new("ResponseData", Span::call_site());
 
-        let params = collect_function_params(
-            request_artifacts.as_ref(),
-            response_artifacts.as_ref(),
-            &struct_prefix,
-            &mut context,
-            Some(&response_data_ident),
-        )?;
+        if let Some(response_artifacts) = response_artifacts.as_ref() {
+            add_response_struct(&mut context, response_artifacts, &response_data_ident)?;
+        }
+        let params =
+            collect_function_params(request_artifacts.as_ref(), &struct_prefix, &mut context)?;
 
         let instance_id_ident = Ident::new("instance_id", Span::call_site());
         let instance_id_param_index = params
@@ -1348,36 +1322,10 @@ impl LanguageGenerator for RustGenerator {
 
         let request_struct_ident = Ident::new("Request", Span::call_site());
         if !request_struct_params.is_empty() {
-            let fields = request_struct_params
-                .iter()
-                .map(|param| (param.ident.clone(), param.ty.clone()))
-                .collect();
-            context.add_struct(request_struct_ident.clone(), fields);
-            let ctor_params: Vec<TokenStream> = request_struct_params
-                .iter()
-                .map(|param| {
-                    let ident = &param.ident;
-                    let ty = &param.ty;
-                    quote!(#ident: #ty)
-                })
-                .collect();
-            let ctor_bindings: Vec<TokenStream> = request_struct_params
-                .iter()
-                .map(|param| {
-                    let ident = &param.ident;
-                    quote!(#ident)
-                })
-                .collect();
-            let ctor_tokens = quote! {
-                impl #request_struct_ident {
-                    pub fn new(#(#ctor_params),*) -> Self {
-                        Self {
-                            #( #ctor_bindings ),*
-                        }
-                    }
-                }
-            };
-            context.add_private_struct(ctor_tokens);
+            context.add_struct_with_constructor(
+                request_struct_ident.clone(),
+                build_fields_from_params(&request_struct_params),
+            );
         }
 
         let request_encoding = self.prepare_message_encoding(
@@ -1405,10 +1353,7 @@ impl LanguageGenerator for RustGenerator {
             );
             quote! { let request_payload = #serialize_block; }
         } else {
-            let suppress_unused = unused_params_stmt(&params);
-
             quote! {
-                #suppress_unused
                 let request_payload = peppylib::Payload::new();
             }
         };
@@ -1449,7 +1394,7 @@ impl LanguageGenerator for RustGenerator {
 
                 let response_format = response_artifacts.message_format();
                 let field_context_expr = quote!(context.clone());
-                let (response_statements, response_inits, _) = deserialize_format_fields(
+                let (response_statements, response_inits) = deserialize_format_fields(
                     response_format,
                     &response_data_ident.to_string(),
                     &field_context_expr,
@@ -1563,7 +1508,6 @@ impl LanguageGenerator for RustGenerator {
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
         self.testgen.record_peer_emitted_topic(topic, peer);
-        let topic_component = sanitize_component(topic.name.as_str());
         let schema_key =
             crate::generator::naming::peer_schema_key(&peer.link_id, topic.name.as_str());
         let schema_prefix = to_camel_case(&schema_key);
@@ -1571,13 +1515,8 @@ impl LanguageGenerator for RustGenerator {
 
         let mut context = GenerationContext::default();
         let format_artifacts = map_message_format(&schema_key, topic.message_format.as_ref())?;
-        let params = collect_function_params(
-            format_artifacts.as_ref(),
-            None,
-            &struct_prefix,
-            &mut context,
-            None,
-        )?;
+        let params =
+            collect_function_params(format_artifacts.as_ref(), &struct_prefix, &mut context)?;
         let encoding = self.prepare_message_encoding(
             &schema_key,
             &schema_prefix,
@@ -1600,20 +1539,7 @@ impl LanguageGenerator for RustGenerator {
             #method_tokens
         };
         let rendered = render_tokens(tokens);
-
-        let module_path = peer.module_path_for(&sanitize_node_display_name(&topic_component));
-        crate::generator::types::ensure_no_peer_collision(
-            &self.sections,
-            &module_path,
-            peer,
-            topic,
-        )?;
-        self.push_section(InterfaceArtifact {
-            module_path,
-            kind: InterfaceKind::PeerEmittedTopic,
-            code_output: rendered,
-        });
-        Ok(())
+        self.push_pair_topic_section(topic, peer, InterfaceKind::PeerEmittedTopic, rendered)
     }
 
     fn add_peer_consumed_topic(
@@ -1722,7 +1648,6 @@ impl LanguageGenerator for RustGenerator {
             map_message_format(&action_schema_keys.result_response, result_response_format)?;
         let (result_method, mut result_helpers) = self.build_consumed_action_get_result_method(
             &mut context,
-            &action_struct_name,
             result_artifacts,
             &action_schema_keys.result_response,
         )?;
@@ -1730,37 +1655,26 @@ impl LanguageGenerator for RustGenerator {
         helper_items.append(&mut result_helpers);
 
         let goal_response_data_ident = Ident::new("GoalResponseData", Span::call_site());
-        let action_handle_struct = if has_goal_response_data {
+        let data_field = has_goal_response_data.then(|| {
             quote! {
-                pub struct ActionHandle {
-                    messenger: peppylib::MessengerHandle,
-                    inner: peppylib::messaging::ActionGoalHandle,
-                    /// Whether the producer admitted the goal, decoded from
-                    /// the framework goal-ack envelope.
-                    pub accepted: bool,
-                    /// Optional human-readable rejection reason from the
-                    /// goal-ack envelope. `None` for accepted goals and for
-                    /// rejections sent without a reason.
-                    pub reason: Option<String>,
-                    /// The declared goal response. Always present for
-                    /// accepted goals; `None` when a rejection carried no
-                    /// response payload.
-                    pub data: Option<#goal_response_data_ident>,
-                }
+                /// The declared goal response. Always present for
+                /// accepted goals; `None` when a rejection carried no
+                /// response payload.
+                pub data: Option<#goal_response_data_ident>,
             }
-        } else {
-            quote! {
-                pub struct ActionHandle {
-                    messenger: peppylib::MessengerHandle,
-                    inner: peppylib::messaging::ActionGoalHandle,
-                    /// Whether the producer admitted the goal, decoded from
-                    /// the framework goal-ack envelope.
-                    pub accepted: bool,
-                    /// Optional human-readable rejection reason from the
-                    /// goal-ack envelope. `None` for accepted goals and for
-                    /// rejections sent without a reason.
-                    pub reason: Option<String>,
-                }
+        });
+        let action_handle_struct = quote! {
+            pub struct ActionHandle {
+                messenger: peppylib::MessengerHandle,
+                inner: peppylib::messaging::ActionGoalHandle,
+                /// Whether the producer admitted the goal, decoded from
+                /// the framework goal-ack envelope.
+                pub accepted: bool,
+                /// Optional human-readable rejection reason from the
+                /// goal-ack envelope. `None` for accepted goals and for
+                /// rejections sent without a reason.
+                pub reason: Option<String>,
+                #data_field
             }
         };
 
@@ -1807,11 +1721,6 @@ impl LanguageGenerator for RustGenerator {
         scaffold::add_parameters_to_lib(&to_path, &self.parameters)?;
         Ok(())
     }
-}
-
-fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Ident {
-    let name = identifiers::prefixed_name(prefix, candidate, fallback);
-    Ident::new(&name, Span::call_site())
 }
 
 /// One `#[doc = "..."]` attribute per pre-wrapped doc line (the renderer

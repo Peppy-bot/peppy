@@ -11,20 +11,19 @@
 use super::super::testgen::{
     DepActionSpec, DepLinkSpec, DepServiceSpec, DepTopicSpec, MOCK_CORE_NODE, MOCK_PEER_LINK_ID,
     MOCK_SOURCE_LINK_ID, ObservedLinkSpec, PairTopicSpec, PairingLinkSpec, TargetSpec,
-    TestGenRegistry, claim_sanitized_name, dep_member_name, mock_instance_id,
-    reserved_member_owners,
+    TestGenRegistry, dep_member_name, mock_instance_id, reserved_member_owners,
 };
 use super::scaffold::sanitize_rust_module_name;
 use super::topics::{qos_profile_tokens, retention_tokens};
 use super::{
-    GenerationContext, RustGenerator, build_deserialize_fn, build_serialize_payload,
-    collect_function_params, deserialize_format_fields, generate_assignments_from_struct,
-    identifiers, map_message_format, render_tokens,
+    GenerationContext, RustGenerator, build_deserialize_fn, build_fields_from_params,
+    build_serialize_payload, collect_function_params, deserialize_format_fields,
+    generate_assignments_from_struct, identifiers, map_declared_message_format, render_tokens,
 };
 use crate::error::Result;
-use crate::generator::naming::to_camel_case;
+use crate::generator::naming::{claim_sanitized_name, to_camel_case};
 use crate::generator::types::{InterfaceArtifact, InterfaceKind};
-use config::node::{MessageFormat, QoSProfile};
+use config::node::MessageFormat;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
@@ -122,8 +121,7 @@ pub(super) fn build_struct_serializer(
         format,
         context_label,
     } = spec;
-    let artifacts = map_message_format(schema_key, Some(format))?
-        .expect("non-empty message format maps to schema artifacts");
+    let artifacts = map_declared_message_format(schema_key, format)?;
     let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
     let builder_type = info.builder_type_tokens();
     let builder_ident = Ident::new("root", Span::call_site());
@@ -155,12 +153,11 @@ pub(super) fn build_struct_deserializer(
         format,
         context_label,
     } = spec;
-    let artifacts = map_message_format(schema_key, Some(format))?
-        .expect("non-empty message format maps to schema artifacts");
+    let artifacts = map_declared_message_format(schema_key, format)?;
     let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
     let reader_type = info.reader_type_tokens();
     let context_expr = quote!(String::from(#context_label));
-    let (field_statements, field_inits, _) =
+    let (field_statements, field_inits) =
         deserialize_format_fields(format, nested_prefix, &context_expr)?;
     let result_expr = quote!(#return_ty { #(#field_inits),* });
     Ok(build_deserialize_fn(
@@ -173,39 +170,43 @@ pub(super) fn build_struct_deserializer(
     ))
 }
 
-/// A locally-defined `Message` struct (plus nested companions) and its
-/// deserializer, for directions where production defines no struct (topics
-/// the node emits: the producer side only serializes).
-pub(super) fn build_local_message_with_deserializer(
+/// A locally-defined struct (plus its nested companions) and the
+/// deserializer that constructs it.
+pub(super) struct LocalStructCodec {
+    pub struct_items: Vec<TokenStream>,
+    pub deserializer: TokenStream,
+}
+
+/// A locally-defined `struct_name` struct (plus nested companions, prefixed
+/// by `struct_name`) and its deserializer, for directions where production
+/// defines no struct: topics the node emits (the producer side only
+/// serializes) and the feedback and result of an action the node exposes.
+pub(super) fn build_local_struct_with_deserializer(
     generator: &mut RustGenerator,
     spec: CodecSpec<'_>,
+    struct_name: &str,
     fn_ident: &Ident,
-) -> Result<TokenStream> {
+) -> Result<LocalStructCodec> {
     let CodecSpec {
         schema_key,
         struct_prefix,
         format,
         context_label,
     } = spec;
-    let artifacts = map_message_format(schema_key, Some(format))?
-        .expect("non-empty message format maps to schema artifacts");
+    let artifacts = map_declared_message_format(schema_key, format)?;
     let mut context = GenerationContext::default();
-    let message_ident = Ident::new("Message", Span::call_site());
-    let params = collect_function_params(Some(&artifacts), None, "Message", &mut context, None)?;
-    let fields: Vec<(Ident, TokenStream)> = params
-        .iter()
-        .map(|param| (param.ident.clone(), param.ty.clone()))
-        .collect();
-    context.add_struct(message_ident, fields);
-    let struct_tokens = context.into_tokens();
+    let struct_ident = Ident::new(struct_name, Span::call_site());
+    let params = collect_function_params(Some(&artifacts), struct_name, &mut context)?;
+    context.add_struct(struct_ident.clone(), build_fields_from_params(&params));
+    let struct_items = context.into_tokens();
 
     let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
     let reader_type = info.reader_type_tokens();
     let context_expr = quote!(String::from(#context_label));
-    let (field_statements, field_inits, _) =
-        deserialize_format_fields(format, "Message", &context_expr)?;
-    let return_ty = quote!(Message);
-    let result_expr = quote!(Message { #(#field_inits),* });
+    let (field_statements, field_inits) =
+        deserialize_format_fields(format, struct_name, &context_expr)?;
+    let return_ty = quote!(#struct_ident);
+    let result_expr = quote!(#struct_ident { #(#field_inits),* });
     let deserializer = build_deserialize_fn(
         fn_ident,
         &reader_type,
@@ -214,14 +215,27 @@ pub(super) fn build_local_message_with_deserializer(
         &field_statements,
         &result_expr,
     );
-    Ok(quote! {
-        #( #struct_tokens )*
-        #deserializer
+    Ok(LocalStructCodec {
+        struct_items,
+        deserializer,
     })
 }
 
-pub(super) fn qos_tokens(qos: &QoSProfile) -> TokenStream {
-    qos_profile_tokens(qos)
+/// The local `Message` struct of a topic the node emits and its
+/// deserializer, as one item list.
+pub(super) fn build_local_message_with_deserializer(
+    generator: &mut RustGenerator,
+    spec: CodecSpec<'_>,
+    fn_ident: &Ident,
+) -> Result<TokenStream> {
+    let LocalStructCodec {
+        struct_items,
+        deserializer,
+    } = build_local_struct_with_deserializer(generator, spec, "Message", fn_ident)?;
+    Ok(quote! {
+        #( #struct_items )*
+        #deserializer
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -273,33 +287,26 @@ fn render_dep_link(
     for topic in &spec.topics {
         let member = dep_member_name(link_id, &topic.module_link, &topic.name);
         let module_ident = claim_member_name(link_id, &member, &mut owners)?;
-        members.push(render_dep_topic(
-            generator,
-            link_id,
-            &spec.producer_name,
-            topic,
-            &target,
-            module_ident,
-        )?);
+        members.push(render_dep_topic(generator, topic, &target, module_ident)?);
     }
     for service in &spec.services {
         let member = dep_member_name(link_id, &service.module_link, &service.name);
         let module_ident = claim_member_name(link_id, &member, &mut owners)?;
         members.push(render_dep_service(
             generator,
-            link_id,
             &spec.producer_name,
             service,
             &target,
             module_ident,
         )?);
     }
+    let mut action_stops: Vec<TokenStream> = Vec::with_capacity(spec.actions.len());
     for action in &spec.actions {
         let member = dep_member_name(link_id, &action.module_link, &action.name);
         let module_ident = claim_member_name(link_id, &member, &mut owners)?;
+        action_stops.push(quote!(self.#module_ident.stop();));
         members.push(render_dep_action(
             generator,
-            link_id,
             &spec.producer_name,
             action,
             &target,
@@ -314,15 +321,6 @@ fn render_dep_link(
         constructs,
         field_names,
     } = member_parts(&members);
-    let action_stops: Vec<TokenStream> = spec
-        .actions
-        .iter()
-        .map(|action| {
-            let member = dep_member_name(link_id, &action.module_link, &action.name);
-            let ident = Ident::new(&sanitize_rust_module_name(&member), Span::call_site());
-            quote!(self.#ident.stop();)
-        })
-        .collect();
 
     let doc = format!(
         "Mock producer for the `{link_id}` dependency slot: plays the dependency over the \
@@ -396,8 +394,6 @@ fn render_dep_link(
 
 fn render_dep_topic(
     generator: &mut RustGenerator,
-    _link_id: &str,
-    _producer_name: &str,
     spec: &DepTopicSpec,
     target: &TokenStream,
     module_ident: Ident,
@@ -498,7 +494,6 @@ fn render_dep_topic(
 
 fn render_dep_service(
     generator: &mut RustGenerator,
-    _link_id: &str,
     producer_name: &str,
     spec: &DepServiceSpec,
     target: &TokenStream,
@@ -701,7 +696,6 @@ fn render_dep_service(
 
 fn render_dep_action(
     generator: &mut RustGenerator,
-    _link_id: &str,
     producer_name: &str,
     spec: &DepActionSpec,
     target: &TokenStream,
@@ -1132,7 +1126,7 @@ fn render_pair_publisher(
     let production = production_module("paired_topics", &[link_id, topic_name]);
     let schema_key = crate::generator::naming::peer_schema_key(link_id, topic_name);
     let schema_prefix = to_camel_case(&schema_key);
-    let qos = qos_tokens(&spec.qos);
+    let qos = qos_profile_tokens(&spec.qos);
     let serialize_ident = Ident::new("serialize_message", Span::call_site());
     let serializer = build_struct_serializer(
         generator,
@@ -1222,7 +1216,7 @@ fn render_pair_subscription(
     let topic_name = spec.name.as_str();
     let schema_key = crate::generator::naming::peer_schema_key(link_id, topic_name);
     let schema_prefix = to_camel_case(&schema_key);
-    let qos = qos_tokens(&spec.qos);
+    let qos = qos_profile_tokens(&spec.qos);
     let deserialize_ident = Ident::new("deserialize_message", Span::call_site());
     // The node-emitted direction has no production consumer struct (the
     // production module only serializes), so the veneer defines its own.
@@ -1438,7 +1432,7 @@ fn render_observed_publisher(
     let production = production_module("paired_topics", &[link_id, topic_name]);
     let schema_key = crate::generator::naming::peer_schema_key(link_id, topic_name);
     let schema_prefix = to_camel_case(&schema_key);
-    let qos = qos_tokens(&spec.qos);
+    let qos = qos_profile_tokens(&spec.qos);
     let serialize_ident = Ident::new("serialize_message", Span::call_site());
     let serializer = build_struct_serializer(
         generator,

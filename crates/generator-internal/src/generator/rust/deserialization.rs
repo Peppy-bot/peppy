@@ -1,13 +1,16 @@
-use super::identifiers::{nested_struct_name, sanitize_rust_identifier};
+use super::identifiers::sanitize_rust_identifier;
 use super::serialization::NameGenerator;
 use super::type_mapping::primitive_type_token;
 use crate::error::{Error, Result};
-use crate::generator::naming::{array_item_type_name, sanitize_component};
+use crate::generator::naming::{array_item_type_name, nested_type_name, sanitize_component};
 use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
+/// Generates the statements that read one field into a local and returns
+/// them with the local's name. An optional field reads into an `Option`,
+/// guarded by the field's presence check when its wire type has one.
 pub fn generate_field_reader_statements(
     reader_expr: &TokenStream,
     field_name: &str,
@@ -16,15 +19,45 @@ pub fn generate_field_reader_statements(
     context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> Result<(Vec<TokenStream>, Ident)> {
-    generate_field_reader_statements_inner(
+    if !schema.is_optional() {
+        return generate_required_field_reader_statements(
+            reader_expr,
+            field_name,
+            schema,
+            struct_prefix,
+            context_expr,
+            names,
+        );
+    }
+
+    let option_ident = names.next(&format!("{field_name}_opt"));
+    let (inner_statements, value_ident) = generate_required_field_reader_statements(
         reader_expr,
         field_name,
         schema,
         struct_prefix,
         context_expr,
         names,
-        true,
-    )
+    )?;
+    if !schema_supports_presence_check(schema) {
+        let mut statements = inner_statements;
+        statements.push(quote!(let #option_ident = Some(#value_ident);));
+        return Ok((statements, option_ident));
+    }
+
+    let has_method = Ident::new(
+        &format!("has_{}", sanitize_component(field_name)),
+        Span::call_site(),
+    );
+    let statements = vec![quote! {
+        let #option_ident = if #reader_expr.reborrow().#has_method() {
+            #( #inner_statements )*
+            Some(#value_ident)
+        } else {
+            None
+        };
+    }];
+    Ok((statements, option_ident))
 }
 
 /// Generates a complete deserialization function:
@@ -81,90 +114,64 @@ pub fn build_deserialize_fn(
 
 /// Deserializes all fields from a `MessageFormat`, iterating directly over format fields.
 ///
-/// Returns `(field_statements, field_inits, value_idents)` where:
+/// Returns `(field_statements, field_inits)` where:
 /// - `field_statements`: variable binding statements for each deserialized field
 /// - `field_inits`: struct field initializers (`field_name: value_ident`)
-/// - `value_idents`: the value identifiers for each field
 pub fn deserialize_format_fields(
     format: &MessageFormat,
     struct_prefix: &str,
     context_expr: &TokenStream,
-) -> Result<(Vec<TokenStream>, Vec<TokenStream>, Vec<Ident>)> {
-    let mut names = NameGenerator::new();
-    let mut field_statements = Vec::new();
-    let mut field_inits = Vec::new();
-    let mut value_idents = Vec::new();
+) -> Result<(Vec<TokenStream>, Vec<TokenStream>)> {
+    generate_struct_field_readers(
+        &quote!(root),
+        &format.0,
+        struct_prefix,
+        context_expr,
+        &mut NameGenerator::new(),
+    )
+}
 
-    for (field_name, schema) in &format.0 {
+/// Generates the readers of every field of a struct read from
+/// `reader_expr`, in field order, and returns their statements with the
+/// `field: value` initializers of the struct. The structs nested in the
+/// fields take `struct_prefix`.
+fn generate_struct_field_readers(
+    reader_expr: &TokenStream,
+    fields: &IndexMap<String, SchemaType>,
+    struct_prefix: &str,
+    context_expr: &TokenStream,
+    names: &mut NameGenerator,
+) -> Result<(Vec<TokenStream>, Vec<TokenStream>)> {
+    let mut field_statements = Vec::new();
+    let mut field_inits = Vec::with_capacity(fields.len());
+
+    for (field_name, schema) in fields {
         let (mut statements, value_ident) = generate_field_reader_statements(
-            &quote!(root),
+            reader_expr,
             field_name,
             schema,
             struct_prefix,
             context_expr,
-            &mut names,
+            names,
         )?;
         field_statements.append(&mut statements);
-        let field_ident = Ident::new(
-            &sanitize_rust_identifier(field_name.as_str()),
-            Span::call_site(),
-        );
+        let field_ident = Ident::new(&sanitize_rust_identifier(field_name), Span::call_site());
         field_inits.push(quote!(#field_ident: #value_ident));
-        value_idents.push(value_ident);
     }
 
-    Ok((field_statements, field_inits, value_idents))
+    Ok((field_statements, field_inits))
 }
 
-fn generate_field_reader_statements_inner(
+/// Generates the statements that read one field as if it were required:
+/// the wire value itself, without a presence check.
+fn generate_required_field_reader_statements(
     reader_expr: &TokenStream,
     field_name: &str,
     schema: &SchemaType,
     struct_prefix: &str,
     context_expr: &TokenStream,
     names: &mut NameGenerator,
-    handle_optional: bool,
 ) -> Result<(Vec<TokenStream>, Ident)> {
-    if handle_optional && schema.is_optional() {
-        let option_ident = names.next(&format!("{field_name}_opt"));
-        if schema_supports_presence_check(schema) {
-            let has_method = Ident::new(
-                &format!("has_{}", sanitize_component(field_name)),
-                Span::call_site(),
-            );
-            let (inner_statements, value_ident) = generate_field_reader_statements_inner(
-                reader_expr,
-                field_name,
-                schema,
-                struct_prefix,
-                context_expr,
-                names,
-                false,
-            )?;
-            let statements = vec![quote! {
-                let #option_ident = if #reader_expr.reborrow().#has_method() {
-                    #( #inner_statements )*
-                    Some(#value_ident)
-                } else {
-                    None
-                };
-            }];
-            return Ok((statements, option_ident));
-        } else {
-            let (mut statements, value_ident) = generate_field_reader_statements_inner(
-                reader_expr,
-                field_name,
-                schema,
-                struct_prefix,
-                context_expr,
-                names,
-                false,
-            )?;
-            statements.push(quote!(let #option_ident = Some(#value_ident);));
-            return Ok((statements, option_ident));
-        }
-    }
-
     match schema {
         SchemaType::Type(token) => Ok(generate_primitive_reader(
             reader_expr,
@@ -199,6 +206,48 @@ fn generate_field_reader_statements_inner(
     }
 }
 
+/// The `get_<field>` reader method of a capnp field.
+fn build_getter_ident(field_name: &str) -> Ident {
+    Ident::new(
+        &format!("get_{}", sanitize_component(field_name)),
+        Span::call_site(),
+    )
+}
+
+/// The closure that turns a read error of a field into the generated
+/// crate's deserialization error. Every reader maps through it, so the
+/// message a user sees names the field and the message context the same
+/// way for every field shape.
+fn build_field_error_mapper(field_literal: &Literal, context_expr: &TokenStream) -> TokenStream {
+    quote! {
+        |source| {
+            #[allow(clippy::all)]
+            let context = #context_expr;
+            crate::Error::Deserialization(
+                format!("field '{}' in {}: {}", #field_literal, context, source)
+            )
+        }
+    }
+}
+
+/// The statement that reads a pointer field (text, data, a list or a
+/// struct) into `target`, failing with the field's deserialization error.
+fn build_pointer_field_read(
+    target: &Ident,
+    reader_expr: &TokenStream,
+    getter: &Ident,
+    field_literal: &Literal,
+    context_expr: &TokenStream,
+) -> TokenStream {
+    let error_mapper = build_field_error_mapper(field_literal, context_expr);
+    quote! {
+        let #target = #reader_expr
+            .reborrow()
+            .#getter()
+            .map_err(#error_mapper)?;
+    }
+}
+
 fn schema_supports_presence_check(schema: &SchemaType) -> bool {
     match schema {
         SchemaType::Type(token) => matches!(
@@ -220,10 +269,7 @@ fn generate_primitive_reader(
     context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> (Vec<TokenStream>, Ident) {
-    let method_ident = Ident::new(
-        &format!("get_{}", sanitize_component(field_name)),
-        Span::call_site(),
-    );
+    let method_ident = build_getter_ident(field_name);
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
 
@@ -246,29 +292,19 @@ fn generate_primitive_reader(
         }
         TypeToken::String => {
             let reader_ident = names.next("text");
+            let error_mapper = build_field_error_mapper(&field_literal, context_expr);
             let statements = vec![
-                quote! {
-                    let #reader_ident = #reader_expr
-                        .reborrow()
-                        .#method_ident()
-                        .map_err(|source| {
-                            #[allow(clippy::all)]
-                            let context = #context_expr;
-                            crate::Error::Deserialization(
-                                format!("field '{}' in {}: {}", #field_literal, context, source)
-                            )
-                        })?;
-                },
+                build_pointer_field_read(
+                    &reader_ident,
+                    reader_expr,
+                    &method_ident,
+                    &field_literal,
+                    context_expr,
+                ),
                 quote! {
                     let #value_ident = #reader_ident
                         .to_str()
-                        .map_err(|source| {
-                            #[allow(clippy::all)]
-                            let context = #context_expr;
-                            crate::Error::Deserialization(
-                                format!("field '{}' in {}: {}", #field_literal, context, source)
-                            )
-                        })?
+                        .map_err(#error_mapper)?
                         .to_owned();
                 },
             ];
@@ -277,18 +313,13 @@ fn generate_primitive_reader(
         TypeToken::Bytes => {
             let reader_ident = names.next("data");
             let statements = vec![
-                quote! {
-                    let #reader_ident = #reader_expr
-                        .reborrow()
-                        .#method_ident()
-                        .map_err(|source| {
-                            #[allow(clippy::all)]
-                            let context = #context_expr;
-                            crate::Error::Deserialization(
-                                format!("field '{}' in {}: {}", #field_literal, context, source)
-                            )
-                        })?;
-                },
+                build_pointer_field_read(
+                    &reader_ident,
+                    reader_expr,
+                    &method_ident,
+                    &field_literal,
+                    context_expr,
+                ),
                 quote! {
                     let #value_ident = #reader_ident.to_vec();
                 },
@@ -299,18 +330,13 @@ fn generate_primitive_reader(
             let reader_ident = names.next("timestamp");
             let capnp_ident = names.next("capnp_timestamp");
             let statements = vec![
-                quote! {
-                    let #reader_ident = #reader_expr
-                        .reborrow()
-                        .#method_ident()
-                        .map_err(|source| {
-                            #[allow(clippy::all)]
-                            let context = #context_expr;
-                            crate::Error::Deserialization(
-                                format!("field '{}' in {}: {}", #field_literal, context, source)
-                            )
-                        })?;
-                },
+                build_pointer_field_read(
+                    &reader_ident,
+                    reader_expr,
+                    &method_ident,
+                    &field_literal,
+                    context_expr,
+                ),
                 quote! {
                     let #capnp_ident = peppylib::encoding::CapnpTimestamp {
                         sec: #reader_ident.get_sec(),
@@ -332,10 +358,7 @@ fn generate_array_reader(
     context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> Result<(Vec<TokenStream>, Ident)> {
-    let method_ident = Ident::new(
-        &format!("get_{}", sanitize_component(field_name)),
-        Span::call_site(),
-    );
+    let method_ident = build_getter_ident(field_name);
     match array.items.as_ref() {
         SchemaType::Object(object) => generate_object_array_reader(
             reader_expr,
@@ -383,18 +406,13 @@ fn generate_u8_array_reader(
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
 
-    let mut statements = vec![quote! {
-        let #reader_ident = #reader_expr
-            .reborrow()
-            .#method_ident()
-            .map_err(|source| {
-                #[allow(clippy::all)]
-                let context = #context_expr;
-                crate::Error::Deserialization(
-                    format!("field '{}' in {}: {}", #field_literal, context, source)
-                )
-            })?;
-    }];
+    let mut statements = vec![build_pointer_field_read(
+        &reader_ident,
+        reader_expr,
+        method_ident,
+        &field_literal,
+        context_expr,
+    )];
 
     match length {
         Some(len) => {
@@ -441,18 +459,13 @@ fn generate_primitive_array_reader(
 
     let element_ty = primitive_type_token(token);
 
-    let mut statements = vec![quote! {
-        let #reader_ident = #reader_expr
-            .reborrow()
-            .#method_ident()
-            .map_err(|source| {
-                #[allow(clippy::all)]
-                let context = #context_expr;
-                crate::Error::Deserialization(
-                    format!("field '{}' in {}: {}", #field_literal, context, source)
-                )
-            })?;
-    }];
+    let mut statements = vec![build_pointer_field_read(
+        &reader_ident,
+        reader_expr,
+        method_ident,
+        &field_literal,
+        context_expr,
+    )];
 
     // A text or data list's iterator yields `Result<_, capnp::Error>` per
     // element (each pointer can fail to resolve on its own), unlike a
@@ -471,18 +484,13 @@ fn generate_primitive_array_reader(
         }),
         _ => None,
     };
+    let error_mapper = build_field_error_mapper(&field_literal, context_expr);
     let collect_pointer_elements = |vec_ident: &Ident, element_expr: &TokenStream| {
         quote! {
             let #vec_ident = #reader_ident
                 .iter()
                 .map(|element| {
-                    (#element_expr).map_err(|source| {
-                        #[allow(clippy::all)]
-                        let context = #context_expr;
-                        crate::Error::Deserialization(
-                            format!("field '{}' in {}: {}", #field_literal, context, source)
-                        )
-                    })
+                    (#element_expr).map_err(#error_mapper)
                 })
                 .collect::<::std::result::Result<Vec<#element_ty>, crate::Error>>()?;
         }
@@ -539,46 +547,28 @@ fn generate_object_reader(
     context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> Result<(Vec<TokenStream>, Ident)> {
-    let method_ident = Ident::new(
-        &format!("get_{}", sanitize_component(field_name)),
-        Span::call_site(),
-    );
+    let method_ident = build_getter_ident(field_name);
     let reader_ident = names.next("reader");
     let field_literal = Literal::string(field_name);
-    let mut statements = vec![quote! {
-        let #reader_ident = #reader_expr
-            .reborrow()
-            .#method_ident()
-            .map_err(|source| {
-                #[allow(clippy::all)]
-                let context = #context_expr;
-                crate::Error::Deserialization(
-                    format!("field '{}' in {}: {}", #field_literal, context, source)
-                )
-            })?;
-    }];
+    let mut statements = vec![build_pointer_field_read(
+        &reader_ident,
+        reader_expr,
+        &method_ident,
+        &field_literal,
+        context_expr,
+    )];
 
-    let mut field_statements = Vec::new();
-    let mut field_inits = Vec::new();
     // The struct this reader builds and the prefix its own nested structs
     // continue from are the same name, so it is computed once: the declared
     // type and the constructed type cannot drift apart.
-    let nested_prefix = nested_struct_name(struct_prefix, field_name);
-
-    for (nested_name, nested_schema) in object {
-        let (mut nested_statements, nested_value_ident) = generate_field_reader_statements(
-            &quote!(#reader_ident),
-            nested_name.as_str(),
-            nested_schema,
-            &nested_prefix,
-            context_expr,
-            names,
-        )?;
-        field_statements.append(&mut nested_statements);
-        let field_ident = Ident::new(&sanitize_rust_identifier(nested_name), Span::call_site());
-        field_inits.push(quote!(#field_ident: #nested_value_ident));
-    }
-
+    let nested_prefix = nested_type_name(struct_prefix, field_name);
+    let (field_statements, field_inits) = generate_struct_field_readers(
+        &quote!(#reader_ident),
+        object,
+        &nested_prefix,
+        context_expr,
+        names,
+    )?;
     statements.extend(field_statements);
 
     let struct_ident = Ident::new(&nested_prefix, Span::call_site());
@@ -601,10 +591,7 @@ fn generate_object_array_reader(
     names: &mut NameGenerator,
     length: Option<usize>,
 ) -> Result<(Vec<TokenStream>, Ident)> {
-    let method_ident = Ident::new(
-        &format!("get_{}", sanitize_component(field_name)),
-        Span::call_site(),
-    );
+    let method_ident = build_getter_ident(field_name);
     let list_ident = names.next("list");
     let result_ident = names.next("result");
     let value_ident = names.next(field_name);
@@ -614,35 +601,21 @@ fn generate_object_array_reader(
     let struct_ident = Ident::new(&nested_prefix, Span::call_site());
 
     let element_ident = names.next("element");
-    let mut field_statements = Vec::new();
-    let mut field_inits = Vec::new();
+    let (field_statements, field_inits) = generate_struct_field_readers(
+        &quote!(#element_ident),
+        fields,
+        &nested_prefix,
+        context_expr,
+        names,
+    )?;
 
-    for (nested_name, nested_schema) in fields {
-        let (mut nested_statements, nested_value_ident) = generate_field_reader_statements(
-            &quote!(#element_ident),
-            nested_name.as_str(),
-            nested_schema,
-            &nested_prefix,
-            context_expr,
-            names,
-        )?;
-        field_statements.append(&mut nested_statements);
-        let field_ident = Ident::new(&sanitize_rust_identifier(nested_name), Span::call_site());
-        field_inits.push(quote!(#field_ident: #nested_value_ident));
-    }
-
-    let mut statements = vec![quote! {
-        let #list_ident = #reader_expr
-            .reborrow()
-            .#method_ident()
-            .map_err(|source| {
-                #[allow(clippy::all)]
-                let context = #context_expr;
-                crate::Error::Deserialization(
-                    format!("field '{}' in {}: {}", #field_literal, context, source)
-                )
-            })?;
-    }];
+    let mut statements = vec![build_pointer_field_read(
+        &list_ident,
+        reader_expr,
+        &method_ident,
+        &field_literal,
+        context_expr,
+    )];
 
     if let Some(len) = length {
         let len_lit = Literal::usize_unsuffixed(len);
@@ -701,6 +674,36 @@ mod tests {
 
         let combined = quote! { #( #statements )* };
         combined.to_string()
+    }
+
+    /// The format model refuses `$optional` on a scalar at parse time, but a
+    /// format built in code can still carry one. It has no presence check
+    /// on the wire, so the reader wraps the plain value in `Some`.
+    #[test]
+    fn optional_field_without_presence_check_reads_into_some() {
+        let schema = SchemaType::Primitive(config::node::PrimitiveSchema {
+            kind: TypeToken::U32,
+            optional: true,
+        });
+        let mut names = NameGenerator::new();
+
+        let (statements, value_ident) = generate_field_reader_statements(
+            &quote!(root),
+            "count",
+            &schema,
+            "Test",
+            &quote!("TestMsg"),
+            &mut names,
+        )
+        .unwrap();
+
+        // The `Option` local takes its name before the value it wraps.
+        let code = quote! { #( #statements )* }.to_string();
+        assert_eq!(value_ident, "count_opt_0");
+        assert_eq!(
+            code,
+            "let count_1 = root . reborrow () . get_count () ; let count_opt_0 = Some (count_1) ;"
+        );
     }
 
     #[test]

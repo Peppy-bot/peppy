@@ -1,22 +1,32 @@
-use super::code_builder::{PythonCodeBuilder, container_name, emit_fixed_length_check};
+use super::PythonSchemaInfo;
+use super::code_builder::{
+    PythonCodeBuilder, container_name, emit_fixed_length_check, next_temp_index,
+};
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
+use super::topics::capnp_loader_fn_name;
 use crate::generator::naming::sanitize_capnp_field_name;
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 
-/// Emits pycapnp field assignment statements for all fields in a `MessageFormat`.
+/// Emits a new pycapnp message of `schema_info` bound to `capnp_msg`, then
+/// one assignment statement per field of `format`. The caller emits what is
+/// done with the message (`capnp_msg.to_bytes()`).
 ///
-/// `builder_var` is the pycapnp message variable (e.g., `"capnp_msg"` or `"header_builder"`).
-/// `param_prefix` is the Python expression prefix for accessing parameter values
-/// (empty string for top-level fields, e.g., `"header"` for nested fields under `header`).
-/// `counter` provides unique suffixes for temporary variable names.
-pub fn emit_capnp_assignments(
+/// `param_prefix` is the Python expression the field values are read from:
+/// `"request"` reads `request.<field>`, an empty prefix reads each field from
+/// a parameter of the same name.
+pub fn emit_new_capnp_message(
     builder: &mut PythonCodeBuilder,
-    builder_var: &str,
+    schema_info: &PythonSchemaInfo,
     format: &MessageFormat,
     param_prefix: &str,
-    counter: &mut u32,
 ) {
+    builder.line(&format!(
+        "capnp_msg = {}().{}.new_message()",
+        capnp_loader_fn_name(schema_info),
+        schema_info.struct_name
+    ));
+    let mut counter = 0u32;
     for (field_name, schema) in &format.0 {
         let python_name = sanitize_python_identifier(field_name);
         let value_expr = if param_prefix.is_empty() {
@@ -27,11 +37,11 @@ pub fn emit_capnp_assignments(
 
         emit_field_assignment(
             builder,
-            builder_var,
+            "capnp_msg",
             field_name,
             schema,
             &value_expr,
-            counter,
+            &mut counter,
         );
     }
 }
@@ -44,7 +54,8 @@ fn capnp_assignment_stmt(builder_var: &str, capnp_name: &str, value_expr: &str) 
     }
 }
 
-/// Emits a single pycapnp field assignment, dispatching on the schema type.
+/// Emits a single pycapnp field assignment. An optional field is only
+/// written when its value is not `None`.
 fn emit_field_assignment(
     builder: &mut PythonCodeBuilder,
     builder_var: &str,
@@ -53,14 +64,39 @@ fn emit_field_assignment(
     value_expr: &str,
     counter: &mut u32,
 ) {
-    let capnp_name = sanitize_capnp_field_name(field_name);
-    let optional = schema.is_optional();
-
-    if optional {
-        builder.line(&format!("if {value_expr} is not None:"));
-        builder.indent();
+    if !schema.is_optional() {
+        emit_field_value_assignment(
+            builder,
+            builder_var,
+            field_name,
+            schema,
+            value_expr,
+            counter,
+        );
+        return;
     }
+    builder.block(&format!("if {value_expr} is not None:"), |builder| {
+        emit_field_value_assignment(
+            builder,
+            builder_var,
+            field_name,
+            schema,
+            value_expr,
+            counter,
+        );
+    });
+}
 
+/// Emits the assignment of one present value, dispatching on the schema type.
+fn emit_field_value_assignment(
+    builder: &mut PythonCodeBuilder,
+    builder_var: &str,
+    field_name: &str,
+    schema: &SchemaType,
+    value_expr: &str,
+    counter: &mut u32,
+) {
+    let capnp_name = sanitize_capnp_field_name(field_name);
     match schema {
         SchemaType::Type(TypeToken::Time) => {
             emit_time_assignment(builder, builder_var, &capnp_name, value_expr, counter);
@@ -100,8 +136,7 @@ fn emit_field_assignment(
             }
         }
         SchemaType::Object(object) => {
-            let idx = *counter;
-            *counter += 1;
+            let idx = next_temp_index(counter);
             let sub_builder = format!("builder_{idx}");
             builder.line(&format!(
                 "{sub_builder} = {builder_var}.init(\"{capnp_name}\")"
@@ -121,10 +156,6 @@ fn emit_field_assignment(
             }
         }
     }
-
-    if optional {
-        builder.dedent();
-    }
 }
 
 /// Emits timestamp conversion and assignment for a `Time` field.
@@ -135,11 +166,9 @@ fn emit_time_assignment(
     value_expr: &str,
     counter: &mut u32,
 ) {
-    let idx = *counter;
-    *counter += 1;
+    let idx = next_temp_index(counter);
     let ts_var = format!("timestamp_{idx}");
-    let idx2 = *counter;
-    *counter += 1;
+    let idx2 = next_temp_index(counter);
     let ts_builder = format!("builder_{idx2}");
     builder.line(&format!(
         "{ts_var} = peppylib.encoding.convert_time({value_expr})"
@@ -163,8 +192,7 @@ fn emit_object_array_assignment(
     length: Option<usize>,
     counter: &mut u32,
 ) {
-    let idx = *counter;
-    *counter += 1;
+    let idx = next_temp_index(counter);
     let list_builder = format!("list_{idx}");
     let length_expr = match length {
         Some(len) => format!("{len}"),
@@ -316,6 +344,48 @@ mod tests {
         assert!(
             code.contains("init(\"frames\", len(self.frames))"),
             "dynamic-length path must use len(value_expr) in init, got:\n{code}"
+        );
+    }
+
+    /// The object-array writer in full: the list is sized, then one loop
+    /// writes each element's fields, nested struct included, into its
+    /// element builder.
+    #[test]
+    fn object_array_serialization_writes_each_element_through_its_builder() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"{
+                frames: {
+                    $type: "array",
+                    $items: {
+                        $type: "object",
+                        x: "i32",
+                        pose: { $type: "object", yaw: "f64" }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let mut builder = PythonCodeBuilder::new();
+        let mut counter = 0u32;
+        emit_field_assignment(
+            &mut builder,
+            "msg",
+            "frames",
+            &format.0["frames"],
+            "value.frames",
+            &mut counter,
+        );
+        assert_eq!(
+            builder.build(),
+            [
+                "list_0 = msg.init(\"frames\", len(value.frames))",
+                "for i_0, elem_0 in enumerate(value.frames):",
+                "    eb_0 = list_0[i_0]",
+                "    eb_0.x = elem_0.x",
+                "    builder_1 = eb_0.init(\"pose\")",
+                "    builder_1.yaw = elem_0.pose.yaw",
+            ]
+            .join("\n")
         );
     }
 }

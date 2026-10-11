@@ -1,7 +1,10 @@
 use super::PythonSchemaInfo;
-use super::code_builder::{PythonCodeBuilder, container_name, emit_fixed_length_check};
+use super::code_builder::{
+    PythonCodeBuilder, container_name, emit_fixed_length_check, next_temp_index,
+};
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
-use crate::generator::naming::{array_item_type_name, sanitize_capnp_field_name, to_camel_case};
+use super::topics::capnp_loader_fn_name;
+use crate::generator::naming::{array_item_type_name, nested_type_name, sanitize_capnp_field_name};
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 
@@ -13,11 +16,12 @@ fn capnp_read_expr(reader_var: &str, capnp_name: &str) -> String {
     }
 }
 
-/// Generates a single field reader statement, dispatching on the schema type.
+/// Generates the reader statements of one field, wrapping the read in a
+/// presence check when the field is optional.
 ///
 /// `reader_var` is the pycapnp reader variable (e.g., `"capnp_msg"` or `"reader_0"`).
 /// Returns the variable name holding the deserialized value.
-pub fn generate_field_reader_statements(
+fn generate_field_reader_statements(
     builder: &mut PythonCodeBuilder,
     reader_var: &str,
     field_name: &str,
@@ -25,17 +29,50 @@ pub fn generate_field_reader_statements(
     struct_prefix: &str,
     counter: &mut u32,
 ) -> String {
+    if !schema.is_optional() {
+        return read_field_value(
+            builder,
+            reader_var,
+            field_name,
+            schema,
+            struct_prefix,
+            counter,
+        );
+    }
+
     // An absent optional field is not read at all. Reading it first and
     // overriding afterwards decodes what Cap'n Proto returns for a field that
     // was never set, and a fixed-length array inside such a field is an empty
     // list, which fails its length check before the presence check is reached.
-    let optional = schema.is_optional();
-    if optional {
-        let capnp_name = sanitize_capnp_field_name(field_name);
-        builder.line(&format!("if {reader_var}._has(\"{capnp_name}\"):"));
-        builder.indent();
-    }
-    let var = match schema {
+    let capnp_name = sanitize_capnp_field_name(field_name);
+    let var = builder.block(
+        &format!("if {reader_var}._has(\"{capnp_name}\"):"),
+        |builder| {
+            read_field_value(
+                builder,
+                reader_var,
+                field_name,
+                schema,
+                struct_prefix,
+                counter,
+            )
+        },
+    );
+    builder.block("else:", |builder| builder.line(&format!("{var} = None")));
+    var
+}
+
+/// Reads one present field, dispatching on the schema type. Returns the
+/// variable name holding the deserialized value.
+fn read_field_value(
+    builder: &mut PythonCodeBuilder,
+    reader_var: &str,
+    field_name: &str,
+    schema: &SchemaType,
+    struct_prefix: &str,
+    counter: &mut u32,
+) -> String {
+    match schema {
         SchemaType::Type(TypeToken::Time) => {
             generate_time_reader(builder, reader_var, field_name, counter)
         }
@@ -81,17 +118,7 @@ pub fn generate_field_reader_statements(
             struct_prefix,
             counter,
         ),
-    };
-
-    if optional {
-        builder.dedent();
-        builder.line("else:");
-        builder.indent();
-        builder.line(&format!("{var} = None"));
-        builder.dedent();
     }
-
-    var
 }
 
 /// Generates a complete `deserialize_payload` helper function that reads a Cap'n Proto
@@ -100,7 +127,7 @@ pub fn generate_field_reader_statements(
 /// Emits:
 /// ```python
 /// def deserialize_payload(payload):
-///     with capnp_module_expr.StructName.from_bytes(payload) as capnp_msg:
+///     with _<file_stem>_capnp().StructName.from_bytes(payload) as capnp_msg:
 ///         ...field reads...
 ///         return Message(field1=var1, ...)
 /// ```
@@ -109,58 +136,73 @@ pub fn build_deserialize_fn(
     schema_info: &PythonSchemaInfo,
     format: &MessageFormat,
     struct_prefix: &str,
-    capnp_module_expr: &str,
     fn_name: &str,
 ) {
-    builder.blank_line();
-    builder.line(&format!(
-        "def {fn_name}(payload: bytes) -> {struct_prefix}:"
-    ));
-    builder.indent();
-    builder.line(&format!(
-        "with {capnp_module_expr}.{}.from_bytes(payload) as capnp_msg:",
+    let loader_fn_name = capnp_loader_fn_name(schema_info);
+    let with_header = format!(
+        "with {loader_fn_name}().{}.from_bytes(payload) as capnp_msg:",
         schema_info.struct_name
-    ));
-    builder.indent();
+    );
+    builder.blank_line();
+    builder.block(
+        &format!("def {fn_name}(payload: bytes) -> {struct_prefix}:"),
+        |builder| {
+            builder.block(&with_header, |builder| {
+                let field_bindings =
+                    deserialize_format_fields(builder, "capnp_msg", format, struct_prefix);
 
-    let field_bindings = deserialize_format_fields(builder, "capnp_msg", format, struct_prefix);
+                let kwargs_str = keyword_arguments(&field_bindings);
+                builder.line(&format!("return {struct_prefix}({kwargs_str})"));
+            });
+        },
+    );
+}
 
-    let kwargs: Vec<String> = field_bindings
+/// The `name=var` keyword arguments of a dataclass constructor call, one per
+/// `(python_field_name, variable_name)` binding.
+fn keyword_arguments(bindings: &[(String, String)]) -> String {
+    bindings
         .iter()
         .map(|(name, var)| format!("{name}={var}"))
-        .collect();
-    let kwargs_str = kwargs.join(", ");
-    builder.line(&format!("return {struct_prefix}({kwargs_str})"));
-
-    builder.dedent();
-    builder.dedent();
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Deserializes all fields from a `MessageFormat`, iterating directly over format fields.
 ///
 /// Returns a list of `(python_field_name, variable_name)` pairs for constructing a dataclass.
-pub fn deserialize_format_fields(
+fn deserialize_format_fields(
     builder: &mut PythonCodeBuilder,
     reader_var: &str,
     format: &MessageFormat,
     struct_prefix: &str,
 ) -> Vec<(String, String)> {
     let mut counter = 0u32;
-    let mut field_bindings = Vec::new();
+    read_struct_fields(builder, reader_var, &format.0, struct_prefix, &mut counter)
+}
 
-    for (field_name, schema) in &format.0 {
-        let python_name = sanitize_python_identifier(field_name);
+/// Reads every field of a struct from `reader_var`, the message itself or a
+/// nested struct reader. Returns the `(python_field_name, variable_name)`
+/// pairs the struct's dataclass is constructed from.
+fn read_struct_fields(
+    builder: &mut PythonCodeBuilder,
+    reader_var: &str,
+    fields: &IndexMap<String, SchemaType>,
+    struct_prefix: &str,
+    counter: &mut u32,
+) -> Vec<(String, String)> {
+    let mut field_bindings = Vec::new();
+    for (field_name, schema) in fields {
         let var_name = generate_field_reader_statements(
             builder,
             reader_var,
             field_name,
             schema,
             struct_prefix,
-            &mut counter,
+            counter,
         );
-        field_bindings.push((python_name, var_name));
+        field_bindings.push((sanitize_python_identifier(field_name), var_name));
     }
-
     field_bindings
 }
 
@@ -172,8 +214,7 @@ fn generate_primitive_reader(
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
-    let idx = *counter;
-    *counter += 1;
+    let idx = next_temp_index(counter);
     let var = format!("{python_name}_{idx}");
     builder.line(&format!(
         "{var} = {}",
@@ -190,11 +231,9 @@ fn generate_time_reader(
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
-    let ts_idx = *counter;
-    *counter += 1;
+    let ts_idx = next_temp_index(counter);
     let ts_var = format!("timestamp_{ts_idx}");
-    let result_idx = *counter;
-    *counter += 1;
+    let result_idx = next_temp_index(counter);
     let result_var = format!("{python_name}_{result_idx}");
     builder.line(&format!(
         "{ts_var} = {}",
@@ -206,7 +245,7 @@ fn generate_time_reader(
     result_var
 }
 
-/// Reads an array of primitives into `container` — `bytes` for `u8` items,
+/// Reads an array of primitives into `container`: `bytes` for `u8` items,
 /// a `list` otherwise.
 fn generate_array_reader(
     builder: &mut PythonCodeBuilder,
@@ -217,8 +256,7 @@ fn generate_array_reader(
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
-    let idx = *counter;
-    *counter += 1;
+    let idx = next_temp_index(counter);
     let var = format!("{python_name}_{idx}");
     builder.line(&format!(
         "{var} = {container}({})",
@@ -237,37 +275,20 @@ fn generate_object_reader(
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
-    let nested_prefix = format!("{struct_prefix}{}", to_camel_case(field_name));
+    let nested_prefix = nested_type_name(struct_prefix, field_name);
 
-    let reader_idx = *counter;
-    *counter += 1;
+    let reader_idx = next_temp_index(counter);
     let sub_reader = format!("reader_{reader_idx}");
     builder.line(&format!(
         "{sub_reader} = {}",
         capnp_read_expr(reader_var, &capnp_name)
     ));
 
-    let mut nested_bindings = Vec::new();
-    for (nested_name, nested_schema) in fields {
-        let nested_var = generate_field_reader_statements(
-            builder,
-            &sub_reader,
-            nested_name,
-            nested_schema,
-            &nested_prefix,
-            counter,
-        );
-        nested_bindings.push((sanitize_python_identifier(nested_name), nested_var));
-    }
+    let nested_bindings = read_struct_fields(builder, &sub_reader, fields, &nested_prefix, counter);
 
-    let result_idx = *counter;
-    *counter += 1;
+    let result_idx = next_temp_index(counter);
     let result_var = format!("{python_name}_{result_idx}");
-    let kwargs: Vec<String> = nested_bindings
-        .iter()
-        .map(|(name, var)| format!("{name}={var}"))
-        .collect();
-    let kwargs_str = kwargs.join(", ");
+    let kwargs_str = keyword_arguments(&nested_bindings);
     builder.line(&format!("{result_var} = {nested_prefix}({kwargs_str})"));
     result_var
 }
@@ -285,48 +306,27 @@ fn generate_object_array_reader(
 
     let nested_prefix = array_item_type_name(struct_prefix, field_name);
 
-    let list_idx = *counter;
-    *counter += 1;
+    let list_idx = next_temp_index(counter);
     let list_var = format!("list_{list_idx}");
     builder.line(&format!(
         "{list_var} = {}",
         capnp_read_expr(reader_var, &capnp_name)
     ));
 
-    let result_idx = *counter;
-    *counter += 1;
+    let result_idx = next_temp_index(counter);
     let result_var = format!("{python_name}_{result_idx}");
     builder.line(&format!("{result_var} = []"));
 
-    let elem_idx = *counter;
-    *counter += 1;
+    let elem_idx = next_temp_index(counter);
     let elem_var = format!("elem_{elem_idx}");
-    builder.line(&format!("for {elem_var} in {list_var}:"));
-    builder.indent();
-
-    let mut nested_bindings = Vec::new();
-    for (nested_name, nested_schema) in fields {
-        let nested_var = generate_field_reader_statements(
-            builder,
-            &elem_var,
-            nested_name,
-            nested_schema,
-            &nested_prefix,
-            counter,
-        );
-        nested_bindings.push((sanitize_python_identifier(nested_name), nested_var));
-    }
-
-    let kwargs: Vec<String> = nested_bindings
-        .iter()
-        .map(|(name, var)| format!("{name}={var}"))
-        .collect();
-    let kwargs_str = kwargs.join(", ");
-    builder.line(&format!(
-        "{result_var}.append({nested_prefix}({kwargs_str}))"
-    ));
-
-    builder.dedent();
+    builder.block(&format!("for {elem_var} in {list_var}:"), |builder| {
+        let nested_bindings =
+            read_struct_fields(builder, &elem_var, fields, &nested_prefix, counter);
+        let kwargs_str = keyword_arguments(&nested_bindings);
+        builder.line(&format!(
+            "{result_var}.append({nested_prefix}({kwargs_str}))"
+        ));
+    });
 
     result_var
 }
@@ -441,6 +441,47 @@ mod tests {
         assert!(
             !code.contains("raise ValueError"),
             "dynamic-length path must not raise ValueError, got:\n{code}"
+        );
+    }
+
+    /// The items of the array in the full-reader test: a scalar and a nested
+    /// struct, so both reader shapes run inside the element loop.
+    fn object_items_format() -> MessageFormat {
+        serde_json5::from_str(
+            r#"{
+                frames: {
+                    $type: "array",
+                    $items: {
+                        $type: "object",
+                        x: "i32",
+                        pose: { $type: "object", yaw: "f64" }
+                    }
+                }
+            }"#,
+        )
+        .unwrap()
+    }
+
+    /// The object-array reader in full: one loop reads each element's
+    /// fields, nested struct included, into the item dataclass, every
+    /// temporary numbered in reading order.
+    #[test]
+    fn object_array_reader_reads_each_element_into_its_item_class() {
+        let format = object_items_format();
+        let code = read_field("frames", &format.0["frames"]);
+        assert_eq!(
+            code,
+            [
+                "list_0 = reader.frames",
+                "frames_1 = []",
+                "for elem_2 in list_0:",
+                "    x_3 = elem_2.x",
+                "    reader_4 = elem_2.pose",
+                "    yaw_5 = reader_4.yaw",
+                "    pose_6 = TestFramesItemPose(yaw=yaw_5)",
+                "    frames_1.append(TestFramesItem(x=x_3, pose=pose_6))",
+            ]
+            .join("\n")
         );
     }
 }

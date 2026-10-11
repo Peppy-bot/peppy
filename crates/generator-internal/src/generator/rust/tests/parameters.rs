@@ -188,13 +188,7 @@ fn generate_parameters_struct() {
 
     let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.set_parameters(node_config.execution.parameters);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
+    build_crate(generator, &output_dir);
 
     let parameters_file = output_dir.join("src/parameters.rs");
     assert!(
@@ -247,13 +241,7 @@ fn generate_empty_parameters_struct() {
 
     let (generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
     // Don't set any parameters - use the default empty parameters
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
+    build_crate(generator, &output_dir);
 
     let parameters_file = output_dir.join("src/parameters.rs");
     assert!(
@@ -281,13 +269,7 @@ fn generate_parameters_struct_avoids_nested_struct_name_collisions() {
 
     let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.set_parameters(node_config.execution.parameters);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
+    build_crate(generator, &output_dir);
 
     let parameters_file = output_dir.join("src/parameters.rs");
     assert!(
@@ -350,6 +332,46 @@ fn reject_parameters_with_invalid_field_names() {
             assert_eq!(allowed, ALLOWED_CONFIG_CHARS);
         }
         _ => panic!("Expected InvalidParameterFieldName error, got: {:?}", err),
+    }
+}
+
+/// The generated code has no array parameter type, so an array is refused
+/// at any depth, and the error names the field by its dotted path.
+#[test]
+fn reject_array_parameters_with_their_dotted_path() {
+    use crate::error::Error;
+    use crate::generator::rust::generate_parameters_struct;
+    use config::ParameterSpec;
+    use config::node::TypeToken;
+    use std::collections::BTreeMap;
+
+    let array = ParameterSpec::Array {
+        items: Box::new(ParameterSpec::Primitive {
+            kind: TypeToken::U16,
+            default: None,
+        }),
+        length: None,
+    };
+    let cases = [
+        (
+            BTreeMap::from([("gains".to_string(), array.clone())]),
+            "gains",
+        ),
+        (
+            BTreeMap::from([(
+                "video".to_string(),
+                ParameterSpec::Group(BTreeMap::from([("frames".to_string(), array)])),
+            )]),
+            "video.frames",
+        ),
+    ];
+
+    for (schema, expected_path) in cases {
+        let error = generate_parameters_struct(&schema).unwrap_err();
+        assert!(
+            matches!(&error, Error::UnsupportedArrayParameter { path } if path == expected_path),
+            "expected UnsupportedArrayParameter at `{expected_path}`, got: {error:?}"
+        );
     }
 }
 

@@ -1,49 +1,10 @@
 //! Python mirror of `tests/rust/actions_implements.rs`.
 
-use crate::helpers::{prepare_directories, test_peppy_dirs};
-use config::node::{
-    GoalServiceEndpoint, MessageFormat, NativeExposedAction, PeppygenLanguage, SchemaType,
-    TypeToken,
-};
-use generator::{
-    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, NodeTree,
-    generate_peppygen_lib,
-};
-use indexmap::IndexMap;
+use crate::helpers::{generate_test_peppygen_lib, prepare_directories};
+use crate::implements_fixtures::{contract_backed_action, make_move_arm_action};
+use config::node::PeppygenLanguage;
 use std::fs;
 use tempfile::TempDir;
-
-fn make_action(marker: &str) -> NativeExposedAction {
-    let mut req: IndexMap<String, SchemaType> = IndexMap::new();
-    req.insert(marker.to_string(), SchemaType::Type(TypeToken::I32));
-    let mut resp: IndexMap<String, SchemaType> = IndexMap::new();
-    resp.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
-    NativeExposedAction {
-        name: "move_arm".to_string(),
-        goal_service: Some(GoalServiceEndpoint {
-            request_message_format: Some(MessageFormat(req)),
-            response_message_format: Some(MessageFormat(resp)),
-        }),
-        feedback_topic: None,
-        result_service: None,
-    }
-}
-
-fn contract_backed(
-    link_id: &str,
-    name: &str,
-    tag: &str,
-    action: NativeExposedAction,
-) -> DeploymentInterface {
-    DeploymentInterface::new(InterfaceVariant::ExposedAction {
-        action,
-        origin: Some(ContractOrigin {
-            link_id: link_id.to_string(),
-            contract_name: name.to_string(),
-            contract_tag: tag.to_string(),
-        }),
-    })
-}
 
 const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
@@ -73,27 +34,17 @@ const NODE_CONFIG: &str = r#"{
 
 #[test]
 fn nests_contract_backed_actions_under_link_id() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("arm_v1", "arm", "v1", make_action("arm_v1_marker")),
-        contract_backed("arm_v2", "arm", "v2", make_action("arm_v2_marker")),
+        contract_backed_action("arm_v1", "arm", "v1", make_move_arm_action("arm_v1_marker")),
+        contract_backed_action("arm_v2", "arm", "v2", make_move_arm_action("arm_v2_marker")),
     ];
 
-    let peppy_dirs = test_peppy_dirs();
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &user_node,
-        extras,
-        "test-hash",
-        &peppy_dirs,
-        CrateDeployMode::default(),
-        Some(&peppy_node_config),
-        NodeTree::Source,
-    )
-    .expect("generation should succeed");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &user_node, extras)
+        .expect("generation should succeed");
 
     let pkg = user_node
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)
@@ -157,7 +108,7 @@ fn nests_contract_backed_actions_under_link_id() {
         );
         assert!(
             !src.contains("_PKG_DIR"),
-            "{label} action should no longer reference the legacy `_PKG_DIR` \
+            "{label} action must not reference a file-relative `_PKG_DIR` \
              constant:\n{src}",
         );
     }

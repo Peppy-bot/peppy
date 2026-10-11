@@ -8,7 +8,8 @@ use super::*;
 use crate::generator::testgen::{
     DepLinkSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
-use config::node::{Cardinality, MessageFormat, TopicRetention};
+use config::node::{Cardinality, MessageFormat, NativeEmittedTopic, TopicRetention};
+use std::path::Path;
 use tempfile::TempDir;
 
 fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
@@ -28,9 +29,16 @@ fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
 }
 
 fn rendered_harness(registry: &TestGenRegistry) -> String {
-    let mut generator = PythonGenerator::new();
     let node_dir = TempDir::new().unwrap();
-    super::super::fixtures::render(&mut generator, registry, node_dir.path()).unwrap();
+    rendered_harness_in(PythonGenerator::new(), registry, node_dir.path())
+}
+
+fn rendered_harness_in(
+    mut generator: PythonGenerator,
+    registry: &TestGenRegistry,
+    node_dir: &Path,
+) -> String {
+    super::super::fixtures::render(&mut generator, registry, node_dir).unwrap();
     generator
         .into_artifacts()
         .into_iter()
@@ -213,5 +221,84 @@ fn a_retaining_topic_reaches_its_mock_publisher_and_its_fixture_subscription() {
             "peppylib.TopicMessenger.subscribe("
         ),
         "the fixture subscription declares the retention"
+    );
+}
+
+/// Production keys an emitted topic's schema on the raw topic name, so a
+/// name that is a Rust keyword stays `loop`. The fixture subscription decodes
+/// on that same key: both land on one capnp file instead of colliding on the
+/// shared `loop_message` stem.
+#[test]
+fn an_emitted_topic_named_after_a_rust_keyword_shares_its_production_schema() {
+    let mut generator = PythonGenerator::new();
+    generator.set_node_identity("node", "v1");
+    let topic: NativeEmittedTopic =
+        serde_json5::from_str(r#"{ name: "loop", message_format: { x: "u8" } }"#).unwrap();
+    generator.add_emitted_topic(&topic, None).unwrap();
+
+    let registry = std::mem::take(&mut generator.testgen);
+    let node_dir = TempDir::new().unwrap();
+    let rendered = super::super::fixtures::render(&mut generator, &registry, node_dir.path());
+
+    assert!(
+        rendered.is_ok(),
+        "the fixture codec must reuse the production schema, got: {rendered:?}"
+    );
+    assert_eq!(generator.schemas.len(), 1);
+}
+
+/// The baked node directory is the one arbitrary user string in the harness.
+/// A path holding a combining character (an NFD name, common on macOS) must
+/// still be a valid Python string literal: Rust's `{:?}` writes it as
+/// `\u{301}`, an escape Python rejects with a SyntaxError.
+#[test]
+fn a_node_directory_with_a_combining_character_bakes_as_a_python_literal() {
+    let mut registry = TestGenRegistry::default();
+    registry.record_node_identity("relay_node", "v1");
+    let temp = TempDir::new().unwrap();
+    let node_dir = temp.path().join("jose\u{301}");
+    std::fs::create_dir(&node_dir).unwrap();
+    let canonical = std::fs::canonicalize(&node_dir).unwrap();
+
+    let rendered = rendered_harness_in(PythonGenerator::new(), &registry, &node_dir);
+
+    let expected = format!("_SYNC_TIME_NODE_DIR = \"{}\"", canonical.display());
+    assert!(
+        rendered.contains(&expected),
+        "the raw path must be baked verbatim, expected `{expected}` in:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("\\u{"),
+        "no Rust-only `\\u{{...}}` escape may reach the Python source"
+    );
+}
+
+/// A schema whose every leaf has a default, nested group included, bakes
+/// the defaults as one dict literal in which the group is a nested dict.
+#[test]
+fn fully_defaulted_parameters_bake_a_nested_dict_literal() {
+    let mut registry = TestGenRegistry::default();
+    registry.record_node_identity("relay_node", "v1");
+    let parameters: config::ParameterSchema = serde_json5::from_str(
+        r#"{
+            frame_rate: { $type: "u32", $default: 30 },
+            calibration: {
+                $type: "object",
+                offset: { $type: "f64", $default: 0.5 },
+                enabled: { $type: "bool", $default: true }
+            }
+        }"#,
+    )
+    .unwrap();
+    let mut generator = PythonGenerator::new();
+    generator.set_parameters(parameters);
+    let node_dir = TempDir::new().unwrap();
+
+    let rendered = rendered_harness_in(generator, &registry, node_dir.path());
+
+    let expected = r#"_DEFAULT_PARAMETERS = {"calibration": {"enabled": True, "offset": 0.5}, "frame_rate": 30}"#;
+    assert!(
+        rendered.contains(expected),
+        "expected `{expected}` in:\n{rendered}"
     );
 }

@@ -5,19 +5,20 @@
 //! so each slot writes its own file from its own format and the per-slot
 //! decode code always matches the schema it reads.
 //!
-//! Before per-slot keying both slots resolved `on_next_video_stream_message`;
-//! the first registration owned the file and every later slot was handed the
-//! first struct while its decode code was still generated from its own
-//! format. Declaring the rgbd slot after the rgb one produced
-//! `error[E0599]: no method named get_align_mode` on the shared reader and the
-//! node did not build; the other order built but read the rgb slot through a
-//! schema with a field it never sets. Both declaration orders are covered.
+//! Keyed by topic name alone, both slots would resolve
+//! `on_next_video_stream_message`: the first registration would own the file
+//! and every later slot would get the first struct while its decode code is
+//! generated from its own format. Declaring the rgbd slot after the rgb one
+//! would then fail with `error[E0599]: no method named get_align_mode` on the
+//! shared reader and the node would not build; the other order would build
+//! but read the rgb slot through a schema with a field it never sets. Both
+//! declaration orders are covered.
 //!
 //! This is the Rust counterpart of `tests/python/consumed_topics_distinct_formats.rs`.
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage, TopicRetention};
-use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -144,8 +145,8 @@ fn read_schema(capnp_dir: &Path, file_stem: &str) -> String {
 }
 
 fn generate_and_build(order: [Slot; 2]) {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let user_node_dir = temp_dir.path().join("user_node");
     fs::create_dir_all(&user_node_dir).expect("failed to create user_node directory");
 
@@ -154,17 +155,8 @@ fn generate_and_build(order: [Slot; 2]) {
 
     let interfaces = order.into_iter().map(consumed_topic).collect();
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        &user_node_dir,
-        interfaces,
-        "test-hash",
-        &helpers::test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib");
+    helpers::generate_test_peppygen_lib(PeppygenLanguage::Rust, &user_node_dir, interfaces)
+        .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let capnp_dir = peppygen_dir.join("src/capnp");
@@ -189,9 +181,8 @@ fn generate_and_build(order: [Slot; 2]) {
     );
 
     helpers::init_cargo_user_node(&user_node_dir);
-    let src_dir = user_node_dir.join("src");
-    fs::create_dir_all(&src_dir).expect("failed to create src dir");
-    fs::write(src_dir.join("main.rs"), USER_MAIN).expect("failed to write user main.rs");
+    fs::write(user_node_dir.join("src").join("main.rs"), USER_MAIN)
+        .expect("failed to write user main.rs");
 
     helpers::compile_project(&user_node_dir);
 }

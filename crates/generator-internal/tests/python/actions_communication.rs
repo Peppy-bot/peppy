@@ -1,33 +1,25 @@
 use crate::helpers::{
-    CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT,
-    CONSUMED_ACTION_GOAL_RESPONSE_FORMAT, CONSUMED_ACTION_RESULT_FORMAT, EXPOSED_ACTION_EXAMPLE,
-    bind_slot, python_consumer_stub_node_config,
-};
-use crate::helpers::{
-    CapturedChild, DEFAULT_WAIT_TIMEOUT, PYTHON_STUB_EXECUTION, STUB_PYTHON_NODE_CONFIG,
-    WaitContext, contract_consumer_stub_node_config, contract_dep, copy_config_to_output,
-    init_python_project_venv, init_python_user_node, init_test_env, native_dep, send_shutdown,
-    spawn_python_run, test_contract_target, test_peppy_dirs, try_send_shutdown,
+    CapturedChild, ConsumerExposerOutput, DEFAULT_WAIT_TIMEOUT, EXPOSED_ACTION_EXAMPLE,
+    JOINTS_CONTRACT_ACTION, JOINTS_CONTRACT_NAME, JOINTS_REFINEMENT, PYTHON_STUB_EXECUTION,
+    SHUTDOWN_SENDER_INSTANCE_ID, STUB_PYTHON_NODE_CONFIG, TEST_CORE_NODE,
+    assert_exited_successfully, bind_slot, consumed_move_arm_action_messages,
+    contract_consumer_stub_node_config, contract_dep, generate_node_project,
+    init_python_project_venv, init_python_user_node, native_dep, python_consumer_stub_node_config,
+    save_runtime_config, shut_down_test_node, spawn_python_run, test_contract_target,
+    test_node_runtime_config, test_wait_context, try_send_shutdown,
     wait_for_action_reachable_via_target_or_exit, wait_for_action_service_reachable_or_exit,
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
-use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
-use config::runtime::NodeInstanceConfig;
-use config::{
-    node::{ConsumedAction, MessageFormat, NativeExposedAction, NativeExposedService},
-    runtime::{Name, RuntimeConfig},
-};
+use config::consts::RUNTIME_CONFIG_VAR_NAME;
+use config::node::{ConsumedAction, NativeExposedAction, NativeExposedService};
 use generator::{ConsumedActionMessage, ContractOrigin, LanguageGenerator};
-use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
 
 // --- Common test constants
-const TEST_CORE_NODE: &str = "test_core";
 const CONSUMER_NODE_NAME: &str = "consumer_node";
 const CONSUMER_INSTANCE_ID: &str = "consumer_instance";
 const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const BRAIN_NODE_NAME: &str = "brain";
 const ACTION_FLOW_DONE_SERVICE: &str = "move_arm_flow_done";
 const ACTION_CANCEL_FLOW_DONE_SERVICE: &str = "move_arm_cancel_flow_done";
@@ -35,36 +27,6 @@ const ACTION_IN_HANDLER_FLOW_DONE_SERVICE: &str = "move_arm_in_handler_flow_done
 const ACTION_CANCEL_ACCEPT_FLOW_DONE_SERVICE: &str = "move_arm_cancel_accept_flow_done";
 const ACTION_CANCEL_REJECT_FLOW_DONE_SERVICE: &str = "move_arm_cancel_reject_flow_done";
 const ACTION_DRAIN_LOOP_FLOW_DONE_SERVICE: &str = "move_arm_drain_loop_flow_done";
-const EXPOSED_ACTION_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
-{
-  name: "move_arm_flow_done"
-}
-"#;
-const EXPOSED_ACTION_IN_HANDLER_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
-{
-  name: "move_arm_in_handler_flow_done"
-}
-"#;
-const EXPOSED_ACTION_CANCEL_ACCEPT_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
-{
-  name: "move_arm_cancel_accept_flow_done"
-}
-"#;
-const EXPOSED_ACTION_CANCEL_REJECT_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
-{
-  name: "move_arm_cancel_reject_flow_done"
-}
-"#;
-const EXPOSED_ACTION_DRAIN_LOOP_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
-{
-  name: "move_arm_drain_loop_flow_done"
-}
-"#;
-const EXPOSED_ACTION_CANCEL_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
-{
-  name: "move_arm_cancel_flow_done"
-}
-"#;
 
 const CONSUMED_ACTION_EXAMPLE: &str = r#"
 {
@@ -73,69 +35,50 @@ const CONSUMED_ACTION_EXAMPLE: &str = r#"
 }
 "#;
 
-#[rstest::rstest]
-#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
-#[case::router(crate::helpers::LocalNodesTopology::Router)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopology) {
+/// Runs one native move_arm action flow. The consumer fires goals at the
+/// exposer of [`EXPOSED_ACTION_EXAMPLE`] through its `brain` slot, bound to
+/// that exposer, and exposes `flow_done_service`, which its script answers
+/// once it has run the flow. The exposer starts first, and both nodes are
+/// shut down once the consumer's flow-done service is reachable. Returns
+/// what the two nodes printed; both exited successfully.
+async fn run_move_arm_flow(
+    topology: crate::helpers::LocalNodesTopology,
+    flow_done_service: &str,
+    consumer_main: &str,
+    exposer_main: &str,
+) -> ConsumerExposerOutput {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Consumer (client) project
-    let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
-    let goal_request_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let feedback_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
-    let result_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = ConsumedActionMessage {
-        goal_request: Some(goal_request_format),
-        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(feedback_format),
-        result_response: Some(result_response_format),
-    };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(
-            &temp_dir_consumer,
-            &python_consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    let flow_done_service: NativeExposedService =
-        serde_json5::from_str(EXPOSED_ACTION_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    generator
-        .add_exposed_service(&flow_done_service, None)
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let action_messages = consumed_move_arm_action_messages();
+    let flow_done: NativeExposedService =
+        serde_json5::from_str(&format!(r#"{{ name: "{flow_done_service}" }}"#)).unwrap();
+    let user_node_consumer = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_consumer,
+        &python_consumer_stub_node_config("brain", "v1", "brain"),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &native_dep("brain", "v1", "brain"),
+                )
+                .unwrap();
+            generator.add_exposed_service(&flow_done, None).unwrap();
+        },
     );
-
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        CONSUMER_INSTANCE_ID,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "brain",
@@ -143,12 +86,125 @@ async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopol
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
-
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
     init_python_user_node(&user_node_consumer);
+    fs::write(user_node_consumer.join("main.py"), consumer_main)
+        .expect("failed to write consumer main.py");
+
+    // --- Exposer (server) project
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let user_node_exposer = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_exposer,
+        STUB_PYTHON_NODE_CONFIG,
+        |generator| {
+            generator.add_exposed_action(&exposed_action, None).unwrap();
+        },
+    );
+    // The exposer runs as the `brain` node the consumer's slot depends on.
+    let exposer_runtime_config = test_node_runtime_config(
+        &router_host,
+        router_port,
+        BRAIN_NODE_NAME,
+        EXPOSER_INSTANCE_ID,
+    );
+    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
+    init_python_user_node(&user_node_exposer);
+    fs::write(user_node_exposer.join("main.py"), exposer_main)
+        .expect("failed to write exposer main.py");
+
+    init_python_project_venv(&user_node_consumer);
+    init_python_project_venv(&user_node_exposer);
+
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
+    let ctx = test_wait_context(&messenger);
+
+    // Spawn exposer first so it's ready to handle requests
+    let mut exposer_child = spawn_python_run(
+        &user_node_exposer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
+    );
+    wait_for_action_service_reachable_or_exit(
+        &ctx,
+        BRAIN_NODE_NAME,
+        "move_arm",
+        None,
+        &mut exposer_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    let mut consumer_child = spawn_python_run(
+        &user_node_consumer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
+    );
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        CONSUMER_NODE_NAME,
+        CONSUMER_INSTANCE_ID,
+        &mut consumer_child,
+        &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        BRAIN_NODE_NAME,
+        EXPOSER_INSTANCE_ID,
+        &mut exposer_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        CONSUMER_NODE_NAME,
+        flow_done_service,
+        Some(CONSUMER_INSTANCE_ID),
+        &mut consumer_child,
+        &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, CONSUMER_INSTANCE_ID).await;
+    shut_down_test_node(&messenger, BRAIN_NODE_NAME, EXPOSER_INSTANCE_ID).await;
+
+    let consumer_output = wait_for_child(
+        &mut consumer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_consumer,
+    );
+    let exposer_output = wait_for_child(
+        &mut exposer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
+    let (consumer_stdout, consumer_stderr) =
+        assert_exited_successfully("consumer process", &consumer_output);
+    let (exposer_stdout, exposer_stderr) =
+        assert_exited_successfully("exposer process", &exposer_output);
+    ConsumerExposerOutput {
+        consumer_stdout,
+        consumer_stderr,
+        exposer_stdout,
+        exposer_stderr,
+    }
+}
+
+#[rstest::rstest]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopology) {
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
@@ -196,44 +252,6 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_consumer.join("main.py");
-    fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
-
-    // --- Exposer (server) project
-    let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for exposer project");
-    let exposed_action: NativeExposedAction =
-        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let exposer_runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
-        BRAIN_NODE_NAME, // Must match the node name expected by the consumer
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
-    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
-
-    init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -273,134 +291,18 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_exposer.join("main.py");
-    fs::write(main_file, exposer_main).expect("failed to write exposer main.py");
-
-    println!(
-        "User node consumer PEPPY_RUNTIME_CONFIG=\"{}\"",
-        consumer_runtime_config_path.display()
-    );
-    println!("User node consumer = {}", user_node_consumer.display());
-    println!(
-        "User node exposer PEPPY_RUNTIME_CONFIG=\"{}\"",
-        exposer_runtime_config_path.display()
-    );
-    println!("User node exposer = {}", user_node_exposer.display());
-
-    init_python_project_venv(&user_node_consumer);
-    init_python_project_venv(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
-
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger for test control");
-
-    // Spawn exposer first so it's ready to handle requests
-    let mut exposer_child = spawn_python_run(
-        &user_node_exposer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
-    );
-
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_action_service_reachable_or_exit(
-        &action_ctx,
-        BRAIN_NODE_NAME,
-        "move_arm",
-        None,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    let mut consumer_child = spawn_python_run(
-        &user_node_consumer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
-
-    let health_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        consumer_instance_id,
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        BRAIN_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        ACTION_FLOW_DONE_SERVICE,
-        Some(consumer_instance_id),
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
-    let exposer_output = wait_for_child(
-        &mut exposer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_exposer,
-    );
-
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
+    let ConsumerExposerOutput {
         consumer_stdout,
-        consumer_stderr
-    );
+        consumer_stderr,
+        exposer_stdout,
+        exposer_stderr,
+    } = run_move_arm_flow(
+        topology,
+        ACTION_FLOW_DONE_SERVICE,
+        consumer_main,
+        exposer_main,
+    )
+    .await;
     assert!(
         consumer_stdout
             .contains("rejected goal accepted=False reason=arm 99 is reserved data_present=False")
@@ -413,15 +315,6 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
     assert!(
         exposer_stdout.contains("server received goal arm_id=7 desired=[10, 20, 30]")
             && exposer_stdout.contains("server emitted feedback message [7, 31, 43]")
@@ -438,77 +331,6 @@ if __name__ == "__main__":
 #[case::router(crate::helpers::LocalNodesTopology::Router)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::LocalNodesTopology) {
-    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-
-    // --- Consumer (client) project
-    let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for consumer project");
-    let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
-    let goal_request_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let feedback_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
-    let result_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = ConsumedActionMessage {
-        goal_request: Some(goal_request_format),
-        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(feedback_format),
-        result_response: Some(result_response_format),
-    };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(
-            &temp_dir_consumer,
-            &python_consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    let flow_done_service: NativeExposedService =
-        serde_json5::from_str(EXPOSED_ACTION_CANCEL_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    generator
-        .add_exposed_service(&flow_done_service, None)
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let consumer_runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
-        CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
-    let consumer_runtime_config = bind_slot(
-        consumer_runtime_config,
-        "brain",
-        TEST_CORE_NODE,
-        EXPOSER_INSTANCE_ID,
-    );
-    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
-
-    init_python_user_node(&user_node_consumer);
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
@@ -540,44 +362,6 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_consumer.join("main.py");
-    fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
-
-    // --- Exposer (server) project
-    let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for exposer project");
-    let exposed_action: NativeExposedAction =
-        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let exposer_runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
-        BRAIN_NODE_NAME, // Must match the node name expected by the consumer
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
-    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
-
-    init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -611,123 +395,18 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_exposer.join("main.py");
-    fs::write(main_file, exposer_main).expect("failed to write exposer main.py");
-
-    init_python_project_venv(&user_node_consumer);
-    init_python_project_venv(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
-
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger for test control");
-
-    // Spawn exposer first so it's ready to handle requests
-    let mut exposer_child = spawn_python_run(
-        &user_node_exposer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
-    );
-
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_action_service_reachable_or_exit(
-        &action_ctx,
-        BRAIN_NODE_NAME,
-        "move_arm",
-        None,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    let mut consumer_child = spawn_python_run(
-        &user_node_consumer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
-
-    let health_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        consumer_instance_id,
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        BRAIN_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        ACTION_CANCEL_FLOW_DONE_SERVICE,
-        Some(consumer_instance_id),
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
-    let exposer_output = wait_for_child(
-        &mut exposer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_exposer,
-    );
-
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
+    let ConsumerExposerOutput {
         consumer_stdout,
-        consumer_stderr
-    );
+        consumer_stderr,
+        exposer_stdout,
+        exposer_stderr,
+    } = run_move_arm_flow(
+        topology,
+        ACTION_CANCEL_FLOW_DONE_SERVICE,
+        consumer_main,
+        exposer_main,
+    )
+    .await;
     assert!(
         consumer_stdout.contains("goal accepted=True")
             && consumer_stdout.contains("cancel accepted=True error=<none>"),
@@ -736,15 +415,6 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
     assert!(
         exposer_stdout.contains("server received goal arm_id=7 desired=[10, 20, 30]")
             && exposer_stdout.contains("server observed cancel for goal"),
@@ -766,77 +436,6 @@ if __name__ == "__main__":
 async fn actions_communication_async_goal_decider(
     #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
-    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-
-    // --- Consumer (client) project
-    let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for consumer project");
-    let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
-    let goal_request_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let feedback_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
-    let result_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = ConsumedActionMessage {
-        goal_request: Some(goal_request_format),
-        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(feedback_format),
-        result_response: Some(result_response_format),
-    };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(
-            &temp_dir_consumer,
-            &python_consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    let flow_done_service: NativeExposedService =
-        serde_json5::from_str(EXPOSED_ACTION_IN_HANDLER_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    generator
-        .add_exposed_service(&flow_done_service, None)
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let consumer_runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
-        CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
-    let consumer_runtime_config = bind_slot(
-        consumer_runtime_config,
-        "brain",
-        TEST_CORE_NODE,
-        EXPOSER_INSTANCE_ID,
-    );
-    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
-
-    init_python_user_node(&user_node_consumer);
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
@@ -872,46 +471,9 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_consumer.join("main.py");
-    fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
-
-    // --- Exposer (server) project. The goal decider is `async` (codegen
-    // awaits it); after accepting, the worker publishes feedback through the
-    // `GoalContext` and completes. See the test docstring above.
-    let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for exposer project");
-    let exposed_action: NativeExposedAction =
-        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let exposer_runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
-        BRAIN_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
-    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
-
-    init_python_user_node(&user_node_exposer);
+    // The goal decider is `async` (codegen awaits it); after accepting, the
+    // worker publishes feedback through the `GoalContext` and completes. See
+    // the test docstring above.
     let exposer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -951,122 +513,18 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_exposer.join("main.py");
-    fs::write(main_file, exposer_main).expect("failed to write exposer main.py");
-
-    init_python_project_venv(&user_node_consumer);
-    init_python_project_venv(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
-
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger for test control");
-
-    let mut exposer_child = spawn_python_run(
-        &user_node_exposer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
-    );
-
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_action_service_reachable_or_exit(
-        &action_ctx,
-        BRAIN_NODE_NAME,
-        "move_arm",
-        None,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    let mut consumer_child = spawn_python_run(
-        &user_node_consumer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
-
-    let health_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        consumer_instance_id,
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        BRAIN_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        ACTION_IN_HANDLER_FLOW_DONE_SERVICE,
-        Some(consumer_instance_id),
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
-    let exposer_output = wait_for_child(
-        &mut exposer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_exposer,
-    );
-
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
+    let ConsumerExposerOutput {
         consumer_stdout,
-        consumer_stderr
-    );
+        consumer_stderr,
+        exposer_stdout,
+        exposer_stderr,
+    } = run_move_arm_flow(
+        topology,
+        ACTION_IN_HANDLER_FLOW_DONE_SERVICE,
+        consumer_main,
+        exposer_main,
+    )
+    .await;
     assert!(
         consumer_stdout.contains("goal accepted=True")
             && consumer_stdout.contains("feedback message received new_position=[7, 100, 200]")
@@ -1076,15 +534,6 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
     assert!(
         exposer_stdout.contains("server accepted goal via async decider")
             && exposer_stdout.contains("server emitted feedback")
@@ -1121,77 +570,6 @@ if __name__ == "__main__":
 async fn actions_communication_cancel_accept_closes_feedback_stream(
     #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
-    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-
-    // --- Consumer (client) project
-    let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for consumer project");
-    let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
-    let goal_request_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let feedback_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
-    let result_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = ConsumedActionMessage {
-        goal_request: Some(goal_request_format),
-        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(feedback_format),
-        result_response: Some(result_response_format),
-    };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(
-            &temp_dir_consumer,
-            &python_consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    let flow_done_service: NativeExposedService =
-        serde_json5::from_str(EXPOSED_ACTION_CANCEL_ACCEPT_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    generator
-        .add_exposed_service(&flow_done_service, None)
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let consumer_runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
-        CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
-    let consumer_runtime_config = bind_slot(
-        consumer_runtime_config,
-        "brain",
-        TEST_CORE_NODE,
-        EXPOSER_INSTANCE_ID,
-    );
-    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
-
-    init_python_user_node(&user_node_consumer);
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
@@ -1231,44 +609,6 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_consumer.join("main.py");
-    fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
-
-    // --- Exposer (server) project
-    let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for exposer project");
-    let exposed_action: NativeExposedAction =
-        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let exposer_runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
-        BRAIN_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
-    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
-
-    init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -1303,122 +643,17 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_exposer.join("main.py");
-    fs::write(main_file, exposer_main).expect("failed to write exposer main.py");
-
-    init_python_project_venv(&user_node_consumer);
-    init_python_project_venv(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
-
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger for test control");
-
-    let mut exposer_child = spawn_python_run(
-        &user_node_exposer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
-    );
-
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_action_service_reachable_or_exit(
-        &action_ctx,
-        BRAIN_NODE_NAME,
-        "move_arm",
-        None,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    let mut consumer_child = spawn_python_run(
-        &user_node_consumer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
-
-    let health_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        consumer_instance_id,
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        BRAIN_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        ACTION_CANCEL_ACCEPT_FLOW_DONE_SERVICE,
-        Some(consumer_instance_id),
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
-    let exposer_output = wait_for_child(
-        &mut exposer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_exposer,
-    );
-
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
+    let ConsumerExposerOutput {
         consumer_stdout,
-        consumer_stderr
-    );
+        exposer_stdout,
+        ..
+    } = run_move_arm_flow(
+        topology,
+        ACTION_CANCEL_ACCEPT_FLOW_DONE_SERVICE,
+        consumer_main,
+        exposer_main,
+    )
+    .await;
     assert!(
         consumer_stdout.contains("warmup feedback new_position=[1, 2, 3]"),
         "consumer did not receive warmup feedback before cancel.\nstdout:\n{}",
@@ -1440,15 +675,6 @@ if __name__ == "__main__":
         consumer_stdout
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
     assert!(
         exposer_stdout.contains("server observed cancel"),
         "exposer did not exercise the cancel-observed path.\nstdout:\n{}",
@@ -1487,77 +713,6 @@ if __name__ == "__main__":
 async fn actions_communication_cancel_reject_keeps_feedback_open(
     #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
-    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-
-    // --- Consumer (client) project
-    let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for consumer project");
-    let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
-    let goal_request_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let feedback_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
-    let result_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = ConsumedActionMessage {
-        goal_request: Some(goal_request_format),
-        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(feedback_format),
-        result_response: Some(result_response_format),
-    };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(
-            &temp_dir_consumer,
-            &python_consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    let flow_done_service: NativeExposedService =
-        serde_json5::from_str(EXPOSED_ACTION_CANCEL_REJECT_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    generator
-        .add_exposed_service(&flow_done_service, None)
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let consumer_runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
-        CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
-    let consumer_runtime_config = bind_slot(
-        consumer_runtime_config,
-        "brain",
-        TEST_CORE_NODE,
-        EXPOSER_INSTANCE_ID,
-    );
-    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
-
-    init_python_user_node(&user_node_consumer);
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
@@ -1607,44 +762,6 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_consumer.join("main.py");
-    fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
-
-    // --- Exposer (server) project
-    let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for exposer project");
-    let exposed_action: NativeExposedAction =
-        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let exposer_runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
-        BRAIN_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
-    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
-
-    init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -1684,122 +801,17 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_exposer.join("main.py");
-    fs::write(main_file, exposer_main).expect("failed to write exposer main.py");
-
-    init_python_project_venv(&user_node_consumer);
-    init_python_project_venv(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
-
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger for test control");
-
-    let mut exposer_child = spawn_python_run(
-        &user_node_exposer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
-    );
-
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_action_service_reachable_or_exit(
-        &action_ctx,
-        BRAIN_NODE_NAME,
-        "move_arm",
-        None,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    let mut consumer_child = spawn_python_run(
-        &user_node_consumer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
-
-    let health_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        consumer_instance_id,
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        BRAIN_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        ACTION_CANCEL_REJECT_FLOW_DONE_SERVICE,
-        Some(consumer_instance_id),
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
-    let exposer_output = wait_for_child(
-        &mut exposer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_exposer,
-    );
-
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
+    let ConsumerExposerOutput {
         consumer_stdout,
-        consumer_stderr
-    );
+        exposer_stdout,
+        ..
+    } = run_move_arm_flow(
+        topology,
+        ACTION_CANCEL_REJECT_FLOW_DONE_SERVICE,
+        consumer_main,
+        exposer_main,
+    )
+    .await;
     assert!(
         consumer_stdout.contains("pre_cancel feedback new_position=[1, 1, 1]"),
         "consumer did not receive pre-cancel feedback.\nstdout:\n{}",
@@ -1826,15 +838,6 @@ if __name__ == "__main__":
         consumer_stdout
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
     assert!(
         exposer_stdout.contains("server emitted pre-cancel feedback")
             && exposer_stdout.contains("server observed cancel but keeps going")
@@ -1875,77 +878,6 @@ if __name__ == "__main__":
 async fn actions_communication_drain_loop_until_end_signal(
     #[case] topology: crate::helpers::LocalNodesTopology,
 ) {
-    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-        .await
-        .expect("failed to start zenoh router for test");
-    let (router_host, router_port) = (instance.host.clone(), instance.port);
-
-    // --- Consumer (client) project
-    let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for consumer project");
-    let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
-    let goal_request_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let feedback_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
-    let result_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = ConsumedActionMessage {
-        goal_request: Some(goal_request_format),
-        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(feedback_format),
-        result_response: Some(result_response_format),
-    };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(
-            &temp_dir_consumer,
-            &python_consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    let flow_done_service: NativeExposedService =
-        serde_json5::from_str(EXPOSED_ACTION_DRAIN_LOOP_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    generator
-        .add_exposed_service(&flow_done_service, None)
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let consumer_runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
-        CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
-    let consumer_runtime_config = bind_slot(
-        consumer_runtime_config,
-        "brain",
-        TEST_CORE_NODE,
-        EXPOSER_INSTANCE_ID,
-    );
-    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
-
-    init_python_user_node(&user_node_consumer);
     let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
@@ -1991,44 +923,6 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_consumer.join("main.py");
-    fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
-
-    // --- Exposer (server) project
-    let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for exposer project");
-    let exposed_action: NativeExposedAction =
-        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let exposer_runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
-        BRAIN_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
-    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
-
-    init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -2065,122 +959,17 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_exposer.join("main.py");
-    fs::write(main_file, exposer_main).expect("failed to write exposer main.py");
-
-    init_python_project_venv(&user_node_consumer);
-    init_python_project_venv(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
-
-    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
-        .await
-        .expect("failed to create messenger for test control");
-
-    let mut exposer_child = spawn_python_run(
-        &user_node_exposer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
-    );
-
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_action_service_reachable_or_exit(
-        &action_ctx,
-        BRAIN_NODE_NAME,
-        "move_arm",
-        None,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    let mut consumer_child = spawn_python_run(
-        &user_node_consumer,
-        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
-
-    let health_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        consumer_instance_id,
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_health_service_reachable_or_exit(
-        &health_ctx,
-        BRAIN_NODE_NAME,
-        exposer_instance_id,
-        &mut exposer_child,
-        &user_node_exposer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-    wait_for_service_reachable_or_exit(
-        &health_ctx,
-        CONSUMER_NODE_NAME,
-        ACTION_DRAIN_LOOP_FLOW_DONE_SERVICE,
-        Some(consumer_instance_id),
-        &mut consumer_child,
-        &user_node_consumer,
-        DEFAULT_WAIT_TIMEOUT,
-    )
-    .await;
-
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-
-    let consumer_output = wait_for_child(
-        &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_consumer,
-    );
-    let exposer_output = wait_for_child(
-        &mut exposer_child,
-        Some(Duration::from_secs(10)),
-        &user_node_exposer,
-    );
-
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
+    let ConsumerExposerOutput {
         consumer_stdout,
-        consumer_stderr
-    );
+        exposer_stdout,
+        ..
+    } = run_move_arm_flow(
+        topology,
+        ACTION_DRAIN_LOOP_FLOW_DONE_SERVICE,
+        consumer_main,
+        exposer_main,
+    )
+    .await;
     assert!(
         consumer_stdout.contains("feedback #1 new_position=[0, 1, 2]")
             && consumer_stdout.contains("feedback #2 new_position=[1, 2, 3]")
@@ -2199,15 +988,6 @@ if __name__ == "__main__":
         consumer_stdout
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
     assert!(
         exposer_stdout.contains("server emitted feedback #3 position=[2, 3, 4]")
             && exposer_stdout.contains("server handled result request"),
@@ -2242,52 +1022,30 @@ async fn actions_communication_producer_killed_yields_connection_error_and_aband
 
     // --- Consumer (client) project
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
-    let goal_request_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
-    let feedback_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
-    let result_response_format: MessageFormat =
-        serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = ConsumedActionMessage {
-        goal_request: Some(goal_request_format),
-        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(feedback_format),
-        result_response: Some(result_response_format),
-    };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(
-            &temp_dir_consumer,
-            &python_consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let action_messages = consumed_move_arm_action_messages();
+    let user_node_consumer = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_consumer,
+        &python_consumer_stub_node_config("brain", "v1", "brain"),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &native_dep("brain", "v1", "brain"),
+                )
+                .unwrap();
+        },
     );
 
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        consumer_instance_id,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "brain",
@@ -2295,10 +1053,8 @@ async fn actions_communication_producer_killed_yields_connection_error_and_aband
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_python_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -2354,37 +1110,27 @@ if __name__ == "__main__":
     fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
 
     // --- Exposer (server) project
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_exposer,
+        STUB_PYTHON_NODE_CONFIG,
+        |generator| {
+            generator.add_exposed_action(&exposed_action, None).unwrap();
+        },
     );
 
-    let exposer_runtime_config = RuntimeConfig::new(
+    let exposer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(EXPOSER_INSTANCE_ID).unwrap()),
         BRAIN_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        EXPOSER_INSTANCE_ID,
+    );
     let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
 
     init_python_user_node(&user_node_exposer);
     // The worker never calls `ctx.complete(...)`: it streams feedback forever
@@ -2427,9 +1173,6 @@ if __name__ == "__main__":
     init_python_project_venv(&user_node_consumer);
     init_python_project_venv(&user_node_exposer);
 
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
-
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
@@ -2439,14 +1182,9 @@ if __name__ == "__main__":
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_service_reachable_or_exit(
-        &action_ctx,
+        &ctx,
         BRAIN_NODE_NAME,
         "move_arm",
         None,
@@ -2474,8 +1212,8 @@ if __name__ == "__main__":
     // exit status is deliberately not asserted: being killed is the point.
     // `spawn_python_run` wraps the node in `uv run`, and SIGKILLing only the
     // wrapper orphans the python node (it keeps running and publishing), so
-    // the node's own process must be killed first: take out every descendant
-    // of the wrapper, then the wrapper.
+    // the node's own process must be killed first: kill the wrapper's direct
+    // children (`pkill -P`), the node among them, then the wrapper.
     std::process::Command::new("pkill")
         .args(["-KILL", "-P", &exposer_child.id().to_string()])
         .status()
@@ -2503,15 +1241,8 @@ if __name__ == "__main__":
 
     let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, consumer_stderr) =
+        assert_exited_successfully("consumer process", &consumer_output);
     assert!(
         consumer_stdout.contains("FEEDBACK_PRODUCER_GONE"),
         "consumer drain did not raise ConnectionError for the killed producer.\nstdout:\n{}\nstderr:\n{}",
@@ -2569,58 +1300,42 @@ async fn actions_communication_via_contract_slot(
 
     // --- Consumer (client) project: one contract slot, bound to the exposer.
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction =
         serde_json5::from_str(CONSUMED_ACTION_CONTRACT_EXAMPLE).unwrap();
-    let action_messages = ConsumedActionMessage {
-        goal_request: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap()),
-        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap()),
-        result_response: Some(serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap()),
-    };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(
-            &temp_dir_consumer,
-            &contract_consumer_stub_node_config(
-                ARM_CONTRACT_NAME,
-                "v1",
-                "arm",
-                "one",
-                PYTHON_STUB_EXECUTION,
-            ),
-        );
+    let action_messages = consumed_move_arm_action_messages();
     let flow_done_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CONTRACT_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &contract_dep(ARM_CONTRACT_NAME, "v1", "arm"),
-        )
-        .unwrap();
-    generator
-        .add_exposed_service(&flow_done_service, None)
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_consumer,
+        &contract_consumer_stub_node_config(
+            ARM_CONTRACT_NAME,
+            "v1",
+            "arm",
+            "one",
+            PYTHON_STUB_EXECUTION,
+        ),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &contract_dep(ARM_CONTRACT_NAME, "v1", "arm"),
+                )
+                .unwrap();
+            generator
+                .add_exposed_service(&flow_done_service, None)
+                .unwrap();
+        },
     );
 
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        consumer_instance_id,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "arm",
@@ -2628,10 +1343,8 @@ async fn actions_communication_via_contract_slot(
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_python_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -2703,46 +1416,36 @@ if __name__ == "__main__":
     // --- Exposer (server) project: exposes the action through a
     // `manifest.implements`-shaped contract origin.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator
-        .add_exposed_action(
-            &exposed_action,
-            Some(&ContractOrigin {
-                link_id: "arm_impl".to_string(),
-                contract_name: ARM_CONTRACT_NAME.to_string(),
-                contract_tag: "v1".to_string(),
-            }),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_exposer,
+        STUB_PYTHON_NODE_CONFIG,
+        |generator| {
+            generator
+                .add_exposed_action(
+                    &exposed_action,
+                    Some(&ContractOrigin {
+                        link_id: "arm_impl".to_string(),
+                        contract_name: ARM_CONTRACT_NAME.to_string(),
+                        contract_tag: "v1".to_string(),
+                    }),
+                )
+                .unwrap();
+        },
     );
 
-    let exposer_runtime_config = RuntimeConfig::new(
+    let exposer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         ARM_SERVER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        exposer_instance_id,
+    );
     let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
 
     init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
@@ -2793,9 +1496,6 @@ if __name__ == "__main__":
     init_python_project_venv(&user_node_consumer);
     init_python_project_venv(&user_node_exposer);
 
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
-
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
@@ -2807,12 +1507,7 @@ if __name__ == "__main__":
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_reachable_via_target_or_exit(
         &ctx,
         test_contract_target(ARM_CONTRACT_NAME),
@@ -2858,26 +1553,8 @@ if __name__ == "__main__":
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        ARM_SERVER_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, ARM_SERVER_NODE_NAME, exposer_instance_id).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,
@@ -2890,15 +1567,8 @@ if __name__ == "__main__":
         &user_node_exposer,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, consumer_stderr) =
+        assert_exited_successfully("consumer process", &consumer_output);
     assert!(
         consumer_stdout.contains("rejected goal accepted=False reason=arm 99 is reserved")
             && consumer_stdout.contains("goal accepted=True data_accepted=True")
@@ -2912,15 +1582,8 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
+    let (exposer_stdout, exposer_stderr) =
+        assert_exited_successfully("exposer process", &exposer_output);
     assert!(
         exposer_stdout.contains("server received goal arm_id=99 desired=[0, 0, 0]")
             && exposer_stdout.contains("server received goal arm_id=7 desired=[10, 20, 30]")
@@ -2933,8 +1596,6 @@ if __name__ == "__main__":
         exposer_stderr
     );
 }
-
-use crate::helpers::{JOINTS_CONTRACT_ACTION, JOINTS_CONTRACT_NAME, JOINTS_REFINEMENT};
 
 const JOINTS_FLOW_DONE_SERVICE: &str = "joints_flow_done";
 
@@ -2964,53 +1625,42 @@ async fn actions_refined_producer_interoperates_with_generic_consumer() {
     // --- Consumer (client) project: the contract member as written, plus a
     // service whose first call tells the test the flow has run.
     let consumer_instance_id = CONSUMER_INSTANCE_ID;
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_consumer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for consumer project");
     let consumed_action: ConsumedAction =
         serde_json5::from_str(r#"{ link_id: "arm", name: "move_arm_joints" }"#).unwrap();
     let action_messages = ConsumedActionMessage::from(&contract_action);
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(
-            &temp_dir_consumer,
-            &contract_consumer_stub_node_config(
-                JOINTS_CONTRACT_NAME,
-                "v1",
-                "arm",
-                "one",
-                PYTHON_STUB_EXECUTION,
-            ),
-        );
     let flow_done_service: NativeExposedService =
         serde_json5::from_str(&format!(r#"{{ name: "{JOINTS_FLOW_DONE_SERVICE}" }}"#)).unwrap();
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &contract_dep(JOINTS_CONTRACT_NAME, "v1", "arm"),
-        )
-        .unwrap();
-    generator
-        .add_exposed_service(&flow_done_service, None)
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_consumer,
+        &contract_consumer_stub_node_config(
+            JOINTS_CONTRACT_NAME,
+            "v1",
+            "arm",
+            "one",
+            PYTHON_STUB_EXECUTION,
+        ),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &contract_dep(JOINTS_CONTRACT_NAME, "v1", "arm"),
+                )
+                .unwrap();
+            generator
+                .add_exposed_service(&flow_done_service, None)
+                .unwrap();
+        },
     );
 
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        consumer_instance_id,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "arm",
@@ -3018,10 +1668,8 @@ async fn actions_refined_producer_interoperates_with_generic_consumer() {
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_python_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -3075,7 +1723,7 @@ if __name__ == "__main__":
     // --- Exposer (server) project: the same member with the implementer's
     // `refine` block applied, under a `manifest.implements`-shaped origin.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
-    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+    let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
     use config::node::Refines;
     let refinement: config::node::ActionRefinement =
@@ -3083,42 +1731,32 @@ if __name__ == "__main__":
     let exposed_action = refinement
         .apply(contract_action)
         .expect("the contract member admits both pins");
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
-    generator
-        .add_exposed_action(
-            &exposed_action,
-            Some(&ContractOrigin {
-                link_id: "arm_impl".to_string(),
-                contract_name: JOINTS_CONTRACT_NAME.to_string(),
-                contract_tag: "v1".to_string(),
-            }),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::PythonGenerator>(
+        &temp_dir_exposer,
+        STUB_PYTHON_NODE_CONFIG,
+        |generator| {
+            generator
+                .add_exposed_action(
+                    &exposed_action,
+                    Some(&ContractOrigin {
+                        link_id: "arm_impl".to_string(),
+                        contract_name: JOINTS_CONTRACT_NAME.to_string(),
+                        contract_tag: "v1".to_string(),
+                    }),
+                )
+                .unwrap();
+        },
     );
 
-    let exposer_runtime_config = RuntimeConfig::new(
+    let exposer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         ARM_SERVER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        exposer_instance_id,
+    );
     let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
 
     init_python_user_node(&user_node_exposer);
     let exposer_main = r#"
@@ -3160,9 +1798,6 @@ if __name__ == "__main__":
     init_python_project_venv(&user_node_consumer);
     init_python_project_venv(&user_node_exposer);
 
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
-
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
@@ -3172,12 +1807,7 @@ if __name__ == "__main__":
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_reachable_via_target_or_exit(
         &ctx,
         test_contract_target(JOINTS_CONTRACT_NAME),
@@ -3223,26 +1853,8 @@ if __name__ == "__main__":
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        ARM_SERVER_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, ARM_SERVER_NODE_NAME, exposer_instance_id).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,
@@ -3255,15 +1867,8 @@ if __name__ == "__main__":
         &user_node_exposer,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, consumer_stderr) =
+        assert_exited_successfully("consumer process", &consumer_output);
     for needle in [
         "goal 1 accepted=True",
         "result 1 success=True final=[1.0, 2.0, 3.0]",
@@ -3278,15 +1883,8 @@ if __name__ == "__main__":
         );
     }
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
+    let (exposer_stdout, exposer_stderr) =
+        assert_exited_successfully("exposer process", &exposer_output);
     assert!(
         exposer_stdout.contains("server received goal arm_id=1 joints=[0.1, 0.2, 0.3]")
             && exposer_stdout.contains("server received goal arm_id=3 joints=[0.4, 0.5, 0.6]")

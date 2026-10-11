@@ -10,20 +10,19 @@
 //! Mirrors `rust/mock.rs` semantically; the flat-file shape (Python has no
 //! nested modules inside one file) flattens the Rust sub-modules into
 //! `<Camel(member)>Publisher` / `Service` / `Action` classes and
-//! member-prefixed codec/​re-export names.
+//! member-prefixed codec/re-export names.
 
-use super::super::naming::to_camel_case;
+use super::super::naming::{claim_sanitized_name, to_camel_case};
 use super::super::testgen::{
     DepActionSpec, DepLinkSpec, DepServiceSpec, DepTopicSpec, MOCK_CORE_NODE, MOCK_PEER_LINK_ID,
     MOCK_SOURCE_LINK_ID, ObservedLinkSpec, PairTopicSpec, PairingLinkSpec, TargetSpec,
-    TestGenRegistry, claim_sanitized_name, dep_member_name, mock_instance_id,
-    reserved_member_owners,
+    TestGenRegistry, dep_member_name, mock_instance_id, reserved_member_owners,
 };
 use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass};
 use super::deserialization;
 use super::scaffold::sanitize_python_module_name;
 use super::serialization;
-use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
+use super::topics::{emit_capnp_loader_fn, emit_capnp_preamble};
 use super::type_mapping::{qos_profile_python, retention_python};
 use super::{PythonGenerator, PythonSchemaInfo};
 use crate::error::Result;
@@ -77,12 +76,12 @@ pub(super) fn target_python_expr(target: &TargetSpec) -> String {
 /// Dotted import path of a production generated module:
 /// `peppygen.<category>.<segments…>`, each segment sanitized exactly like the
 /// tree writer sanitizes the on-disk module names.
-pub(super) fn production_module_path(category: &str, segments: &[&str]) -> String {
+pub(super) fn production_module_path<S: AsRef<str>>(category: &str, segments: &[S]) -> String {
     let mut parts = vec!["peppygen".to_string(), category.to_string()];
     parts.extend(
         segments
             .iter()
-            .map(|segment| sanitize_python_module_name(segment)),
+            .map(|segment| sanitize_python_module_name(segment.as_ref())),
     );
     parts.join(".")
 }
@@ -142,19 +141,7 @@ pub(super) fn emit_value_serializer(
     builder.block(
         &format!("def {fn_name}(value: {value_type}) -> bytes:"),
         |builder| {
-            builder.line(&format!(
-                "capnp_msg = {}().{}.new_message()",
-                capnp_loader_fn_name(&info),
-                info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(
-                builder,
-                "capnp_msg",
-                format,
-                "value",
-                &mut counter,
-            );
+            serialization::emit_new_capnp_message(builder, &info, format, "value");
             builder.line("return capnp_msg.to_bytes()");
         },
     );
@@ -177,14 +164,7 @@ pub(super) fn emit_value_deserializer(
     struct_prefix: &str,
 ) -> Result<()> {
     let info = register_with_loader(generator, builder, emitted_loaders, schema_key, format)?;
-    deserialization::build_deserialize_fn(
-        builder,
-        &info,
-        format,
-        struct_prefix,
-        &format!("{}()", capnp_loader_fn_name(&info)),
-        fn_name,
-    );
+    deserialization::build_deserialize_fn(builder, &info, format, struct_prefix, fn_name);
     builder.blank_line();
     Ok(())
 }
@@ -203,14 +183,7 @@ pub(super) fn emit_local_message_with_deserializer(
 ) -> Result<()> {
     let info = register_with_loader(generator, builder, emitted_loaders, schema_key, format)?;
     emit_format_as_dataclass(builder, class_name, format)?;
-    deserialization::build_deserialize_fn(
-        builder,
-        &info,
-        format,
-        class_name,
-        &format!("{}()", capnp_loader_fn_name(&info)),
-        fn_name,
-    );
+    deserialization::build_deserialize_fn(builder, &info, format, class_name, fn_name);
     builder.blank_line();
     Ok(())
 }
@@ -229,7 +202,6 @@ struct MockMember {
 }
 
 /// Emits the shared `Mock` aggregate class from its member list.
-#[allow(clippy::too_many_arguments)]
 fn emit_mock_class(
     builder: &mut PythonCodeBuilder,
     doc: &str,
@@ -349,7 +321,6 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
             generator,
             &mut builder,
             &mut loaders,
-            link_id,
             topic,
             &target,
             attr,
@@ -362,7 +333,6 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
             generator,
             &mut builder,
             &mut loaders,
-            link_id,
             &spec.producer_name,
             service,
             &target,
@@ -376,7 +346,6 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
             generator,
             &mut builder,
             &mut loaders,
-            link_id,
             &spec.producer_name,
             action,
             &target,
@@ -412,35 +381,98 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
     Ok(format!("\"\"\"{module_doc}\"\"\"\n\n{}", builder.build()))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_dep_topic(
     generator: &mut PythonGenerator,
     builder: &mut PythonCodeBuilder,
     loaders: &mut HashSet<String>,
-    _link_id: &str,
     spec: &DepTopicSpec,
     target: &str,
     attr: String,
 ) -> Result<MockMember> {
     let topic_name = spec.name.as_str();
-    let production = production_module_path("consumed_topics", &[&spec.module_link, topic_name]);
-    let alias = format!("_{attr}");
-    builder.add_import(&production_import_line(&production, &alias));
-    let camel = to_camel_case(&attr);
     // `module_link` is the slot's consumer-side link_id, the same value
     // `add_consumed_topic` keys the schema on. The mock must pass exactly what
     // the consumer passes so both resolve one per-slot capnp file (and the
     // `register_schema` mismatch guard sees identical text, not a collision).
     let schema_key =
         crate::generator::naming::consumed_topic_schema_key(&spec.module_link, topic_name);
+    emit_publisher_member(
+        generator,
+        builder,
+        loaders,
+        attr,
+        PublisherVeneer {
+            production: production_module_path(
+                "consumed_topics",
+                &[spec.module_link.as_str(), topic_name],
+            ),
+            schema_key,
+            format: &spec.format,
+            class_doc: format!(
+                "Typed mock publisher for the consumed topic `{topic_name}`: publishes over \
+                 the real wire as this mock's identity; the first publish waits for the node's \
+                 subscription to match (no sleeps), and no subscriber within the readiness \
+                 timeout is a loud error."
+            ),
+            declare_params: "session, instance_id",
+            declare_call: "core = await peppylib.testing.TestTopicPublisher.declare(",
+            declare_args: vec![
+                "session,".to_string(),
+                "MOCK_CORE_NODE,".to_string(),
+                "instance_id,".to_string(),
+                format!("{target},"),
+                format!("{topic_name:?},"),
+                "peppylib.QoSProfile.Standard,".to_string(),
+                format!("retention={},", retention_python(spec.retention)),
+            ],
+            publish_doc: "Publishes one typed message; lazily waits for the node's subscription \
+                          before the first delivery.",
+            wait_doc: "Waits until the node's subscription for this topic is visible; returns \
+                       whether it matched within `timeout`.",
+        },
+    )
+}
+
+/// What differs between the publisher members of the dependency, pairing
+/// peer and observed source mocks. Every text is emitted verbatim.
+struct PublisherVeneer<'a> {
+    /// Dotted path of the production module whose `Message` is published.
+    production: String,
+    /// The production schema key the serializer registers on.
+    schema_key: String,
+    format: &'a MessageFormat,
+    class_doc: String,
+    /// The parameters of `_declare` after `cls`, which `Mock.start` passes
+    /// in the same order.
+    declare_params: &'static str,
+    /// The opening line of the `peppylib.testing.TestTopicPublisher` call.
+    declare_call: &'static str,
+    declare_args: Vec<String>,
+    publish_doc: &'static str,
+    wait_doc: &'static str,
+}
+
+/// Emits a typed publisher member over `peppylib.testing.TestTopicPublisher`:
+/// the serializer on the production schema key, the re-exported production
+/// `Message`, and the `<Camel>Publisher` class `Mock.start` declares.
+fn emit_publisher_member(
+    generator: &mut PythonGenerator,
+    builder: &mut PythonCodeBuilder,
+    loaders: &mut HashSet<String>,
+    attr: String,
+    veneer: PublisherVeneer<'_>,
+) -> Result<MockMember> {
+    let alias = format!("_{attr}");
+    builder.add_import(&production_import_line(&veneer.production, &alias));
+    let camel = to_camel_case(&attr);
     let serialize_fn = format!("_serialize_{attr}_message");
     emit_value_serializer(
         generator,
         builder,
         loaders,
         &serialize_fn,
-        &schema_key,
-        &spec.format,
+        &veneer.schema_key,
+        veneer.format,
         &format!("{alias}.Message"),
     )?;
 
@@ -449,13 +481,10 @@ fn render_dep_topic(
     builder.line(&format!("{camel}Message = {alias}.Message"));
     builder.blank_line();
 
+    let declare_params = veneer.declare_params;
+    let declare_args: Vec<&str> = veneer.declare_args.iter().map(String::as_str).collect();
     builder.block(&format!("class {camel}Publisher:"), |builder| {
-        builder.docstring(&format!(
-            "Typed mock publisher for the consumed topic `{topic_name}`: publishes over \
-             the real wire as this mock's identity; the first publish waits for the node's \
-             subscription to match (no sleeps), and no subscriber within the readiness \
-             timeout is a loud error."
-        ));
+        builder.docstring(&veneer.class_doc);
         builder.blank_line();
         builder.py(r#"
 def __init__(self, core) -> None:
@@ -464,21 +493,9 @@ def __init__(self, core) -> None:
         builder.blank_line();
         builder.line("@classmethod");
         builder.block(
-            "async def _declare(cls, session, instance_id):",
+            &format!("async def _declare(cls, {declare_params}):"),
             |builder| {
-                builder.call(
-                    "core = await peppylib.testing.TestTopicPublisher.declare(",
-                    &[
-                        "session,",
-                        "MOCK_CORE_NODE,",
-                        "instance_id,",
-                        &format!("{target},"),
-                        &format!("{topic_name:?},"),
-                        "peppylib.QoSProfile.Standard,",
-                        &format!("retention={},", retention_python(spec.retention)),
-                    ],
-                    ")",
-                );
+                builder.call(veneer.declare_call, &declare_args, ")");
                 builder.line("return cls(core)");
             },
         );
@@ -486,10 +503,7 @@ def __init__(self, core) -> None:
         builder.block(
             &format!("async def publish(self, message: {alias}.Message) -> None:"),
             |builder| {
-                builder.docstring(
-                    "Publishes one typed message; lazily waits for the node's subscription \
-                     before the first delivery.",
-                );
+                builder.docstring(veneer.publish_doc);
                 builder.line(&format!(
                     "await self._core.publish({serialize_fn}(message))"
                 ));
@@ -499,10 +513,7 @@ def __init__(self, core) -> None:
         builder.block(
             "async def wait_for_subscriber(self, timeout: float) -> bool:",
             |builder| {
-                builder.docstring(
-                    "Waits until the node's subscription for this topic is visible; returns \
-                     whether it matched within `timeout`.",
-                );
+                builder.docstring(veneer.wait_doc);
                 builder.line("return await self._core.wait_for_subscriber(timeout)");
             },
         );
@@ -510,27 +521,27 @@ def __init__(self, core) -> None:
     builder.blank_line();
 
     Ok(MockMember {
-        construct: format!("{attr} = await {camel}Publisher._declare(session, instance_id)"),
+        construct: format!("{attr} = await {camel}Publisher._declare({declare_params})"),
         attr,
         action_stop: None,
         service_close: None,
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_dep_service(
     generator: &mut PythonGenerator,
     builder: &mut PythonCodeBuilder,
     loaders: &mut HashSet<String>,
-    _link_id: &str,
     producer_name: &str,
     spec: &DepServiceSpec,
     target: &str,
     attr: String,
 ) -> Result<MockMember> {
     let service_name = spec.name.as_str();
-    let production =
-        production_module_path("consumed_services", &[&spec.module_link, service_name]);
+    let production = production_module_path(
+        "consumed_services",
+        &[spec.module_link.as_str(), service_name],
+    );
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&production, &alias));
     let camel = to_camel_case(&attr);
@@ -568,9 +579,11 @@ fn render_dep_service(
         builder.blank_line();
     }
 
-    let (response_param, response_payload) = if spec.response.is_some() {
+    // A response-less service takes no `response` parameter at all, so the
+    // parameter list is spliced rather than each signature written twice.
+    let (response_arg, response_payload) = if spec.response.is_some() {
         (
-            format!("response: {alias}.ResponseData"),
+            format!(", response: {alias}.ResponseData"),
             format!("{serialize_fn}(response)"),
         )
     } else {
@@ -579,13 +592,6 @@ fn render_dep_service(
 
     // Responder first, so the Service annotations referencing it resolve at
     // definition time.
-    // A response-less service takes no `response` parameter at all, so the
-    // parameter list is spliced rather than each signature written twice.
-    let response_arg = if response_param.is_empty() {
-        String::new()
-    } else {
-        format!(", {response_param}")
-    };
     builder.block(&format!("class {camel}Responder:"), |builder| {
         builder.docstring("Answers exactly one parked request; consumed by use.");
         builder.blank_line();
@@ -733,19 +739,20 @@ def __init__(self, core) -> None:
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_dep_action(
     generator: &mut PythonGenerator,
     builder: &mut PythonCodeBuilder,
     loaders: &mut HashSet<String>,
-    _link_id: &str,
     producer_name: &str,
     spec: &DepActionSpec,
     target: &str,
     attr: String,
 ) -> Result<MockMember> {
     let action_name = spec.name.as_str();
-    let production = production_module_path("consumed_actions", &[&spec.module_link, action_name]);
+    let production = production_module_path(
+        "consumed_actions",
+        &[spec.module_link.as_str(), action_name],
+    );
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&production, &alias));
     let camel = to_camel_case(&attr);
@@ -814,9 +821,11 @@ fn render_dep_action(
         builder.blank_line();
     }
 
-    let (complete_param, complete_payload) = if spec.messages.result_response.is_some() {
+    // A result-less action takes no `result` parameter at all, so the
+    // parameter list is spliced rather than each signature written twice.
+    let (complete_arg, complete_payload) = if spec.messages.result_response.is_some() {
         (
-            format!("result: {alias}.ResultResponseData"),
+            format!(", result: {alias}.ResultResponseData"),
             format!("{serialize_result_fn}(result)"),
         )
     } else {
@@ -825,13 +834,6 @@ fn render_dep_action(
 
     // ActiveGoal first, then PendingGoal, then Action: annotations resolve at
     // definition time without forward references.
-    // A result-less action takes no `result` parameter at all, so the
-    // parameter list is spliced rather than each signature written twice.
-    let complete_arg = if complete_param.is_empty() {
-        String::new()
-    } else {
-        format!(", {complete_param}")
-    };
     builder.block(&format!("class {camel}ActiveGoal:"), |builder| {
         builder.docstring("An accepted goal: drives feedback and terminal completion.");
         builder.blank_line();
@@ -864,12 +866,10 @@ def __init__(self, context) -> None:
             builder.line("return self._context.is_cancelled()");
         });
         builder.blank_line();
-        for method in ["complete", "complete_cancelled"] {
-            let doc = if method == "complete" {
-                "Completes the goal successfully."
-            } else {
-                "Completes the goal as cancelled."
-            };
+        for (method, doc) in [
+            ("complete", "Completes the goal successfully."),
+            ("complete_cancelled", "Completes the goal as cancelled."),
+        ] {
             builder.block(
                 &format!("async def {method}(self{complete_arg}) -> None:"),
                 |builder| {
@@ -1149,91 +1149,39 @@ fn render_pair_publisher(
     attr: String,
 ) -> Result<MockMember> {
     let topic_name = spec.name.as_str();
-    let production = production_module_path("paired_topics", &[link_id, topic_name]);
-    let alias = format!("_{attr}");
-    builder.add_import(&production_import_line(&production, &alias));
-    let camel = to_camel_case(&attr);
-    let schema_key = crate::generator::naming::peer_schema_key(link_id, topic_name);
     let qos = qos_profile_python(&spec.qos);
-    let serialize_fn = format!("_serialize_{attr}_message");
-    emit_value_serializer(
+    emit_publisher_member(
         generator,
         builder,
         loaders,
-        &serialize_fn,
-        &schema_key,
-        &spec.format,
-        &format!("{alias}.Message"),
-    )?;
-    builder.line(&format!("{camel}Message = {alias}.Message"));
-    builder.blank_line();
-
-    builder.block(&format!("class {camel}Publisher:"), |builder| {
-        builder.docstring(&format!(
-            "Typed peer publisher for `{topic_name}` (the node consumes this \
-             direction): publishes from the mock peer's slot to the node's slot, so \
-             the node's pinned subscription receives it."
-        ));
-        builder.blank_line();
-        builder.py(r#"
-def __init__(self, core) -> None:
-    self._core = core
-"#);
-        builder.blank_line();
-        builder.line("@classmethod");
-        builder.block(
-            "async def _declare(cls, session, instance_id, node):",
-            |builder| {
-                builder.call(
-                    "core = await peppylib.testing.TestTopicPublisher.declare_to_peer(",
-                    &[
-                        "session,",
-                        "MOCK_CORE_NODE,",
-                        "instance_id,",
-                        &format!("{pairing_target},"),
-                        "PEER_LINK_ID,",
-                        &format!("{topic_name:?},"),
-                        &format!("{qos},"),
-                        "node,",
-                    ],
-                    ")",
-                );
-                builder.line("return cls(core)");
-            },
-        );
-        builder.blank_line();
-        builder.block(
-            &format!("async def publish(self, message: {alias}.Message) -> None:"),
-            |builder| {
-                builder.docstring(
-                    "Publishes one typed message; lazily waits for the node's pinned \
-                     subscription before the first delivery.",
-                );
-                builder.line(&format!(
-                    "await self._core.publish({serialize_fn}(message))"
-                ));
-            },
-        );
-        builder.blank_line();
-        builder.block(
-            "async def wait_for_subscriber(self, timeout: float) -> bool:",
-            |builder| {
-                builder.docstring(
-                    "Waits until the node's pinned subscription is visible; returns whether \
-                     it matched within `timeout`.",
-                );
-                builder.line("return await self._core.wait_for_subscriber(timeout)");
-            },
-        );
-    });
-    builder.blank_line();
-
-    Ok(MockMember {
-        construct: format!("{attr} = await {camel}Publisher._declare(session, instance_id, node)"),
         attr,
-        action_stop: None,
-        service_close: None,
-    })
+        PublisherVeneer {
+            production: production_module_path("paired_topics", &[link_id, topic_name]),
+            schema_key: crate::generator::naming::peer_schema_key(link_id, topic_name),
+            format: &spec.format,
+            class_doc: format!(
+                "Typed peer publisher for `{topic_name}` (the node consumes this \
+                 direction): publishes from the mock peer's slot to the node's slot, so \
+                 the node's pinned subscription receives it."
+            ),
+            declare_params: "session, instance_id, node",
+            declare_call: "core = await peppylib.testing.TestTopicPublisher.declare_to_peer(",
+            declare_args: vec![
+                "session,".to_string(),
+                "MOCK_CORE_NODE,".to_string(),
+                "instance_id,".to_string(),
+                format!("{pairing_target},"),
+                "PEER_LINK_ID,".to_string(),
+                format!("{topic_name:?},"),
+                format!("{qos},"),
+                "node,".to_string(),
+            ],
+            publish_doc: "Publishes one typed message; lazily waits for the node's pinned \
+                          subscription before the first delivery.",
+            wait_doc: "Waits until the node's pinned subscription is visible; returns whether \
+                       it matched within `timeout`.",
+        },
+    )
 }
 
 fn render_pair_subscription(
@@ -1443,89 +1391,37 @@ fn render_observed_publisher(
     attr: String,
 ) -> Result<MockMember> {
     let topic_name = spec.name.as_str();
-    let production = production_module_path("paired_topics", &[link_id, topic_name]);
-    let alias = format!("_{attr}");
-    builder.add_import(&production_import_line(&production, &alias));
-    let camel = to_camel_case(&attr);
-    let schema_key = crate::generator::naming::peer_schema_key(link_id, topic_name);
     let qos = qos_profile_python(&spec.qos);
-    let serialize_fn = format!("_serialize_{attr}_message");
-    emit_value_serializer(
+    emit_publisher_member(
         generator,
         builder,
         loaders,
-        &serialize_fn,
-        &schema_key,
-        &spec.format,
-        &format!("{alias}.Message"),
-    )?;
-    builder.line(&format!("{camel}Message = {alias}.Message"));
-    builder.blank_line();
-
-    builder.block(&format!("class {camel}Publisher:"), |builder| {
-        builder.docstring(&format!(
-            "Typed source publisher for the observed topic `{topic_name}`: publishes \
-             from the mock source's slot to its own peer, so the node's \
-             generation-checked observation subscription receives it."
-        ));
-        builder.blank_line();
-        builder.py(r#"
-def __init__(self, core) -> None:
-    self._core = core
-"#);
-        builder.blank_line();
-        builder.line("@classmethod");
-        builder.block(
-            "async def _declare(cls, session, instance_id):",
-            |builder| {
-                builder.call(
-                    "core = await peppylib.testing.TestTopicPublisher.declare_to_peer(",
-                    &[
-                        "session,",
-                        "MOCK_CORE_NODE,",
-                        "instance_id,",
-                        &format!("{pairing_target},"),
-                        "SOURCE_LINK_ID,",
-                        &format!("{topic_name:?},"),
-                        &format!("{qos},"),
-                        "peer_of(instance_id),",
-                    ],
-                    ")",
-                );
-                builder.line("return cls(core)");
-            },
-        );
-        builder.blank_line();
-        builder.block(
-            &format!("async def publish(self, message: {alias}.Message) -> None:"),
-            |builder| {
-                builder.docstring(
-                    "Publishes one typed message; lazily waits for the node's observation \
-                     subscription before the first delivery.",
-                );
-                builder.line(&format!(
-                    "await self._core.publish({serialize_fn}(message))"
-                ));
-            },
-        );
-        builder.blank_line();
-        builder.block(
-            "async def wait_for_subscriber(self, timeout: float) -> bool:",
-            |builder| {
-                builder.docstring(
-                    "Waits until the node's observation subscription is visible; returns \
-                     whether it matched within `timeout`.",
-                );
-                builder.line("return await self._core.wait_for_subscriber(timeout)");
-            },
-        );
-    });
-    builder.blank_line();
-
-    Ok(MockMember {
-        construct: format!("{attr} = await {camel}Publisher._declare(session, instance_id)"),
         attr,
-        action_stop: None,
-        service_close: None,
-    })
+        PublisherVeneer {
+            production: production_module_path("paired_topics", &[link_id, topic_name]),
+            schema_key: crate::generator::naming::peer_schema_key(link_id, topic_name),
+            format: &spec.format,
+            class_doc: format!(
+                "Typed source publisher for the observed topic `{topic_name}`: publishes \
+                 from the mock source's slot to its own peer, so the node's \
+                 generation-checked observation subscription receives it."
+            ),
+            declare_params: "session, instance_id",
+            declare_call: "core = await peppylib.testing.TestTopicPublisher.declare_to_peer(",
+            declare_args: vec![
+                "session,".to_string(),
+                "MOCK_CORE_NODE,".to_string(),
+                "instance_id,".to_string(),
+                format!("{pairing_target},"),
+                "SOURCE_LINK_ID,".to_string(),
+                format!("{topic_name:?},"),
+                format!("{qos},"),
+                "peer_of(instance_id),".to_string(),
+            ],
+            publish_doc: "Publishes one typed message; lazily waits for the node's observation \
+                          subscription before the first delivery.",
+            wait_doc: "Waits until the node's observation subscription is visible; returns \
+                       whether it matched within `timeout`.",
+        },
+    )
 }

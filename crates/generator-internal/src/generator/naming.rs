@@ -1,5 +1,9 @@
 //! Shared naming utilities used by both Rust and Python generators.
 
+use std::collections::HashMap;
+
+use crate::error::{Error, Result};
+
 /// Converts a raw string to a sanitized snake_case identifier component.
 ///
 /// - Non-alphanumeric characters are replaced with underscores
@@ -18,8 +22,6 @@ pub(crate) fn sanitize_component(raw: &str) -> String {
         } else if !out.is_empty() && !last_was_underscore {
             out.push('_');
             last_was_underscore = true;
-        } else if out.is_empty() {
-            last_was_underscore = true;
         }
     }
 
@@ -27,11 +29,7 @@ pub(crate) fn sanitize_component(raw: &str) -> String {
         out.pop();
     }
 
-    if out.is_empty() {
-        return String::new();
-    }
-
-    if matches!(out.chars().next(), Some(c) if c.is_ascii_digit()) {
+    if out.starts_with(|ch: char| ch.is_ascii_digit()) {
         out.insert(0, '_');
     }
 
@@ -39,21 +37,12 @@ pub(crate) fn sanitize_component(raw: &str) -> String {
 }
 
 /// Sanitizes a contract tag for use as a generated module segment and as a
-/// Zenoh wire-path segment. Currently this is just a hyphen→underscore
-/// conversion; the rest of [`sanitize_component`]'s heuristics would lose
-/// information (e.g. case) without buying us anything, since interface tags
-/// are already constrained to letters/digits/underscores/hyphens.
+/// Zenoh wire-path segment: it converts hyphens to underscores and nothing
+/// else. The rest of [`sanitize_component`]'s heuristics would lose
+/// information (e.g. case) for no gain, since interface tags are constrained
+/// to letters, digits, underscores and hyphens.
 pub(crate) fn sanitize_contract_tag(raw: &str) -> String {
     raw.replace('-', "_")
-}
-
-/// Returns `None` when the trimmed string is empty, otherwise `Some(value)`.
-pub(crate) fn non_empty_str(value: &str) -> Option<&str> {
-    if value.trim().is_empty() {
-        None
-    } else {
-        Some(value)
-    }
 }
 
 /// Converts a CamelCase or mixed-case string to snake_case.
@@ -64,11 +53,7 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
 
     while let Some(ch) = chars.next() {
         if ch.is_ascii_uppercase() {
-            let next_is_lower = chars
-                .peek()
-                .copied()
-                .map(|next| next.is_ascii_lowercase())
-                .unwrap_or(false);
+            let next_is_lower = chars.peek().is_some_and(char::is_ascii_lowercase);
             if !result.is_empty()
                 && (prev_was_lower_or_digit || next_is_lower)
                 && !result.ends_with('_')
@@ -79,7 +64,7 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
             prev_was_lower_or_digit = false;
         } else if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
             result.push(ch);
-            prev_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+            prev_was_lower_or_digit = true;
         } else {
             if !result.ends_with('_') && !result.is_empty() {
                 result.push('_');
@@ -96,12 +81,7 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
         return String::from("message");
     }
 
-    if result
-        .chars()
-        .next()
-        .map(|ch| ch.is_ascii_digit())
-        .unwrap_or(false)
-    {
+    if result.starts_with(|ch: char| ch.is_ascii_digit()) {
         result.insert(0, '_');
     }
 
@@ -137,6 +117,18 @@ pub(crate) fn array_item_type_name(struct_prefix: &str, field_name: &str) -> Str
     )
 }
 
+/// Returns the CamelCase type/class name of a nested object field, which
+/// continues its parent's prefix. E.g. `("Message", "frame_header")` →
+/// `"MessageFrameHeader"`.
+///
+/// The Rust and Python generators name the nested types they emit through
+/// this function, and `types::validate_generated_type_name_collisions`
+/// checks the names it returns, so a name the check accepts is the name the
+/// generated code declares.
+pub(crate) fn nested_type_name(struct_prefix: &str, field_name: &str) -> String {
+    format!("{struct_prefix}{}", to_camel_case(field_name))
+}
+
 /// Converts a snake_case or raw string to CamelCase.
 pub(crate) fn to_camel_case(raw: &str) -> String {
     let sanitized = sanitize_component(raw);
@@ -154,12 +146,7 @@ pub(crate) fn to_camel_case(raw: &str) -> String {
         out.push_str("Item");
     }
 
-    if !out
-        .chars()
-        .next()
-        .map(|ch| ch.is_ascii_alphabetic())
-        .unwrap_or(true)
-    {
+    if out.starts_with(|ch: char| !ch.is_ascii_alphabetic()) {
         out.insert(0, 'T');
     }
 
@@ -196,15 +183,11 @@ pub(crate) fn sanitize_capnp_field_name(input: &str) -> String {
         camel.extend(chars);
     }
 
-    if camel.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+    if camel.starts_with(|ch: char| ch.is_ascii_digit()) {
         camel.insert(0, '_');
     }
 
-    if camel.is_empty() {
-        "_field".to_string()
-    } else {
-        camel
-    }
+    camel
 }
 
 /// Resolved schema file stem with both the base name and the full file stem.
@@ -220,32 +203,27 @@ pub(crate) struct ResolvedSchemaFileStem {
 /// Sanitizes the key to snake_case, falls back to `"message"` if empty,
 /// and appends `"_message"` suffix when not already present.
 pub(crate) fn resolve_schema_file_stem(schema_key: &str) -> ResolvedSchemaFileStem {
-    let key_component = sanitize_component(schema_key);
-    let base_name = if key_component.is_empty() {
-        "message".to_string()
-    } else {
-        key_component
-    };
+    let base_name = sanitize_or(schema_key, "message");
 
-    if base_name.ends_with("_message") {
-        let stem_base = base_name.strip_suffix("_message").unwrap().to_string();
-        ResolvedSchemaFileStem {
-            base_name: stem_base,
+    if let Some(stem_base) = base_name.strip_suffix("_message") {
+        return ResolvedSchemaFileStem {
+            base_name: stem_base.to_string(),
             file_stem: base_name,
-        }
-    } else {
-        let file_stem = format!("{base_name}_message");
-        ResolvedSchemaFileStem {
-            base_name,
-            file_stem,
-        }
+        };
+    }
+
+    let file_stem = format!("{base_name}_message");
+    ResolvedSchemaFileStem {
+        base_name,
+        file_stem,
     }
 }
 
 /// Sanitizes `raw` via [`sanitize_component`]; if the result is empty,
-/// substitutes `fallback`. Used by the shared schema-key helpers below so
-/// degenerate inputs (empty producer or entity name) produce a stable,
-/// non-empty schema_key in both the Rust and Python generators.
+/// substitutes `fallback`. Used by the shared schema-key and schema-file-stem
+/// helpers of this module so degenerate inputs (empty producer or entity
+/// name) produce a stable, non-empty name in both the Rust and Python
+/// generators.
 pub(crate) fn sanitize_or(raw: &str, fallback: &str) -> String {
     let component = sanitize_component(raw);
     if component.is_empty() {
@@ -253,6 +231,28 @@ pub(crate) fn sanitize_or(raw: &str, fallback: &str) -> String {
     } else {
         component
     }
+}
+
+/// Claims `sanitized` for `owner` within one generated surface. A second
+/// owner landing on an already-claimed identifier is a hard error naming
+/// both, so the operator sees which two inputs clashed rather than the
+/// sanitized identifier twice.
+pub(crate) fn claim_sanitized_name(
+    owners: &mut HashMap<String, String>,
+    sanitized: &str,
+    category: &str,
+    owner: &str,
+) -> Result<()> {
+    if let Some(first) = owners.get(sanitized) {
+        return Err(Error::ModuleNameCollision {
+            category: category.to_string(),
+            first: first.clone(),
+            second: owner.to_string(),
+            sanitized: sanitized.to_string(),
+        });
+    }
+    owners.insert(sanitized.to_string(), owner.to_string());
+    Ok(())
 }
 
 /// Schema key for the cap'n proto message backing a consumed topic:
@@ -364,6 +364,43 @@ mod tests {
             array_item_type_name("MessageHeader", "points"),
             "MessageHeaderPointsItem"
         );
+    }
+
+    #[test]
+    fn a_nested_type_name_continues_its_parent_prefix() {
+        assert_eq!(
+            nested_type_name("UvcCameraEnableActionGoal", "frame_header"),
+            "UvcCameraEnableActionGoalFrameHeader"
+        );
+    }
+
+    #[test]
+    fn sanitize_component_trims_separators_and_guards_a_leading_digit() {
+        assert_eq!(sanitize_component("--Foo--Bar--"), "foo_bar");
+        assert_eq!(sanitize_component("9lives"), "_9lives");
+        assert_eq!(sanitize_component("__"), "");
+        assert_eq!(sanitize_component(""), "");
+    }
+
+    #[test]
+    fn normalize_snake_case_guards_a_leading_digit_and_empty_input() {
+        assert_eq!(normalize_snake_case("9Lives"), "_9_lives");
+        assert_eq!(normalize_snake_case("--"), "message");
+        assert_eq!(normalize_snake_case(""), "message");
+    }
+
+    #[test]
+    fn to_camel_case_guards_a_leading_digit_and_empty_input() {
+        assert_eq!(to_camel_case("3d_pose"), "T3dPose");
+        assert_eq!(to_camel_case("--"), "Item");
+        assert_eq!(to_camel_case(""), "Item");
+    }
+
+    #[test]
+    fn capnp_field_name_guards_a_leading_digit_and_empty_input() {
+        assert_eq!(sanitize_capnp_field_name("2nd_value"), "_2ndValue");
+        assert_eq!(sanitize_capnp_field_name("--"), "_field");
+        assert_eq!(sanitize_capnp_field_name("FRAME_ID"), "frameId");
     }
 
     #[test]

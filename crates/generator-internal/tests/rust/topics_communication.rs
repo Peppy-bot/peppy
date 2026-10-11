@@ -1,11 +1,10 @@
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project,
-    consumer_stub_node_config, copy_config_to_output, init_cargo_user_node, init_test_env,
-    send_shutdown, spawn_cargo_run, test_peppy_dirs, wait_for_child,
+    DEFAULT_WAIT_TIMEOUT, EMITTED_TOPIC_EXAMPLE, STUB_NODE_CONFIG, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE,
+    TEST_CORE_NODE, TopicScenario, assert_exited_successfully, bind_slot, compile_project,
+    consumer_stub_node_config, copy_config_to_output, generate_node_project, init_cargo_user_node,
+    init_test_env, native_dep, save_runtime_config, shut_down_test_node, spawn_cargo_run,
+    test_node_runtime_config, test_peppy_dirs, test_wait_context, wait_for_child,
     wait_for_health_service_reachable_or_exit,
-};
-use crate::helpers::{
-    EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, TopicScenario, native_dep,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -19,11 +18,9 @@ use std::{fs, time::Duration};
 use tempfile::TempDir;
 
 // --- Common test constants
-const TEST_CORE_NODE: &str = "test_core";
 const RECEIVER_NODE_NAME: &str = "receiver_node";
 const RECEIVER_INSTANCE_ID: &str = "receiver_instance";
 const EMITTER_INSTANCE_ID: &str = "emitter_instance";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 
 // --- Topics emitted and its corresponding receiver
@@ -95,42 +92,31 @@ async fn run_emitter_and_receiver(
 
     // --- Receiver project
     let receiver_instance_id = RECEIVER_INSTANCE_ID;
-    let temp_dir_proj2 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_receiver = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let consumed_topic: ConsumedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
-    let (mut generator, receiver_dir, user_node_receiver, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(
-            &temp_dir_proj2,
-            &consumer_stub_node_config(UVC_CAMERA_NODE_NAME, "v1", "uvc_camera"),
-        );
-    generator
-        .add_consumed_topic(
-            &consumed_topic,
-            subscribed_format,
-            scenario.retention(),
-            &native_dep("uvc_camera", "v1", "uvc_camera"),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_receiver, &receiver_dir);
-    generator
-        .build(&receiver_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_receiver = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_receiver,
+        &consumer_stub_node_config(UVC_CAMERA_NODE_NAME, "v1", "uvc_camera"),
+        |generator| {
+            generator
+                .add_consumed_topic(
+                    &consumed_topic,
+                    subscribed_format,
+                    scenario.retention(),
+                    &native_dep("uvc_camera", "v1", "uvc_camera"),
+                )
+                .unwrap();
+        },
     );
 
-    let receiver_runtime_config = RuntimeConfig::new(
+    let receiver_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(receiver_instance_id).unwrap()),
         RECEIVER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        receiver_instance_id,
+    );
     let receiver_runtime_config = bind_slot(
         receiver_runtime_config,
         "uvc_camera",
@@ -138,13 +124,10 @@ async fn run_emitter_and_receiver(
         EMITTER_INSTANCE_ID,
     );
     let receiver_runtime_config = crate::helpers::apply_topology(receiver_runtime_config, topology);
-    let receiver_runtime_config_path = temp_dir_proj2.path().join("peppy_runtime.json5");
-    receiver_runtime_config
-        .save_json5_launch_config(&receiver_runtime_config_path)
-        .unwrap();
+    let receiver_runtime_config_str =
+        save_runtime_config(&receiver_runtime_config, temp_dir_receiver.path());
 
     init_cargo_user_node(&user_node_receiver);
-    // TODO: An exit signal should be sent to the receiver to terminate the process
     let receiver_main = r#"
 use peppygen::NodeBuilder;
 use peppygen::consumed_topics::uvc_camera::video_stream::subscribe;
@@ -169,13 +152,13 @@ fn main() -> Result<()> {
 
     // --- Emitter project
     let emitter_instance_id = EMITTER_INSTANCE_ID;
-    let temp_dir_proj1 = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir_emitter = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let emitted_topic = NativeEmittedTopic {
         retention: scenario.retention(),
         ..serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap()
     };
     let (mut generator, emitter_dir, user_node_emitter, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_proj1, STUB_NODE_CONFIG);
+        init_test_env::<generator::RustGenerator>(&temp_dir_emitter, STUB_NODE_CONFIG);
     let emitter_parameters: config::ParameterSchema =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
     generator.set_parameters(emitter_parameters.clone());
@@ -213,13 +196,10 @@ fn main() -> Result<()> {
     )
     .unwrap();
     let emitter_runtime_config = crate::helpers::apply_topology(emitter_runtime_config, topology);
-    let emitter_runtime_config_path = temp_dir_proj1.path().join("peppy_runtime.json5");
-    emitter_runtime_config
-        .save_json5_launch_config(&emitter_runtime_config_path)
-        .unwrap();
+    let emitter_runtime_config_str =
+        save_runtime_config(&emitter_runtime_config, temp_dir_emitter.path());
 
     init_cargo_user_node(&user_node_emitter);
-    // TODO: An exit signal should be sent to the emitter to terminate the process
     let live_emitter_main = r#"
 use peppygen::emitted_topics::video_stream;
 use peppygen::NodeBuilder;
@@ -272,42 +252,33 @@ fn main() -> Result<()> {
     let main_file = user_node_emitter.join("src").join("main.rs");
     fs::write(main_file, emitter_main).expect("failed to write main file");
 
-    let user_node_receiver_config_str = receiver_runtime_config_path.to_str().unwrap().to_owned();
-    let user_node_emitter_runtime_config_str =
-        emitter_runtime_config_path.to_str().unwrap().to_owned();
-
     compile_project(&user_node_receiver);
     compile_project(&user_node_emitter);
 
     let spawn_receiver = || {
         spawn_cargo_run(
             &user_node_receiver,
-            &[(RUNTIME_CONFIG_VAR_NAME, &user_node_receiver_config_str)],
+            &[(RUNTIME_CONFIG_VAR_NAME, &receiver_runtime_config_str)],
         )
     };
     let spawn_emitter = || {
         spawn_cargo_run(
             &user_node_emitter,
-            &[(
-                RUNTIME_CONFIG_VAR_NAME,
-                &user_node_emitter_runtime_config_str,
-            )],
+            &[(RUNTIME_CONFIG_VAR_NAME, &emitter_runtime_config_str)],
         )
     };
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for shutdown");
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
 
     // A node's health service is reachable once its setup_fn completed: for
     // the receiver, once it received a frame; for the retaining emitter, once
     // it published its one frame. The late-join receiver starts after that.
-    let live_receiver = matches!(scenario, TopicScenario::LiveStream).then(&spawn_receiver);
+    let early_receiver = match scenario {
+        TopicScenario::LiveStream => Some(spawn_receiver()),
+        TopicScenario::RetainingThenLateJoin => None,
+    };
     let mut emitter_child = spawn_emitter();
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -318,7 +289,10 @@ fn main() -> Result<()> {
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    let mut receiver_child = live_receiver.unwrap_or_else(&spawn_receiver);
+    let mut receiver_child = match early_receiver {
+        Some(child) => child,
+        None => spawn_receiver(),
+    };
     wait_for_health_service_reachable_or_exit(
         &ctx,
         RECEIVER_NODE_NAME,
@@ -329,26 +303,8 @@ fn main() -> Result<()> {
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        RECEIVER_NODE_NAME,
-        TEST_CORE_NODE,
-        receiver_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        UVC_CAMERA_NODE_NAME,
-        TEST_CORE_NODE,
-        emitter_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, RECEIVER_NODE_NAME, receiver_instance_id).await;
+    shut_down_test_node(&messenger, UVC_CAMERA_NODE_NAME, emitter_instance_id).await;
 
     // Wait for both processes to exit
     let receiver_output = wait_for_child(
@@ -362,15 +318,8 @@ fn main() -> Result<()> {
         &user_node_emitter,
     );
 
-    let receiver_stdout = String::from_utf8_lossy(&receiver_output.stdout).into_owned();
-    let receiver_stderr = String::from_utf8_lossy(&receiver_output.stderr).into_owned();
-    assert!(
-        receiver_output.status.success(),
-        "receiver cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        receiver_output.status.code(),
-        receiver_stdout,
-        receiver_stderr
-    );
+    let (receiver_stdout, receiver_stderr) =
+        assert_exited_successfully("receiver cargo run", &receiver_output);
     assert!(
         receiver_stdout.contains(&format!(
             "got 640x480 frame encoded as rgb8 from {TEST_CORE_NODE}/{EMITTER_INSTANCE_ID}"
@@ -380,13 +329,5 @@ fn main() -> Result<()> {
         receiver_stderr
     );
 
-    let emitter_stdout = String::from_utf8_lossy(&emitter_output.stdout).into_owned();
-    let emitter_stderr = String::from_utf8_lossy(&emitter_output.stderr).into_owned();
-    assert!(
-        emitter_output.status.success(),
-        "emitter cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        emitter_output.status.code(),
-        emitter_stdout,
-        emitter_stderr
-    );
+    assert_exited_successfully("emitter cargo run", &emitter_output);
 }

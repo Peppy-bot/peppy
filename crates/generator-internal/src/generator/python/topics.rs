@@ -4,7 +4,7 @@ use super::deserialization;
 use super::serialization;
 use super::services::sender_target_python_expr;
 use super::type_mapping::{
-    collect_fields_from_format, qos_profile_python, retention_python, uses_optional,
+    PythonField, collect_fields_from_format, qos_profile_python, retention_python, uses_optional,
 };
 use crate::error::Result;
 use crate::generator::types::{PairTopicConsumerKind, SubscriptionTag, retention_doc};
@@ -49,14 +49,42 @@ pub(crate) fn emit_capnp_loader_fn(
     builder.blank_line();
 }
 
-/// Convenience wrapper: emits preamble + a single loader function.
-/// Use this when there is only one schema to load.
+/// Emits the preamble imports and the loader function of one schema. The
+/// preamble only registers deduplicated imports, so a module with several
+/// schemas calls this once per schema.
 pub(crate) fn emit_capnp_schema_loader(
     builder: &mut PythonCodeBuilder,
     schema_info: &PythonSchemaInfo,
 ) {
     emit_capnp_preamble(builder);
     emit_capnp_loader_fn(builder, schema_info);
+}
+
+/// Emits what a publisher module needs before its `build_message`, shared by
+/// the plain and peer publisher modules: the `Optional` import when a field
+/// uses it, the capnp schema loader when the topic has a schema, and the
+/// nested dataclasses of the message. Returns the top-level fields, the
+/// parameters of `build_message`. A topic without a message format has no
+/// fields.
+fn emit_published_message_types(
+    builder: &mut PythonCodeBuilder,
+    message_format: Option<&MessageFormat>,
+    schema_info: Option<&PythonSchemaInfo>,
+) -> Result<Vec<PythonField>> {
+    let mut nested_classes = Vec::new();
+    let fields = message_format
+        .map(|format| collect_fields_from_format(format, "Message", &mut nested_classes))
+        .transpose()?
+        .unwrap_or_default();
+
+    if uses_optional(&fields, &nested_classes) {
+        builder.add_import("from typing import Optional");
+    }
+    if let Some(info) = schema_info {
+        emit_capnp_schema_loader(builder, info);
+    }
+    emit_nested_classes(builder, &nested_classes);
+    Ok(fields)
 }
 
 /// Emits the pure `build_message(...) -> bytes` serializer shared by the
@@ -66,7 +94,7 @@ pub(crate) fn emit_capnp_schema_loader(
 /// serialization off the loop's GIL time.
 fn emit_build_message_fn(
     builder: &mut PythonCodeBuilder,
-    fields: &[super::type_mapping::PythonField],
+    fields: &[PythonField],
     schema_info: Option<&PythonSchemaInfo>,
     message_format: Option<&MessageFormat>,
 ) {
@@ -81,13 +109,7 @@ fn emit_build_message_fn(
                 builder.line("return b\"\"");
                 return;
             };
-            let loader_fn_name = capnp_loader_fn_name(info);
-            builder.line(&format!(
-                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(builder, "capnp_msg", fmt, "", &mut counter);
+            serialization::emit_new_capnp_message(builder, info, fmt, "");
             builder.line("return capnp_msg.to_bytes()");
         },
     );
@@ -108,6 +130,35 @@ fn follows_the_set_suffix(cardinality: Cardinality) -> String {
     crate::generator::types::follows_the_set_doc(cardinality)
         .map(|sentence| format!(" {sentence}"))
         .unwrap_or_default()
+}
+
+/// Emits what a consumer module decodes into, shared by the bound-set, peer
+/// and observer consumers: the capnp schema loader, the `Message` dataclass
+/// after its nested dataclasses (dependency order), then the
+/// `_deserialize_payload` helper that `Subscription.next` calls.
+fn emit_consumed_message(
+    builder: &mut PythonCodeBuilder,
+    arguments: &MessageFormat,
+    schema_info: &PythonSchemaInfo,
+) -> Result<()> {
+    let mut nested_classes = Vec::new();
+    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
+
+    emit_capnp_schema_loader(builder, schema_info);
+    emit_nested_classes(builder, &nested_classes);
+    let field_refs: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.type_str.as_str()))
+        .collect();
+    builder.dataclass("Message", &field_refs);
+    deserialization::build_deserialize_fn(
+        builder,
+        schema_info,
+        arguments,
+        "Message",
+        "_deserialize_payload",
+    );
+    Ok(())
 }
 
 /// Emits the held-`Subscription` class shared by the bound-set, peer, and
@@ -165,27 +216,8 @@ pub fn build_emitted_topic(
     origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
-    let mut nested_classes = Vec::new();
-
-    // Collect fields from message format
-    let fields = topic
-        .message_format
-        .as_ref()
-        .map(|fmt| collect_fields_from_format(fmt, "Message", &mut nested_classes))
-        .transpose()?
-        .unwrap_or_default();
-
-    if uses_optional(&fields, &nested_classes) {
-        builder.add_import("from typing import Optional");
-    }
-
-    // Add capnp imports and a lazy, cached schema loader.
-    if let Some(info) = schema_info {
-        emit_capnp_schema_loader(&mut builder, info);
-    }
-
-    // Emit nested dataclasses (e.g., MessageHeader)
-    emit_nested_classes(&mut builder, &nested_classes);
+    let fields =
+        emit_published_message_types(&mut builder, topic.message_format.as_ref(), schema_info)?;
 
     builder.add_import("import peppylib");
 
@@ -238,6 +270,26 @@ pub fn build_emitted_topic(
     Ok(builder.build())
 }
 
+/// Emits the module-level constants of a pairing topic module, which address
+/// the topic on its pairing slot. Both directions of a peer topic and the
+/// observer topic declare and subscribe through these names.
+fn emit_slot_topic_constants(
+    builder: &mut PythonCodeBuilder,
+    topic_name: &str,
+    qos: &str,
+    slot: &crate::generator::types::PeerContext,
+) {
+    builder.add_import("import peppylib");
+    builder.lines([
+        format!("TOPIC_NAME = \"{topic_name}\""),
+        format!("LINK_ID = \"{}\"", slot.link_id),
+        format!("PAIRING_NAME = \"{}\"", slot.pairing_name),
+        format!("PAIRING_TAG = \"{}\"", slot.pairing_tag),
+        format!("QOS = {qos}"),
+    ]);
+    builder.blank_line();
+}
+
 /// Emits the module-level slot constants plus the slot's live state, shared
 /// by both directions of a peer topic module. A scalar slot (`one`,
 /// `zero_or_one`) gets `paired()`/`wait_paired()`; a multi slot gets
@@ -249,15 +301,7 @@ fn emit_peer_module_header(
     qos: &str,
     peer: &crate::generator::types::PeerContext,
 ) {
-    builder.add_import("import peppylib");
-    builder.lines([
-        format!("TOPIC_NAME = \"{topic_name}\""),
-        format!("LINK_ID = \"{}\"", peer.link_id),
-        format!("PAIRING_NAME = \"{}\"", peer.pairing_name),
-        format!("PAIRING_TAG = \"{}\"", peer.pairing_tag),
-        format!("QOS = {qos}"),
-    ]);
-    builder.blank_line();
+    emit_slot_topic_constants(builder, topic_name, qos, peer);
 
     match crate::generator::types::peer_set_doc(peer.cardinality) {
         None => {
@@ -289,10 +333,7 @@ fn emit_peer_module_header(
             builder.block(
                 "def peers(node_runner: peppylib.NodeRunner) -> List[peppylib.PeerMember]:",
                 |builder| {
-                    builder.line(&format!("\"\"\"{}", doc.summary));
-                    builder.blank_line();
-                    builder.lines(doc.body_lines());
-                    builder.line("\"\"\"");
+                    builder.multiline_docstring(doc.summary, doc.body_lines());
                     builder.line("return node_runner.peer_set(LINK_ID).members()");
                 },
             );
@@ -311,22 +352,8 @@ pub fn build_peer_emitted_topic(
     peer: &crate::generator::types::PeerContext,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
-    let mut nested_classes = Vec::new();
-
-    let fields = topic
-        .message_format
-        .as_ref()
-        .map(|fmt| collect_fields_from_format(fmt, "Message", &mut nested_classes))
-        .transpose()?
-        .unwrap_or_default();
-
-    if uses_optional(&fields, &nested_classes) {
-        builder.add_import("from typing import Optional");
-    }
-    if let Some(info) = schema_info {
-        emit_capnp_schema_loader(&mut builder, info);
-    }
-    emit_nested_classes(&mut builder, &nested_classes);
+    let fields =
+        emit_published_message_types(&mut builder, topic.message_format.as_ref(), schema_info)?;
 
     let qos = qos_profile_python(&topic.qos_profile);
     emit_peer_module_header(&mut builder, &topic.name, qos, peer);
@@ -396,15 +423,7 @@ fn emit_observer_module_header(
     observer: &crate::generator::types::PeerContext,
     cardinality: Cardinality,
 ) {
-    builder.add_import("import peppylib");
-    builder.lines([
-        format!("TOPIC_NAME = \"{topic_name}\""),
-        format!("LINK_ID = \"{}\"", observer.link_id),
-        format!("PAIRING_NAME = \"{}\"", observer.pairing_name),
-        format!("PAIRING_TAG = \"{}\"", observer.pairing_tag),
-        format!("QOS = {qos}"),
-    ]);
-    builder.blank_line();
+    emit_slot_topic_constants(builder, topic_name, qos, observer);
 
     let (fn_name, runtime_method, return_type, typing_import) = match cardinality {
         Cardinality::One => ("source", "sole_source", "peppylib.ObservedSource", None),
@@ -442,12 +461,7 @@ fn emit_observer_module_header(
     builder.block(
         &format!("def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"),
         |builder| {
-            // A multi-paragraph docstring, so it opens and closes by hand
-            // rather than through `docstring`.
-            builder.line(&format!("\"\"\"{}", doc.summary));
-            builder.blank_line();
-            builder.lines(doc.body_lines());
-            builder.line("\"\"\"");
+            builder.multiline_docstring(doc.summary, doc.body_lines());
             builder.line(&format!(
                 "return node_runner.{handle}(LINK_ID).{runtime_method}()"
             ));
@@ -471,29 +485,8 @@ pub fn build_pair_topic_consumer(
     kind: PairTopicConsumerKind,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
-    let mut nested_classes = Vec::new();
-
-    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
-
     builder.add_import("from typing import Optional, Tuple");
-    emit_capnp_schema_loader(&mut builder, schema_info);
-    emit_nested_classes(&mut builder, &nested_classes);
-
-    let field_refs: Vec<(&str, &str)> = fields
-        .iter()
-        .map(|f| (f.name.as_str(), f.type_str.as_str()))
-        .collect();
-    builder.dataclass("Message", &field_refs);
-
-    let loader_fn_name = capnp_loader_fn_name(schema_info);
-    deserialization::build_deserialize_fn(
-        &mut builder,
-        schema_info,
-        arguments,
-        "Message",
-        &format!("{loader_fn_name}()"),
-        "_deserialize_payload",
-    );
+    emit_consumed_message(&mut builder, arguments, schema_info)?;
 
     let qos = qos_profile_python(&topic.qos_profile);
     let (subscription_doc, subscription_tag, subscribe_doc, subscribe_method) = match kind {
@@ -555,40 +548,13 @@ pub fn build_consumed_topic(
 ) -> Result<String> {
     let topic_name = topic.name.as_str();
     let mut builder = PythonCodeBuilder::new();
-    let mut nested_classes = Vec::new();
-
-    // Collect fields from the message format
-    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
 
     // Optional covers any Optional fields in the dataclasses and the closed
     // sentinel of `Subscription.next`; Tuple wraps the `(producer, message)`
     // pair each message yields (the producer itself is a structured
     // `peppylib.ProducerRef`).
     builder.add_import("from typing import Optional, Tuple");
-
-    // Add capnp imports and a lazy, cached schema loader.
-    emit_capnp_schema_loader(&mut builder, schema_info);
-
-    // Emit nested dataclasses first (dependency order)
-    emit_nested_classes(&mut builder, &nested_classes);
-
-    // Emit the main Message dataclass
-    let field_refs: Vec<(&str, &str)> = fields
-        .iter()
-        .map(|f| (f.name.as_str(), f.type_str.as_str()))
-        .collect();
-    builder.dataclass("Message", &field_refs);
-
-    // Generate deserialize_payload helper function
-    let loader_fn_name = capnp_loader_fn_name(schema_info);
-    deserialization::build_deserialize_fn(
-        &mut builder,
-        schema_info,
-        arguments,
-        "Message",
-        &format!("{loader_fn_name}()"),
-        "_deserialize_payload",
-    );
+    emit_consumed_message(&mut builder, arguments, schema_info)?;
 
     // Generate the held-subscription consumer API. `subscribe()` covers the
     // slot's complete bound producer set (one pinned wire subscription per

@@ -178,24 +178,15 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
 }
 "#;
 
-#[test]
-fn generate_parameters_struct() {
+/// Builds the library of `generator` into a temporary directory and returns
+/// the `peppygen/parameters.py` it wrote.
+fn build_parameters_py(generator: PythonGenerator) -> String {
     let temp_dir = TempDir::new().unwrap();
-    let node_config: NodeConfig =
-        serde_json5::from_str(NODE_EXAMPLE).expect("failed to parse NODE_EXAMPLE into NodeConfig");
 
     let output_dir = temp_dir.path().join("output");
     fs::create_dir_all(&output_dir).unwrap();
 
-    let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.execution.parameters);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
+    build_package(generator, &output_dir);
 
     let parameters_file = output_dir.join("peppygen").join("parameters.py");
     assert!(
@@ -203,7 +194,17 @@ fn generate_parameters_struct() {
         "Expected parameters.py to be generated"
     );
 
-    let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.py");
+    fs::read_to_string(&parameters_file).expect("failed to read parameters.py")
+}
+
+#[test]
+fn generate_parameters_struct() {
+    let node_config: NodeConfig =
+        serde_json5::from_str(NODE_EXAMPLE).expect("failed to parse NODE_EXAMPLE into NodeConfig");
+
+    let mut generator = PythonGenerator::new();
+    generator.set_parameters(node_config.execution.parameters);
+    let generated = build_parameters_py(generator);
 
     assert_contains_all(
         &generated,
@@ -249,30 +250,12 @@ fn generate_parameters_struct() {
 
 #[test]
 fn generate_parameters_struct_avoids_nested_class_name_collisions() {
-    let temp_dir = TempDir::new().unwrap();
     let node_config: NodeConfig = serde_json5::from_str(NESTED_CLASS_COLLISION_NODE_EXAMPLE)
         .expect("failed to parse NESTED_CLASS_COLLISION_NODE_EXAMPLE into NodeConfig");
 
-    let output_dir = temp_dir.path().join("output");
-    fs::create_dir_all(&output_dir).unwrap();
-
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.execution.parameters);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-
-    let parameters_file = output_dir.join("peppygen").join("parameters.py");
-    assert!(
-        parameters_file.exists(),
-        "Expected parameters.py to be generated"
-    );
-
-    let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.py");
+    let generated = build_parameters_py(generator);
 
     assert_contains_all(
         &generated,
@@ -297,28 +280,8 @@ fn generate_parameters_struct_avoids_nested_class_name_collisions() {
 
 #[test]
 fn generate_empty_parameters_struct() {
-    let temp_dir = TempDir::new().unwrap();
-
-    let output_dir = temp_dir.path().join("output");
-    fs::create_dir_all(&output_dir).unwrap();
-
-    let generator = PythonGenerator::new();
-    // Don't set any parameters - use the default empty parameters
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-
-    let parameters_file = output_dir.join("peppygen").join("parameters.py");
-    assert!(
-        parameters_file.exists(),
-        "Expected parameters.py to be generated"
-    );
-
-    let generated = fs::read_to_string(&parameters_file).expect("failed to read parameters.py");
+    // No parameters are set, so the generator uses the default empty ones.
+    let generated = build_parameters_py(PythonGenerator::new());
 
     // Even with no parameters, we should have a valid Parameters dataclass
     // with a from_dict classmethod
@@ -336,13 +299,13 @@ fn generate_empty_parameters_struct() {
 #[test]
 fn reject_parameters_with_invalid_field_names() {
     use crate::error::Error;
-    use crate::generator::rust::generate_parameters_struct;
+    use crate::generator::python::parameters::generate_python_parameters;
     use config::consts::ALLOWED_CONFIG_CHARS;
 
     let node_config: NodeConfig = serde_json5::from_str(INVALID_PARAMETERS_NODE_EXAMPLE)
         .expect("failed to parse INVALID_PARAMETERS_NODE_EXAMPLE into NodeConfig");
 
-    let result = generate_parameters_struct(&node_config.execution.parameters);
+    let result = generate_python_parameters(&node_config.execution.parameters);
 
     assert!(
         result.is_err(),
@@ -389,5 +352,88 @@ fn reject_python_parameters_with_unknown_type_name_at_parse() {
     assert!(
         err.contains("uuid"),
         "expected error mentioning unknown type name, got: {err}"
+    );
+}
+
+/// Pins the whole module: the class of a nested group comes before the class
+/// that references it, sibling groups follow the sorted order of their keys,
+/// not the order the schema declares them in, a nested class continues its
+/// parent's name, and `Parameters` comes last.
+#[test]
+fn generate_python_parameters_renders_each_group_before_its_parent() {
+    let parameters: config::ParameterSchema = serde_json5::from_str(
+        r#"{
+          zoom: "f32",
+          video: { frame_rate: "u16", resolution: { width: "u16" } },
+          audio: { gain: { level: "f64" }, muted: "bool" },
+        }"#,
+    )
+    .expect("the schema parses");
+
+    let rendered =
+        crate::generator::python::parameters::generate_python_parameters(&parameters).unwrap();
+
+    assert_eq!(
+        rendered,
+        r#"from dataclasses import dataclass
+
+@dataclass
+class AudioGain:
+    level: float
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AudioGain":
+        return cls(
+            level=data["level"],
+        )
+
+@dataclass
+class Audio:
+    gain: AudioGain
+    muted: bool
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Audio":
+        return cls(
+            gain=AudioGain.from_dict(data["gain"]),
+            muted=data["muted"],
+        )
+
+@dataclass
+class VideoResolution:
+    width: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "VideoResolution":
+        return cls(
+            width=data["width"],
+        )
+
+@dataclass
+class Video:
+    frame_rate: int
+    resolution: VideoResolution
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Video":
+        return cls(
+            frame_rate=data["frame_rate"],
+            resolution=VideoResolution.from_dict(data["resolution"]),
+        )
+
+@dataclass
+class Parameters:
+    audio: Audio
+    video: Video
+    zoom: float
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Parameters":
+        return cls(
+            audio=Audio.from_dict(data["audio"]),
+            video=Video.from_dict(data["video"]),
+            zoom=data["zoom"],
+        )
+"#
     );
 }

@@ -5,20 +5,19 @@
 //! so each slot writes its own file from its own format and each per-slot
 //! `_deserialize_payload` decodes through the schema it was generated from.
 //!
-//! Before per-slot keying both slots resolved `on_next_video_stream_message`
-//! and the last registration overwrote the file, so every consumer decoded
-//! through whichever format was declared last: rgb declared last made every
-//! rgbd frame raise on `alignMode`, rgbd declared last silently read an empty
-//! `align_mode` on rgb frames. Both declaration orders are covered.
+//! Keyed by topic name alone, both slots would resolve
+//! `on_next_video_stream_message` and the last registration would overwrite
+//! the file, so every consumer would decode through whichever format was
+//! declared last: rgb declared last would make every rgbd frame raise on
+//! `alignMode`, rgbd declared last would silently read an empty `align_mode`
+//! on rgb frames. Both declaration orders are covered.
 //!
 //! This is the Python counterpart of `tests/rust/consumed_topics_distinct_formats.rs`.
 
-use crate::helpers::{
-    contract_dep, init_python_project_venv, init_python_user_node, run_uv, test_peppy_dirs,
-};
+use crate::helpers::{contract_dep, generate_test_peppygen_lib, run_python_check};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage, TopicRetention};
-use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -164,8 +163,8 @@ fn read_schema(capnp_dir: &Path, file_stem: &str) -> String {
 }
 
 fn generate_and_probe(order: [Slot; 2]) {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let user_node_dir = temp_dir.path().join("user_node");
     fs::create_dir_all(&user_node_dir).expect("failed to create user_node directory");
 
@@ -174,17 +173,8 @@ fn generate_and_probe(order: [Slot; 2]) {
 
     let interfaces = order.into_iter().map(consumed_topic).collect();
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &user_node_dir,
-        interfaces,
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &user_node_dir, interfaces)
+        .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let capnp_dir = peppygen_dir.join("peppygen/capnp");
@@ -208,18 +198,10 @@ fn generate_and_probe(order: [Slot; 2]) {
         shared_stem.display()
     );
 
-    init_python_user_node(&user_node_dir);
-    init_python_project_venv(&user_node_dir);
-
-    let output = run_uv(&user_node_dir, &["run", "python", "-c", PYTHON_PROBE]);
-
-    assert!(
-        output.status.success(),
-        "Python probe failed for same-named consumed topics with distinct formats.\n\
-         stdout:\n{}\n\
-         stderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    run_python_check(
+        &user_node_dir,
+        PYTHON_PROBE,
+        "Python probe for same-named consumed topics with distinct formats",
     );
 }
 

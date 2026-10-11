@@ -16,12 +16,10 @@
 //! in `consumed_topics_distinct_formats.rs`.
 
 use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
-use crate::helpers::{
-    init_python_project_venv, init_python_user_node, native_dep, run_uv, test_peppy_dirs,
-};
+use crate::helpers::{generate_test_peppygen_lib, native_dep, run_python_check};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage, TopicRetention};
-use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant};
 use std::fs;
 use tempfile::TempDir;
 
@@ -92,8 +90,8 @@ print(f"left={left_struct_name} right={right_struct_name}")
 
 #[test]
 fn python_handles_two_consumed_topics_sharing_topic_name() {
-    let temp_dir =
-        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let user_node_dir = temp_dir.path().join("user_node");
     fs::create_dir_all(&user_node_dir).expect("failed to create user_node directory");
 
@@ -112,27 +110,18 @@ fn python_handles_two_consumed_topics_sharing_topic_name() {
             topic: left_topic,
             message_format: shared_format.clone(),
             retention: TopicRetention::LiveOnly,
-            dependency: native_dep("robot_arm", "v1", "robot_arm"),
+            dependency: native_dep("robot_arm", "v1", "left_arm"),
         }),
         DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
             topic: right_topic,
             message_format: shared_format,
             retention: TopicRetention::LiveOnly,
-            dependency: native_dep("robot_arm", "v1", "robot_arm"),
+            dependency: native_dep("robot_arm", "v1", "right_arm"),
         }),
     ];
 
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &user_node_dir,
-        interfaces,
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate peppygen lib");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &user_node_dir, interfaces)
+        .expect("failed to generate peppygen lib");
 
     let peppygen_dir = user_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let left_module = peppygen_dir.join("peppygen/consumed_topics/left_arm/joint_states.py");
@@ -148,17 +137,9 @@ fn python_handles_two_consumed_topics_sharing_topic_name() {
         right_module.display()
     );
 
-    init_python_user_node(&user_node_dir);
-    init_python_project_venv(&user_node_dir);
-
-    let output = run_uv(&user_node_dir, &["run", "python", "-c", PYTHON_PROBE]);
-
-    assert!(
-        output.status.success(),
-        "Python probe failed for two-consumed-topics dedup scenario.\n\
-         stdout:\n{}\n\
-         stderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    run_python_check(
+        &user_node_dir,
+        PYTHON_PROBE,
+        "Python probe for the two-consumed-topics dedup scenario",
     );
 }

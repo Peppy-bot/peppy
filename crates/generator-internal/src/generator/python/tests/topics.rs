@@ -107,6 +107,27 @@ fn parse_message_format(example: &str) -> MessageFormat {
     serde_json5::from_str(example).unwrap()
 }
 
+/// Asserts that a rendered consumer module (topic subscriber, service poller
+/// or action caller) takes no core_node or instance_id string parameter. The
+/// producer travels only as the `peppylib.ProducerRef` resolved from the
+/// slot's bound set, so no `from_*` or `target_*` core_node or instance_id
+/// parameter appears, and no `pinned_target_for` accessor is emitted (the
+/// runtime helpers are the bound-producer accessors).
+pub(super) fn assert_no_producer_identity_params(rendered: &str) {
+    for needle in [
+        "from_core_node",
+        "from_instance_id: Optional[str] = None",
+        "target_core_node",
+        "target_instance_id: Optional[str] = None",
+        "pinned_target_for",
+    ] {
+        assert!(
+            !rendered.contains(needle),
+            "`{needle}` is not part of the generated API; rendered:\n{rendered}"
+        );
+    }
+}
+
 /// In the case of a topic, an "exposed" topic is an entity that emits messages.
 #[test]
 fn emit_topic() {
@@ -207,11 +228,11 @@ fn emit_topic() {
     );
     assert!(
         !rendered.contains("async def emit("),
-        "emit() should no longer be generated; declare_publisher is the only publish path; rendered:\n{rendered}"
+        "emit() is not generated; declare_publisher is the only publish path; rendered:\n{rendered}"
     );
     assert!(
         !rendered.contains("TopicMessenger.emit"),
-        "TopicMessenger.emit should no longer be generated; rendered:\n{rendered}"
+        "TopicMessenger.emit is not generated; rendered:\n{rendered}"
     );
 }
 
@@ -266,6 +287,43 @@ fn emit_two_topics() {
     assert!(
         !lidar_rendered.contains("video_stream"),
         "push_lidar_object artifact should not reference video_stream"
+    );
+}
+
+/// A node that drops message-format interfaces generates again over its
+/// earlier tree: `peppygen/capnp` keeps only the schemas of the interfaces
+/// the node still has, and goes away with the last one.
+#[test]
+fn regeneration_drops_the_capnp_schemas_of_removed_topics() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let output_dir = temp_dir.path().join("output");
+    let capnp_dir = output_dir.join("peppygen").join("capnp");
+    let video_stream_schema = capnp_dir.join("video_stream_message.capnp");
+    let lidar_schema = capnp_dir.join("push_lidar_object_message.capnp");
+    let video_stream = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
+
+    let mut generator = PythonGenerator::new();
+    generator.add_emitted_topic(&video_stream, None).unwrap();
+    generator
+        .add_emitted_topic(&parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2), None)
+        .unwrap();
+    build_package(generator, &output_dir);
+    assert!(video_stream_schema.exists());
+    assert!(lidar_schema.exists());
+
+    let mut generator = PythonGenerator::new();
+    generator.add_emitted_topic(&video_stream, None).unwrap();
+    build_package(generator, &output_dir);
+    assert!(video_stream_schema.exists());
+    assert!(
+        !lidar_schema.exists(),
+        "the schema of the removed topic must leave peppygen/capnp"
+    );
+
+    build_package(PythonGenerator::new(), &output_dir);
+    assert!(
+        !capnp_dir.exists(),
+        "peppygen/capnp must go away with the last schema"
     );
 }
 
@@ -759,16 +817,9 @@ fn consumed_topic() {
     );
     assert!(
         !rendered.contains("on_next_message_received"),
-        "the per-call on_next_message_received API must be gone; rendered:\n{rendered}"
+        "a consumer reads through the held subscription, never a per-call on_next_message_received; rendered:\n{rendered}"
     );
-    assert!(
-        !rendered.contains("from_core_node"),
-        "from_core_node should no longer appear in the generated API; rendered:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("from_instance_id: Optional[str] = None"),
-        "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
-    );
+    assert_no_producer_identity_params(&rendered);
 
     // Topic metadata and subscribe call: the merged subscription follows the
     // slot's complete bound set by its link_id through the node runner, which
@@ -814,11 +865,10 @@ fn consumed_topic() {
         ],
     );
 
-    // Regression guard for the dropped-message bug: the topic is subscribed
-    // exactly once (in `subscribe`), never per `next` call. The old
-    // `on_next_message_received` re-subscribed on every call, so anything
-    // published in the re-subscribe gap was silently lost; with a held
-    // subscription the buffer keeps every message between `next` calls.
+    // The topic is subscribed exactly once (in `subscribe`), never per
+    // `next` call: a subscription per call loses what is published between
+    // two calls, while a held subscription buffers every message between
+    // `next` calls.
     assert_eq!(
         rendered.matches("node_runner.subscribe_bound_set(").count(),
         1,
@@ -948,8 +998,8 @@ fn consumed_two_topics_same_node() {
 /// service pollers, action callers) expose no user-facing producer-identity
 /// parameters. Producer identity travels only as the full
 /// `(core_node, instance_id)` resolved at runtime from the bindings map.
-/// This test fails loudly if any generator drifts back to exposing a
-/// `from_*` / `target_*` core_node or instance_id parameter.
+/// This test fails loudly if any generator exposes a `from_*` / `target_*`
+/// core_node or instance_id parameter.
 #[test]
 fn no_user_facing_producer_identity_params() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
@@ -1003,35 +1053,5 @@ fn no_user_facing_producer_identity_params() {
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts()).join("\n");
 
-    // Topic subscriber: producer identity travels only as the full
-    // `(core_node, instance_id)` resolved at runtime from the bindings map;
-    // there is no user-facing core_node parameter, and `from_instance_id`
-    // is no longer a parameter either.
-    assert!(
-        !rendered.contains("from_core_node"),
-        "from_core_node should no longer appear in the generated API; rendered:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("from_instance_id: Optional[str] = None"),
-        "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
-    );
-
-    // The fixtures supply real manifest link_ids, and every consumed call
-    // site resolves its bound set through the slot's cardinality-typed
-    // accessor. The generated API exposes no targeting parameters:
-    // `target_core_node` and `target_instance_id` must not appear, and a
-    // `pinned_target_for` accessor must never be emitted (the runtime
-    // helpers are the bound-producer accessors).
-    assert!(
-        !rendered.contains("target_core_node"),
-        "target_core_node should not appear in the generated API; rendered:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("target_instance_id: Optional[str] = None"),
-        "target_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helpers are the bound-producer accessors; rendered:\n{rendered}"
-    );
+    assert_no_producer_identity_params(&rendered);
 }

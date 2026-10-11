@@ -624,9 +624,9 @@ fn consumed_action() {
     // ActionHandle construction: the caller passes the selected member of
     // the slot's bound set explicitly (every cardinality, `one` included),
     // membership-checked before the goal reaches the wire. No
-    // implicit-target overload is generated; `target_core_node` /
-    // `target_instance_id` never appear as string parameters, and the
-    // renamed `pinned_target_for` accessor must never be emitted.
+    // implicit-target overload is generated, and no `from_*` / `target_*`
+    // core_node or instance_id string parameter appears (see
+    // assert_no_producer_identity_params).
     assert_contains_all(
         &rendered,
         &[
@@ -669,18 +669,7 @@ fn consumed_action() {
         !rendered.contains("def bound_producers("),
         "a `one` slot must expose only the singular accessor; got:\n{rendered}"
     );
-    assert!(
-        !rendered.contains("target_instance_id: Optional[str] = None"),
-        "target_instance_id should no longer appear as a generated parameter; got:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("target_core_node"),
-        "target_core_node should not appear in the generated API; got:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helpers are the bound-producer accessors; got:\n{rendered}"
-    );
+    super::topics::assert_no_producer_identity_params(&rendered);
 
     // cancel_goal as self method, mapping the typed cancel reply's state tag.
     assert_contains_all(

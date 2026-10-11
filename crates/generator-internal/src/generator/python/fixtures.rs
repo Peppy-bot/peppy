@@ -12,10 +12,9 @@
 //! harness cannot pin the node's own targets without the manifest identity.
 
 use super::super::common::NodeTree;
-use super::super::naming::non_empty_str;
 use super::super::testgen::{
     DepLinkSpec, EmittedSpec, ExposedActionSpec, ExposedServiceSpec, FIXTURE_CORE_NODE,
-    FIXTURE_INSTANCE_ID, TargetSpec, TestGenRegistry, claim_sanitized_name,
+    FIXTURE_INSTANCE_ID, ObservedLinkSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
 use super::PythonGenerator;
 use super::code_builder::PythonCodeBuilder;
@@ -26,6 +25,7 @@ use super::mock::{
 use super::scaffold::sanitize_python_module_name;
 use super::type_mapping::{qos_profile_python, retention_python};
 use crate::error::Result;
+use crate::generator::naming::claim_sanitized_name;
 use crate::generator::types::{InterfaceArtifact, InterfaceKind, scoped_schema_key};
 use config::node::Cardinality;
 use std::collections::{HashMap, HashSet};
@@ -133,6 +133,22 @@ fn sync_time_node_dir(to_path: &Path) -> String {
     node_dir.to_string_lossy().into_owned()
 }
 
+/// The fixtures module path of one of the node's own interfaces: `category`
+/// first, then the leaf nested under its link when contract-backed, exactly
+/// as the production module of that interface nests.
+fn own_surface_module_path(
+    category: &str,
+    origin: Option<&crate::generator::types::ContractOrigin>,
+    name: &str,
+) -> Vec<String> {
+    let mut module_path = vec![category.to_string()];
+    match origin {
+        Some(origin) => module_path.extend(origin.module_path_for(name)),
+        None => module_path.push(name.to_string()),
+    }
+    module_path
+}
+
 /// The node's own publish/serve identity for a surface, baked at generation
 /// time: its contract target when contract-routed, else the manifest target.
 fn own_target_expr(
@@ -178,12 +194,9 @@ fn render_emitted_topic(
     spec: &EmittedSpec,
 ) -> Result<(InterfaceArtifact, EmittedMember)> {
     let topic_name = spec.name.as_str();
-    // Key derivation copied from the Rust fixtures renderer, which itself
-    // copies the production emitted-topic key: both resolve to the same capnp
-    // file stem, so no new schema file appears.
-    let fn_name =
-        crate::generator::rust::identifiers::prefixed_name("", non_empty_str(topic_name), "topic");
-    let schema_key = scoped_schema_key(spec.origin.as_ref(), &fn_name);
+    // Same key the Python production module registered, so the codec lands
+    // on the identical capnp file.
+    let schema_key = scoped_schema_key(spec.origin.as_ref(), topic_name);
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
     let qos = qos_profile_python(&spec.qos);
 
@@ -253,15 +266,8 @@ class Subscription:
         },
     );
 
-    let mut module_path = vec!["emitted_topics".to_string()];
-    match &spec.origin {
-        Some(origin) => module_path.extend(origin.module_path_for(topic_name)),
-        None => module_path.push(topic_name.to_string()),
-    }
-    let module = {
-        let segments: Vec<&str> = module_path.iter().map(String::as_str).collect();
-        production_module_path("fixtures", &segments)
-    };
+    let module_path = own_surface_module_path("emitted_topics", spec.origin.as_ref(), topic_name);
+    let module = production_module_path("fixtures", &module_path);
     let doc = format!(
         "Typed observation of the node's emitted topic `{topic_name}`: the harness \
          subscribes before the node boots (pinned to the node's identity) and barriers \
@@ -308,15 +314,9 @@ fn render_exposed_service(
     let response_key = scoped_schema_key(spec.origin.as_ref(), &format!("{service_name}_response"));
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
 
-    let mut module_path = vec!["exposed_services".to_string()];
-    match &spec.origin {
-        Some(origin) => module_path.extend(origin.module_path_for(service_name)),
-        None => module_path.push(service_name.to_string()),
-    }
-    let production = {
-        let segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
-        production_module_path("exposed_services", &segments)
-    };
+    let module_path =
+        own_surface_module_path("exposed_services", spec.origin.as_ref(), service_name);
+    let production = production_module_path("exposed_services", &module_path[1..]);
 
     let mut builder = PythonCodeBuilder::new();
     builder.add_import("import peppylib");
@@ -450,15 +450,8 @@ fn render_exposed_action(
     );
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
 
-    let mut module_path = vec!["exposed_actions".to_string()];
-    match &spec.origin {
-        Some(origin) => module_path.extend(origin.module_path_for(action_name)),
-        None => module_path.push(action_name.to_string()),
-    }
-    let production = {
-        let segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
-        production_module_path("exposed_actions", &segments)
-    };
+    let module_path = own_surface_module_path("exposed_actions", spec.origin.as_ref(), action_name);
+    let production = production_module_path("exposed_actions", &module_path[1..]);
 
     let mut builder = PythonCodeBuilder::new();
     builder.add_import("import peppylib");
@@ -745,12 +738,26 @@ struct SlotKwarg {
     doc: String,
 }
 
-/// The `_DEFAULT_PARAMETERS` dict literal, synthesized from the schema's
-/// declared defaults; `None` when any reachable leaf lacks one (the node's
-/// own boot validation then raises the canonical missing-parameter error).
-fn default_parameters_literal(parameters: &config::ParameterSchema) -> Option<String> {
+/// The `start` keyword arguments and the `_start` statements of every slot,
+/// collected before either is emitted, in the order the slots are visited.
+/// `publisher_readiness` also receives the barriers on the node's emitted
+/// topics, after those of the slots.
+#[derive(Default)]
+struct HarnessParts {
+    slot_kwargs: Vec<SlotKwarg>,
+    mock_starts: Vec<String>,
+    seeding: Vec<String>,
+    publisher_readiness: Vec<Vec<String>>,
+    service_readiness: Vec<String>,
+}
+
+/// The dict literal of a parameter group, the schema itself (the harness's
+/// `_DEFAULT_PARAMETERS`) or a nested group, synthesized from the declared
+/// defaults; `None` when any reachable leaf lacks one (the node's own boot
+/// validation then raises the canonical missing-parameter error).
+fn default_group_literal(fields: &config::ParameterSchema) -> Option<String> {
     let mut parts = Vec::new();
-    for (key, spec) in parameters {
+    for (key, spec) in fields {
         parts.push(format!(
             "{}: {}",
             serde_json::to_string(key).ok()?,
@@ -771,17 +778,7 @@ fn default_spec_literal(spec: &config::ParameterSpec) -> Option<String> {
         }
         config::ParameterSpec::Primitive { default: None, .. } => None,
         config::ParameterSpec::Array { .. } => None,
-        config::ParameterSpec::Group(fields) => {
-            let mut parts = Vec::new();
-            for (key, sub) in fields {
-                parts.push(format!(
-                    "{}: {}",
-                    serde_json::to_string(key).ok()?,
-                    default_spec_literal(sub)?
-                ));
-            }
-            Some(format!("{{{}}}", parts.join(", ")))
-        }
+        config::ParameterSpec::Group(fields) => default_group_literal(fields),
     }
 }
 
@@ -794,6 +791,14 @@ fn python_json_literal(value: &serde_json::Value) -> String {
         serde_json::Value::Null => "None".to_string(),
         other => other.to_string(),
     }
+}
+
+/// A string as a Python string literal. Every JSON string escape (`\"`,
+/// `\\`, `\n`, `\uXXXX`) is valid in Python, while Rust's `{:?}` writes
+/// non-printable and grapheme-extending characters as `\u{...}`, which
+/// Python rejects.
+fn python_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("a str always serializes to a JSON string")
 }
 
 /// Emits a namespace class holding one attribute per link.
@@ -820,7 +825,6 @@ fn emit_namespace_class(
     builder.blank_line();
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_harness(
     parameters: &config::ParameterSchema,
     registry: &TestGenRegistry,
@@ -835,11 +839,7 @@ fn render_harness(
     builder.add_import("import peppylib.testing");
     builder.add_import("from peppygen import parameters as _parameters");
 
-    let mut slot_kwargs: Vec<SlotKwarg> = Vec::new();
-    let mut mock_starts: Vec<String> = Vec::new();
-    let mut seeding: Vec<String> = Vec::new();
-    let mut publisher_readiness: Vec<Vec<String>> = Vec::new();
-    let mut service_readiness: Vec<String> = Vec::new();
+    let mut parts = HarnessParts::default();
     let mut dep_attrs: Vec<String> = Vec::new();
     let mut pairing_attrs: Vec<String> = Vec::new();
     let mut observed_attrs: Vec<String> = Vec::new();
@@ -852,17 +852,7 @@ fn render_harness(
             &alias,
         ));
         let local = format!("dep_{attr}");
-        render_dep_harness_parts(
-            link_id,
-            spec,
-            &attr,
-            &alias,
-            &local,
-            &mut slot_kwargs,
-            &mut mock_starts,
-            &mut seeding,
-            &mut service_readiness,
-        );
+        render_dep_harness_parts(link_id, spec, &attr, &alias, &local, &mut parts);
         dep_attrs.push(attr);
     }
 
@@ -874,128 +864,7 @@ fn render_harness(
             &alias,
         ));
         let local = format!("pair_{attr}");
-        // The mock subscribes to every topic the node emits on this slot;
-        // barrier on each, addressed to the mock's identity, so the node's
-        // first publish routes.
-        let pairing_target = target_python_expr(&TargetSpec::Pairing {
-            name: spec.pairing_name.clone(),
-            tag: spec.pairing_tag.clone(),
-        });
-        let readiness_of = |peer_expr: &str| -> Vec<Vec<String>> {
-            spec.node_emits
-                .iter()
-                .map(|topic| {
-                    publisher_readiness_lines(
-                        &pairing_target,
-                        &topic.name,
-                        Some((link_id, peer_expr)),
-                    )
-                })
-                .collect()
-        };
-        match spec.cardinality {
-            Cardinality::One | Cardinality::ZeroOrOne => {
-                mock_starts.push(format!(
-                    "{local} = await {alias}.Mock.start(router, instance_id)"
-                ));
-                if spec.cardinality == Cardinality::ZeroOrOne {
-                    // The mock still starts when vacant: its pinned subscription is
-                    // what resolves the publisher-readiness barrier, and an unpaired
-                    // node's publishes on the slot are legal no-ops, so only the
-                    // pin seeding is withheld.
-                    let kwarg = format!("{attr}_vacant");
-                    slot_kwargs.push(SlotKwarg {
-                        name: kwarg.clone(),
-                        default: "False".to_string(),
-                        doc: format!(
-                            "{kwarg}: boot with the `zero_or_one` pairing slot `{link_id}` \
-                             unpaired (the peer pin is not seeded; the still-started \
-                             mock's subscriptions stay silent)."
-                        ),
-                    });
-                    seeding.push(format!("if not {kwarg}:"));
-                    seeding.push(format!(
-                        "    standalone = standalone.with_peer_pin({link_id:?}, \
-                         {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID, {alias}.PEER_LINK_ID)"
-                    ));
-                } else {
-                    seeding.push(format!(
-                        "standalone = standalone.with_peer_pin({link_id:?}, {alias}.MOCK_CORE_NODE, \
-                         {alias}.MOCK_INSTANCE_ID, {alias}.PEER_LINK_ID)"
-                    ));
-                }
-                publisher_readiness.extend(readiness_of(&format!("{alias}.peer_info()")));
-            }
-            Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
-                let kwarg = format!("{attr}_instances");
-                let default_count: usize = match spec.cardinality {
-                    Cardinality::OneOrMore => 1,
-                    _ => 0,
-                };
-                slot_kwargs.push(SlotKwarg {
-                    name: kwarg.clone(),
-                    default: default_count.to_string(),
-                    doc: format!(
-                        "{kwarg}: how many mock peers to pair into the `{link_id}` \
-                         pairing slot, each under its own instance id and outside any \
-                         copy."
-                    ),
-                });
-                let members_kwarg = format!("{attr}_members");
-                slot_kwargs.push(SlotKwarg {
-                    name: members_kwarg.clone(),
-                    default: "None".to_string(),
-                    doc: format!(
-                        "{members_kwarg}: explicit mock peers for the `{link_id}` pairing \
-                         slot as a dict of instance id to the copy it belongs to (`None` \
-                         outside a copy), overriding `{kwarg}` when given. For nodes \
-                         that group pairs by copy or classify peers by instance name."
-                    ),
-                });
-                let members_local = format!("{local}_member_specs");
-                mock_starts.push(format!(
-                    "{members_local} = list({members_kwarg}.items()) if {members_kwarg} is \
-                     not None else [(f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\", None) for \
-                     index in range({kwarg})]"
-                ));
-                mock_starts.push(format!("{local} = []"));
-                mock_starts.push(format!(
-                    "for member_instance_id, _member_copy in {members_local}:"
-                ));
-                mock_starts.push(format!(
-                    "    {local}.append(await {alias}.Mock.start(router, instance_id, \
-                     member_instance_id))"
-                ));
-                seeding.push(format!(
-                    "for member_instance_id, member_copy in {members_local}:"
-                ));
-                seeding.push("    if member_copy is None:".to_string());
-                seeding.push(format!(
-                    "        standalone = standalone.with_peer_pin({link_id:?}, \
-                     {alias}.MOCK_CORE_NODE, member_instance_id, {alias}.PEER_LINK_ID)"
-                ));
-                seeding.push("    else:".to_string());
-                seeding.push(format!(
-                    "        standalone = standalone.with_peer_pin_in_copy({link_id:?}, \
-                     {alias}.MOCK_CORE_NODE, member_instance_id, {alias}.PEER_LINK_ID, \
-                     member_copy)"
-                ));
-                let per_member =
-                    readiness_of(&format!("{alias}.peer_info_for(member_instance_id)"));
-                if !per_member.is_empty() {
-                    let mut block = vec![format!(
-                        "for member_instance_id, _member_copy in {members_local}:"
-                    )];
-                    block.extend(
-                        per_member
-                            .into_iter()
-                            .flatten()
-                            .map(|line| format!("    {line}")),
-                    );
-                    publisher_readiness.push(block);
-                }
-            }
-        }
+        render_pairing_harness_parts(link_id, spec, &attr, &alias, &local, &mut parts);
         pairing_attrs.push(attr);
     }
 
@@ -1007,75 +876,7 @@ fn render_harness(
             &alias,
         ));
         let local = format!("obs_{attr}");
-        match spec.cardinality {
-            Cardinality::One => {
-                mock_starts.push(format!("{local} = await {alias}.Mock.start(router)"));
-                seeding.push(format!(
-                    "standalone = standalone.with_observed_source({link_id:?}, \
-                     {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID, {alias}.SOURCE_LINK_ID)"
-                ));
-            }
-            Cardinality::ZeroOrOne => {
-                let kwarg = format!("{attr}_vacant");
-                slot_kwargs.push(SlotKwarg {
-                    name: kwarg.clone(),
-                    default: "False".to_string(),
-                    doc: format!(
-                        "{kwarg}: leave the `{link_id}` observer slot empty (its \
-                         cardinality admits an empty set)."
-                    ),
-                });
-                mock_starts.push(format!("{local} = None"));
-                mock_starts.push(format!("if not {kwarg}:"));
-                mock_starts.push(format!("    {local} = await {alias}.Mock.start(router)"));
-                seeding.push(format!("if not {kwarg}:"));
-                seeding.push(format!(
-                    "    standalone = standalone.with_observed_source({link_id:?}, \
-                     {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID, {alias}.SOURCE_LINK_ID)"
-                ));
-            }
-            Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
-                let kwarg = format!("{attr}_instances");
-                let default_count: usize = match spec.cardinality {
-                    Cardinality::OneOrMore => 1,
-                    _ => 0,
-                };
-                slot_kwargs.push(SlotKwarg {
-                    name: kwarg.clone(),
-                    default: default_count.to_string(),
-                    doc: format!(
-                        "{kwarg}: how many mock sources to start for the `{link_id}` \
-                         observer slot."
-                    ),
-                });
-                let ids_kwarg = format!("{attr}_instance_ids");
-                slot_kwargs.push(SlotKwarg {
-                    name: ids_kwarg.clone(),
-                    default: "None".to_string(),
-                    doc: format!(
-                        "{ids_kwarg}: explicit instance ids for the `{link_id}` mock \
-                         sources, overriding `{kwarg}` when given. For nodes that \
-                         classify sources by instance name."
-                    ),
-                });
-                let ids_local = format!("{local}_member_ids");
-                mock_starts.push(format!(
-                    "{ids_local} = list({ids_kwarg}) if {ids_kwarg} is not None else \
-                     [f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\" for index in \
-                     range({kwarg})]"
-                ));
-                mock_starts.push(format!("{local} = []"));
-                mock_starts.push(format!("for member_instance_id in {ids_local}:"));
-                mock_starts.push(format!(
-                    "    {local}.append(await {alias}.Mock.start(router, member_instance_id))"
-                ));
-                seeding.push(format!("for member_instance_id in {ids_local}:"));
-                seeding.push(format!(
-                    "    standalone = standalone.with_observed_source({link_id:?}, \
-                     {alias}.MOCK_CORE_NODE, member_instance_id, {alias}.SOURCE_LINK_ID)"
-                ));
-            }
-        }
+        render_observed_harness_parts(link_id, spec, &attr, &alias, &local, &mut parts);
         observed_attrs.push(attr);
     }
 
@@ -1090,7 +891,7 @@ fn render_harness(
         emitted_subscribes.push(format!(
             "{local} = await {alias}.subscribe(session, instance_id)"
         ));
-        publisher_readiness.push(publisher_readiness_lines(
+        parts.publisher_readiness.push(publisher_readiness_lines(
             &member.target_expr,
             &member.topic,
             None,
@@ -1108,10 +909,10 @@ fn render_harness(
     builder.line(&format!("NODE_TAG = {node_tag:?}"));
     builder.line("_NODE_CONFIG_FILE = \"peppy.json5\"");
     builder.line(&match node_dir {
-        Some(node_dir) => format!("_SYNC_TIME_NODE_DIR = {node_dir:?}"),
+        Some(node_dir) => format!("_SYNC_TIME_NODE_DIR = {}", python_string_literal(node_dir)),
         None => "_SYNC_TIME_NODE_DIR = None".to_string(),
     });
-    match default_parameters_literal(parameters) {
+    match default_group_literal(parameters) {
         Some(literal) => builder.line(&format!("_DEFAULT_PARAMETERS = {literal}")),
         None => builder.py(r#"
 # At least one parameter has no schema default: `parameters=None`
@@ -1267,7 +1068,7 @@ async def __aexit__(self, exc_type, exc, tb) -> None:
     // ---- start() + _start() -----------------------------------------
     let mut kwarg_params = String::new();
     let mut kwarg_args = String::new();
-    for kwarg in &slot_kwargs {
+    for kwarg in &parts.slot_kwargs {
         kwarg_params.push_str(&format!(", {}={}", kwarg.name, kwarg.default));
         kwarg_args.push_str(&format!(", {}", kwarg.name));
     }
@@ -1305,9 +1106,9 @@ test reads them back with
 `peppylib.clock.subscribe(harness.node_runner())`.
 "#);
             // One paragraph per slot the deployment lets a test vary.
-            if !slot_kwargs.is_empty() {
+            if !parts.slot_kwargs.is_empty() {
                 builder.blank_line();
-                builder.lines(slot_kwargs.iter().map(|kwarg| &kwarg.doc));
+                builder.lines(parts.slot_kwargs.iter().map(|kwarg| &kwarg.doc));
             }
             builder.line("\"\"\"");
             builder.line(&format!(
@@ -1331,7 +1132,7 @@ if instance_id is None:
 router = await peppylib.testing.EphemeralRouter.start()
 "#);
             builder.block("try:", |builder| {
-                builder.lines(&mock_starts);
+                builder.lines(&parts.mock_starts);
                 builder.line("session = await router.connect()");
                 builder.lines(&emitted_subscribes);
                 builder.py(r#"
@@ -1353,13 +1154,13 @@ standalone = (
 if parameters is not None:
     standalone = standalone.with_parameters(parameters)
 "#);
-                builder.lines(&seeding);
+                builder.lines(&parts.seeding);
                 builder.line("publisher_readiness = []");
-                for entry in &publisher_readiness {
+                for entry in &parts.publisher_readiness {
                     builder.lines(entry);
                 }
                 builder.line("service_readiness = [clock.readiness()]");
-                builder.lines(&service_readiness);
+                builder.lines(&parts.service_readiness);
                 builder.call(
                     "core = await peppylib.testing.HarnessCore.start(",
                     &[
@@ -1420,17 +1221,254 @@ raise
     Ok(format!("\"\"\"{doc}\"\"\"\n\n{}", builder.build()))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The default of a set slot's instance-count kwarg: the fewest instances
+/// its cardinality admits.
+fn default_instance_count(cardinality: Cardinality) -> usize {
+    match cardinality {
+        Cardinality::One | Cardinality::OneOrMore => 1,
+        Cardinality::ZeroOrOne | Cardinality::ZeroOrMore => 0,
+    }
+}
+
+/// Starts one mock per instance id of a dependency or observer set slot:
+/// the ids come from the `ids_kwarg` override when given, else `count_kwarg`
+/// of them are generated. Returns the local holding the ids, which the
+/// slot's seeding iterates.
+fn push_instance_set_mock_starts(
+    parts: &mut HarnessParts,
+    alias: &str,
+    local: &str,
+    count_kwarg: &str,
+    ids_kwarg: &str,
+) -> String {
+    let ids_local = format!("{local}_member_ids");
+    parts.mock_starts.push(format!(
+        "{ids_local} = list({ids_kwarg}) if {ids_kwarg} is not None else \
+         [f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\" for index in range({count_kwarg})]"
+    ));
+    parts.mock_starts.push(format!("{local} = []"));
+    parts
+        .mock_starts
+        .push(format!("for member_instance_id in {ids_local}:"));
+    parts.mock_starts.push(format!(
+        "    {local}.append(await {alias}.Mock.start(router, member_instance_id))"
+    ));
+    ids_local
+}
+
+/// The harness statements of one pairing slot: its mock start, its peer
+/// pin seeding and the readiness barriers on the topics the node emits to
+/// the mock peer.
+fn render_pairing_harness_parts(
+    link_id: &str,
+    spec: &PairingLinkSpec,
+    attr: &str,
+    alias: &str,
+    local: &str,
+    parts: &mut HarnessParts,
+) {
+    // The mock subscribes to every topic the node emits on this slot;
+    // barrier on each, addressed to the mock's identity, so the node's
+    // first publish routes.
+    let pairing_target = target_python_expr(&TargetSpec::Pairing {
+        name: spec.pairing_name.clone(),
+        tag: spec.pairing_tag.clone(),
+    });
+    let readiness_of = |peer_expr: &str| -> Vec<Vec<String>> {
+        spec.node_emits
+            .iter()
+            .map(|topic| {
+                publisher_readiness_lines(&pairing_target, &topic.name, Some((link_id, peer_expr)))
+            })
+            .collect()
+    };
+    match spec.cardinality {
+        Cardinality::One | Cardinality::ZeroOrOne => {
+            parts.mock_starts.push(format!(
+                "{local} = await {alias}.Mock.start(router, instance_id)"
+            ));
+            if spec.cardinality == Cardinality::ZeroOrOne {
+                // The mock still starts when vacant: its pinned subscription is
+                // what resolves the publisher-readiness barrier, and an unpaired
+                // node's publishes on the slot are legal no-ops, so only the
+                // pin seeding is withheld.
+                let kwarg = format!("{attr}_vacant");
+                parts.slot_kwargs.push(SlotKwarg {
+                    name: kwarg.clone(),
+                    default: "False".to_string(),
+                    doc: format!(
+                        "{kwarg}: boot with the `zero_or_one` pairing slot `{link_id}` \
+                         unpaired (the peer pin is not seeded; the still-started \
+                         mock's subscriptions stay silent)."
+                    ),
+                });
+                parts.seeding.push(format!("if not {kwarg}:"));
+                parts.seeding.push(format!(
+                    "    standalone = standalone.with_peer_pin({link_id:?}, \
+                     {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID, {alias}.PEER_LINK_ID)"
+                ));
+            } else {
+                parts.seeding.push(format!(
+                    "standalone = standalone.with_peer_pin({link_id:?}, {alias}.MOCK_CORE_NODE, \
+                     {alias}.MOCK_INSTANCE_ID, {alias}.PEER_LINK_ID)"
+                ));
+            }
+            parts
+                .publisher_readiness
+                .extend(readiness_of(&format!("{alias}.peer_info()")));
+        }
+        Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
+            let kwarg = format!("{attr}_instances");
+            parts.slot_kwargs.push(SlotKwarg {
+                name: kwarg.clone(),
+                default: default_instance_count(spec.cardinality).to_string(),
+                doc: format!(
+                    "{kwarg}: how many mock peers to pair into the `{link_id}` \
+                     pairing slot, each under its own instance id and outside any \
+                     copy."
+                ),
+            });
+            let members_kwarg = format!("{attr}_members");
+            parts.slot_kwargs.push(SlotKwarg {
+                name: members_kwarg.clone(),
+                default: "None".to_string(),
+                doc: format!(
+                    "{members_kwarg}: explicit mock peers for the `{link_id}` pairing \
+                     slot as a dict of instance id to the copy it belongs to (`None` \
+                     outside a copy), overriding `{kwarg}` when given. For nodes \
+                     that group pairs by copy or classify peers by instance name."
+                ),
+            });
+            let members_local = format!("{local}_member_specs");
+            parts.mock_starts.push(format!(
+                "{members_local} = list({members_kwarg}.items()) if {members_kwarg} is \
+                 not None else [(f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\", None) for \
+                 index in range({kwarg})]"
+            ));
+            parts.mock_starts.push(format!("{local} = []"));
+            parts.mock_starts.push(format!(
+                "for member_instance_id, _member_copy in {members_local}:"
+            ));
+            parts.mock_starts.push(format!(
+                "    {local}.append(await {alias}.Mock.start(router, instance_id, \
+                 member_instance_id))"
+            ));
+            parts.seeding.push(format!(
+                "for member_instance_id, member_copy in {members_local}:"
+            ));
+            parts
+                .seeding
+                .push("    if member_copy is None:".to_string());
+            parts.seeding.push(format!(
+                "        standalone = standalone.with_peer_pin({link_id:?}, \
+                 {alias}.MOCK_CORE_NODE, member_instance_id, {alias}.PEER_LINK_ID)"
+            ));
+            parts.seeding.push("    else:".to_string());
+            parts.seeding.push(format!(
+                "        standalone = standalone.with_peer_pin_in_copy({link_id:?}, \
+                 {alias}.MOCK_CORE_NODE, member_instance_id, {alias}.PEER_LINK_ID, \
+                 member_copy)"
+            ));
+            let per_member = readiness_of(&format!("{alias}.peer_info_for(member_instance_id)"));
+            if !per_member.is_empty() {
+                let mut block = vec![format!(
+                    "for member_instance_id, _member_copy in {members_local}:"
+                )];
+                block.extend(
+                    per_member
+                        .into_iter()
+                        .flatten()
+                        .map(|line| format!("    {line}")),
+                );
+                parts.publisher_readiness.push(block);
+            }
+        }
+    }
+}
+
+/// The harness statements of one observer slot: its mock source starts and
+/// their observed-source seeding.
+fn render_observed_harness_parts(
+    link_id: &str,
+    spec: &ObservedLinkSpec,
+    attr: &str,
+    alias: &str,
+    local: &str,
+    parts: &mut HarnessParts,
+) {
+    match spec.cardinality {
+        Cardinality::One => {
+            parts
+                .mock_starts
+                .push(format!("{local} = await {alias}.Mock.start(router)"));
+            parts.seeding.push(format!(
+                "standalone = standalone.with_observed_source({link_id:?}, \
+                 {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID, {alias}.SOURCE_LINK_ID)"
+            ));
+        }
+        Cardinality::ZeroOrOne => {
+            let kwarg = format!("{attr}_vacant");
+            parts.slot_kwargs.push(SlotKwarg {
+                name: kwarg.clone(),
+                default: "False".to_string(),
+                doc: format!(
+                    "{kwarg}: leave the `{link_id}` observer slot empty (its \
+                     cardinality admits an empty set)."
+                ),
+            });
+            parts.mock_starts.push(format!("{local} = None"));
+            parts.mock_starts.push(format!("if not {kwarg}:"));
+            parts
+                .mock_starts
+                .push(format!("    {local} = await {alias}.Mock.start(router)"));
+            parts.seeding.push(format!("if not {kwarg}:"));
+            parts.seeding.push(format!(
+                "    standalone = standalone.with_observed_source({link_id:?}, \
+                 {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID, {alias}.SOURCE_LINK_ID)"
+            ));
+        }
+        Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
+            let kwarg = format!("{attr}_instances");
+            parts.slot_kwargs.push(SlotKwarg {
+                name: kwarg.clone(),
+                default: default_instance_count(spec.cardinality).to_string(),
+                doc: format!(
+                    "{kwarg}: how many mock sources to start for the `{link_id}` \
+                     observer slot."
+                ),
+            });
+            let ids_kwarg = format!("{attr}_instance_ids");
+            parts.slot_kwargs.push(SlotKwarg {
+                name: ids_kwarg.clone(),
+                default: "None".to_string(),
+                doc: format!(
+                    "{ids_kwarg}: explicit instance ids for the `{link_id}` mock \
+                     sources, overriding `{kwarg}` when given. For nodes that \
+                     classify sources by instance name."
+                ),
+            });
+            let ids_local = push_instance_set_mock_starts(parts, alias, local, &kwarg, &ids_kwarg);
+            parts
+                .seeding
+                .push(format!("for member_instance_id in {ids_local}:"));
+            parts.seeding.push(format!(
+                "    standalone = standalone.with_observed_source({link_id:?}, \
+                 {alias}.MOCK_CORE_NODE, member_instance_id, {alias}.SOURCE_LINK_ID)"
+            ));
+        }
+    }
+}
+
+/// The harness statements of one dependency slot: its mock producer starts,
+/// their bound-producer seeding and the readiness probes of the services
+/// and actions they serve.
 fn render_dep_harness_parts(
     link_id: &str,
     spec: &DepLinkSpec,
     attr: &str,
     alias: &str,
     local: &str,
-    slot_kwargs: &mut Vec<SlotKwarg>,
-    mock_starts: &mut Vec<String>,
-    seeding: &mut Vec<String>,
-    service_readiness: &mut Vec<String>,
+    parts: &mut HarnessParts,
 ) {
     let target = target_python_expr(&spec.target);
 
@@ -1459,19 +1497,21 @@ fn render_dep_harness_parts(
 
     match spec.cardinality {
         Cardinality::One => {
-            mock_starts.push(format!("{local} = await {alias}.Mock.start(router)"));
-            seeding.push(format!(
+            parts
+                .mock_starts
+                .push(format!("{local} = await {alias}.Mock.start(router)"));
+            parts.seeding.push(format!(
                 "standalone = standalone.with_bound_producer({link_id:?}, \
                  {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID)"
             ));
-            service_readiness.extend(per_instance_readiness(
+            parts.service_readiness.extend(per_instance_readiness(
                 &format!("{alias}.MOCK_INSTANCE_ID"),
                 "",
             ));
         }
         Cardinality::ZeroOrOne => {
             let kwarg = format!("{attr}_vacant");
-            slot_kwargs.push(SlotKwarg {
+            parts.slot_kwargs.push(SlotKwarg {
                 name: kwarg.clone(),
                 default: "False".to_string(),
                 doc: format!(
@@ -1479,40 +1519,38 @@ fn render_dep_harness_parts(
                      cardinality admits an empty binding)."
                 ),
             });
-            mock_starts.push(format!("{local} = None"));
-            mock_starts.push(format!("if not {kwarg}:"));
-            mock_starts.push(format!("    {local} = await {alias}.Mock.start(router)"));
-            seeding.push(format!("if {kwarg}:"));
-            seeding.push(format!(
+            parts.mock_starts.push(format!("{local} = None"));
+            parts.mock_starts.push(format!("if not {kwarg}:"));
+            parts
+                .mock_starts
+                .push(format!("    {local} = await {alias}.Mock.start(router)"));
+            parts.seeding.push(format!("if {kwarg}:"));
+            parts.seeding.push(format!(
                 "    standalone = standalone.with_vacant_producer_slot({link_id:?})"
             ));
-            seeding.push("else:".to_string());
-            seeding.push(format!(
+            parts.seeding.push("else:".to_string());
+            parts.seeding.push(format!(
                 "    standalone = standalone.with_bound_producer({link_id:?}, \
                  {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID)"
             ));
             let entries = per_instance_readiness(&format!("{alias}.MOCK_INSTANCE_ID"), "    ");
             if !entries.is_empty() {
-                service_readiness.push(format!("if not {kwarg}:"));
-                service_readiness.extend(entries);
+                parts.service_readiness.push(format!("if not {kwarg}:"));
+                parts.service_readiness.extend(entries);
             }
         }
         Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
             let kwarg = format!("{attr}_instances");
-            let default_count: usize = match spec.cardinality {
-                Cardinality::OneOrMore => 1,
-                _ => 0,
-            };
-            slot_kwargs.push(SlotKwarg {
+            parts.slot_kwargs.push(SlotKwarg {
                 name: kwarg.clone(),
-                default: default_count.to_string(),
+                default: default_instance_count(spec.cardinality).to_string(),
                 doc: format!(
                     "{kwarg}: how many mock producer instances to start and bind for \
                      the `{link_id}` dependency slot."
                 ),
             });
             let ids_kwarg = format!("{attr}_instance_ids");
-            slot_kwargs.push(SlotKwarg {
+            parts.slot_kwargs.push(SlotKwarg {
                 name: ids_kwarg.clone(),
                 default: "None".to_string(),
                 doc: format!(
@@ -1521,25 +1559,20 @@ fn render_dep_harness_parts(
                      classify producers by instance name."
                 ),
             });
-            let ids_local = format!("{local}_member_ids");
-            mock_starts.push(format!(
-                "{ids_local} = list({ids_kwarg}) if {ids_kwarg} is not None else \
-                 [f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\" for index in range({kwarg})]"
-            ));
-            mock_starts.push(format!("{local} = []"));
-            mock_starts.push(format!("for member_instance_id in {ids_local}:"));
-            mock_starts.push(format!(
-                "    {local}.append(await {alias}.Mock.start(router, member_instance_id))"
-            ));
-            seeding.push(format!("for member_instance_id in {ids_local}:"));
-            seeding.push(format!(
+            let ids_local = push_instance_set_mock_starts(parts, alias, local, &kwarg, &ids_kwarg);
+            parts
+                .seeding
+                .push(format!("for member_instance_id in {ids_local}:"));
+            parts.seeding.push(format!(
                 "    standalone = standalone.with_bound_producer({link_id:?}, \
                  {alias}.MOCK_CORE_NODE, member_instance_id)"
             ));
             let entries = per_instance_readiness("member_instance_id", "    ");
             if !entries.is_empty() {
-                service_readiness.push(format!("for member_instance_id in {ids_local}:"));
-                service_readiness.extend(entries);
+                parts
+                    .service_readiness
+                    .push(format!("for member_instance_id in {ids_local}:"));
+                parts.service_readiness.extend(entries);
             }
         }
     }

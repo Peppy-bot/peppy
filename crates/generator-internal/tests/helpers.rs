@@ -13,7 +13,7 @@ use peppylib::{MessengerHandle, ServiceMessenger};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -27,6 +27,26 @@ use tokio::time::sleep;
 /// shared cache directories for deploying vendored crates and Python packages.
 pub fn test_peppy_dirs() -> PeppyDirs {
     PeppyDirs::default()
+}
+
+/// Runs [`generate_peppygen_lib`] the way the tests run it: git hash
+/// `test-hash`, the shared [`test_peppy_dirs`], the default (symlink) deploy
+/// mode, the node's own `peppy.json5` and the source node tree.
+pub fn generate_test_peppygen_lib(
+    language: PeppygenLanguage,
+    node_dir: &Path,
+    interfaces: Vec<generator::DeploymentInterface>,
+) -> Result<(), generator::GeneratorError> {
+    generate_peppygen_lib(
+        language,
+        node_dir,
+        interfaces,
+        "test-hash",
+        &test_peppy_dirs(),
+        generator::CrateDeployMode::default(),
+        None,
+        NodeTree::Source,
+    )
 }
 
 /// A consumed service whose producer declares no request (or response) format
@@ -66,17 +86,14 @@ pub fn contract_dep(
     )
 }
 
-/// Root for per-test scratch directories. Thin re-export of the shared
-/// [`config_test_support::test_tmp_root`] so the many generator test files can
-/// keep calling `crate::helpers::test_tmp_root()`.
-///
-/// Note: the shared `peppylib` `.so` cache itself still lives under
-/// [`test_peppy_dirs`] (the global `.peppy`); only the per-test copies move here.
-pub fn test_tmp_root() -> PathBuf {
-    config_test_support::test_tmp_root()
-}
-
 pub const TEST_NODE_TAG: &str = "v1";
+
+/// The core node every node instance of the communication tests runs on.
+pub const TEST_CORE_NODE: &str = "test_core";
+
+/// The instance id the communication tests probe and shut nodes down as. No
+/// node runs under it: it names the test harness on the wire.
+pub const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 
 /// Re-exported so the communication test files can name the messaging topology
 /// for their `#[case]` parameterization without reaching into the internal path.
@@ -290,6 +307,63 @@ pub fn copy_config_to_output(user_node: &Path, output_dir: &Path) -> std::path::
     destination
 }
 
+/// Generates a node's peppygen library with the `G` backend in a new project
+/// under `temp_dir`: writes `node_config` as the node manifest, lets
+/// `register_interfaces` add the node's interfaces, builds the library, and
+/// writes the codegen fingerprint that the runtime checks at boot. Returns the
+/// user node directory.
+pub fn generate_node_project<G: generator::LanguageGenerator + Default>(
+    temp_dir: &TempDir,
+    node_config: &str,
+    register_interfaces: impl FnOnce(&mut G),
+) -> std::path::PathBuf {
+    let (mut generator, output_dir, user_node, node_config_path) =
+        init_test_env::<G>(temp_dir, node_config);
+    register_interfaces(&mut generator);
+    let staged_config = copy_config_to_output(&user_node, &output_dir);
+    generator
+        .build(
+            &output_dir,
+            &test_peppy_dirs(),
+            generator::CrateDeployMode::default(),
+        )
+        .unwrap();
+    fs::remove_file(staged_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+    user_node
+}
+
+/// The runtime config of one test node instance: `node_name` at the test tag,
+/// deployed as `instance_id` on [`TEST_CORE_NODE`] and connected to the test
+/// router. Callers bind its slots and apply the topology before saving it.
+pub fn test_node_runtime_config(
+    router_host: &str,
+    router_port: u16,
+    node_name: &str,
+    instance_id: &str,
+) -> config::runtime::RuntimeConfig {
+    config::runtime::RuntimeConfig::new(
+        router_host,
+        router_port,
+        config::runtime::NodeInstanceConfig::new(config::runtime::Name::new(instance_id).unwrap()),
+        node_name,
+        TEST_NODE_TAG,
+        TEST_CORE_NODE,
+    )
+    .unwrap()
+}
+
+/// Saves `config` as `peppy_runtime.json5` in `dir` and returns its path, the
+/// value a spawned node reads from `RUNTIME_CONFIG_VAR_NAME`.
+pub fn save_runtime_config(config: &config::runtime::RuntimeConfig, dir: &Path) -> String {
+    let path = dir.join("peppy_runtime.json5");
+    config.save_json5_launch_config(&path).unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
 const USER_NODE_LAUNCH_BIN: &str = "user_node";
 
 /// Stable per-crate-dir hash used to derive the unique `user_node` and
@@ -441,22 +515,22 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread", "time"] }}
     }
 }
 
+/// Spawns the binary that [`compile_project`] copied to `target/debug` of
+/// `dir`, with piped stdout and stderr. The binary runs directly rather than
+/// through `cargo run`, which would contend for cargo's global package-cache
+/// lock.
 pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
-    // Run the compiled binary directly to avoid cargo's global package-cache lock contention.
-    // `compile_project` must be called beforehand to ensure the binary exists.
     let binary_path = dir
         .join("target")
         .join("debug")
         .join(executable_filename(USER_NODE_LAUNCH_BIN));
-    let use_binary = binary_path.exists();
-    let mut command = if use_binary {
-        Command::new(&binary_path)
-    } else {
-        Command::new("cargo")
-    };
+    assert!(
+        binary_path.exists(),
+        "spawn_cargo_run needs compile_project first: no binary at {}",
+        binary_path.display()
+    );
+    let mut command = Command::new(&binary_path);
     command
-        .env("CARGO_NET_OFFLINE", "true")
-        .args((!use_binary).then_some("run"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(dir);
@@ -465,16 +539,17 @@ pub fn spawn_cargo_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std:
         command.env(key, value);
     }
 
-    command.spawn().expect("failed to spawn cargo run")
+    command
+        .spawn()
+        .expect("failed to spawn the compiled user node")
 }
 
 /// Wraps a spawned child whose stdout/stderr are piped, draining them
 /// from background threads into shared buffers. This lets a test
 /// inspect stdout while the child is still running (for example, to
 /// wait for a specific line to appear before sending shutdown) without
-/// blocking on the pipe. Existing helpers that take a plain
-/// `&mut std::process::Child` keep working against the exposed `child`
-/// field.
+/// blocking on the pipe. Helpers that take a plain
+/// `&mut std::process::Child` use the exposed `child` field.
 pub struct CapturedChild {
     pub child: std::process::Child,
     stdout: Arc<Mutex<Vec<u8>>>,
@@ -575,8 +650,8 @@ impl CapturedChild {
 
     /// Waits for the child to exit and returns the captured output.
     /// Mirrors [`wait_for_child`] but pulls from the background buffers
-    /// instead of reading the pipes directly (the drainer threads now
-    /// own them).
+    /// instead of reading the pipes directly (the drainer threads own
+    /// them).
     pub fn wait(
         mut self,
         timeout: Option<Duration>,
@@ -648,6 +723,54 @@ fn stdout_contains(buf: &Arc<Mutex<Vec<u8>>>, needle: &[u8]) -> bool {
 
 fn lossy_snapshot(buf: &Arc<Mutex<Vec<u8>>>) -> String {
     String::from_utf8_lossy(&buf.lock().unwrap()).into_owned()
+}
+
+/// What the consumer and the exposer of a two-node communication test
+/// printed, read once both exited successfully.
+pub struct ConsumerExposerOutput {
+    pub consumer_stdout: String,
+    pub consumer_stderr: String,
+    pub exposer_stdout: String,
+    pub exposer_stderr: String,
+}
+
+/// A generated node project ready to compile and spawn: its directory and
+/// its saved runtime config.
+pub struct NodeProject {
+    /// Keeps the project directory on disk while the node runs.
+    _temp_dir: TempDir,
+    pub dir: std::path::PathBuf,
+    /// Path of the saved runtime config, the value the node reads from
+    /// `RUNTIME_CONFIG_VAR_NAME`.
+    pub runtime_config: String,
+}
+
+impl NodeProject {
+    /// `dir` is the project directory inside `temp_dir`, and `runtime_config`
+    /// the path [`save_runtime_config`] returned.
+    pub fn new(temp_dir: TempDir, dir: std::path::PathBuf, runtime_config: String) -> Self {
+        Self {
+            _temp_dir: temp_dir,
+            dir,
+            runtime_config,
+        }
+    }
+}
+
+/// Asserts that the process behind `output` exited with success and returns
+/// its stdout and stderr as text for the caller's content checks. `label`
+/// names the process in the failure message.
+pub fn assert_exited_successfully(label: &str, output: &std::process::Output) -> (String, String) {
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "{label} failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        stdout,
+        stderr
+    );
+    (stdout, stderr)
 }
 
 pub fn wait_for_child(
@@ -747,8 +870,8 @@ pub fn compile_project(dir: impl AsRef<Path>) {
         String::from_utf8_lossy(&cargo_output.stderr)
     );
 
-    // The shared target dir is still useful for dependency reuse, but each test
-    // wrapper has a unique package + binary name. That gives Cargo disjoint
+    // The shared target dir gives dependency reuse, and each test wrapper
+    // has a unique package + binary name. That gives Cargo disjoint
     // fingerprints and output artifact paths while preserving the fixed local
     // launch path that `spawn_cargo_run` expects.
     let shared_binary = target_dir
@@ -801,9 +924,8 @@ pub fn run_generate_peppygen_lib_test(
     language: PeppygenLanguage,
     json_config_content: &str,
 ) -> (TempDir, std::path::PathBuf) {
-    // Unqualified (not `crate::helpers::`) so this compiles both when helpers.rs
-    // is included as `mod helpers` and when cargo builds it as its own test binary.
-    let temp_dir = TempDir::new_in(test_tmp_root()).expect("failed to create temp directory");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp directory");
     let node_dir = temp_dir.path();
 
     // Write the peppy.json5 config
@@ -811,18 +933,7 @@ pub fn run_generate_peppygen_lib_test(
     fs::write(&config_path, json_config_content).expect("failed to write peppy.json5");
 
     // Generate the library
-    let peppy_dirs = PeppyDirs::default();
-    generate_peppygen_lib(
-        language,
-        node_dir,
-        Vec::new(),
-        "test-hash",
-        &peppy_dirs,
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("failed to generate library");
+    generate_test_peppygen_lib(language, node_dir, Vec::new()).expect("failed to generate library");
 
     // Verify the generated library structure exists
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
@@ -862,6 +973,18 @@ pub struct WaitContext<'a> {
     pub bound_core_node: &'a str,
     pub caller_instance_id: &'a str,
     pub target_core_node: &'a str,
+}
+
+/// The wait context of the communication tests: the harness speaks from
+/// [`TEST_CORE_NODE`] as [`SHUTDOWN_SENDER_INSTANCE_ID`], and every node
+/// instance it waits for runs on [`TEST_CORE_NODE`].
+pub fn test_wait_context(messenger: &MessengerHandle) -> WaitContext<'_> {
+    WaitContext {
+        messenger,
+        bound_core_node: TEST_CORE_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_core_node: TEST_CORE_NODE,
+    }
 }
 
 /// Default deadline for the wait-family helpers. Long enough for slow CI
@@ -1038,26 +1161,6 @@ pub async fn wait_for_action_reachable_via_target_or_exit(
     }
 }
 
-pub async fn wait_for_shutdown_service_reachable_or_exit(
-    ctx: &WaitContext<'_>,
-    to_node_name: &str,
-    target_instance_id: &str,
-    child: &mut std::process::Child,
-    dir: &std::path::Path,
-    timeout: Duration,
-) {
-    wait_for_service_reachable_or_exit(
-        ctx,
-        to_node_name,
-        SHUTDOWN_SERVICE,
-        Some(target_instance_id),
-        child,
-        dir,
-        timeout,
-    )
-    .await;
-}
-
 pub async fn wait_for_health_service_reachable_or_exit(
     ctx: &WaitContext<'_>,
     to_node_name: &str,
@@ -1087,6 +1190,74 @@ pub async fn send_shutdown(
     target_instance_id: &str,
     timeout: Duration,
 ) {
+    poll_shutdown(
+        messenger,
+        bound_core_node,
+        sender_instance_id,
+        to_node_name,
+        target_core_node,
+        target_instance_id,
+        timeout,
+    )
+    .await
+    .unwrap_or_else(|err| {
+        panic!(
+            "failed to send shutdown to node={} instance={} (project core node={}): {}",
+            to_node_name, target_instance_id, bound_core_node, err
+        )
+    });
+}
+
+/// Shuts down the `instance_id` instance of `node_name` on [`TEST_CORE_NODE`]
+/// with the harness identity of [`test_wait_context`]. Panics when the
+/// request does not reach the instance within 5 seconds.
+pub async fn shut_down_test_node(messenger: &MessengerHandle, node_name: &str, instance_id: &str) {
+    send_shutdown(
+        messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        node_name,
+        TEST_CORE_NODE,
+        instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+}
+
+/// Like `send_shutdown` but doesn't panic if the service is unreachable
+/// (e.g., the process has already exited).
+pub async fn try_send_shutdown(
+    messenger: &MessengerHandle,
+    bound_core_node: &str,
+    sender_instance_id: &str,
+    to_node_name: &str,
+    target_core_node: &str,
+    target_instance_id: &str,
+    timeout: Duration,
+) {
+    let _ = poll_shutdown(
+        messenger,
+        bound_core_node,
+        sender_instance_id,
+        to_node_name,
+        target_core_node,
+        target_instance_id,
+        timeout,
+    )
+    .await;
+}
+
+/// Polls the shutdown service of one instance of `to_node_name`, the request
+/// both `send_shutdown` and `try_send_shutdown` send.
+async fn poll_shutdown(
+    messenger: &MessengerHandle,
+    bound_core_node: &str,
+    sender_instance_id: &str,
+    to_node_name: &str,
+    target_core_node: &str,
+    target_instance_id: &str,
+    timeout: Duration,
+) -> peppylib::PeppyResult<peppylib::Message> {
     let payload = peppylib::types::Payload::from_static(b"shutdown");
     ServiceMessenger::poll(
         messenger,
@@ -1102,40 +1273,6 @@ pub async fn send_shutdown(
         timeout,
     )
     .await
-    .unwrap_or_else(|err| {
-        panic!(
-            "failed to send shutdown to node={} instance={} (project core node={}): {}",
-            to_node_name, target_instance_id, bound_core_node, err
-        )
-    });
-}
-
-/// Like `send_shutdown` but doesn't panic if the service is unreachable
-/// (e.g., the process has already exited).
-pub async fn try_send_shutdown(
-    messenger: &MessengerHandle,
-    bound_core_node: &str,
-    sender_instance_id: &str,
-    to_node_name: &str,
-    target_core_node: &str,
-    target_instance_id: &str,
-    timeout: Duration,
-) {
-    let payload = peppylib::types::Payload::from_static(b"shutdown");
-    let _ = ServiceMessenger::poll(
-        messenger,
-        bound_core_node,
-        sender_instance_id,
-        test_node_target(to_node_name),
-        SHUTDOWN_SERVICE,
-        ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
-            target_core_node,
-            target_instance_id,
-        )),
-        payload,
-        timeout,
-    )
-    .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1255,6 +1392,26 @@ fn sync_python_project(dir: &Path) {
     );
 }
 
+/// Installs the generated packages of the Python project at `project_dir`
+/// into its venv and runs `script` with the venv's interpreter, failing with
+/// both output streams when the script fails. `what` names the check in that
+/// failure.
+pub fn run_python_check(project_dir: &Path, script: &str, what: &str) {
+    init_python_user_node(project_dir);
+    init_python_project_venv(project_dir);
+    let output = Command::new(project_dir.join(".venv/bin/python"))
+        .args(["-c", script])
+        .current_dir(project_dir)
+        .output()
+        .expect("failed to run venv python");
+    assert!(
+        output.status.success(),
+        "{what} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Spawns `uv run python main.py` inside the given project directory.
 pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std::process::Child {
     let mut command = Command::new("uv");
@@ -1273,13 +1430,13 @@ pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std
 
 // ---------------------------------------------------------------------------
 // Interface/config fixtures shared verbatim by the Rust and Python twin test
-// suites. Only constants whose values were byte-identical across the pair
+// suites. Only constants whose values are byte-identical across the pair
 // live here; per-language fixtures stay inline in their test file.
 // ---------------------------------------------------------------------------
 
 /// A contract member that keeps its joint vectors generic: the length is the
 /// implementing arm's to pin. Shared by the Rust and Python `refine`
-/// wire-compatibility capstones, which are twins of each other — one member,
+/// wire-compatibility capstones, which are twins of each other: one member,
 /// so the two cannot drift apart and quietly stop testing the same thing.
 pub const JOINTS_CONTRACT_NAME: &str = "limb_motion";
 
@@ -1397,6 +1554,17 @@ pub const CONSUMED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
 }
 "#;
 
+/// The consumer side of the `move_arm` action of [`EXPOSED_ACTION_EXAMPLE`]:
+/// its goal request, goal response, feedback and result formats.
+pub fn consumed_move_arm_action_messages() -> generator::ConsumedActionMessage {
+    generator::ConsumedActionMessage {
+        goal_request: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap()),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
+        feedback: Some(serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap()),
+        result_response: Some(serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap()),
+    }
+}
+
 pub const TOPIC_DEDUP_SHARED_FORMAT: &str = r#"{
   positions: { $type: "array", $items: "f64", $length: 3 },
   velocities: { $type: "array", $items: "f64", $length: 3 },
@@ -1444,6 +1612,69 @@ pub const CONSUMED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
   name: "get_system_status",
 }
 "#;
+
+/// The consumer side of `enable_camera` of [`EXPOSED_SERVICE_EXAMPLE`],
+/// consumed through the `uvc_camera` slot.
+pub const CONSUMED_SERVICE_EXAMPLE: &str = r#"
+{
+  link_id: "uvc_camera",
+  name: "enable_camera",
+}
+"#;
+
+pub const CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
+{
+  enable: "bool"
+}
+"#;
+
+pub const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
+{
+  healthy: "bool"
+}
+"#;
+
+/// The instance ids of the consumer and the exposer of the single-exposer
+/// service tests.
+pub const SOLE_CONSUMER_INSTANCE_ID: &str = "the_consumer";
+pub const SOLE_EXPOSER_INSTANCE_ID: &str = "the_exposer";
+
+/// One consumed service and the exposed service that answers it, as the
+/// consumer and the exposers of a service communication test declare them.
+pub struct ServicePair {
+    pub consumed: config::node::ConsumedService,
+    pub request_format: MessageFormat,
+    pub response_format: MessageFormat,
+    pub exposed: config::node::NativeExposedService,
+}
+
+impl ServicePair {
+    /// `enable_camera` of [`EXPOSED_SERVICE_EXAMPLE`], consumed through the
+    /// `uvc_camera` slot.
+    pub fn enable_camera() -> Self {
+        Self {
+            consumed: serde_json5::from_str(CONSUMED_SERVICE_EXAMPLE).unwrap(),
+            request_format: serde_json5::from_str(CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap(),
+            response_format: serde_json5::from_str(CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE)
+                .unwrap(),
+            exposed: serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap(),
+        }
+    }
+
+    /// `get_system_status` of [`EXPOSED_SERVICE_NO_REQUEST_EXAMPLE`], which
+    /// declares no request, consumed through the `uvc_camera` slot.
+    pub fn get_system_status() -> Self {
+        Self {
+            consumed: serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_EXAMPLE).unwrap(),
+            request_format: empty_message_format(),
+            response_format: serde_json5::from_str(
+                CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE,
+            )
+            .unwrap(),
+            exposed: serde_json5::from_str(EXPOSED_SERVICE_NO_REQUEST_EXAMPLE).unwrap(),
+        }
+    }
+}
 
 pub const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {

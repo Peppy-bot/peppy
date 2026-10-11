@@ -272,15 +272,7 @@ fn assert_generated_node_lints_clean(declare_surface: impl FnOnce(&mut RustGener
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.set_node_identity("generated_node", "v1");
     declare_surface(&mut generator);
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_clippy(&output_dir);
 }

@@ -17,15 +17,16 @@
 //! cancellation and rejection.
 
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, compile_project, copy_config_to_output,
-    init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run, test_peppy_dirs,
-    test_tmp_root, wait_for_child, wait_for_health_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, SHUTDOWN_SENDER_INSTANCE_ID, STUB_NODE_CONFIG, TEST_CORE_NODE,
+    assert_exited_successfully, compile_project, generate_node_project, init_cargo_user_node,
+    save_runtime_config, send_shutdown, spawn_cargo_run, test_node_runtime_config,
+    test_wait_context, wait_for_child, wait_for_health_service_reachable_or_exit,
 };
-use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
+use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use config::node::{MessageFormat, TopicRetention};
-use config::runtime::{BoundProducers, Name, NodeInstanceConfig, RuntimeConfig};
+use config::runtime::BoundProducers;
 use daemon_config::contract::PeppyContractParser;
-use generator::{ContractOrigin, LanguageGenerator};
+use generator::ContractOrigin;
 use mcp_test_support::register_contract_members;
 use message_codec::MessageCodec;
 use message_codec::consumer::{
@@ -37,15 +38,12 @@ use peppylib::messaging::{BoundSetState, CancelState, ProducerRef, SenderTarget}
 use peppylib::runtime::{CancellationToken, subscribe_bound_set_with_watch};
 use serde_json::{Value, json};
 use std::fs;
-use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
 
-const TEST_CORE_NODE: &str = "test_core";
 const STUB_INSTANCE_ID: &str = "codec_stub_instance";
 const STUB_NODE_NAME: &str = "generated_node";
 const CONSUMER_INSTANCE_ID: &str = "codec_consumer";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const LINK_ID: &str = "codec_impl";
 const CONTRACT_NAME: &str = "codec_fixture";
 const CONTRACT_TAG: &str = "v1";
@@ -335,55 +333,33 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- The generated provider.
-    let temp_dir = TempDir::new_in(test_tmp_root()).expect("temp dir for the stub");
-    let (mut stub_generator, output_dir, user_node, _config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir, STUB_NODE_CONFIG);
+    let temp_dir =
+        TempDir::new_in(config_test_support::test_tmp_root()).expect("temp dir for the stub");
     let origin = ContractOrigin {
         link_id: LINK_ID.to_string(),
         contract_name: CONTRACT_NAME.to_string(),
         contract_tag: CONTRACT_TAG.to_string(),
     };
     let contract = PeppyContractParser::from_content(&fixture_contract()).expect("contract parses");
-    register_contract_members(&mut stub_generator, &contract, &origin);
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    stub_generator
-        .build(&output_dir, &test_peppy_dirs(), Default::default())
-        .expect("build stub peppygen");
-    fs::remove_file(output_config).expect("remove staged config");
-    config::fingerprint::create_codegen_fingerprint(
-        &user_node.join(config::consts::NODE_CONFIG_FILE),
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node = generate_node_project::<generator::RustGenerator>(
+        &temp_dir,
+        STUB_NODE_CONFIG,
+        |stub_generator| register_contract_members(stub_generator, &contract, &origin),
     );
-    let runtime_config = RuntimeConfig::new(
-        &router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(STUB_INSTANCE_ID).expect("valid instance id")),
-        STUB_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .expect("stub runtime config builds");
-    let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
-    runtime_config
-        .save_json5_launch_config(&runtime_config_path)
-        .expect("write stub runtime config");
+    let runtime_config =
+        test_node_runtime_config(&router_host, router_port, STUB_NODE_NAME, STUB_INSTANCE_ID);
+    let config_str = save_runtime_config(&runtime_config, temp_dir.path());
     init_cargo_user_node(&user_node);
     fs::write(user_node.join("src").join("main.rs"), STUB_MAIN).expect("write stub main");
     compile_project(&user_node);
 
-    let config_str = runtime_config_path.to_str().expect("utf-8 path").to_owned();
     let mut stub_child = spawn_cargo_run(&user_node, &[(RUNTIME_CONFIG_VAR_NAME, &config_str)]);
 
     // --- The runtime side: one session, no generated code.
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("the consumer session connects");
-    let wait = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let wait = test_wait_context(&messenger);
     wait_for_health_service_reachable_or_exit(
         &wait,
         STUB_NODE_NAME,
@@ -581,9 +557,5 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     )
     .await;
     let output = wait_for_child(&mut stub_child, Some(Duration::from_secs(10)), &user_node);
-    assert!(
-        output.status.success(),
-        "the stub exits cleanly:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_exited_successfully("the generated stub", &output);
 }

@@ -7,58 +7,19 @@
 //! `generate_peppygen_lib` (the cache-loading side is exercised by the sync
 //! unit tests in `core-node-internal`), and verify:
 //!   1. The generated file layout nests contract-backed artifacts under
-//!      `emitted_topics/{iface_name}/{iface_tag}/{topic}.rs` while keeping the
-//!      native artifact at `emitted_topics/{topic}.rs`.
+//!      `emitted_topics/{link_id}/{topic}.rs` while keeping the native
+//!      artifact at `emitted_topics/{topic}.rs`.
 //!   2. Each `mod.rs` declares the right children.
 //!   3. The rendered declare_publisher inside each leaf passes the matching
 //!      sender target (`SenderTarget::contract("name", "tag")?` for contract-backed,
 //!      `SenderTarget::node("name", "tag")?` for native) to
 //!      `peppylib::TopicMessenger::declare_publisher`.
 
-use crate::helpers::{prepare_directories, test_peppy_dirs};
-use config::node::{
-    MessageFormat, NativeEmittedTopic, PeppygenLanguage, QoSProfile, SchemaType, TopicRetention,
-    TypeToken,
-};
-use generator::{
-    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, NodeTree,
-    generate_peppygen_lib,
-};
-use indexmap::IndexMap;
+use crate::helpers::{generate_test_peppygen_lib, prepare_directories};
+use crate::implements_fixtures::{contract_backed_topic, make_video_stream_topic};
+use config::node::PeppygenLanguage;
 use std::fs;
 use tempfile::TempDir;
-
-/// Minimal `video_stream`-shaped topic with one distinguishing field per
-/// interface tag so we can tell the generated files apart at a glance.
-fn make_topic(distinguishing_field: &str) -> NativeEmittedTopic {
-    let mut fields: IndexMap<String, SchemaType> = IndexMap::new();
-    fields.insert(
-        distinguishing_field.to_string(),
-        SchemaType::Type(TypeToken::U32),
-    );
-    NativeEmittedTopic {
-        name: "video_stream".to_string(),
-        qos_profile: QoSProfile::SensorData,
-        retention: TopicRetention::LiveOnly,
-        message_format: Some(MessageFormat(fields)),
-    }
-}
-
-fn contract_backed(
-    link_id: &str,
-    name: &str,
-    tag: &str,
-    topic: NativeEmittedTopic,
-) -> DeploymentInterface {
-    DeploymentInterface::new(InterfaceVariant::EmittedTopic {
-        topic,
-        origin: Some(ContractOrigin {
-            link_id: link_id.to_string(),
-            contract_name: name.to_string(),
-            contract_tag: tag.to_string(),
-        }),
-    })
-}
 
 const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
@@ -88,9 +49,8 @@ const NODE_CONFIG: &str = r#"{
 /// publisher plus three resolved contract-backed interfaces (`depth_camera:v1`,
 /// `depth_camera:v2`, `uvc_camera:v1`) each shaped as `video_stream` with a
 /// distinguishing marker field. Verifies that:
-///   1. Conformed artifacts nest under
-///      `emitted_topics/{iface_name}/{iface_tag}/{topic}.rs` while the native
-///      artifact stays flat at `emitted_topics/{topic}.rs`.
+///   1. Conformed artifacts nest under `emitted_topics/{link_id}/{topic}.rs`
+///      while the native artifact stays flat at `emitted_topics/{topic}.rs`.
 ///   2. Each container `mod.rs` declares its direct child modules, and the
 ///      top-level `emitted_topics.rs` lists the native leaf plus one entry per
 ///      implemented contract directory.
@@ -101,38 +61,33 @@ const NODE_CONFIG: &str = r#"{
 ///      four artifacts weren't cross-wired during generation.
 #[test]
 fn nests_contract_backed_topics_under_link_id() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed(
+        contract_backed_topic(
             "depth_v1",
             "depth_camera",
             "v1",
-            make_topic("depth_v1_marker"),
+            make_video_stream_topic("depth_v1_marker"),
         ),
-        contract_backed(
+        contract_backed_topic(
             "depth_v2",
             "depth_camera",
             "v2",
-            make_topic("depth_v2_marker"),
+            make_video_stream_topic("depth_v2_marker"),
         ),
-        contract_backed("uvc_v1", "uvc_camera", "v1", make_topic("uvc_v1_marker")),
+        contract_backed_topic(
+            "uvc_v1",
+            "uvc_camera",
+            "v1",
+            make_video_stream_topic("uvc_v1_marker"),
+        ),
     ];
 
-    let peppy_dirs = test_peppy_dirs();
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        &user_node,
-        extras,
-        "test-hash",
-        &peppy_dirs,
-        CrateDeployMode::default(),
-        Some(&peppy_node_config),
-        NodeTree::Source,
-    )
-    .expect("generation should succeed");
+    generate_test_peppygen_lib(PeppygenLanguage::Rust, &user_node, extras)
+        .expect("generation should succeed");
 
     let src = user_node
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)
@@ -260,29 +215,19 @@ fn nests_contract_backed_topics_under_link_id() {
 /// at the wire boundary, so the generator keeps the raw value.
 #[test]
 fn hyphenated_link_id_lands_in_underscore_directory() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
-    let extras = vec![contract_backed(
+    let extras = vec![contract_backed_topic(
         "depth-beta",
         "depth_camera",
         "v1-beta",
-        make_topic("hyphen_marker"),
+        make_video_stream_topic("hyphen_marker"),
     )];
 
-    let peppy_dirs = test_peppy_dirs();
-    generate_peppygen_lib(
-        PeppygenLanguage::Rust,
-        &user_node,
-        extras,
-        "test-hash",
-        &peppy_dirs,
-        CrateDeployMode::default(),
-        Some(&peppy_node_config),
-        NodeTree::Source,
-    )
-    .expect("generation should succeed");
+    generate_test_peppygen_lib(PeppygenLanguage::Rust, &user_node, extras)
+        .expect("generation should succeed");
 
     let emit_dir = user_node
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)

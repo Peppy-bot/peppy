@@ -10,17 +10,16 @@ mod mock;
 mod parameters;
 mod ruff;
 mod scaffold;
-pub(crate) mod serialization;
+mod serialization;
 mod services;
 mod topics;
 mod type_mapping;
 
-use super::naming::{resolve_schema_file_stem, to_camel_case};
+use super::naming::{peer_schema_key, resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
-    InterfaceKind, LanguageGenerator, PairTopicConsumerKind, non_empty_message_format,
-    scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
-    validate_message_format_field_names,
+    InterfaceKind, LanguageGenerator, PairTopicConsumerKind, PeerContext, ensure_no_peer_collision,
+    non_empty_message_format, scoped_schema_key, validate_generatable_message_format,
 };
 use crate::error::Result;
 use config::node::{
@@ -45,7 +44,7 @@ pub struct PythonGenerator {
     sections: Vec<InterfaceArtifact>,
     parameters: config::ParameterSchema,
     schemas: HashMap<String, CapnpSchema>,
-    is_container: bool,
+    peppylib_platform: scaffold::PeppylibPlatform,
     node_tree: NodeTree,
     testgen: crate::generator::testgen::TestGenRegistry,
 }
@@ -61,16 +60,6 @@ impl PythonGenerator {
         self.testgen.record_node_identity(name, tag);
     }
 
-    fn make_artifact(
-        &self,
-        leaf_name: &str,
-        origin: Option<&ContractOrigin>,
-        kind: InterfaceKind,
-        code_output: String,
-    ) -> InterfaceArtifact {
-        InterfaceArtifact::for_leaf(origin, leaf_name, kind, code_output)
-    }
-
     /// Sets the node parameters for code generation.
     pub fn set_parameters(&mut self, parameters: config::ParameterSchema) {
         self.parameters = parameters;
@@ -81,7 +70,11 @@ impl PythonGenerator {
     /// When `true`, the Linux cross-compiled `.so` is deployed; otherwise the
     /// host platform's `.so` is used.
     pub fn set_container(&mut self, is_container: bool) {
-        self.is_container = is_container;
+        self.peppylib_platform = if is_container {
+            scaffold::PeppylibPlatform::LinuxContainer
+        } else {
+            scaffold::PeppylibPlatform::Host
+        };
     }
 
     /// Declares what the output tree is, so the fixtures harness knows
@@ -96,8 +89,8 @@ impl PythonGenerator {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
+    #[cfg(test)]
+    fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         self.sections
     }
 
@@ -108,9 +101,7 @@ impl PythonGenerator {
         schema_key: &str,
         format: &MessageFormat,
     ) -> Result<PythonSchemaInfo> {
-        validate_message_format_field_names(format, schema_key)?;
-        validate_fixed_length_array_items(format)?;
-        validate_generated_type_name_collisions(format, "Message")?;
+        validate_generatable_message_format(format, schema_key)?;
 
         let artifacts = MessageFormatMapper::new(schema_key, format.clone())
             .map_message_format_to_capnpn()
@@ -165,8 +156,7 @@ impl PythonGenerator {
         schema_key: impl AsRef<str>,
         format: Option<&MessageFormat>,
     ) -> Result<Option<PythonSchemaInfo>> {
-        format
-            .filter(|format| !format.0.is_empty())
+        non_empty_message_format(format)
             .map(|format| self.register_schema(schema_key.as_ref(), format))
             .transpose()
     }
@@ -178,10 +168,10 @@ impl PythonGenerator {
     fn add_pair_topic_consumer(
         &mut self,
         topic: &NativeEmittedTopic,
-        peer: &crate::generator::types::PeerContext,
+        peer: &PeerContext,
         kind: PairTopicConsumerKind,
     ) -> Result<()> {
-        let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
+        let schema_key = peer_schema_key(&peer.link_id, &topic.name);
         let arguments = topic.message_format.clone().ok_or_else(|| {
             crate::error::Error::PeerTopicMissingMessageFormat {
                 link_id: peer.link_id.clone(),
@@ -194,17 +184,23 @@ impl PythonGenerator {
             PairTopicConsumerKind::Observed(_) => InterfaceKind::ObservedTopic,
         };
         let code = topics::build_pair_topic_consumer(topic, &arguments, &schema_info, peer, kind)?;
+        self.push_pair_topic_section(topic, peer, artifact_kind, code)
+    }
 
+    /// Pushes the module of a pairing topic at `[link_id, topic]`, after
+    /// checking that no other pairing artifact of the node already sits there.
+    fn push_pair_topic_section(
+        &mut self,
+        topic: &NativeEmittedTopic,
+        peer: &PeerContext,
+        kind: InterfaceKind,
+        code: String,
+    ) -> Result<()> {
         let module_path = peer.module_path_for(&topic.name);
-        crate::generator::types::ensure_no_peer_collision(
-            &self.sections,
-            &module_path,
-            peer,
-            topic,
-        )?;
+        ensure_no_peer_collision(&self.sections, &module_path, peer, topic)?;
         self.push_section(InterfaceArtifact {
             module_path,
-            kind: artifact_kind,
+            kind,
             code_output: code,
         });
         Ok(())
@@ -226,9 +222,9 @@ impl LanguageGenerator for PythonGenerator {
             .transpose()?;
 
         let code = topics::build_emitted_topic(topic, schema_info.as_ref(), origin)?;
-        self.push_section(self.make_artifact(
-            &topic.name,
+        self.push_section(InterfaceArtifact::for_leaf(
             origin,
+            &topic.name,
             InterfaceKind::EmittedTopic,
             code,
         ));
@@ -256,9 +252,9 @@ impl LanguageGenerator for PythonGenerator {
             response_schema_info.as_ref(),
             origin,
         )?;
-        self.push_section(self.make_artifact(
-            &service.name,
+        self.push_section(InterfaceArtifact::for_leaf(
             origin,
+            &service.name,
             InterfaceKind::ExposedService,
             code,
         ));
@@ -313,9 +309,9 @@ impl LanguageGenerator for PythonGenerator {
             feedback_schema_info.as_ref(),
             origin,
         )?;
-        self.push_section(self.make_artifact(
-            &action.name,
+        self.push_section(InterfaceArtifact::for_leaf(
             origin,
+            &action.name,
             InterfaceKind::ExposedAction,
             code,
         ));
@@ -365,14 +361,14 @@ impl LanguageGenerator for PythonGenerator {
                 producer_name,
                 &service.name,
             ),
-            non_empty_message_format(Some(request_arguments)),
+            Some(request_arguments),
         )?;
         let response_schema_info = self.register_optional_schema(
             crate::generator::naming::consumed_service_response_schema_key(
                 producer_name,
                 &service.name,
             ),
-            non_empty_message_format(Some(response_arguments)),
+            Some(response_arguments),
         )?;
 
         let code = services::build_consumed_service(
@@ -394,10 +390,10 @@ impl LanguageGenerator for PythonGenerator {
     fn add_peer_emitted_topic(
         &mut self,
         topic: &NativeEmittedTopic,
-        peer: &crate::generator::types::PeerContext,
+        peer: &PeerContext,
     ) -> Result<()> {
         self.testgen.record_peer_emitted_topic(topic, peer);
-        let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
+        let schema_key = peer_schema_key(&peer.link_id, &topic.name);
         let schema_info = topic
             .message_format
             .as_ref()
@@ -405,25 +401,13 @@ impl LanguageGenerator for PythonGenerator {
             .transpose()?;
 
         let code = topics::build_peer_emitted_topic(topic, schema_info.as_ref(), peer)?;
-        let module_path = peer.module_path_for(&topic.name);
-        crate::generator::types::ensure_no_peer_collision(
-            &self.sections,
-            &module_path,
-            peer,
-            topic,
-        )?;
-        self.push_section(InterfaceArtifact {
-            module_path,
-            kind: InterfaceKind::PeerEmittedTopic,
-            code_output: code,
-        });
-        Ok(())
+        self.push_pair_topic_section(topic, peer, InterfaceKind::PeerEmittedTopic, code)
     }
 
     fn add_peer_consumed_topic(
         &mut self,
         topic: &NativeEmittedTopic,
-        peer: &crate::generator::types::PeerContext,
+        peer: &PeerContext,
     ) -> Result<()> {
         self.testgen.record_peer_consumed_topic(topic, peer);
         self.add_pair_topic_consumer(topic, peer, PairTopicConsumerKind::Peer)
@@ -432,7 +416,7 @@ impl LanguageGenerator for PythonGenerator {
     fn add_observed_topic(
         &mut self,
         topic: &NativeEmittedTopic,
-        observer: &crate::generator::types::PeerContext,
+        observer: &PeerContext,
         cardinality: Cardinality,
     ) -> Result<()> {
         self.testgen
@@ -481,7 +465,6 @@ impl LanguageGenerator for PythonGenerator {
             actions::ConsumedActionSchemaInfo {
                 goal_request: goal_request_schema_info.as_ref(),
                 goal_response: goal_response_schema_info.as_ref(),
-                cancel_response: None,
                 feedback: feedback_schema_info.as_ref(),
                 result_response: result_response_schema_info.as_ref(),
             },
@@ -511,7 +494,7 @@ impl LanguageGenerator for PythonGenerator {
         mock::render(&mut self, &registry)?;
         fixtures::render(&mut self, &registry, to_path)?;
 
-        scaffold::add_peppylib_dependencies(to_path, peppy_dirs, self.is_container)?;
+        scaffold::add_peppylib_dependencies(to_path, peppy_dirs, self.peppylib_platform)?;
         scaffold::add_capnp_schemas(&self.schemas, to_path)?;
         scaffold::add_artifacts_to_lib(to_path, self.sections)?;
         scaffold::add_parameters_to_lib(&self.parameters, to_path)?;

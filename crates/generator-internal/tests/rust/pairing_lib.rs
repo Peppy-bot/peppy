@@ -1,9 +1,9 @@
 //! Generate-and-compile fixture for pairing peer modules (Rust): a synthetic
 //! two-role pairing (`arm_link/v1`, roles controller/arm) generates
 //! `paired_topics/<link_id>/<topic>` modules for both directions, and a user node
-//! exercising the full generated surface — slot consts, `paired()` /
+//! exercising the full generated surface (slot consts, `paired()` /
 //! `wait_paired()`, the slot-scoped publisher, and the pin-following
-//! subscription — must compile against the real peppylib. This is the
+//! subscription) must compile against the real peppylib. This is the
 //! type-level proof that the generated seams line up with
 //! `peppylib::runtime::{subscribe_peer, NodeRunner::peer}`.
 
@@ -16,8 +16,7 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use crate::helpers::{
-    STUB_NODE_CONFIG, compile_project, copy_config_to_output, init_cargo_user_node, init_test_env,
-    test_peppy_dirs,
+    STUB_NODE_CONFIG, compile_project, generate_node_project, init_cargo_user_node,
 };
 
 const JOINT_COMMANDS: &str = r#"
@@ -49,29 +48,50 @@ fn controller_peer_context() -> PeerContext {
         link_id: "arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
+        cardinality: Cardinality::One,
     }
+}
+
+/// Asserts that the `category` directory of the generated crate's
+/// `src_dir` holds no module besides its `mod.rs`. Pairing topics nest under
+/// `paired_topics`, and the check reads the directory so that a misplaced
+/// module fails even when the crate compiles.
+fn assert_no_modules_under(src_dir: &Path, category: &str) {
+    let dir = src_dir.join(category);
+    // The scaffold creates every category dir, so a missing one means the
+    // layout changed and this check would otherwise pass vacuously.
+    assert!(
+        dir.is_dir(),
+        "expected category dir {}; if the scaffold stopped creating empty \
+         categories, rewrite this assertion rather than deleting it",
+        dir.display()
+    );
+    let entries: Vec<String> = fs::read_dir(&dir)
+        .expect("category dir reads")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "mod.rs")
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "pairing topics must not generate modules under {category}, found: {entries:?}"
+    );
 }
 
 #[test]
 fn generated_peer_modules_compile_against_peppylib() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let commands: NativeEmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
-    let (mut generator, output_dir, user_node, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir, STUB_NODE_CONFIG);
     let peer = controller_peer_context();
-    generator.add_peer_emitted_topic(&commands, &peer).unwrap();
-    generator.add_peer_consumed_topic(&states, &peer).unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(&output_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node = generate_node_project::<generator::RustGenerator>(
+        &temp_dir,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator.add_peer_emitted_topic(&commands, &peer).unwrap();
+            generator.add_peer_consumed_topic(&states, &peer).unwrap();
+        },
     );
 
     // Both directions of the slot nest under paired_topics/<link_id>/<topic>.
@@ -84,28 +104,8 @@ fn generated_peer_modules_compile_against_peppylib() {
         );
     }
     // Neither direction may leak into the flat consumed/emitted namespaces.
-    // Asserted on directory contents so a misplaced-but-working module fails
-    // loudly instead of passing by compiling.
     for category in ["consumed_topics", "emitted_topics"] {
-        let dir = src_dir.join(category);
-        // The scaffold creates every category dir, so a missing one means the
-        // layout changed and this check would otherwise pass vacuously.
-        assert!(
-            dir.is_dir(),
-            "expected category dir {}; if the scaffold stopped creating empty \
-             categories, rewrite this assertion rather than deleting it",
-            dir.display()
-        );
-        let entries: Vec<String> = fs::read_dir(&dir)
-            .expect("category dir reads")
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name != "mod.rs")
-            .collect();
-        assert!(
-            entries.is_empty(),
-            "pairing topics must not generate modules under {category}, found: {entries:?}"
-        );
+        assert_no_modules_under(&src_dir, category);
     }
 
     init_cargo_user_node(&user_node);
@@ -167,33 +167,28 @@ fn main() -> Result<()> {
 /// its peer belongs to.
 #[test]
 fn generated_multi_peer_modules_compile_against_peppylib() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let commands: NativeEmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
-    let (mut generator, output_dir, user_node, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir, STUB_NODE_CONFIG);
     let limbs = PeerContext {
         link_id: "limbs".to_string(),
-        cardinality: config::node::Cardinality::ZeroOrMore,
+        cardinality: Cardinality::ZeroOrMore,
         ..controller_peer_context()
     };
     let crew = PeerContext {
         link_id: "crew".to_string(),
-        cardinality: config::node::Cardinality::OneOrMore,
+        cardinality: Cardinality::OneOrMore,
         ..controller_peer_context()
     };
-    generator.add_peer_emitted_topic(&commands, &limbs).unwrap();
-    generator.add_peer_consumed_topic(&states, &limbs).unwrap();
-    generator.add_peer_emitted_topic(&commands, &crew).unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(&output_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node = generate_node_project::<generator::RustGenerator>(
+        &temp_dir,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator.add_peer_emitted_topic(&commands, &limbs).unwrap();
+            generator.add_peer_consumed_topic(&states, &limbs).unwrap();
+            generator.add_peer_emitted_topic(&commands, &crew).unwrap();
+        },
     );
 
     init_cargo_user_node(&user_node);
@@ -250,62 +245,41 @@ fn main() -> Result<()> {
     compile_project(&user_node);
 }
 
-/// The recorder side observing `arm_link/v1`: taps the `arm` role's
-/// `joint_states` through an observer slot whose link_id is `observed_arm`.
-fn recorder_observer_context() -> PeerContext {
-    PeerContext {
-        link_id: "observed_arm".to_string(),
-        pairing_name: "arm_link".to_string(),
-        pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
-    }
-}
-
-/// A commander watching every arm of the fleet: same pairing and role, but a
-/// `one_or_more` slot, so the generated module is a member set.
-fn commander_observer_context() -> PeerContext {
-    PeerContext {
-        link_id: "observed_arms".to_string(),
-        pairing_name: "arm_link".to_string(),
-        pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
-    }
-}
-
 #[test]
 fn generated_observer_modules_compile_against_peppylib() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
-    let (mut generator, output_dir, user_node, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir, STUB_NODE_CONFIG);
-    let observer = recorder_observer_context();
-    generator
-        .add_observed_topic(&states, &observer, Cardinality::One)
-        .unwrap();
-    // `zero_or_one` is scalar-shaped like `one`, so it generates the same
-    // singular accessor name, but a different return type: it is the one scalar
-    // cardinality a deployment may leave empty, so it alone answers an `Option`.
-    generator
-        .add_observed_topic(
-            &states,
-            &PeerContext {
-                link_id: "maybe_observed_arm".to_string(),
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                cardinality: config::node::Cardinality::One,
-            },
-            Cardinality::ZeroOrOne,
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(&output_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node = generate_node_project::<generator::RustGenerator>(
+        &temp_dir,
+        STUB_NODE_CONFIG,
+        |generator| {
+            // A recorder taps the `arm` role's `joint_states` through an
+            // observer slot.
+            generator
+                .add_observed_topic(
+                    &states,
+                    &PeerContext {
+                        link_id: "observed_arm".to_string(),
+                        ..controller_peer_context()
+                    },
+                    Cardinality::One,
+                )
+                .unwrap();
+            // `zero_or_one` is scalar-shaped like `one`, so it generates the same
+            // singular accessor name, but a different return type: it is the one scalar
+            // cardinality a deployment may leave empty, so it alone answers an `Option`.
+            generator
+                .add_observed_topic(
+                    &states,
+                    &PeerContext {
+                        link_id: "maybe_observed_arm".to_string(),
+                        ..controller_peer_context()
+                    },
+                    Cardinality::ZeroOrOne,
+                )
+                .unwrap();
+        },
     );
 
     // The observer topic nests under paired_topics/<link_id>/<topic>, alongside
@@ -319,17 +293,7 @@ fn generated_observer_modules_compile_against_peppylib() {
         "expected generated module paired_topics/observed_arm/joint_states.rs"
     );
     for category in ["consumed_topics", "emitted_topics"] {
-        let dir = src_dir.join(category);
-        let entries: Vec<String> = fs::read_dir(&dir)
-            .expect("category dir reads")
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name != "mod.rs")
-            .collect();
-        assert!(
-            entries.is_empty(),
-            "an observer topic must not generate a module under {category}, found: {entries:?}"
-        );
+        assert_no_modules_under(&src_dir, category);
     }
 
     init_cargo_user_node(&user_node);
@@ -394,38 +358,36 @@ fn main() -> Result<()> {
 /// many, or an empty set the plan said could not happen.
 #[test]
 fn generated_multi_observer_modules_compile_against_peppylib() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
-    let (mut generator, output_dir, user_node, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir, STUB_NODE_CONFIG);
-    generator
-        .add_observed_topic(
-            &states,
-            &commander_observer_context(),
-            Cardinality::OneOrMore,
-        )
-        .unwrap();
-    generator
-        .add_observed_topic(
-            &states,
-            &PeerContext {
-                link_id: "spare_arms".to_string(),
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                cardinality: config::node::Cardinality::One,
-            },
-            Cardinality::ZeroOrMore,
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(&output_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node = generate_node_project::<generator::RustGenerator>(
+        &temp_dir,
+        STUB_NODE_CONFIG,
+        |generator| {
+            // A commander watches every arm of the fleet through a
+            // `one_or_more` observer slot.
+            generator
+                .add_observed_topic(
+                    &states,
+                    &PeerContext {
+                        link_id: "observed_arms".to_string(),
+                        ..controller_peer_context()
+                    },
+                    Cardinality::OneOrMore,
+                )
+                .unwrap();
+            generator
+                .add_observed_topic(
+                    &states,
+                    &PeerContext {
+                        link_id: "spare_arms".to_string(),
+                        ..controller_peer_context()
+                    },
+                    Cardinality::ZeroOrMore,
+                )
+                .unwrap();
+        },
     );
 
     init_cargo_user_node(&user_node);

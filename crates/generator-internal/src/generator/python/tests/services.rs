@@ -62,11 +62,8 @@ pub(super) const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
 }
 "#;
 
-/// Only pointer-backed fields can be optional, so a `_has` presence probe is
-/// only ever emitted for these. `$optional` on a scalar is rejected when the
-/// config is parsed and never reaches code generation.
-// An optional struct carrying a fixed-length array: the shape a placement
-// takes, and the one that decoded a robot out of a scene.
+/// An optional struct carrying a fixed-length array, the shape a placement
+/// takes.
 const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_STRUCT: &str = r#"
 {
   placement: {
@@ -77,6 +74,9 @@ const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_STRUCT: &str = r#"
 }
 "#;
 
+/// Only pointer-backed fields can be optional, so a `_has` presence probe is
+/// only ever emitted for these. `$optional` on a scalar is rejected when the
+/// config is parsed and never reaches code generation.
 const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_POINTERS: &str = r#"
 {
   maybe_text: {
@@ -404,9 +404,8 @@ fn consumed_service() {
     // Poll function signature with typed params and return type: the
     // caller passes the selected member of the slot's bound set explicitly
     // (every cardinality, `one` included). No implicit-target overload is
-    // generated; `target_core_node` / `target_instance_id` never appear as
-    // string parameters, and the renamed `pinned_target_for` accessor must
-    // never be emitted.
+    // generated, and no `from_*` / `target_*` core_node or instance_id string
+    // parameter appears (see assert_no_producer_identity_params).
     assert_contains_all(
         &rendered,
         &[
@@ -418,18 +417,7 @@ fn consumed_service() {
             ") -> Response:",
         ],
     );
-    assert!(
-        !rendered.contains("target_instance_id: Optional[str] = None"),
-        "target_instance_id should no longer appear as a generated parameter; got:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("target_core_node"),
-        "target_core_node should not appear in the generated API; got:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("pinned_target_for"),
-        "pinned_target_for should never be emitted; the runtime helpers are the bound-producer accessors; got:\n{rendered}"
-    );
+    super::topics::assert_no_producer_identity_params(&rendered);
 
     // The cardinality-typed module surface plus the per-call membership
     // check: this `one` slot exposes the singular, infallible

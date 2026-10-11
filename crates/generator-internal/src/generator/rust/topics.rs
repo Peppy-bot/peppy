@@ -1,8 +1,8 @@
 use super::deserialization::build_deserialize_fn;
 use super::serialization::{MessageEncodingSpec, build_serialize_payload};
-use super::services::deserialize_fields_from_format;
+use super::services::{build_result_expr_from_values, deserialize_fields_from_format};
 use crate::error::Result;
-use crate::generator::types::{SubscriptionTag, retention_doc};
+use crate::generator::types::{DocLanguage, SubscriptionTag, retention_doc};
 use config::node::{Cardinality, ConsumedTopic, NativeEmittedTopic, QoSProfile, TopicRetention};
 use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
@@ -143,7 +143,7 @@ pub fn build_topic_publisher(
 /// `build_message(fields…)` for an emitted topic: serializes the message fields
 /// to a wire `peppylib::Payload` with no messenger access, so a publish loop can
 /// build the payload off any lock and hand the finished bytes to
-/// [`peppylib::TopicPublisher::publish`]. Filters the reserved `instance_id`
+/// `peppylib::TopicPublisher::publish`. Filters the reserved `instance_id`
 /// from the params and returns `MessageFormatUnavailable` when the topic has no
 /// serializable message format.
 fn build_topic_build_message(
@@ -408,10 +408,8 @@ pub fn build_peer_topic_publisher(
     }
 }
 
-/// Consume side of a peer topic: a subscription backed by
-/// `peppylib::runtime::subscribe_peer`, which follows the slot's live pin
-/// (silent while unpaired, triple wire pin while paired, drop-before-redeclare
-/// on re-pin). The binding-slot consumer filters are never involved.
+/// Inputs of a pairing-topic subscription module, shared by the peer and
+/// observer consume sides.
 pub struct PeerTopicSubscriptionSpec<'a> {
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
@@ -422,6 +420,10 @@ pub struct PeerTopicSubscriptionSpec<'a> {
     pub struct_prefix: &'a str,
 }
 
+/// Consume side of a peer topic: a subscription backed by
+/// `peppylib::runtime::subscribe_peer`, which follows the slot's live pin
+/// (silent while unpaired, triple wire pin while paired, drop-before-redeclare
+/// on re-pin). The binding-slot consumer filters are never involved.
 pub fn build_peer_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Result<TokenStream> {
     build_pair_topic_subscription(spec, PairTopicSubscriptionKind::Peer)
 }
@@ -752,61 +754,45 @@ pub fn build_consumed_topic_subscription(
 /// surfaces every call site that relied on the old guarantee at compile
 /// time. The accessor doc comes from
 /// [`DependencyContext::bound_producers_doc`] so both language generators
-/// state the same guarantees; only the Rust-API tail sentence is added
-/// here.
+/// state the same guarantees, in Rust's API terms.
 ///
 /// [`DependencyContext::bound_producers_doc`]: crate::generator::types::DependencyContext::bound_producers_doc
 pub fn build_bound_producer_accessor_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let link_id_literal = Literal::string(&dependency.link_id);
-    let (api_note, accessor) = match dependency.cardinality {
-        Cardinality::One => (
-            None,
-            quote! {
-                pub fn bound_producer(
-                    node_runner: &crate::NodeRunner,
-                ) -> &peppylib::messaging::ProducerRef {
-                    node_runner.processor().sole_bound_producer(#link_id_literal)
-                }
-            },
-        ),
-        Cardinality::ZeroOrOne => (
-            None,
-            quote! {
-                pub fn bound_producer(
-                    node_runner: &crate::NodeRunner,
-                ) -> Option<&peppylib::messaging::ProducerRef> {
-                    node_runner.processor().optional_bound_producer(#link_id_literal)
-                }
-            },
-        ),
-        Cardinality::OneOrMore => (
-            Some(crate::generator::types::DocLanguage::Rust.never_empty_tail()),
-            quote! {
-                pub fn bound_producers(
-                    node_runner: &crate::NodeRunner,
-                ) -> peppylib::messaging::NonEmptyProducers {
-                    node_runner.processor().non_empty_bound_producers(#link_id_literal)
-                }
-            },
-        ),
-        Cardinality::ZeroOrMore => (
-            None,
-            quote! {
-                pub fn bound_producers(
-                    node_runner: &crate::NodeRunner,
-                ) -> Vec<peppylib::messaging::ProducerRef> {
-                    node_runner.processor().bound_producers(#link_id_literal)
-                }
-            },
-        ),
+    let accessor = match dependency.cardinality {
+        Cardinality::One => quote! {
+            pub fn bound_producer(
+                node_runner: &crate::NodeRunner,
+            ) -> &peppylib::messaging::ProducerRef {
+                node_runner.processor().sole_bound_producer(#link_id_literal)
+            }
+        },
+        Cardinality::ZeroOrOne => quote! {
+            pub fn bound_producer(
+                node_runner: &crate::NodeRunner,
+            ) -> Option<&peppylib::messaging::ProducerRef> {
+                node_runner.processor().optional_bound_producer(#link_id_literal)
+            }
+        },
+        Cardinality::OneOrMore => quote! {
+            pub fn bound_producers(
+                node_runner: &crate::NodeRunner,
+            ) -> peppylib::messaging::NonEmptyProducers {
+                node_runner.processor().non_empty_bound_producers(#link_id_literal)
+            }
+        },
+        Cardinality::ZeroOrMore => quote! {
+            pub fn bound_producers(
+                node_runner: &crate::NodeRunner,
+            ) -> Vec<peppylib::messaging::ProducerRef> {
+                node_runner.processor().bound_producers(#link_id_literal)
+            }
+        },
     };
-    let mut doc_lines: Vec<&str> = dependency.bound_producers_doc().to_vec();
-    if let Some(note) = api_note {
-        doc_lines.push(note);
-    }
-    let doc = super::doc_attrs(&doc_lines);
+    let producers_doc = dependency.bound_producers_doc(DocLanguage::Rust);
+    let doc = super::doc_attrs(&producers_doc.lines().collect::<Vec<_>>());
     let members_accessor = build_bound_members_accessor_fn(dependency);
     quote! {
         #(#doc)*
@@ -833,40 +819,30 @@ fn follows_the_set_attrs(cardinality: Cardinality) -> Vec<TokenStream> {
 fn build_bound_members_accessor_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
-    let Some(doc_lines) = dependency.bound_members_doc() else {
+    let Some(members_doc) = dependency.bound_members_doc(DocLanguage::Rust) else {
         return TokenStream::new();
     };
     let link_id_literal = Literal::string(&dependency.link_id);
-    let (api_note, accessor) = match dependency.cardinality {
-        Cardinality::OneOrMore => (
-            Some(crate::generator::types::DocLanguage::Rust.never_empty_tail()),
-            quote! {
-                pub fn bound_members(
-                    node_runner: &crate::NodeRunner,
-                ) -> peppylib::messaging::NonEmptyMembers {
-                    node_runner.processor().non_empty_bound_members(#link_id_literal)
-                }
-            },
-        ),
-        Cardinality::ZeroOrMore => (
-            None,
-            quote! {
-                pub fn bound_members(
-                    node_runner: &crate::NodeRunner,
-                ) -> Vec<peppylib::messaging::BoundMember> {
-                    node_runner.processor().bound_members(#link_id_literal)
-                }
-            },
-        ),
+    let accessor = match dependency.cardinality {
+        Cardinality::OneOrMore => quote! {
+            pub fn bound_members(
+                node_runner: &crate::NodeRunner,
+            ) -> peppylib::messaging::NonEmptyMembers {
+                node_runner.processor().non_empty_bound_members(#link_id_literal)
+            }
+        },
+        Cardinality::ZeroOrMore => quote! {
+            pub fn bound_members(
+                node_runner: &crate::NodeRunner,
+            ) -> Vec<peppylib::messaging::BoundMember> {
+                node_runner.processor().bound_members(#link_id_literal)
+            }
+        },
         Cardinality::One | Cardinality::ZeroOrOne => {
             unreachable!("a scalar slot has no members doc")
         }
     };
-    let mut doc_lines: Vec<&str> = doc_lines.to_vec();
-    if let Some(note) = api_note {
-        doc_lines.push(note);
-    }
-    let doc = super::doc_attrs(&doc_lines);
+    let doc = super::doc_attrs(&members_doc.lines().collect::<Vec<_>>());
     quote! {
         #(#doc)*
         #accessor
@@ -913,14 +889,8 @@ fn build_topic_deserialize_helper(
         struct_prefix,
         &context_expr,
     )?;
-    let field_inits: Vec<TokenStream> = params
-        .iter()
-        .zip(value_idents.iter())
-        .map(|(param, value_ident)| {
-            let field_ident = &param.ident;
-            quote!(#field_ident: #value_ident)
-        })
-        .collect();
+    let message_expr =
+        build_result_expr_from_values(params, &value_idents, Some(args_struct_ident));
 
     Ok(build_deserialize_fn(
         helper_fn_ident,
@@ -928,26 +898,19 @@ fn build_topic_deserialize_helper(
         &context_expr,
         &quote!(#args_struct_ident),
         &field_statements,
-        &quote!(#args_struct_ident { #( #field_inits ),* }),
+        &message_expr,
     ))
 }
 
-/// The `QoSProfile` variant an emitted reference spells, for renderers that
-/// reach the type through their own module path (generated peppygen code
-/// says `peppylib::config::QoSProfile`).
-pub fn qos_profile_variant(profile: &QoSProfile) -> Ident {
-    let variant = match profile {
-        QoSProfile::Standard => "Standard",
-        QoSProfile::Reliable => "Reliable",
-        QoSProfile::SensorData => "SensorData",
-        QoSProfile::Critical => "Critical",
-    };
-    Ident::new(variant, proc_macro2::Span::call_site())
-}
-
+/// The `peppylib::config::QoSProfile` value generated code states for a
+/// topic's QoS profile.
 pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
-    let variant_ident = qos_profile_variant(profile);
-    quote!(peppylib::config::QoSProfile::#variant_ident)
+    match profile {
+        QoSProfile::Standard => quote!(peppylib::config::QoSProfile::Standard),
+        QoSProfile::Reliable => quote!(peppylib::config::QoSProfile::Reliable),
+        QoSProfile::SensorData => quote!(peppylib::config::QoSProfile::SensorData),
+        QoSProfile::Critical => quote!(peppylib::config::QoSProfile::Critical),
+    }
 }
 
 /// The doc lines a retaining topic's generated API adds: a paragraph break and

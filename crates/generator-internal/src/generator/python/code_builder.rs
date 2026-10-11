@@ -73,23 +73,23 @@ impl PythonCodeBuilder {
     }
 
     /// Increases indentation by one level.
-    pub fn indent(&mut self) {
+    fn indent(&mut self) {
         self.indent_level += 1;
     }
 
     /// Decreases indentation by one level.
-    pub fn dedent(&mut self) {
+    fn dedent(&mut self) {
         assert!(self.indent_level > 0, "cannot dedent below level 0");
         self.indent_level -= 1;
     }
 
     /// Emits `header`, runs `body` one level deeper, then dedents.
     ///
-    /// Exactly the sequence it replaces — `line(header); indent(); body;
-    /// dedent();` — so not a byte of output moves. What it buys is that the
-    /// pair can no longer be left unbalanced: written by hand, a `dedent()`
-    /// ends up dozens of lines below its `indent()`, and a suite closed with a
-    /// bare `dedent(); dedent();` is only checkable by counting upwards.
+    /// Writes the same bytes as `line(header); indent(); body; dedent();`, and
+    /// keeps the indent and its dedent in one call: written by hand, a
+    /// `dedent()` ends up dozens of lines below its `indent()`, and a suite
+    /// closed with a bare `dedent(); dedent();` is only checkable by counting
+    /// upwards.
     ///
     /// Generic over the body's result so a block can propagate an error with
     /// `?` at the call site, or hand back a value it computed while emitting.
@@ -135,6 +135,19 @@ impl PythonCodeBuilder {
         self.line(&format!("\"\"\"{text}\"\"\""));
     }
 
+    /// A docstring of several paragraphs: `"""summary`, a blank line, the
+    /// body lines, then the closing `"""` on a line of its own.
+    pub fn multiline_docstring<S: AsRef<str>>(
+        &mut self,
+        summary: &str,
+        body: impl IntoIterator<Item = S>,
+    ) {
+        self.line(&format!("\"\"\"{summary}"));
+        self.blank_line();
+        self.lines(body);
+        self.line("\"\"\"");
+    }
+
     /// Appends a block of literal Python, written as a Rust raw string.
     ///
     /// The text must open with a newline (`r#"` followed by a line break). The
@@ -146,8 +159,8 @@ impl PythonCodeBuilder {
     ///
     /// Deliberately takes no interpolation. The emitted Python is full of
     /// f-strings whose literal braces would every one need `{{`/`}}` doubling
-    /// under `format!` — precisely in the lines whose readability matters most
-    /// — and a placeholder syntax of our own would trade `format!`'s
+    /// under `format!`, precisely in the lines whose readability matters most,
+    /// and a placeholder syntax of our own would trade `format!`'s
     /// compile-time argument checking for a runtime panic. Anything dynamic
     /// stays on [`Self::line`] with `format!`; `py` is for the static runs,
     /// which is most of what these renderers emit.
@@ -158,8 +171,8 @@ impl PythonCodeBuilder {
     ///
     /// Panics on a tab or on trailing whitespace. Both are invisible in a Rust
     /// source file and would silently rewrite the generated Python, so they are
-    /// rejected rather than repaired — which also means a blank line inside a
-    /// block must be genuinely empty, not indented to match its neighbours.
+    /// rejected rather than repaired. A blank line inside a block must
+    /// therefore be genuinely empty, not indented to match its neighbours.
     pub fn py(&mut self, source: &str) {
         let mut source_lines: Vec<&str> = source.split('\n').collect();
         assert!(
@@ -210,17 +223,16 @@ impl PythonCodeBuilder {
     }
 
     /// Writes a plain class (no `@dataclass` decorator).
-    pub fn class_def(&mut self, class_name: &str, fields: &[(&str, &str)]) {
-        self.line(&format!("class {class_name}:"));
-        self.indent();
-        if fields.is_empty() {
-            self.line("pass");
-        } else {
-            for (name, ty) in fields {
-                self.line(&format!("{name}: {ty}"));
+    fn class_def(&mut self, class_name: &str, fields: &[(&str, &str)]) {
+        self.block(&format!("class {class_name}:"), |builder| {
+            if fields.is_empty() {
+                builder.line("pass");
+            } else {
+                for (name, ty) in fields {
+                    builder.line(&format!("{name}: {ty}"));
+                }
             }
-        }
-        self.dedent();
+        });
         self.blank_line();
     }
 
@@ -250,6 +262,15 @@ pub fn container_name(items: &SchemaType) -> &'static str {
     }
 }
 
+/// Takes the next temporary-variable index from `counter`. The readers or
+/// writers of one message share a counter, so every temporary they name is
+/// unique within the generated function.
+pub fn next_temp_index(counter: &mut u32) -> u32 {
+    let index = *counter;
+    *counter += 1;
+    index
+}
+
 /// Emits the `ValueError` raised when `var` does not hold exactly `len`
 /// items; `container` names it in the message (`list` or `bytes`).
 pub fn emit_fixed_length_check(
@@ -270,8 +291,8 @@ pub fn emit_fixed_length_check(
 mod tests {
     use super::PythonCodeBuilder;
 
-    /// `block` is the `line`/`indent`/`dedent` sequence it replaces, byte for
-    /// byte, and hands back what its body computed.
+    /// `block` writes the same bytes as the `line`/`indent`/`dedent`
+    /// sequence, and hands back what its body computed.
     #[test]
     fn block_emits_the_header_then_the_body_one_level_deeper() {
         let mut builder = PythonCodeBuilder::new();

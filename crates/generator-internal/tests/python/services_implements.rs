@@ -5,43 +5,11 @@
 //! into each `ServiceMessenger.listen` call (or
 //! `peppylib.SenderTarget.node(...)` for the native leaf).
 
-use crate::helpers::{prepare_directories, test_peppy_dirs};
-use config::node::{MessageFormat, NativeExposedService, PeppygenLanguage, SchemaType, TypeToken};
-use generator::{
-    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, NodeTree,
-    generate_peppygen_lib,
-};
-use indexmap::IndexMap;
+use crate::helpers::{generate_test_peppygen_lib, prepare_directories};
+use crate::implements_fixtures::{contract_backed_service, make_control_service};
+use config::node::PeppygenLanguage;
 use std::fs;
 use tempfile::TempDir;
-
-fn make_service(marker: &str) -> NativeExposedService {
-    let mut req: IndexMap<String, SchemaType> = IndexMap::new();
-    req.insert(marker.to_string(), SchemaType::Type(TypeToken::Bool));
-    let mut resp: IndexMap<String, SchemaType> = IndexMap::new();
-    resp.insert(format!("{marker}_ack"), SchemaType::Type(TypeToken::Bool));
-    NativeExposedService {
-        name: "control".to_string(),
-        request_message_format: Some(MessageFormat(req)),
-        response_message_format: Some(MessageFormat(resp)),
-    }
-}
-
-fn contract_backed(
-    link_id: &str,
-    name: &str,
-    tag: &str,
-    service: NativeExposedService,
-) -> DeploymentInterface {
-    DeploymentInterface::new(InterfaceVariant::ExposedService {
-        service,
-        origin: Some(ContractOrigin {
-            link_id: link_id.to_string(),
-            contract_name: name.to_string(),
-            contract_tag: tag.to_string(),
-        }),
-    })
-}
 
 const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
@@ -69,27 +37,22 @@ const NODE_CONFIG: &str = r#"{
 
 #[test]
 fn nests_contract_backed_services_under_link_id() {
-    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).expect("temp dir");
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).expect("temp dir");
     let (_output_dir, user_node, peppy_node_config) = prepare_directories(&temp_dir);
     fs::write(&peppy_node_config, NODE_CONFIG).expect("write node config");
 
     let extras = vec![
-        contract_backed("cam", "camera", "v1", make_service("camera_v1_marker")),
-        contract_backed("arm", "arm", "v2", make_service("arm_v2_marker")),
+        contract_backed_service(
+            "cam",
+            "camera",
+            "v1",
+            make_control_service("camera_v1_marker"),
+        ),
+        contract_backed_service("arm", "arm", "v2", make_control_service("arm_v2_marker")),
     ];
 
-    let peppy_dirs = test_peppy_dirs();
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &user_node,
-        extras,
-        "test-hash",
-        &peppy_dirs,
-        CrateDeployMode::default(),
-        Some(&peppy_node_config),
-        NodeTree::Source,
-    )
-    .expect("generation should succeed");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &user_node, extras)
+        .expect("generation should succeed");
 
     let pkg = user_node
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)
@@ -141,7 +104,7 @@ fn nests_contract_backed_services_under_link_id() {
         );
         assert!(
             !src.contains("_PKG_DIR"),
-            "{label} service should no longer reference the legacy `_PKG_DIR` \
+            "{label} service must not reference a file-relative `_PKG_DIR` \
              constant:\n{src}",
         );
     }

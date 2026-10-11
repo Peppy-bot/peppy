@@ -155,8 +155,8 @@ fn emit_topic() {
         ],
     );
 
-    // Topic metadata. declare_publisher is the only publish path; build_message
-    // serializes off the messenger lock, and emit() is no longer generated.
+    // Topic metadata. declare_publisher is the only publish path, and
+    // build_message serializes off the messenger lock.
     assert_contains_all(
         &rendered,
         &[
@@ -167,11 +167,11 @@ fn emit_topic() {
     );
     assert!(
         !rendered.contains("pub async fn emit("),
-        "emit() should no longer be generated; declare_publisher is the only publish path; got: {rendered}"
+        "emit() is not generated; declare_publisher is the only publish path; got: {rendered}"
     );
     assert!(
         !rendered.contains("TopicMessenger::emit"),
-        "TopicMessenger::emit should no longer be generated; got: {rendered}"
+        "TopicMessenger::emit is not generated; got: {rendered}"
     );
 }
 
@@ -322,6 +322,72 @@ fn emit_two_topics() {
     // Verify each topic gets its own distinct artifact with correct schema
     assert_artifact_contains(&artifacts, "video_stream_message_capnp");
     assert_artifact_contains(&artifacts, "push_lidar_object_message_capnp");
+}
+
+/// A node that drops its last message-format interface generates again over
+/// its earlier tree: the capnp module is the placeholder again and the
+/// earlier schemas leave the crate.
+#[test]
+fn regeneration_without_schemas_drops_the_earlier_capnp_modules() {
+    let temp_dir = TempDir::new().unwrap();
+    let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
+    generator
+        .add_emitted_topic(&parse_emitted_topic(EMITTED_TOPIC_EXAMPLE), None)
+        .unwrap();
+    build_crate(generator, &output_dir);
+    assert!(
+        output_dir
+            .join("src/capnp/video_stream_message.capnp")
+            .exists()
+    );
+
+    build_crate(RustGenerator::new(), &output_dir);
+
+    assert_eq!(
+        fs::read_to_string(output_dir.join("src/capnp.rs")).unwrap(),
+        "// No Cap'n Proto schemas generated.\n"
+    );
+    assert!(!output_dir.join("src/capnp").exists());
+}
+
+/// A node that drops one of its message-format interfaces keeps no file of
+/// that interface's schema under `src/capnp`.
+#[test]
+fn regeneration_drops_the_capnp_files_of_a_removed_topic() {
+    let temp_dir = TempDir::new().unwrap();
+    let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
+    let video_stream = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
+    generator.add_emitted_topic(&video_stream, None).unwrap();
+    generator
+        .add_emitted_topic(&parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2), None)
+        .unwrap();
+    build_crate(generator, &output_dir);
+    let capnp_dir = output_dir.join("src/capnp");
+    let removed_files = [
+        capnp_dir.join("push_lidar_object_message.capnp"),
+        capnp_dir.join("push_lidar_object_message_capnp.rs"),
+    ];
+    for file in &removed_files {
+        assert!(
+            file.exists(),
+            "{} after the first generation",
+            file.display()
+        );
+    }
+
+    let mut generator = RustGenerator::new();
+    generator.add_emitted_topic(&video_stream, None).unwrap();
+    build_crate(generator, &output_dir);
+
+    assert!(capnp_dir.join("video_stream_message.capnp").exists());
+    assert!(capnp_dir.join("video_stream_message_capnp.rs").exists());
+    for file in &removed_files {
+        assert!(
+            !file.exists(),
+            "{} after the second generation",
+            file.display()
+        );
+    }
 }
 
 #[test]
@@ -705,11 +771,11 @@ fn consumed_topic() {
     );
     assert!(
         !rendered.contains("on_next_message_received"),
-        "the per-call on_next_message_received API must be gone; got: {rendered}"
+        "the per-call on_next_message_received API must not appear; got: {rendered}"
     );
     assert!(
         !rendered.contains("from_core_node"),
-        "from_core_node should no longer appear in the generated API; got: {rendered}"
+        "from_core_node must not appear in the generated API; got: {rendered}"
     );
 
     // Deserialization
@@ -734,18 +800,17 @@ fn consumed_topic() {
     );
 
     // Error variant: subscribing maps the failure to `TopicSubscribe`; a
-    // closed subscription is no longer an error (it surfaces as `Ok(None)`).
+    // closed subscription is not an error (it surfaces as `Ok(None)`).
     assert_contains_all(&rendered, &["crate::Error::TopicSubscribe"]);
     assert!(
         !rendered.contains("crate::Error::SubscriptionClosed"),
-        "closed subscriptions now return Ok(None), not SubscriptionClosed; got: {rendered}"
+        "closed subscriptions return Ok(None), not SubscriptionClosed; got: {rendered}"
     );
 
-    // Regression guard for the dropped-message bug: the topic is subscribed
-    // exactly once (in `subscribe`), never per `next` call. The old
-    // `on_next_message_received` re-subscribed on every call, so anything
-    // published in the re-subscribe gap was silently lost; with a held
-    // subscription the buffer keeps every message between `next` calls.
+    // The topic is subscribed exactly once (in `subscribe`), never per `next`
+    // call: a per-call subscription loses what is published between calls,
+    // while the held subscription's buffer keeps every message between `next`
+    // calls.
     assert_eq!(
         rendered
             .matches("peppylib::runtime::subscribe_bound_set(")
@@ -895,15 +960,7 @@ fn clippy_single_emitted_topic_without_message_format() {
             &native_dep("controller", "v1", "controller"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_clippy(&output_dir);
 
@@ -950,15 +1007,7 @@ fn compile_lib_with_emitted_and_consumed_topics() {
             &native_dep("uvc_camera", "v1", "uvc_camera"),
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(
-            &output_dir,
-            &daemon_config::consts::PeppyDirs::default(),
-            Default::default(),
-        )
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
+    build_crate_with_node_config(generator, &output_dir, &user_node);
 
     run_cargo_build(&output_dir);
     run_clippy(&output_dir);
@@ -1011,8 +1060,8 @@ fn compile_lib_with_emitted_and_consumed_topics() {
 /// service pollers, action callers) expose no user-facing producer-identity
 /// parameters. Producer identity travels only as the full
 /// `(core_node, instance_id)` resolved at runtime from the bindings map.
-/// This test fails loudly if any generator drifts back to exposing a
-/// `from_*` / `target_*` core_node or instance_id parameter.
+/// This test fails loudly if any generator exposes a `from_*` / `target_*`
+/// core_node or instance_id parameter.
 #[test]
 fn no_user_facing_producer_identity_params() {
     let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
@@ -1068,26 +1117,25 @@ fn no_user_facing_producer_identity_params() {
 
     // Topic subscriber: producer identity travels only as the full
     // `(core_node, instance_id)` resolved at runtime from the bindings map;
-    // there is no user-facing core_node parameter, and `from_instance_id`
-    // is no longer a parameter either.
+    // there is no user-facing core_node or `from_instance_id` parameter.
     assert!(
         !rendered.contains("from_core_node"),
-        "from_core_node should no longer appear in the generated API; rendered:\n{rendered}"
+        "from_core_node must not appear in the generated API; rendered:\n{rendered}"
     );
     assert!(
         !rendered.contains("from_instance_id: Option<&str>"),
-        "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
+        "from_instance_id must not appear as a generated parameter; rendered:\n{rendered}"
     );
 
     // Consumed service/action call sites resolve the slot's single bound
-    // producer at runtime; the user-facing `target_instance_id` parameter
-    // is gone. `target_core_node` is never exposed in the generated API.
+    // producer at runtime; neither `target_instance_id` nor
+    // `target_core_node` is a parameter of the generated API.
     assert!(
         !rendered.contains("target_core_node"),
         "target_core_node should not appear in the generated API; rendered:\n{rendered}"
     );
     assert!(
         !rendered.contains("target_instance_id: Option<&str>"),
-        "target_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
+        "target_instance_id must not appear as a generated parameter; rendered:\n{rendered}"
     );
 }

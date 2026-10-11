@@ -1,9 +1,8 @@
 use super::context::GenerationContext;
-use super::identifiers::{nested_struct_name, sanitize_rust_identifier};
+use super::identifiers::sanitize_rust_identifier;
 use crate::error::{Error, Result};
-use crate::generator::naming::array_item_field_name;
+use crate::generator::naming::{array_item_field_name, nested_type_name};
 use config::node::{SchemaType, TypeToken};
-use encoding::FunctionParam;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 use syn::{File, parse2};
@@ -47,7 +46,7 @@ pub fn schema_type_to_tokens(
             }
         }
         SchemaType::Object(object) => {
-            let struct_name = nested_struct_name(struct_prefix, field_name);
+            let struct_name = nested_type_name(struct_prefix, field_name);
             let struct_ident = Ident::new(&struct_name, Span::call_site());
 
             let mut fields = Vec::with_capacity(object.fields.len());
@@ -66,11 +65,9 @@ pub fn schema_type_to_tokens(
         }
     };
 
-    let ty = if schema.is_optional() {
-        context.wrap_optional_type(ty)
-    } else {
-        ty
-    };
+    if schema.is_optional() {
+        return Ok(quote!(Option<#ty>));
+    }
     Ok(ty)
 }
 
@@ -90,28 +87,6 @@ pub fn primitive_type_token(token: &TypeToken) -> TokenStream {
         TypeToken::I64 => quote!(i64),
         TypeToken::F32 => quote!(f32),
         TypeToken::F64 => quote!(f64),
-    }
-}
-
-pub fn unused_params_stmt(params: &[FunctionParam]) -> TokenStream {
-    if params.is_empty() {
-        TokenStream::new()
-    } else if params.len() == 1 {
-        let ident = &params[0].ident;
-        quote! {
-            let _ = &#ident;
-        }
-    } else {
-        let refs: Vec<TokenStream> = params
-            .iter()
-            .map(|param| {
-                let ident = &param.ident;
-                quote!(&#ident)
-            })
-            .collect();
-        quote! {
-            let _ = (#(#refs),*);
-        }
     }
 }
 

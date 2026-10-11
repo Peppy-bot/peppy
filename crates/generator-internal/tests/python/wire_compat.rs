@@ -29,9 +29,10 @@
 //! -- the capnp schema generation under test is language-agnostic.
 
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, WaitContext, bind_slot, init_python_project_venv, init_python_user_node,
-    native_dep, send_shutdown, spawn_python_run, test_peppy_dirs,
-    wait_for_action_service_reachable_or_exit, wait_for_child,
+    DEFAULT_WAIT_TIMEOUT, NodeProject, TEST_CORE_NODE, assert_exited_successfully, bind_slot,
+    generate_test_peppygen_lib, init_python_project_venv, init_python_user_node, native_dep,
+    save_runtime_config, shut_down_test_node, spawn_python_run, test_node_runtime_config,
+    test_wait_context, wait_for_action_service_reachable_or_exit, wait_for_child,
     wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
@@ -39,21 +40,17 @@ use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, NodeConfigParser, PeppygenLanguage,
     TopicRetention,
 };
-use config::runtime::Name;
-use config::runtime::{NodeInstanceConfig, RuntimeConfig};
-use generator::{
-    ConsumedActionMessage, DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib,
-};
+use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
+use peppylib::MessengerHandle;
 use std::path::Path;
+use std::process::{Child, Output};
 use std::{fs, time::Duration};
 use tempfile::TempDir;
 
-const TEST_CORE_NODE: &str = "test_core";
 const PRODUCER_NODE_NAME: &str = "producer";
 const CONSUMER_NODE_NAME: &str = "consumer";
 const PRODUCER_INSTANCE_ID: &str = "producer_instance";
 const CONSUMER_INSTANCE_ID: &str = "consumer_instance";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 
 /// Mirror the variant-sync flow on the producer side: parse the source
 /// config, serialise it to JSON5, then write the result to disk for the
@@ -75,29 +72,107 @@ fn parse_producer_config_in_memory(producer_config_json5: &str) -> config::node:
         .expect("producer config parses for consumer view")
 }
 
-fn build_runtime_config(
+/// Saves the runtime config of the `instance_id` instance of `node_name` in
+/// `dir` and returns its path.
+fn write_runtime_config(
     router_host: &str,
     router_port: u16,
     instance_id: &str,
     node_name: &str,
-    runtime_config_path: &Path,
-) {
-    let cfg = RuntimeConfig::new(
-        router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(instance_id).unwrap()),
-        node_name,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+    dir: &Path,
+) -> String {
+    let cfg = test_node_runtime_config(router_host, router_port, node_name, instance_id);
     // Consumers declare their dep at link_id "producer"; bind it to the
     // producer instance so the generated call sites resolve their pinned
     // target (producers ignore the extra entry: their manifests declare
     // no such slot and the runtime only reads bindings for declared
     // slots).
     let cfg = bind_slot(cfg, "producer", TEST_CORE_NODE, PRODUCER_INSTANCE_ID);
-    cfg.save_json5_launch_config(runtime_config_path).unwrap();
+    save_runtime_config(&cfg, dir)
+}
+
+/// Generates the producer project, which consumes nothing, deployed as the
+/// producer instance, and writes `producer_main` as its main.py. Its config
+/// reaches the generator through [`write_producer_config_via_round_trip`].
+fn prepare_producer(
+    router_host: &str,
+    router_port: u16,
+    producer_config: &str,
+    producer_main: &str,
+) -> NodeProject {
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp dir for producer project");
+    let dir = temp_dir.path().join("user_node");
+    fs::create_dir_all(&dir).unwrap();
+    write_producer_config_via_round_trip(producer_config, &dir);
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &dir, Vec::new())
+        .expect("generate peppygen for producer");
+    let runtime_config = write_runtime_config(
+        router_host,
+        router_port,
+        PRODUCER_INSTANCE_ID,
+        PRODUCER_NODE_NAME,
+        temp_dir.path(),
+    );
+    init_python_user_node(&dir);
+    fs::write(dir.join("main.py"), producer_main).expect("write producer main.py");
+    NodeProject::new(temp_dir, dir, runtime_config)
+}
+
+/// Generates the consumer project with `consumed_interface` as its one
+/// consumed interface, deployed as the consumer instance with its
+/// `producer` slot bound to the producer instance, and writes
+/// `consumer_main` as its main.py. Its config is written as it is.
+fn prepare_consumer(
+    router_host: &str,
+    router_port: u16,
+    consumer_config: &str,
+    consumed_interface: DeploymentInterface,
+    consumer_main: &str,
+) -> NodeProject {
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
+    let dir = temp_dir.path().join("user_node");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(NODE_CONFIG_FILE), consumer_config).expect("write consumer peppy.json5");
+    generate_test_peppygen_lib(PeppygenLanguage::Python, &dir, vec![consumed_interface])
+        .expect("generate peppygen for consumer");
+    let runtime_config = write_runtime_config(
+        router_host,
+        router_port,
+        CONSUMER_INSTANCE_ID,
+        CONSUMER_NODE_NAME,
+        temp_dir.path(),
+    );
+    init_python_user_node(&dir);
+    fs::write(dir.join("main.py"), consumer_main).expect("write consumer main.py");
+    NodeProject::new(temp_dir, dir, runtime_config)
+}
+
+/// Starts the node of `project` with its runtime config.
+fn spawn_node(project: &NodeProject) -> Child {
+    spawn_python_run(
+        &project.dir,
+        &[(RUNTIME_CONFIG_VAR_NAME, &project.runtime_config)],
+    )
+}
+
+/// Shuts the consumer down, then the producer, and returns the outputs of
+/// both processes once they exited, the consumer's first.
+async fn shut_down_and_collect(
+    messenger: &MessengerHandle,
+    consumer: &NodeProject,
+    consumer_child: &mut Child,
+    producer: &NodeProject,
+    producer_child: &mut Child,
+) -> (Output, Output) {
+    shut_down_test_node(messenger, CONSUMER_NODE_NAME, CONSUMER_INSTANCE_ID).await;
+    shut_down_test_node(messenger, PRODUCER_NODE_NAME, PRODUCER_INSTANCE_ID).await;
+    let consumer_output =
+        wait_for_child(consumer_child, Some(Duration::from_secs(10)), &consumer.dir);
+    let producer_output =
+        wait_for_child(producer_child, Some(Duration::from_secs(10)), &producer.dir);
+    (consumer_output, producer_output)
 }
 
 // ---------------------------------------------------------------------------
@@ -183,38 +258,6 @@ async fn actions_preserve_result_field_order() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Producer (server) project
-    let temp_dir_producer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for producer project");
-    let producer_dir = temp_dir_producer.path().join("user_node");
-    fs::create_dir_all(&producer_dir).unwrap();
-    write_producer_config_via_round_trip(ACTION_PRODUCER_CONFIG, &producer_dir);
-
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &producer_dir,
-        Vec::new(),
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("generate peppygen for producer");
-
-    let producer_runtime_config_path = temp_dir_producer.path().join("peppy_runtime.json5");
-    build_runtime_config(
-        &router_host,
-        router_port,
-        PRODUCER_INSTANCE_ID,
-        PRODUCER_NODE_NAME,
-        &producer_runtime_config_path,
-    );
-
-    init_python_user_node(&producer_dir);
-    // Construct `ResultResponse` with keyword arguments so this source
-    // compiles regardless of how the generated constructor orders its
-    // positional parameters. The bug we're catching is on the wire, not
-    // in the class layout.
     let producer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -255,16 +298,14 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    fs::write(producer_dir.join("main.py"), producer_main).expect("write producer main.py");
+    let producer = prepare_producer(
+        &router_host,
+        router_port,
+        ACTION_PRODUCER_CONFIG,
+        producer_main,
+    );
 
     // --- Consumer (client) project
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for consumer project");
-    let consumer_dir = temp_dir_consumer.path().join("user_node");
-    fs::create_dir_all(&consumer_dir).unwrap();
-    fs::write(consumer_dir.join(NODE_CONFIG_FILE), ACTION_CONSUMER_CONFIG)
-        .expect("write consumer peppy.json5");
-
     let exposed_action = parse_producer_config_in_memory(ACTION_PRODUCER_CONFIG)
         .interfaces
         .native_action_exposes()
@@ -272,24 +313,7 @@ if __name__ == "__main__":
         .cloned()
         .expect("exposed action present in producer config");
 
-    let consumed_action_messages = ConsumedActionMessage {
-        goal_request: exposed_action
-            .goal_service
-            .as_ref()
-            .and_then(|s| s.request_message_format.clone()),
-        goal_response: exposed_action
-            .goal_service
-            .as_ref()
-            .and_then(|s| s.response_message_format.clone()),
-        feedback: exposed_action
-            .feedback_topic
-            .as_ref()
-            .map(|t| t.message_format.clone()),
-        result_response: exposed_action
-            .result_service
-            .as_ref()
-            .and_then(|s| s.response_message_format.clone()),
-    };
+    let consumed_action_messages = ConsumedActionMessage::from(&exposed_action);
     let consumed_action: ConsumedAction = serde_json5::from_str(&format!(
         r#"{{ link_id: "{PRODUCER_NODE_NAME}", name: "{ACTION_NAME}" }}"#
     ))
@@ -299,29 +323,6 @@ if __name__ == "__main__":
         messages: consumed_action_messages,
         dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
-
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &consumer_dir,
-        vec![consumed_interface],
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("generate peppygen for consumer");
-
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    build_runtime_config(
-        &router_host,
-        router_port,
-        CONSUMER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        &consumer_runtime_config_path,
-    );
-
-    init_python_user_node(&consumer_dir);
     // The consumer drives the full goal/feedback/result cycle, then
     // exposes `result_received` to signal the test that all three decodes
     // succeeded. Without this handshake, the test would race shutdown
@@ -370,56 +371,43 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    fs::write(consumer_dir.join("main.py"), consumer_main).expect("write consumer main.py");
+    let consumer = prepare_consumer(
+        &router_host,
+        router_port,
+        ACTION_CONSUMER_CONFIG,
+        consumed_interface,
+        consumer_main,
+    );
 
-    init_python_project_venv(&producer_dir);
-    init_python_project_venv(&consumer_dir);
-
-    let producer_runtime_config_str = producer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
+    init_python_project_venv(&producer.dir);
+    init_python_project_venv(&consumer.dir);
 
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
-    let mut producer_child = spawn_python_run(
-        &producer_dir,
-        &[(RUNTIME_CONFIG_VAR_NAME, &producer_runtime_config_str)],
-    );
+    let mut producer_child = spawn_node(&producer);
 
     wait_for_action_service_reachable_or_exit(
-        &WaitContext {
-            messenger: &messenger,
-            bound_core_node: TEST_CORE_NODE,
-            caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-            target_core_node: TEST_CORE_NODE,
-        },
+        &test_wait_context(&messenger),
         PRODUCER_NODE_NAME,
         ACTION_NAME,
         None,
         &mut producer_child,
-        &producer_dir,
+        &producer.dir,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
-    let mut consumer_child = spawn_python_run(
-        &consumer_dir,
-        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
+    let mut consumer_child = spawn_node(&consumer);
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
         CONSUMER_INSTANCE_ID,
         &mut consumer_child,
-        &consumer_dir,
+        &consumer.dir,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
@@ -428,7 +416,7 @@ if __name__ == "__main__":
         PRODUCER_NODE_NAME,
         PRODUCER_INSTANCE_ID,
         &mut producer_child,
-        &producer_dir,
+        &producer.dir,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
@@ -442,52 +430,23 @@ if __name__ == "__main__":
         ACTION_RESULT_RECEIVED_SERVICE,
         Some(CONSUMER_INSTANCE_ID),
         &mut consumer_child,
-        &consumer_dir,
+        &consumer.dir,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
-    send_shutdown(
+    let (consumer_output, producer_output) = shut_down_and_collect(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        CONSUMER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        PRODUCER_NODE_NAME,
-        TEST_CORE_NODE,
-        PRODUCER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
-
-    let consumer_output = wait_for_child(
+        &consumer,
         &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &consumer_dir,
-    );
-    let producer_output = wait_for_child(
+        &producer,
         &mut producer_child,
-        Some(Duration::from_secs(10)),
-        &producer_dir,
-    );
+    )
+    .await;
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed -- likely producer/consumer capnp wire layout \
-         disagreement for the action's `result_response`.\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
+    let (consumer_stdout, consumer_stderr) = assert_exited_successfully(
+        "consumer process (likely producer/consumer capnp wire layout disagreement for the action's `result_response`)",
+        &consumer_output,
     );
     assert!(
         consumer_stdout.contains("goal accepted=True")
@@ -500,15 +459,7 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let producer_stdout = String::from_utf8_lossy(&producer_output.stdout).into_owned();
-    let producer_stderr = String::from_utf8_lossy(&producer_output.stderr).into_owned();
-    assert!(
-        producer_output.status.success(),
-        "producer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        producer_output.status.code(),
-        producer_stdout,
-        producer_stderr
-    );
+    assert_exited_successfully("producer process", &producer_output);
 }
 
 // ---------------------------------------------------------------------------
@@ -583,34 +534,6 @@ async fn services_preserve_response_field_order() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Producer (server) project
-    let temp_dir_producer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for producer project");
-    let producer_dir = temp_dir_producer.path().join("user_node");
-    fs::create_dir_all(&producer_dir).unwrap();
-    write_producer_config_via_round_trip(SERVICE_PRODUCER_CONFIG, &producer_dir);
-
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &producer_dir,
-        Vec::new(),
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("generate peppygen for producer");
-
-    let producer_runtime_config_path = temp_dir_producer.path().join("peppy_runtime.json5");
-    build_runtime_config(
-        &router_host,
-        router_port,
-        PRODUCER_INSTANCE_ID,
-        PRODUCER_NODE_NAME,
-        &producer_runtime_config_path,
-    );
-
-    init_python_user_node(&producer_dir);
     let producer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -637,16 +560,14 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    fs::write(producer_dir.join("main.py"), producer_main).expect("write producer main.py");
+    let producer = prepare_producer(
+        &router_host,
+        router_port,
+        SERVICE_PRODUCER_CONFIG,
+        producer_main,
+    );
 
     // --- Consumer (client) project
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for consumer project");
-    let consumer_dir = temp_dir_consumer.path().join("user_node");
-    fs::create_dir_all(&consumer_dir).unwrap();
-    fs::write(consumer_dir.join(NODE_CONFIG_FILE), SERVICE_CONSUMER_CONFIG)
-        .expect("write consumer peppy.json5");
-
     let exposed_service = parse_producer_config_in_memory(SERVICE_PRODUCER_CONFIG)
         .interfaces
         .native_service_exposes()
@@ -670,29 +591,6 @@ if __name__ == "__main__":
             .unwrap_or_default(),
         dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
-
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &consumer_dir,
-        vec![consumed_interface],
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("generate peppygen for consumer");
-
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    build_runtime_config(
-        &router_host,
-        router_port,
-        CONSUMER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        &consumer_runtime_config_path,
-    );
-
-    init_python_user_node(&consumer_dir);
     // The consumer polls once, then exposes `response_received` to signal
     // the test that the decode succeeded. The single poll has a narrow
     // race window vs. shutdown but the handshake removes it entirely.
@@ -730,51 +628,43 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    fs::write(consumer_dir.join("main.py"), consumer_main).expect("write consumer main.py");
+    let consumer = prepare_consumer(
+        &router_host,
+        router_port,
+        SERVICE_CONSUMER_CONFIG,
+        consumed_interface,
+        consumer_main,
+    );
 
-    init_python_project_venv(&producer_dir);
-    init_python_project_venv(&consumer_dir);
-
-    let producer_runtime_config_str = producer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
+    init_python_project_venv(&producer.dir);
+    init_python_project_venv(&consumer.dir);
 
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
-    let mut producer_child = spawn_python_run(
-        &producer_dir,
-        &[(RUNTIME_CONFIG_VAR_NAME, &producer_runtime_config_str)],
-    );
+    let mut producer_child = spawn_node(&producer);
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_service_reachable_or_exit(
         &ctx,
         PRODUCER_NODE_NAME,
         SERVICE_NAME,
         Some(PRODUCER_INSTANCE_ID),
         &mut producer_child,
-        &producer_dir,
+        &producer.dir,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
-    let mut consumer_child = spawn_python_run(
-        &consumer_dir,
-        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
+    let mut consumer_child = spawn_node(&consumer);
 
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
         CONSUMER_INSTANCE_ID,
         &mut consumer_child,
-        &consumer_dir,
+        &consumer.dir,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
@@ -783,7 +673,7 @@ if __name__ == "__main__":
         PRODUCER_NODE_NAME,
         PRODUCER_INSTANCE_ID,
         &mut producer_child,
-        &producer_dir,
+        &producer.dir,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
@@ -797,52 +687,23 @@ if __name__ == "__main__":
         SERVICE_RESPONSE_RECEIVED_SERVICE,
         Some(CONSUMER_INSTANCE_ID),
         &mut consumer_child,
-        &consumer_dir,
+        &consumer.dir,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
-    send_shutdown(
+    let (consumer_output, producer_output) = shut_down_and_collect(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        CONSUMER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        PRODUCER_NODE_NAME,
-        TEST_CORE_NODE,
-        PRODUCER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
-
-    let consumer_output = wait_for_child(
+        &consumer,
         &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &consumer_dir,
-    );
-    let producer_output = wait_for_child(
+        &producer,
         &mut producer_child,
-        Some(Duration::from_secs(10)),
-        &producer_dir,
-    );
+    )
+    .await;
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed -- likely producer/consumer capnp wire layout \
-         disagreement for the service's `response_message_format`.\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
+    let (consumer_stdout, consumer_stderr) = assert_exited_successfully(
+        "consumer process (likely producer/consumer capnp wire layout disagreement for the service's `response_message_format`)",
+        &consumer_output,
     );
     assert!(
         consumer_stdout
@@ -852,15 +713,7 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let producer_stdout = String::from_utf8_lossy(&producer_output.stdout).into_owned();
-    let producer_stderr = String::from_utf8_lossy(&producer_output.stderr).into_owned();
-    assert!(
-        producer_output.status.success(),
-        "producer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        producer_output.status.code(),
-        producer_stdout,
-        producer_stderr
-    );
+    assert_exited_successfully("producer process", &producer_output);
 }
 
 // ---------------------------------------------------------------------------
@@ -937,34 +790,6 @@ async fn topics_preserve_message_field_order() {
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
     // --- Producer (emitter) project
-    let temp_dir_producer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for producer project");
-    let producer_dir = temp_dir_producer.path().join("user_node");
-    fs::create_dir_all(&producer_dir).unwrap();
-    write_producer_config_via_round_trip(TOPIC_PRODUCER_CONFIG, &producer_dir);
-
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &producer_dir,
-        Vec::new(),
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("generate peppygen for producer");
-
-    let producer_runtime_config_path = temp_dir_producer.path().join("peppy_runtime.json5");
-    build_runtime_config(
-        &router_host,
-        router_port,
-        PRODUCER_INSTANCE_ID,
-        PRODUCER_NODE_NAME,
-        &producer_runtime_config_path,
-    );
-
-    init_python_user_node(&producer_dir);
     let producer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
@@ -991,16 +816,14 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    fs::write(producer_dir.join("main.py"), producer_main).expect("write producer main.py");
+    let producer = prepare_producer(
+        &router_host,
+        router_port,
+        TOPIC_PRODUCER_CONFIG,
+        producer_main,
+    );
 
     // --- Consumer (receiver) project
-    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
-        .expect("failed to create temp dir for consumer project");
-    let consumer_dir = temp_dir_consumer.path().join("user_node");
-    fs::create_dir_all(&consumer_dir).unwrap();
-    fs::write(consumer_dir.join(NODE_CONFIG_FILE), TOPIC_CONSUMER_CONFIG)
-        .expect("write consumer peppy.json5");
-
     let emitted_topic = parse_producer_config_in_memory(TOPIC_PRODUCER_CONFIG)
         .interfaces
         .native_emits()
@@ -1021,29 +844,6 @@ if __name__ == "__main__":
         retention: TopicRetention::LiveOnly,
         dependency: native_dep(PRODUCER_NODE_NAME, "v1", PRODUCER_NODE_NAME),
     });
-
-    generate_peppygen_lib(
-        PeppygenLanguage::Python,
-        &consumer_dir,
-        vec![consumed_interface],
-        "test-hash",
-        &test_peppy_dirs(),
-        Default::default(),
-        None,
-        NodeTree::Source,
-    )
-    .expect("generate peppygen for consumer");
-
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    build_runtime_config(
-        &router_host,
-        router_port,
-        CONSUMER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        &consumer_runtime_config_path,
-    );
-
-    init_python_user_node(&consumer_dir);
     // The receiver subscribes, prints the first decoded message, and
     // then exposes `received_ack` to signal the test that decode
     // succeeded. If decode raises, `os._exit(1)` fast-fails so the
@@ -1088,39 +888,31 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    fs::write(consumer_dir.join("main.py"), consumer_main).expect("write consumer main.py");
+    let consumer = prepare_consumer(
+        &router_host,
+        router_port,
+        TOPIC_CONSUMER_CONFIG,
+        consumed_interface,
+        consumer_main,
+    );
 
-    init_python_project_venv(&producer_dir);
-    init_python_project_venv(&consumer_dir);
-
-    let producer_runtime_config_str = producer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
+    init_python_project_venv(&producer.dir);
+    init_python_project_venv(&consumer.dir);
 
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
 
-    let mut producer_child = spawn_python_run(
-        &producer_dir,
-        &[(RUNTIME_CONFIG_VAR_NAME, &producer_runtime_config_str)],
-    );
-    let mut consumer_child = spawn_python_run(
-        &consumer_dir,
-        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
-    );
+    let mut producer_child = spawn_node(&producer);
+    let mut consumer_child = spawn_node(&consumer);
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
         CONSUMER_INSTANCE_ID,
         &mut consumer_child,
-        &consumer_dir,
+        &consumer.dir,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
@@ -1129,7 +921,7 @@ if __name__ == "__main__":
         PRODUCER_NODE_NAME,
         PRODUCER_INSTANCE_ID,
         &mut producer_child,
-        &producer_dir,
+        &producer.dir,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
@@ -1143,52 +935,23 @@ if __name__ == "__main__":
         TOPIC_RECEIVED_SERVICE,
         Some(CONSUMER_INSTANCE_ID),
         &mut consumer_child,
-        &consumer_dir,
+        &consumer.dir,
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
 
-    send_shutdown(
+    let (consumer_output, producer_output) = shut_down_and_collect(
         &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        CONSUMER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        PRODUCER_NODE_NAME,
-        TEST_CORE_NODE,
-        PRODUCER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
-
-    let consumer_output = wait_for_child(
+        &consumer,
         &mut consumer_child,
-        Some(Duration::from_secs(10)),
-        &consumer_dir,
-    );
-    let producer_output = wait_for_child(
+        &producer,
         &mut producer_child,
-        Some(Duration::from_secs(10)),
-        &producer_dir,
-    );
+    )
+    .await;
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed -- likely producer/consumer capnp wire layout \
-         disagreement for the topic's `message_format`.\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
+    let (consumer_stdout, consumer_stderr) = assert_exited_successfully(
+        "consumer process (likely producer/consumer capnp wire layout disagreement for the topic's `message_format`)",
+        &consumer_output,
     );
     assert!(
         consumer_stdout.contains(&format!(
@@ -1199,13 +962,5 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let producer_stdout = String::from_utf8_lossy(&producer_output.stdout).into_owned();
-    let producer_stderr = String::from_utf8_lossy(&producer_output.stderr).into_owned();
-    assert!(
-        producer_output.status.success(),
-        "producer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        producer_output.status.code(),
-        producer_stdout,
-        producer_stderr
-    );
+    assert_exited_successfully("producer process", &producer_output);
 }

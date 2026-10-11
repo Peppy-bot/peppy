@@ -27,11 +27,6 @@ pub fn build_action_expose_method(
     origin: Option<&crate::generator::types::ContractOrigin>,
 ) -> TokenStream {
     let target_expr = super::topics::sender_target_expression(origin);
-    let has_feedback_lit = if has_feedback {
-        quote!(true)
-    } else {
-        quote!(false)
-    };
 
     quote! {
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
@@ -41,7 +36,7 @@ pub fn build_action_expose_method(
                 node_runner.processor().bound_instance_id(),
                 #target_expr,
                 ACTION_NAME,
-                #has_feedback_lit,
+                #has_feedback,
             )
             .await?;
 
@@ -163,29 +158,26 @@ pub fn build_handle_goal_next_request(
     };
 
     let (accept_arm, reject_arm) = match response_serialization {
-        Some(serialize) => {
-            let serialize_reject = serialize.clone();
-            (
-                quote! {
-                    GoalDecision::Accept(response) => {
-                        let response_payload = #serialize;
-                        let inner = pending.accept(response_payload).await?;
-                        return Ok(Some(GoalContext { inner, request }));
-                    }
-                },
-                quote! {
-                    // Rejected: answer the client and keep polling for the
-                    // next goal. A reject never ends the accept loop.
-                    GoalDecision::Reject { reason, response } => {
-                        let response_payload = match response {
-                            Some(response) => #serialize_reject,
-                            None => peppylib::Payload::new(),
-                        };
-                        pending.reject(reason.as_deref(), response_payload).await?;
-                    }
-                },
-            )
-        }
+        Some(serialize) => (
+            quote! {
+                GoalDecision::Accept(response) => {
+                    let response_payload = #serialize;
+                    let inner = pending.accept(response_payload).await?;
+                    return Ok(Some(GoalContext { inner, request }));
+                }
+            },
+            quote! {
+                // Rejected: answer the client and keep polling for the
+                // next goal. A reject never ends the accept loop.
+                GoalDecision::Reject { reason, response } => {
+                    let response_payload = match response {
+                        Some(response) => #serialize,
+                        None => peppylib::Payload::new(),
+                    };
+                    pending.reject(reason.as_deref(), response_payload).await?;
+                }
+            },
+        ),
         None => (
             quote! {
                 GoalDecision::Accept => {
@@ -304,7 +296,6 @@ pub fn build_goal_context_complete(
     label: &str,
 ) -> TokenStream {
     let method_ident = Ident::new(method_name, Span::call_site());
-    let inner_ident = Ident::new(method_name, Span::call_site());
     let label_literal = Literal::string(label);
     let error_context = quote!(format!("{} {}", #label_literal, ACTION_NAME));
 
@@ -333,7 +324,7 @@ pub fn build_goal_context_complete(
         #[allow(clippy::too_many_arguments)]
         pub async fn #method_ident(#signature) -> crate::Result<()> {
             let payload = #serialize;
-            self.inner.#inner_ident(payload).await?;
+            self.inner.#method_ident(payload).await?;
             Ok(())
         }
     }

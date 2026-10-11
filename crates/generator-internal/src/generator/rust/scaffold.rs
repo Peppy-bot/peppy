@@ -1,13 +1,12 @@
-use super::identifiers::is_rust_keyword;
+use super::identifiers::rust_identifier_or;
 use crate::generator::common::{
     CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfig, EmbeddedCoreNodeApi,
     EmbeddedPeppyMessagingInterface, EmbeddedPeppylib, WorkspacePackageMetadata,
-    cache_sibling_path, copy_dir_recursive,
+    copy_dir_recursive, populate_cache_dir_once,
 };
 use crate::{
     error::{Error, Result},
     generator::{
-        naming::sanitize_component,
         scaffold_tree::{
             ModuleEntry, TreeWriter, build_module_tree, group_artifacts_by_category,
             write_module_tree,
@@ -16,7 +15,6 @@ use crate::{
     },
 };
 use encoding::compile_capnp;
-use proc_macro2::Span;
 use rust_embed::Embed;
 use sha2::{Digest, Sha256};
 use std::io;
@@ -26,10 +24,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use syn::{
-    Attribute, File, FnArg, ImplItem, ImplItemFn, Item, ItemFn, ItemImpl, Type, parse_file,
-    parse_quote,
-};
+use syn::{Attribute, File, Item, parse_file, parse_quote};
 use toml_edit::{DocumentMut, value};
 
 pub fn add_peppylib_dependencies(
@@ -95,20 +90,28 @@ pub fn add_parameters_to_lib(
     Ok(())
 }
 
+/// Writes the node's Cap'n Proto schemas under `src/capnp` and compiles them
+/// into the crate's `capnp` module. A generation can run over the tree of an
+/// earlier one, so the earlier `src/capnp` directory is removed first and
+/// `src/capnp.rs` is always written: the crate keeps no schema of an interface
+/// the node no longer has.
 pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Path) -> Result<()> {
     let src_dir = crate_root.join("src");
+    let capnp_dir = src_dir.join("capnp");
+    if capnp_dir.exists() {
+        fs::remove_dir_all(&capnp_dir)?;
+    }
     if schemas.is_empty() {
-        let capnp_rs = src_dir.join("capnp.rs");
-        if !capnp_rs.exists() {
-            fs::write(capnp_rs, "// No Cap'n Proto schemas generated.\n")?;
-        }
+        fs::write(
+            src_dir.join("capnp.rs"),
+            "// No Cap'n Proto schemas generated.\n",
+        )?;
         return Ok(());
     }
 
     let mut entries: Vec<&CapnpSchema> = schemas.values().collect();
     entries.sort_by(|a, b| a.file_stem().cmp(b.file_stem()));
 
-    let capnp_dir = src_dir.join("capnp");
     fs::create_dir_all(&capnp_dir)?;
 
     let mut schema_paths = Vec::with_capacity(entries.len());
@@ -143,33 +146,15 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
         .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
 
     if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
-        if package
-            .get("version")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
+        if inherits_from_workspace(package, "version") {
             package.insert("version", value(metadata.version));
         }
 
-        if package
-            .get("edition")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
+        if inherits_from_workspace(package, "edition") {
             package.insert("edition", value(metadata.edition));
         }
 
-        if package
-            .get("authors")
-            .and_then(|v| v.as_table())
-            .and_then(|table| table.get("workspace"))
-            .and_then(|w| w.as_bool())
-            == Some(true)
-        {
+        if inherits_from_workspace(package, "authors") {
             package.remove("authors");
         }
 
@@ -202,34 +187,69 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
     Ok(())
 }
 
-/// Crate directories the vendored `.peppy/libs` cache lays out as flat siblings.
+/// Whether the `[package]` field `key` takes its value from the workspace,
+/// in the dotted form (`key.workspace = true`) or the inline-table form
+/// (`key = { workspace = true }`).
+fn inherits_from_workspace(package: &toml_edit::Table, key: &str) -> bool {
+    package
+        .get(key)
+        .and_then(|field| field.as_table_like())
+        .and_then(|table| table.get("workspace"))
+        .and_then(|workspace| workspace.as_bool())
+        == Some(true)
+}
+
+/// One crate of the vendored `.peppy/libs` cache: its directory there, and
+/// the hash and copy steps of its embedded files.
+struct VendoredCrate {
+    dir_name: &'static str,
+    hash_into: fn(&mut Sha256, &str),
+    copy_into: fn(&str, &Path, &WorkspacePackageMetadata) -> Result<()>,
+}
+
+impl VendoredCrate {
+    /// The vendored crate whose files `E` embeds, laid out under `dir_name`.
+    const fn embedded<E: Embed>(dir_name: &'static str) -> Self {
+        Self {
+            dir_name,
+            hash_into: hash_embedded_crate::<E>,
+            copy_into: copy_embedded_crate::<E>,
+        }
+    }
+}
+
+/// Crates the vendored `.peppy/libs` cache lays out as flat siblings, in the
+/// order they are hashed into the cache key, staged and deployed.
 /// A `path` dependency whose final component is one of these is rewritten to
 /// `../<crate>` so it resolves in the flat cache however the source manifest
 /// spells the way to its sibling. The source crates live in the sealed
 /// `peppy-shared` tree, so a sibling is all such a path can name.
-const VENDORED_SIBLING_CRATES: &[&str] = &[
-    "peppylib",
-    "peppy-messaging-interface",
-    "peppy-config-model",
-    "core-node-api",
-    "build-helpers",
+const VENDORED_CRATES: [VendoredCrate; 5] = [
+    VendoredCrate::embedded::<EmbeddedPeppylib>("peppylib"),
+    VendoredCrate::embedded::<EmbeddedPeppyMessagingInterface>("peppy-messaging-interface"),
+    VendoredCrate::embedded::<EmbeddedConfig>("peppy-config-model"),
+    VendoredCrate::embedded::<EmbeddedCoreNodeApi>("core-node-api"),
+    VendoredCrate::embedded::<EmbeddedBuildHelpers>("build-helpers"),
 ];
 
 /// Returns the flattened `../<crate>` path for `current` if its final component
 /// names a vendored sibling crate, otherwise `None` (leave it untouched).
 fn flatten_vendored_path(current: &str) -> Option<String> {
     let final_component = current.rsplit('/').next().unwrap_or(current);
-    VENDORED_SIBLING_CRATES
-        .contains(&final_component)
+    VENDORED_CRATES
+        .iter()
+        .any(|vendored| vendored.dir_name == final_component)
         .then(|| format!("../{final_component}"))
 }
 
-/// Rewrites every intra-vendor `path` dependency in `doc` to a flat sibling so the
-/// deployed flat-cache layout resolves. Registry deps and non-vendored path deps
-/// are left alone; `features` and other keys on the dependency are preserved.
-/// Idempotent on manifests whose paths are already flat.
+/// Rewrites every intra-vendor `path` dependency of the `[dependencies]` and
+/// `[build-dependencies]` tables in `doc` to a flat sibling so the deployed
+/// flat-cache layout resolves. Registry deps and non-vendored path deps are left
+/// alone; `features` and other keys on the dependency are preserved. Idempotent
+/// on manifests whose paths are already flat. The dev-dependencies are not
+/// rewritten: [`localize_cargo_toml`] strips them first.
 fn normalize_vendored_path_deps(doc: &mut DocumentMut) {
-    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+    for table_name in ["dependencies", "build-dependencies"] {
         let Some(deps) = doc.get_mut(table_name).and_then(|t| t.as_table_mut()) else {
             continue;
         };
@@ -333,21 +353,16 @@ fn hash_embedded_crate<E: Embed>(hasher: &mut Sha256, label: &str) {
 /// `rerun-if-changed` registration keeps those embedded bytes fresh).
 fn vendored_crates_cache_key() -> String {
     let mut hasher = Sha256::new();
-    hash_embedded_crate::<EmbeddedPeppylib>(&mut hasher, "peppylib");
-    hash_embedded_crate::<EmbeddedPeppyMessagingInterface>(
-        &mut hasher,
-        "peppy-messaging-interface",
-    );
-    hash_embedded_crate::<EmbeddedConfig>(&mut hasher, "peppy-config-model");
-    hash_embedded_crate::<EmbeddedCoreNodeApi>(&mut hasher, "core-node-api");
-    hash_embedded_crate::<EmbeddedBuildHelpers>(&mut hasher, "build-helpers");
+    for vendored in &VENDORED_CRATES {
+        (vendored.hash_into)(&mut hasher, vendored.dir_name);
+    }
     let hash = hasher.finalize();
     let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
     format!("{}-{}", &hex[..16], env!("CARGO_PKG_VERSION"))
 }
 
-/// Deploys the vendored Rust crates (peppylib, peppy-messaging-interface, config, core-node-api,
-/// build-helpers) to a shared cache directory, then links or copies them into `node_libs_dir`.
+/// Deploys the [`VENDORED_CRATES`] to a shared cache directory, then links or
+/// copies them into `node_libs_dir`.
 ///
 /// In `Symlink` mode (the default), creates symlinks from `node_libs_dir/{crate}`
 /// to the shared cache. This avoids duplicating source files across nodes.
@@ -366,105 +381,61 @@ fn deploy_rust_crates_to_shared_cache(
     let cache_key = vendored_crates_cache_key();
     let cache_dir = peppy_dirs.rust_libs_cache_dir(&cache_key);
 
-    let parent = cache_dir
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cache dir has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let lock_path = cache_sibling_path(&cache_dir, ".lock");
-    let lock_file = fs::File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)?;
-    lock_file.lock()?;
-
-    if !cache_dir.join(".complete").exists() {
-        let staging_dir =
-            cache_sibling_path(&cache_dir, &format!(".staging-{}", std::process::id()));
-        if staging_dir.exists() {
-            fs::remove_dir_all(&staging_dir)?;
-        }
-
+    populate_cache_dir_once(&cache_dir, |staging_dir| {
         let metadata = WorkspacePackageMetadata::embedded();
-        copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedPeppyMessagingInterface>(
-            "peppy-messaging-interface",
-            &staging_dir,
-            &metadata,
-        )?;
-        copy_embedded_crate::<EmbeddedConfig>("peppy-config-model", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedCoreNodeApi>("core-node-api", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedBuildHelpers>("build-helpers", &staging_dir, &metadata)?;
-
-        if cache_dir.exists() {
-            fs::remove_dir_all(&cache_dir)?;
+        for vendored in &VENDORED_CRATES {
+            (vendored.copy_into)(vendored.dir_name, staging_dir, &metadata)?;
         }
-        fs::rename(&staging_dir, &cache_dir)?;
-        fs::write(cache_dir.join(".complete"), "")?;
-    }
-    drop(lock_file);
+        Ok(())
+    })?;
 
-    // Link or copy all vendored crates (peppylib, peppy-messaging-interface, config,
-    // core-node-api, build-helpers) into node_libs_dir.
+    // Link or copy every vendored crate into node_libs_dir.
     // All are needed because the crates reference each other via relative sibling
     // paths (e.g., peppylib has `config = { package = "peppy-config-model", path = "../peppy-config-model" }` and
     // build-dependencies), and Cargo resolves these paths relative to the symlink
     // location, not the target.
-    for crate_name in &[
-        "peppylib",
-        "peppy-messaging-interface",
-        "peppy-config-model",
-        "core-node-api",
-        "build-helpers",
-    ] {
-        let dest = node_libs_dir.join(crate_name);
-        let source = cache_dir.join(crate_name);
+    for vendored in &VENDORED_CRATES {
+        let dest = node_libs_dir.join(vendored.dir_name);
+        let source = cache_dir.join(vendored.dir_name);
 
         match deploy_mode {
-            CrateDeployMode::Symlink => {
-                match dest.symlink_metadata() {
-                    Ok(meta) if meta.file_type().is_symlink() => {
-                        if fs::read_link(&dest).ok().as_deref() == Some(source.as_path()) {
-                            continue;
-                        }
-                        fs::remove_file(&dest)?;
-                    }
-                    Ok(_) => fs::remove_dir_all(&dest)?,
-                    Err(_) => {}
-                }
-                symlink_dir(&source, &dest)?;
-            }
-            CrateDeployMode::Copy => {
-                if dest.exists() {
-                    fs::remove_dir_all(&dest)?;
-                }
-                copy_dir_recursive(&source, &dest)?;
-            }
+            CrateDeployMode::Symlink => link_vendored_crate(&source, &dest)?,
+            CrateDeployMode::Copy => copy_vendored_crate(&source, &dest)?,
         }
     }
 
     Ok(())
 }
 
-impl ModuleCategory {
-    fn struct_name(self) -> &'static str {
-        match self {
-            Self::EmittedTopics => "EmittedTopics",
-            Self::ConsumedTopics => "ConsumedTopics",
-            Self::ExposedServices => "ExposedServices",
-            Self::ConsumedServices => "ConsumedServices",
-            Self::ExposedActions => "ExposedActions",
-            Self::ConsumedActions => "ConsumedActions",
-            Self::PairedTopics => "PairedTopics",
-            // Names generated code must never use: write_leaf_module dissolves
-            // `impl <struct_name()>` blocks into free items, so a real
-            // generated `impl Mock` would be destroyed if these collided.
-            Self::Mock => "MockCategoryNeverGenerated",
-            Self::Fixtures => "FixturesCategoryNeverGenerated",
+/// Makes `dest` a symlink to `source`, replacing a directory or a symlink to
+/// another target at `dest`. A `dest` that already links to `source` is left
+/// as it is.
+fn link_vendored_crate(source: &Path, dest: &Path) -> Result<()> {
+    match dest.symlink_metadata() {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if fs::read_link(dest).ok().as_deref() == Some(source) {
+                return Ok(());
+            }
+            fs::remove_file(dest)?;
         }
+        Ok(_) => fs::remove_dir_all(dest)?,
+        Err(_) => {}
     }
+    symlink_dir(source, dest)?;
+    Ok(())
+}
 
+/// Replaces the directory at `dest`, or a symlink at `dest` whose target
+/// exists, with a full copy of `source`.
+fn copy_vendored_crate(source: &Path, dest: &Path) -> Result<()> {
+    if dest.exists() {
+        fs::remove_dir_all(dest)?;
+    }
+    copy_dir_recursive(source, dest)?;
+    Ok(())
+}
+
+impl ModuleCategory {
     fn doc_label(self) -> &'static str {
         match self {
             Self::EmittedTopics => "emitted topics",
@@ -506,13 +477,6 @@ fn category_module_path(src_dir: &Path, category: ModuleCategory) -> PathBuf {
     src_dir.join(format!("{}.rs", category.dir_name()))
 }
 
-/// Walks the module tree, writing a `.rs` file per leaf and a `mod.rs` (or
-/// the category file at the root) listing the modules at each level.
-///
-/// `category_dir` is the on-disk directory under `src/` for this category
-/// (e.g. `src/emitted_topics`). `category_file` is its companion sibling
-/// `src/emitted_topics.rs` that declares `pub mod <subdir>;` for each top
-/// child.
 /// [`TreeWriter`] that renders Rust modules: one `.rs` file per leaf and a
 /// `pub mod ...;` listing per directory, written to `mod.rs` (or, at the root,
 /// to the category's sibling `.rs` companion file). A renamed leaf keeps a
@@ -520,6 +484,8 @@ fn category_module_path(src_dir: &Path, category: ModuleCategory) -> PathBuf {
 /// in the shared [`write_module_tree`] walker.
 struct RustTreeWriter<'a> {
     category: ModuleCategory,
+    /// The category's sibling `src/<category>.rs`, which receives the root
+    /// index.
     category_file: &'a Path,
 }
 
@@ -535,13 +501,7 @@ impl TreeWriter for RustTreeWriter<'_> {
         raw_name: &str,
         artifacts: &[InterfaceArtifact],
     ) -> Result<()> {
-        write_leaf_module(
-            dir,
-            module_name,
-            raw_name,
-            artifacts.to_vec(),
-            self.category,
-        )
+        write_leaf_module(dir, module_name, raw_name, artifacts, self.category)
     }
 
     fn write_index(&mut self, dir: &Path, entries: &[ModuleEntry], is_root: bool) -> Result<()> {
@@ -566,11 +526,10 @@ fn write_leaf_module(
     base_dir: &Path,
     module_name: &str,
     original_name: &str,
-    artifacts: Vec<InterfaceArtifact>,
+    artifacts: &[InterfaceArtifact],
     category: ModuleCategory,
 ) -> Result<()> {
     let mut items: Vec<Item> = Vec::new();
-    let struct_ident = syn::Ident::new(category.struct_name(), Span::call_site());
     let node_label = if original_name.is_empty() {
         module_name.to_string()
     } else {
@@ -582,15 +541,7 @@ fn write_leaf_module(
                 node: node_label.clone(),
                 source,
             })?;
-
-        for item in file.items {
-            match item {
-                Item::Impl(impl_block) if impl_targets_struct(&impl_block, &struct_ident) => {
-                    items.extend(extract_impl_functions(impl_block));
-                }
-                other => items.push(other),
-            }
-        }
+        items.extend(file.items);
     }
 
     let mut attrs: Vec<Attribute> = Vec::new();
@@ -602,32 +553,20 @@ fn write_leaf_module(
         );
         attrs.push(parse_quote!(#![doc = #doc_comment]));
     }
-    let module_file = File {
-        shebang: None,
-        frontmatter: None,
-        attrs,
-        items,
-    };
-
-    let rendered = render_module_file(module_file);
+    let rendered = render_module_file(attrs, items);
 
     fs::write(base_dir.join(format!("{module_name}.rs")), rendered)?;
     Ok(())
 }
 
-fn render_module_file(module_file: File) -> String {
+fn render_module_file(attrs: Vec<Attribute>, items: Vec<Item>) -> String {
     let mut output = String::new();
 
-    if let Some(shebang) = module_file.shebang {
-        output.push_str(&shebang);
-        output.push('\n');
-    }
-
-    if !module_file.attrs.is_empty() {
+    if !attrs.is_empty() {
         let attr_file = File {
             shebang: None,
             frontmatter: None,
-            attrs: module_file.attrs,
+            attrs,
             items: Vec::new(),
         };
         let rendered_attrs = prettyplease::unparse(&attr_file);
@@ -635,7 +574,7 @@ fn render_module_file(module_file: File) -> String {
         output.push('\n');
     }
 
-    let mut items_iter = module_file.items.into_iter().peekable();
+    let mut items_iter = items.into_iter().peekable();
     while let Some(item) = items_iter.next() {
         let item_file = File {
             shebang: None,
@@ -659,68 +598,8 @@ fn render_module_file(module_file: File) -> String {
     output
 }
 
-fn impl_targets_struct(impl_block: &ItemImpl, struct_ident: &syn::Ident) -> bool {
-    let type_path = match impl_block.self_ty.as_ref() {
-        Type::Path(path) if path.qself.is_none() => path,
-        _ => return false,
-    };
-
-    let Some(last_segment) = type_path.path.segments.last() else {
-        return false;
-    };
-
-    last_segment.ident == *struct_ident
-}
-
-fn extract_impl_functions(impl_block: ItemImpl) -> Vec<Item> {
-    impl_block
-        .items
-        .into_iter()
-        .filter_map(as_function_item)
-        .collect()
-}
-
-fn as_function_item(item: ImplItem) -> Option<Item> {
-    let ImplItem::Fn(method) = item else {
-        return None;
-    };
-
-    if method
-        .sig
-        .inputs
-        .iter()
-        .any(|arg| matches!(arg, FnArg::Receiver(_)))
-    {
-        return None;
-    }
-
-    let ImplItemFn {
-        attrs,
-        vis,
-        modifiers,
-        sig,
-        block,
-        ..
-    } = method;
-
-    Some(Item::Fn(ItemFn {
-        attrs,
-        vis,
-        modifiers,
-        sig,
-        block: Box::new(block),
-    }))
-}
-
 pub(super) fn sanitize_rust_module_name(raw: &str) -> String {
-    let mut out = sanitize_component(raw);
-    if out.is_empty() {
-        return "node".to_string();
-    }
-    if is_rust_keyword(&out) {
-        out.push('_');
-    }
-    out
+    rust_identifier_or(raw, "node")
 }
 
 #[cfg(test)]
@@ -731,5 +610,225 @@ mod tests {
     fn sanitize_module_name_escapes_rust_keywords() {
         assert_eq!(sanitize_rust_module_name("mod"), "mod_");
         assert_eq!(sanitize_rust_module_name("type"), "type_");
+    }
+
+    #[test]
+    fn sanitize_module_name_falls_back_to_node_when_nothing_survives() {
+        assert_eq!(sanitize_rust_module_name(""), "node");
+        assert_eq!(sanitize_rust_module_name("  -- "), "node");
+    }
+
+    #[test]
+    fn sanitize_module_name_snake_cases_and_guards_a_leading_digit() {
+        assert_eq!(sanitize_rust_module_name("Video-Stream"), "video_stream");
+        assert_eq!(sanitize_rust_module_name("9lives"), "_9lives");
+    }
+
+    #[test]
+    fn flatten_vendored_path_points_each_vendored_crate_at_its_flat_sibling() {
+        let cases = [
+            ("../peppylib", Some("../peppylib")),
+            (
+                "../peppy-messaging-interface",
+                Some("../peppy-messaging-interface"),
+            ),
+            (
+                "../../peppy-shared/peppy-config-model",
+                Some("../peppy-config-model"),
+            ),
+            ("../core-node-api", Some("../core-node-api")),
+            ("build-helpers", Some("../build-helpers")),
+            ("../peppylib-rs", None),
+            ("../some-other-crate", None),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(
+                flatten_vendored_path(path).as_deref(),
+                expected,
+                "path {path}"
+            );
+        }
+    }
+
+    /// A node libs directory where a stale real directory and a symlink to
+    /// somewhere else stand in the place of two vendored crates.
+    fn node_libs_dir_with_stale_entries(root: &Path) -> PathBuf {
+        let node_libs_dir = root.join("node").join("libs");
+        fs::create_dir_all(node_libs_dir.join("peppylib").join("stale")).unwrap();
+        symlink_dir(root, &node_libs_dir.join("build-helpers")).unwrap();
+        node_libs_dir
+    }
+
+    #[test]
+    fn symlink_deploy_links_every_vendored_crate_to_the_shared_cache() {
+        let root = tempfile::TempDir::new().unwrap();
+        let peppy_dirs = daemon_config::consts::PeppyDirs::new(root.path().join("peppy"));
+        let node_libs_dir = node_libs_dir_with_stale_entries(root.path());
+
+        // The second deploy finds every link already in place.
+        for _ in 0..2 {
+            deploy_rust_crates_to_shared_cache(
+                &node_libs_dir,
+                &peppy_dirs,
+                CrateDeployMode::Symlink,
+            )
+            .unwrap();
+        }
+
+        let cache_dir = peppy_dirs.rust_libs_cache_dir(&vendored_crates_cache_key());
+        for vendored in &VENDORED_CRATES {
+            let dest = node_libs_dir.join(vendored.dir_name);
+            assert_eq!(
+                fs::read_link(&dest).unwrap(),
+                cache_dir.join(vendored.dir_name)
+            );
+            assert!(dest.join("Cargo.toml").is_file(), "{}", vendored.dir_name);
+        }
+    }
+
+    #[test]
+    fn copy_deploy_replaces_links_and_directories_with_copies() {
+        let root = tempfile::TempDir::new().unwrap();
+        let peppy_dirs = daemon_config::consts::PeppyDirs::new(root.path().join("peppy"));
+        let node_libs_dir = node_libs_dir_with_stale_entries(root.path());
+
+        deploy_rust_crates_to_shared_cache(&node_libs_dir, &peppy_dirs, CrateDeployMode::Copy)
+            .unwrap();
+
+        for vendored in &VENDORED_CRATES {
+            let dest = node_libs_dir.join(vendored.dir_name);
+            let meta = dest.symlink_metadata().unwrap();
+            assert!(meta.is_dir(), "{} is a real directory", vendored.dir_name);
+            assert!(dest.join("Cargo.toml").is_file(), "{}", vendored.dir_name);
+        }
+        assert!(!node_libs_dir.join("peppylib").join("stale").exists());
+    }
+
+    const TEST_METADATA: WorkspacePackageMetadata = WorkspacePackageMetadata {
+        version: "1.2.3",
+        edition: "2024",
+    };
+
+    /// Writes `manifest` to a temporary `Cargo.toml`, localizes it with
+    /// [`TEST_METADATA`] and returns the resulting document.
+    fn localized_manifest(manifest: &str) -> DocumentMut {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cargo_toml = dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, manifest).unwrap();
+        localize_cargo_toml(&cargo_toml, &TEST_METADATA).unwrap();
+        fs::read_to_string(&cargo_toml).unwrap().parse().unwrap()
+    }
+
+    /// The `[package]` table of [`localized_manifest`].
+    fn localized_package(manifest: &str) -> toml_edit::Table {
+        localized_manifest(manifest)["package"]
+            .as_table()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn localize_cargo_toml_resolves_workspace_inherited_package_fields() {
+        let package = localized_package(
+            "[package]\n\
+             name = \"core-node-api\"\n\
+             version.workspace = true\n\
+             authors.workspace = true\n\
+             edition.workspace = true\n",
+        );
+
+        assert_eq!(package["version"].as_str(), Some("1.2.3"));
+        assert_eq!(package["edition"].as_str(), Some("2024"));
+        assert!(package.get("authors").is_none());
+    }
+
+    #[test]
+    fn localize_cargo_toml_resolves_inline_table_workspace_inheritance() {
+        let package = localized_package(
+            "[package]\n\
+             name = \"core-node-api\"\n\
+             version = { workspace = true }\n\
+             authors = { workspace = true }\n\
+             edition = { workspace = true }\n",
+        );
+
+        assert_eq!(package["version"].as_str(), Some("1.2.3"));
+        assert_eq!(package["edition"].as_str(), Some("2024"));
+        assert!(package.get("authors").is_none());
+    }
+
+    #[test]
+    fn localize_cargo_toml_keeps_concrete_package_fields() {
+        let package = localized_package(
+            "[package]\n\
+             name = \"core-node-api\"\n\
+             version = \"0.1.0\"\n\
+             authors = [\"Peppy\"]\n\
+             edition = \"2021\"\n",
+        );
+
+        assert_eq!(package["version"].as_str(), Some("0.1.0"));
+        assert_eq!(package["edition"].as_str(), Some("2021"));
+        assert_eq!(
+            package["authors"]
+                .as_array()
+                .and_then(|authors| authors.get(0)?.as_str()),
+            Some("Peppy")
+        );
+    }
+
+    #[test]
+    fn localize_cargo_toml_flattens_vendored_paths_and_strips_dev_dependencies() {
+        let doc = localized_manifest(
+            r#"
+            [package]
+            name = "core-node-api"
+            version = "0.1.0"
+
+            [dependencies]
+            peppy-config-model = { path = "../../peppy-shared/peppy-config-model", features = ["schema"] }
+            serde = "1"
+
+            [dependencies.peppy-messaging-interface]
+            path = "../../peppy-shared/peppy-messaging-interface"
+
+            [build-dependencies]
+            build-helpers = { path = "build-helpers" }
+
+            [dev-dependencies]
+            peppylib = { path = "../../peppy-shared/peppylib" }
+
+            [target.'cfg(unix)'.dependencies]
+            libc = "0.2"
+
+            [target.'cfg(unix)'.dev-dependencies]
+            tempfile = "3"
+            "#,
+        );
+
+        let dependencies = &doc["dependencies"];
+        assert_eq!(
+            dependencies["peppy-config-model"]["path"].as_str(),
+            Some("../peppy-config-model")
+        );
+        assert_eq!(
+            dependencies["peppy-config-model"]["features"]
+                .as_array()
+                .map(|features| features.len()),
+            Some(1)
+        );
+        assert_eq!(dependencies["serde"].as_str(), Some("1"));
+        assert_eq!(
+            dependencies["peppy-messaging-interface"]["path"].as_str(),
+            Some("../peppy-messaging-interface")
+        );
+        assert_eq!(
+            doc["build-dependencies"]["build-helpers"]["path"].as_str(),
+            Some("../build-helpers")
+        );
+        assert!(doc.get("dev-dependencies").is_none());
+        let unix_target = &doc["target"]["cfg(unix)"];
+        assert_eq!(unix_target["dependencies"]["libc"].as_str(), Some("0.2"));
+        assert!(unix_target.get("dev-dependencies").is_none());
     }
 }

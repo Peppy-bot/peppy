@@ -1,7 +1,7 @@
 use super::identifiers::sanitize_rust_identifier;
 use super::type_mapping::{primitive_type_token, render_tokens};
 use crate::error::{Error, Result};
-use crate::generator::naming::to_camel_case;
+use crate::generator::naming::{nested_type_name, to_camel_case};
 use config::ParameterSpec;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 /// Always generates a `Parameters` struct, even if empty.
 ///
 /// Returns an error if any field name contains characters outside
-/// [`config::consts::ALLOWED_CONFIG_CHARS`].
+/// [`config::consts::ALLOWED_CONFIG_CHARS`], or if a parameter is an array.
 pub fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Result<String> {
     validate_parameter_schema(parameters)?;
 
@@ -24,17 +24,16 @@ pub fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Resul
         let field_ident = Ident::new(&sanitize_rust_identifier(field_name), Span::call_site());
 
         match spec {
-            ParameterSpec::Group(_) => {
-                let module_ident =
-                    Ident::new(&sanitize_rust_identifier(field_name), Span::call_site());
+            ParameterSpec::Group(group_fields) => {
+                let module_ident = &field_ident;
                 let struct_name = to_camel_case(field_name);
                 let struct_ident = Ident::new(&struct_name, Span::call_site());
-                let module_contents =
-                    generate_parameter_module_contents(spec, &struct_name, field_name)?;
+                let mut structs = Vec::new();
+                generate_parameter_struct(group_fields, &struct_name, field_name, &mut structs)?;
 
                 modules.push(quote! {
                     pub mod #module_ident {
-                        #module_contents
+                        #( #structs )*
                     }
                 });
 
@@ -59,31 +58,21 @@ pub fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Resul
         }
     };
 
-    let mut all_tokens = main_struct;
-    for module in modules {
-        all_tokens = quote! { #all_tokens #module };
-    }
-
-    Ok(render_tokens(all_tokens))
+    Ok(render_tokens(quote! {
+        #main_struct
+        #( #modules )*
+    }))
 }
 
-/// Validates that parameter field names contain only allowed characters.
-///
-/// Type validity is already enforced at parse time by [`config::ParameterSpec`],
-/// so this only checks identifier-name rules. Shared with the Python generator.
+/// Checks the rules the generators add on top of parsing: every field name,
+/// at any depth, uses only [`config::consts::ALLOWED_CONFIG_CHARS`], and no
+/// parameter is an array ([`Error::UnsupportedArrayParameter`], with its
+/// dotted path). Shared with the Python generator.
 pub fn validate_parameter_schema(parameters: &config::ParameterSchema) -> Result<()> {
     use config::consts::ALLOWED_CONFIG_CHARS;
 
     fn is_valid_field_name(name: &str, allowed: &str) -> bool {
         !name.is_empty() && name.chars().all(|c| allowed.contains(c))
-    }
-
-    fn join_path(parent_path: &str, field_name: &str) -> String {
-        if parent_path.is_empty() {
-            field_name.to_string()
-        } else {
-            format!("{parent_path}.{field_name}")
-        }
     }
 
     fn validate_fields(
@@ -99,11 +88,11 @@ pub fn validate_parameter_schema(parameters: &config::ParameterSchema) -> Result
                 });
             }
             if let ParameterSpec::Group(nested) = spec {
-                let field_path = join_path(parent_path, field_name);
+                let field_path = join_parameter_path(parent_path, field_name);
                 validate_fields(nested, &field_path, allowed)?;
             } else if let ParameterSpec::Array { .. } = spec {
                 return Err(Error::UnsupportedArrayParameter {
-                    path: join_path(parent_path, field_name),
+                    path: join_parameter_path(parent_path, field_name),
                 });
             }
         }
@@ -113,31 +102,23 @@ pub fn validate_parameter_schema(parameters: &config::ParameterSchema) -> Result
     validate_fields(parameters, "", ALLOWED_CONFIG_CHARS)
 }
 
-fn generate_parameter_module_contents(
-    spec: &ParameterSpec,
-    struct_name: &str,
-    root_path: &str,
-) -> Result<TokenStream> {
-    let mut structs = Vec::new();
-    generate_parameter_struct(spec, struct_name, root_path, &mut structs)?;
-
-    let tokens: TokenStream = structs.into_iter().collect();
-    Ok(tokens)
+/// The dotted path of `field_name` inside the group at `parent_path`, which
+/// is empty for the top level of the schema. Parameter errors name a field by
+/// this path.
+pub(crate) fn join_parameter_path(parent_path: &str, field_name: &str) -> String {
+    if parent_path.is_empty() {
+        field_name.to_string()
+    } else {
+        format!("{parent_path}.{field_name}")
+    }
 }
 
 fn generate_parameter_struct(
-    spec: &ParameterSpec,
+    fields: &BTreeMap<String, ParameterSpec>,
     struct_name: &str,
     current_path: &str,
     structs: &mut Vec<TokenStream>,
 ) -> Result<()> {
-    let ParameterSpec::Group(fields) = spec else {
-        // Only Groups produce nested structs. Primitives are inlined as field types.
-        return Err(Error::InvariantViolation {
-            context: format!("expected parameter group at `{current_path}`"),
-        });
-    };
-
     let struct_ident = Ident::new(struct_name, Span::call_site());
     let mut field_tokens = Vec::new();
 
@@ -150,11 +131,16 @@ fn generate_parameter_struct(
                 let rust_type = primitive_type_token(kind);
                 field_tokens.push(quote!(pub #field_ident: #rust_type));
             }
-            ParameterSpec::Group(_) => {
-                let nested_struct_name = nested_struct_name(struct_name, field_name);
+            ParameterSpec::Group(nested_fields) => {
+                let nested_struct_name = nested_type_name(struct_name, field_name);
                 let nested_struct_ident = Ident::new(&nested_struct_name, Span::call_site());
 
-                generate_parameter_struct(field_spec, &nested_struct_name, &field_path, structs)?;
+                generate_parameter_struct(
+                    nested_fields,
+                    &nested_struct_name,
+                    &field_path,
+                    structs,
+                )?;
 
                 field_tokens.push(quote!(pub #field_ident: #nested_struct_ident));
             }
@@ -172,8 +158,4 @@ fn generate_parameter_struct(
     });
 
     Ok(())
-}
-
-fn nested_struct_name(parent_struct: &str, field_name: &str) -> String {
-    format!("{parent_struct}{}", to_camel_case(field_name))
 }

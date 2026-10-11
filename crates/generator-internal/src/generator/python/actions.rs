@@ -3,8 +3,8 @@ use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass, emit_nest
 use super::deserialization;
 use super::serialization;
 use super::services::sender_target_python_expr;
-use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
-use super::type_mapping::{collect_fields_from_format, uses_optional};
+use super::topics::emit_capnp_schema_loader;
+use super::type_mapping::{PythonField, collect_fields_from_format, uses_optional};
 use crate::error::Result;
 use crate::generator::types::{ConsumedActionMessage, ContractOrigin, non_empty_message_format};
 use config::node::{ConsumedAction, NativeExposedAction};
@@ -32,14 +32,7 @@ pub fn build_exposed_action(
     let has_feedback = action.feedback_topic.is_some();
     let has_result = action.result_service.is_some();
 
-    // Capnp preamble and loader functions.
-    let any_schema = goal_request_schema_info.is_some()
-        || goal_response_schema_info.is_some()
-        || result_response_schema_info.is_some()
-        || feedback_schema_info.is_some();
-    if any_schema {
-        emit_capnp_preamble(&mut builder);
-    }
+    // Capnp loader functions.
     for info in [
         goal_request_schema_info,
         goal_response_schema_info,
@@ -49,7 +42,7 @@ pub fn build_exposed_action(
     .into_iter()
     .flatten()
     {
-        emit_capnp_loader_fn(&mut builder, info);
+        emit_capnp_schema_loader(&mut builder, info);
     }
 
     builder.line(&format!("ACTION_NAME = \"{}\"", action.name));
@@ -144,13 +137,11 @@ def reject(reason=None):
     // ---------------------------------------------------------------
 
     if let Some((fmt, info)) = goal_request_format.zip(goal_request_schema_info) {
-        let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "GoalRequestData",
-            &format!("{loader_fn_name}()"),
             "_deserialize_goal_request",
         );
         builder.blank_line();
@@ -252,19 +243,7 @@ if hasattr(decision, "__await__"):
                     if let Some((fmt, info)) = goal_response_format.zip(goal_response_schema_info) {
                         builder.line("response = decision.response");
                         builder.block("if response is not None:", |builder| {
-                            let loader_fn_name = capnp_loader_fn_name(info);
-                            builder.line(&format!(
-                                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                                info.struct_name
-                            ));
-                            let mut counter = 0u32;
-                            serialization::emit_capnp_assignments(
-                                builder,
-                                "capnp_msg",
-                                fmt,
-                                "response",
-                                &mut counter,
-                            );
+                            serialization::emit_new_capnp_message(builder, info, fmt, "response");
                             builder.line("response_bytes = capnp_msg.to_bytes()");
                         });
                         builder.block("else:", |builder| {
@@ -312,26 +291,13 @@ def is_cancelled(self) -> bool:
 
         // publish_feedback
         if let Some((fmt, info)) = feedback_format.zip(feedback_schema_info) {
-            let mut params = vec![String::from("self")];
-            for field in &feedback_fields {
-                params.push(format!("{}: {}", field.name, field.type_str));
-            }
             builder.block(
-                &format!("async def publish_feedback({}) -> None:", params.join(", ")),
+                &format!(
+                    "async def publish_feedback({}) -> None:",
+                    method_params(&feedback_fields)
+                ),
                 |builder| {
-                    let loader_fn_name = capnp_loader_fn_name(info);
-                    builder.line(&format!(
-                        "capnp_msg = {loader_fn_name}().{}.new_message()",
-                        info.struct_name
-                    ));
-                    let mut counter = 0u32;
-                    serialization::emit_capnp_assignments(
-                        builder,
-                        "capnp_msg",
-                        fmt,
-                        "",
-                        &mut counter,
-                    );
+                    serialization::emit_new_capnp_message(builder, info, fmt, "");
                     builder.py(r#"
 payload = capnp_msg.to_bytes()
 await self._inner.publish_feedback(payload)
@@ -342,30 +308,15 @@ await self._inner.publish_feedback(payload)
 
         // complete / complete_cancelled
         if has_result {
+            let result_params = method_params(&result_fields);
             for method in ["complete", "complete_cancelled"] {
-                let mut params = vec![String::from("self")];
-                for field in &result_fields {
-                    params.push(format!("{}: {}", field.name, field.type_str));
-                }
                 builder.block(
-                    &format!("async def {method}({}) -> None:", params.join(", ")),
+                    &format!("async def {method}({result_params}) -> None:"),
                     |builder| {
                         if let Some((fmt, info)) =
                             result_response_format.zip(result_response_schema_info)
                         {
-                            let loader_fn_name = capnp_loader_fn_name(info);
-                            builder.line(&format!(
-                                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                                info.struct_name
-                            ));
-                            let mut counter = 0u32;
-                            serialization::emit_capnp_assignments(
-                                builder,
-                                "capnp_msg",
-                                fmt,
-                                "",
-                                &mut counter,
-                            );
+                            serialization::emit_new_capnp_message(builder, info, fmt, "");
                             builder.line("payload = capnp_msg.to_bytes()");
                         } else {
                             builder.line("payload = b\"\"");
@@ -380,6 +331,18 @@ await self._inner.publish_feedback(payload)
     Ok(builder.build())
 }
 
+/// The parameter list of a `GoalContext` method that sends `fields`: `self`,
+/// then one annotated parameter per field.
+fn method_params(fields: &[PythonField]) -> String {
+    let mut params = vec![String::from("self")];
+    params.extend(
+        fields
+            .iter()
+            .map(|field| format!("{}: {}", field.name, field.type_str)),
+    );
+    params.join(", ")
+}
+
 // ---------------------------------------------------------------------------
 // Subscribed actions
 // ---------------------------------------------------------------------------
@@ -387,7 +350,6 @@ await self._inner.publish_feedback(payload)
 pub struct ConsumedActionSchemaInfo<'a> {
     pub goal_request: Option<&'a PythonSchemaInfo>,
     pub goal_response: Option<&'a PythonSchemaInfo>,
-    pub cancel_response: Option<&'a PythonSchemaInfo>,
     pub feedback: Option<&'a PythonSchemaInfo>,
     pub result_response: Option<&'a PythonSchemaInfo>,
 }
@@ -407,27 +369,17 @@ pub fn build_consumed_action(
     let feedback_format = non_empty_message_format(messages.feedback.as_ref());
     let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
-    // Capnp preamble and loader functions
-    let any_schema = schema_info.goal_request.is_some()
-        || schema_info.goal_response.is_some()
-        || schema_info.cancel_response.is_some()
-        || schema_info.feedback.is_some()
-        || schema_info.result_response.is_some();
-
-    if any_schema {
-        emit_capnp_preamble(&mut builder);
-    }
+    // Capnp loader functions
     for info in [
         schema_info.goal_request,
         schema_info.goal_response,
-        schema_info.cancel_response,
         schema_info.feedback,
         schema_info.result_response,
     ]
     .into_iter()
     .flatten()
     {
-        emit_capnp_loader_fn(&mut builder, info);
+        emit_capnp_schema_loader(&mut builder, info);
     }
 
     // Constants
@@ -512,39 +464,33 @@ class ResultStatus(IntEnum):
 
     // _deserialize_goal_response
     if let Some((fmt, info)) = goal_response_format.zip(schema_info.goal_response) {
-        let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "GoalResponseData",
-            &format!("{loader_fn_name}()"),
             "_deserialize_goal_response",
         );
     }
 
     // _deserialize_feedback_payload
     if let Some((fmt, info)) = feedback_format.zip(schema_info.feedback) {
-        let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "FeedbackMessage",
-            &format!("{loader_fn_name}()"),
             "_deserialize_feedback_payload",
         );
     }
 
     // _deserialize_result_response
     if let Some((fmt, info)) = result_response_format.zip(schema_info.result_response) {
-        let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "ResultResponseData",
-            &format!("{loader_fn_name}()"),
             "_deserialize_result_response",
         );
     }
@@ -582,34 +528,21 @@ class ResultStatus(IntEnum):
                 "async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, {request_param}timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:"
             ),
             |builder| {
-                // A multi-paragraph docstring, so it opens and closes by hand
-                // rather than through `docstring`.
-                builder.py(r#"
-"""Fires this goal at `target`, a member of the slot's bound set.
-
-A target outside the set fails before anything reaches the wire. The
-handle retains the target: feedback, result, and cancel stay pinned
-to it.
-"#);
-                builder.lines(dependency.target_selection_doc());
-                builder.line("\"\"\"");
+                builder.multiline_docstring(
+                    "Fires this goal at `target`, a member of the slot's bound set.",
+                    [
+                        "A target outside the set fails before anything reaches the wire. The",
+                        "handle retains the target: feedback, result, and cancel stay pinned",
+                        "to it.",
+                    ]
+                    .into_iter()
+                    .chain(dependency.target_selection_doc().iter().copied()),
+                );
                 crate::generator::python::services::emit_target_membership_check(builder);
 
                 // Serialize request payload
                 if let Some((fmt, info)) = goal_request_format.zip(schema_info.goal_request) {
-                    let loader_fn_name = capnp_loader_fn_name(info);
-                    builder.line(&format!(
-                        "capnp_msg = {loader_fn_name}().{}.new_message()",
-                        info.struct_name
-                    ));
-                    let mut counter = 0u32;
-                    serialization::emit_capnp_assignments(
-                        builder,
-                        "capnp_msg",
-                        fmt,
-                        "request",
-                        &mut counter,
-                    );
+                    serialization::emit_new_capnp_message(builder, info, fmt, "request");
                     builder.line("user_goal_payload = capnp_msg.to_bytes()");
                 } else {
                     builder.line("user_goal_payload = b\"\"");

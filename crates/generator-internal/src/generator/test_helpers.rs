@@ -163,6 +163,29 @@ fn rename_peppygen_package(peppygen_dir: &Path) {
 /// Lints with every feature enabled, so the `testing`-gated `mock` and
 /// `fixtures` modules every node compiles into its test builds face the same
 /// `-D warnings` gate as the production surface.
+pub fn run_clippy(output_dir: &Path) {
+    run_cargo_on_generated_crate(
+        output_dir,
+        "clippy",
+        &[
+            "--all-targets",
+            "--all-features",
+            "--color",
+            "always",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    );
+}
+
+/// Runs `cargo build` on a generated crate.
+pub fn run_cargo_build(output_dir: &Path) {
+    run_cargo_on_generated_crate(output_dir, "build", &[]);
+}
+
+/// Runs `cargo <subcommand> <extra_args>` in a generated crate and asserts
+/// that it succeeds.
 ///
 /// Uses a shared target directory so heavy dependencies are compiled once and
 /// reused across all checks. Two protections cover its two distinct hazards:
@@ -172,61 +195,29 @@ fn rename_peppygen_package(peppygen_dir: &Path) {
 /// processes do not exhaust file descriptors (sccache "Too many open files"). The
 /// lock alone does not prevent the reuse: identity is decided in the target dir, so
 /// even serialized builds can pick up a stale same-named unit.
-pub fn run_clippy(output_dir: &Path) {
+fn run_cargo_on_generated_crate(output_dir: &Path, subcommand: &str, extra_args: &[&str]) {
     let target_dir = stable_test_target_dir();
     fs::create_dir_all(&target_dir).expect("failed to create stable test target directory");
     rename_peppygen_package(output_dir);
 
-    let lock_file = fs::File::create(target_dir.join(".compile.lock"))
-        .expect("failed to create compile lock file");
-    lock_file.lock().expect("failed to acquire compile lock");
-
-    let clippy_output = Command::new("cargo")
-        .arg("clippy")
-        .arg("--all-targets")
-        .arg("--all-features")
-        .arg("--color")
-        .arg("always")
-        .arg("--")
-        .arg("-D")
-        .arg("warnings")
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(output_dir)
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to run cargo clippy on generated crate");
-    assert!(
-        clippy_output.status.success(),
-        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        clippy_output.status.code(),
-        String::from_utf8_lossy(&clippy_output.stdout),
-        String::from_utf8_lossy(&clippy_output.stderr)
-    );
-}
-
-/// Runs `cargo build` on a generated crate, using the same shared target
-/// directory, per-test peppygen rename, and file lock as [`run_clippy`].
-pub fn run_cargo_build(output_dir: &Path) {
-    let target_dir = stable_test_target_dir();
-    fs::create_dir_all(&target_dir).expect("failed to create stable test target directory");
-    rename_peppygen_package(output_dir);
-
+    // Held until this function returns, so the cargo run below happens under
+    // the lock.
     let lock_file = fs::File::create(target_dir.join(".compile.lock"))
         .expect("failed to create compile lock file");
     lock_file.lock().expect("failed to acquire compile lock");
 
     let cargo_output = Command::new("cargo")
-        .arg("build")
+        .arg(subcommand)
+        .args(extra_args)
         .env("CARGO_TARGET_DIR", &target_dir)
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(output_dir)
         .stdin(Stdio::null())
         .output()
-        .expect("failed to run cargo build on generated crate");
+        .unwrap_or_else(|err| panic!("failed to run cargo {subcommand} on generated crate: {err}"));
     assert!(
         cargo_output.status.success(),
-        "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        "cargo {subcommand} failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
         cargo_output.status.code(),
         String::from_utf8_lossy(&cargo_output.stdout),
         String::from_utf8_lossy(&cargo_output.stderr)

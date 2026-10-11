@@ -71,6 +71,16 @@ const PEER_STATES: &str = r#"{
   message_format: { positions: { $type: "array", $items: "f64", $length: 3 } }
 }"#;
 
+/// A slot of the `arm_link:v1` pairing, as a participant or an observer.
+fn arm_link_slot(link_id: &str, cardinality: Cardinality) -> PeerContext {
+    PeerContext {
+        link_id: link_id.to_string(),
+        pairing_name: "arm_link".to_string(),
+        pairing_tag: "v1".to_string(),
+        cardinality,
+    }
+}
+
 fn populate<G: LanguageGenerator>(generator: &mut G) {
     let emitted: NativeEmittedTopic = serde_json5::from_str(EMITTED_TOPIC).unwrap();
     generator.add_emitted_topic(&emitted, None).unwrap();
@@ -81,27 +91,19 @@ fn populate<G: LanguageGenerator>(generator: &mut G) {
     let action: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION).unwrap();
     generator.add_exposed_action(&action, None).unwrap();
 
+    let camera = DependencyContext::native("uvc_camera", "v1", "camera", Cardinality::One);
+
     let ctopic: ConsumedTopic = serde_json5::from_str(CONSUMED_TOPIC).unwrap();
     let cformat: MessageFormat = serde_json5::from_str(CONSUMED_TOPIC_FORMAT).unwrap();
     generator
-        .add_consumed_topic(
-            &ctopic,
-            cformat,
-            TopicRetention::LiveOnly,
-            &DependencyContext::native("uvc_camera", "v1", "camera", Cardinality::One),
-        )
+        .add_consumed_topic(&ctopic, cformat, TopicRetention::LiveOnly, &camera)
         .unwrap();
 
     let cservice: ConsumedService = serde_json5::from_str(CONSUMED_SERVICE).unwrap();
     let req: MessageFormat = serde_json5::from_str(CONSUMED_SERVICE_REQ).unwrap();
     let resp: MessageFormat = serde_json5::from_str(CONSUMED_SERVICE_RESP).unwrap();
     generator
-        .add_consumed_service(
-            &cservice,
-            &req,
-            &resp,
-            &DependencyContext::native("uvc_camera", "v1", "camera", Cardinality::One),
-        )
+        .add_consumed_service(&cservice, &req, &resp, &camera)
         .unwrap();
 
     let caction: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION).unwrap();
@@ -121,30 +123,15 @@ fn populate<G: LanguageGenerator>(generator: &mut G) {
 
     let commands: NativeEmittedTopic = serde_json5::from_str(PEER_COMMANDS).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(PEER_STATES).unwrap();
-    let peer = PeerContext {
-        link_id: "arm".to_string(),
-        pairing_name: "arm_link".to_string(),
-        pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
-    };
+    let peer = arm_link_slot("arm", Cardinality::One);
     generator.add_peer_emitted_topic(&commands, &peer).unwrap();
     generator.add_peer_consumed_topic(&states, &peer).unwrap();
 
-    let observer = PeerContext {
-        link_id: "observed_arm".to_string(),
-        pairing_name: "arm_link".to_string(),
-        pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
-    };
+    let observer = arm_link_slot("observed_arm", Cardinality::One);
     generator
         .add_observed_topic(&states, &observer, Cardinality::One)
         .unwrap();
-    let multi_observer = PeerContext {
-        link_id: "fleet_arms".to_string(),
-        pairing_name: "arm_link".to_string(),
-        pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
-    };
+    let multi_observer = arm_link_slot("fleet_arms", Cardinality::ZeroOrMore);
     generator
         .add_observed_topic(&states, &multi_observer, Cardinality::ZeroOrMore)
         .unwrap();

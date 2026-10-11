@@ -3,11 +3,12 @@
 //! seeding-call planning live here ONCE; the Rust and Python backends only
 //! render these specs (one derivation, two renderers).
 //!
-//! Population is a one-line `record_*` call at the end of each backend's
-//! existing `add_*` method, cloning the already-validated inputs. Renderers
-//! re-derive schema keys with the same `naming` functions production used,
-//! so codecs land on the identical capnp files (schema registries dedupe by
-//! file stem, zero duplicated schemas).
+//! Population is one `record_*` call at the start of each backend's `add_*`
+//! method, cloning the parsed inputs. An `add_*` that then fails aborts the
+//! whole generation, so nothing renders from an input production refused.
+//! Renderers re-derive schema keys with the same `naming` functions
+//! production used, so codecs land on the identical capnp files (schema
+//! registries dedupe by file stem, zero duplicated schemas).
 
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
@@ -16,8 +17,9 @@ use config::node::{
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
-use super::types::{ConsumedActionMessage, ContractOrigin, DependencyContext, PeerContext};
-use crate::error::{Error, Result};
+use super::types::{
+    ConsumedActionMessage, ContractOrigin, DependencyContext, PeerContext, non_empty_message_format,
+};
 
 /// Core-node segment every mock publishes/serves under.
 pub(crate) const MOCK_CORE_NODE: &str = "mock-core";
@@ -64,28 +66,6 @@ pub(crate) fn reserved_member_owners() -> HashMap<String, String> {
             )
         })
         .collect()
-}
-
-/// Claims `sanitized` for `owner` within one generated surface. A second
-/// owner landing on an already-claimed identifier is a hard error naming
-/// both, so the operator sees which two inputs clashed rather than the
-/// sanitized identifier twice.
-pub(crate) fn claim_sanitized_name(
-    owners: &mut HashMap<String, String>,
-    sanitized: &str,
-    category: &str,
-    owner: &str,
-) -> Result<()> {
-    if let Some(first) = owners.get(sanitized) {
-        return Err(Error::ModuleNameCollision {
-            category: category.to_string(),
-            first: first.clone(),
-            second: owner.to_string(),
-            sanitized: sanitized.to_string(),
-        });
-    }
-    owners.insert(sanitized.to_string(), owner.to_string());
-    Ok(())
 }
 
 /// The member name for a dep-link interface: plain when the interface's own
@@ -184,6 +164,18 @@ pub(crate) struct PairTopicSpec {
     pub format: MessageFormat,
 }
 
+impl PairTopicSpec {
+    /// The spec of a pairing or observed topic. A topic without a message
+    /// format carries the empty format.
+    fn from_topic(topic: &NativeEmittedTopic) -> Self {
+        Self {
+            name: topic.name.clone(),
+            qos: topic.qos_profile.clone(),
+            format: topic.message_format.clone().unwrap_or_default(),
+        }
+    }
+}
+
 /// The mock peer for one pairing slot: publishes what the node consumes,
 /// subscribes (triple-pinned) to what the node emits.
 #[derive(Debug, Clone)]
@@ -270,7 +262,18 @@ pub(crate) struct TestGenRegistry {
 /// `None` for an absent or empty message format: an empty struct has no
 /// codec in production, and the veneer mirrors that (no typed argument).
 fn non_empty(format: Option<&MessageFormat>) -> Option<MessageFormat> {
-    format.filter(|format| !format.0.is_empty()).cloned()
+    non_empty_message_format(format).cloned()
+}
+
+/// The action's messages with each absent or empty format as `None`, by the
+/// rule of [`non_empty`].
+fn non_empty_action_messages(messages: &ConsumedActionMessage) -> ConsumedActionMessage {
+    ConsumedActionMessage {
+        goal_request: non_empty(messages.goal_request.as_ref()),
+        goal_response: non_empty(messages.goal_response.as_ref()),
+        feedback: non_empty(messages.feedback.as_ref()),
+        result_response: non_empty(messages.result_response.as_ref()),
+    }
 }
 
 impl TestGenRegistry {
@@ -342,31 +345,20 @@ impl TestGenRegistry {
         self.dep_entry(dependency).actions.push(DepActionSpec {
             name: action.name.clone(),
             module_link: action.link_id.clone(),
-            messages: ConsumedActionMessage {
-                goal_request: non_empty(messages.goal_request.as_ref()),
-                goal_response: non_empty(messages.goal_response.as_ref()),
-                feedback: non_empty(messages.feedback.as_ref()),
-                result_response: non_empty(messages.result_response.as_ref()),
-            },
+            messages: non_empty_action_messages(messages),
         });
     }
 
     pub fn record_peer_emitted_topic(&mut self, topic: &NativeEmittedTopic, peer: &PeerContext) {
-        let spec = PairTopicSpec {
-            name: topic.name.clone(),
-            qos: topic.qos_profile.clone(),
-            format: topic.message_format.clone().unwrap_or_default(),
-        };
-        self.pairing_entry(peer).node_emits.push(spec);
+        self.pairing_entry(peer)
+            .node_emits
+            .push(PairTopicSpec::from_topic(topic));
     }
 
     pub fn record_peer_consumed_topic(&mut self, topic: &NativeEmittedTopic, peer: &PeerContext) {
-        let spec = PairTopicSpec {
-            name: topic.name.clone(),
-            qos: topic.qos_profile.clone(),
-            format: topic.message_format.clone().unwrap_or_default(),
-        };
-        self.pairing_entry(peer).node_consumes.push(spec);
+        self.pairing_entry(peer)
+            .node_consumes
+            .push(PairTopicSpec::from_topic(topic));
     }
 
     pub fn record_observed_topic(
@@ -384,11 +376,7 @@ impl TestGenRegistry {
                 topics: Vec::new(),
             })
             .topics
-            .push(PairTopicSpec {
-                name: topic.name.clone(),
-                qos: topic.qos_profile.clone(),
-                format: topic.message_format.clone().unwrap_or_default(),
-            });
+            .push(PairTopicSpec::from_topic(topic));
     }
 
     pub fn record_emitted_topic(
@@ -423,13 +411,13 @@ impl TestGenRegistry {
         action: &NativeExposedAction,
         origin: Option<&ContractOrigin>,
     ) {
-        let messages = ConsumedActionMessage::from(action);
+        let messages = non_empty_action_messages(&ConsumedActionMessage::from(action));
         self.own.actions.push(ExposedActionSpec {
             name: action.name.clone(),
-            goal_request: non_empty(messages.goal_request.as_ref()),
-            goal_response: non_empty(messages.goal_response.as_ref()),
-            feedback: non_empty(messages.feedback.as_ref()),
-            result: non_empty(messages.result_response.as_ref()),
+            goal_request: messages.goal_request,
+            goal_response: messages.goal_response,
+            feedback: messages.feedback,
+            result: messages.result_response,
             origin: origin.cloned(),
         });
     }

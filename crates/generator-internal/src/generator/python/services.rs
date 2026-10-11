@@ -2,9 +2,9 @@ use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass};
 use super::deserialization;
 use super::serialization;
-use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
+use super::topics::emit_capnp_schema_loader;
 use crate::error::Result;
-use crate::generator::types::{ContractOrigin, non_empty_message_format};
+use crate::generator::types::{ContractOrigin, DocLanguage, non_empty_message_format};
 use config::node::{Cardinality, ConsumedService, MessageFormat, NativeExposedService};
 
 /// Returns the Python expression for the `SenderTarget` to splice into a
@@ -40,62 +40,48 @@ pub(crate) fn sender_target_python_expr(
 /// calls are separate: the two scalar cardinalities share one emitted name
 /// over two runtime accessors. The docstring prose comes from
 /// `DependencyContext::bound_producers_doc` so both language generators
-/// state the same guarantees; only the Python-API tail sentence is added
-/// here. Callers need `import peppylib`, which every consumed module
-/// already adds.
+/// state the same guarantees, in Python's API terms. Callers need
+/// `import peppylib`, which every consumed module already adds.
 pub(crate) fn emit_bound_producer_accessor_fn(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
 ) {
-    let (fn_name, runtime_method, return_type, typing_import, api_note) =
-        match dependency.cardinality {
-            Cardinality::One => (
-                "bound_producer",
-                "bound_producer",
-                "peppylib.ProducerRef",
-                None,
-                None,
-            ),
-            Cardinality::ZeroOrOne => (
-                "bound_producer",
-                "optional_bound_producer",
-                "Optional[peppylib.ProducerRef]",
-                Some("from typing import Optional"),
-                None,
-            ),
-            Cardinality::OneOrMore => (
-                "bound_producers",
-                "bound_producers",
-                "List[peppylib.ProducerRef]",
-                Some("from typing import List"),
-                Some(crate::generator::types::DocLanguage::Python.never_empty_tail()),
-            ),
-            Cardinality::ZeroOrMore => (
-                "bound_producers",
-                "bound_producers",
-                "List[peppylib.ProducerRef]",
-                Some("from typing import List"),
-                None,
-            ),
-        };
+    let (fn_name, runtime_method, return_type, typing_import) = match dependency.cardinality {
+        Cardinality::One => (
+            "bound_producer",
+            "bound_producer",
+            "peppylib.ProducerRef",
+            None,
+        ),
+        Cardinality::ZeroOrOne => (
+            "bound_producer",
+            "optional_bound_producer",
+            "Optional[peppylib.ProducerRef]",
+            Some("from typing import Optional"),
+        ),
+        Cardinality::OneOrMore => (
+            "bound_producers",
+            "bound_producers",
+            "List[peppylib.ProducerRef]",
+            Some("from typing import List"),
+        ),
+        Cardinality::ZeroOrMore => (
+            "bound_producers",
+            "bound_producers",
+            "List[peppylib.ProducerRef]",
+            Some("from typing import List"),
+        ),
+    };
     if let Some(import) = typing_import {
         builder.add_import(import);
     }
 
-    let doc = dependency.bound_producers_doc();
+    let doc = dependency.bound_producers_doc(DocLanguage::Python);
     builder.blank_line();
     builder.block(
         &format!("def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"),
         |builder| {
-            // A multi-paragraph docstring, so it opens and closes by hand
-            // rather than through `docstring`.
-            builder.line(&format!("\"\"\"{}", doc[0]));
-            builder.blank_line();
-            builder.lines(&doc[1..]);
-            if let Some(note) = api_note {
-                builder.line(note);
-            }
-            builder.line("\"\"\"");
+            builder.multiline_docstring(doc.summary, doc.body_lines());
             builder.line(&format!(
                 "return node_runner.{runtime_method}({:?})",
                 dependency.link_id
@@ -109,28 +95,19 @@ pub(crate) fn emit_bound_producer_accessor_fn(
 /// Emits the `bound_members()` accessor a set slot carries beside its
 /// `bound_producers()`: the same set as a `List[peppylib.BoundMember]`, each
 /// member with the copy it belongs to. Nothing for a scalar slot. The
-/// docstring prose comes from `DependencyContext::bound_members_doc`, with
-/// the Python never-empty tail on a `one_or_more` slot.
+/// docstring prose comes from `DependencyContext::bound_members_doc`.
 fn emit_bound_members_accessor_fn(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
 ) {
-    let Some(doc) = dependency.bound_members_doc() else {
+    let Some(doc) = dependency.bound_members_doc(DocLanguage::Python) else {
         return;
     };
-    let api_note = (dependency.cardinality == Cardinality::OneOrMore)
-        .then(|| crate::generator::types::DocLanguage::Python.never_empty_tail());
     builder.add_import("from typing import List");
     builder.block(
         "def bound_members(node_runner: peppylib.NodeRunner) -> List[peppylib.BoundMember]:",
         |builder| {
-            builder.line(&format!("\"\"\"{}", doc[0]));
-            builder.blank_line();
-            builder.lines(&doc[1..]);
-            if let Some(note) = api_note {
-                builder.line(note);
-            }
-            builder.line("\"\"\"");
+            builder.multiline_docstring(doc.summary, doc.body_lines());
             builder.line(&format!(
                 "return node_runner.bound_members({:?})",
                 dependency.link_id
@@ -162,14 +139,11 @@ pub fn build_exposed_service(
     let response_format = non_empty_message_format(service.response_message_format.as_ref());
 
     // Emit capnp schema loaders
-    if request_schema_info.is_some() || response_schema_info.is_some() {
-        emit_capnp_preamble(&mut builder);
-    }
-    if let Some(info) = request_schema_info {
-        emit_capnp_loader_fn(&mut builder, info);
-    }
-    if let Some(info) = response_schema_info {
-        emit_capnp_loader_fn(&mut builder, info);
+    for info in [request_schema_info, response_schema_info]
+        .into_iter()
+        .flatten()
+    {
+        emit_capnp_schema_loader(&mut builder, info);
     }
 
     // Response dataclass
@@ -198,19 +172,12 @@ pub fn build_exposed_service(
     builder.blank_line();
 
     // _deserialize_request helper (when request format exists)
-    if let Some((fmt, info)) = service
-        .request_message_format
-        .as_ref()
-        .filter(|f| !f.0.is_empty())
-        .zip(request_schema_info)
-    {
-        let loader_fn_name = capnp_loader_fn_name(info);
+    if let Some((fmt, info)) = request_format.zip(request_schema_info) {
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "RequestData",
-            &format!("{loader_fn_name}()"),
             "_deserialize_request",
         );
     }
@@ -240,12 +207,7 @@ request = Request(instance_id=instance_id, core_node=core_node, data=request_dat
                 builder.line("request = Request(instance_id=instance_id, core_node=core_node)");
             }
 
-            let Some((resp_fmt, resp_info)) = service
-                .response_message_format
-                .as_ref()
-                .filter(|f| !f.0.is_empty())
-                .zip(response_schema_info)
-            else {
+            let Some((resp_fmt, resp_info)) = response_format.zip(response_schema_info) else {
                 builder.py(r#"
 maybe_response = handler(request)
 if hasattr(maybe_response, "__await__"):
@@ -260,19 +222,7 @@ response = handler(request)
 if hasattr(response, "__await__"):
     response = await response
 "#);
-            let loader_fn_name = capnp_loader_fn_name(resp_info);
-            builder.line(&format!(
-                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                resp_info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(
-                builder,
-                "capnp_msg",
-                resp_fmt,
-                "response",
-                &mut counter,
-            );
+            serialization::emit_new_capnp_message(builder, resp_info, resp_fmt, "response");
             builder.line("return capnp_msg.to_bytes()");
         },
     );
@@ -337,14 +287,11 @@ pub fn build_consumed_service(
     let response_format = non_empty_message_format(Some(response_arguments));
 
     // Capnp schema loaders.
-    if request_schema_info.is_some() || response_schema_info.is_some() {
-        emit_capnp_preamble(&mut builder);
-    }
-    if let Some(info) = request_schema_info {
-        emit_capnp_loader_fn(&mut builder, info);
-    }
-    if let Some(info) = response_schema_info {
-        emit_capnp_loader_fn(&mut builder, info);
+    for info in [request_schema_info, response_schema_info]
+        .into_iter()
+        .flatten()
+    {
+        emit_capnp_schema_loader(&mut builder, info);
     }
 
     // Constants
@@ -374,13 +321,11 @@ pub fn build_consumed_service(
 
     // _deserialize_response helper (when response schema exists)
     if let Some((fmt, info)) = response_format.zip(response_schema_info) {
-        let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
             info,
             fmt,
             "ResponseData",
-            &format!("{loader_fn_name}()"),
             "_deserialize_response",
         );
     }
@@ -399,39 +344,32 @@ pub fn build_consumed_service(
 
     emit_bound_producer_accessor_fn(&mut builder, dependency);
 
-    let signature = if has_request {
-        format!(
-            "async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: Request, timeout: float){return_type}:"
-        )
+    // A body-less service takes no `request` parameter at all, so the
+    // parameter list is spliced rather than the whole signature written twice.
+    let request_param = if has_request {
+        "request: Request, "
     } else {
-        format!(
-            "async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float){return_type}:"
-        )
+        ""
     };
+    let signature = format!(
+        "async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, {request_param}timeout: float){return_type}:"
+    );
     let target_expr = sender_target_python_expr(
         dependency.origin.as_ref(),
         "NODE_NAME",
         &format!("{:?}", dependency.producer_tag),
     );
     builder.block(&signature, |builder| {
-        // A multi-paragraph docstring, so it opens and closes by hand rather
-        // than through `docstring`.
-        builder.line("\"\"\"Polls this service on `target`, a member of the slot's bound set.");
-        builder.blank_line();
-        builder.line("A target outside the set fails before anything reaches the wire.");
-        builder.lines(dependency.target_selection_doc());
-        builder.line("\"\"\"");
+        builder.multiline_docstring(
+            "Polls this service on `target`, a member of the slot's bound set.",
+            std::iter::once("A target outside the set fails before anything reaches the wire.")
+                .chain(dependency.target_selection_doc().iter().copied()),
+        );
         emit_target_membership_check(builder);
 
         // Serialize the request payload
         if let Some((fmt, info)) = request_format.zip(request_schema_info) {
-            let loader_fn_name = capnp_loader_fn_name(info);
-            builder.line(&format!(
-                "capnp_msg = {loader_fn_name}().{}.new_message()",
-                info.struct_name
-            ));
-            let mut counter = 0u32;
-            serialization::emit_capnp_assignments(builder, "capnp_msg", fmt, "request", &mut counter);
+            serialization::emit_new_capnp_message(builder, info, fmt, "request");
             builder.line("request_payload = capnp_msg.to_bytes()");
         } else {
             builder.line("request_payload = b\"\"");

@@ -1,7 +1,7 @@
-use crate::generator::naming::{non_empty_str, sanitize_component, to_camel_case};
+use crate::generator::naming::{sanitize_component, to_camel_case};
 use proc_macro2::{Ident, Span};
 
-pub(crate) fn is_rust_keyword(ident: &str) -> bool {
+fn is_rust_keyword(ident: &str) -> bool {
     matches!(
         ident,
         "as" | "break"
@@ -82,36 +82,23 @@ pub(crate) fn suffixed_rust_identifier(name: &str, suffix: &str) -> Ident {
     )
 }
 
-/// Builds a prefixed name from an optional candidate, falling back to `fallback`.
-pub(crate) fn prefixed_name(prefix: &str, candidate: Option<&str>, fallback: &str) -> String {
-    let fallback_component = match sanitize_rust_identifier(fallback) {
-        component if component.is_empty() => "item".to_string(),
-        component => component,
-    };
-
-    let maybe_component = candidate.and_then(|value| {
-        let sanitized = sanitize_rust_identifier(value);
-        if sanitized.is_empty() {
-            None
-        } else {
-            Some(sanitized)
-        }
-    });
-
-    let component = maybe_component.unwrap_or(fallback_component);
-
-    if prefix.is_empty() {
-        component
-    } else {
-        format!("{prefix}_{component}")
+/// Converts `raw` into a Rust identifier like [`sanitize_rust_identifier`],
+/// and returns `fallback` when no identifier character of `raw` survives (an
+/// empty, blank or all-punctuation name). The fallback is returned unchanged,
+/// so the caller passes a valid Rust identifier that is not a keyword.
+pub(crate) fn rust_identifier_or(raw: &str, fallback: &str) -> String {
+    let identifier = sanitize_rust_identifier(raw);
+    if identifier.is_empty() {
+        return fallback.to_string();
     }
+    identifier
 }
 
 /// The camel-case struct prefix of a consumed service's generated
 /// request/response types. Every renderer that names these types derives
 /// them from this one rule.
 pub(crate) fn consumed_service_struct_prefix(service_name: &str) -> String {
-    to_camel_case(&prefixed_name("", non_empty_str(service_name), "service"))
+    to_camel_case(&rust_identifier_or(service_name, "service"))
 }
 
 /// The camel-case prefix of a consumed action's generated types, derived
@@ -127,12 +114,6 @@ pub(crate) fn consumed_action_type_prefix(producer_name: &str, action_name: &str
         (false, false) => format!("{node_component}_{action_component}"),
     };
     to_camel_case(&base_component)
-}
-
-/// The struct name of a nested object field, continuing its parent's
-/// prefix.
-pub(crate) fn nested_struct_name(struct_prefix: &str, field_name: &str) -> String {
-    format!("{struct_prefix}{}", to_camel_case(field_name))
 }
 
 #[cfg(test)]
@@ -199,11 +180,17 @@ mod tests {
         assert_eq!(consumed_service_struct_prefix(""), "Service");
     }
 
+    /// A blank or all-punctuation name keeps no identifier character, so it
+    /// falls back like the empty name.
     #[test]
-    fn a_nested_struct_name_continues_its_parent_prefix() {
-        assert_eq!(
-            nested_struct_name("UvcCameraEnableActionGoal", "frame_header"),
-            "UvcCameraEnableActionGoalFrameHeader"
-        );
+    fn the_consumed_service_struct_prefix_of_a_name_without_identifier_characters_is_service() {
+        assert_eq!(consumed_service_struct_prefix("  -- "), "Service");
+        assert_eq!(consumed_service_struct_prefix("   "), "Service");
+    }
+
+    /// A keyword is escaped before the camel case drops the escape again.
+    #[test]
+    fn the_consumed_service_struct_prefix_drops_the_keyword_escape() {
+        assert_eq!(consumed_service_struct_prefix("type"), "Type");
     }
 }

@@ -106,67 +106,56 @@ pub fn generate_field_assignment(
     value_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> Result<TokenStream> {
-    generate_field_assignment_inner(
-        builder_expr,
-        field_name,
-        schema,
-        value_expr,
-        names,
-        true,
-        false,
-    )
+    generate_field_assignment_inner(builder_expr, field_name, schema, value_expr, names, false)
 }
 
+/// Assigns `value_expr` to the field, behind an `if let Some(..)` when the
+/// schema is optional.
 fn generate_field_assignment_inner(
     builder_expr: &TokenStream,
     field_name: &str,
     schema: &SchemaType,
     value_expr: &TokenStream,
     names: &mut NameGenerator,
-    handle_optional: bool,
     value_is_ref: bool,
 ) -> Result<TokenStream> {
-    if handle_optional && schema.is_optional() {
-        match schema {
-            SchemaType::Object(_) => {
-                let binding = names.next("value");
-                let inner_expr = quote!(#binding);
-                let inner = generate_field_assignment_inner(
-                    builder_expr,
-                    field_name,
-                    schema,
-                    &inner_expr,
-                    names,
-                    false,
-                    true,
-                )?;
-                return Ok(quote! {
-                    if let Some(#binding) = (#value_expr).as_ref() {
-                        #inner
-                    }
-                });
-            }
-            _ => {
-                let binding = names.next("value");
-                let inner_expr = quote!(#binding);
-                let inner = generate_field_assignment_inner(
-                    builder_expr,
-                    field_name,
-                    schema,
-                    &inner_expr,
-                    names,
-                    false,
-                    true,
-                )?;
-                return Ok(quote! {
-                    if let Some(#binding) = (#value_expr).as_ref() {
-                        #inner
-                    }
-                });
-            }
-        }
+    if !schema.is_optional() {
+        return generate_present_field_assignment(
+            builder_expr,
+            field_name,
+            schema,
+            value_expr,
+            names,
+            value_is_ref,
+        );
     }
 
+    let binding = names.next("value");
+    let inner = generate_present_field_assignment(
+        builder_expr,
+        field_name,
+        schema,
+        &quote!(#binding),
+        names,
+        true,
+    )?;
+    Ok(quote! {
+        if let Some(#binding) = (#value_expr).as_ref() {
+            #inner
+        }
+    })
+}
+
+/// Assigns a value that is present: `value_expr` holds the field's value
+/// itself, never an `Option` of it.
+fn generate_present_field_assignment(
+    builder_expr: &TokenStream,
+    field_name: &str,
+    schema: &SchemaType,
+    value_expr: &TokenStream,
+    names: &mut NameGenerator,
+    value_is_ref: bool,
+) -> Result<TokenStream> {
     let method_component = sanitize_component(field_name);
     let set_method = Ident::new(&format!("set_{method_component}"), Span::call_site());
     let init_method = Ident::new(&format!("init_{method_component}"), Span::call_site());
@@ -317,7 +306,9 @@ fn make_length_expr(
     }
 }
 
-/// Pre-computed length tokens for object list serialization.
+/// Serializes a list of scalars, strings or byte strings into the list that
+/// `init_method` creates, one element at a time. Refuses a list of `time`
+/// values.
 fn generate_list_assignment(
     builder_expr: &TokenStream,
     init_method: &Ident,
@@ -371,28 +362,13 @@ fn generate_object_assignment(
     names: &mut NameGenerator,
 ) -> Result<TokenStream> {
     let builder_ident = names.next("builder");
-    let mut nested = Vec::with_capacity(fields.len());
-
-    for (nested_name, nested_schema) in fields {
-        let nested_ident = Ident::new(
-            &sanitize_rust_identifier(nested_name.as_str()),
-            Span::call_site(),
-        );
-        let nested_value_expr = if value_is_ref {
-            quote!(&(#value_expr).#nested_ident)
-        } else {
-            quote!((#value_expr).#nested_ident)
-        };
-        nested.push(generate_field_assignment_inner(
-            &quote!(#builder_ident),
-            nested_name,
-            nested_schema,
-            &nested_value_expr,
-            names,
-            true,
-            value_is_ref,
-        )?);
-    }
+    let nested = generate_nested_field_assignments(
+        &builder_ident,
+        &quote!((#value_expr)),
+        fields,
+        names,
+        value_is_ref,
+    )?;
 
     Ok(quote! {
         let mut #builder_ident = #builder_expr.reborrow().#init_method();
@@ -414,27 +390,13 @@ fn generate_object_list_assignment(
     let element_ident = names.next("element");
 
     let element_builder_ident = names.next("builder");
-    let mut nested = Vec::with_capacity(fields.len());
-    for (nested_name, nested_schema) in fields {
-        let nested_ident = Ident::new(
-            &sanitize_rust_identifier(nested_name.as_str()),
-            Span::call_site(),
-        );
-        let nested_value_expr = if value_is_ref {
-            quote!(&#element_ident.#nested_ident)
-        } else {
-            quote!(#element_ident.#nested_ident)
-        };
-        nested.push(generate_field_assignment_inner(
-            &quote!(#element_builder_ident),
-            nested_name,
-            nested_schema,
-            &nested_value_expr,
-            names,
-            true,
-            value_is_ref,
-        )?);
-    }
+    let nested = generate_nested_field_assignments(
+        &element_builder_ident,
+        &quote!(#element_ident),
+        fields,
+        names,
+        value_is_ref,
+    )?;
 
     Ok(quote! {
         let mut #list_ident = #builder_expr.reborrow().#init_method(#length_expr);
@@ -443,6 +405,39 @@ fn generate_object_list_assignment(
             #(#nested)*
         }
     })
+}
+
+/// Assigns every field of a nested object, read from `parent_expr`, through
+/// `builder_ident`. `parent_expr` must be a single token tree (an ident or a
+/// parenthesized expression) so that `.field` applies to all of it.
+fn generate_nested_field_assignments(
+    builder_ident: &Ident,
+    parent_expr: &TokenStream,
+    fields: &IndexMap<String, SchemaType>,
+    names: &mut NameGenerator,
+    value_is_ref: bool,
+) -> Result<Vec<TokenStream>> {
+    let mut nested = Vec::with_capacity(fields.len());
+    for (nested_name, nested_schema) in fields {
+        let nested_ident = Ident::new(
+            &sanitize_rust_identifier(nested_name.as_str()),
+            Span::call_site(),
+        );
+        let nested_value_expr = if value_is_ref {
+            quote!(&#parent_expr.#nested_ident)
+        } else {
+            quote!(#parent_expr.#nested_ident)
+        };
+        nested.push(generate_field_assignment_inner(
+            &quote!(#builder_ident),
+            nested_name,
+            nested_schema,
+            &nested_value_expr,
+            names,
+            value_is_ref,
+        )?);
+    }
+    Ok(nested)
 }
 
 /// Generates a block expression that serializes fields into a Cap'n Proto message

@@ -1,6 +1,6 @@
 use super::identifiers::is_python_keyword;
 use crate::error::Result;
-use crate::generator::common::{cache_sibling_path, copy_dir_recursive};
+use crate::generator::common::{copy_dir_recursive, populate_cache_dir_once};
 use crate::generator::naming::sanitize_component;
 use crate::generator::scaffold_tree::{
     ModuleEntry, TreeWriter, build_module_tree, group_artifacts_by_category, write_module_tree,
@@ -76,30 +76,39 @@ fn host_platform_suffix() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// Returns the platform suffix to deploy.
-///
-/// - Non-container nodes run on the host, so use the host platform's `.so`.
-/// - Container nodes run inside a Linux VM, so use the Linux `.so` matching
-///   the host architecture.
-fn target_platform_suffix(is_container: bool) -> String {
-    if is_container {
-        format!("linux-{}", std::env::consts::ARCH)
-    } else {
-        host_platform_suffix()
+/// The platform whose native extension the node's peppylib deploys.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum PeppylibPlatform {
+    /// The node runs on the host, so it gets the host platform's `.so`.
+    #[default]
+    Host,
+    /// The node runs in a container, inside a Linux VM, so it gets the Linux
+    /// `.so` matching the host architecture.
+    LinuxContainer,
+}
+
+impl PeppylibPlatform {
+    /// The platform suffix of the `.so` to deploy (e.g. "macos-aarch64",
+    /// "linux-x86_64").
+    fn suffix(self) -> String {
+        match self {
+            Self::Host => host_platform_suffix(),
+            Self::LinuxContainer => format!("linux-{}", std::env::consts::ARCH),
+        }
     }
 }
 
 pub fn add_peppylib_dependencies(
     to_path: &Path,
     peppy_dirs: &daemon_config::consts::PeppyDirs,
-    is_container: bool,
+    platform: PeppylibPlatform,
 ) -> Result<()> {
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
     crate::generator::common::copy_embedded_templates("peppygen/python", to_path, "")?;
 
     // Determine which platform's .so to deploy, and include it in the cache key
     // so that native and container caches are separate.
-    let target_suffix = target_platform_suffix(is_container);
+    let target_suffix = platform.suffix();
     let expected_so_name = format!("{SO_PLATFORM_PREFIX}{target_suffix}.so");
     let cache_key = format!(
         "{}-{}-{}",
@@ -109,74 +118,9 @@ pub fn add_peppylib_dependencies(
     );
     let cache_dir = peppy_dirs.python_libs_cache_dir(&cache_key);
 
-    if !cache_dir.join(".complete").exists() {
-        let parent = cache_dir.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "cache dir has no parent")
-        })?;
-        fs::create_dir_all(parent)?;
-        let lock_path = cache_sibling_path(&cache_dir, ".lock");
-        let lock_file = fs::File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)?;
-        lock_file.lock()?;
-
-        if !cache_dir.join(".complete").exists() {
-            let staging_dir =
-                cache_sibling_path(&cache_dir, &format!(".staging-{}", std::process::id()));
-            if staging_dir.exists() {
-                fs::remove_dir_all(&staging_dir)?;
-            }
-
-            // Write the embedded Python wrappers.
-            for file_path in EmbeddedPeppylibPy::iter() {
-                let file_path_str = file_path.as_ref();
-                let destination = staging_dir.join(file_path_str);
-                if let Some(parent) = destination.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                let content = EmbeddedPeppylibPy::get(file_path_str).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("embedded peppylib file not found: {file_path_str}"),
-                    )
-                })?;
-                fs::write(&destination, content.data.as_ref())?;
-            }
-
-            // Write the target platform's native extension under the canonical
-            // name Python imports at runtime.
-            let so_bytes = PEPPYLIB_PLATFORM_SO
-                .iter()
-                .find(|(name, _)| *name == expected_so_name)
-                .map(|(_, bytes)| *bytes)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!(
-                            "no embedded native extension found for platform \
-                             '{target_suffix}' (expected '{expected_so_name}'). \
-                             Linux container bindings are only produced (or, \
-                             after a shared-crate change, refreshed) by a cross \
-                             build: every release build runs one, a debug build \
-                             only with PEPPY_CROSS_BUILD=1. Rebuild peppy \
-                             (`cargo build --release`, or PEPPY_CROSS_BUILD=1 \
-                             `cargo build`) and restart the daemon."
-                        ),
-                    )
-                })?;
-            fs::write(staging_dir.join(SO_CANONICAL_NAME), so_bytes)?;
-
-            if cache_dir.exists() {
-                fs::remove_dir_all(&cache_dir)?;
-            }
-            fs::rename(&staging_dir, &cache_dir)?;
-            fs::write(cache_dir.join(".complete"), "")?;
-        }
-        drop(lock_file);
-    }
+    populate_cache_dir_once(&cache_dir, |staging_dir| {
+        write_peppylib_package(staging_dir, &expected_so_name, &target_suffix)
+    })?;
 
     // Deploy peppylib as a standalone project at `.peppy/libs/peppylib`
     // (sibling of peppygen, mirroring the Rust layout) so each node gets the
@@ -206,12 +150,65 @@ pub fn add_peppylib_dependencies(
     Ok(())
 }
 
+/// Writes the peppylib Python package into `staging_dir`: the embedded
+/// wrappers, and the native extension of `target_suffix` under the canonical
+/// name Python imports at runtime.
+fn write_peppylib_package(
+    staging_dir: &Path,
+    expected_so_name: &str,
+    target_suffix: &str,
+) -> Result<()> {
+    for file_path in EmbeddedPeppylibPy::iter() {
+        let file_path_str = file_path.as_ref();
+        let destination = staging_dir.join(file_path_str);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let content = EmbeddedPeppylibPy::get(file_path_str).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("embedded peppylib file not found: {file_path_str}"),
+            )
+        })?;
+        fs::write(&destination, content.data.as_ref())?;
+    }
+
+    let so_bytes = PEPPYLIB_PLATFORM_SO
+        .iter()
+        .find(|(name, _)| *name == expected_so_name)
+        .map(|(_, bytes)| *bytes)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "no embedded native extension found for platform \
+                     '{target_suffix}' (expected '{expected_so_name}'). \
+                     Linux container bindings are only produced (or, \
+                     after a shared-crate change, refreshed) by a cross \
+                     build: every release build runs one, a debug build \
+                     only with PEPPY_CROSS_BUILD=1. Rebuild peppy \
+                     (`cargo build --release`, or PEPPY_CROSS_BUILD=1 \
+                     `cargo build`) and restart the daemon."
+                ),
+            )
+        })?;
+    fs::write(staging_dir.join(SO_CANONICAL_NAME), so_bytes)?;
+    Ok(())
+}
+
+/// Writes the node's Cap'n Proto schemas under `peppygen/capnp`. A generation
+/// can run over the tree of an earlier one, so the earlier directory is
+/// removed first: the package keeps no schema of an interface the node no
+/// longer has.
 pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path) -> Result<()> {
+    let capnp_dir = to_path.join("peppygen").join("capnp");
+    if capnp_dir.exists() {
+        fs::remove_dir_all(&capnp_dir)?;
+    }
     if schemas.is_empty() {
         return Ok(());
     }
 
-    let capnp_dir = to_path.join("peppygen").join("capnp");
     fs::create_dir_all(&capnp_dir)?;
     for schema in schemas.values() {
         let file_path = capnp_dir.join(format!("{}.capnp", schema.file_stem()));
@@ -309,7 +306,6 @@ pub(super) fn sanitize_python_module_name(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[test]
@@ -559,15 +555,30 @@ mod tests {
         }
     }
 
+    /// `set_container` is the boundary where the deployment kind of the node
+    /// becomes the platform whose `.so` its peppylib deploys.
     #[test]
-    fn target_platform_suffix_selects_host_for_non_container() {
-        let suffix = target_platform_suffix(false);
+    fn set_container_chooses_the_deployed_peppylib_platform() {
+        let mut generator = crate::generator::python::PythonGenerator::new();
+        assert_eq!(generator.peppylib_platform, PeppylibPlatform::Host);
+        generator.set_container(true);
+        assert_eq!(
+            generator.peppylib_platform,
+            PeppylibPlatform::LinuxContainer
+        );
+        generator.set_container(false);
+        assert_eq!(generator.peppylib_platform, PeppylibPlatform::Host);
+    }
+
+    #[test]
+    fn peppylib_platform_suffix_selects_host_for_non_container() {
+        let suffix = PeppylibPlatform::Host.suffix();
         assert_eq!(suffix, host_platform_suffix());
     }
 
     #[test]
-    fn target_platform_suffix_selects_linux_for_container() {
-        let suffix = target_platform_suffix(true);
+    fn peppylib_platform_suffix_selects_linux_for_container() {
+        let suffix = PeppylibPlatform::LinuxContainer.suffix();
         assert!(
             suffix.starts_with("linux-"),
             "container should select linux platform, got: {suffix}"
@@ -575,28 +586,6 @@ mod tests {
         assert!(
             suffix.ends_with(std::env::consts::ARCH),
             "container should use host architecture, got: {suffix}"
-        );
-    }
-
-    #[test]
-    fn cache_sibling_path_preserves_semver_dots() {
-        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456-1.0.0");
-        assert_eq!(
-            cache_sibling_path(&cache_dir, ".lock"),
-            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.lock"),
-        );
-        assert_eq!(
-            cache_sibling_path(&cache_dir, ".staging-42"),
-            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.staging-42"),
-        );
-    }
-
-    #[test]
-    fn cache_sibling_path_works_without_dots() {
-        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456");
-        assert_eq!(
-            cache_sibling_path(&cache_dir, ".lock"),
-            PathBuf::from("/data/libs/rust/abc123def456.lock"),
         );
     }
 }

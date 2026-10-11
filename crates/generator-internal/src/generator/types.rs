@@ -1,14 +1,15 @@
 use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
-use crate::generator::naming::{array_item_type_name, to_camel_case};
+use crate::generator::naming::{array_item_type_name, nested_type_name};
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, FormatRuleViolation,
-    MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, SchemaType,
-    TopicRetention,
+    MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, PeppygenLanguage,
+    SchemaType, TopicRetention,
 };
 use daemon_config::consts::PeppyDirs;
 use indexmap::IndexMap;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,15 +202,16 @@ pub fn ensure_no_peer_collision(
 /// `depends_on.nodes`, or the contract's `(name, tag)` when the consumer
 /// pulls in via `depends_on.contracts` (there's no producer node in that
 /// case, but the labels still need a stable identity). `origin` is `Some`
-/// exactly when the dependency is a contract document: node dependencies
-/// expose native interfaces only, so their consumed artifacts always carry
-/// the `node`-shaped wire discriminator.
+/// exactly when the dependency is a contract document, whose consumed
+/// artifacts address [`SenderTarget::Contract`]: node dependencies expose
+/// native interfaces only, so their consumed artifacts always address
+/// [`SenderTarget::Node`].
 ///
 /// `link_id` is the consumer manifest slot whose runtime binding resolves
-/// this dependency's bound producer set, sized per `cardinality`. In the
-/// harmonized wire model the consumer never pins by `link_id` on the wire
-/// (producers always advertise the `_` sentinel); instead the generated
-/// call sites splice processor bound-set lookups by `link_id`.
+/// this dependency's bound producer set, sized per `cardinality`. On the
+/// wire the consumer never pins by `link_id` (producers always advertise
+/// the `_` sentinel); instead the generated call sites splice processor
+/// bound-set lookups by `link_id`.
 /// `cardinality` picks the generated accessor shape so the launch-validated
 /// guarantee lives in the type: a `one` slot exposes `bound_producer()`
 /// returning the sole `&ProducerRef`, `zero_or_one` the same name returning an
@@ -308,47 +310,99 @@ impl DependencyContext {
         }
     }
 
-    /// Pre-wrapped doc lines for the module-level bound-producer accessor,
-    /// shared verbatim by both language generators (the same mechanism as
+    /// The doc of the module-level bound-producer accessor, shared verbatim
+    /// by both language generators (the same mechanism as
     /// [`Self::target_selection_doc`]) so the bound-set guarantees are
-    /// stated once. The first line stands alone as the summary sentence.
-    /// The `one_or_more` prose deliberately stops mid-sentence ("so"): each
-    /// generator appends its own API-specific tail (`first()` for Rust,
-    /// `[0]` for Python).
-    pub fn bound_producers_doc(&self) -> &'static [&'static str] {
+    /// stated once. The `one_or_more` prose stops mid-sentence ("so"): the
+    /// clause that finishes it names one language's API, so it comes from
+    /// `language`, as in [`observed_sources_doc`].
+    pub fn bound_producers_doc(&self, language: DocLanguage) -> AccessorDoc {
         match self.cardinality {
-            Cardinality::One => &[
-                "The producer bound to this module's slot.",
-                "The binding is fixed when the node starts (no live discovery; a",
-                "producer disconnecting never rebinds it) and shared by every",
-                "generated module referencing this slot. This slot declares",
-                "cardinality `one`: launch validation resolved exactly one producer,",
-                "so the accessor is singular and infallible.",
-            ],
-            Cardinality::ZeroOrOne => &[
-                "The producer bound to this module's slot, if any.",
-                "The binding is fixed when the node starts (no live discovery; a",
-                "producer disconnecting never rebinds it) and shared by every",
-                "generated module referencing this slot.",
-                "This slot declares cardinality `zero_or_one`: launch validation",
-                "resolved at most one producer, and nothing is bound wherever the",
-                "deployment wrote the slot vacant.",
-            ],
-            Cardinality::OneOrMore => &[
-                "The producer set currently bound to this module's slot, in plan order.",
-                "A join can grow the set and a removal shrink it, so call the accessor at the",
-                "point of use; a producer disconnecting never changes it. Every generated module",
-                "referencing this slot reads the same set.",
-                "This slot declares cardinality `one_or_more`: the set is never empty, so",
-            ],
-            Cardinality::ZeroOrMore => &[
-                "The producer set currently bound to this module's slot, in plan order.",
-                "A join can grow the set and a removal shrink it, so call the accessor at the",
-                "point of use; a producer disconnecting never changes it. Every generated module",
-                "referencing this slot reads the same set.",
-                "This slot declares cardinality `zero_or_more`: the set may be empty, so",
-                "callers handle the empty case.",
-            ],
+            Cardinality::One => AccessorDoc {
+                summary: "The producer bound to this module's slot.",
+                body: &[
+                    "The binding is fixed when the node starts (no live discovery; a",
+                    "producer disconnecting never rebinds it) and shared by every",
+                    "generated module referencing this slot. This slot declares",
+                    "cardinality `one`: launch validation resolved exactly one producer,",
+                    "so the accessor is singular and infallible.",
+                ],
+                api_note: None,
+                closing: &[],
+            },
+            Cardinality::ZeroOrOne => AccessorDoc {
+                summary: "The producer bound to this module's slot, if any.",
+                body: &[
+                    "The binding is fixed when the node starts (no live discovery; a",
+                    "producer disconnecting never rebinds it) and shared by every",
+                    "generated module referencing this slot.",
+                    "This slot declares cardinality `zero_or_one`: launch validation",
+                    "resolved at most one producer, and nothing is bound wherever the",
+                    "deployment wrote the slot vacant.",
+                ],
+                api_note: None,
+                closing: &[],
+            },
+            Cardinality::OneOrMore => AccessorDoc {
+                summary: "The producer set currently bound to this module's slot, in plan order.",
+                body: &[
+                    "A join can grow the set and a removal shrink it, so call the accessor at the",
+                    "point of use; a producer disconnecting never changes it. Every generated module",
+                    "referencing this slot reads the same set.",
+                    "This slot declares cardinality `one_or_more`: the set is never empty, so",
+                ],
+                api_note: Some(language.never_empty_tail()),
+                closing: &[],
+            },
+            Cardinality::ZeroOrMore => AccessorDoc {
+                summary: "The producer set currently bound to this module's slot, in plan order.",
+                body: &[
+                    "A join can grow the set and a removal shrink it, so call the accessor at the",
+                    "point of use; a producer disconnecting never changes it. Every generated module",
+                    "referencing this slot reads the same set.",
+                    "This slot declares cardinality `zero_or_more`: the set may be empty, so",
+                    "callers handle the empty case.",
+                ],
+                api_note: None,
+                closing: &[],
+            },
+        }
+    }
+
+    /// The doc of the `bound_members()` accessor a set slot carries beside
+    /// `bound_producers()`: the same set, each member with the copy its
+    /// instance belongs to. `None` for a scalar slot, whose one member is
+    /// what the launch bound. Shared by both language generators; the
+    /// never-empty tail of a `one_or_more` slot comes from `language`, as in
+    /// [`Self::bound_producers_doc`].
+    pub fn bound_members_doc(&self, language: DocLanguage) -> Option<AccessorDoc> {
+        match self.cardinality {
+            Cardinality::One | Cardinality::ZeroOrOne => None,
+            Cardinality::OneOrMore => Some(AccessorDoc {
+                summary: "The members of the set currently bound to this module's slot, in plan order.",
+                body: &[
+                    "Each member is a producer with the copy its instance belongs to, `None` for",
+                    "one the launcher deploys outside any copy. The same set `bound_producers()`",
+                    "answers by producer alone, read under the same rules; a node that groups",
+                    "producers by copy reads this one.",
+                    "This slot declares cardinality `one_or_more`: the set is never empty, so",
+                ],
+                api_note: Some(language.never_empty_tail()),
+                closing: &[],
+            }),
+            Cardinality::ZeroOrMore => Some(AccessorDoc {
+                summary: "The members of the set currently bound to this module's slot, in plan order.",
+                body: &[
+                    "Each member is a producer with the copy its instance belongs to, `None` for",
+                    "one the launcher deploys outside any copy. The same set `bound_producers()`",
+                    "answers by producer alone, read under the same rules; a node that groups",
+                    "producers by copy reads this one.",
+                    "This slot declares cardinality `zero_or_more`: the set may be empty, so",
+                    "callers handle the empty case.",
+                ],
+                api_note: None,
+                closing: &[],
+            }),
         }
     }
 }
@@ -375,36 +429,6 @@ pub fn retention_doc(retention: TopicRetention) -> Option<String> {
              also receives them."
         ),
     })
-}
-
-impl DependencyContext {
-    /// Pre-wrapped doc lines for the `bound_members()` accessor a set slot
-    /// carries beside `bound_producers()`: the same set, each member with the
-    /// copy its instance belongs to. `None` for a scalar slot, whose one
-    /// member is what the launch bound. Shared by both language generators;
-    /// each appends its own never-empty tail on a `one_or_more` slot.
-    pub fn bound_members_doc(&self) -> Option<&'static [&'static str]> {
-        match self.cardinality {
-            Cardinality::One | Cardinality::ZeroOrOne => None,
-            Cardinality::OneOrMore => Some(&[
-                "The members of the set currently bound to this module's slot, in plan order.",
-                "Each member is a producer with the copy its instance belongs to, `None` for",
-                "one the launcher deploys outside any copy. The same set `bound_producers()`",
-                "answers by producer alone, read under the same rules; a node that groups",
-                "producers by copy reads this one.",
-                "This slot declares cardinality `one_or_more`: the set is never empty, so",
-            ]),
-            Cardinality::ZeroOrMore => Some(&[
-                "The members of the set currently bound to this module's slot, in plan order.",
-                "Each member is a producer with the copy its instance belongs to, `None` for",
-                "one the launcher deploys outside any copy. The same set `bound_producers()`",
-                "answers by producer alone, read under the same rules; a node that groups",
-                "producers by copy reads this one.",
-                "This slot declares cardinality `zero_or_more`: the set may be empty, so",
-                "callers handle the empty case.",
-            ]),
-        }
-    }
 }
 
 /// Pre-wrapped doc lines for an observer module's source accessor, the
@@ -549,7 +573,7 @@ impl DocLanguage {
 pub struct AccessorDoc {
     pub summary: &'static str,
     /// The rest of the prose, without [`Self::api_note`] or
-    /// [`Self::CLOSING_NOTE`].
+    /// [`Self::closing`].
     pub body: &'static [&'static str],
     /// The language-specific clause finishing [`Self::body`]'s last sentence,
     /// where the cardinality leaves one open. Resolved when the doc is built,
@@ -640,10 +664,9 @@ pub enum InterfaceVariant {
         topic: NativeEmittedTopic,
         observer: PeerContext,
         /// The observer slot's declared `cardinality`, which types the
-        /// generated accessor: `one` emits `source()`, the multi cardinalities
-        /// emit `sources()`. It rides beside `observer` rather than inside it
-        /// because [`PeerContext`] is shared with participant slots, which
-        /// carry no cardinality.
+        /// generated accessor: `one` and `zero_or_one` emit `source()`, the
+        /// multi cardinalities emit `sources()`. The generators read the
+        /// accessor shape from this field, not from `observer.cardinality`.
         cardinality: Cardinality,
     },
 }
@@ -781,6 +804,7 @@ impl InterfaceArtifact {
 
     /// Returns the leaf segment (the topic/service/action name). Panics on an
     /// empty `module_path`, which would be a generator bug.
+    #[cfg(test)]
     pub fn leaf_name(&self) -> &str {
         self.module_path
             .last()
@@ -866,7 +890,7 @@ pub trait LanguageGenerator {
         observer: &PeerContext,
         cardinality: Cardinality,
     ) -> Result<()>;
-    /// Finalizes the builder and return a path to the library
+    /// Consumes the generator and writes the generated library to `to_path`.
     fn build(
         self,
         to_path: impl AsRef<Path>,
@@ -924,10 +948,21 @@ pub fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&Messa
     format.filter(|format| !format.0.is_empty())
 }
 
+/// Refuses a message format that the generators cannot emit: a reserved
+/// payload field name, a fixed-length array of non-scalar items, or two
+/// nested types that get the same generated name. Both generators run these
+/// rules, in this order, on every format they map; `context` names the
+/// format in a reserved-name error.
+pub fn validate_generatable_message_format(format: &MessageFormat, context: &str) -> Result<()> {
+    validate_message_format_field_names(format, context)?;
+    validate_fixed_length_array_items(format)?;
+    validate_generated_type_name_collisions(format, "Message")
+}
+
 /// Refuses a fixed-length array whose items are not scalars, the rule the
 /// generators and the MCP catalog share through `config`; the violation is
 /// mapped onto this crate's error vocabulary.
-pub fn validate_fixed_length_array_items(format: &MessageFormat) -> Result<()> {
+fn validate_fixed_length_array_items(format: &MessageFormat) -> Result<()> {
     format
         .check_fixed_length_array_items()
         .map_err(|violation| format_rule_error(violation, ""))
@@ -938,7 +973,7 @@ pub fn validate_fixed_length_array_items(format: &MessageFormat) -> Result<()> {
 /// Some names are reserved by transport metadata and cannot be used in
 /// payload schemas; the rule itself lives in `config` beside the format
 /// model, shared with the MCP catalog.
-pub fn validate_message_format_field_names(format: &MessageFormat, context: &str) -> Result<()> {
+fn validate_message_format_field_names(format: &MessageFormat, context: &str) -> Result<()> {
     let normalized_context = if context.trim().is_empty() {
         "message_format"
     } else {
@@ -970,7 +1005,7 @@ fn format_rule_error(violation: FormatRuleViolation, context: &str) -> Error {
 /// For example, a field `frames` (array of objects) generates `{prefix}FramesItem`,
 /// while a sibling field `frames_item` (object) also generates `{prefix}FramesItem`.
 /// This function detects such collisions and returns an error.
-pub fn validate_generated_type_name_collisions(
+fn validate_generated_type_name_collisions(
     format: &MessageFormat,
     struct_prefix: &str,
 ) -> Result<()> {
@@ -987,10 +1022,9 @@ fn generated_object_child<'a>(
     schema: &'a SchemaType,
 ) -> Option<(String, &'a IndexMap<String, SchemaType>)> {
     match schema {
-        SchemaType::Object(object) => Some((
-            format!("{struct_prefix}{}", to_camel_case(field_name)),
-            &object.fields,
-        )),
+        SchemaType::Object(object) => {
+            Some((nested_type_name(struct_prefix, field_name), &object.fields))
+        }
         SchemaType::Array(array) => match array.items.as_ref() {
             SchemaType::Object(object) => Some((
                 array_item_type_name(struct_prefix, field_name),
@@ -999,6 +1033,54 @@ fn generated_object_child<'a>(
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// The field names of one struct, keyed by their spelling after one
+/// normalization of a target language (a Python identifier, a Rust
+/// identifier, a capnp field name). Two different fields that normalize to
+/// the same spelling would become one generated field, so the second one is
+/// refused.
+pub(crate) struct NormalizedFieldNames<'a> {
+    language: PeppygenLanguage,
+    normalization: &'static str,
+    context: &'a str,
+    first_field_by_spelling: HashMap<String, String>,
+}
+
+impl<'a> NormalizedFieldNames<'a> {
+    pub(crate) fn new(
+        language: PeppygenLanguage,
+        normalization: &'static str,
+        context: &'a str,
+    ) -> Self {
+        Self {
+            language,
+            normalization,
+            context,
+            first_field_by_spelling: HashMap::new(),
+        }
+    }
+
+    /// Records `field_name` under its `normalized` spelling. A different
+    /// field already recorded under that spelling is a collision, reported
+    /// with both field names.
+    pub(crate) fn claim(&mut self, normalized: String, field_name: &str) -> Result<()> {
+        match self.first_field_by_spelling.entry(normalized) {
+            Entry::Vacant(entry) => {
+                entry.insert(field_name.to_string());
+                Ok(())
+            }
+            Entry::Occupied(entry) if entry.get() == field_name => Ok(()),
+            Entry::Occupied(entry) => Err(Error::FieldNameNormalizationCollision {
+                language: self.language,
+                context: self.context.to_string(),
+                normalization: self.normalization,
+                normalized: entry.key().clone(),
+                first_field: entry.get().clone(),
+                second_field: field_name.to_string(),
+            }),
+        }
     }
 }
 
@@ -1030,6 +1112,128 @@ fn validate_sibling_type_name_collisions(
     }
 
     Ok(())
+}
+
+/// One generated Cap'n Proto schema file, keyed by its file stem.
+///
+/// `source` is the schema text exactly as the message-format mapper rendered
+/// it (root struct still named `Message`); `schema` is what gets written to
+/// disk, with the root struct renamed to the generator's chosen identity.
+/// The unsubstituted `source` is what `register_schema` compares when a
+/// second registration lands on the same file stem: identical text is the
+/// consumer and the mock of one slot sharing a file, anything else is a
+/// naming collision that must fail loudly.
+#[derive(Clone)]
+pub struct CapnpSchema {
+    schema_key: String,
+    file_stem: String,
+    struct_module: String,
+    source: String,
+    schema: String,
+}
+
+impl CapnpSchema {
+    pub fn new(
+        schema_key: String,
+        file_stem: String,
+        struct_module: String,
+        source: String,
+        schema: String,
+    ) -> Self {
+        Self {
+            schema_key,
+            file_stem,
+            struct_module,
+            source,
+            schema,
+        }
+    }
+
+    /// The raw schema key the first registration used for this file.
+    pub fn schema_key(&self) -> &str {
+        &self.schema_key
+    }
+
+    pub fn file_stem(&self) -> &str {
+        &self.file_stem
+    }
+
+    pub fn struct_module(&self) -> &str {
+        &self.struct_module
+    }
+
+    /// The mapper's schema text before the root-struct rename.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// The schema text written to disk.
+    pub fn schema(&self) -> &str {
+        &self.schema
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ModuleCategory {
+    EmittedTopics,
+    ConsumedTopics,
+    ExposedServices,
+    ConsumedServices,
+    ExposedActions,
+    ConsumedActions,
+    /// Both directions of every pairing slot: `paired_topics/<link_id>/<topic>`.
+    PairedTopics,
+    /// Test-only per-link mocks: `mock/{deps,pairings,observed}/<link_id>`.
+    /// Compilation is gated behind the peppygen `testing` cargo feature.
+    Mock,
+    /// Test-only harness + own-surface observation clients:
+    /// `fixtures/{harness,emitted_topics,exposed_services,exposed_actions}`.
+    /// Compilation is gated behind the peppygen `testing` cargo feature.
+    Fixtures,
+}
+
+impl ModuleCategory {
+    pub const ALL: [Self; 9] = [
+        Self::EmittedTopics,
+        Self::ConsumedTopics,
+        Self::ExposedServices,
+        Self::ConsumedServices,
+        Self::ExposedActions,
+        Self::ConsumedActions,
+        Self::PairedTopics,
+        Self::Mock,
+        Self::Fixtures,
+    ];
+
+    pub fn from_kind(kind: InterfaceKind) -> Self {
+        match kind {
+            InterfaceKind::EmittedTopic => Self::EmittedTopics,
+            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
+            InterfaceKind::ExposedService => Self::ExposedServices,
+            InterfaceKind::ConsumedService => Self::ConsumedServices,
+            InterfaceKind::ExposedAction => Self::ExposedActions,
+            InterfaceKind::ConsumedAction => Self::ConsumedActions,
+            InterfaceKind::PeerEmittedTopic
+            | InterfaceKind::PeerConsumedTopic
+            | InterfaceKind::ObservedTopic => Self::PairedTopics,
+            InterfaceKind::Mock => Self::Mock,
+            InterfaceKind::Fixture => Self::Fixtures,
+        }
+    }
+
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            Self::EmittedTopics => "emitted_topics",
+            Self::ConsumedTopics => "consumed_topics",
+            Self::ExposedServices => "exposed_services",
+            Self::ConsumedServices => "consumed_services",
+            Self::ExposedActions => "exposed_actions",
+            Self::ConsumedActions => "consumed_actions",
+            Self::PairedTopics => "paired_topics",
+            Self::Mock => "mock",
+            Self::Fixtures => "fixtures",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1326,127 +1530,5 @@ mod tests {
         assert_eq!(type_name, "MessageOuterFramesItem");
         assert_eq!(first_field, "frames");
         assert_eq!(second_field, "frames_item");
-    }
-}
-
-/// One generated Cap'n Proto schema file, keyed by its file stem.
-///
-/// `source` is the schema text exactly as the message-format mapper rendered
-/// it (root struct still named `Message`); `schema` is what gets written to
-/// disk, with the root struct renamed to the generator's chosen identity.
-/// The unsubstituted `source` is what `register_schema` compares when a
-/// second registration lands on the same file stem: identical text is the
-/// consumer and the mock of one slot sharing a file, anything else is a
-/// naming collision that must fail loudly.
-#[derive(Clone)]
-pub struct CapnpSchema {
-    schema_key: String,
-    file_stem: String,
-    struct_module: String,
-    source: String,
-    schema: String,
-}
-
-impl CapnpSchema {
-    pub fn new(
-        schema_key: String,
-        file_stem: String,
-        struct_module: String,
-        source: String,
-        schema: String,
-    ) -> Self {
-        Self {
-            schema_key,
-            file_stem,
-            struct_module,
-            source,
-            schema,
-        }
-    }
-
-    /// The raw schema key the first registration used for this file.
-    pub fn schema_key(&self) -> &str {
-        &self.schema_key
-    }
-
-    pub fn file_stem(&self) -> &str {
-        &self.file_stem
-    }
-
-    pub fn struct_module(&self) -> &str {
-        &self.struct_module
-    }
-
-    /// The mapper's schema text before the root-struct rename.
-    pub fn source(&self) -> &str {
-        &self.source
-    }
-
-    /// The schema text written to disk.
-    pub fn schema(&self) -> &str {
-        &self.schema
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum ModuleCategory {
-    EmittedTopics,
-    ConsumedTopics,
-    ExposedServices,
-    ConsumedServices,
-    ExposedActions,
-    ConsumedActions,
-    /// Both directions of every pairing slot: `paired_topics/<link_id>/<topic>`.
-    PairedTopics,
-    /// Test-only per-link mocks: `mock/{deps,pairings,observed}/<link_id>`.
-    /// Compilation is gated behind the peppygen `testing` cargo feature.
-    Mock,
-    /// Test-only harness + own-surface observation clients:
-    /// `fixtures/{harness,emitted_topics,exposed_services,exposed_actions}`.
-    /// Compilation is gated behind the peppygen `testing` cargo feature.
-    Fixtures,
-}
-
-impl ModuleCategory {
-    pub const ALL: [Self; 9] = [
-        Self::EmittedTopics,
-        Self::ConsumedTopics,
-        Self::ExposedServices,
-        Self::ConsumedServices,
-        Self::ExposedActions,
-        Self::ConsumedActions,
-        Self::PairedTopics,
-        Self::Mock,
-        Self::Fixtures,
-    ];
-
-    pub fn from_kind(kind: InterfaceKind) -> Self {
-        match kind {
-            InterfaceKind::EmittedTopic => Self::EmittedTopics,
-            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
-            InterfaceKind::ExposedService => Self::ExposedServices,
-            InterfaceKind::ConsumedService => Self::ConsumedServices,
-            InterfaceKind::ExposedAction => Self::ExposedActions,
-            InterfaceKind::ConsumedAction => Self::ConsumedActions,
-            InterfaceKind::PeerEmittedTopic
-            | InterfaceKind::PeerConsumedTopic
-            | InterfaceKind::ObservedTopic => Self::PairedTopics,
-            InterfaceKind::Mock => Self::Mock,
-            InterfaceKind::Fixture => Self::Fixtures,
-        }
-    }
-
-    pub fn dir_name(self) -> &'static str {
-        match self {
-            Self::EmittedTopics => "emitted_topics",
-            Self::ConsumedTopics => "consumed_topics",
-            Self::ExposedServices => "exposed_services",
-            Self::ConsumedServices => "consumed_services",
-            Self::ExposedActions => "exposed_actions",
-            Self::ConsumedActions => "consumed_actions",
-            Self::PairedTopics => "paired_topics",
-            Self::Mock => "mock",
-            Self::Fixtures => "fixtures",
-        }
     }
 }
