@@ -1,13 +1,12 @@
 use crate::helpers::{
     CONSUMED_ACTION_FEEDBACK_FORMAT, CONSUMED_ACTION_GOAL_FORMAT,
-    CONSUMED_ACTION_GOAL_RESPONSE_FORMAT, CONSUMED_ACTION_RESULT_FORMAT, EXPOSED_ACTION_EXAMPLE,
-};
-use crate::helpers::{
-    CapturedChild, DEFAULT_WAIT_TIMEOUT, RUST_STUB_EXECUTION, STUB_NODE_CONFIG, WaitContext,
+    CONSUMED_ACTION_GOAL_RESPONSE_FORMAT, CONSUMED_ACTION_RESULT_FORMAT, CapturedChild,
+    DEFAULT_WAIT_TIMEOUT, EXPOSED_ACTION_EXAMPLE, JOINTS_CONTRACT_ACTION, JOINTS_CONTRACT_NAME,
+    JOINTS_REFINEMENT, RUST_STUB_EXECUTION, STUB_NODE_CONFIG, TEST_CORE_NODE,
     assert_exited_successfully, bind_slot, compile_project, consumer_stub_node_config,
     contract_consumer_stub_node_config, contract_dep, generate_node_project, init_cargo_user_node,
-    native_dep, save_runtime_config, send_shutdown, spawn_cargo_run, test_contract_target,
-    test_node_runtime_config, wait_for_action_reachable_via_target_or_exit,
+    native_dep, save_runtime_config, shut_down_test_node, spawn_cargo_run, test_contract_target,
+    test_node_runtime_config, test_wait_context, wait_for_action_reachable_via_target_or_exit,
     wait_for_action_service_reachable_or_exit, wait_for_child,
     wait_for_health_service_reachable_or_exit,
 };
@@ -18,11 +17,9 @@ use std::{fs, time::Duration};
 use tempfile::TempDir;
 
 // --- Common test constants
-const TEST_CORE_NODE: &str = "test_core";
 const CONSUMER_NODE_NAME: &str = "consumer_node";
 const CONSUMER_INSTANCE_ID: &str = "consumer_instance";
 const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const BRAIN_NODE_NAME: &str = "brain";
 
 const CONSUMED_ACTION_EXAMPLE: &str = r#"
@@ -229,12 +226,7 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &right_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_service_reachable_or_exit(
         &ctx,
         BRAIN_NODE_NAME,
@@ -270,27 +262,9 @@ fn main() -> Result<()> {
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        CONSUMER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, CONSUMER_INSTANCE_ID).await;
     for arm_instance in [LEFT_ARM_INSTANCE_ID, RIGHT_ARM_INSTANCE_ID] {
-        send_shutdown(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            BRAIN_NODE_NAME,
-            TEST_CORE_NODE,
-            arm_instance,
-            Duration::from_secs(5),
-        )
-        .await;
+        shut_down_test_node(&messenger, BRAIN_NODE_NAME, arm_instance).await;
     }
 
     let consumer_output = wait_for_child(
@@ -563,14 +537,9 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_service_reachable_or_exit(
-        &action_ctx,
+        &ctx,
         BRAIN_NODE_NAME,
         "move_arm",
         None,
@@ -585,12 +554,6 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
@@ -610,26 +573,8 @@ fn main() -> Result<()> {
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, BRAIN_NODE_NAME, exposer_instance_id).await;
 
     // Wait for both processes to exit
     let consumer_output = wait_for_child(
@@ -851,14 +796,9 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_service_reachable_or_exit(
-        &action_ctx,
+        &ctx,
         BRAIN_NODE_NAME,
         "move_arm",
         None,
@@ -873,12 +813,6 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
@@ -898,26 +832,8 @@ fn main() -> Result<()> {
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, BRAIN_NODE_NAME, exposer_instance_id).await;
 
     // Wait for both processes to exit
     let consumer_output = wait_for_child(
@@ -1184,14 +1100,9 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_service_reachable_or_exit(
-        &action_ctx,
+        &ctx,
         BRAIN_NODE_NAME,
         "move_arm",
         None,
@@ -1206,12 +1117,6 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
@@ -1231,26 +1136,8 @@ fn main() -> Result<()> {
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, BRAIN_NODE_NAME, exposer_instance_id).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,
@@ -1526,14 +1413,9 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_service_reachable_or_exit(
-        &action_ctx,
+        &ctx,
         BRAIN_NODE_NAME,
         "move_arm",
         None,
@@ -1548,12 +1430,6 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
@@ -1573,26 +1449,8 @@ fn main() -> Result<()> {
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, BRAIN_NODE_NAME, exposer_instance_id).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,
@@ -1878,14 +1736,9 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_service_reachable_or_exit(
-        &action_ctx,
+        &ctx,
         BRAIN_NODE_NAME,
         "move_arm",
         None,
@@ -1900,12 +1753,6 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
@@ -1925,26 +1772,8 @@ fn main() -> Result<()> {
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, BRAIN_NODE_NAME, exposer_instance_id).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,
@@ -2230,14 +2059,9 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_service_reachable_or_exit(
-        &action_ctx,
+        &ctx,
         BRAIN_NODE_NAME,
         "move_arm",
         None,
@@ -2276,12 +2100,6 @@ fn main() -> Result<()> {
 
     // The setup fn has returned, so the node is now serving health/shutdown
     // and can be told to exit cleanly.
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
@@ -2291,16 +2109,7 @@ fn main() -> Result<()> {
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
 
     // Only the consumer's exit is meaningful; the exposer was SIGKILLed, so
     // its status is unconditionally a failure and is not asserted.
@@ -2619,12 +2428,7 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_reachable_via_target_or_exit(
         &ctx,
         test_contract_target(ARM_CONTRACT_NAME),
@@ -2660,26 +2464,8 @@ fn main() -> Result<()> {
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        ARM_SERVER_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, ARM_SERVER_NODE_NAME, exposer_instance_id).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,
@@ -2723,8 +2509,6 @@ fn main() -> Result<()> {
         exposer_stderr
     );
 }
-
-use crate::helpers::{JOINTS_CONTRACT_ACTION, JOINTS_CONTRACT_NAME, JOINTS_REFINEMENT};
 
 /// Wire-compatibility capstone for `refine`: the producer generates from the
 /// contract member with its `refine` block applied (`[f64; 3]` on both the
@@ -2950,12 +2734,7 @@ fn main() -> Result<()> {
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_reachable_via_target_or_exit(
         &ctx,
         test_contract_target(JOINTS_CONTRACT_NAME),
@@ -2991,26 +2770,8 @@ fn main() -> Result<()> {
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        ARM_SERVER_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, ARM_SERVER_NODE_NAME, exposer_instance_id).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,

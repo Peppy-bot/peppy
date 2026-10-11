@@ -20,10 +20,10 @@ use config::node::TopicRetention;
 
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, EMITTED_TOPIC_EXAMPLE, EXPOSED_SERVICE_EXAMPLE, STUB_NODE_CONFIG,
-    SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, WaitContext, assert_exited_successfully, bind_slot_many,
+    SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, TEST_CORE_NODE, assert_exited_successfully, bind_slot_many,
     compile_project, generate_node_project, init_cargo_user_node, multi_consumer_stub_node_config,
-    save_runtime_config, send_shutdown, spawn_cargo_run, test_node_runtime_config, wait_for_child,
-    wait_for_health_service_reachable_or_exit,
+    save_runtime_config, shut_down_test_node, spawn_cargo_run, test_node_runtime_config,
+    test_wait_context, wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use config::node::{
@@ -33,13 +33,11 @@ use generator::LanguageGenerator;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
 
-const TEST_CORE_NODE: &str = "test_core";
 const CONSUMER_NODE_NAME: &str = "consumer_node";
 const CONSUMER_INSTANCE_ID: &str = "consumer_instance";
 const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 const FRONT_CAMERA_INSTANCE_ID: &str = "front_camera";
 const REAR_CAMERA_INSTANCE_ID: &str = "rear_camera";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 
 /// The consumer's `cameras` slot, consumed as both a topic and a service.
 const MULTI_SUBSCRIBED_TOPIC: &str = r#"
@@ -326,12 +324,7 @@ fn main() -> Result<()> {
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for shutdown");
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     for (instance_id, child, dir) in [
         (
             FRONT_CAMERA_INSTANCE_ID,
@@ -363,16 +356,7 @@ fn main() -> Result<()> {
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        CONSUMER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, CONSUMER_INSTANCE_ID).await;
     let consumer_output = wait_for_child(
         &mut consumer_child,
         Some(Duration::from_secs(10)),
@@ -380,16 +364,7 @@ fn main() -> Result<()> {
     );
 
     for instance_id in [FRONT_CAMERA_INSTANCE_ID, REAR_CAMERA_INSTANCE_ID] {
-        send_shutdown(
-            &messenger,
-            TEST_CORE_NODE,
-            SHUTDOWN_SENDER_INSTANCE_ID,
-            UVC_CAMERA_NODE_NAME,
-            TEST_CORE_NODE,
-            instance_id,
-            Duration::from_secs(5),
-        )
-        .await;
+        shut_down_test_node(&messenger, UVC_CAMERA_NODE_NAME, instance_id).await;
     }
     wait_for_child(
         &mut front_child,

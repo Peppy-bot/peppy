@@ -29,10 +29,11 @@
 //! -- the capnp schema generation under test is language-agnostic.
 
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, WaitContext, assert_exited_successfully, bind_slot,
-    init_python_project_venv, init_python_user_node, native_dep, send_shutdown, spawn_python_run,
-    test_node_runtime_config, test_peppy_dirs, wait_for_action_service_reachable_or_exit,
-    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, TEST_CORE_NODE, assert_exited_successfully, bind_slot,
+    init_python_project_venv, init_python_user_node, native_dep, shut_down_test_node,
+    spawn_python_run, test_node_runtime_config, test_peppy_dirs, test_wait_context,
+    wait_for_action_service_reachable_or_exit, wait_for_child,
+    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{
@@ -46,12 +47,10 @@ use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
 
-const TEST_CORE_NODE: &str = "test_core";
 const PRODUCER_NODE_NAME: &str = "producer";
 const CONSUMER_NODE_NAME: &str = "consumer";
 const PRODUCER_INSTANCE_ID: &str = "producer_instance";
 const CONSUMER_INSTANCE_ID: &str = "consumer_instance";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 
 /// Mirror the variant-sync flow on the producer side: parse the source
 /// config, serialise it to JSON5, then write the result to disk for the
@@ -378,12 +377,7 @@ if __name__ == "__main__":
     );
 
     wait_for_action_service_reachable_or_exit(
-        &WaitContext {
-            messenger: &messenger,
-            bound_core_node: TEST_CORE_NODE,
-            caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-            target_core_node: TEST_CORE_NODE,
-        },
+        &test_wait_context(&messenger),
         PRODUCER_NODE_NAME,
         ACTION_NAME,
         None,
@@ -398,12 +392,7 @@ if __name__ == "__main__":
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
@@ -437,26 +426,8 @@ if __name__ == "__main__":
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        CONSUMER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        PRODUCER_NODE_NAME,
-        TEST_CORE_NODE,
-        PRODUCER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, CONSUMER_INSTANCE_ID).await;
+    shut_down_test_node(&messenger, PRODUCER_NODE_NAME, PRODUCER_INSTANCE_ID).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,
@@ -723,12 +694,7 @@ if __name__ == "__main__":
         &[(RUNTIME_CONFIG_VAR_NAME, &producer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_service_reachable_or_exit(
         &ctx,
         PRODUCER_NODE_NAME,
@@ -778,26 +744,8 @@ if __name__ == "__main__":
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        CONSUMER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        PRODUCER_NODE_NAME,
-        TEST_CORE_NODE,
-        PRODUCER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, CONSUMER_INSTANCE_ID).await;
+    shut_down_test_node(&messenger, PRODUCER_NODE_NAME, PRODUCER_INSTANCE_ID).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,
@@ -1071,12 +1019,7 @@ if __name__ == "__main__":
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_health_service_reachable_or_exit(
         &ctx,
         CONSUMER_NODE_NAME,
@@ -1110,26 +1053,8 @@ if __name__ == "__main__":
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        CONSUMER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        PRODUCER_NODE_NAME,
-        TEST_CORE_NODE,
-        PRODUCER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, CONSUMER_INSTANCE_ID).await;
+    shut_down_test_node(&messenger, PRODUCER_NODE_NAME, PRODUCER_INSTANCE_ID).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,

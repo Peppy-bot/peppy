@@ -1,13 +1,11 @@
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, TEST_CORE_NODE, WaitContext,
-    assert_exited_successfully, bind_slot, copy_config_to_output, generate_node_project,
-    init_python_project_venv, init_python_user_node, init_test_env,
-    python_consumer_stub_node_config, save_runtime_config, send_shutdown, spawn_python_run,
-    test_node_runtime_config, test_peppy_dirs, wait_for_child,
-    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
-};
-use crate::helpers::{
-    EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, TopicScenario, native_dep,
+    DEFAULT_WAIT_TIMEOUT, EMITTED_TOPIC_EXAMPLE, STUB_PYTHON_NODE_CONFIG,
+    SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, TEST_CORE_NODE, TopicScenario, assert_exited_successfully,
+    bind_slot, copy_config_to_output, generate_node_project, init_python_project_venv,
+    init_python_user_node, init_test_env, native_dep, python_consumer_stub_node_config,
+    save_runtime_config, shut_down_test_node, spawn_python_run, test_node_runtime_config,
+    test_peppy_dirs, test_wait_context, wait_for_child, wait_for_health_service_reachable_or_exit,
+    wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -24,7 +22,6 @@ use tempfile::TempDir;
 const RECEIVER_NODE_NAME: &str = "receiver_node";
 const RECEIVER_INSTANCE_ID: &str = "receiver_instance";
 const EMITTER_INSTANCE_ID: &str = "emitter_instance";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 const FRAME_RECEIVED_SERVICE: &str = "frame_received_ack";
 const EXPOSED_FRAME_RECEIVED_SERVICE_EXAMPLE: &str = r#"
@@ -326,12 +323,7 @@ if __name__ == "__main__":
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for shutdown");
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
 
     // A node's health service is reachable once its setup returned: for the
     // retaining emitter, once it published its one frame. The late-join
@@ -375,26 +367,8 @@ if __name__ == "__main__":
         DEFAULT_WAIT_TIMEOUT,
     )
     .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        RECEIVER_NODE_NAME,
-        TEST_CORE_NODE,
-        receiver_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        UVC_CAMERA_NODE_NAME,
-        TEST_CORE_NODE,
-        emitter_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, RECEIVER_NODE_NAME, receiver_instance_id).await;
+    shut_down_test_node(&messenger, UVC_CAMERA_NODE_NAME, emitter_instance_id).await;
     let receiver_output = wait_for_child(
         &mut receiver_child,
         Some(Duration::from_secs(10)),

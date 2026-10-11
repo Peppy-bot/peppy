@@ -1,15 +1,14 @@
 use crate::helpers::{
-    CapturedChild, DEFAULT_WAIT_TIMEOUT, PYTHON_STUB_EXECUTION, STUB_PYTHON_NODE_CONFIG,
-    WaitContext, contract_consumer_stub_node_config, contract_dep, init_python_project_venv,
-    init_python_user_node, native_dep, send_shutdown, spawn_python_run, test_contract_target,
-    try_send_shutdown, wait_for_action_reachable_via_target_or_exit,
-    wait_for_action_service_reachable_or_exit, wait_for_child,
-    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
-};
-use crate::helpers::{
-    ConsumerExposerOutput, EXPOSED_ACTION_EXAMPLE, TEST_CORE_NODE, assert_exited_successfully,
-    bind_slot, consumed_move_arm_action_messages, generate_node_project,
-    python_consumer_stub_node_config, save_runtime_config, test_node_runtime_config,
+    CapturedChild, ConsumerExposerOutput, DEFAULT_WAIT_TIMEOUT, EXPOSED_ACTION_EXAMPLE,
+    JOINTS_CONTRACT_ACTION, JOINTS_CONTRACT_NAME, JOINTS_REFINEMENT, PYTHON_STUB_EXECUTION,
+    SHUTDOWN_SENDER_INSTANCE_ID, STUB_PYTHON_NODE_CONFIG, TEST_CORE_NODE,
+    assert_exited_successfully, bind_slot, consumed_move_arm_action_messages,
+    contract_consumer_stub_node_config, contract_dep, generate_node_project,
+    init_python_project_venv, init_python_user_node, native_dep, python_consumer_stub_node_config,
+    save_runtime_config, shut_down_test_node, spawn_python_run, test_contract_target,
+    test_node_runtime_config, test_wait_context, try_send_shutdown,
+    wait_for_action_reachable_via_target_or_exit, wait_for_action_service_reachable_or_exit,
+    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use config::node::{ConsumedAction, NativeExposedAction, NativeExposedService};
@@ -21,7 +20,6 @@ use tempfile::TempDir;
 const CONSUMER_NODE_NAME: &str = "consumer_node";
 const CONSUMER_INSTANCE_ID: &str = "consumer_instance";
 const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const BRAIN_NODE_NAME: &str = "brain";
 const ACTION_FLOW_DONE_SERVICE: &str = "move_arm_flow_done";
 const ACTION_CANCEL_FLOW_DONE_SERVICE: &str = "move_arm_cancel_flow_done";
@@ -126,12 +124,7 @@ async fn run_move_arm_flow(
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
 
     // Spawn exposer first so it's ready to handle requests
     let mut exposer_child = spawn_python_run(
@@ -182,26 +175,8 @@ async fn run_move_arm_flow(
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        CONSUMER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        BRAIN_NODE_NAME,
-        TEST_CORE_NODE,
-        EXPOSER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, CONSUMER_INSTANCE_ID).await;
+    shut_down_test_node(&messenger, BRAIN_NODE_NAME, EXPOSER_INSTANCE_ID).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,
@@ -1207,14 +1182,9 @@ if __name__ == "__main__":
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let action_ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_service_reachable_or_exit(
-        &action_ctx,
+        &ctx,
         BRAIN_NODE_NAME,
         "move_arm",
         None,
@@ -1537,12 +1507,7 @@ if __name__ == "__main__":
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_reachable_via_target_or_exit(
         &ctx,
         test_contract_target(ARM_CONTRACT_NAME),
@@ -1588,26 +1553,8 @@ if __name__ == "__main__":
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        ARM_SERVER_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, ARM_SERVER_NODE_NAME, exposer_instance_id).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,
@@ -1649,8 +1596,6 @@ if __name__ == "__main__":
         exposer_stderr
     );
 }
-
-use crate::helpers::{JOINTS_CONTRACT_ACTION, JOINTS_CONTRACT_NAME, JOINTS_REFINEMENT};
 
 const JOINTS_FLOW_DONE_SERVICE: &str = "joints_flow_done";
 
@@ -1862,12 +1807,7 @@ if __name__ == "__main__":
         &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
     );
 
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
     wait_for_action_reachable_via_target_or_exit(
         &ctx,
         test_contract_target(JOINTS_CONTRACT_NAME),
@@ -1913,26 +1853,8 @@ if __name__ == "__main__":
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        ARM_SERVER_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, ARM_SERVER_NODE_NAME, exposer_instance_id).await;
 
     let consumer_output = wait_for_child(
         &mut consumer_child,

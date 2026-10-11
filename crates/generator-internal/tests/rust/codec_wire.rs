@@ -17,10 +17,10 @@
 //! cancellation and rejection.
 
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, assert_exited_successfully,
-    compile_project, generate_node_project, init_cargo_user_node, save_runtime_config,
-    send_shutdown, spawn_cargo_run, test_node_runtime_config, wait_for_child,
-    wait_for_health_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, SHUTDOWN_SENDER_INSTANCE_ID, STUB_NODE_CONFIG, TEST_CORE_NODE,
+    assert_exited_successfully, compile_project, generate_node_project, init_cargo_user_node,
+    save_runtime_config, send_shutdown, spawn_cargo_run, test_node_runtime_config,
+    test_wait_context, wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use config::node::{MessageFormat, TopicRetention};
@@ -41,11 +41,9 @@ use std::fs;
 use std::time::Duration;
 use tempfile::TempDir;
 
-const TEST_CORE_NODE: &str = "test_core";
 const STUB_INSTANCE_ID: &str = "codec_stub_instance";
 const STUB_NODE_NAME: &str = "generated_node";
 const CONSUMER_INSTANCE_ID: &str = "codec_consumer";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const LINK_ID: &str = "codec_impl";
 const CONTRACT_NAME: &str = "codec_fixture";
 const CONTRACT_TAG: &str = "v1";
@@ -361,12 +359,7 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("the consumer session connects");
-    let wait = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let wait = test_wait_context(&messenger);
     wait_for_health_service_reachable_or_exit(
         &wait,
         STUB_NODE_NAME,

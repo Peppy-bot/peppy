@@ -1,12 +1,10 @@
 use crate::helpers::{
-    CONSUMED_SERVICE_NO_REQUEST_EXAMPLE, CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE,
-    ConsumerExposerOutput, EXPOSED_SERVICE_EXAMPLE, EXPOSED_SERVICE_NO_REQUEST_EXAMPLE,
-    TEST_CORE_NODE, assert_exited_successfully, bind_slot, generate_node_project,
-    python_consumer_stub_node_config, save_runtime_config, test_node_runtime_config,
-};
-use crate::helpers::{
-    CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_PYTHON_NODE_CONFIG, WaitContext,
-    init_python_project_venv, init_python_user_node, native_dep, send_shutdown, spawn_python_run,
+    CONSUMED_SERVICE_NO_REQUEST_EXAMPLE, CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE, CapturedChild,
+    ConsumerExposerOutput, DEFAULT_WAIT_TIMEOUT, EXPOSED_SERVICE_EXAMPLE,
+    EXPOSED_SERVICE_NO_REQUEST_EXAMPLE, STUB_PYTHON_NODE_CONFIG, TEST_CORE_NODE,
+    assert_exited_successfully, bind_slot, generate_node_project, init_python_project_venv,
+    init_python_user_node, native_dep, python_consumer_stub_node_config, save_runtime_config,
+    shut_down_test_node, spawn_python_run, test_node_runtime_config, test_wait_context,
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
@@ -18,7 +16,6 @@ use tempfile::TempDir;
 // --- Common test constants
 const CONSUMER_NODE_NAME: &str = "consumer_node";
 const CONSUMER_INSTANCE_ID: &str = "consumer_instance";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 
 // --- Services exposes and its corresponding consumer
@@ -140,12 +137,7 @@ async fn run_single_exposer_service_flow(
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
 
     // Spawn exposer first so it's ready to handle requests
     let mut exposer_child = spawn_python_run(
@@ -197,26 +189,8 @@ async fn run_single_exposer_service_flow(
         &user_node_consumer,
     );
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        SOLE_CONSUMER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        UVC_CAMERA_NODE_NAME,
-        TEST_CORE_NODE,
-        SOLE_EXPOSER_INSTANCE_ID,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, SOLE_CONSUMER_INSTANCE_ID).await;
+    shut_down_test_node(&messenger, UVC_CAMERA_NODE_NAME, SOLE_EXPOSER_INSTANCE_ID).await;
 
     let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
     let exposer_output = wait_for_child(
@@ -641,12 +615,7 @@ if __name__ == "__main__":
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
 
     // Spawn both exposers first so they're ready to handle requests
     let mut exposer1_child = spawn_python_run(
@@ -700,7 +669,7 @@ if __name__ == "__main__":
     // never runs there. Probing health on it would panic with a
     // wait-timeout instead of hanging, but it's still the wrong question
     // to ask. The pre-setup shutdown queryable is up on both exposers, so
-    // the `send_shutdown` calls below land cleanly. The
+    // the shutdown requests below land cleanly. The
     // `wait_for_stdout_contains` below guarantees the bound exposer
     // already produced the response that the consumer's poll observed.
 
@@ -714,36 +683,9 @@ if __name__ == "__main__":
         &user_node_consumer,
     );
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        CONSUMER_NODE_NAME,
-        TEST_CORE_NODE,
-        consumer_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        UVC_CAMERA_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer1_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        UVC_CAMERA_NODE_NAME,
-        TEST_CORE_NODE,
-        exposer2_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, CONSUMER_NODE_NAME, consumer_instance_id).await;
+    shut_down_test_node(&messenger, UVC_CAMERA_NODE_NAME, exposer1_instance_id).await;
+    shut_down_test_node(&messenger, UVC_CAMERA_NODE_NAME, exposer2_instance_id).await;
 
     let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
     let exposer_output1 = wait_for_child(

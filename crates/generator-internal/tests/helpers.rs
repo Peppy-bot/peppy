@@ -91,6 +91,10 @@ pub const TEST_NODE_TAG: &str = "v1";
 /// The core node every node instance of the communication tests runs on.
 pub const TEST_CORE_NODE: &str = "test_core";
 
+/// The instance id the communication tests probe and shut nodes down as. No
+/// node runs under it: it names the test harness on the wire.
+pub const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
+
 /// Re-exported so the communication test files can name the messaging topology
 /// for their `#[case]` parameterization without reaching into the internal path.
 pub use daemon_config::peppy_config::LocalNodesTopology;
@@ -948,6 +952,18 @@ pub struct WaitContext<'a> {
     pub target_core_node: &'a str,
 }
 
+/// The wait context of the communication tests: the harness speaks from
+/// [`TEST_CORE_NODE`] as [`SHUTDOWN_SENDER_INSTANCE_ID`], and every node
+/// instance it waits for runs on [`TEST_CORE_NODE`].
+pub fn test_wait_context(messenger: &MessengerHandle) -> WaitContext<'_> {
+    WaitContext {
+        messenger,
+        bound_core_node: TEST_CORE_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_core_node: TEST_CORE_NODE,
+    }
+}
+
 /// Default deadline for the wait-family helpers. Long enough for slow CI
 /// (zenoh discovery + queryable propagation can take a couple of seconds
 /// on a cold session); short enough that a true hang (e.g. a probed
@@ -1167,6 +1183,22 @@ pub async fn send_shutdown(
             to_node_name, target_instance_id, bound_core_node, err
         )
     });
+}
+
+/// Shuts down the `instance_id` instance of `node_name` on [`TEST_CORE_NODE`]
+/// with the harness identity of [`test_wait_context`]. Panics when the
+/// request does not reach the instance within 5 seconds.
+pub async fn shut_down_test_node(messenger: &MessengerHandle, node_name: &str, instance_id: &str) {
+    send_shutdown(
+        messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        node_name,
+        TEST_CORE_NODE,
+        instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
 }
 
 /// Like `send_shutdown` but doesn't panic if the service is unreachable

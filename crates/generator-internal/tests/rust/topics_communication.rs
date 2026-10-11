@@ -1,12 +1,10 @@
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, assert_exited_successfully, bind_slot,
-    compile_project, consumer_stub_node_config, copy_config_to_output, generate_node_project,
-    init_cargo_user_node, init_test_env, save_runtime_config, send_shutdown, spawn_cargo_run,
-    test_node_runtime_config, test_peppy_dirs, wait_for_child,
+    DEFAULT_WAIT_TIMEOUT, EMITTED_TOPIC_EXAMPLE, STUB_NODE_CONFIG, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE,
+    TEST_CORE_NODE, TopicScenario, assert_exited_successfully, bind_slot, compile_project,
+    consumer_stub_node_config, copy_config_to_output, generate_node_project, init_cargo_user_node,
+    init_test_env, native_dep, save_runtime_config, shut_down_test_node, spawn_cargo_run,
+    test_node_runtime_config, test_peppy_dirs, test_wait_context, wait_for_child,
     wait_for_health_service_reachable_or_exit,
-};
-use crate::helpers::{
-    EMITTED_TOPIC_EXAMPLE, SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, TopicScenario, native_dep,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -20,11 +18,9 @@ use std::{fs, time::Duration};
 use tempfile::TempDir;
 
 // --- Common test constants
-const TEST_CORE_NODE: &str = "test_core";
 const RECEIVER_NODE_NAME: &str = "receiver_node";
 const RECEIVER_INSTANCE_ID: &str = "receiver_instance";
 const EMITTER_INSTANCE_ID: &str = "emitter_instance";
-const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 
 // --- Topics emitted and its corresponding receiver
@@ -279,12 +275,7 @@ fn main() -> Result<()> {
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for shutdown");
-    let ctx = WaitContext {
-        messenger: &messenger,
-        bound_core_node: TEST_CORE_NODE,
-        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_core_node: TEST_CORE_NODE,
-    };
+    let ctx = test_wait_context(&messenger);
 
     // A node's health service is reachable once its setup_fn completed: for
     // the receiver, once it received a frame; for the retaining emitter, once
@@ -311,26 +302,8 @@ fn main() -> Result<()> {
     )
     .await;
 
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        RECEIVER_NODE_NAME,
-        TEST_CORE_NODE,
-        receiver_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
-    send_shutdown(
-        &messenger,
-        TEST_CORE_NODE,
-        SHUTDOWN_SENDER_INSTANCE_ID,
-        UVC_CAMERA_NODE_NAME,
-        TEST_CORE_NODE,
-        emitter_instance_id,
-        Duration::from_secs(5),
-    )
-    .await;
+    shut_down_test_node(&messenger, RECEIVER_NODE_NAME, receiver_instance_id).await;
+    shut_down_test_node(&messenger, UVC_CAMERA_NODE_NAME, emitter_instance_id).await;
 
     // Wait for both processes to exit
     let receiver_output = wait_for_child(
