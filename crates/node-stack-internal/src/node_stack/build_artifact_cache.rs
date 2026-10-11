@@ -133,10 +133,7 @@ pub(super) fn reuse_line(
 
 /// Fingerprints `working_dir` for a build of `kind` performed by this peppy
 /// on this host platform.
-pub(super) fn fingerprint_staged_tree(
-    working_dir: &Path,
-    kind: ArtifactKind,
-) -> io::Result<BuildFingerprint> {
+fn fingerprint_staged_tree(working_dir: &Path, kind: ArtifactKind) -> io::Result<BuildFingerprint> {
     fingerprint_tree_for(
         working_dir,
         kind,
@@ -149,7 +146,7 @@ pub(super) fn fingerprint_staged_tree(
 /// Testable core of [`fingerprint_staged_tree`]: sha256 of the tree digest
 /// (see [`hash_dir`]) followed by NUL-separated `peppy_version`, `os`, `arch`
 /// and the artifact kind, truncated to [`FINGERPRINT_HEX_LEN`] hex chars.
-pub(super) fn fingerprint_tree_for(
+fn fingerprint_tree_for(
     working_dir: &Path,
     kind: ArtifactKind,
     peppy_version: &str,

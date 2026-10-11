@@ -6,9 +6,10 @@ use node_stack::{NodeStack, NodeStackError};
 use crate::helpers::config_common::core_node_config;
 use crate::helpers::graph_query;
 
-#[test]
-fn action_dependency_resolved_when_dependency_added_first() {
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
+/// The `brain` node, which consumes the `move_right_arm` action of
+/// `controller:v1` over link_id `controller`.
+fn brain_consuming_move_right_arm() -> config::node::NodeConfig {
+    serde_json5::from_str(
         r#"{
             peppy_schema: "node/v1",
             manifest: {
@@ -36,7 +37,12 @@ fn action_dependency_resolved_when_dependency_added_first() {
             },
         }"#,
     )
-    .expect("valid dependent node config");
+    .expect("valid dependent node config")
+}
+
+#[test]
+fn action_dependency_resolved_when_dependency_added_first() {
+    let dependent = brain_consuming_move_right_arm();
 
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
@@ -129,35 +135,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
 
 #[test]
 fn action_dependency_fails_when_dependency_is_missing() {
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-              name: "brain",
-              tag: "v1",
-              depends_on: {
-                nodes: [
-                  { name: "controller", tag: "v1", link_id: "controller" }
-                ]
-              },
-            },
-            interfaces: {
-                actions: {
-                    consumes: [
-                        {
-                          link_id: "controller",
-                          name: "move_right_arm"
-                        }
-                    ]
-                }
-            },
-            execution: {
-              language: "rust",
-              run_cmd: ["brain"]
-            },
-        }"#,
-    )
-    .expect("valid dependent node config");
+    let dependent = brain_consuming_move_right_arm();
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
@@ -180,35 +158,7 @@ fn action_dependency_fails_when_dependency_is_missing() {
 fn action_dependency_fails_when_action_not_exposed_by_dependency() {
     // Test the scenario where a node subscribes to an action from another node,
     // but the target node exists without exposing the requested action
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-              name: "brain",
-              tag: "v1",
-              depends_on: {
-                nodes: [
-                  { name: "controller", tag: "v1", link_id: "controller" }
-                ]
-              },
-            },
-            interfaces: {
-                actions: {
-                    consumes: [
-                        {
-                          link_id: "controller",
-                          name: "move_right_arm"
-                        }
-                    ]
-                }
-            },
-            execution: {
-              language: "rust",
-              run_cmd: ["brain"]
-            },
-        }"#,
-    )
-    .expect("valid dependent node config");
+    let dependent = brain_consuming_move_right_arm();
 
     // This node has the correct name but exposes a different action
     let dependency_wrong_action: config::node::NodeConfig = serde_json5::from_str(

@@ -1,5 +1,6 @@
 //! Real-lifecycle test helpers.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -66,6 +67,24 @@ impl LifecycleHarness {
             hooks: Arc::clone(&self.hooks),
         }
     }
+
+    /// The start context of a fixture spawn of `instance_id`: an empty
+    /// runtime config, no slot bindings, the wall clock, no launch identity
+    /// or copy, and no extra env vars or mounts.
+    pub fn start_context<'a>(&'a self, instance_id: &'a Name) -> StartContext<'a> {
+        StartContext {
+            instance_id,
+            runtime_config_json5: "{}",
+            slot_bindings: BTreeMap::new(),
+            clock: Default::default(),
+            launch: None,
+            copy: None,
+            env_vars: &[],
+            mount_paths_resolved: &[],
+            peppy_dirs: &self.peppy_dirs,
+            output_sinks: self.output_sinks(),
+        }
+    }
 }
 
 /// Constructs a fresh [`LifecycleHarness`] with isolated tempdirs and a
@@ -122,7 +141,28 @@ pub async fn build_ready(
     config: NodeConfig,
     config_path: impl Into<PathBuf>,
 ) -> EntityHandle {
-    let config = override_execution_for_fixture(config);
+    build_ready_as_is(
+        stack,
+        harness,
+        override_execution_for_fixture(config),
+        config_path,
+    )
+    .await
+}
+
+/// Pushes `config` into `stack` with its execution fields as they are, then
+/// drives the real `NodeEntity::build` to produce a `Ready` entity. The
+/// config must build without apptainer or a user build_cmd; a test that
+/// needs its own `run_cmd` starts from [`override_execution_for_fixture`]
+/// and replaces it.
+///
+/// Returns the `Ready` entity handle.
+pub async fn build_ready_as_is(
+    stack: &NodeStack,
+    harness: &LifecycleHarness,
+    config: NodeConfig,
+    config_path: impl Into<PathBuf>,
+) -> EntityHandle {
     let config_path = config_path.into();
     let name = config.manifest.name.as_str().to_owned();
     let tag = config.manifest.tag.clone();
@@ -186,23 +226,10 @@ pub async fn spawn_running_instance(
     harness: &LifecycleHarness,
     instance_id: Name,
 ) -> RunningInstanceGuard {
-    let (child, started_ctx) = NodeEntity::prepare_and_spawn(
-        &handle,
-        StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &harness.peppy_dirs,
-            output_sinks: harness.output_sinks(),
-        },
-    )
-    .await
-    .expect("test fixture: prepare_and_spawn should succeed on Ready entity");
+    let (child, started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, harness.start_context(&instance_id))
+            .await
+            .expect("test fixture: prepare_and_spawn should succeed on Ready entity");
 
     let pid = child.id().expect("fixture: spawned child should have pid");
     NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone(), Vec::new())

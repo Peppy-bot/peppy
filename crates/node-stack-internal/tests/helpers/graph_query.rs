@@ -1,14 +1,9 @@
 //! Read-only graph-wiring queries for tests, built on the public
 //! [`NodeStack::to_serialized_graph`] API.
 //!
-//! These replace the former `NodeStack::dependencies_of` / `dependents_of`
-//! accessors, which were removed as unused production surface. Tests assert
-//! dependency wiring by inspecting the serialized graph's direct edges. Only
-//! direct `depends_on.nodes` edges are considered (contract-implementation edges,
-//! tagged with `via_contract`, are excluded), matching the DAG-only semantics
-//! of the removed accessors.
-
-#![allow(dead_code)] // Each helper is used by a subset of the test modules.
+//! Tests assert dependency wiring by inspecting the serialized graph's direct
+//! edges. Only direct `depends_on.nodes` edges are considered
+//! (contract-implementation edges, tagged with `via_contract`, are excluded).
 
 use node_stack::NodeStack;
 

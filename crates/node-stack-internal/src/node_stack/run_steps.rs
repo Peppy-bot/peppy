@@ -4,11 +4,8 @@
 //! [`super::entity::NodeEntity::prepare_and_spawn`] and
 //! [`super::entity::NodeEntity::commit_started`].
 
-use parking_lot::Mutex as StdMutex;
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -21,6 +18,7 @@ use tracing::{debug, warn};
 
 use crate::action_log::{ActionLog, Announcer, STDERR_TAIL_HEADER};
 use crate::archive::extract_tar_zst;
+use crate::build_io::StderrTail;
 
 /// Per-process counter used to name temporary runtime config files uniquely.
 ///
@@ -28,18 +26,15 @@ use crate::archive::extract_tar_zst;
 /// file under `peppy_dirs.runtime_config_dir()`. Using a shared path can cause
 /// cross-test and cross-instance races where a node reads the wrong config
 /// (instance_id/port), leading to hangs waiting for ready/health responses.
-pub(super) static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Writes a runtime config to a unique temp file under
 /// `peppy_dirs.runtime_config_dir()` and returns the path.
 ///
-/// Used by both `spawn_process_node` and `spawn_container_node` to materialize
+/// Used by [`assemble_command`] and [`build_container_command`] to materialize
 /// the runtime config that the spawned child reads via the
 /// `PEPPY_RUNTIME_CONFIG` environment variable.
-pub(super) fn write_runtime_config_temp(
-    peppy_dirs: &PeppyDirs,
-    json5: &str,
-) -> std::io::Result<PathBuf> {
+fn write_runtime_config_temp(peppy_dirs: &PeppyDirs, json5: &str) -> std::io::Result<PathBuf> {
     let runtime_dir = peppy_dirs.runtime_config_dir();
     std::fs::create_dir_all(&runtime_dir)?;
     let counter = RUNTIME_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -131,10 +126,11 @@ fn spawn_as_process_group_leader(_command: &mut Command) {}
 
 /// An unspawned start command plus the metadata its caller needs after the fork.
 ///
-/// `build_process_command` / `build_container_command` return this so the caller
-/// can fork the child under the entity write lock (recording the pid atomically
-/// with the spawn) while still owning the runtime config temp file's cleanup and
-/// having a human-readable command description for spawn-failure errors.
+/// `build_process_command`, `build_built_in_command` and
+/// `build_container_command` return this so the caller can fork the child
+/// under the entity write lock (recording the pid atomically with the spawn)
+/// while still owning the runtime config temp file's cleanup and having a
+/// human-readable command description for spawn-failure errors.
 pub(super) struct SpawnCommand {
     pub(super) command: Command,
     pub(super) runtime_config_path: PathBuf,
@@ -304,10 +300,18 @@ fn assemble_command(
 }
 
 /// Describes a bind mount for a container node.
-pub(super) struct ContainerBind {
-    pub(super) src: String,
-    pub(super) dest: Option<String>,
-    pub(super) opts: Option<String>,
+struct ContainerBind {
+    src: String,
+    dest: Option<String>,
+    opts: Option<String>,
+}
+
+impl ContainerBind {
+    /// Whether the bind passes a host device through at its own path: a
+    /// source under `/dev/` with no destination or the same one.
+    fn is_device_passthrough(&self) -> bool {
+        self.src.starts_with("/dev/") && self.dest.as_deref().is_none_or(|dest| dest == self.src)
+    }
 }
 
 /// Collect all bind mounts needed for a container node.
@@ -315,7 +319,7 @@ pub(super) struct ContainerBind {
 /// Always includes the runtime config file as the first entry so it is
 /// accessible inside the container regardless of Apptainer's `$HOME` auto-bind
 /// behavior (which may not cover `~/.peppy/` when running inside a Lima VM).
-pub(super) fn collect_container_binds(
+fn collect_container_binds(
     runtime_config_path: &Path,
     mount_paths: &[String],
 ) -> Vec<ContainerBind> {
@@ -353,7 +357,7 @@ pub(super) fn collect_container_binds(
     binds
 }
 
-/// Inputs for [`spawn_container_node`].
+/// Inputs for [`build_container_command`].
 pub(super) struct SpawnContainerInputs<'a> {
     pub sif_path: &'a Path,
     pub working_dir: &'a Path,
@@ -429,10 +433,9 @@ pub(super) async fn build_container_command(
     //     `/sys`), accept it; those nodes are created by the kernel and
     //     may not exist on the host running the daemon.
     //   - Otherwise, `mkdir -p` the source so node-owned scratch / output
-    //     directories Just Work. This used to be silent, which masked file
-    //     bind typos by turning them into empty directories. We now emit a
-    //     loud warning to the per-instance start log for every auto-create
-    //     so an unintended mkdir is still visible to the operator.
+    //     directories Just Work, and emit a loud warning to the per-instance
+    //     start log for every auto-create: a silent mkdir would turn a file
+    //     bind typo into an empty directory that nobody notices.
     ensure_bind_sources(&binds[1..], announcer)?;
 
     // Ensure host paths outside $HOME are accessible in the Lima VM. The
@@ -502,21 +505,14 @@ pub(super) async fn build_container_command(
     apptainer_cmd = apptainer_cmd.apptainer_env(RUNTIME_CONFIG_VAR_NAME, runtime_config_str);
 
     // Add all bind mounts (runtime config + user-specified).
-    // Device passthrough mounts (src under /dev/ with no dest or same dest)
-    // are skipped: Apptainer applies `nodev` to --bind mounts
-    // which blocks device-node access. Host devices are already available
-    // inside the container via `mount dev = yes` in apptainer.conf.
-    // Remapped device mounts (e.g. /dev/video0:/dev/my_video0) still need
-    // an explicit --bind.
+    // Device passthrough mounts are skipped: Apptainer applies `nodev` to
+    // --bind mounts which blocks device-node access. Host devices are
+    // already available inside the container via `mount dev = yes` in
+    // apptainer.conf. Remapped device mounts (e.g.
+    // /dev/video0:/dev/my_video0) still need an explicit --bind.
     for bind in &binds {
-        if bind.src.starts_with("/dev/") {
-            let is_passthrough = match bind.dest.as_deref() {
-                None => true,
-                Some(dest) => dest == bind.src,
-            };
-            if is_passthrough {
-                continue;
-            }
+        if bind.is_device_passthrough() {
+            continue;
         }
         apptainer_cmd = apptainer_cmd.bind(&bind.src, bind.dest.as_deref(), bind.opts.as_deref());
     }
@@ -570,10 +566,7 @@ pub(super) async fn build_container_command(
 ///
 /// Returns the underlying `io::Error` (with the offending path embedded in
 /// the message) if a source is missing and cannot be created.
-pub(super) fn ensure_bind_sources(
-    binds: &[ContainerBind],
-    announcer: &Announcer,
-) -> std::io::Result<()> {
+fn ensure_bind_sources(binds: &[ContainerBind], announcer: &Announcer) -> std::io::Result<()> {
     for bind in binds {
         if !containers::ensure_bind_source(Path::new(&bind.src))? {
             continue;
@@ -631,7 +624,7 @@ pub(super) async fn kill_and_collect_error(
     mut child: Child,
     instance_id_str: &str,
     error: &str,
-    stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
+    stderr_buffer: StderrTail,
     mut output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
 ) -> String {
     // A start reaps its leader only once the leader's group is killed, so
@@ -654,25 +647,16 @@ pub(super) async fn kill_and_collect_error(
     // We intentionally ignore join errors so we don't mask the actual node start failure.
     join_output_readers(instance_id_str, &mut output_reader_handles).await;
 
-    let stderr_output = stderr_buffer
-        .lock()
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if !stderr_output.is_empty() {
-        debug!(
-            "Node instance '{}' stderr (tail): {}",
-            instance_id_str, stderr_output
-        );
-    }
-
+    let stderr_output = stderr_buffer.lines().join("\n");
     if stderr_output.is_empty() {
-        error.to_string()
-    } else {
-        format!("{error}{STDERR_TAIL_HEADER}{stderr_output}")
+        return error.to_string();
     }
+
+    debug!(
+        "Node instance '{}' stderr (tail): {}",
+        instance_id_str, stderr_output
+    );
+    format!("{error}{STDERR_TAIL_HEADER}{stderr_output}")
 }
 
 /// Joins the output readers of a killed instance within
@@ -702,9 +686,13 @@ async fn join_output_readers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build_io::FeedbackLine;
-    use crate::build_io::FeedbackStream;
-    use log_export::{LogExporter, LogKind};
+    use crate::action_log::test_support::scratch_log;
+    use crate::build_io::{
+        FeedbackLine, FeedbackStream, OutputReaderHooks, spawn_output_reader_async,
+    };
+    use log_export::{Iostream, LogExporter, LogKind};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use tokio::sync::mpsc;
 
     /// An announcer whose run log is in `dir`, with the receiving end of its
@@ -811,6 +799,78 @@ mod tests {
     }
 
     #[test]
+    fn device_passthrough_is_a_dev_source_bound_at_its_own_path() {
+        let cases = [
+            ("/dev/ttyUSB0", None, None, true),
+            ("/dev/video0", Some("/dev/video0"), None, true),
+            ("/dev/video0", Some("/dev/video0"), Some("ro"), true),
+            ("/dev/video0", Some("/dev/my_video0"), None, false),
+            ("/data/input", None, None, false),
+            ("/data/input", Some("/data/input"), None, false),
+            ("/devices", None, None, false),
+        ];
+        for (src, dest, opts, expected) in cases {
+            let bind = ContainerBind {
+                src: src.to_owned(),
+                dest: dest.map(str::to_owned),
+                opts: opts.map(str::to_owned),
+            };
+            assert_eq!(
+                bind.is_device_passthrough(),
+                expected,
+                "src {src}, dest {dest:?}, opts {opts:?}"
+            );
+        }
+    }
+
+    /// Output reader hooks that ignore every event.
+    struct NoOpHooks;
+
+    impl OutputReaderHooks for NoOpHooks {}
+
+    /// Kills a `sleep` child, spawned as the leader of its process group as a
+    /// start spawns it, through `kill_and_collect_error`, whose stderr reader
+    /// read `stderr`, and returns the error it reports.
+    async fn collect_error_after_stderr(stderr: &[u8]) -> String {
+        let mut command = Command::new("sleep");
+        command.arg("5");
+        spawn_as_process_group_leader(&mut command);
+        let child = command.spawn().expect("spawn sleep");
+        let stderr_buffer = StderrTail::new();
+        let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
+        let reader = spawn_output_reader_async(
+            std::io::Cursor::new(stderr.to_vec()),
+            feedback_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(NoOpHooks),
+            Iostream::Stderr,
+            Some(stderr_buffer.clone()),
+            scratch_log(),
+        );
+        kill_and_collect_error(child, "sensor_inst", "failed", stderr_buffer, vec![reader]).await
+    }
+
+    /// The error quotes the stderr tail after its header, and is the error
+    /// alone when the child printed nothing on stderr. The paused clock keeps
+    /// the reader join budget from running out before a slow host schedules
+    /// the reader.
+    #[tokio::test(start_paused = true)]
+    async fn kill_and_collect_error_quotes_the_stderr_tail() {
+        let cases: [(&[u8], String); 3] = [
+            (b"", "failed".to_owned()),
+            (b"boom\n", format!("failed{STDERR_TAIL_HEADER}boom")),
+            (b"one\ntwo\n", format!("failed{STDERR_TAIL_HEADER}one\ntwo")),
+        ];
+        for (stderr, expected) in cases {
+            assert_eq!(
+                collect_error_after_stderr(stderr).await,
+                expected,
+                "stderr {stderr:?}"
+            );
+        }
+    }
+
+    #[test]
     fn collect_container_binds_always_includes_runtime_config() {
         let rc = PathBuf::from("/home/user/.peppy/runtime/runtime_config_99_0.json5");
         let binds = collect_container_binds(&rc, &[]);
@@ -875,7 +935,8 @@ mod tests {
             let _signal = DropSignal(Some(dropped_tx));
             std::future::pending::<std::io::Result<()>>().await
         });
-        let stderr = Arc::new(StdMutex::new(VecDeque::from(["last words".to_owned()])));
+        let stderr = StderrTail::new();
+        stderr.push("last words");
 
         let message =
             kill_and_collect_error(child, "inst", "the start gave up", stderr, vec![held_open])

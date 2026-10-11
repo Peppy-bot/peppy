@@ -15,11 +15,12 @@
 //!
 //! Consumers (the daemon in `core-node-internal`, the CLI in `peppy`) own:
 //! the `peppy.json5` config objects, every filesystem path (working dirs,
-//! log files, artifact storage, peppy directory layout), environment
-//! variables, and the messenger/feedback plumbing. They pass these across
-//! the boundary through the explicit context structs ([`BuildContext`],
-//! [`StartContext`], [`OutputSinks`]) and receive [`EntityHandle`]s to read
-//! or drive entities.
+//! log files, artifact storage, peppy directory layout), the environment
+//! variables that builds and runs get (the variables the crate reads itself
+//! are listed under Initialization), and the messenger/feedback plumbing.
+//! They pass these across the boundary through the explicit context structs
+//! ([`BuildContext`], [`StartContext`], [`OutputSinks`]) and receive
+//! [`EntityHandle`]s to read or drive entities.
 //!
 //! # Initialization
 //!
@@ -28,16 +29,21 @@
 //! is the builder knob for the cooperative-shutdown grace period,
 //! [`NodeStack::with_pypi_mirror`] the one for the PyPI mirror of Python
 //! builds, and [`NodeStack::with_log_exporter`] the one for the exporter of the
-//! log files. The crate
-//! reads no environment variables and performs no lazy global init. It does
-//! keep two process-wide monotonic counters (documented at their definitions
-//! in `node_stack::entity` and `node_stack::run_steps`); both are intentional
-//! per-process token sources, not per-`NodeStack` state.
+//! log files. The crate reads one environment variable of its own,
+//! `PEPPY_NO_CONTAINER_BUILD_CACHE`, which turns the container build cache
+//! off (`node_stack::container_build_cache`), and the HTTP client of the PyPI
+//! mirror check follows the proxy variables of the daemon (`ALL_PROXY`,
+//! `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`). Its process-wide state is three
+//! monotonic counters (the entity generation in `node_stack::entity`, the
+//! runtime config file names in `node_stack::run_steps`, the sccache server
+//! ports in `node_stack::container_build_cache`) and the map of uv cache gates
+//! in `node_stack::container_build_cache`, created on first use. Each is
+//! per-process by intent, not per-`NodeStack` state.
 #![allow(clippy::result_large_err)]
 #![forbid(unsafe_code)]
 
 pub mod action_log;
-pub mod archive;
+mod archive;
 pub mod build_io;
 mod build_progress;
 mod error;

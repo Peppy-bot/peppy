@@ -399,7 +399,8 @@ fn bind_build_cache<'a>(
 }
 
 /// Spawns `std_cmd` with its output piped and no input, as the leader of a
-/// process group (see [`spawn_in_process_group`]).
+/// process group (see [`spawn_in_process_group`]). With no input, a
+/// misbehaving child cannot read from (or block on) the daemon's stdin.
 fn spawn_piped(std_cmd: std::process::Command) -> std::io::Result<Box<dyn ChildWrapper>> {
     let mut cmd = tokio::process::Command::from(std_cmd);
     cmd.stdout(Stdio::piped());
@@ -582,33 +583,25 @@ async fn run_uv_cache_prune_child(
 /// `build_cmd` so that variable references in multi-element commands work even
 /// though the command is executed directly (not through a shell).
 pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String {
-    // Single-pass scanner: walk the string looking for `${...}`, resolve each
-    // match against `env_vars`, and leave unknown references untouched. The
-    // previous implementation did a linear `contains` + `replace` per env var,
-    // which reallocated the whole string for every match and scaled with
-    // O(len(s) * len(env_vars)) even when nothing needed expanding.
-    let bytes = s.as_bytes();
+    // Single pass: each `${NAME}` is resolved against `env_vars`, and an
+    // unknown reference is left untouched. A `${` with no `}` after it has no
+    // later reference either, so it and the rest stay as they are.
     let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'$'
-            && i + 1 < bytes.len()
-            && bytes[i + 1] == b'{'
-            && let Some(end_rel) = s[i + 2..].find('}')
-        {
-            let end = i + 2 + end_rel;
-            let key = &s[i + 2..end];
-            if let Some((_, value)) = env_vars.iter().find(|(k, _)| k == key) {
-                out.push_str(value);
-            } else {
-                out.push_str(&s[i..end + 1]);
-            }
-            i = end + 1;
-            continue;
+    let mut rest = s;
+    while let Some(start) = rest.find("${") {
+        let after_open = &rest[start + 2..];
+        let Some(name_len) = after_open.find('}') else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        let name = &after_open[..name_len];
+        match env_vars.iter().find(|(key, _)| key == name) {
+            Some((_, value)) => out.push_str(value),
+            None => out.push_str(&rest[start..start + 2 + name_len + 1]),
         }
-        out.push(s[i..].chars().next().unwrap());
-        i += s[i..].chars().next().unwrap().len_utf8();
+        rest = &after_open[name_len + 1..];
     }
+    out.push_str(rest);
     out
 }
 
@@ -617,7 +610,7 @@ pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String 
 /// successfully. Used by [`super::entity::NodeEntity::build`] for process
 /// nodes after the entity has transitioned to `Building`.
 pub(super) async fn run_build_cmd(
-    build_cmd: Option<&Vec<String>>,
+    build_cmd: Option<&[String]>,
     working_dir: &Path,
     env_vars: &[(String, String)],
     announcer: &Announcer,
@@ -678,14 +671,9 @@ pub(super) async fn run_build_cmd(
         .log()
         .command("build_cmd", &full_cmd_display, working_dir, &[]);
 
-    let mut command = tokio::process::Command::new(&program);
+    let mut command = std::process::Command::new(&program);
     command.args(&args);
     command.current_dir(working_dir);
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-    // Detach stdin so a misbehaving `build_cmd` cannot read from (or block
-    // on) the daemon's stdin. Mirrors `build_container_image`.
-    command.stdin(Stdio::null());
     // The cargo settings go first, so the goal's own values for them, set
     // next, take precedence.
     for (key, value) in CARGO_PROGRESS_ENV {
@@ -694,7 +682,7 @@ pub(super) async fn run_build_cmd(
     for (key, value) in env_vars {
         command.env(key, value);
     }
-    let child = spawn_in_process_group(command)
+    let child = spawn_piped(command)
         .map_err(|e| spawn_failure_message(&full_cmd_display, &program, working_dir, &e))?;
 
     // A `build_cmd` compiling one large crate is as silent as a container
@@ -980,7 +968,7 @@ mod tests {
         let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
         let cmd = vec!["peppy-test-no-such-tool".to_string(), "sync".to_string()];
         let err = run_build_cmd(
-            Some(&cmd),
+            Some(cmd.as_slice()),
             working_dir.path(),
             &[],
             &Announcer::new(scratch_log(), feedback_tx),
@@ -1000,7 +988,7 @@ mod tests {
         let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
         let cmd = vec!["true".to_string()];
         let err = run_build_cmd(
-            Some(&cmd),
+            Some(cmd.as_slice()),
             working_dir,
             &[],
             &Announcer::new(scratch_log(), feedback_tx),
@@ -1069,7 +1057,7 @@ mod tests {
         let cmd = vec!["peppy-test-stub-tool".to_string(), "sync".to_string()];
         let env_vars = vec![("PATH".to_string(), tool_dir.path().display().to_string())];
         run_build_cmd(
-            Some(&cmd),
+            Some(cmd.as_slice()),
             working_dir.path(),
             &env_vars,
             &Announcer::new(scratch_log(), feedback_tx),
@@ -1091,8 +1079,9 @@ mod tests {
     async fn build_cmd_output(script: &str, env_vars: &[(String, String)]) -> Vec<String> {
         let working_dir = tempfile::tempdir().expect("tempdir should succeed");
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel();
+        let cmd = [script.to_string()];
         run_build_cmd(
-            Some(&vec![script.to_string()]),
+            Some(cmd.as_slice()),
             working_dir.path(),
             env_vars,
             &Announcer::new(scratch_log(), feedback_tx),
@@ -1514,6 +1503,20 @@ mod tests {
         assert_eq!(expand_env_vars("${UNKNOWN}", &env), "${UNKNOWN}");
         // Plain strings pass through unchanged.
         assert_eq!(expand_env_vars("nothing here", &env), "nothing here");
+    }
+
+    #[test]
+    fn expand_env_vars_keeps_what_is_no_braced_ref() {
+        let env = vec![("FOO".to_string(), "bar".to_string())];
+        // A `${` with no `}` after it stays as it is, and so does the rest.
+        assert_eq!(expand_env_vars("a ${FOO", &env), "a ${FOO");
+        assert_eq!(expand_env_vars("${FOO} ${FOO", &env), "bar ${FOO");
+        // Multi-byte characters around a reference are copied whole.
+        assert_eq!(expand_env_vars("é${FOO}ü", &env), "ébarü");
+        // A `$` before a reference is copied.
+        assert_eq!(expand_env_vars("$${FOO}", &env), "$bar");
+        // The name of a reference ends at its first `}`.
+        assert_eq!(expand_env_vars("${${FOO}}", &env), "${${FOO}}");
     }
 
     /// The exact stderr shape of a registry answering apptainer's image fetch

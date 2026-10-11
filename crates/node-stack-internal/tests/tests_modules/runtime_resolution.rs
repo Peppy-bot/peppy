@@ -40,7 +40,7 @@ async fn add_instance_creates_new_entity() {
     let harness = real_lifecycle::lifecycle_harness();
     assert_eq!(stack.len(), 1, "stack should start with root node only");
 
-    // Push config + build (no I/O) first
+    // Push the config and build it first
     fixtures::push_built(&stack, &harness, config).await;
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
@@ -710,7 +710,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
 
 #[test]
 fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
-    // First config: version 1.0.0 exposes a service
+    // First config: tag v1 exposes a service
     let config_v1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             peppy_schema: "node/v1",
@@ -735,7 +735,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
     )
     .expect("valid node config");
 
-    // Second config: version 2.0.0 emits a topic AND exposes a service (different interfaces are allowed with different tag)
+    // Second config: tag v2 exposes another service (a different tag may change interfaces)
     let config_v2: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             peppy_schema: "node/v1",
@@ -760,13 +760,13 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
-    // Add version 1.0.0
+    // Add tag v1
     stack
         .push_config(config_v1, false, PathBuf::from("/tmp"))
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + sensor v1");
 
-    // Adding version 2.0.0 with different interfaces should succeed (different tag = different entity)
+    // Adding tag v2 with different interfaces should succeed (different tag = different entity)
     stack
         .push_config(config_v2, false, PathBuf::from("/tmp"))
         .expect("different tag should create new entity even with different interfaces");
@@ -909,6 +909,107 @@ fn node_stack_wires_dependencies_for_dependants() {
     assert!(
         deps.iter().any(|name| name == "lidar"),
         "brain should depend on lidar in the stack"
+    );
+}
+
+/// A node removed while a dependant still names it leaves the dependant
+/// waiting, so the next add of the node wires the dependency edge again and
+/// the dependant keeps guarding the interfaces it consumes.
+#[test]
+fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
+    let lidar_config = |exposed_services: &str| -> config::node::NodeConfig {
+        serde_json5::from_str(&format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{
+                  name: "lidar",
+                  tag: "v1",
+                }},
+                interfaces: {{
+                    services: {{
+                        exposes: [{exposed_services}]
+                    }}
+                }},
+                execution: {{
+                  language: "rust",
+                  run_cmd: ["lidar"]
+                }},
+            }}"#
+        ))
+        .expect("valid dependency node config")
+    };
+
+    let dependent: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+              name: "brain",
+              tag: "v1",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "v1", link_id: "lidar" }
+                ]
+              },
+            },
+            interfaces: {
+                services: {
+                    consumes: [
+                        {
+                          link_id: "lidar",
+                          name: "reset_sensor"
+                        }
+                    ]
+                }
+            },
+            execution: {
+              language: "rust",
+              run_cmd: ["brain"]
+            },
+        }"#,
+    )
+    .expect("valid dependent node config");
+
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    stack
+        .push_config(
+            lidar_config(r#"{ name: "reset_sensor" }"#),
+            false,
+            PathBuf::from("/tmp"),
+        )
+        .expect("dependency has no dependencies");
+    stack
+        .push_config(dependent, false, PathBuf::from("/tmp"))
+        .expect("dependent dependency is present");
+
+    assert!(
+        matches!(stack.remove_config("lidar", "v1"), Ok(true)),
+        "lidar has no instances, so it can be removed"
+    );
+    stack
+        .push_config(
+            lidar_config(r#"{ name: "reset_sensor" }"#),
+            false,
+            PathBuf::from("/tmp"),
+        )
+        .expect("dependency has no dependencies");
+
+    assert_eq!(
+        graph_query::dependency_names(&stack, "brain", "v1"),
+        vec!["lidar".to_string()],
+        "adding lidar again should wire brain to it"
+    );
+
+    let result = stack.push_config(
+        lidar_config(r#"{ name: "reset_sensor" }, { name: "calibrate" }"#),
+        false,
+        PathBuf::from("/tmp"),
+    );
+    assert!(
+        matches!(
+            result,
+            Err(NodeStackError::CannotOverwriteNodeWithDependents { .. })
+        ),
+        "brain still depends on lidar, so its interfaces cannot change, got {result:?}"
     );
 }
 

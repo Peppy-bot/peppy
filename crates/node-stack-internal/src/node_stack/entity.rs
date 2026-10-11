@@ -1,5 +1,4 @@
-use parking_lot::{Mutex as StdMutex, RwLock};
-use std::collections::VecDeque;
+use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -20,7 +19,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::action_log::Announcer;
-use crate::build_io::{OutputReaderHooks, spawn_output_reader_async};
+use crate::build_io::{OutputReaderHooks, StderrTail, spawn_output_reader_async};
 use crate::error::{Error, Result};
 
 use super::build_artifact_cache::{ArtifactKind, prune_siblings, resolve_slot, reuse_line};
@@ -118,11 +117,10 @@ impl Artifact {
 ///   stage and is rejected immediately with no queueing.
 /// - `Ready`: the [`Artifact`] is on disk, built from sources or the
 ///   daemon's own executable for a built-in node. The instances list may be
-///   empty (no instances spawned yet, equivalent to the old `Built` stage)
-///   or hold any mix of `Starting` (in-flight `prepare_and_spawn`),
-///   `Running`, and terminal `Finished`/`Failed` instances. A self-exited
-///   instance stays listed as `Finished` or `Failed` until the stack is
-///   cleared or it is stopped.
+///   empty (no instances spawned yet) or hold any mix of `Starting`
+///   (in-flight `prepare_and_spawn`), `Running`, and terminal
+///   `Finished`/`Failed` instances. A self-exited instance stays listed as
+///   `Finished` or `Failed` until the stack is cleared or it is stopped.
 /// - `Root`: the synthetic daemon entity. Has no buildable artifact and
 ///   exactly one `Running` instance (the daemon process itself). The
 ///   lifecycle methods (`build`, `prepare_and_spawn`, `commit_started`,
@@ -142,7 +140,6 @@ pub enum NodeStage {
         artifact: Artifact,
         instances: Vec<TrackedNodeInstance>,
     },
-    // Special kind
     Root {
         config_path: PathBuf,
         /// Boxed so the one root entity does not make every stage as large
@@ -326,6 +323,32 @@ pub struct OutputSinks {
     pub hooks: Arc<dyn OutputReaderHooks>,
 }
 
+impl OutputSinks {
+    /// Registers one output reader with the hooks, then spawns its task.
+    /// The reader is registered before its task launches so the daemon's
+    /// drain primitive counts it without racing the task's startup.
+    fn register_and_spawn_reader<R>(
+        &self,
+        reader: R,
+        stream: Iostream,
+        stderr_tail: Option<StderrTail>,
+    ) -> JoinHandle<std::io::Result<()>>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    {
+        self.hooks.on_reader_registered();
+        spawn_output_reader_async(
+            reader,
+            self.announcer.feedback_tx().clone(),
+            Arc::clone(&self.publish_enabled),
+            Arc::clone(&self.hooks),
+            stream,
+            stderr_tail,
+            self.announcer.log().clone(),
+        )
+    }
+}
+
 /// State handed back from [`NodeEntity::prepare_and_spawn`]. The caller owns
 /// it across `.await` boundaries (so it must be `Send`) and passes it to
 /// either [`NodeEntity::commit_started`] or [`NodeEntity::abort_started`].
@@ -333,7 +356,7 @@ pub struct OutputSinks {
 pub struct StartedInstanceCtx {
     pub(crate) instance_dir: PathBuf,
     pub(crate) runtime_config_path: PathBuf,
-    pub(crate) stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
+    pub(crate) stderr_buffer: StderrTail,
     pub(crate) output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
     /// Snapshot of the entity's `generation` taken at `prepare_and_spawn`
     /// time. `commit_started`/`abort_started` compare this against the
@@ -355,9 +378,10 @@ fn next_entity_generation() -> u64 {
 }
 
 /// RAII guard for a temporary working directory staged by `node add` and
-/// consumed by `node build`. Removes the directory when the last clone is
-/// dropped, so removing an `Added` entity from the stack also cleans up
-/// its pending working dir on disk.
+/// consumed by `node build`. Removes the directory on drop, which for the
+/// shared `Arc<WorkingDirGuard>` is when its last clone drops, so removing
+/// an `Added` entity from the stack also cleans up its pending working dir
+/// on disk.
 #[derive(Debug)]
 pub struct WorkingDirGuard {
     path: PathBuf,
@@ -385,16 +409,16 @@ pub struct NodeEntity {
     stage: NodeStage,
     /// Unique-per-construction token used to detect when an in-flight `build`
     /// is racing against a wholesale entity replacement (`push_config_impl`'s
-    /// in-place overwrite). Bumped on every `new`, `from_snapshot`, and
-    /// `root` construction. The build path captures this value at Phase 1 and
-    /// re-checks it at Phase 3 before publishing artifacts.
+    /// in-place overwrite). Bumped by every constructor (`new`, `built_in`,
+    /// `root`, `from_snapshot`). The build path captures this value at Phase 1
+    /// and re-checks it at Phase 3 before publishing artifacts.
     generation: u64,
     /// In-memory only: the temporary working directory staged by `node add`
     /// and consumed by `node build`. Set to `Some` while the entity is
     /// `Added`, taken (set to `None`) by the build path. The `Arc` lets the
     /// build task hold its own reference for the duration of the build after
-    /// `take_pending_working_dir` clears the entity-side slot. Never
-    /// persisted.
+    /// `take_pending_working_dir_if_generation` clears the entity-side slot.
+    /// Never persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
     /// Broadcasts this entity's stage label on every stage transition
     /// (`Added`/`Building`/`Ready`/`Root`). Observers obtain a receiver via
@@ -483,7 +507,7 @@ impl NodeEntity {
 
     /// Returns the in-memory working directory guard staged by `node add`
     /// for a future `node build`, if any. The build path consumes this via
-    /// [`take_pending_working_dir`].
+    /// [`Self::take_pending_working_dir_if_generation`].
     pub fn pending_working_dir(&self) -> Option<Arc<WorkingDirGuard>> {
         self.pending_working_dir.clone()
     }
@@ -492,11 +516,6 @@ impl NodeEntity {
     /// later `node build` can reuse it without re-cloning the source.
     pub fn set_pending_working_dir(&mut self, guard: Arc<WorkingDirGuard>) {
         self.pending_working_dir = Some(guard);
-    }
-
-    /// Takes the staged working-directory guard, leaving `None` in place.
-    pub fn take_pending_working_dir(&mut self) -> Option<Arc<WorkingDirGuard>> {
-        self.pending_working_dir.take()
     }
 
     /// Takes the staged working-directory guard, but only if the entity's
@@ -515,10 +534,10 @@ impl NodeEntity {
         }
     }
 
-    /// Returns the entity's monotonic generation token. Bumped on every
-    /// `new`/`from_snapshot`/`root` construction so the build path can
-    /// distinguish "still the entity I started building" from "wholesale
-    /// replaced by a concurrent push_config".
+    /// Returns the entity's monotonic generation token. Bumped by every
+    /// constructor (`new`, `built_in`, `root`, `from_snapshot`) so the build
+    /// path can distinguish "still the entity I started building" from
+    /// "wholesale replaced by a concurrent push_config".
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -534,7 +553,7 @@ impl NodeEntity {
     /// `Building` with a matching generation. Deliberately does NOT bump the
     /// generation: this is the same entity, re-presented as buildable, and the
     /// superseding build captures the current generation via its own lookup.
-    pub fn rollback_building_to_added(&mut self, working_dir: Arc<WorkingDirGuard>) {
+    pub(crate) fn rollback_building_to_added(&mut self, working_dir: Arc<WorkingDirGuard>) {
         let NodeStage::Building { config_path } = &self.stage else {
             debug_assert!(
                 false,
@@ -579,11 +598,12 @@ impl NodeEntity {
         }
     }
 
-    /// Returns the tracked instances of this entity, including both
-    /// `Starting` (in-flight) and `Running` (committed) instances. Observers
-    /// that only care about fully-started instances should filter by
-    /// [`TrackedNodeInstance::state`]. Returns an empty slice for `Added`
-    /// and `Building`.
+    /// Returns the tracked instances of this entity: the `Starting`
+    /// (in-flight), `Running` (committed), and terminal `Finished`/`Failed`
+    /// instances of a `Ready` entity, or the one daemon instance of the root
+    /// entity. Observers that only care about fully-started instances should
+    /// filter by [`TrackedNodeInstance::state`]. Returns an empty slice for
+    /// `Added` and `Building`.
     pub fn instances(&self) -> &[TrackedNodeInstance] {
         match &self.stage {
             NodeStage::Ready { instances, .. } => instances,
@@ -596,7 +616,7 @@ impl NodeEntity {
     ///
     /// A staged tree whose fingerprint already has an artifact in storage is
     /// not rebuilt unless `ctx.rebuild` is set (see
-    /// [`super::build_artifact_cache`]).
+    /// `node_stack::build_artifact_cache`).
     ///
     /// On success, returns the `PathBuf` of the artifact installed in storage.
     /// The caller MUST use this returned path rather than re-reading
@@ -799,7 +819,7 @@ impl NodeEntity {
             None => {
                 // Process node: run build_cmd inside the working dir.
                 run_build_cmd(
-                    snapshot.build_cmd.as_ref(),
+                    snapshot.build_cmd.as_deref(),
                     ctx.working_dir,
                     ctx.env_vars,
                     &ctx.announcer,
@@ -839,8 +859,9 @@ impl NodeEntity {
     }
 
     /// Best-effort removal of an in-flight `Starting` instance. Used by
-    /// [`prepare_and_spawn`] (on I/O failure during the spawn/wire phases)
-    /// and [`abort_started`] (on caller-side ready/health failure).
+    /// [`Self::prepare_and_spawn`] (on I/O failure during the spawn/wire
+    /// phases) and [`Self::abort_started`] (on caller-side ready/health
+    /// failure).
     ///
     /// Looks up the instance by id and removes it from the `Ready.instances`
     /// list. Silent no-op if the entity is no longer in `Ready` (concurrent
@@ -862,14 +883,14 @@ impl NodeEntity {
     }
 
     /// Records the spawned child's `pid` on the still-`Starting` instance
-    /// `instance_id`. Called by [`prepare_and_spawn`] while the entity write lock
-    /// is already held, in the SAME critical section as the fork, so a daemon
-    /// teardown snapshot can never observe a live child whose pid is not yet
-    /// force-killable. A no-op if the entity is no longer `Ready` or the instance
-    /// is gone, which cannot happen while the `Starting` instance is registered:
-    /// `push_config`/`remove_config` both refuse a non-empty instances list under
-    /// this same entity write lock, so the entity is neither replaced nor
-    /// detached for the lifetime of the start.
+    /// `instance_id`. Called by [`Self::prepare_and_spawn`] while the entity
+    /// write lock is already held, in the SAME critical section as the fork,
+    /// so a daemon teardown snapshot can never observe a live child whose pid
+    /// is not yet force-killable. A no-op if the entity is no longer `Ready`
+    /// or the instance is gone, which cannot happen while the `Starting`
+    /// instance is registered: `push_config`/`remove_config` both refuse a
+    /// non-empty instances list under this same entity write lock, so the
+    /// entity is neither replaced nor detached for the lifetime of the start.
     fn record_starting_pid(&mut self, instance_id: &Name, pid: u32) {
         let NodeStage::Ready { instances, .. } = &mut self.stage else {
             return;
@@ -1079,37 +1100,23 @@ impl NodeEntity {
         })?;
 
         // ---- Phase 4: wire output streaming ----
-        let stderr_buffer = Arc::new(StdMutex::new(VecDeque::with_capacity(
-            crate::build_io::STDERR_TAIL_LINES,
-        )));
+        let stderr_buffer = StderrTail::new();
         let mut output_reader_handles = Vec::new();
 
         let sinks = &ctx.output_sinks;
-        // Register each reader before launching its task so the daemon's drain
-        // primitive counts it without racing the task's startup.
         if let Some(stdout) = child.stdout.take() {
-            sinks.hooks.on_reader_registered();
-            output_reader_handles.push(spawn_output_reader_async(
+            output_reader_handles.push(sinks.register_and_spawn_reader(
                 stdout,
-                sinks.announcer.feedback_tx().clone(),
-                Arc::clone(&sinks.publish_enabled),
-                Arc::clone(&sinks.hooks),
                 Iostream::Stdout,
                 None,
-                sinks.announcer.log().clone(),
             ));
         }
 
         if let Some(stderr) = child.stderr.take() {
-            sinks.hooks.on_reader_registered();
-            output_reader_handles.push(spawn_output_reader_async(
+            output_reader_handles.push(sinks.register_and_spawn_reader(
                 stderr,
-                sinks.announcer.feedback_tx().clone(),
-                Arc::clone(&sinks.publish_enabled),
-                Arc::clone(&sinks.hooks),
                 Iostream::Stderr,
-                Some(Arc::clone(&stderr_buffer)),
-                sinks.announcer.log().clone(),
+                Some(stderr_buffer.clone()),
             ));
         }
 
@@ -1174,80 +1181,78 @@ impl NodeEntity {
             ..
         } = started_ctx;
 
-        let validation_result: Result<()> = {
-            let mut guard = handle.write();
-            let node_name = guard.config.manifest.name.as_str().to_owned();
-            let node_tag = guard.config.manifest.tag.clone();
-            // Generation guard: if a concurrent `push_config` replaced the
-            // entity wholesale, the new entity has a different generation
-            // and is *not* ours to mutate. Fall through to the cleanup
-            // branch (kill child + remove temp files) without touching the
-            // replacement entity's instances list.
-            if guard.generation != start_generation {
-                Err(Error::InvalidStageTransition {
-                    node_name,
-                    node_tag,
-                    from: "stale-generation",
-                    to: "Running",
-                })
-            } else {
-                match &mut guard.stage {
-                    NodeStage::Ready { instances, .. } => {
-                        if let Some(inst) = instances
-                            .iter_mut()
-                            .find(|inst| inst.instance_id() == &instance_id)
-                        {
-                            if inst.state() != InstanceState::Starting {
-                                Err(Error::InvalidStageTransition {
-                                    node_name,
-                                    node_tag,
-                                    from: "Running",
-                                    to: "Running",
-                                })
-                            } else {
-                                inst.set_running(instance_dir.clone(), runtime_config_path.clone());
-                                inst.set_endpoints(endpoints);
-                                Ok(())
-                            }
-                        } else {
-                            Err(Error::InvalidStageTransition {
-                                node_name,
-                                node_tag,
-                                from: "missing",
-                                to: "Running",
-                            })
-                        }
-                    }
-                    other => Err(Error::InvalidStageTransition {
-                        node_name,
-                        node_tag,
-                        from: other.name(),
-                        to: "Ready",
-                    }),
-                }
-            }
-        };
-
-        match validation_result {
-            Ok(()) => {
-                // Successful commit: hand the live Child back without killing.
-                // The OS process keeps running; the caller moves it into the
-                // exit watcher, which observes the eventual exit (clean or
-                // crash) and reaps the process.
-                Ok(child)
-            }
-            Err(e) => {
-                // Concurrent push_config / stale generation / inconsistent
-                // state: the entity is no longer ours, but the spawned
-                // process and the on-disk artifacts created during this
-                // start *are*; kill the child and clean up the temp files
-                // before returning so nothing orphans.
-                kill_child(&mut child).await;
-                let _ = std::fs::remove_dir_all(&instance_dir);
-                let _ = std::fs::remove_file(&runtime_config_path);
-                Err(e)
-            }
+        // The write guard is a temporary of this statement, so it is released
+        // before the cleanup below awaits.
+        let committed = handle.write().commit_starting_instance(
+            start_generation,
+            &instance_id,
+            &instance_dir,
+            &runtime_config_path,
+            endpoints,
+        );
+        if let Err(error) = committed {
+            // Concurrent push_config / stale generation / inconsistent
+            // state: the entity is no longer ours, but the spawned
+            // process and the on-disk artifacts created during this
+            // start *are*; kill the child and clean up the temp files
+            // before returning so nothing orphans.
+            kill_child(&mut child).await;
+            let _ = std::fs::remove_dir_all(&instance_dir);
+            let _ = std::fs::remove_file(&runtime_config_path);
+            return Err(error);
         }
+
+        // Successful commit: hand the live Child back without killing.
+        // The OS process keeps running; the caller moves it into the
+        // exit watcher, which observes the eventual exit (clean or
+        // crash) and reaps the process.
+        Ok(child)
+    }
+
+    /// The entity half of [`Self::commit_started`]: flips the `Starting`
+    /// instance `instance_id` to `Running` and records its on-disk paths and
+    /// endpoints. Refuses, and leaves the entity untouched, when this is not
+    /// the entity the start registered on (generation `start_generation`),
+    /// the entity is not `Ready`, or the instance is missing or not
+    /// `Starting`.
+    fn commit_starting_instance(
+        &mut self,
+        start_generation: u64,
+        instance_id: &Name,
+        instance_dir: &Path,
+        runtime_config_path: &Path,
+        endpoints: Vec<InstanceEndpoint>,
+    ) -> Result<()> {
+        let refuse = |from: &'static str, to: &'static str| Error::InvalidStageTransition {
+            node_name: self.config.manifest.name.as_str().to_owned(),
+            node_tag: self.config.manifest.tag.clone(),
+            from,
+            to,
+        };
+        // Generation guard: if a concurrent `push_config` replaced the entity
+        // wholesale, the new entity has a different generation and is *not*
+        // ours to mutate, so its instances list stays untouched.
+        if self.generation != start_generation {
+            return Err(refuse("stale-generation", "Running"));
+        }
+        let NodeStage::Ready { instances, .. } = &mut self.stage else {
+            return Err(refuse(self.stage.name(), "Ready"));
+        };
+        let Some(instance) = instances
+            .iter_mut()
+            .find(|instance| instance.instance_id() == instance_id)
+        else {
+            return Err(refuse("missing", "Running"));
+        };
+        if instance.state() != InstanceState::Starting {
+            return Err(refuse("Running", "Running"));
+        }
+        instance.set_running(
+            instance_dir.to_path_buf(),
+            runtime_config_path.to_path_buf(),
+        );
+        instance.set_endpoints(endpoints);
+        Ok(())
     }
 
     /// Phase 2 (failure): kills the process group of the spawned child,
@@ -1498,7 +1503,7 @@ pub struct TrackedNodeInstance {
     /// cheap clone returned by `NodeStack::find_by_instance_id`, without taking
     /// an entity write lock. `true` until a probe is observed to fail; surfaced
     /// by `stack list` so it reports health without a per-instance round-trip.
-    healthy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    healthy: Arc<AtomicBool>,
     /// Set by the stop paths before they terminate this instance's process, so
     /// the process-exit watcher can tell a daemon-initiated stop (cooperative
     /// shutdown or force-kill) apart from a self-exit. When set, the watcher
@@ -1507,7 +1512,7 @@ pub struct TrackedNodeInstance {
     /// mislabeling an intentional force-kill as a crash). Behind an
     /// `Arc<AtomicBool>` for the same reason as `healthy`: it is flipped through
     /// the clone the stop path resolves, without an entity write lock.
-    stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stopping: Arc<AtomicBool>,
     /// The endpoints the instance serves, as the daemon expanded the sockets
     /// it announced at start; empty for a node whose manifest declares none
     /// and until the instance commits to `Running`.
@@ -1540,8 +1545,8 @@ impl TrackedNodeInstance {
             clock: config::runtime::ClockBinding::Wall,
             launch: None,
             copy: None,
-            healthy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            stopping: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            healthy: Arc::new(AtomicBool::new(true)),
+            stopping: Arc::new(AtomicBool::new(false)),
             endpoints: Vec::new(),
         }
     }
@@ -1562,7 +1567,7 @@ impl TrackedNodeInstance {
     }
 
     /// Records the clock the change that started this instance resolved.
-    pub fn with_clock(mut self, clock: config::runtime::ClockBinding) -> Self {
+    pub(crate) fn with_clock(mut self, clock: config::runtime::ClockBinding) -> Self {
         self.clock = clock;
         self
     }
@@ -1575,7 +1580,7 @@ impl TrackedNodeInstance {
     }
 
     /// Records the launch the change that started this instance belongs to.
-    pub fn with_launch(mut self, launch: Option<LaunchIdentity>) -> Self {
+    pub(crate) fn with_launch(mut self, launch: Option<LaunchIdentity>) -> Self {
         self.launch = launch;
         self
     }
@@ -1587,7 +1592,7 @@ impl TrackedNodeInstance {
     }
 
     /// Records the copy this instance belongs to.
-    pub fn with_copy(mut self, copy: Option<config::runtime::Name>) -> Self {
+    pub(crate) fn with_copy(mut self, copy: Option<config::runtime::Name>) -> Self {
         self.copy = copy;
         self
     }
@@ -1626,30 +1631,28 @@ impl TrackedNodeInstance {
     /// The last `node_health` outcome the health monitor recorded for this
     /// instance. `true` until a probe is observed to fail.
     pub fn healthy(&self) -> bool {
-        self.healthy.load(std::sync::atomic::Ordering::Relaxed)
+        self.healthy.load(Ordering::Relaxed)
     }
 
     /// Records the latest `node_health` outcome. Takes `&self` because the flag
     /// is an `Arc<AtomicBool>`; the health monitor updates it through the clone
     /// returned by `NodeStack::find_by_instance_id`.
     pub fn set_healthy(&self, healthy: bool) {
-        self.healthy
-            .store(healthy, std::sync::atomic::Ordering::Relaxed);
+        self.healthy.store(healthy, Ordering::Relaxed);
     }
 
     /// `true` once a stop path has claimed this instance for termination via
-    /// [`mark_stopping`]. The process-exit watcher reads this to avoid
+    /// [`Self::mark_stopping`]. The process-exit watcher reads this to avoid
     /// transitioning an intentionally-stopped instance to a terminal state.
     pub fn is_stopping(&self) -> bool {
-        self.stopping.load(std::sync::atomic::Ordering::Relaxed)
+        self.stopping.load(Ordering::Relaxed)
     }
 
     /// Marks this instance as being deliberately stopped, before its process is
     /// signaled. Takes `&self` because the flag is an `Arc<AtomicBool>`; the
     /// stop path flips it through the clone it resolves. Idempotent.
     pub fn mark_stopping(&self) {
-        self.stopping
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stopping.store(true, Ordering::Relaxed);
     }
 
     /// Returns the on-disk instance directory recorded during start, if any.
@@ -1835,47 +1838,48 @@ mod tests {
         );
     }
 
+    /// A `sleep` child and the context `prepare_and_spawn` hands back for
+    /// its start as `instance_id` on an entity of generation `generation`.
+    /// The instance dir and the runtime config file of the start exist under
+    /// `peppy_root`, so a test can see whether the commit removes them.
+    fn sleeping_start(
+        peppy_root: &Path,
+        instance_id: &str,
+        generation: u64,
+    ) -> (Child, StartedInstanceCtx) {
+        let instance_dir = PeppyDirs::new(peppy_root).instances_dir().join(instance_id);
+        std::fs::create_dir_all(&instance_dir).expect("instance dir");
+        let runtime_config_path = peppy_root.join(format!("runtime_config_{instance_id}.json5"));
+        std::fs::write(&runtime_config_path, "{}").expect("runtime config file");
+        let child = tokio::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .expect("spawn sleep");
+        (
+            child,
+            StartedInstanceCtx {
+                instance_dir,
+                runtime_config_path,
+                stderr_buffer: StderrTail::new(),
+                output_reader_handles: Vec::new(),
+                generation,
+            },
+        )
+    }
+
     /// The endpoints the start sequence records at commit reach the
     /// serialized instance with their kind and every URL.
     #[tokio::test]
     async fn serialized_instances_carry_the_endpoints_committed_at_start() {
-        let handle = Arc::new(RwLock::new(NodeEntity::from_snapshot(
-            sensor_config(),
-            PathBuf::from("/tmp/sensor/peppy.json5"),
-            Some(PathBuf::from("/opt/peppy/bin/peppy")),
-            Vec::new(),
-        )));
         let instance_id = Name::new("panel_inst").unwrap();
+        let handle = ready_entity_with(TrackedNodeInstance::new(
+            instance_id.clone(),
+            InstanceState::Starting,
+            BTreeMap::new(),
+        ));
         let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
-        let peppy_dirs = PeppyDirs::new(peppy_root.path());
-        let instance_dir = peppy_dirs.instances_dir().join("panel_inst");
-        std::fs::create_dir_all(&instance_dir).expect("instance dir");
-        let (child, started_ctx) = {
-            let generation = handle.read().generation;
-            let child = tokio::process::Command::new("sleep")
-                .arg("5")
-                .spawn()
-                .expect("spawn sleep");
-            let mut guard = handle.write();
-            let NodeStage::Ready { instances, .. } = &mut guard.stage else {
-                panic!("from_snapshot builds a Ready entity")
-            };
-            instances.push(TrackedNodeInstance::new(
-                instance_id.clone(),
-                InstanceState::Starting,
-                BTreeMap::new(),
-            ));
-            (
-                child,
-                StartedInstanceCtx {
-                    instance_dir: instance_dir.clone(),
-                    runtime_config_path: instance_dir.join("peppy_runtime.json5"),
-                    stderr_buffer: Arc::new(StdMutex::new(VecDeque::new())),
-                    output_reader_handles: Vec::new(),
-                    generation,
-                },
-            )
-        };
+        let generation = handle.read().generation;
+        let (child, started_ctx) = sleeping_start(peppy_root.path(), "panel_inst", generation);
         let endpoints = vec![InstanceEndpoint {
             label: "panel".to_owned(),
             kind: config::node::EndpointKind::Page,
@@ -1902,6 +1906,121 @@ mod tests {
             handle.read().instances()[0].endpoints(),
             endpoints.as_slice()
         );
+    }
+
+    /// Commits the start of `sensor_inst` on an entity of generation
+    /// `generation` and checks that `commit_started` refuses it as the
+    /// transition `from` to `to`, and that the refusal removes the instance
+    /// dir and the runtime config file of the start.
+    async fn assert_commit_refused(
+        handle: &Arc<RwLock<NodeEntity>>,
+        generation: u64,
+        from: &str,
+        to: &str,
+    ) {
+        let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
+        let (child, started_ctx) = sleeping_start(peppy_root.path(), "sensor_inst", generation);
+        let instance_dir = started_ctx.instance_dir.clone();
+        let runtime_config_path = started_ctx.runtime_config_path.clone();
+
+        let error = NodeEntity::commit_started(
+            handle,
+            child,
+            started_ctx,
+            Name::new("sensor_inst").unwrap(),
+            Vec::new(),
+        )
+        .await
+        .expect_err("commit_started should refuse the start");
+
+        let Error::InvalidStageTransition {
+            node_name,
+            node_tag,
+            from: refused_from,
+            to: refused_to,
+        } = error
+        else {
+            panic!("expected InvalidStageTransition, got {error:?}");
+        };
+        assert_eq!(
+            (
+                node_name.as_str(),
+                node_tag.as_str(),
+                refused_from,
+                refused_to
+            ),
+            ("sensor", "v1", from, to)
+        );
+        assert!(
+            !instance_dir.exists(),
+            "a refused commit removes the instance dir"
+        );
+        assert!(
+            !runtime_config_path.exists(),
+            "a refused commit removes the runtime config file"
+        );
+    }
+
+    /// A concurrent `push_config` gives the entity a new generation: the
+    /// commit leaves the replacement entity's instance alone.
+    #[tokio::test]
+    async fn commit_started_refuses_a_replaced_entity() {
+        let handle = ready_entity_with(TrackedNodeInstance::new(
+            Name::new("sensor_inst").unwrap(),
+            InstanceState::Starting,
+            BTreeMap::new(),
+        ));
+        let replaced_generation = handle.read().generation + 1;
+
+        assert_commit_refused(&handle, replaced_generation, "stale-generation", "Running").await;
+
+        assert_eq!(
+            handle.read().instances()[0].state(),
+            InstanceState::Starting
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_started_refuses_an_instance_the_entity_does_not_track() {
+        let handle = ready_entity_with(TrackedNodeInstance::new(
+            Name::new("other_inst").unwrap(),
+            InstanceState::Starting,
+            BTreeMap::new(),
+        ));
+        let generation = handle.read().generation;
+
+        assert_commit_refused(&handle, generation, "missing", "Running").await;
+    }
+
+    #[tokio::test]
+    async fn commit_started_refuses_an_instance_that_is_not_starting() {
+        let handle = ready_entity_with(TrackedNodeInstance::new(
+            Name::new("sensor_inst").unwrap(),
+            InstanceState::Running,
+            BTreeMap::new(),
+        ));
+        let generation = handle.read().generation;
+
+        assert_commit_refused(&handle, generation, "Running", "Running").await;
+
+        let guard = handle.read();
+        assert_eq!(guard.instances()[0].state(), InstanceState::Running);
+        assert_eq!(
+            guard.instances()[0].instance_dir(),
+            None,
+            "the refused commit records no instance dir"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_started_refuses_an_entity_that_is_not_ready() {
+        let handle = Arc::new(RwLock::new(NodeEntity::new(
+            sensor_config(),
+            "/tmp/sensor/peppy.json5",
+        )));
+        let generation = handle.read().generation;
+
+        assert_commit_refused(&handle, generation, "Added", "Ready").await;
     }
 
     /// A delivered producer set replaces the one instance's slot it names and
@@ -1949,8 +2068,8 @@ mod tests {
     }
 
     /// Guards the one line that places resolved bindings onto the `graph_json`
-    /// wire: `From<&NodeEntity>` must copy each instance's `slot_bindings`
-    /// through to its `SerializedInstance`. Reverting that line to an empty map
+    /// wire: `serialize_node_entity` must copy each instance's `slot_bindings`
+    /// through to its `SerializedInstance`. Setting that field to an empty map
     /// makes this fail.
     #[test]
     fn serialized_node_carries_per_instance_slot_bindings() {
@@ -2043,8 +2162,9 @@ mod tests {
         );
     }
 
-    /// Builds a single-`Running`-instance `Ready` entity behind a handle, the
-    /// shape `mark_instance_exited` operates on.
+    /// Builds a `Ready` entity behind a handle that tracks the one
+    /// `instance`, the shape `mark_instance_exited` and `commit_started`
+    /// operate on.
     fn ready_entity_with(instance: TrackedNodeInstance) -> Arc<RwLock<NodeEntity>> {
         let entity = NodeEntity::from_snapshot(
             sensor_config(),

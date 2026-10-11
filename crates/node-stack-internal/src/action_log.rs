@@ -27,7 +27,7 @@ const FILE_TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S_%3f";
 const ERROR_MARKER: &str = "error";
 /// What separates an error from the last lines its command printed on stderr,
 /// which the daemon quotes after it.
-pub const STDERR_TAIL_HEADER: &str = "\n\n--- stderr (last lines) ---\n";
+pub(crate) const STDERR_TAIL_HEADER: &str = "\n\n--- stderr (last lines) ---\n";
 /// How far the time of a line may run ahead of the clock. Past it, a clock
 /// that stepped back is followed.
 const MAX_CLOCK_LEAD: Duration = Duration::from_secs(1);
@@ -84,6 +84,7 @@ impl ActionLog {
         kind: LogKind,
         exporter: LogExporter,
     ) -> Result<Self, String> {
+        let filename = LogFileName::parse(filename.to_owned())?;
         Self::create_as(dir, filename, None, exporter, |path| {
             LogIdentity::new(kind, path)
         })
@@ -97,10 +98,10 @@ impl ActionLog {
         launch_id: Option<&str>,
     ) -> Result<Self, String> {
         let timestamp = file_timestamp();
-        let filename = format!("{}_{timestamp}.log", action.name());
+        let filename = LogFileName::parse(format!("{}_{timestamp}.log", action.name()))?;
         Self::create_as(
             &peppy_dirs.logs_dir_launch(),
-            &filename,
+            filename,
             Some(timestamp),
             exporter,
             |path| LogIdentity::new(LogKind::Launch { action }, path).with_launch(launch_id),
@@ -136,10 +137,10 @@ impl ActionLog {
         launch_id: Option<&str>,
         timestamp: String,
     ) -> Result<Self, String> {
-        let filename = format!("{label}_{timestamp}.log");
+        let filename = LogFileName::parse(format!("{label}_{timestamp}.log"))?;
         Self::create_as(
             &peppy_dirs.logs_dir_add(),
-            &filename,
+            filename,
             Some(timestamp),
             exporter,
             |path| {
@@ -161,10 +162,10 @@ impl ActionLog {
         launch_id: Option<&str>,
     ) -> Result<Self, String> {
         let timestamp = file_timestamp();
-        let filename = format!("{name}_{tag}_{timestamp}.log");
+        let filename = LogFileName::parse(format!("{name}_{tag}_{timestamp}.log"))?;
         Self::create_as(
             &peppy_dirs.logs_dir_build(),
-            &filename,
+            filename,
             Some(timestamp),
             exporter,
             |path| {
@@ -185,9 +186,10 @@ impl ActionLog {
         instance_id: &str,
         launch_id: Option<&str>,
     ) -> Result<Self, String> {
+        let filename = LogFileName::parse(format!("{instance_id}.log"))?;
         Self::create_as(
             &peppy_dirs.logs_dir_run(),
-            &format!("{instance_id}.log"),
+            filename,
             None,
             exporter,
             |path| {
@@ -205,18 +207,17 @@ impl ActionLog {
     /// last run.
     fn create_as(
         dir: &Path,
-        filename: &str,
+        filename: LogFileName,
         file_timestamp: Option<String>,
         exporter: LogExporter,
         identify: impl FnOnce(PathBuf) -> LogIdentity,
     ) -> Result<Self, String> {
-        validate_log_filename(filename)?;
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("Failed to create logs directory: {e}"))?;
         let (file, path) = match file_timestamp {
-            Some(_) => create_free(dir, filename),
+            Some(_) => create_free(dir, &filename),
             None => {
-                let path = dir.join(filename);
+                let path = dir.join(filename.as_str());
                 File::create(&path).map(|file| (file, path))
             }
         }
@@ -260,7 +261,7 @@ impl ActionLog {
             .file_timestamp
             .as_ref()
             .map(|timestamp| format!("{name}_{tag}_{timestamp}.log"))
-            .filter(|filename| validate_log_filename(filename).is_ok())
+            .and_then(|filename| LogFileName::parse(filename).ok())
             .and_then(|filename| move_to_free_name(&current, &filename).ok())
             .unwrap_or(current);
         let identity = LogIdentity {
@@ -292,7 +293,7 @@ impl ActionLog {
     }
 
     /// Writes an error of the daemon. The record of an error that quotes the
-    /// stderr of its command after [`STDERR_TAIL_HEADER`] holds the error
+    /// stderr of its command after `STDERR_TAIL_HEADER` holds the error
     /// alone: each quoted line is a record of the log that captured it.
     pub fn error(&self, message: &str) {
         self.write(
@@ -333,7 +334,11 @@ impl ActionLog {
         let mut state = self.inner.state.lock();
         let time = time_after(state.last_time, SystemTime::now());
         state.last_time = time;
-        let _ = writeln!(state.file, "{}", log_line(time, marker, text));
+        // One write per line: `writeln!` writes the line and its end in two,
+        // and a reader of the file could see the line without its end.
+        let mut line = log_line(time, marker, text);
+        line.push('\n');
+        let _ = state.file.write_all(line.as_bytes());
         match exported {
             Exported::No => {}
             Exported::Daemon(severity) => {
@@ -356,7 +361,7 @@ impl ActionLog {
 /// Creates `filename` in `dir`, or the first of `filename`'s free names: a
 /// log created in the same millisecond as another of the same name sits
 /// beside it.
-fn create_free(dir: &Path, filename: &str) -> std::io::Result<(File, PathBuf)> {
+fn create_free(dir: &Path, filename: &LogFileName) -> std::io::Result<(File, PathBuf)> {
     let mut candidates = free_names(dir, filename);
     loop {
         let path = candidates.next().expect("the names never run out");
@@ -371,7 +376,7 @@ fn create_free(dir: &Path, filename: &str) -> std::io::Result<(File, PathBuf)> {
 /// Moves the file at `current` to `filename` in its directory, or to the
 /// first of `filename`'s free names: a link to the new name is made first,
 /// which fails when the name is taken, so no file is replaced.
-fn move_to_free_name(current: &Path, filename: &str) -> std::io::Result<PathBuf> {
+fn move_to_free_name(current: &Path, filename: &LogFileName) -> std::io::Result<PathBuf> {
     let dir = current
         .parent()
         .ok_or_else(|| std::io::Error::other("a log file has a directory"))?;
@@ -390,7 +395,8 @@ fn move_to_free_name(current: &Path, filename: &str) -> std::io::Result<PathBuf>
 }
 
 /// `filename` in `dir`, then `{stem}-2.log`, `{stem}-3.log` and so on.
-fn free_names(dir: &Path, filename: &str) -> impl Iterator<Item = PathBuf> {
+fn free_names(dir: &Path, filename: &LogFileName) -> impl Iterator<Item = PathBuf> {
+    let filename = filename.as_str();
     let stem = filename.strip_suffix(".log").unwrap_or(filename).to_owned();
     let dir = dir.to_path_buf();
     std::iter::once(dir.join(filename))
@@ -405,7 +411,7 @@ fn file_timestamp() -> String {
 /// The time of the line written at `now` after a line written at `last`:
 /// `now`, or one nanosecond after `last` when the clock has not moved past
 /// it, so the times of a log's lines strictly increase. A clock more than
-/// [`MAX_CLOCK_LEAD`] behind `last` stepped back, and the line takes `now`.
+/// `MAX_CLOCK_LEAD` behind `last` stepped back, and the line takes `now`.
 pub fn time_after(last: SystemTime, now: SystemTime) -> SystemTime {
     match last.duration_since(now) {
         Ok(lead) if lead <= MAX_CLOCK_LEAD => last + Duration::from_nanos(1),
@@ -413,14 +419,25 @@ pub fn time_after(last: SystemTime, now: SystemTime) -> SystemTime {
     }
 }
 
-fn validate_log_filename(name: &str) -> Result<(), String> {
-    let is_one_component = Path::new(name).file_name().and_then(|n| n.to_str()) == Some(name);
-    let is_reserved = name.is_empty() || name == "." || name == "..";
-    let has_separator = name.contains('/') || name.contains('\\') || name.contains('\0');
-    if is_reserved || has_separator || !is_one_component {
-        return Err(format!("invalid log filename: {name:?}"));
+/// The name of a log file: one path component, so a name that holds client
+/// input stays inside the directory of its log.
+struct LogFileName(String);
+
+impl LogFileName {
+    fn parse(name: String) -> Result<Self, String> {
+        let is_one_component =
+            Path::new(&name).file_name().and_then(|n| n.to_str()) == Some(name.as_str());
+        let is_reserved = name.is_empty() || name == "." || name == "..";
+        let has_separator = name.contains('/') || name.contains('\\') || name.contains('\0');
+        if is_reserved || has_separator || !is_one_component {
+            return Err(format!("invalid log filename: {name:?}"));
+        }
+        Ok(Self(name))
     }
-    Ok(())
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// A log and the feedback channel of its action: where the daemon reports the
@@ -498,7 +515,7 @@ pub mod test_support {
         let prefix = line.get(..width)?;
         let shaped = prefix.starts_with('[')
             && prefix.ends_with("] ")
-            && prefix[1..5].bytes().all(|byte| byte.is_ascii_digit());
+            && prefix.as_bytes()[1..5].iter().all(u8::is_ascii_digit);
         shaped.then(|| &line[width..])
     }
 
@@ -944,6 +961,22 @@ mod tests {
                 "[node] ready",
                 "the node did not start\n\n--- stderr (last lines) ---\n[node] ready",
             ]
+        );
+    }
+
+    /// A continuation line quotes node output, which can hold any text: one
+    /// shaped like a time prefix with a multi-byte character inside it is
+    /// still a continuation.
+    #[test]
+    fn a_continuation_line_with_a_multibyte_char_joins_its_entry() {
+        let continuation = format!("[abcé{}] tail", "x".repeat(18));
+        let content = format!(
+            "{}\n{continuation}",
+            log_line(SystemTime::UNIX_EPOCH, Some(ERROR_MARKER), "boom")
+        );
+        assert_eq!(
+            test_support::log_entries(&content),
+            [format!("boom\n{continuation}")]
         );
     }
 

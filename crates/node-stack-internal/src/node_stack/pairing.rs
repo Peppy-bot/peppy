@@ -107,6 +107,12 @@ impl Pairing {
         }
     }
 
+    /// Whether this pair is the one between `a` and `b`, whichever way round
+    /// it was recorded.
+    fn is_between(&self, a: &SlotAddr, b: &SlotAddr) -> bool {
+        self.endpoint(a).is_some() && self.endpoint(b).is_some()
+    }
+
     /// The OTHER endpoint relative to `slot`, if this pair contains `slot`.
     pub fn peer_of(&self, slot: &SlotAddr) -> Option<&PairEndpoint> {
         if &self.a.slot == slot {
@@ -127,9 +133,27 @@ impl Pairing {
             endpoint.slot.core_node == core_node && endpoint.slot.instance_id == instance_id
         })
     }
+
+    /// Whether `is_live` accepts the instance of every endpoint on
+    /// `local_core_node`, the rule by which a pair is still live.
+    ///
+    /// A remote endpoint is deliberately never judged. This daemon cannot see
+    /// whether an instance on another machine is alive, and treating "cannot
+    /// see" as "dead" would silently dissolve every cross-daemon pair on the
+    /// next registry read. Remote death arrives as an explicit notification
+    /// from the daemon that owns it, which stays authoritative.
+    pub(crate) fn has_live_local_endpoints(
+        &self,
+        local_core_node: &str,
+        is_live: impl Fn(&str) -> bool,
+    ) -> bool {
+        [&self.a, &self.b].into_iter().all(|endpoint| {
+            !endpoint.slot.is_on(local_core_node) || is_live(&endpoint.slot.instance_id)
+        })
+    }
 }
 
-/// The pair store. Plain `Vec` — stacks hold at most a handful of pairs, and
+/// The pair store. Plain `Vec`: stacks hold at most a handful of pairs, and
 /// every access already happens under the stack's `RwLock`.
 #[derive(Debug, Default)]
 pub(crate) struct PairingRegistry {
@@ -140,22 +164,12 @@ impl PairingRegistry {
     /// The first pair `slot` takes part in, which is its only one on a
     /// scalar slot.
     pub(crate) fn find_by_slot(&self, slot: &SlotAddr) -> Option<&Pairing> {
-        self.pairs_of_slot(slot).next()
-    }
-
-    /// Every pair `slot` takes part in, in establishment order.
-    fn pairs_of_slot(&self, slot: &SlotAddr) -> impl Iterator<Item = &Pairing> + '_ {
-        let slot = slot.clone();
-        self.pairs
-            .iter()
-            .filter(move |p| p.endpoint(&slot).is_some())
+        self.pairs.iter().find(|pair| pair.endpoint(slot).is_some())
     }
 
     /// The pair between `a` and `b`, whichever way round it was recorded.
     pub(crate) fn find_pair(&self, a: &SlotAddr, b: &SlotAddr) -> Option<&Pairing> {
-        self.pairs
-            .iter()
-            .find(|p| p.endpoint(a).is_some() && p.endpoint(b).is_some())
+        self.pairs.iter().find(|pair| pair.is_between(a, b))
     }
 
     pub(crate) fn insert(&mut self, pairing: Pairing) {
@@ -163,10 +177,7 @@ impl PairingRegistry {
     }
 
     pub(crate) fn remove_pair(&mut self, a: &SlotAddr, b: &SlotAddr) -> Option<Pairing> {
-        let idx = self
-            .pairs
-            .iter()
-            .position(|p| p.endpoint(a).is_some() && p.endpoint(b).is_some())?;
+        let idx = self.pairs.iter().position(|pair| pair.is_between(a, b))?;
         Some(self.pairs.remove(idx))
     }
 
@@ -183,21 +194,13 @@ impl PairingRegistry {
     }
 
     /// Drops every pair for which `is_live` rejects a LOCAL endpoint's
-    /// instance. The lazy half of cleanup: the process-exit watcher has no
-    /// stack back-reference, so registry reads prune dead pairs on the fly
-    /// instead of trusting eager dissolution alone.
-    ///
-    /// A remote endpoint is deliberately never pruned here. This daemon cannot
-    /// see whether an instance on another machine is alive, and treating
-    /// "cannot see" as "dead" would silently dissolve every cross-daemon pair
-    /// on the next registry read. Remote death arrives as an explicit
-    /// notification from the daemon that owns it, which stays authoritative.
+    /// instance (see [`Pairing::has_live_local_endpoints`]). The lazy half of
+    /// cleanup: the process-exit watcher has no stack back-reference, so
+    /// registry reads prune dead pairs on the fly instead of trusting eager
+    /// dissolution alone.
     pub(crate) fn prune_dead(&mut self, local_core_node: &str, is_live: impl Fn(&str) -> bool) {
-        self.pairs.retain(|p| {
-            [&p.a, &p.b].into_iter().all(|endpoint| {
-                !endpoint.slot.is_on(local_core_node) || is_live(&endpoint.slot.instance_id)
-            })
-        });
+        self.pairs
+            .retain(|pair| pair.has_live_local_endpoints(local_core_node, &is_live));
     }
 
     pub(crate) fn pairs(&self) -> &[Pairing] {

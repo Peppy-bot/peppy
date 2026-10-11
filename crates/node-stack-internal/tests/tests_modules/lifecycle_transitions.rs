@@ -194,23 +194,10 @@ async fn stop_instance_skips_starting_instances() {
     // Drive prepare_and_spawn to produce a Starting instance, but do NOT
     // commit_started; the instance stays in Starting.
     let id = Name::new("starting-inst").unwrap();
-    let (mut child, _started_ctx) = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &harness.peppy_dirs,
-            output_sinks: harness.output_sinks(),
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed");
+    let (mut child, _started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, harness.start_context(&id))
+            .await
+            .expect("prepare_and_spawn should succeed");
 
     let removed = handle.write().stop_instance(&id);
     assert!(
@@ -261,9 +248,9 @@ async fn push_config_resets_existing_entity_to_added() {
 
 #[test]
 fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
-    // This test checks a specific bug fix: when you re-push a node config that keeps the same interfaces
-    // but changes which producer it depends on, the system must actually rewire the dependencies
-    // (not skip the work thinking "nothing changed").
+    // Re-pushing a config that keeps the same interfaces but depends on
+    // another producer rewires the dependencies: an unchanged interface set
+    // does not mean an unchanged graph.
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     let producer_a: config::node::NodeConfig = serde_json5::from_str(
@@ -334,7 +321,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     assert_eq!(deps_a, vec!["producer_a".to_string()]);
 
     // Re-push the consumer with the same interfaces, but pointed at
-    // producer_b. With the fix, dependency_keys drift triggers rewire.
+    // producer_b. The drift of its dependency keys triggers the rewire.
     stack
         .push_config(
             consumer_pointing_at("producer_b"),
@@ -505,7 +492,7 @@ async fn concurrent_builds_are_rejected_immediately() {
 }
 
 // ===========================================================================
-// Build with build_cmd: Added → Building → Built (or Building → Added on failure)
+// Build with build_cmd: Added → Building → Ready (a failure leaves the entity in Building)
 // ===========================================================================
 
 /// Returns a Rust sensor config whose `execution.build_cmd` runs the given
@@ -553,7 +540,9 @@ fn sensor_config_in_language(language: &str, build_cmd_shell: &str) -> config::n
 /// Helper that constructs the BuildContext fields shared across tests.
 struct BuildHarness {
     working_dir: tempfile::TempDir,
-    peppy_root: tempfile::TempDir,
+    /// Owns the directory that `peppy_dirs` points into, so the directory
+    /// lives as long as the harness.
+    _peppy_root: tempfile::TempDir,
     peppy_dirs: daemon_config::consts::PeppyDirs,
     log: ActionLog,
     feedback_tx: tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
@@ -597,7 +586,7 @@ fn build_harness() -> BuildHarness {
         tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
     BuildHarness {
         working_dir,
-        peppy_root,
+        _peppy_root: peppy_root,
         peppy_dirs,
         log,
         feedback_tx,
@@ -719,7 +708,7 @@ fn assert_keyed_artifact_path(
 }
 
 #[tokio::test]
-async fn build_runs_add_cmd_for_process_node() {
+async fn build_runs_build_cmd_for_process_node() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
     stack
@@ -748,7 +737,7 @@ async fn build_runs_add_cmd_for_process_node() {
     .await
     .expect("build should succeed when build_cmd exits 0");
 
-    // Entity is in Built.
+    // The entity is Ready.
     let guard = handle.read();
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
     assert_eq!(guard.artifact_path(), Some(archive.as_path()));
@@ -763,10 +752,6 @@ async fn build_runs_add_cmd_for_process_node() {
         archived_text(&archive, "marker.txt").is_some(),
         "marker.txt produced by build_cmd should be in archive"
     );
-
-    // Keep harness alive (so tempdirs survive until the assertions above).
-    drop(h.peppy_root);
-    drop(h.working_dir);
 }
 
 #[tokio::test]
@@ -1276,23 +1261,9 @@ async fn prepare_and_spawn_rejects_when_not_built() {
     let handle = stack.find("sensor", "v1").expect("entity should exist");
     let (instance_id, h) = start_harness("test-inst-1");
 
-    let err = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-        },
-    )
-    .await
-    .expect_err("prepare_and_spawn should fail on Added entity");
+    let err = NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+        .await
+        .expect_err("prepare_and_spawn should fail on Added entity");
 
     match err {
         NodeStackError::InvalidStageTransition { from, to, .. } => {
@@ -1313,23 +1284,10 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     let (instance_id, h) = start_harness("test-inst-2");
     let handle = push_built_long_running_sensor(&stack, &h).await;
 
-    let (child, started_ctx) = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed on Ready entity");
+    let (child, started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+            .await
+            .expect("prepare_and_spawn should succeed on Ready entity");
 
     // Entity is in Ready with the new instance in Starting state.
     {
@@ -1397,23 +1355,10 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
     let (instance_id, h) = start_harness("test-inst-3");
     let handle = push_built_long_running_sensor(&stack, &h).await;
 
-    let (child, started_ctx) = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed");
+    let (child, started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+            .await
+            .expect("prepare_and_spawn should succeed");
 
     let pid = child.id().expect("child has pid");
 
@@ -1462,6 +1407,46 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
     );
 }
 
+/// The start path feeds the child's stderr, and not its stdout, into the
+/// tail that `abort_started` quotes after the original error.
+#[tokio::test]
+async fn abort_started_quotes_the_stderr_of_the_child_and_not_its_stdout() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let (instance_id, h) = start_harness("test-inst-stderr");
+    let mut config = real_lifecycle::override_execution_for_fixture(long_running_sensor_config());
+    config.execution.run_cmd = Some(
+        ["sh", "-c", "echo on-stdout; echo on-stderr >&2"]
+            .map(String::from)
+            .to_vec(),
+    );
+    let config_path = h.peppy_root.path().join("printing_sensor.json5");
+    let handle = real_lifecycle::build_ready_as_is(&stack, &h, config, config_path).await;
+
+    let (mut child, started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+            .await
+            .expect("prepare_and_spawn should succeed");
+    // Waiting for the child to exit puts both lines in the pipes before
+    // abort_started kills it, so the readers it drains have seen them.
+    child
+        .wait()
+        .await
+        .expect("the child should exit on its own");
+
+    let msg = NodeEntity::abort_started(
+        &handle,
+        child,
+        started_ctx,
+        "synthetic failure".to_string(),
+        &instance_id,
+    )
+    .await;
+    assert_eq!(
+        msg,
+        "synthetic failure\n\n--- stderr (last lines) ---\non-stderr"
+    );
+}
+
 #[tokio::test]
 async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     // This is the multi-instance launch case: a node is already running and
@@ -1479,23 +1464,10 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
         real_lifecycle::spawn_running_instance(Arc::clone(&handle), &h, existing_id.clone()).await;
 
     // Now spawn a second instance via the regular start API.
-    let (child, started_ctx) = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed on Ready entity with existing instances");
+    let (child, started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+            .await
+            .expect("prepare_and_spawn should succeed on Ready entity with existing instances");
 
     // Entity is still in Ready. Both instances visible: existing Running
     // and new Starting.
@@ -1570,23 +1542,9 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
     let _existing =
         real_lifecycle::spawn_running_instance(Arc::clone(&handle), &h, instance_id.clone()).await;
 
-    let err = NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id: &instance_id,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            copy: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &h.peppy_dirs,
-            output_sinks: h.output_sinks(),
-        },
-    )
-    .await
-    .expect_err("prepare_and_spawn should reject duplicate instance id");
+    let err = NodeEntity::prepare_and_spawn(&handle, h.start_context(&instance_id))
+        .await
+        .expect_err("prepare_and_spawn should reject duplicate instance id");
 
     match err {
         NodeStackError::DuplicateInstanceId {
@@ -1609,13 +1567,6 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
         other => panic!("expected Ready, got {:?}", other),
     }
 }
-
-// Producer-side link_id collision tests were removed: in the harmonized
-// wire model the producer always advertises under the `_` link_id sentinel
-// and consumers pin by `from_instance_id` derived from the binding map, so
-// there is no producer-side link_id to collide on. Duplicate-instance_id
-// detection is still covered by
-// `prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_present`.
 
 // ===========================================================================
 // Backwards / sideways transition rejection (exhaustive)
@@ -1671,46 +1622,29 @@ mod backwards_transitions_are_rejected {
     }
 
     #[test]
-    fn build_rejected_from_building() {
-        assert_eq!(building().ensure_buildable(), Err("Building"));
+    fn build_is_accepted_from_added_only() {
+        let cases = [
+            (added(), Ok(())),
+            (building(), Err("Building")),
+            (ready_empty(), Err("Ready")),
+            (ready_with_running_instance(), Err("Ready")),
+        ];
+        for (stage, expected) in cases {
+            assert_eq!(stage.ensure_buildable(), expected, "{stage:?}");
+        }
     }
 
     #[test]
-    fn build_rejected_from_ready_empty() {
-        assert_eq!(ready_empty().ensure_buildable(), Err("Ready"));
-    }
-
-    #[test]
-    fn build_rejected_from_ready_with_instances() {
-        assert_eq!(
-            ready_with_running_instance().ensure_buildable(),
-            Err("Ready")
-        );
-    }
-
-    #[test]
-    fn build_accepted_from_added() {
-        assert_eq!(added().ensure_buildable(), Ok(()));
-    }
-
-    #[test]
-    fn prepare_and_spawn_rejected_from_added() {
-        assert_eq!(added().ensure_spawnable(), Err("Added"));
-    }
-
-    #[test]
-    fn prepare_and_spawn_rejected_from_building() {
-        assert_eq!(building().ensure_spawnable(), Err("Building"));
-    }
-
-    #[test]
-    fn prepare_and_spawn_accepted_from_ready_empty() {
-        assert_eq!(ready_empty().ensure_spawnable(), Ok(()));
-    }
-
-    #[test]
-    fn prepare_and_spawn_accepted_from_ready_with_running_instance() {
-        assert_eq!(ready_with_running_instance().ensure_spawnable(), Ok(()));
+    fn prepare_and_spawn_is_accepted_from_ready_only() {
+        let cases = [
+            (added(), Err("Added")),
+            (building(), Err("Building")),
+            (ready_empty(), Ok(())),
+            (ready_with_running_instance(), Ok(())),
+        ];
+        for (stage, expected) in cases {
+            assert_eq!(stage.ensure_spawnable(), expected, "{stage:?}");
+        }
     }
 }
 

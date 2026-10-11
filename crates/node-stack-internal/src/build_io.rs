@@ -1,33 +1,24 @@
 //! I/O primitives for streaming child-process output to a feedback channel and
 //! a log file.
 //!
-//! Two reader variants exist because build and start use different child types:
-//!
-//! - [`spawn_output_reader`] is **synchronous**: it consumes a `std::io::Read`
-//!   inside `tokio::task::spawn_blocking`. This is the right shape for the
-//!   build path, where the child is launched via `std::process::Command` (see
-//!   `node_stack::build_steps::build_container_image`) and we wait for it to
-//!   exit before continuing; no concurrent monitoring of `child.try_wait()`
-//!   is needed.
-//!
-//! - [`spawn_output_reader_async`] reads raw bytes from a
-//!   `tokio::process::ChildStdout`/`ChildStderr` and splits them into lines on
-//!   `\n`, `\r`, and `\r\n` (see [`LineSplitter`]), so TTY-style `\r` progress
-//!   repaints surface as feedback instead of accumulating silently inside one
-//!   never-terminated line. This variant is required by the
-//!   start path, where the daemon must call `child.try_wait()` concurrently
-//!   with reading stdout/stderr (so it can detect early child exit while
-//!   polling the ready/health signals). The reader tasks also outlive the
-//!   `prepare_and_spawn` call; they remain alive as long as the spawned
-//!   node is running so its stdout/stderr keeps streaming.
+//! `spawn_output_reader_async` reads raw bytes from a
+//! `tokio::process::ChildStdout`/`ChildStderr` and splits them into lines on
+//! `\n`, `\r`, and `\r\n` (see `LineSplitter`), so TTY-style `\r` progress
+//! repaints surface as feedback instead of accumulating silently inside one
+//! never-terminated line. The build path uses it through
+//! `stream_child_output`. The start path uses it from
+//! `NodeEntity::prepare_and_spawn`, where the daemon must call
+//! `child.try_wait()` concurrently with reading stdout/stderr (so it can
+//! detect early child exit while polling the ready/health signals). The
+//! reader tasks also outlive the `prepare_and_spawn` call; they remain alive
+//! as long as the spawned node is running so its stdout/stderr keeps
+//! streaming.
 
 use crate::action_log::ActionLog;
 use containers::BuildActivity;
 use log_export::Iostream;
-use parking_lot::Mutex as StdMutex;
+use parking_lot::Mutex;
 use std::collections::VecDeque;
-#[cfg(test)]
-use std::io::{BufRead, BufReader, Read};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
@@ -40,7 +31,7 @@ use crate::build_progress::{BuildProgressMonitor, LastOutputLine};
 
 /// Maximum number of stderr lines to retain for error diagnostics.
 /// Used by both the build (apptainer/archive) path and the start (node run) path.
-pub const STDERR_TAIL_LINES: usize = 20;
+pub(crate) const STDERR_TAIL_LINES: usize = 20;
 
 pub use core_node_api::encoding::FeedbackStream;
 
@@ -123,7 +114,7 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Hooks called by [`spawn_output_reader_async`] at meaningful moments in the
+/// Hooks called by `spawn_output_reader_async` at meaningful moments in the
 /// reader loop. This trait exists so `node-stack-internal` does not have to
 /// know about the daemon's `FeedbackSync` drain primitive: the daemon
 /// implements `OutputReaderHooks` for its `FeedbackSync` and threads it through
@@ -166,17 +157,34 @@ pub trait OutputReaderHooks: Send + Sync {
     fn on_reader_exit(&self, _was_idle: bool) {}
 }
 
-/// Pushes a line into a bounded ring buffer of stderr output.
-/// When the buffer is full, the oldest line is dropped.
-pub fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
-    let mut guard = buffer.lock();
-    if guard.len() == STDERR_TAIL_LINES {
-        guard.pop_front();
+/// The last [`STDERR_TAIL_LINES`] lines a child printed on stderr, which the
+/// error of a failed build or start quotes. Clones share one buffer.
+#[derive(Clone, Debug)]
+pub(crate) struct StderrTail(Arc<Mutex<VecDeque<String>>>);
+
+impl StderrTail {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(Mutex::new(VecDeque::with_capacity(
+            STDERR_TAIL_LINES,
+        ))))
     }
-    guard.push_back(line.to_string());
+
+    /// Appends `line`. When the tail is full, the oldest line is dropped.
+    pub(crate) fn push(&self, line: &str) {
+        let mut lines = self.0.lock();
+        if lines.len() == STDERR_TAIL_LINES {
+            lines.pop_front();
+        }
+        lines.push_back(line.to_string());
+    }
+
+    /// The lines of the tail, oldest first.
+    pub(crate) fn lines(&self) -> Vec<String> {
+        self.0.lock().iter().cloned().collect()
+    }
 }
 
-pub use process_wrap::tokio::ChildWrapper;
+pub(crate) use process_wrap::tokio::ChildWrapper;
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
 
 /// Spawns `cmd` as a process-group leader so [`stream_child_output`]'s
@@ -187,7 +195,7 @@ use process_wrap::tokio::{CommandWrap, ProcessGroup};
 /// would be orphaned and keep the daemon's stdio pipes open until they exit
 /// naturally, stalling cancellation. Making the child its own process-group
 /// leader (PGID == its PID) lets `start_kill()` signal the whole group.
-pub fn spawn_in_process_group(
+pub(crate) fn spawn_in_process_group(
     cmd: tokio::process::Command,
 ) -> std::io::Result<Box<dyn ChildWrapper>> {
     let mut wrap = CommandWrap::from(cmd);
@@ -213,7 +221,7 @@ pub fn spawn_in_process_group(
 /// `Err("build cancelled")`, so no zombie lingers and the working dir is free
 /// for a superseding build. If this future is instead dropped outright, the
 /// `KillGuard` still SIGKILLs the group as a fallback (without reaping).
-pub async fn stream_child_output(
+pub(crate) async fn stream_child_output(
     mut child: Box<dyn ChildWrapper>,
     activity_sampler: impl Fn() -> BuildActivity + Send + Sync + 'static,
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
@@ -221,13 +229,7 @@ pub async fn stream_child_output(
     collect_stderr_tail: bool,
     cancel_token: &CancellationToken,
 ) -> std::result::Result<(std::process::ExitStatus, Vec<String>), String> {
-    let stderr_tail: Option<Arc<StdMutex<VecDeque<String>>>> = if collect_stderr_tail {
-        Some(Arc::new(StdMutex::new(VecDeque::with_capacity(
-            STDERR_TAIL_LINES,
-        ))))
-    } else {
-        None
-    };
+    let stderr_tail = collect_stderr_tail.then(StderrTail::new);
 
     let mut reader_handles = Vec::new();
 
@@ -326,46 +328,17 @@ pub async fn stream_child_output(
         return Err(err);
     }
 
-    let tail_lines = match stderr_tail {
-        Some(ref tail) => tail.lock().iter().cloned().collect::<Vec<_>>(),
-        None => Vec::new(),
-    };
+    let tail_lines = stderr_tail.map(|tail| tail.lines()).unwrap_or_default();
 
     Ok((status, tail_lines))
-}
-
-/// Test-only blocking line reader retained so the existing
-/// `spawn_output_reader_propagates_io_error` regression test can continue
-/// exercising `BufRead::lines` error semantics.
-#[cfg(test)]
-fn spawn_output_reader<R: Read + Send + 'static>(
-    reader: R,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    stream: Iostream,
-    log: ActionLog,
-    stderr_tail: Option<Arc<StdMutex<VecDeque<String>>>>,
-) -> JoinHandle<std::io::Result<()>> {
-    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-        let reader = BufReader::new(reader);
-        for line in reader.lines() {
-            let line = line?;
-            log.output(stream, &line);
-            if let Some(ref buffer) = stderr_tail {
-                push_stderr_line(buffer, &line);
-            }
-            let _ = feedback_tx.send(FeedbackLine::logged(feedback_stream(stream), line));
-        }
-        Ok(())
-    })
 }
 
 /// How a fragment produced by [`LineSplitter`] was terminated, which decides
 /// whether it forwards unconditionally or is subject to repaint coalescing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LineTerminator {
-    /// `\n` or `\r\n`: a real line. Always forwarded — this is the
-    /// compatibility guarantee that keeps output containing no bare `\r`
-    /// byte-identical to the previous `BufRead::lines` behavior.
+    /// `\n` or `\r\n`: a real line. Always forwarded, so output that holds
+    /// no bare `\r` splits into the same lines as `BufRead::lines` gives.
     Newline,
     /// A bare `\r`: a terminal repaint (progress bars). Forwarded at most
     /// once per coalescing interval.
@@ -454,8 +427,7 @@ pub(crate) const REPAINT_FORWARD_MIN_INTERVAL: Duration = Duration::from_millis(
 /// Decides which fragments forward: real lines (`\n`-terminated, or cut off by
 /// the end of the stream) always do, bare-`\r` repaints only when at least
 /// [`REPAINT_FORWARD_MIN_INTERVAL`] has passed since the last forwarded line.
-/// Suppressed fragments are dropped entirely (no log write, no stderr tail),
-/// matching their pre-`\r`-splitting invisibility.
+/// Suppressed fragments are dropped entirely (no log write, no stderr tail).
 #[derive(Default)]
 pub(crate) struct RepaintCoalescer {
     last_forward: Option<Instant>,
@@ -477,8 +449,8 @@ impl RepaintCoalescer {
     }
 }
 
-/// Async sibling of [`spawn_output_reader`], used by both the start path
-/// (via `start_steps`) and the build path (via [`stream_child_output`]).
+/// Used by the start path (`NodeEntity::prepare_and_spawn`) and the build path
+/// ([`stream_child_output`]).
 ///
 /// Reads output from a `tokio::io::AsyncRead` (typically a
 /// `tokio::process::ChildStdout`/`ChildStderr`), splits it into lines on `\n`,
@@ -496,13 +468,13 @@ impl RepaintCoalescer {
 /// continues running past the return of `prepare_and_spawn`/`commit_started`
 /// for as long as the spawned node is alive, which is the desired behavior so
 /// the daemon keeps streaming the running node's stdout/stderr.
-pub fn spawn_output_reader_async<R>(
+pub(crate) fn spawn_output_reader_async<R>(
     mut reader: R,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     publish_enabled: Arc<AtomicBool>,
     hooks: Arc<dyn OutputReaderHooks>,
     stream: Iostream,
-    stderr_buffer: Option<Arc<StdMutex<VecDeque<String>>>>,
+    stderr_buffer: Option<StderrTail>,
     log: ActionLog,
 ) -> JoinHandle<std::io::Result<()>>
 where
@@ -541,7 +513,7 @@ where
                 && terminator != LineTerminator::CarriageReturn
                 && let Some(buffer) = &stderr_buffer
             {
-                push_stderr_line(buffer, &line);
+                buffer.push(&line);
             }
 
             if !publish_enabled.load(Ordering::Acquire) {
@@ -612,55 +584,6 @@ mod tests {
     use super::*;
     use crate::action_log::test_support::scratch_log;
     use std::io;
-
-    /// Reader that yields `prefix` then errors. Used to verify that
-    /// `spawn_output_reader` propagates I/O errors instead of swallowing them.
-    struct ErroringReader {
-        prefix: Vec<u8>,
-        pos: usize,
-        errored: bool,
-    }
-
-    impl ErroringReader {
-        fn new(prefix: &[u8]) -> Self {
-            Self {
-                prefix: prefix.to_vec(),
-                pos: 0,
-                errored: false,
-            }
-        }
-    }
-
-    impl io::Read for ErroringReader {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            if self.pos < self.prefix.len() {
-                let n = (self.prefix.len() - self.pos).min(buf.len());
-                buf[..n].copy_from_slice(&self.prefix[self.pos..self.pos + n]);
-                self.pos += n;
-                return Ok(n);
-            }
-            if !self.errored {
-                self.errored = true;
-                return Err(io::Error::other("synthetic read error"));
-            }
-            Ok(0)
-        }
-    }
-
-    #[tokio::test]
-    async fn spawn_output_reader_propagates_io_error() {
-        let log = scratch_log();
-        let (tx, _rx) = mpsc::unbounded_channel();
-        // No newline at the end of the prefix → BufRead::lines yields the
-        // partial line *and then* surfaces the next read error.
-        let reader = ErroringReader::new(b"first line\npartial");
-        let handle = spawn_output_reader(reader, tx, Iostream::Stdout, log, None);
-        let result = handle.await.expect("join should succeed");
-        assert!(
-            result.is_err(),
-            "spawn_output_reader should propagate the synthetic read error"
-        );
-    }
 
     // -- LineSplitter --
 
@@ -781,7 +704,7 @@ mod tests {
     /// Hooks that keep every line [`OutputReaderHooks::on_line`] receives.
     #[derive(Default)]
     struct LineRecordingHooks {
-        lines: StdMutex<Vec<String>>,
+        lines: Mutex<Vec<String>>,
     }
 
     impl OutputReaderHooks for LineRecordingHooks {
@@ -864,7 +787,7 @@ mod tests {
     /// feedback channel and the stderr tail it collected.
     async fn read_stderr(input: &[u8]) -> (Vec<String>, Vec<String>) {
         let log = scratch_log();
-        let tail = Arc::new(StdMutex::new(VecDeque::new()));
+        let tail = StderrTail::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
             std::io::Cursor::new(input.to_vec()),
@@ -872,7 +795,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             Arc::new(LineRecordingHooks::default()) as Arc<dyn OutputReaderHooks>,
             Iostream::Stderr,
-            Some(Arc::clone(&tail)),
+            Some(tail.clone()),
             log,
         );
         handle
@@ -883,8 +806,7 @@ mod tests {
         while let Ok(line) = rx.try_recv() {
             forwarded.push(line.line);
         }
-        let tail = tail.lock().iter().cloned().collect();
-        (forwarded, tail)
+        (forwarded, tail.lines())
     }
 
     /// The stderr tail explains a failure, so the progress bar cargo repaints
@@ -923,5 +845,46 @@ mod tests {
             ]
         );
         assert_eq!(tail, vec!["error: could not compile `b`".to_string()]);
+    }
+
+    /// A reader whose every read fails.
+    struct FailingReader;
+
+    impl tokio::io::AsyncRead for FailingReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::other("synthetic read error")))
+        }
+    }
+
+    /// A read error ends the reader with that error, after the lines that
+    /// arrived before it were forwarded.
+    #[tokio::test]
+    async fn async_reader_propagates_a_read_error() {
+        use tokio::io::AsyncReadExt;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = spawn_output_reader_async(
+            std::io::Cursor::new(b"first line\npartial".to_vec()).chain(FailingReader),
+            tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(LineRecordingHooks::default()) as Arc<dyn OutputReaderHooks>,
+            Iostream::Stdout,
+            None,
+            scratch_log(),
+        );
+        let result = handle.await.expect("join should succeed");
+        assert!(
+            result.is_err(),
+            "spawn_output_reader_async should propagate the synthetic read error"
+        );
+        let mut forwarded = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            forwarded.push(line.line);
+        }
+        assert_eq!(forwarded, vec!["first line".to_string()]);
     }
 }

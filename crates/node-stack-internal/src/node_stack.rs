@@ -76,12 +76,11 @@ fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
         .collect()
 }
 
-/// Whether `inst` is the instance addressed by `instance_id`. When
-/// `require_running` is set, only `Running` instances match; otherwise an
-/// instance in any state (e.g. `Starting`) matches.
-fn instance_matches(inst: &TrackedNodeInstance, instance_id: &Name, require_running: bool) -> bool {
-    inst.instance_id() == instance_id
-        && (!require_running || inst.state() == InstanceState::Running)
+/// Whether `inst` is the instance addressed by `instance_id` and is
+/// `Running`. A `Starting` instance has not subscribed to messenger services
+/// yet, so it does not match.
+fn is_running_instance(inst: &TrackedNodeInstance, instance_id: &Name) -> bool {
+    inst.instance_id() == instance_id && inst.state() == InstanceState::Running
 }
 
 /// One pair endpoint's pairing identity, normalized so a locally-resolved
@@ -151,37 +150,36 @@ impl NodeStackInner {
         };
         // Root node has no dependencies, so this should never fail.
         inner
-            .insert_entity(root, true)
+            .validate_dependencies(&root)
             .expect("root node should have no dependencies");
+        inner.insert_new_entity(root);
         inner
     }
 
-    fn insert_entity(&mut self, entity: NodeEntity, validate: bool) -> Result<()> {
-        if validate {
-            self.validate_dependencies(&entity)?;
-        }
-
+    /// Adds `entity`, whose key is not in the stack yet, and wires its edges
+    /// in both directions. The caller validates it first.
+    fn insert_new_entity(&mut self, entity: NodeEntity) {
         let key = key_from_entity(&entity);
-        let index = if let Some(&existing_index) = self.key_to_index.get(&key) {
-            // Existing entity: replace the inner value while keeping the same Arc.
-            // (No external Arc handles can exist before insert is called for the
-            // first time, but for an existing entity replacement we want to keep
-            // any external handles valid.)
-            if let Some(handle) = self.graph.node_weight(existing_index) {
-                let mut guard = handle.write();
-                *guard = entity;
-            }
-            existing_index
-        } else {
-            let handle: EntityHandle = Arc::new(RwLock::new(entity));
-            let idx = self.graph.add_node(handle);
-            self.key_to_index.insert(key.clone(), idx);
-            idx
-        };
-
+        let index = self.graph.add_node(Arc::new(RwLock::new(entity)));
+        self.key_to_index.insert(key.clone(), index);
         self.rewire_dependencies(index);
         self.resolve_pending_requirements(&key);
-        Ok(())
+    }
+
+    /// Validates a candidate entity before it is added or replaces the entity
+    /// of its key.
+    fn validate_candidate(
+        &self,
+        entity: &NodeEntity,
+        allow_missing_dependencies: bool,
+    ) -> Result<()> {
+        if allow_missing_dependencies {
+            // A permissive (missing-dependency) push skips the full dependency
+            // check, but must still not close a service/action cycle; run the
+            // cycle check on the candidate's incoming config regardless.
+            return self.validate_no_service_action_cycle(entity);
+        }
+        self.validate_dependencies(entity)
     }
 
     fn validate_dependencies(&self, entity: &NodeEntity) -> Result<()> {
@@ -361,22 +359,33 @@ impl NodeStackInner {
 
     /// Shared entity scan for the instance-lookup methods. Visits every entity
     /// in graph order, holding each entity's read guard while `project`
-    /// inspects it, and returns the first `Some` projection. When `skip_root`
-    /// is set the synthetic root entity is not visited. Holding the guard
+    /// inspects it, and returns the first `Some` projection. Holding the guard
     /// across the projection keeps each lookup atomic with respect to a
     /// concurrent `prepare_and_spawn` / `stop_instance` mutating that entity's
     /// instances list.
     fn find_map_entity<T>(
         &self,
-        skip_root: bool,
         mut project: impl FnMut(&EntityHandle, &NodeEntity) -> Option<T>,
     ) -> Option<T> {
         self.graph.node_weights().find_map(|handle| {
             let guard = handle.read();
-            if skip_root && self.is_root(&key_from_entity(&guard)) {
-                return None;
-            }
             project(handle, &guard)
+        })
+    }
+
+    /// Projects the first tracked instance whose id is `instance_id`, in any
+    /// state, together with its entity (see [`Self::find_map_entity`]).
+    fn find_instance_map<T>(
+        &self,
+        instance_id: &str,
+        mut project: impl FnMut(&NodeEntity, &TrackedNodeInstance) -> T,
+    ) -> Option<T> {
+        self.find_map_entity(|_, entity| {
+            entity
+                .instances()
+                .iter()
+                .find(|inst| inst.instance_id().as_str() == instance_id)
+                .map(|inst| project(entity, inst))
         })
     }
 
@@ -387,11 +396,11 @@ impl NodeStackInner {
     /// to clean up an in-flight start should use `NodeEntity::abort_started`
     /// instead.
     fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
-        self.find_map_entity(false, |_, entity| {
+        self.find_map_entity(|_, entity| {
             entity
                 .instances()
                 .iter()
-                .find(|inst| instance_matches(inst, instance_id, true))
+                .find(|inst| is_running_instance(inst, instance_id))
                 .cloned()
         })
     }
@@ -410,11 +419,14 @@ impl NodeStackInner {
         &self,
         instance_id: &Name,
     ) -> Option<(String, String)> {
-        self.find_map_entity(true, |_, entity| {
+        self.find_map_entity(|_, entity| {
+            if self.is_root(&key_from_entity(entity)) {
+                return None;
+            }
             entity
                 .instances()
                 .iter()
-                .any(|inst| instance_matches(inst, instance_id, false))
+                .any(|inst| inst.instance_id() == instance_id)
                 .then(|| {
                     (
                         entity.config().manifest.name.as_str().to_owned(),
@@ -424,14 +436,14 @@ impl NodeStackInner {
         })
     }
 
-    /// Same filtering rule as [`find_by_instance_id`]: only entities
+    /// Same filtering rule as [`Self::find_by_instance_id`]: only entities
     /// containing a `Running` instance with the given id are returned.
     fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
-        self.find_map_entity(false, |handle, entity| {
+        self.find_map_entity(|handle, entity| {
             entity
                 .instances()
                 .iter()
-                .any(|inst| instance_matches(inst, instance_id, true))
+                .any(|inst| is_running_instance(inst, instance_id))
                 .then(|| handle.clone())
         })
     }
@@ -465,8 +477,10 @@ impl NodeStackInner {
     /// `.sif`/archive of the previous build is the caller's responsibility to
     /// clean up; `push_config` only manages the in-memory entity.
     ///
-    /// Dependency checks and rewiring only occur when interfaces change.
+    /// Dependency checks and rewiring occur only when the interfaces or the
+    /// dependencies change.
     /// Returns `Err(CannotModifyRootNode)` if trying to modify the root node config.
+    /// Returns `Err(CannotOverwriteNodeWithLiveInstances)` if the entity still tracks instances.
     /// Returns `Err(CannotOverwriteNodeWithDependents)` if interfaces change and the node has dependents.
     fn push_config_impl<P: Into<PathBuf>>(
         &mut self,
@@ -483,109 +497,100 @@ impl NodeStackInner {
     /// Inserts `entity`, or replaces the entity of the same identity in
     /// place under its write lock when it has no instances.
     fn push_entity(&mut self, entity: NodeEntity, allow_missing_dependencies: bool) -> Result<()> {
-        let config = entity.config().clone();
-        let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
+        let key = key_from_entity(&entity);
 
         // The root node cannot be modified
         if self.is_root(&key) {
             return Err(Error::CannotModifyRootNode);
         }
 
-        if let Some(&index) = self.key_to_index.get(&key) {
-            // We must perform the "no live instances" check, the
-            // interfaces/dependency drift checks, AND the wholesale entity
-            // replacement under a *single* held write lock on the entity.
-            // Dropping the lock between the check and the replacement would
-            // let an in-flight `prepare_and_spawn` (which only holds an
-            // `Arc<RwLock<NodeEntity>>` and not the stack lock) append a
-            // `Starting` instance that the replacement would silently orphan.
-            let Some(handle) = self.graph.node_weight(index).cloned() else {
-                return Ok(());
-            };
+        let Some(&index) = self.key_to_index.get(&key) else {
+            self.validate_candidate(&entity, allow_missing_dependencies)?;
+            self.insert_new_entity(entity);
+            return Ok(());
+        };
 
-            let (interfaces_changed, dependencies_changed) = {
-                let mut guard = handle.write();
+        // We must perform the "no live instances" check, the
+        // interfaces/dependency drift checks, AND the wholesale entity
+        // replacement under a *single* held write lock on the entity.
+        // Dropping the lock between the check and the replacement would
+        // let an in-flight `prepare_and_spawn` (which only holds an
+        // `Arc<RwLock<NodeEntity>>` and not the stack lock) append a
+        // `Starting` instance that the replacement would silently orphan.
+        let Some(handle) = self.graph.node_weight(index).cloned() else {
+            return Ok(());
+        };
+        let mut guard = handle.write();
 
-                if !guard.instances().is_empty() {
-                    return Err(Error::CannotOverwriteNodeWithLiveInstances {
-                        node_name: key.name.clone(),
-                        node_tag: key.tag.clone(),
-                    });
-                }
-
-                let interfaces_changed = guard.config().interfaces != config.interfaces;
-                let old_dependency_keys = dependency_keys(guard.config());
-                let new_dependency_keys = dependency_keys(&config);
-                let dependencies_changed = old_dependency_keys != new_dependency_keys;
-
-                // Interface changes can break dependents that consume this
-                // node, so they need an explicit gate. Dependency-spec
-                // changes (e.g. swapping `link_id` of a consumed
-                // topic) only affect *this* node's outbound edges, so they
-                // don't need the dependents check.
-                if interfaces_changed {
-                    let has_dependents = self
-                        .graph
-                        .neighbors_directed(index, Direction::Incoming)
-                        .next()
-                        .is_some()
-                        || self
-                            .pending_requirements
-                            .get(&key)
-                            .is_some_and(|requirements| !requirements.is_empty());
-
-                    if has_dependents {
-                        return Err(Error::CannotOverwriteNodeWithDependents {
-                            node_name: key.name,
-                            node_tag: key.tag,
-                        });
-                    }
-                }
-
-                if interfaces_changed || dependencies_changed {
-                    let candidate = &entity;
-                    if allow_missing_dependencies {
-                        // A permissive (missing-dependency) re-add skips the full
-                        // dependency check, but must still not close a
-                        // service/action cycle; run the cycle check on the
-                        // candidate's incoming config regardless.
-                        self.validate_no_service_action_cycle(candidate)?;
-                    } else {
-                        self.validate_dependencies(candidate)?;
-                    }
-                }
-
-                // Replace the entity in-place under the still-held write
-                // lock. The same `Arc` handle is preserved so any external
-                // readers see the new state.
-                *guard = entity;
-
-                (interfaces_changed, dependencies_changed)
-            };
-
-            if interfaces_changed || dependencies_changed {
-                self.rewire_dependencies(index);
-            }
-
-            Ok(())
-        } else {
-            if allow_missing_dependencies {
-                // `insert_entity` skips dependency validation (and with it the
-                // cycle check) on a permissive add, so run the cycle check
-                // explicitly. The entity is not in the graph yet, so this sees
-                // it as the candidate appended to the live stack.
-                self.validate_no_service_action_cycle(&entity)?;
-            }
-            self.insert_entity(entity, !allow_missing_dependencies)?;
-            Ok(())
+        if !guard.instances().is_empty() {
+            return Err(Error::CannotOverwriteNodeWithLiveInstances {
+                node_name: key.name,
+                node_tag: key.tag,
+            });
         }
+
+        let interfaces_changed = guard.config().interfaces != entity.config().interfaces;
+        let dependencies_changed =
+            dependency_keys(guard.config()) != dependency_keys(entity.config());
+
+        // Interface changes can break dependents that consume this node, so
+        // they need an explicit gate. Dependency-spec changes (e.g. swapping
+        // `link_id` of a consumed topic) only affect *this* node's outbound
+        // edges, so they don't need the dependents check.
+        if interfaces_changed && self.has_dependents(index, &key) {
+            return Err(Error::CannotOverwriteNodeWithDependents {
+                node_name: key.name,
+                node_tag: key.tag,
+            });
+        }
+
+        let needs_rewire = interfaces_changed || dependencies_changed;
+        if needs_rewire {
+            self.validate_candidate(&entity, allow_missing_dependencies)?;
+        }
+
+        // Replace the entity in-place under the still-held write lock. The
+        // same `Arc` handle is preserved so any external readers see the new
+        // state. The lock is released before the rewire, which reads the
+        // entity.
+        *guard = entity;
+        drop(guard);
+
+        if needs_rewire {
+            self.rewire_dependencies(index);
+        }
+        Ok(())
+    }
+
+    /// Whether another node depends on the node at `index`, through an edge
+    /// or as a pending requirement that waits for `key`.
+    fn has_dependents(&self, index: NodeIndex, key: &NodeKey) -> bool {
+        self.graph
+            .neighbors_directed(index, Direction::Incoming)
+            .next()
+            .is_some()
+            || self
+                .pending_requirements
+                .get(key)
+                .is_some_and(|requirements| !requirements.is_empty())
     }
 
     /// Removes an entity entirely from the graph.
     fn remove_entity(&mut self, key: &NodeKey) {
-        if let Some(index) = self.key_to_index.remove(key) {
-            self.graph.remove_node(index);
-            self.clear_pending_requirements_for(index);
+        let Some(index) = self.key_to_index.remove(key) else {
+            return;
+        };
+        let dependants: Vec<NodeIndex> = self
+            .graph
+            .neighbors_directed(index, Direction::Incoming)
+            .filter(|&dependant| dependant != index)
+            .collect();
+        self.graph.remove_node(index);
+        self.clear_pending_requirements_for(index);
+        // The dependants still name the removed node, so they wait for it as
+        // for a node not added yet, and its next add wires their edges again.
+        for dependant in dependants {
+            self.register_pending_requirement(key.clone(), dependant);
         }
     }
 
@@ -635,42 +640,34 @@ impl NodeStackInner {
     // ── Pairing ──────────────────────────────────────────────────────────
 
     /// Instance liveness for pairing purposes: tracked with a non-terminal
-    /// state (`Starting` counts — the reserve-before-spawn path pairs a
+    /// state (`Starting` counts: the reserve-before-spawn path pairs a
     /// slot while its instance is still starting).
     fn instance_is_live_for_pairing(&self, instance_id: &str) -> bool {
-        self.find_map_entity(false, |_, entity| {
-            entity
-                .instances()
-                .iter()
-                .find(|inst| inst.instance_id().as_str() == instance_id)
-                .map(|inst| !inst.state().is_terminal())
-        })
-        .unwrap_or(false)
+        self.find_instance_map(instance_id, |_, inst| !inst.state().is_terminal())
+            .unwrap_or(false)
     }
 
     /// Every instance id that is live for pairing purposes, collected in a
     /// single graph pass (vs one [`Self::instance_is_live_for_pairing`]
     /// scan per id).
     fn live_instance_ids_for_pairing(&self) -> std::collections::HashSet<String> {
-        self.graph
-            .node_weights()
-            .flat_map(|handle| {
-                let guard = handle.read();
-                guard
+        let mut live = std::collections::HashSet::new();
+        for handle in self.graph.node_weights() {
+            let entity = handle.read();
+            live.extend(
+                entity
                     .instances()
                     .iter()
                     .filter(|inst| !inst.state().is_terminal())
-                    .map(|inst| inst.instance_id().as_str().to_string())
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+                    .map(|inst| inst.instance_id().as_str().to_string()),
+            );
+        }
+        live
     }
 
     /// Live pairs, liveness-filtered without mutating the registry (for
-    /// read-lock paths; write paths use [`Self::prune_dead_pairs`]). Same
-    /// rule as [`PairingRegistry::prune_dead`]: only LOCAL endpoints are
-    /// judged, because this daemon cannot see whether an instance on
-    /// another machine is alive, and "cannot see" must not read as "dead".
+    /// read-lock paths; write paths use [`Self::prune_dead_pairs`]), by the
+    /// rule of [`Pairing::has_live_local_endpoints`].
     fn live_pairs_filtered(&self) -> Vec<Pairing> {
         if self.pairing_registry.pairs().is_empty() {
             return Vec::new();
@@ -680,12 +677,7 @@ impl NodeStackInner {
         self.pairing_registry
             .pairs()
             .iter()
-            .filter(|p| {
-                [&p.a, &p.b].into_iter().all(|endpoint| {
-                    !endpoint.slot.is_on(&local_core_node)
-                        || live.contains(&endpoint.slot.instance_id)
-                })
-            })
+            .filter(|pair| pair.has_live_local_endpoints(&local_core_node, |id| live.contains(id)))
             .cloned()
             .collect()
     }
@@ -694,28 +686,22 @@ impl NodeStackInner {
     /// current state. Errors when the instance is unknown/terminal or its
     /// manifest declares no such pairing slot.
     fn pairing_slot_meta(&self, slot: &SlotAddr) -> Result<PairingParticipantDependency> {
-        let found = self.find_map_entity(false, |_, entity| {
-            entity
-                .instances()
-                .iter()
-                .find(|inst| inst.instance_id().as_str() == slot.instance_id)
-                .map(|inst| {
-                    // Only a participant slot can be paired, so an observer
-                    // slot with this link_id resolves to no pair slot.
-                    let dep = entity
-                        .config()
-                        .manifest
-                        .depends_on
-                        .as_ref()
-                        .and_then(|depends_on| {
-                            depends_on
-                                .pairings
-                                .iter()
-                                .find(|participant| participant.link_id == slot.link_id)
-                                .cloned()
-                        });
-                    (dep, inst.state())
-                })
+        let found = self.find_instance_map(&slot.instance_id, |entity, inst| {
+            // Only a participant slot can be paired, so an observer slot with
+            // this link_id resolves to no pair slot.
+            let dep = entity
+                .config()
+                .manifest
+                .depends_on
+                .as_ref()
+                .and_then(|depends_on| {
+                    depends_on
+                        .pairings
+                        .iter()
+                        .find(|participant| participant.link_id == slot.link_id)
+                        .cloned()
+                });
+            (dep, inst.state())
         });
         let Some((dep, state)) = found else {
             return Err(Error::PairingInstanceNotRunning {
@@ -778,14 +764,8 @@ impl NodeStackInner {
 
     /// The copy a local instance belongs to, as recorded when it started.
     fn instance_copy(&self, instance_id: &str) -> Option<config::runtime::Name> {
-        self.find_map_entity(false, |_, entity| {
-            entity
-                .instances()
-                .iter()
-                .find(|inst| inst.instance_id().as_str() == instance_id)
-                .map(|inst| inst.copy().cloned())
-        })
-        .flatten()
+        self.find_instance_map(instance_id, |_, inst| inst.copy().cloned())
+            .flatten()
     }
 
     /// Establishes a pair between two complementary slots. Validates that
@@ -1040,11 +1020,11 @@ impl NodeStack {
     /// The root node (core node) is the parent of all other nodes in the graph
     /// and cannot be removed from the stack.
     ///
-    /// If `instance_id` is `None`, a random instance ID will be generated for
+    /// If `instance_id` is `None`, a random instance ID is generated for
     /// the root node. The root entity's lifecycle is degenerate: it represents
     /// the running daemon itself and has no buildable artifact, so it is
     /// constructed directly in `Ready { instances: [Running] }` via
-    /// [`NodeEntity::root`]. The root instance is in `Running` state because
+    /// `NodeEntity::root`. The root instance is in `Running` state because
     /// the daemon process is already alive; there's no spawn-then-commit to
     /// model. It records no pid: the daemon is its own process, and the only
     /// pids a stack holds are those of the children it spawned.
@@ -1462,7 +1442,7 @@ impl NodeStack {
     ///
     /// The lifecycle paths ask "who else needs to hear about this instance?"
     /// on every start and stop, and cloning the whole registry to answer a
-    /// question about one instance is the bulk of that cost — on stacks with
+    /// question about one instance is the bulk of that cost, on stacks with
     /// no pairs at all as much as on federated ones.
     ///
     /// Deliberately NOT pruned, unlike [`Self::pairs`]. The question is asked
@@ -1550,8 +1530,8 @@ impl NodeStack {
     pub fn live_container_instance_ids(&self) -> Vec<String> {
         let guard = self.shared.read();
         guard
-            .entities_snapshot()
-            .iter()
+            .graph
+            .node_weights()
             .flat_map(|handle| {
                 let entity = handle.read();
                 live_container_instances_of(entity.config(), entity.instances())
@@ -1785,6 +1765,62 @@ mod live_container_instances_tests {
         let process = config_of(r#"{ language: "rust", run_cmd: ["recon"] }"#);
         let instances = [instance("running_inst", InstanceState::Running)];
         assert!(live_container_instances_of(&process, &instances).is_empty());
+    }
+
+    /// The stack walk applies the rule to every entity and keeps the instances
+    /// of each entity in start order.
+    #[test]
+    fn the_stack_names_the_live_instances_of_its_container_nodes() {
+        let root = NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "root", tag: "v1" },
+                execution: { language: "rust", run_cmd: ["root"] },
+            }"#,
+        )
+        .expect("valid root config");
+        let stack = NodeStack::new(root, None, PathBuf::from("/tmp/root"));
+        let process = NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "helper", tag: "v1" },
+                execution: { language: "rust", run_cmd: ["helper"] },
+                interfaces: {},
+            }"#,
+        )
+        .expect("valid process node config");
+        let nodes = [
+            (
+                container_config(),
+                vec![
+                    instance("running_inst", InstanceState::Running),
+                    instance("finished_inst", InstanceState::Finished),
+                    instance("starting_inst", InstanceState::Starting),
+                ],
+            ),
+            (
+                process,
+                vec![instance("process_inst", InstanceState::Running)],
+            ),
+        ];
+        for (config, instances) in nodes {
+            let entity = NodeEntity::from_snapshot(
+                config,
+                PathBuf::from("/tmp/node"),
+                Some(PathBuf::from("/tmp/node/artifact")),
+                instances,
+            );
+            stack
+                .shared
+                .write()
+                .push_entity(entity, false)
+                .expect("the node joins the stack");
+        }
+
+        assert_eq!(
+            stack.live_container_instance_ids(),
+            vec!["running_inst".to_string(), "starting_inst".to_string()]
+        );
     }
 }
 

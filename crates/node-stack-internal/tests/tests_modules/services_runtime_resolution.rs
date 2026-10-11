@@ -6,9 +6,10 @@ use node_stack::{NodeStack, NodeStackError};
 use crate::helpers::config_common::core_node_config;
 use crate::helpers::graph_query;
 
-#[test]
-fn service_dependency_resolved_when_dependency_added_first() {
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
+/// The `brain` node, which consumes the `reset_sensor` service of `lidar:v1`
+/// over link_id `lidar`.
+fn brain_consuming_reset_sensor() -> config::node::NodeConfig {
+    serde_json5::from_str(
         r#"{
             peppy_schema: "node/v1",
             manifest: {
@@ -36,7 +37,12 @@ fn service_dependency_resolved_when_dependency_added_first() {
             },
         }"#,
     )
-    .expect("valid dependent node config");
+    .expect("valid dependent node config")
+}
+
+#[test]
+fn service_dependency_resolved_when_dependency_added_first() {
+    let dependent = brain_consuming_reset_sensor();
 
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
@@ -107,35 +113,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
 
 #[test]
 fn service_dependency_fails_when_dependency_is_missing() {
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-              name: "brain",
-              tag: "v1",
-              depends_on: {
-                nodes: [
-                  { name: "lidar", tag: "v1", link_id: "lidar" }
-                ]
-              },
-            },
-            interfaces: {
-                services: {
-                    consumes: [
-                        {
-                          link_id: "lidar",
-                          name: "reset_sensor"
-                        }
-                    ]
-                }
-            },
-            execution: {
-              language: "rust",
-              run_cmd: ["brain"]
-            },
-        }"#,
-    )
-    .expect("valid dependent node config");
+    let dependent = brain_consuming_reset_sensor();
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
@@ -158,35 +136,7 @@ fn service_dependency_fails_when_dependency_is_missing() {
 fn service_dependency_fails_when_service_not_exposed_by_dependency() {
     // Test the scenario where a node subscribes to a service from another node,
     // but the target node exists without exposing the requested service
-    let dependent: config::node::NodeConfig = serde_json5::from_str(
-        r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-              name: "brain",
-              tag: "v1",
-              depends_on: {
-                nodes: [
-                  { name: "lidar", tag: "v1", link_id: "lidar" }
-                ]
-              },
-            },
-            interfaces: {
-                services: {
-                    consumes: [
-                        {
-                          link_id: "lidar",
-                          name: "reset_sensor"
-                        }
-                    ]
-                }
-            },
-            execution: {
-              language: "rust",
-              run_cmd: ["brain"]
-            },
-        }"#,
-    )
-    .expect("valid dependent node config");
+    let dependent = brain_consuming_reset_sensor();
 
     // This node has the correct name but exposes a different service
     let dependency_wrong_service: config::node::NodeConfig = serde_json5::from_str(

@@ -11,10 +11,6 @@ pub enum Error {
     #[error(transparent)]
     Config(#[from] ConfigError),
 
-    // -- nodes errors
-    #[error("The node name `{0}` or tag `{1}` could not be found")]
-    NoMatchingNode(String, String),
-
     // -- pairing registry errors
     #[error("instance `{instance_id}` declares no pairing slot `{link_id}` in depends_on.pairings")]
     PairingSlotNotFound {

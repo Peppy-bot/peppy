@@ -22,7 +22,7 @@
 //! cycle the moment the second node is declared, even when the two nodes are
 //! added in separate invocations.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use config::node::{InterfaceKind, Interfaces, NodeConfig, node_implements};
 use petgraph::algo::tarjan_scc;
@@ -194,8 +194,6 @@ fn cycle_from_component(
     edges: &[Edge],
     nodes: &[CycleCheckNode<'_>],
 ) -> Option<ServiceActionCycle> {
-    let member_set: std::collections::HashSet<usize> = members.iter().copied().collect();
-
     // A single-node component is a cycle only when it has a self-edge (a node
     // consuming its own service/action interface). Multi-node components are
     // always cycles.
@@ -209,14 +207,11 @@ fn cycle_from_component(
 
     // Pick the closing edge deterministically: among edges internal to the
     // component, the one with the smallest (from_label, to_label).
+    let member_set: HashSet<usize> = members.iter().copied().collect();
     let closing = edges
         .iter()
         .filter(|e| member_set.contains(&e.from) && member_set.contains(&e.to))
-        .min_by(|a, b| {
-            let a_key = (label_of(nodes, a.from), label_of(nodes, a.to));
-            let b_key = (label_of(nodes, b.from), label_of(nodes, b.to));
-            a_key.cmp(&b_key)
-        })?;
+        .min_by_key(|e| (label_of(nodes, e.from), label_of(nodes, e.to)))?;
 
     let mut labels: Vec<String> = members.iter().map(|&idx| label_of(nodes, idx)).collect();
     labels.sort();
@@ -232,14 +227,15 @@ fn label_of(nodes: &[CycleCheckNode<'_>], idx: usize) -> String {
     format!("{}:{}", nodes[idx].name, nodes[idx].tag)
 }
 
+/// Node configs for the caller-driven cycle tests of this module and of
+/// [`crate::virtual_deptree`].
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use config::node::NodeConfigParser;
+pub(crate) mod test_support {
+    use config::node::{NodeConfig, NodeConfigParser};
 
     /// Readable builder for a node config. All tags default to `v1`; only the
     /// pieces relevant to a test are set, the rest stay empty.
-    struct NodeSpec {
+    pub(crate) struct NodeSpec {
         name: String,
         implements: Vec<(String, String)>,
         contract_deps: Vec<(String, String, String)>,
@@ -250,7 +246,7 @@ mod tests {
     }
 
     impl NodeSpec {
-        fn new(name: &str) -> Self {
+        pub(crate) fn new(name: &str) -> Self {
             Self {
                 name: name.to_owned(),
                 implements: Vec::new(),
@@ -262,40 +258,40 @@ mod tests {
             }
         }
 
-        fn implements(mut self, name: &str, tag: &str) -> Self {
+        pub(crate) fn implements(mut self, name: &str, tag: &str) -> Self {
             self.implements.push((name.to_owned(), tag.to_owned()));
             self
         }
 
-        fn contract_dep(mut self, name: &str, tag: &str, link_id: &str) -> Self {
+        pub(crate) fn contract_dep(mut self, name: &str, tag: &str, link_id: &str) -> Self {
             self.contract_deps
                 .push((name.to_owned(), tag.to_owned(), link_id.to_owned()));
             self
         }
 
-        fn node_dep(mut self, name: &str, tag: &str, link_id: &str) -> Self {
+        pub(crate) fn node_dep(mut self, name: &str, tag: &str, link_id: &str) -> Self {
             self.node_deps
                 .push((name.to_owned(), tag.to_owned(), link_id.to_owned()));
             self
         }
 
-        fn consumes_service(mut self, link_id: &str) -> Self {
+        pub(crate) fn consumes_service(mut self, link_id: &str) -> Self {
             self.service_consumes.push(link_id.to_owned());
             self
         }
 
-        fn consumes_action(mut self, link_id: &str) -> Self {
+        pub(crate) fn consumes_action(mut self, link_id: &str) -> Self {
             self.action_consumes.push(link_id.to_owned());
             self
         }
 
-        fn consumes_topic(mut self, link_id: &str, name: &str) -> Self {
+        pub(crate) fn consumes_topic(mut self, link_id: &str, name: &str) -> Self {
             self.topic_consumes
                 .push((link_id.to_owned(), name.to_owned()));
             self
         }
 
-        fn build(&self) -> NodeConfig {
+        pub(crate) fn build(&self) -> NodeConfig {
             let implements = join_indexed(&self.implements, |idx, (n, t)| {
                 format!(r#"{{ name: "{n}", tag: "{t}", link_id: "impl_{idx}" }}"#)
             });
@@ -350,6 +346,12 @@ mod tests {
             .collect::<Vec<_>>()
             .join(", ")
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::NodeSpec;
+    use super::*;
 
     fn view(configs: &[NodeConfig]) -> Vec<CycleCheckNode<'_>> {
         configs
@@ -421,8 +423,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn three_node_service_cycle_detected() {
+    /// Nodes a, b and c, each of which consumes as a service the contract
+    /// that the next one implements, so that they call each other in the ring
+    /// a -> b -> c -> a.
+    fn three_node_service_ring() -> [NodeConfig; 3] {
         let a = NodeSpec::new("a")
             .implements("contract_a", "v1")
             .contract_dep("contract_b", "v1", "to_b")
@@ -438,9 +442,36 @@ mod tests {
             .contract_dep("contract_a", "v1", "to_a")
             .consumes_service("to_a")
             .build();
+        [a, b, c]
+    }
 
-        let cycle = find_cycle(&[a, b, c]).expect("three-node service cycle should be detected");
+    #[test]
+    fn three_node_service_cycle_detected() {
+        let cycle = find_cycle(&three_node_service_ring())
+            .expect("three-node service cycle should be detected");
         assert_eq!(cycle.nodes.len(), 3);
+    }
+
+    /// The closing dependency of a cycle is the edge between the smallest
+    /// (from, to) node labels, whatever order the nodes come in. The edge list
+    /// follows the node order, so the three orders put the edge from a to b
+    /// first, last, and in the middle of it.
+    #[test]
+    fn closing_dependency_is_the_edge_between_the_smallest_labels() {
+        let [a, b, c] = three_node_service_ring();
+
+        for order in [[&a, &b, &c], [&c, &b, &a], [&b, &a, &c]] {
+            let configs: Vec<NodeConfig> = order.into_iter().cloned().collect();
+            let node_names: Vec<&str> = configs
+                .iter()
+                .map(|config| config.manifest.name.as_str())
+                .collect();
+            let cycle = find_cycle(&configs).expect("three-node service cycle should be detected");
+            assert_eq!(
+                cycle.closing_dependency, "contract_b:v1",
+                "node order {node_names:?}"
+            );
+        }
     }
 
     #[test]
