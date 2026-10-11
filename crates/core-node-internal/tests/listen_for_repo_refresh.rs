@@ -31,25 +31,13 @@ struct RefreshTestResult {
 /// receives feedback over a real messenger; the mock adapter just doesn't
 /// deliver feedback.
 async fn send_refresh_and_wait(started: &StartedCoreNode) -> RefreshTestResult {
-    send_refresh_inner(started, &started.core_node_name, CALLER_INSTANCE_ID).await
-}
-
-async fn send_refresh_and_wait_with_feedback(started: &StartedCoreNode) -> RefreshTestResult {
-    send_refresh_and_wait(started).await
-}
-
-async fn send_refresh_inner(
-    started: &StartedCoreNode,
-    caller_core_node: &str,
-    caller_instance_id: &str,
-) -> RefreshTestResult {
     let goal = RepoRefreshGoal;
     let goal_payload = goal.encode().expect("encode goal");
 
     let mut action_handle = ActionMessenger::send_goal(
         &started.caller_handle,
-        caller_core_node,
-        caller_instance_id,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
         ActionId::RepoRefresh.name(),
         None,
@@ -77,10 +65,10 @@ async fn send_refresh_inner(
         let drain_timeout = Duration::from_millis(50);
         match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
             Ok(Ok(msg)) => {
-                let payload = msg.payload();
-                if let Ok(feedback) = RepoRefreshFeedback::decode(payload.as_ref()) {
-                    feedbacks.push(feedback);
-                }
+                feedbacks.push(
+                    RepoRefreshFeedback::decode(msg.payload().as_ref())
+                        .expect("decode repo_refresh feedback"),
+                );
             }
             Ok(Err(_)) => break,
             Err(_) => {}
@@ -121,7 +109,7 @@ async fn refresh_fs_discovers_nodes() {
 
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.goal_response.accepted, "goal should be accepted");
     assert!(result.result.success, "refresh should succeed");
@@ -161,7 +149,7 @@ async fn refresh_multiple_nodes() {
 
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -200,7 +188,7 @@ async fn refresh_deduplication() {
     // repo_a listed first (lower id), should take precedence
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir_a, &repo_dir_b]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -399,7 +387,7 @@ async fn refresh_cache_includes_duplicates() {
 
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir_a, &repo_dir_b]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -566,7 +554,7 @@ async fn refresh_excludes_fs_repo_with_feedback() {
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
     write_excluded_repositories_json5(&started, &fs_repositories_json(&[&repo_b]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -632,7 +620,7 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
         &fs_repositories_json(&[&repo.join("secret_node_v1")]),
     );
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -696,7 +684,7 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
         &fs_repositories_json(&[&repo_b, &repo_a.join("secret_node_v1")]),
     );
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -778,7 +766,7 @@ async fn refresh_excludes_git_repo() {
         r#"[{ "id": 1, "type": "git", "url": "https://example.com/nonexistent.git" }]"#,
     );
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
@@ -830,7 +818,7 @@ async fn refresh_discovers_contracts() {
 
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_contracts_found, 1);
 
@@ -894,7 +882,7 @@ async fn refresh_discovers_nodes() {
 
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
 
@@ -965,7 +953,7 @@ async fn refresh_discovers_launchers() {
 
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_launchers_found, 1);
 
