@@ -267,7 +267,7 @@ mod tests {
         StackJoinGoal::new(
             Name::new(name).unwrap(),
             "openarm_real",
-            StackBudgets::default(),
+            StackBudgets::new(1, 1, 1, None),
         )
     }
 

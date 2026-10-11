@@ -1,4 +1,5 @@
 use crate::generator::naming::{non_empty_str, sanitize_component, to_camel_case};
+use proc_macro2::{Ident, Span};
 
 pub(crate) fn is_rust_keyword(ident: &str) -> bool {
     matches!(
@@ -66,6 +67,19 @@ pub(crate) fn sanitize_rust_identifier(raw: &str) -> String {
         ident.push('_');
     }
     ident
+}
+
+/// The identifier of an item derived from `name`: the sanitized name and
+/// `suffix` joined by one underscore (`front_camera` and `vacant` give
+/// `front_camera_vacant`). No Rust keyword holds an underscore, so the joined
+/// identifier is never a keyword and `name` is not escaped: `type` and
+/// `vacant` give `type_vacant`. Joined to the escaped `type_`, the suffix
+/// would give `type__vacant`, which the `non_snake_case` lint rejects.
+pub(crate) fn suffixed_rust_identifier(name: &str, suffix: &str) -> Ident {
+    Ident::new(
+        &format!("{}_{suffix}", sanitize_component(name)),
+        Span::call_site(),
+    )
 }
 
 /// Builds a prefixed name from an optional candidate, falling back to `fallback`.
@@ -136,6 +150,29 @@ mod tests {
     fn non_keywords_are_unchanged() {
         assert_eq!(sanitize_rust_identifier("frame_id"), "frame_id");
         assert_eq!(sanitize_rust_identifier("video-stream"), "video_stream");
+    }
+
+    #[test]
+    fn a_suffixed_identifier_joins_the_sanitized_name_and_the_suffix() {
+        assert_eq!(
+            suffixed_rust_identifier("front_camera", "vacant").to_string(),
+            "front_camera_vacant"
+        );
+        assert_eq!(
+            suffixed_rust_identifier("Video-Stream", "instances").to_string(),
+            "video_stream_instances"
+        );
+    }
+
+    /// A keyword name keeps a single underscore before the suffix, so the
+    /// identifier stays snake case.
+    #[test]
+    fn a_suffixed_identifier_does_not_escape_a_keyword_name() {
+        assert_eq!(suffixed_rust_identifier("box", "14").to_string(), "box_14");
+        assert_eq!(
+            suffixed_rust_identifier("type", "vacant").to_string(),
+            "type_vacant"
+        );
     }
 
     /// The three names below are the contract between the Rust backend's

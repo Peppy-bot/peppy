@@ -6,9 +6,10 @@
 //!
 //! # Boundary with consumer crates
 //!
-//! Consumers (`core-node-internal`, `daemon-config-internal`, `peppylib`,
-//! `peppylib-py`, `peppy`, `node-stack-internal`) see exactly five categories
-//! of public items, and nothing else:
+//! Consumers (`core-node-internal`, `daemon-config-internal`,
+//! `mcp-server-internal`, `node-stack-internal`, `stack-goal-internal`,
+//! `peppylib`, `peppylib-py`, `peppy`) see exactly five categories of public
+//! items, and nothing else:
 //!
 //! 1. **Wire identifiers**: the [`ServiceId`] / [`ActionId`] / [`TopicId`]
 //!    enums from the method [`registry`], one variant per wire method, with

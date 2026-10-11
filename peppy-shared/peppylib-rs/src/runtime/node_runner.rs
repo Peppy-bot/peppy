@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::{MessengerHandle, SessionScope};
 
 use futures::FutureExt;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Mutex, PoisonError};
@@ -53,15 +54,27 @@ impl NodeRunner {
                 .reconnecting()
                 .scope(SessionScope::Discovery(processor.discovery()))
                 .await?;
+        Ok(Self::over_messenger(
+            messenger,
+            processor,
+            cancellation_token,
+        ))
+    }
 
+    /// A runner over `messenger`, a session already open.
+    pub(crate) fn over_messenger(
+        messenger: MessengerHandle,
+        processor: Processor,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         let endpoints = AnnouncedEndpoints::new(processor.declared_endpoints().clone());
-        Ok(Self {
+        Self {
             messenger,
             processor,
             cancellation_token,
             shutdown_hooks: Mutex::new(Vec::new()),
             endpoints: Mutex::new(endpoints),
-        })
+        }
     }
 
     /// Announces the socket the node bound for the endpoint the manifest
@@ -119,6 +132,15 @@ impl NodeRunner {
         &self.processor
     }
 
+    /// The setup budget of this instance: how long the daemon waits for
+    /// `setup_fn` to return once the node answers ready, before it stops the
+    /// instance. A setup that waits for something outside the node can give
+    /// up with its own reason before this budget runs out. See
+    /// [`Processor::setup_timeout`].
+    pub fn setup_timeout(&self) -> Duration {
+        self.processor.setup_timeout()
+    }
+
     /// Handle onto the scalar pairing slot declared at `link_id` in
     /// `depends_on.pairings` (a `one` or `zero_or_one` slot). Exposes the
     /// slot's live pair: `peer(link_id)?.paired()` returns the current peer
@@ -155,6 +177,15 @@ impl NodeRunner {
     /// for an instance run outside a copy.
     pub fn copy(&self) -> Option<&str> {
         self.processor.copy()
+    }
+
+    /// The scope of each daemon target this instance serves, keyed by
+    /// target name, as the launch gave it: a value of the scope type of the
+    /// target's daemon interface. Only an instance of the built-in MCP
+    /// server whose exposures name a daemon target has any; every other
+    /// instance, and one run standalone, has none.
+    pub fn daemon_scopes(&self) -> &BTreeMap<String, serde_json::Value> {
+        self.processor.daemon_scopes()
     }
 
     fn pairing_slot_cardinality(

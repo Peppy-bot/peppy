@@ -1,5 +1,5 @@
 use super::feedback::{publish_error, publish_stdout, spawn_feedback_forwarder};
-use super::phases::run_phase;
+use super::phases::{DrainOnCancel, run_phase};
 use super::{NodeKey, PlannedDeployment};
 use crate::services::node::{
     NodeAddActionContext, NodeBuildActionContext, NodeRunActionContext, create_add_log,
@@ -174,7 +174,7 @@ pub(in crate::services::stack) async fn start_node_directly(
         core_node_name: ctx.bound_core_node.clone(),
         caller_instance_id: ctx.core_instance_id.clone(),
         node_startup_timeout: ctx.timeouts.node_startup,
-        node_start_health_timeout: ctx.timeouts.node_start_health,
+        default_setup_timeout: ctx.timeouts.default_setup,
         peppy_dirs: ctx.peppy_dirs.clone(),
         health_monitor: ctx.timeouts.health_monitor,
         daemon_defaults: ctx.daemon_defaults.clone(),
@@ -185,10 +185,16 @@ pub(in crate::services::stack) async fn start_node_directly(
 
     let log_for_timeout = log.clone();
 
-    // Token triggered by `run_phase_with_timeouts` on idle/max timeout; observed
-    // inside `run_node_run` to abort a half-spawned node instance (SIGKILL the
-    // child + unregister its `Starting` entry) before we return the failure.
+    // Token triggered by `run_phase_with_timeouts` on idle/max timeout and by
+    // a stack reset; observed inside `run_node_run` to give up a half-started
+    // node instance (its cooperative stop after the ready signal, else a kill
+    // of its process group, then the removal of its `Starting` entry) before
+    // we return the failure.
     let run_cancel_token = ctx.cancellation.child_token();
+    let give_up = DrainOnCancel {
+        token: run_cancel_token.clone(),
+        budget: crate::services::node::start_give_up_budget(ctx.node_stack.shutdown_grace()),
+    };
 
     // Assemble here, from the daemon's own state, exactly as the action-server
     // path does. The launch never builds a config it hands to something else.
@@ -216,7 +222,7 @@ pub(in crate::services::stack) async fn start_node_directly(
         &log_for_timeout,
         LaunchFeedbackStep::RunningNode,
         NodeRunResult::failure,
-        Some(run_cancel_token),
+        Some(give_up),
     )
     .await;
 

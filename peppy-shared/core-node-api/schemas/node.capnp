@@ -52,6 +52,20 @@ struct StackListResponse {
     copies @8 :List(CopyInfo);
     # Configured cooperative shutdown grace, used to budget destructive requests.
     shutdownGraceSecs @9 :UInt64;
+    # The change of one copy that holds this daemon's stack now: the join of
+    # a copy, which `copies` lists only once the join ends, or the removal of
+    # a copy. Any other stack change reports none.
+    copyChange :union {
+        none @10 :Void;
+        join @11 :ChangedCopy;
+        remove @12 :ChangedCopy;
+    }
+}
+
+# The copy that a join adds or that a removal removes.
+struct ChangedCopy {
+    name @0 :Text;
+    option @1 :Text;
 }
 
 # One copy on the stack: a named instance of an option of an axis that runs
