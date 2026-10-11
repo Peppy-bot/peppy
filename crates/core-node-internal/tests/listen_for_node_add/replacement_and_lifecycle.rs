@@ -1,5 +1,22 @@
 use super::*;
 
+/// The names of the services that the entity at `(name, tag)` exposes.
+/// Panics when the entity or its `services.exposes` section is missing.
+fn exposed_service_names(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> Vec<String> {
+    let handle = node_stack.find(name, tag).expect("entity should exist");
+    let guard = handle.read();
+    guard
+        .config()
+        .interfaces
+        .services
+        .as_ref()
+        .and_then(|services| services.exposes.as_ref())
+        .expect("services.exposes should be present")
+        .iter()
+        .map(|service| service.name().to_owned())
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents() {
     const NODE_NAME: &str = "overwrite_node";
@@ -275,33 +292,17 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     // exposes the v1-only interface (`reset_sensor`) and does NOT expose the
     // v2-only interface (`new_service`). This proves the failed overwrite
     // truly preserved the original revision rather than just the path.
-    {
-        let handle = node_stack
-            .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
-            .expect("dependency entity should exist");
-        let guard = handle.read();
-        let services = guard
-            .config()
-            .interfaces
-            .services
-            .as_ref()
-            .expect("services section should be present");
-        let exposed: Vec<&str> = services
-            .exposes
-            .as_ref()
-            .map(|v| v.iter().map(|s| s.name()).collect())
-            .unwrap_or_default();
-        assert!(
-            exposed.contains(&"reset_sensor"),
-            "v1-only service `reset_sensor` should still be exposed; got {:?}",
-            exposed
-        );
-        assert!(
-            !exposed.contains(&"new_service"),
-            "v2-only service `new_service` should NOT be exposed; got {:?}",
-            exposed
-        );
-    }
+    let exposed = exposed_service_names(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
+    assert!(
+        exposed.iter().any(|name| name == "reset_sensor"),
+        "v1-only service `reset_sensor` should still be exposed; got {:?}",
+        exposed
+    );
+    assert!(
+        !exposed.iter().any(|name| name == "new_service"),
+        "v2-only service `new_service` should NOT be exposed; got {:?}",
+        exposed
+    );
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
@@ -1340,30 +1341,17 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
 
     // The dependency's interface must remain the v1 shape: `reset_sensor`
     // is still exposed and the v2 `new_service` was never spliced in.
-    {
-        let handle = node_stack
-            .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
-            .expect("dependency entity missing");
-        let guard = handle.read();
-        let exposes = guard
-            .config()
-            .interfaces
-            .services
-            .as_ref()
-            .and_then(|s| s.exposes.as_ref())
-            .expect("v1 services.exposes should be present");
-        let names: Vec<&str> = exposes.iter().map(|svc| svc.name()).collect();
-        assert!(
-            names.contains(&"reset_sensor"),
-            "v1 `reset_sensor` should still be exposed after failed overwrite, got: {:?}",
-            names
-        );
-        assert!(
-            !names.contains(&"new_service"),
-            "v2 `new_service` must not have leaked through the failed overwrite, got: {:?}",
-            names
-        );
-    }
+    let exposed = exposed_service_names(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
+    assert!(
+        exposed.iter().any(|name| name == "reset_sensor"),
+        "v1 `reset_sensor` should still be exposed after failed overwrite, got: {:?}",
+        exposed
+    );
+    assert!(
+        !exposed.iter().any(|name| name == "new_service"),
+        "v2 `new_service` must not have leaked through the failed overwrite, got: {:?}",
+        exposed
+    );
 }
 /// When a running node instance does not respond to SHUTDOWN_SERVICE (e.g. the
 /// process is frozen), the overwrite path must behave like the SIGINT teardown:
