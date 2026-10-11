@@ -20,8 +20,9 @@ pub(crate) enum ServeOutcome {
     /// A real stop (SIGINT/SIGTERM, `peppy service stop`, or all tasks done):
     /// the daemon exits 0 and the supervisor (systemd/launchd) leaves it stopped.
     Stop,
-    /// A namespace change requested an in-process restart: tear the generation
-    /// down and rebuild a fresh one under the same PID.
+    /// An identity change (enroll or unenroll) requested an in-process
+    /// restart: tear the generation down and rebuild a fresh one under the
+    /// same PID.
     Restart,
 }
 
@@ -39,7 +40,7 @@ enum Startup {
 /// crash-only supervisor (systemd `Restart=on-failure`, launchd `KeepAlive`
 /// scoped to `SuccessfulExit=false`) recovers a daemon the in-process loop could
 /// not. Distinct from a clean stop's `0` and the generic `exit(1)`.
-pub(crate) const RESTART_EXIT_CODE: i32 = 75;
+const RESTART_EXIT_CODE: i32 = 75;
 
 /// Wall-clock window and cap for the in-process flap backstop: more than
 /// [`FLAP_CAP`] restarts within [`FLAP_WINDOW`] converts a same-PID busy loop
@@ -82,16 +83,16 @@ impl CompositeCommand {
         self
     }
 
-    pub(crate) fn execute(self) -> Result<Vec<ServeAsyncHandle>> {
-        let mut futures: Vec<ServeAsyncHandle> = Vec::new();
-        for async_command in self.async_commands {
-            futures.push(async_command.run());
-        }
-
-        Ok(futures)
+    pub(crate) fn execute(self) -> Vec<ServeAsyncHandle> {
+        self.async_commands
+            .into_iter()
+            .map(|command| command.run())
+            .collect()
     }
 }
 
+/// One daemon generation: the serve tasks, and the coordinator that runs them
+/// until a stop, a restart request, or a failed task.
 pub(crate) struct Serve {
     composite_command: CompositeCommand,
     /// External shutdown injection (tests / embedders): when `Some` and
@@ -106,18 +107,13 @@ pub(crate) struct Serve {
     /// fresh one its tasks do not observe.
     teardown_token: CancellationToken,
     /// In-process restart channel: a `true` from [`super::federation_control`]'s
-    /// `handle_conn` (after it flushed the `Restarting` ack) makes the
-    /// coordinator record [`ServeOutcome::Restart`]. `None` when no federation
-    /// control task exists (mock engine).
+    /// `handle_conn` (after it has written, or failed to write, the
+    /// `Restarting` ack) makes the coordinator record
+    /// [`ServeOutcome::Restart`]. `None` when no federation control task exists
+    /// (an external zenoh router or the mock engine).
     restart_rx: Option<watch::Receiver<bool>>,
 }
 
-/// The serve command is the command that runs as a daemon in systemd and maintains a "node stack" (a graph representation of nodes)
-/// It's installed using the `install` command.
-/// It operates as follow:
-/// 1. Starts a zenohd separate process
-/// 2. Creates an internal "node stack" (a graph of nodes that depends on each other)
-/// 3. Starts a "core node" that listen for incoming commands
 impl Serve {
     fn log_task_result(result: std::result::Result<Result<()>, JoinError>) {
         match result {
@@ -159,13 +155,13 @@ impl Serve {
             .enable_all()
             .build()?;
 
-        let handles = self.composite_command.execute()?;
+        let handles = self.composite_command.execute();
         let external_shutdown = self.shutdown_token;
         let teardown_token = self.teardown_token;
         let restart_rx = self.restart_rx;
 
         info!("Running serve command...");
-        let outcome = runtime.block_on(async move {
+        runtime.block_on(async move {
             // The coordinator is the one observer of the OS shutdown signals,
             // and a signal reaches only the listeners that exist when it
             // arrives. So the coordinator listens before any handler runs, and
@@ -218,8 +214,7 @@ impl Serve {
             }
 
             reason
-        })?;
-        Ok(outcome)
+        })
     }
 
     /// Waits until every readiness gate fires, a gate drops without firing,
@@ -380,7 +375,7 @@ pub fn serve(options: ServeOptions) -> Result<()> {
             ServeOutcome::Stop => return Ok(()),
             ServeOutcome::Restart => {
                 finalize_before_restart(router_adopted);
-                if flap.record_and_is_flapping() {
+                if flap.record_and_is_flapping(Instant::now()) {
                     error!(
                         "daemon restarted more than {FLAP_CAP} times within {:?}; \
                          exiting ({RESTART_EXIT_CODE}) for the supervisor to recover",
@@ -408,10 +403,10 @@ fn run_one_generation(options: &ServeOptions) -> Result<(ServeOutcome, bool)> {
         &options.root_dir,
         options.git_hash.clone(),
         options.peppy_dirs.clone(),
-    )?
+    )
     .with_peppy_config(peppy_config)
-    .with_messaging_router(options.messaging_engine.clone())?
-    .with_core_node(options.core_node_name.clone())?;
+    .with_messaging_router(&options.messaging_engine)?
+    .with_core_node_name(options.core_node_name.clone());
 
     if let Some(token) = &options.shutdown_token {
         builder = builder.with_shutdown_token(token.clone());
@@ -442,9 +437,9 @@ impl FlapWindow {
         }
     }
 
-    /// Records a restart and reports whether the recent rate exceeds the cap.
-    fn record_and_is_flapping(&mut self) -> bool {
-        let now = Instant::now();
+    /// Records a restart at `now` and reports whether the recent rate exceeds
+    /// the cap. The caller passes the time so that a test can drive the window.
+    fn record_and_is_flapping(&mut self, now: Instant) -> bool {
         self.restarts
             .retain(|t| now.duration_since(*t) < FLAP_WINDOW);
         self.restarts.push(now);
@@ -472,7 +467,7 @@ fn finalize_before_restart(router_adopted: bool) {
     }
 
     // Verify the messaging listen endpoint is free before the next generation's
-    // start_router. TCP-only today (the local router listens on tcp/); if the old
+    // start_router. The local router listens on TCP only (`tcp/`); if the old
     // zenohd has not released the port after a short bounded retry the in-process
     // loop cannot recover, so exit for the supervisor rather than spin.
     let port = crate::builder::extract_messaging_port();
@@ -729,5 +724,33 @@ mod tests {
         let outcome = execute_alone(Serve::new(composite).with_teardown_token(teardown))
             .expect("serve run failed");
         assert_eq!(outcome, ServeOutcome::Stop);
+    }
+
+    /// The restart past the cap within one window is a flap.
+    #[test]
+    fn more_than_the_cap_of_restarts_within_the_window_is_a_flap() {
+        let start = Instant::now();
+        let mut flap = FlapWindow::new();
+        for second in 0..FLAP_CAP as u64 {
+            assert!(
+                !flap.record_and_is_flapping(start + Duration::from_secs(second)),
+                "restart {} of {FLAP_CAP} is within the cap",
+                second + 1
+            );
+        }
+        assert!(flap.record_and_is_flapping(start + Duration::from_secs(FLAP_CAP as u64)));
+    }
+
+    /// Restarts that are one window apart never accumulate into a flap.
+    #[test]
+    fn restarts_spaced_beyond_the_window_never_flap() {
+        let start = Instant::now();
+        let mut flap = FlapWindow::new();
+        for restart in 0..=2 * FLAP_CAP as u32 {
+            assert!(
+                !flap.record_and_is_flapping(start + FLAP_WINDOW * restart),
+                "restart {restart} is alone in its window"
+            );
+        }
     }
 }

@@ -26,7 +26,7 @@ use daemon_config::consts::PeppyDirs;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::router_federation::{Clock, EnrollmentReader};
+use crate::router_federation::{BlockingCallFailure, Clock, EnrollmentReader, run_blocking};
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
 
 /// The longest sleep between two checks, and the delay before the next attempt
@@ -139,34 +139,6 @@ async fn check_and_renew(deps: &RenewalDeps) -> Step {
     step_after_renewal(&enrollment, renewed)
 }
 
-/// Runs a blocking call off the async workers. A call that panics is a
-/// failure with the panic as its reason.
-async fn run_blocking<T: Send + 'static>(
-    call: impl FnOnce() -> auth::Result<T> + Send + 'static,
-) -> std::result::Result<T, RenewalFailure> {
-    match tokio::task::spawn_blocking(call).await {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(error)) => Err(RenewalFailure::Refused(error)),
-        Err(panic) => Err(RenewalFailure::Panicked(panic.to_string())),
-    }
-}
-
-/// Why a read or a renewal did not complete.
-#[derive(Debug)]
-enum RenewalFailure {
-    Refused(AuthError),
-    Panicked(String),
-}
-
-impl std::fmt::Display for RenewalFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Refused(error) => write!(f, "{error}"),
-            Self::Panicked(panic) => write!(f, "the call panicked: {panic}"),
-        }
-    }
-}
-
 /// The time from `now_unix` to `then_unix`; zero when `then_unix` is past.
 fn time_until(then_unix: i64, now_unix: i64) -> Duration {
     Duration::from_secs(u64::try_from(then_unix.saturating_sub(now_unix)).unwrap_or(0))
@@ -175,7 +147,7 @@ fn time_until(then_unix: i64, now_unix: i64) -> Duration {
 /// Logs the result of a renewal and says when the next check is.
 fn step_after_renewal(
     enrollment: &Enrollment,
-    renewed: std::result::Result<Enrollment, RenewalFailure>,
+    renewed: std::result::Result<Enrollment, BlockingCallFailure>,
 ) -> Step {
     let peer = &enrollment.document.peer_id;
     let failure = match renewed {
@@ -193,7 +165,7 @@ fn step_after_renewal(
 
     let expires_at = rfc3339(enrollment.certificate.not_after);
     match &failure {
-        RenewalFailure::Refused(AuthError::Problem(problem))
+        BlockingCallFailure::Refused(AuthError::Problem(problem))
             if problem.kind == ProblemKind::PeerNotRenewable =>
         {
             error!(
@@ -203,7 +175,7 @@ fn step_after_renewal(
             );
             Step::Stop
         }
-        RenewalFailure::Refused(AuthError::NotAuthenticated) => {
+        BlockingCallFailure::Refused(AuthError::NotAuthenticated) => {
             warn!(
                 peer = %peer, expires_at = %expires_at,
                 "certificate renewal: there is no session on this machine; run `peppy platform \
@@ -211,7 +183,7 @@ fn step_after_renewal(
             );
             Step::Wait(CHECK_INTERVAL)
         }
-        RenewalFailure::Refused(AuthError::Problem(problem)) => {
+        BlockingCallFailure::Refused(AuthError::Problem(problem)) => {
             let delay = retry_delay(problem.retry_after_secs);
             warn!(
                 peer = %peer, expires_at = %expires_at, reason = %failure,
@@ -220,7 +192,7 @@ fn step_after_renewal(
             );
             Step::Wait(delay)
         }
-        RenewalFailure::Refused(_) | RenewalFailure::Panicked(_) => {
+        BlockingCallFailure::Refused(_) | BlockingCallFailure::Panicked(_) => {
             warn!(
                 peer = %peer, expires_at = %expires_at, reason = %failure,
                 retry_in_secs = CHECK_INTERVAL.as_secs(),

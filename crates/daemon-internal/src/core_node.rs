@@ -23,7 +23,7 @@ use tracing::{info, warn};
 /// full run of misses, about twenty seconds, is what turns `unhealthy`. The
 /// monitor never removes an instance, so a router outage shows up as an
 /// unhealthy window rather than tearing the stack down.
-pub(crate) const HEALTH_MONITOR: HealthMonitorPolicy = HealthMonitorPolicy {
+const HEALTH_MONITOR: HealthMonitorPolicy = HealthMonitorPolicy {
     interval: Duration::from_secs(5),
     timeout: Duration::from_secs(3),
     failure_threshold: NonZeroU32::new(3).unwrap(),
@@ -35,7 +35,7 @@ pub(crate) const HEALTH_MONITOR: HealthMonitorPolicy = HealthMonitorPolicy {
 /// couple of dropped beats never trip a node's watchdog. The seconds value is
 /// defined next to the grace-period floor in `config::peppy_config`, where a
 /// compile-time assert enforces that margin.
-pub(crate) const DAEMON_HEARTBEAT_INTERVAL: Duration =
+const DAEMON_HEARTBEAT_INTERVAL: Duration =
     Duration::from_secs(daemon_config::peppy_config::DAEMON_HEARTBEAT_INTERVAL_SECS);
 
 /// Bound on the wait for the managed router's configured `connect` links
@@ -56,7 +56,7 @@ pub struct CoreNodeRunner {
     /// boot presence check. Probing is lock-free; the messenger lock is held
     /// only to construct the probe.
     messenger: Arc<Mutex<Messenger>>,
-    messaging_ready: Option<watch::Receiver<bool>>,
+    messaging_ready: watch::Receiver<bool>,
     /// Cancelled at the start of shutdown to stop the core node's clock +
     /// heartbeat publishers before the messaging session is closed. This is the
     /// core node's OWN internal token (publisher-stop), distinct from the shared
@@ -84,7 +84,7 @@ impl CoreNodeRunner {
         default_setup_timeout: config::node::SetupTimeout,
         root_dir: PathBuf,
         peppy_dirs: PeppyDirs,
-        messaging_ready: Option<watch::Receiver<bool>>,
+        messaging_ready: watch::Receiver<bool>,
         peppy_config: daemon_config::peppy_config::PeppyConfig,
         namespace: config::namespace::Namespace,
         name_claim_settle: Duration,
@@ -155,17 +155,15 @@ impl ServeAsyncCommand for CoreNodeRunner {
             let teardown = serve_teardown_token.cancelled();
             tokio::pin!(teardown);
 
-            if let Some(mut ready_rx) = messaging_ready.take() {
-                if !*ready_rx.borrow() {
-                    info!("Waiting for messaging session before starting core node...");
-                    ready_rx.changed().await.map_err(|_| {
-                        Error::ExecutionFailed(
-                            "Messaging router exited before session was ready".to_string(),
-                        )
-                    })?;
-                }
-                info!("Messaging session ready. Starting core node...");
+            if !*messaging_ready.borrow() {
+                info!("Waiting for messaging session before starting core node...");
+                messaging_ready.changed().await.map_err(|_| {
+                    Error::ExecutionFailed(
+                        "Messaging router exited before session was ready".to_string(),
+                    )
+                })?;
             }
+            info!("Messaging session ready. Starting core node...");
 
             // A managed router accepts the daemon's session as soon as its
             // listener binds, while its configured `connect` links (the
@@ -215,15 +213,19 @@ impl ServeAsyncCommand for CoreNodeRunner {
 
             if shutdown_triggered {
                 info!("Shutting down commands listener...");
+            }
+            // Offboard when the generation is stopping (a shutdown signal, an
+            // in-process restart, or a failed sibling handler) and when the
+            // core node failed while running (a listener task died with an
+            // error) and the daemon is about to exit on it.
+            if shutdown_triggered || result.is_err() {
                 // Stop the daemon's own clock + heartbeat publishers first, so
                 // they don't spin against the session once the messaging router
                 // closes it (logging a failed publish on every tick).
                 shutdown_token.cancel();
-                // The generation is stopping (a shutdown signal, an in-process
-                // restart, or a failed sibling handler), so tear down every
-                // spawned node now (cooperatively, then force-kill any
-                // straggler's process group) so none is left orphaned.
-                // `&mut core_node_future` still holds a shared borrow
+                // Tear down every spawned node now (cooperatively, then
+                // force-kill any straggler's process group) so none is left
+                // orphaned. `&mut core_node_future` still holds a shared borrow
                 // of `core_node`; `teardown_node_stack` also takes `&self`, so
                 // this second shared borrow is fine. Runs before this handler
                 // returns, so the kills complete before the daemon process exits.
@@ -240,16 +242,6 @@ impl ServeAsyncCommand for CoreNodeRunner {
                 core_node.release_presence();
                 // Release the messaging router to close the session now that the
                 // core node no longer needs it.
-                let _ = core_node_done.send(true);
-            } else if result.is_err() {
-                // The core node failed while running (a listener task died
-                // with an error) and the daemon is about to exit on it. Same
-                // offboarding as the teardown path above: stop the publishers,
-                // tear down any node spawned in the meantime, and release the
-                // messaging router.
-                shutdown_token.cancel();
-                core_node.teardown_node_stack().await;
-                core_node.release_presence();
                 let _ = core_node_done.send(true);
             }
             // The teardown has written its last lines by now.

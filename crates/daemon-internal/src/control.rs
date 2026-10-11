@@ -4,7 +4,7 @@
 //! from the `serve` daemon; their only shared state is the enrollment directory
 //! on disk, which the daemon reads when it builds a generation. To react
 //! immediately, the command **pokes** the running daemon over a per-user
-//! Unix-domain socket: it sends [`REFEDERATE_VERB`] and waits for the daemon to
+//! Unix-domain socket: it sends `refederate` and waits for the daemon to
 //! re-read the enrollment, restart under the new identity when it changed, or
 //! verify the link to the cloud router when it did not.
 //!
@@ -28,13 +28,13 @@ use daemon_config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
 
 /// File name of the daemon's federation control socket under the runtime dir.
-pub const FEDERATION_CONTROL_SOCK: &str = "federation_control.sock";
+pub(crate) const FEDERATION_CONTROL_SOCK: &str = "federation_control.sock";
 
 /// The only request the control socket understands: re-read the enrollment
 /// and reconcile the local router with it. One verb covers both enrolling
 /// (the daemon restarts under the project) and unenrolling (it restarts under
 /// `local`), and a repeat poke verifies the link.
-pub const REFEDERATE_VERB: &str = "refederate";
+pub(crate) const REFEDERATE_VERB: &str = "refederate";
 
 /// How long the client waits for the daemon's ack. Kept strictly larger than
 /// the daemon-side ack budget (`ACK_BUDGET`, which itself covers the poke's
@@ -55,7 +55,7 @@ pub fn federation_control_socket_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 /// the daemon (which writes it) and this client (which parses it).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-pub enum ControlResponse {
+pub(crate) enum ControlResponse {
     /// The router runs what the enrollment prescribes: `Some(locator)` dialing
     /// the project's cloud router with the link verified, `None` not enrolled.
     Ok { applied: Option<String> },
@@ -76,7 +76,7 @@ pub enum ControlResponse {
 }
 
 impl ControlResponse {
-    pub fn error(message: impl Into<String>) -> Self {
+    pub(crate) fn error(message: impl Into<String>) -> Self {
         Self::Error {
             message: message.into(),
         }
