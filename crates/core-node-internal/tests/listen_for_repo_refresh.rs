@@ -110,41 +110,6 @@ async fn send_refresh_and_wait(started: &StartedCoreNode) -> RefreshTestResult {
 // ── Tests with real messenger (feedback assertions) ─────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn refresh_fs_discovers_nodes() {
-    let started = start_core_node_with_real_messenger().await;
-
-    let repo_dir = started.peppy_dirs.root().join("test_repo");
-    create_node_dir(&repo_dir, "my_sensor", "v1");
-    common::publish_repo_index(&repo_dir);
-
-    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
-
-    let result = send_refresh_and_wait(&started).await;
-
-    assert!(result.goal_response.accepted, "goal should be accepted");
-    assert!(result.result.success, "refresh should succeed");
-    assert_eq!(
-        result.result.total_nodes_found, 1,
-        "should find exactly 1 node"
-    );
-
-    let discovered = result.discovered();
-    assert_eq!(discovered.len(), 1, "should receive 1 discovered feedback");
-    let RepoRefreshFeedback::Discovered {
-        item_name,
-        item_tag,
-        source_type,
-        ..
-    } = discovered[0]
-    else {
-        unreachable!()
-    };
-    assert_eq!(item_name, "my_sensor");
-    assert_eq!(item_tag, "v1");
-    assert_eq!(*source_type, RepoSourceKind::Fs);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_multiple_nodes() {
     let started = start_core_node_with_real_messenger().await;
 
@@ -824,8 +789,8 @@ async fn refresh_discovers_contracts() {
 
 /// End-to-end coverage of node discovery: refresh writes `nodes.json5`
 /// with the expected shape (node_name + node_tag + sha256), the result
-/// reports the node count, and feedback includes the discovered node
-/// tagged with kind = Node.
+/// reports the node count, and the feedback holds exactly one discovered
+/// line: the fs node, tagged with kind = Node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_discovers_nodes() {
     use core_node_api::encoding::RepoItemKind;
@@ -839,28 +804,30 @@ async fn refresh_discovers_nodes() {
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
     let result = send_refresh_and_wait(&started).await;
+    assert!(result.goal_response.accepted, "goal should be accepted");
     assert!(result.result.success, "refresh should succeed");
-    assert_eq!(result.result.total_nodes_found, 1);
+    assert_eq!(
+        result.result.total_nodes_found, 1,
+        "should find exactly 1 node"
+    );
 
-    let Some(RepoRefreshFeedback::Discovered {
+    let discovered = result.discovered();
+    assert_eq!(discovered.len(), 1, "should receive 1 discovered feedback");
+    let RepoRefreshFeedback::Discovered {
         item_name,
         item_tag,
+        source_type,
+        kind,
         sha256,
         ..
-    }) = result.feedbacks.iter().find(|f| {
-        matches!(
-            f,
-            RepoRefreshFeedback::Discovered {
-                kind: RepoItemKind::Node,
-                ..
-            }
-        )
-    })
+    } = discovered[0]
     else {
-        panic!("node discovery feedback")
+        unreachable!()
     };
     assert_eq!(item_name, "my_sensor");
     assert_eq!(item_tag, "v1");
+    assert_eq!(*source_type, RepoSourceKind::Fs);
+    assert_eq!(*kind, RepoItemKind::Node);
     assert!(
         !sha256.is_empty(),
         "feedback should carry the sha256 fingerprint"
