@@ -5,7 +5,7 @@ use crate::helpers::{
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project,
     consumer_stub_node_config, copy_config_to_output, init_cargo_user_node, init_test_env,
-    native_dep, send_shutdown, spawn_cargo_run, test_peppy_dirs, try_send_shutdown, wait_for_child,
+    native_dep, send_shutdown, spawn_cargo_run, test_peppy_dirs, wait_for_child,
     wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
@@ -267,9 +267,7 @@ fn main() -> Result<()> {
     )
     .await;
 
-    // Use try_send_shutdown for consumer since it may have already exited
-    // after completing its service call
-    try_send_shutdown(
+    send_shutdown(
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
