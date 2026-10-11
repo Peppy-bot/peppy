@@ -48,7 +48,7 @@ from datetime import datetime
 from pathlib import Path
 
 import merge_set
-import resolve
+from merge_set import resolve
 
 # The contract with aws/peppy-ci-pipelines of Peppy-bot/infraops, which sets
 # the function up: the entry point of its runtime, the variables it sets on
@@ -181,8 +181,10 @@ class WebhookSecret:
         self.read_at: float | None = None
 
     def load(self) -> bytes:
-        self.value = parse_webhook_secret(self.read())
+        # A read that fails, or that gives a secret that does not parse,
+        # counts against SECRET_REFRESH_SECONDS as well.
         self.read_at = self.clock()
+        self.value = parse_webhook_secret(self.read())
         return self.value
 
     def current(self) -> bytes:

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for the merge-set bot.
 
 The decisions run on fixed input data. The sync runs against FakeGitHub, an
@@ -12,6 +11,7 @@ uses, so the changes job of tests.yml runs these cases on every change.
 """
 
 import base64
+import http.client
 import io
 import json
 import os
@@ -24,7 +24,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import merge_set
-import resolve
 from merge_set import (
     PEPPY,
     AccessRefusal,
@@ -44,6 +43,7 @@ from merge_set import (
     ReviewDecision,
     TestedRef,
     TestedSet,
+    resolve,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -57,7 +57,6 @@ PRIVATE_NODES_HUB = merge_set.REPOSITORIES_BY_NAME["private-nodes-hub"]
 SET_NAME = "feat/gripper-force"
 BOT = "peppy-merge-set[bot]"
 RUN_URL = "https://github.com/Peppy-bot/peppy/actions/runs/99"
-CONTEXT = merge_set.RunContext(bot_login=BOT, run_url=RUN_URL)
 TEST_CHECK = RequiredCheck("test", 15368)
 # The ruleset of the integration branches that requires an approval.
 APPROVAL_RULESET = 20864833
@@ -70,21 +69,21 @@ def commit(repository, label="head"):
 
 
 def pull_request(repository, number=1, **changes):
-    fields = dict(
-        repository=repository,
-        number=number,
-        url=f"https://github.com/Peppy-bot/{repository.name}/pull/{number}",
-        title=f"Change {repository.name}",
+    fields = {
+        "repository": repository,
+        "number": number,
+        "url": f"https://github.com/Peppy-bot/{repository.name}/pull/{number}",
+        "title": f"Change {repository.name}",
         # The user who ticks the boxes unless a test names another one.
-        author="alice",
-        is_open=True,
-        merged=False,
-        draft=False,
-        head_commit=commit(repository),
-        head_branch=SET_NAME,
-        base_branch=repository.integration_branch,
-        from_fork=False,
-    )
+        "author": "alice",
+        "is_open": True,
+        "merged": False,
+        "draft": False,
+        "head_commit": commit(repository),
+        "head_branch": SET_NAME,
+        "base_branch": repository.integration_branch,
+        "from_fork": False,
+    }
     fields.update(changes)
     return PullRequest(**fields)
 
@@ -128,16 +127,16 @@ def ci_run_of(repository, state=CheckState.PASSED, run_id=10):
 
 
 def report(pr, **changes):
-    fields = dict(
-        pull_request=pr,
-        mergeable=True,
-        review=ReviewDecision.APPROVED,
-        checks=((TEST_CHECK, CheckState.PASSED),),
-        ci=ci_run_of(pr.repository),
-        behind=False,
-        stale=(),
-        unbypassed_approval_rulesets=(),
-    )
+    fields = {
+        "pull_request": pr,
+        "mergeable": True,
+        "review": ReviewDecision.APPROVED,
+        "checks": ((TEST_CHECK, CheckState.PASSED),),
+        "ci": ci_run_of(pr.repository),
+        "behind": False,
+        "stale": (),
+        "unbypassed_approval_rulesets": (),
+    }
     fields.update(changes)
     return merge_set.PullRequestReport(**fields)
 
@@ -236,9 +235,8 @@ class Events(unittest.TestCase):
             ("nodes-hub", SET_NAME, "Peppy-bot/nodes-hub", "twelve"),
             ("landing-page", SET_NAME, "Peppy-bot/landing-page", ""),
         ):
-            with self.subTest(arguments=arguments):
-                with self.assertRaises(MergeSetError):
-                    merge_set.parse_event(*arguments)
+            with self.subTest(arguments=arguments), self.assertRaises(MergeSetError):
+                merge_set.parse_event(*arguments)
 
 
 class Relay(unittest.TestCase):
@@ -1064,9 +1062,8 @@ class SetRecords(unittest.TestCase):
             set_record_text({"nodes-hub": {"ref": "main", "commit": "short"}}),
             set_record_text({"nodes-hub": "main"}),
         ):
-            with self.subTest(text=text):
-                with self.assertRaises(MergeSetError):
-                    merge_set.parse_tested_set(text)
+            with self.subTest(text=text), self.assertRaises(MergeSetError):
+                merge_set.parse_tested_set(text)
 
     def test_the_record_is_read_from_the_artifact_zip(self):
         self.assertEqual(merge_set.set_record_of_bundle(record_bundle("{}")), "{}")
@@ -1677,8 +1674,7 @@ class MergeMessages(unittest.TestCase):
         )
         outcome = merge_set.MergeOutcome(
             merged=(merge_set.MergedPullRequest(peppy, "a" * 40),),
-            failed=nodes,
-            failure="Base branch was modified.",
+            failure=merge_set.MergeFailure(nodes, "Base branch was modified."),
             not_tried=(contracts,),
         )
         text = merge_set.render_merge_report(SET_NAME, ["alice"], outcome, [])
@@ -1938,7 +1934,7 @@ def sync(
         head_repository or repository.full_name,
         str(pull_request),
     )
-    merge_set.sync(github, event, CONTEXT)
+    merge_set.sync(github, event, RUN_URL)
 
 
 class SyncAlone(unittest.TestCase):
@@ -2687,6 +2683,34 @@ class Gateway(unittest.TestCase):
                         gateway.merge(pull_request(NODES_HUB, 88), "message"), expected
                     )
 
+    def test_the_calls_about_a_pull_request_name_its_paths(self):
+        pr = pull_request(NODES_HUB, 88)
+        pull_path = "/repos/Peppy-bot/nodes-hub/pulls/88"
+        comments_path = "/repos/Peppy-bot/nodes-hub/issues/88/comments"
+        repo = {"full_name": "Peppy-bot/nodes-hub"}
+        item = {
+            "number": 88,
+            "html_url": pr.url,
+            "title": pr.title,
+            "user": {"login": pr.author},
+            "state": "open",
+            "head": {"sha": pr.head_commit, "ref": SET_NAME, "repo": repo},
+            "base": {"ref": "main", "repo": repo},
+            "mergeable": True,
+            "mergeable_state": "clean",
+        }
+        api = FakeApi(
+            {("GET", pull_path): item, ("POST", comments_path): {"html_url": "c9"}}
+        )
+        gateway = gateway_of(api)
+        self.assertEqual(gateway.pull_request(NODES_HUB, 88), pr)
+        self.assertEqual(gateway.merge_state(pr), (True, "clean"))
+        self.assertEqual(gateway.create_comment(pr, "a report"), "c9")
+        self.assertEqual(
+            [call[:2] for call in api.calls],
+            [("GET", pull_path), ("GET", pull_path), ("POST", comments_path)],
+        )
+
     def test_a_merge_asks_for_the_head_commit_it_checked(self):
         path = "/repos/Peppy-bot/nodes-hub/pulls/88/merge"
         api = FakeApi({("PUT", path): {"sha": "m" * 40}})
@@ -2876,6 +2900,20 @@ class Gateway(unittest.TestCase):
         self.assertEqual(gateway.permission(NODES_HUB, "mallory"), "none")
         self.assertEqual(len(api.calls), 1)
 
+    def test_the_permission_of_a_collaborator_is_read_once(self):
+        path = "/repos/Peppy-bot/nodes-hub/collaborators/alice/permission"
+        api = FakeApi({("GET", path): {"permission": "admin"}})
+        gateway = gateway_of(api)
+        self.assertEqual(gateway.permission(NODES_HUB, "alice"), "admin")
+        self.assertEqual(gateway.permission(NODES_HUB, "alice"), "admin")
+        self.assertEqual(len(api.calls), 1)
+
+    def test_another_failure_to_read_a_permission_stops_the_sync(self):
+        path = "/repos/Peppy-bot/nodes-hub/collaborators/alice/permission"
+        api = FakeApi({("GET", path): ApiError(f"GET {path}", 502, "Bad Gateway")})
+        with self.assertRaises(ApiError):
+            gateway_of(api).permission(NODES_HUB, "alice")
+
     def test_the_app_bypasses_a_ruleset_that_names_it_as_a_bypass_actor(self):
         path = f"/repos/Peppy-bot/nodes-hub/rulesets/{APPROVAL_RULESET}"
         for ruleset, bypassed in (
@@ -2963,6 +3001,55 @@ class Gateway(unittest.TestCase):
         self.assertEqual(refused.exception.status, 405)
         self.assertEqual(refused.exception.message, "Pull Request is not mergeable")
 
+    def test_a_refused_call_without_a_message_names_the_http_reason(self):
+        class BrokenBody(io.BytesIO):
+            def read(self, *arguments):
+                raise http.client.IncompleteRead(b"{")
+
+        for case, body in (
+            ("no body", io.BytesIO(b"")),
+            ("a list", io.BytesIO(b'["x"]')),
+            ("a string", io.BytesIO(b'"x"')),
+            ("not UTF-8", io.BytesIO(b"\xff")),
+            ("a message that is no string", io.BytesIO(b'{"message": 3}')),
+            ("a body that breaks off", BrokenBody()),
+        ):
+            error = merge_set.urllib.error.HTTPError(
+                "https://api.github.com/x", 405, "Method Not Allowed", {}, body
+            )
+            with self.subTest(case=case):
+                with (
+                    patch.object(
+                        merge_set.urllib.request, "urlopen", side_effect=error
+                    ),
+                    self.assertRaises(ApiError) as refused,
+                ):
+                    merge_set.GitHubApi("token").request("PUT", "/x")
+                self.assertEqual(refused.exception.status, 405)
+                self.assertEqual(refused.exception.message, "Method Not Allowed")
+
+    def test_a_call_that_the_network_breaks_is_an_api_error(self):
+        # urlopen wraps only the failures of sending the request in a
+        # URLError: these come while it waits for the response or reads it.
+        for failure in (
+            TimeoutError("timed out"),
+            ConnectionResetError(104, "Connection reset by peer"),
+            http.client.RemoteDisconnected(
+                "Remote end closed connection without response"
+            ),
+            http.client.IncompleteRead(b"{"),
+        ):
+            with self.subTest(failure=failure):
+                with (
+                    patch.object(
+                        merge_set.urllib.request, "urlopen", side_effect=failure
+                    ),
+                    self.assertRaises(ApiError) as failed,
+                ):
+                    merge_set.GitHubApi("token").request("PUT", "/x")
+                self.assertIsNone(failed.exception.status)
+                self.assertEqual(failed.exception.message, str(failure))
+
 
 class GitFixture:
     """A repository on disk that GitMerges fetches from as it fetches from
@@ -3037,6 +3124,7 @@ class GitFixture:
             ["git", "-C", str(self.work), "merge", "--quiet", "main"],
             capture_output=True,
             env=self.environment,
+            check=False,
         )
         if merge.returncode == 0:
             raise AssertionError("the merge of main has no conflict")
@@ -3132,7 +3220,51 @@ class GitMergesOnDisk(unittest.TestCase):
         )
 
 
+# The environment that the Merge set workflow gives the sync for an event of
+# pull request 7 of nodes-hub.
+SYNC_ENVIRONMENT = {
+    "EVENT_REPOSITORY": "nodes-hub",
+    "EVENT_BRANCH": SET_NAME,
+    "EVENT_HEAD_REPOSITORY": "Peppy-bot/nodes-hub",
+    "EVENT_PULL_REQUEST": "7",
+    "MERGE_SET_BOT_LOGIN": BOT,
+    "GITHUB_SERVER_URL": "https://github.com",
+    "GITHUB_REPOSITORY": "Peppy-bot/peppy",
+    "GITHUB_RUN_ID": "99",
+    "MERGE_SET_TOKEN": "token",
+}
+
+
 class Commands(unittest.TestCase):
+    def test_the_sync_runs_as_the_bot_for_the_event_of_its_environment(self):
+        with patch.object(merge_set, "sync") as sync:
+            merge_set.run_sync(SYNC_ENVIRONMENT)
+        gateway, event, run_url = sync.call_args.args
+        self.assertEqual(gateway.bot_login, BOT)
+        self.assertEqual(gateway.api.token, "token")
+        self.assertEqual(
+            event,
+            merge_set.parse_event("nodes-hub", SET_NAME, "Peppy-bot/nodes-hub", "7"),
+        )
+        self.assertEqual(run_url, RUN_URL)
+
+    def test_the_sync_reads_the_variables_of_its_workflow_in_order(self):
+        names = [
+            "MERGE_SET_BOT_LOGIN",
+            "GITHUB_SERVER_URL",
+            "GITHUB_REPOSITORY",
+            "GITHUB_RUN_ID",
+            "MERGE_SET_TOKEN",
+        ]
+        for index, name in enumerate(names):
+            # This variable and every later one are missing.
+            environment = {**SYNC_ENVIRONMENT, **dict.fromkeys(names[index:], "")}
+            with self.subTest(name=name), patch.object(merge_set, "sync") as sync:
+                with self.assertRaises(MergeSetError) as refused:
+                    merge_set.run_sync(environment)
+                self.assertTrue(str(refused.exception).startswith(f"{name} is not set"))
+                sync.assert_not_called()
+
     def test_the_repositories_command_names_them_in_the_step_output(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
@@ -3158,6 +3290,14 @@ class Commands(unittest.TestCase):
 
 def workflow_lines(name):
     return [line.strip() for line in (WORKFLOWS / name).read_text().splitlines()]
+
+
+def assert_ends_within_its_slim_runner(test, workflow):
+    """An ubuntu-slim job stops after 15 minutes."""
+    lines = workflow_lines(workflow)
+    test.assertIn("runs-on: ubuntu-slim", lines)
+    (timeout,) = [line for line in lines if line.startswith("timeout-minutes:")]
+    test.assertLessEqual(int(timeout.split(":")[1]), 15)
 
 
 class RepositoryFacts(unittest.TestCase):
@@ -3195,11 +3335,7 @@ class RepositoryFacts(unittest.TestCase):
         self.assertIn("    environment:\n      name: merge-set\n", text)
 
     def test_the_sync_starts_at_once_and_ends_within_the_limit_of_its_runner(self):
-        # An ubuntu-slim job stops after 15 minutes.
-        lines = workflow_lines(merge_set.SYNC_WORKFLOW)
-        self.assertIn("runs-on: ubuntu-slim", lines)
-        (timeout,) = [line for line in lines if line.startswith("timeout-minutes:")]
-        self.assertLessEqual(int(timeout.split(":")[1]), 15)
+        assert_ends_within_its_slim_runner(self, merge_set.SYNC_WORKFLOW)
 
     def test_the_relay_hands_on_the_runs_of_the_ci_workflow(self):
         self.assertIn(
@@ -3209,6 +3345,7 @@ class RepositoryFacts(unittest.TestCase):
     def test_the_changes_job_runs_these_cases(self):
         text = (WORKFLOWS / "tests.yml").read_text()
         self.assertIn("--start-directory .github/merge-set", text)
+        self.assertIn("--pattern 'test_*.py'", text)
 
 
 if __name__ == "__main__":

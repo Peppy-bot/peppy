@@ -14,7 +14,8 @@ The `merge-set` commit status is a required check of peppy `dev` and of the
 - A pull request of a set gets a pending status, so its merge button stays
   blocked, and a comment, the dashboard, that lists every repository of the
   set with the state of the CI run of its head, says what blocks the merge,
-  and holds two boxes: "Merge" and "Re-run the out-of-date CI".
+  and holds a "Merge" box, and a "Re-run the out-of-date CI" box while a hub
+  run of the set is out of date.
 
 Ticking "Merge" asks the bot to merge the set. The bot checks every pull
 request of the set, sets the status green on each, checks that GitHub merges
@@ -103,7 +104,7 @@ from pathlib import Path
 sys.path.insert(
     0, str(Path(__file__).resolve().parents[1] / "actions" / "hub-ci-peppy")
 )
-import resolve  # noqa: E402
+import resolve
 
 
 class MergeSetError(Exception):
@@ -1033,16 +1034,30 @@ class PullRequestReport:
     unbypassed_approval_rulesets: tuple[str, ...]
 
 
+class BlockerKind(Enum):
+    # Blocks every user.
+    BLOCKING = "blocking"
+    # A missing approval that only rulesets the App bypasses require, so an
+    # admin of every repository of the set merges without it.
+    MISSING_APPROVAL = "missing approval"
+    # A hub job that ran with another commit of a branch of the set, or whose
+    # set record expired: a re-run of its run clears it.
+    OUT_OF_DATE_CI = "out-of-date CI"
+
+
 @dataclass(frozen=True)
 class Blocker:
     repository: Repository
     text: str
-    # A missing approval, which an admin of every repository of the set
-    # merges without.
-    waived_for_admins: bool = False
-    # A hub job that ran with another commit of a branch of the set, or whose
-    # set record expired: a re-run of its run clears it.
-    out_of_date_ci: bool = False
+    kind: BlockerKind = BlockerKind.BLOCKING
+
+    @property
+    def waived_for_admins(self) -> bool:
+        return self.kind is BlockerKind.MISSING_APPROVAL
+
+    @property
+    def out_of_date_ci(self) -> bool:
+        return self.kind is BlockerKind.OUT_OF_DATE_CI
 
 
 def short(commit: str) -> str:
@@ -1087,16 +1102,22 @@ def missing_approval_text(label: str, unbypassed_rulesets: Sequence[str]) -> str
     )
 
 
+def missing_approval_kind(unbypassed_rulesets: Sequence[str]) -> BlockerKind:
+    """GitHub refuses the merge of the App while a ruleset that it does not
+    bypass requires the approval, so no admin merges without it."""
+    if unbypassed_rulesets:
+        return BlockerKind.BLOCKING
+    return BlockerKind.MISSING_APPROVAL
+
+
 def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     pull_request = report.pull_request
     repository = pull_request.repository
     label = pull_request.label
     blockers = []
 
-    def block(
-        text: str, waived_for_admins: bool = False, out_of_date_ci: bool = False
-    ) -> None:
-        blockers.append(Blocker(repository, text, waived_for_admins, out_of_date_ci))
+    def block(text: str, kind: BlockerKind = BlockerKind.BLOCKING) -> None:
+        blockers.append(Blocker(repository, text, kind))
 
     if pull_request.base_branch != repository.integration_branch:
         block(
@@ -1122,7 +1143,7 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
     if report.review is ReviewDecision.REVIEW_REQUIRED:
         block(
             missing_approval_text(label, report.unbypassed_approval_rulesets),
-            waived_for_admins=not report.unbypassed_approval_rulesets,
+            missing_approval_kind(report.unbypassed_approval_rulesets),
         )
     for check, state in report.checks:
         if state is not CheckState.PASSED:
@@ -1130,7 +1151,7 @@ def pull_request_blockers(report: PullRequestReport) -> list[Blocker]:
                 f"The required check `{check.context}` of {label} {CHECK_STATE_TEXTS[state]}."
             )
     for stale in report.stale:
-        block(stale_job_text(label, stale), out_of_date_ci=True)
+        block(stale_job_text(label, stale), BlockerKind.OUT_OF_DATE_CI)
     return blockers
 
 
@@ -1254,11 +1275,13 @@ def render_set_dashboard(
         DASHBOARD_MARKER,
         f"### Set `{state.name}`",
         "",
-        f"These pull requests share the branch name `{state.name}`. The CI of "
-        "each hub pull request tests it with the others, so they merge "
-        "together: the `merge-set` check keeps the merge button of each one "
-        "blocked. Tick the first box below to merge all of them. The bot acts "
-        f"on a ticked box only for {WHO_MAY_ASK}.",
+        (
+            f"These pull requests share the branch name `{state.name}`. The CI of "
+            "each hub pull request tests it with the others, so they merge "
+            "together: the `merge-set` check keeps the merge button of each one "
+            "blocked. Tick the first box below to merge all of them. The bot acts "
+            f"on a ticked box only for {WHO_MAY_ASK}."
+        ),
         "",
         "| Repository | Pull request | Head | CI | State |",
         "| --- | --- | --- | --- | --- |",
@@ -1325,14 +1348,18 @@ def readiness_lines(blockers: Sequence[Blocker]) -> list[str]:
     or what blocks it."""
     if not blockers:
         return [
-            "**Ready to merge.** Each pull request is approved, its required "
-            f"checks passed, and {CURRENT_HUB_RUNS}."
+            (
+                "**Ready to merge.** Each pull request is approved, its required "
+                f"checks passed, and {CURRENT_HUB_RUNS}."
+            )
         ]
     hard = blockers_for(blockers, admin=True)
     if not hard:
         return [
-            "**Ready to merge for an admin.** Each required check passed and "
-            f"{CURRENT_HUB_RUNS}, but approvals are missing. {ADMIN_WAIVER}",
+            (
+                "**Ready to merge for an admin.** Each required check passed and "
+                f"{CURRENT_HUB_RUNS}, but approvals are missing. {ADMIN_WAIVER}"
+            ),
             "",
             *(f"- {blocker.text}" for blocker in blockers),
         ]
@@ -1398,6 +1425,8 @@ def requesters_of(requests: Sequence[Request]) -> list[str]:
 
 WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
 ADMIN_PERMISSION = "admin"
+# The permission of a user who is no collaborator of the repository.
+NO_PERMISSION = "none"
 # The users the bot acts for when they tick a box, as the dashboard and the
 # refusals word it.
 WHO_MAY_ASK = (
@@ -1476,18 +1505,25 @@ class MergedPullRequest:
 
 
 @dataclass(frozen=True)
+class MergeFailure:
+    """The pull request GitHub did not merge, and GitHub's reason."""
+
+    pull_request: PullRequest
+    reason: str
+
+
+@dataclass(frozen=True)
 class MergeOutcome:
     merged: tuple[MergedPullRequest, ...]
-    # The pull request whose merge failed, and GitHub's reason; None when
-    # every pull request merged.
-    failed: PullRequest | None
-    failure: str | None
+    # None when every pull request merged.
+    failure: MergeFailure | None
     not_tried: tuple[PullRequest, ...]
 
     @property
     def unmerged(self) -> tuple[PullRequest, ...]:
-        failed = (self.failed,) if self.failed is not None else ()
-        return failed + self.not_tried
+        if self.failure is None:
+            return self.not_tried
+        return (self.failure.pull_request, *self.not_tried)
 
 
 def merge_commit_message(
@@ -1501,6 +1537,14 @@ def merge_commit_message(
     )
 
 
+def merged_line(merged: MergedPullRequest, unapproved: Sequence[PullRequest]) -> str:
+    """The line of a merge report for a pull request that merged."""
+    line = f"- {merged.pull_request.label} merged as `{short(merged.commit)}`"
+    if merged.pull_request in unapproved:
+        return f"{line} without an approval."
+    return f"{line}."
+
+
 def render_merge_report(
     set_name: str,
     requesters: Sequence[str],
@@ -1509,37 +1553,33 @@ def render_merge_report(
 ) -> str:
     """The report of a merge, on every pull request of the set. `unapproved`
     are the pull requests an admin merged without an approval."""
-    merged = [
-        f"- {merged.pull_request.label} merged as `{short(merged.commit)}`"
-        + (" without an approval" if merged.pull_request in unapproved else "")
-        + "."
-        for merged in outcome.merged
-    ]
-    if outcome.failed is None:
-        return (
-            "\n".join(
-                [
-                    f"The set `{set_name}` merged, as {mention(requesters)} asked:",
-                    "",
-                    *merged,
-                ]
-            )
-            + "\n"
-        )
+    merged_lines = [merged_line(merged, unapproved) for merged in outcome.merged]
+    if outcome.failure is None:
+        lines = [
+            f"The set `{set_name}` merged, as {mention(requesters)} asked:",
+            "",
+            *merged_lines,
+        ]
+        return "\n".join(lines) + "\n"
+    failure = outcome.failure
     lines = [
-        f"The merge of the set `{set_name}`, which {mention(requesters)} asked "
-        "for, stopped:",
+        (
+            f"The merge of the set `{set_name}`, which {mention(requesters)} asked "
+            "for, stopped:"
+        ),
         "",
-        *merged,
-        f"- {outcome.failed.label} did not merge: {outcome.failure}",
+        *merged_lines,
+        f"- {failure.pull_request.label} did not merge: {failure.reason}",
         *(
             f"- {pull_request.label} was not tried."
             for pull_request in outcome.not_tried
         ),
         "",
-        "The pull requests that did not merge are blocked again. Remove the "
-        "cause, then merge the rest: tick the box of their merge-set comment "
-        "again, or, when one pull request is left alone, use its merge button.",
+        (
+            "The pull requests that did not merge are blocked again. Remove the "
+            "cause, then merge the rest: tick the box of their merge-set comment "
+            "again, or, when one pull request is left alone, use its merge button."
+        ),
     ]
     return "\n".join(lines) + "\n"
 
@@ -1706,16 +1746,32 @@ def read_response(
         raise ApiError(action, error.code, error_message(error)) from error
     except urllib.error.URLError as error:
         raise ApiError(action, None, str(error.reason)) from error
+    except resolve.REQUEST_ERRORS as error:
+        # urlopen wraps only the failures of sending the request in a
+        # URLError: a timeout or a reset connection while it waits for the
+        # response, or a response that breaks off, comes as itself.
+        raise ApiError(action, None, str(error)) from error
 
 
 def error_message(error: urllib.error.HTTPError) -> str:
     """The message GitHub puts in the body of a refused call, else the HTTP
-    reason."""
+    reason: for a body that breaks off, that is no JSON object, or that has
+    no message."""
+    reason = str(error.reason)
     try:
-        document = json.loads(error.read() or b"{}")
-    except (json.JSONDecodeError, OSError):
-        return str(error.reason)
-    return document.get("message") or str(error.reason)
+        body = error.read()
+    except resolve.REQUEST_ERRORS:
+        return reason
+    try:
+        document = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return reason
+    if not isinstance(document, Mapping):
+        return reason
+    message = document.get("message")
+    if not isinstance(message, str) or not message:
+        return reason
+    return message
 
 
 REVIEW_DECISION_QUERY = """
@@ -1740,8 +1796,8 @@ def quoted(branch: str) -> str:
     return urllib.parse.quote(branch, safe="/")
 
 
-def pull_request_path(pull_request: PullRequest) -> str:
-    return f"/repos/{pull_request.repository.full_name}/pulls/{pull_request.number}"
+def pull_request_path(repository: Repository, number: int) -> str:
+    return f"/repos/{repository.full_name}/pulls/{number}"
 
 
 def comment_path(dashboard: Dashboard) -> str:
@@ -1749,8 +1805,8 @@ def comment_path(dashboard: Dashboard) -> str:
     return f"/repos/{repository.full_name}/issues/comments/{dashboard.id}"
 
 
-def issue_comments_path(pull_request: PullRequest) -> str:
-    return f"/repos/{pull_request.repository.full_name}/issues/{pull_request.number}/comments"
+def issue_comments_path(repository: Repository, number: int) -> str:
+    return f"/repos/{repository.full_name}/issues/{number}/comments"
 
 
 class GitHubGateway:
@@ -1792,13 +1848,15 @@ class GitHubGateway:
         return [parse_pull_request(repository, item) for item in items]
 
     def pull_request(self, repository: Repository, number: int) -> PullRequest:
-        item = self.api.request("GET", f"/repos/{repository.full_name}/pulls/{number}")
+        item = self.api.request("GET", pull_request_path(repository, number))
         return parse_pull_request(repository, item)
 
     def merge_state(self, pull_request: PullRequest) -> tuple[bool | None, str]:
         """Whether the pull request merges without conflicts (None while GitHub
         computes it), and its `mergeable_state`."""
-        item = self.api.request("GET", pull_request_path(pull_request))
+        item = self.api.request(
+            "GET", pull_request_path(pull_request.repository, pull_request.number)
+        )
         return item.get("mergeable"), item.get("mergeable_state") or MERGE_STATE_UNKNOWN
 
     def branch_rules(self, repository: Repository) -> BranchRules:
@@ -1983,7 +2041,8 @@ class GitHubGateway:
 
     def dashboard(self, pull_request: PullRequest) -> Dashboard | None:
         """The oldest dashboard the bot wrote on the pull request."""
-        for comment in self.api.pages(issue_comments_path(pull_request)):
+        path = issue_comments_path(pull_request.repository, pull_request.number)
+        for comment in self.api.pages(path):
             if self.is_dashboard(comment):
                 return self.dashboard_of(pull_request, comment)
         return None
@@ -2014,7 +2073,9 @@ class GitHubGateway:
     def create_comment(self, pull_request: PullRequest, body: str) -> str:
         """Write a comment on the pull request, and return its URL."""
         comment = self.api.request(
-            "POST", issue_comments_path(pull_request), body={"body": body}
+            "POST",
+            issue_comments_path(pull_request.repository, pull_request.number),
+            body={"body": body},
         )
         return comment["html_url"]
 
@@ -2026,23 +2087,26 @@ class GitHubGateway:
     def permission(self, repository: Repository, login: str) -> str:
         key = (repository.name, login)
         if key not in self.permissions:
-            try:
-                response = self.api.request(
-                    "GET",
-                    f"/repos/{repository.full_name}/collaborators/{login}/permission",
-                )
-                self.permissions[key] = response["permission"]
-            except ApiError as error:
-                if error.status != 404:
-                    raise
-                self.permissions[key] = "none"
+            self.permissions[key] = self.read_permission(repository, login)
         return self.permissions[key]
+
+    def read_permission(self, repository: Repository, login: str) -> str:
+        try:
+            response = self.api.request(
+                "GET",
+                f"/repos/{repository.full_name}/collaborators/{login}/permission",
+            )
+        except ApiError as error:
+            if error.status != 404:
+                raise
+            return NO_PERMISSION
+        return response["permission"]
 
     def merge(self, pull_request: PullRequest, message: str) -> str:
         """Merge the pull request at its head commit, and return the merge
         commit. A call that fails is checked against the pull request: GitHub
         can merge it and still fail the response."""
-        path = pull_request_path(pull_request)
+        path = pull_request_path(pull_request.repository, pull_request.number)
         try:
             response = self.api.request(
                 "PUT",
@@ -2171,6 +2235,7 @@ class GitMerges:
                 text=True,
                 env=self.environment,
                 timeout=GIT_TIMEOUT_SECONDS,
+                check=False,
             )
         except subprocess.TimeoutExpired as error:
             raise GitError(
@@ -2186,13 +2251,6 @@ def git_failure(
 
 
 # The sync --------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class RunContext:
-    bot_login: str
-    # The URL of this run of the Merge set workflow.
-    run_url: str
 
 
 def read_set(gateway: GitHubGateway, name: str) -> SetState:
@@ -2409,12 +2467,11 @@ def merge_in_order(
         except MergeRefused as refusal:
             return MergeOutcome(
                 merged=tuple(merged),
-                failed=pull_request,
-                failure=str(refusal),
+                failure=MergeFailure(pull_request, str(refusal)),
                 not_tried=tuple(pull_requests[index + 1 :]),
             )
         merged.append(MergedPullRequest(pull_request, commit))
-    return MergeOutcome(tuple(merged), None, None, ())
+    return MergeOutcome(tuple(merged), None, ())
 
 
 def block_again(
@@ -2436,7 +2493,7 @@ def merge_the_set(
     dashboards: Mapping[str, Dashboard],
     request: Request,
     requesters: Sequence[str],
-    context: RunContext,
+    run_url: str,
 ) -> None:
     asked_on = request.dashboard.pull_request
     admin = is_admin_of_the_set(
@@ -2459,7 +2516,7 @@ def merge_the_set(
     ]
     for pull_request in pull_requests:
         gateway.post_gate(
-            pull_request, merging_gate(state.name, request.requester, context.run_url)
+            pull_request, merging_gate(state.name, request.requester, run_url)
         )
     merge_states = [
         (
@@ -2524,15 +2581,16 @@ def handle_requests(
     state: SetState,
     dashboards: Mapping[str, Dashboard],
     requests: Sequence[Request],
-    context: RunContext,
+    run_url: str,
 ) -> None:
     """Act on each action once, for the first user who asked for it and whom
     the bot acts for: an admin of every repository of the set, or the user
     who opened every pull request of the set and has write access to every
     repository of it. Every other user who asked for it gets the reason the
     bot does not act for them, and the reports name the users it acts for
-    alone. The re-run goes first: a merge asked for at the same time then
-    finds the re-run CI running and stops."""
+    alone. The re-run goes first. Both actions read the reports from before
+    the re-run, so a merge asked for at the same time stops on the CI that
+    the re-run finds out of date."""
     reports = read_reports(gateway, state)
     for action in (Action.RERUN, Action.MERGE):
         asked = [request for request in requests if request.action is action]
@@ -2554,7 +2612,7 @@ def handle_requests(
             rerun_out_of_date(gateway, state, reports, allowed[0], requesters)
         else:
             merge_the_set(
-                gateway, state, reports, dashboards, allowed[0], requesters, context
+                gateway, state, reports, dashboards, allowed[0], requesters, run_url
             )
 
 
@@ -2589,7 +2647,7 @@ def no_set_gate(pull_request: PullRequest) -> Gate:
     )
 
 
-def sync(gateway: GitHubGateway, event: Event, context: RunContext) -> None:
+def sync(gateway: GitHubGateway, event: Event, run_url: str) -> None:
     set_name = event.set_name
     if set_name is None:
         if event.pull_request is None:
@@ -2604,7 +2662,7 @@ def sync(gateway: GitHubGateway, event: Event, context: RunContext) -> None:
     dashboards = read_dashboards(gateway, state)
     requests = read_requests(gateway, dashboards) if not state.is_alone else []
     if requests:
-        handle_requests(gateway, state, dashboards, requests, context)
+        handle_requests(gateway, state, dashboards, requests, run_url)
         state = read_set(gateway, set_name)
     publish(gateway, state, dashboards)
 
@@ -2742,7 +2800,7 @@ def relay(
     if subject.branch is None:
         subject = subject_of_pull_request(
             api_for(pull_request_scope(repository)).request(
-                "GET", f"/repos/{repository.full_name}/pulls/{subject.pull_request}"
+                "GET", pull_request_path(repository, subject.pull_request)
             )
         )
     inputs = dispatch_inputs(repository, subject)
@@ -2755,7 +2813,7 @@ def relay(
         return started
     api_for(pull_request_scope(repository)).request(
         "POST",
-        f"/repos/{repository.full_name}/issues/{subject.pull_request}/comments",
+        issue_comments_path(repository, subject.pull_request),
         body={"body": render_request_received(ticked, subject.branch, run_url)},
     )
     return (
@@ -2783,17 +2841,16 @@ def run_sync(environment: Mapping[str, str]) -> None:
         head_repository=environment.get("EVENT_HEAD_REPOSITORY", ""),
         pull_request=environment.get("EVENT_PULL_REQUEST", ""),
     )
-    context = RunContext(
-        bot_login=required(environment, "MERGE_SET_BOT_LOGIN"),
-        run_url=(
-            f"{required(environment, 'GITHUB_SERVER_URL')}/"
-            f"{required(environment, 'GITHUB_REPOSITORY')}/actions/runs/"
-            f"{required(environment, 'GITHUB_RUN_ID')}"
-        ),
+    bot_login = required(environment, "MERGE_SET_BOT_LOGIN")
+    # The URL of this run of the Merge set workflow.
+    run_url = (
+        f"{required(environment, 'GITHUB_SERVER_URL')}/"
+        f"{required(environment, 'GITHUB_REPOSITORY')}/actions/runs/"
+        f"{required(environment, 'GITHUB_RUN_ID')}"
     )
     token = required(environment, "MERGE_SET_TOKEN")
-    gateway = GitHubGateway(GitHubApi(token), context.bot_login, GitMerges(token))
-    sync(gateway, event, context)
+    gateway = GitHubGateway(GitHubApi(token), bot_login, GitMerges(token))
+    sync(gateway, event, run_url)
 
 
 def run_repositories() -> None:

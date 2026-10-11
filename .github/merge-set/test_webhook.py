@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for the webhook of the merge-set App.
 
 The clock is a FakeClock that a test moves, KMS and Secrets Manager are
@@ -30,7 +29,7 @@ from merge_set import MergeSetError
 from test_merge_set import (
     BOT,
     RELAY_RUN_URL,
-    WORKFLOWS,
+    assert_ends_within_its_slim_runner,
     pull_request_event,
     workflow_lines,
 )
@@ -466,6 +465,18 @@ class WebhookSecrets(unittest.TestCase):
         self.status(function, unsigned)
         self.assertEqual(reads.reads, 2)
 
+    def test_a_new_secret_that_does_not_parse_is_read_at_most_once_a_minute(self):
+        # The second document of Secrets Manager holds a number, not a string.
+        reads = FakeSecretReads("old", 1)
+        function = self.function(reads)
+        old = function_url_request("ping", {}, secret=b"old")
+        self.assertEqual(self.status(function, old), 200)
+        self.clock.now += webhook.SECRET_REFRESH_SECONDS
+        new = function_url_request("ping", {}, secret=b"new")
+        self.assertEqual(self.status(function, new), 500)
+        self.assertEqual(self.status(function, new), 401)
+        self.assertEqual(reads.reads, 2)
+
     def test_a_request_that_is_no_delivery_reads_the_secret_no_more(self):
         reads = FakeSecretReads(SECRET.decode())
         function = self.function(reads)
@@ -622,16 +633,7 @@ class RepositoryFacts(unittest.TestCase):
         self.assertIn(f"- .github/workflows/{DEPLOY_WORKFLOW}", lines)
 
     def test_the_deploy_starts_at_once_and_ends_within_the_limit_of_its_runner(self):
-        # An ubuntu-slim job stops after 15 minutes.
-        lines = workflow_lines(DEPLOY_WORKFLOW)
-        self.assertIn("runs-on: ubuntu-slim", lines)
-        (timeout,) = [line for line in lines if line.startswith("timeout-minutes:")]
-        self.assertLessEqual(int(timeout.split(":")[1]), 15)
-
-    def test_the_changes_job_runs_these_cases(self):
-        text = (WORKFLOWS / "tests.yml").read_text()
-        self.assertIn("--start-directory .github/merge-set", text)
-        self.assertIn("--pattern 'test_*.py'", text)
+        assert_ends_within_its_slim_runner(self, DEPLOY_WORKFLOW)
 
 
 if __name__ == "__main__":
