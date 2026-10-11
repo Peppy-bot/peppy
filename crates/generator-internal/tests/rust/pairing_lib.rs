@@ -12,6 +12,7 @@ use config::node::{Cardinality, NativeEmittedTopic};
 use generator::LanguageGenerator;
 use generator::PeerContext;
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
 use crate::helpers::{
@@ -47,8 +48,34 @@ fn controller_peer_context() -> PeerContext {
         link_id: "arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
+        cardinality: Cardinality::One,
     }
+}
+
+/// Asserts that the `category` directory of the generated crate's
+/// `src_dir` holds no module besides its `mod.rs`. Pairing topics nest under
+/// `paired_topics`, and the check reads the directory so that a misplaced
+/// module fails even when the crate compiles.
+fn assert_no_modules_under(src_dir: &Path, category: &str) {
+    let dir = src_dir.join(category);
+    // The scaffold creates every category dir, so a missing one means the
+    // layout changed and this check would otherwise pass vacuously.
+    assert!(
+        dir.is_dir(),
+        "expected category dir {}; if the scaffold stopped creating empty \
+         categories, rewrite this assertion rather than deleting it",
+        dir.display()
+    );
+    let entries: Vec<String> = fs::read_dir(&dir)
+        .expect("category dir reads")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "mod.rs")
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "pairing topics must not generate modules under {category}, found: {entries:?}"
+    );
 }
 
 #[test]
@@ -77,28 +104,8 @@ fn generated_peer_modules_compile_against_peppylib() {
         );
     }
     // Neither direction may leak into the flat consumed/emitted namespaces.
-    // Asserted on directory contents so a misplaced-but-working module fails
-    // loudly instead of passing by compiling.
     for category in ["consumed_topics", "emitted_topics"] {
-        let dir = src_dir.join(category);
-        // The scaffold creates every category dir, so a missing one means the
-        // layout changed and this check would otherwise pass vacuously.
-        assert!(
-            dir.is_dir(),
-            "expected category dir {}; if the scaffold stopped creating empty \
-             categories, rewrite this assertion rather than deleting it",
-            dir.display()
-        );
-        let entries: Vec<String> = fs::read_dir(&dir)
-            .expect("category dir reads")
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name != "mod.rs")
-            .collect();
-        assert!(
-            entries.is_empty(),
-            "pairing topics must not generate modules under {category}, found: {entries:?}"
-        );
+        assert_no_modules_under(&src_dir, category);
     }
 
     init_cargo_user_node(&user_node);
@@ -166,12 +173,12 @@ fn generated_multi_peer_modules_compile_against_peppylib() {
 
     let limbs = PeerContext {
         link_id: "limbs".to_string(),
-        cardinality: config::node::Cardinality::ZeroOrMore,
+        cardinality: Cardinality::ZeroOrMore,
         ..controller_peer_context()
     };
     let crew = PeerContext {
         link_id: "crew".to_string(),
-        cardinality: config::node::Cardinality::OneOrMore,
+        cardinality: Cardinality::OneOrMore,
         ..controller_peer_context()
     };
     let user_node = generate_node_project::<generator::RustGenerator>(
@@ -238,40 +245,26 @@ fn main() -> Result<()> {
     compile_project(&user_node);
 }
 
-/// The recorder side observing `arm_link/v1`: taps the `arm` role's
-/// `joint_states` through an observer slot whose link_id is `observed_arm`.
-fn recorder_observer_context() -> PeerContext {
-    PeerContext {
-        link_id: "observed_arm".to_string(),
-        pairing_name: "arm_link".to_string(),
-        pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
-    }
-}
-
-/// A commander watching every arm of the fleet: same pairing and role, but a
-/// `one_or_more` slot, so the generated module is a member set.
-fn commander_observer_context() -> PeerContext {
-    PeerContext {
-        link_id: "observed_arms".to_string(),
-        pairing_name: "arm_link".to_string(),
-        pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
-    }
-}
-
 #[test]
 fn generated_observer_modules_compile_against_peppylib() {
     let temp_dir = TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
     let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
 
-    let observer = recorder_observer_context();
     let user_node = generate_node_project::<generator::RustGenerator>(
         &temp_dir,
         STUB_NODE_CONFIG,
         |generator| {
+            // A recorder taps the `arm` role's `joint_states` through an
+            // observer slot.
             generator
-                .add_observed_topic(&states, &observer, Cardinality::One)
+                .add_observed_topic(
+                    &states,
+                    &PeerContext {
+                        link_id: "observed_arm".to_string(),
+                        ..controller_peer_context()
+                    },
+                    Cardinality::One,
+                )
                 .unwrap();
             // `zero_or_one` is scalar-shaped like `one`, so it generates the same
             // singular accessor name, but a different return type: it is the one scalar
@@ -281,9 +274,7 @@ fn generated_observer_modules_compile_against_peppylib() {
                     &states,
                     &PeerContext {
                         link_id: "maybe_observed_arm".to_string(),
-                        pairing_name: "arm_link".to_string(),
-                        pairing_tag: "v1".to_string(),
-                        cardinality: config::node::Cardinality::One,
+                        ..controller_peer_context()
                     },
                     Cardinality::ZeroOrOne,
                 )
@@ -302,17 +293,7 @@ fn generated_observer_modules_compile_against_peppylib() {
         "expected generated module paired_topics/observed_arm/joint_states.rs"
     );
     for category in ["consumed_topics", "emitted_topics"] {
-        let dir = src_dir.join(category);
-        let entries: Vec<String> = fs::read_dir(&dir)
-            .expect("category dir reads")
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name != "mod.rs")
-            .collect();
-        assert!(
-            entries.is_empty(),
-            "an observer topic must not generate a module under {category}, found: {entries:?}"
-        );
+        assert_no_modules_under(&src_dir, category);
     }
 
     init_cargo_user_node(&user_node);
@@ -384,10 +365,15 @@ fn generated_multi_observer_modules_compile_against_peppylib() {
         &temp_dir,
         STUB_NODE_CONFIG,
         |generator| {
+            // A commander watches every arm of the fleet through a
+            // `one_or_more` observer slot.
             generator
                 .add_observed_topic(
                     &states,
-                    &commander_observer_context(),
+                    &PeerContext {
+                        link_id: "observed_arms".to_string(),
+                        ..controller_peer_context()
+                    },
                     Cardinality::OneOrMore,
                 )
                 .unwrap();
@@ -396,9 +382,7 @@ fn generated_multi_observer_modules_compile_against_peppylib() {
                     &states,
                     &PeerContext {
                         link_id: "spare_arms".to_string(),
-                        pairing_name: "arm_link".to_string(),
-                        pairing_tag: "v1".to_string(),
-                        cardinality: config::node::Cardinality::One,
+                        ..controller_peer_context()
                     },
                     Cardinality::ZeroOrMore,
                 )
