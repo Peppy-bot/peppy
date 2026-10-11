@@ -1,5 +1,5 @@
 use crate::{peppy_binary, workspace_root};
-use config::node::{NodeConfigParser, PeppygenLanguage};
+use config::node::{NodeConfig, NodeConfigParser, PeppygenLanguage};
 use peppy::test_support::{ServeCommandEmulation, wait_for_log};
 use std::collections::HashMap;
 use std::fs;
@@ -15,6 +15,7 @@ struct NodeSetup {
     /// repo the daemon will scan on refresh.
     daemon_root: PathBuf,
     node_ref: String,
+    language: PeppygenLanguage,
     _temp_dir: tempfile::TempDir,
     _rt: tokio::runtime::Runtime,
     _serve: ServeCommandEmulation,
@@ -42,13 +43,17 @@ fn peppy_output(peppy: &Path, daemon_root: &Path, current_dir: &Path, args: &[&s
         .unwrap_or_else(|e| panic!("failed to run peppy {}: {e}", args.join(" ")))
 }
 
+/// The `name:tag` reference that `peppy node build` and `peppy node run` take.
+fn node_ref(config: &NodeConfig) -> String {
+    format!("{}:{}", config.manifest.name.as_str(), config.manifest.tag)
+}
+
 /// Sets up the environment without syncing the main node.
 /// This allows dependencies to be added before syncing a node that depends on them.
 fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
     let node_config = NodeConfigParser::from_path(node_dir.join("peppy.json5"))
         .expect("failed to parse peppy.json5");
     let node_name = node_config.manifest.name.as_str().to_string();
-    let node_ref = format!("{}:{}", node_name, node_config.manifest.tag);
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let serve = rt
@@ -73,7 +78,8 @@ fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
 
     NodeSetup {
         daemon_root,
-        node_ref,
+        node_ref: node_ref(&node_config),
+        language: node_config.execution.language,
         _temp_dir: temp_dir,
         _rt: rt,
         _serve: serve,
@@ -163,6 +169,27 @@ fn build_node(peppy: &Path, daemon_root: &Path, node_dir: &Path, node_ref: &str)
     assert_success(&build_output, &format!("peppy node build {node_ref}"));
 }
 
+/// Runs the built node with `extra_args` (parameters, `--link` and
+/// `--vacant-link` lines) at the end of the command line. With an
+/// `instance_id`, the node runs under that id; without one, `peppy node run`
+/// generates a random instance id.
+fn run_node(
+    peppy: &Path,
+    daemon_root: &Path,
+    node_dir: &Path,
+    node_ref: &str,
+    instance_id: Option<&str>,
+    extra_args: &[&str],
+) {
+    let mut run_cmd = vec!["node", "run", node_ref];
+    if let Some(instance_id) = instance_id {
+        run_cmd.extend(["--instance-id", instance_id]);
+    }
+    run_cmd.extend_from_slice(extra_args);
+    let run_output = peppy_output(peppy, daemon_root, node_dir, &run_cmd);
+    assert_success(&run_output, &format!("peppy node run {node_ref}"));
+}
+
 pub fn run_snippet(snippets_root: &str, snippet_name: &str, start_args: &[&str]) {
     run_snippet_with_deps(snippets_root, snippet_name, start_args, &[]);
 }
@@ -210,24 +237,17 @@ pub fn run_snippet_with_deps_asserting_output(
         let dep_config_path = dep_dir.join("peppy.json5");
         let dep_config = NodeConfigParser::from_path(&dep_config_path)
             .unwrap_or_else(|e| panic!("failed to parse {}: {e}", dep_config_path.display()));
-        let dep_ref = format!(
-            "{}:{}",
-            dep_config.manifest.name.as_str(),
-            dep_config.manifest.tag
-        );
+        let dep_ref = node_ref(&dep_config);
         let _dep_dir_guard = sync_and_add_node(peppy, &setup.daemon_root, &dep_dir, dep, &[]);
         build_node(peppy, &setup.daemon_root, &dep_dir, &dep_ref);
-        let dep_instance_id = format!("{dep}_1");
-        let mut dep_run_cmd = vec![
-            "node",
-            "run",
-            dep_ref.as_str(),
-            "--instance-id",
-            dep_instance_id.as_str(),
-        ];
-        dep_run_cmd.extend_from_slice(dep_run_args);
-        let dep_run = peppy_output(peppy, &setup.daemon_root, &dep_dir, &dep_run_cmd);
-        assert_success(&dep_run, &format!("peppy node run {dep_ref}"));
+        run_node(
+            peppy,
+            &setup.daemon_root,
+            &dep_dir,
+            &dep_ref,
+            Some(&format!("{dep}_1")),
+            dep_run_args,
+        );
     }
 
     // Now sync, add, and build the main node
@@ -235,17 +255,14 @@ pub fn run_snippet_with_deps_asserting_output(
     build_node(peppy, &setup.daemon_root, &node_dir, &setup.node_ref);
 
     let instance_id = format!("{snippet_name}_1");
-    let mut run_cmd = vec![
-        "node",
-        "run",
-        setup.node_ref.as_str(),
-        "--instance-id",
-        instance_id.as_str(),
-    ];
-    run_cmd.extend_from_slice(start_args);
-
-    let start_output = peppy_output(peppy, &setup.daemon_root, &node_dir, &run_cmd);
-    assert_success(&start_output, &format!("peppy node run {}", setup.node_ref));
+    run_node(
+        peppy,
+        &setup.daemon_root,
+        &node_dir,
+        &setup.node_ref,
+        Some(&instance_id),
+        start_args,
+    );
 
     if !expected_output.is_empty() {
         assert_run_log_contains(&setup.daemon_root, &instance_id, expected_output);
@@ -297,9 +314,7 @@ pub fn run_node_tests(snippets_root: &str, snippet_name: &str, deps: &[&str]) {
     // compiles against the sources this sync just generated.
     let _dir_guard = sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &[]);
 
-    let node_config = NodeConfigParser::from_path(node_dir.join("peppy.json5"))
-        .expect("failed to parse peppy.json5");
-    let output = match node_config.execution.language {
+    let output = match setup.language {
         PeppygenLanguage::Rust => run_cargo_node_tests(&node_dir, snippet_name),
         PeppygenLanguage::Python => run_pytest_node_tests(&node_dir),
     };
@@ -388,10 +403,12 @@ pub fn run_snippet_with_contract_repo(
     // populated by the refresh above (no producer node is in the stack).
     let _dir_guard = sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &["-r"]);
     build_node(peppy, &setup.daemon_root, &node_dir, &setup.node_ref);
-
-    let mut run_cmd = vec!["node", "run", setup.node_ref.as_str()];
-    run_cmd.extend_from_slice(start_args);
-
-    let start_output = peppy_output(peppy, &setup.daemon_root, &node_dir, &run_cmd);
-    assert_success(&start_output, &format!("peppy node run {}", setup.node_ref));
+    run_node(
+        peppy,
+        &setup.daemon_root,
+        &node_dir,
+        &setup.node_ref,
+        None,
+        start_args,
+    );
 }

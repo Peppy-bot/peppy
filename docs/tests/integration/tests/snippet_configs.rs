@@ -1,5 +1,5 @@
-//! Parses every `peppy.json5` snippet under the docs guides to ensure the
-//! user-facing examples stay in sync with the `config` crate's schema types.
+//! Parses every peppy document (`.json5` file) under the docs guide snippets to
+//! ensure the user-facing examples stay in sync with the schema types.
 //!
 //! The snippets are the ground truth shown in the docs, so this test lives here
 //! (rather than in the `config` crate): the docs ship in this repo while `config`
@@ -12,6 +12,10 @@
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
 use daemon_config::contract::PeppyContractParser;
+use daemon_config::launcher::{LauncherFragmentParser, PeppyLauncherParser};
+use daemon_config::mcp_exposure::PeppyMcpExposureParser;
+use daemon_config::pairing::PeppyPairingParser;
+use daemon_config::repository::PeppyRepositoryIndexParser;
 use docs_integration_tests::workspace_root;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -20,11 +24,11 @@ const SNIPPETS_ROOT: &str = "docs/src/content/docs/guides/snippets";
 
 /// Walk `root` recursively and collect every peppy document.
 ///
-/// Any `.json5` file, not just `peppy.json5`: a launcher, a contract, and a
-/// pairing all have their own conventional names, and filtering on the node
-/// filename silently excluded every one of them. The schema is what decides how
-/// a file is parsed (see [`assert_parses_with_matching_schema`]), so the walk
-/// only has to find the files.
+/// Any `.json5` file, not only `peppy.json5`: a launcher, a launcher fragment,
+/// an MCP exposure and a repository index each have a file name of their own.
+/// The schema decides how a file is parsed (see
+/// [`assert_parses_with_matching_schema`]), so the walk only has to find the
+/// files.
 fn find_peppy_documents(root: &Path) -> Vec<PathBuf> {
     walkdir::WalkDir::new(root)
         .into_iter()
@@ -40,17 +44,17 @@ fn find_peppy_documents(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The schema tag a config declares, read without parsing the whole document.
-/// Snippet `peppy.json5` files mix node and contract schemas, so the test must
-/// peek the tag and dispatch each file to the parser that matches it.
+/// The schema tag a document declares, read without parsing the whole document.
+/// The snippets mix documents of several schemas, so the test must peek the tag
+/// and dispatch each file to the parser that matches it.
 #[derive(Deserialize)]
 struct SchemaPeek {
     peppy_schema: PeppySchema,
 }
 
 /// Parse `path` with the typed parser matching its declared `peppy_schema` and
-/// assert it succeeds. This keeps contract snippets covered by the same
-/// schema-sync guarantee as node snippets instead of skipping them.
+/// assert it succeeds, so every documented schema, not only the node manifest,
+/// carries the same schema-sync guarantee.
 fn assert_parses_with_matching_schema(path: &Path) {
     let content = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
@@ -59,71 +63,41 @@ fn assert_parses_with_matching_schema(path: &Path) {
 
     match peek.peppy_schema {
         PeppySchema::NodeV1 => {
-            let result = NodeConfigParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse node {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = NodeConfigParser::from_path(path);
+            assert_parsed("node", path, parsed);
         }
         PeppySchema::ContractV1 => {
-            let result = PeppyContractParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse contract {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = PeppyContractParser::from_path(path);
+            assert_parsed("contract", path, parsed);
         }
         PeppySchema::PairingV1 => {
-            let result = daemon_config::pairing::PeppyPairingParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse pairing {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = PeppyPairingParser::from_path(path);
+            assert_parsed("pairing", path, parsed);
         }
         PeppySchema::LauncherV1 => {
-            // The federation guide's worked launcher is the headline example
-            // of a whole feature. Before this arm parsed it, it was the one
-            // piece of documented syntax nothing checked.
-            let result = daemon_config::launcher::PeppyLauncherParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse launcher {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = PeppyLauncherParser::from_path(path);
+            assert_parsed("launcher", path, parsed);
         }
         PeppySchema::LauncherFragmentV1 => {
-            let result = daemon_config::launcher::LauncherFragmentParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse launcher fragment {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = LauncherFragmentParser::from_path(path);
+            assert_parsed("launcher fragment", path, parsed);
         }
         PeppySchema::RepositoryV1 => {
-            let result = daemon_config::repository::PeppyRepositoryIndexParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse repository index {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = PeppyRepositoryIndexParser::from_path(path);
+            assert_parsed("repository index", path, parsed);
         }
         PeppySchema::McpExposureV1 => {
-            let result = daemon_config::mcp_exposure::PeppyMcpExposureParser::from_path(path);
-            assert!(
-                result.is_ok(),
-                "failed to parse MCP exposure {}: {:?}",
-                path.display(),
-                result.unwrap_err()
-            );
+            let parsed = PeppyMcpExposureParser::from_path(path);
+            assert_parsed("MCP exposure", path, parsed);
         }
+    }
+}
+
+/// Fail with the document kind, its path and the parser's error, so that a
+/// failure names the snippet that drifted from its schema.
+fn assert_parsed<T, E: std::fmt::Debug>(kind: &str, path: &Path, parsed: Result<T, E>) {
+    if let Err(error) = parsed {
+        panic!("failed to parse {kind} {}: {error:?}", path.display());
     }
 }
 
