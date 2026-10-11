@@ -2452,8 +2452,8 @@ fn panel_binding() -> peppylib::runtime::EndpointBinding {
     }
 }
 
-/// Adds the panel node, installs the ready and health responders, and,
-/// and the `node_endpoints` responder answering `announced`.
+/// Adds and builds the panel node, then installs its ready and health
+/// responders and a `node_endpoints` responder that answers `announced`.
 async fn add_panel_node_with_services(
     started: &common::StartedCoreNode,
     node_name: &str,

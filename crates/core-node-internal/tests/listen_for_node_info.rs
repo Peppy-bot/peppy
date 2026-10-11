@@ -52,7 +52,6 @@ async fn poll_node_info(
 
 /// Happy path: add a node + start an instance, then `node info` reports the
 /// stage, instance list, run logs, and (after it's set) the add log path.
-/// This is the rewrite of `listen_for_node_info_on_fs_node_success`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     const TARGET_NODE_NAME: &str = "fs_node";
@@ -129,7 +128,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     assert_eq!(info_response.run_log_paths[0], expected_run_log);
     assert!(
         info_response.add_log_path.is_none(),
-        "force_built bypass does not record an add log"
+        "a node pushed straight onto the stack records no add log"
     );
 
     // Record an add log path via the public setter and re-poll; the response
@@ -176,8 +175,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
 
 /// Full add-then-build-then-run-then-info: verifies that after two instances
 /// are spawned through the real goal pipeline, `node info` reports both of
-/// them with their per-instance state. Direct port of
-/// `listen_for_node_info_has_instance_ids` with the request input swapped.
+/// them with their per-instance state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_has_instance_ids() {
     const TARGET_NODE_NAME: &str = "instance_ids_node";
@@ -299,10 +297,9 @@ async fn node_info_has_instance_ids() {
 }
 
 /// An unknown `(name, tag)` should be reported as a *successful*
-/// `NodeInfoResponse::NotInStack` rather than a protocol-level error; this
-/// is the whole point of the breaking response-shape change. The listener
-/// must also remain healthy after a negative lookup and serve a follow-up
-/// valid request.
+/// `NodeInfoResponse::NotInStack` rather than a protocol-level error. The
+/// listener must also remain healthy after a negative lookup and serve a
+/// follow-up valid request.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_reports_not_in_stack_and_recovers() {
     const TARGET_NODE_NAME: &str = "fs_node";
