@@ -47,7 +47,9 @@ pub use stack_log::ExportDiscardLog;
 pub use stop::{
     TEARDOWN_REAP_BUDGET, force_kill_deadline, listen_for_node_stop, teardown_all_instances,
 };
-pub(crate) use stop::{stop_named_instances, teardown_timeout};
+pub(crate) use stop::{
+    named_instances, stop_named_instance, stop_named_instances, teardown_timeout,
+};
 pub use sync::listen_for_node_sync;
 
 pub(crate) use add::{NodeAddActionContext, create_add_log, dispatch_node_add};
@@ -63,6 +65,7 @@ pub(crate) use git_utils::{
 };
 pub(crate) use run::{
     NodeRunActionContext, assemble_runtime_config, resolve_mount_path_parameters, run_node_run,
+    start_give_up_budget,
 };
 pub(crate) use sync::resolve_contract_doc;
 
@@ -234,6 +237,19 @@ mod tests {
         builder.finish().unwrap();
         let encoder = builder.into_inner().unwrap();
         encoder.finish().unwrap();
+    }
+
+    /// A manifest without `execution.setup_timeout_secs` keeps the
+    /// fingerprint it has in every peppy release, so a federated launch
+    /// between daemons of two releases agrees on it. The value is pinned.
+    #[test]
+    fn a_manifest_without_a_setup_budget_keeps_its_fingerprint() {
+        let config = config::node::NodeConfigParser::from_content(TEST_NODE_CONFIG)
+            .expect("the test manifest parses");
+        assert_eq!(
+            manifest_fingerprint(&config).expect("the manifest serializes"),
+            "e370133366998fc3a940b41c5443d797728a4e1456be7fc5246acd92e00e027f"
+        );
     }
 
     #[test]

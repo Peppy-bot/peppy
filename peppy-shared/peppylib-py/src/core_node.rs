@@ -7,7 +7,9 @@
 use std::time::Duration;
 
 use core_node_api::SerializedNodeGraph;
-use core_node_api::encoding::{ContainerInfo, CopyInfo, InfoResponse, StackListResponse};
+use core_node_api::encoding::{
+    ContainerInfo, CopyChange, CopyInfo, InfoResponse, StackListResponse,
+};
 use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -158,9 +160,10 @@ pub struct PyStackListResponse {
 
 #[pymethods]
 impl PyStackListResponse {
-    /// Every field the daemon fills: the graph, its identity, the copies it
-    /// hosts and its shutdown grace.
+    /// The graph, the daemon's identity, the copies it hosts, its shutdown
+    /// grace, and the copy change that holds its stack, if any.
     #[new]
+    #[pyo3(signature = (graph_json, core_node, instance_id, host_name, copies, shutdown_grace_secs, copy_change=None))]
     fn new(
         graph_json: String,
         core_node: String,
@@ -168,16 +171,23 @@ impl PyStackListResponse {
         host_name: String,
         copies: &Bound<'_, PyAny>,
         shutdown_grace_secs: u64,
+        copy_change: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let mut inner = StackListResponse::new(graph_json, core_node, instance_id, host_name);
         inner.copies = pythonize::depythonize(copies)?;
         inner.shutdown_grace_secs = shutdown_grace_secs;
+        inner.copy_change = copy_change.map(pythonize::depythonize).transpose()?;
         Ok(Self { inner })
     }
 
     #[getter]
     fn copies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         Ok(pythonize(py, &self.inner.copies)?)
+    }
+
+    #[getter]
+    fn copy_change<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        Ok(pythonize(py, &self.inner.copy_change)?)
     }
 
     #[getter]
@@ -224,6 +234,7 @@ impl PyStackListResponse {
 pub struct PyStackList {
     graph: SerializedNodeGraph,
     copies: Vec<CopyInfo>,
+    copy_change: Option<CopyChange>,
     shutdown_grace_secs: u64,
     core_node: String,
     instance_id: String,
@@ -235,6 +246,14 @@ impl PyStackList {
     #[getter]
     fn copies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         Ok(pythonize(py, &self.copies)?)
+    }
+
+    /// The join or the removal of a copy that holds the serving daemon's
+    /// stack now, as a dict with `action`, `name` and `option`, or `None`. A
+    /// copy that joins is in `copies` only once its join ends.
+    #[getter]
+    fn copy_change<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        Ok(pythonize(py, &self.copy_change)?)
     }
 
     #[getter]
@@ -318,6 +337,7 @@ fn stack_list<'py>(
         Ok(PyStackList {
             graph: result.graph,
             copies: result.copies,
+            copy_change: result.copy_change,
             shutdown_grace_secs: result.shutdown_grace_secs,
             core_node: result.core_node,
             instance_id: result.instance_id,

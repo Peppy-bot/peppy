@@ -19,6 +19,9 @@ node-stack = { workspace = true }
 latency-report = { workspace = true }
 # `peppy mcp serve`, the built-in MCP server.
 mcp-server = { workspace = true }
+# The goal path of `stack launch`, `build`, `join` and `remove`, and the
+# default budgets of their flags.
+stack-goal = { workspace = true }
 json5-pretty = { workspace = true }
 bytes = "1"
 # 0.4.31 for `DateTime::from_timestamp`, used to render repo read times.

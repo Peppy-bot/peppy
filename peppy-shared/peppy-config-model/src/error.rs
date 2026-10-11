@@ -384,6 +384,12 @@ pub enum ParsingError {
         "Endpoint `{label}` in `execution.endpoints` needs a non-empty `description`: it is what tells a reader of the manifest what the endpoint serves"
     )]
     EmptyEndpointDescription { label: String },
+    #[error(
+        "Node config `execution.setup_timeout_secs` is {written}; the setup budget is a whole number of seconds from {min} to {max}",
+        min = crate::internal::node::SetupTimeout::MIN_SECS,
+        max = crate::internal::node::SetupTimeout::MAX_SECS
+    )]
+    SetupTimeoutOutOfRange { written: String },
 
     // -- container config: mount paths
     #[error(
@@ -543,6 +549,9 @@ pub enum StructuredError {
     EmptyEndpointDescription {
         label: String,
     },
+    SetupTimeoutOutOfRange {
+        written: String,
+    },
 }
 
 impl StructuredError {
@@ -586,6 +595,9 @@ impl From<StructuredError> for ParsingError {
             }
             StructuredError::EmptyEndpointDescription { label } => {
                 ParsingError::EmptyEndpointDescription { label }
+            }
+            StructuredError::SetupTimeoutOutOfRange { written } => {
+                ParsingError::SetupTimeoutOutOfRange { written }
             }
         }
     }
