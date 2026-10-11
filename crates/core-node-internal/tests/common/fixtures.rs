@@ -25,7 +25,13 @@ pub fn publish_repo_index(root: &Path) {
 /// committed, not merely written.
 pub fn publish_and_commit_repo_index(root: &Path) -> String {
     publish_repo_index(root);
+    commit_work_tree(root)
+}
 
+/// Stages everything in the work tree of the repository at `root` and commits
+/// it on HEAD, on top of the current commit if there is one. Returns the
+/// branch HEAD is on.
+pub fn commit_work_tree(root: &Path) -> String {
     let repo = git2::Repository::open(root).expect("open git repository");
     let mut index = repo.index().expect("open index");
     index
@@ -50,7 +56,7 @@ pub fn publish_and_commit_repo_index(root: &Path) -> String {
         &tree,
         &parent_refs,
     )
-    .expect("commit the published repository");
+    .expect("commit the work tree");
 
     let head = repo.head().expect("read HEAD");
     head.shorthand().expect("HEAD is on a branch").to_owned()

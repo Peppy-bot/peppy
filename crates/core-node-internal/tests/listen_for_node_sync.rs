@@ -1178,25 +1178,6 @@ fn brain_consumes_camera_config() -> &'static str {
     "#
 }
 
-/// Initialise an empty git repo that's locally cloneable (file:// URL).
-/// Returns `(repo_dir, branch_name)`.
-fn init_local_git_repo(repo_dir: &Path) -> String {
-    let repo = git2::Repository::init(repo_dir).expect("git init");
-    // Make a single empty commit so HEAD points at a valid ref the
-    // checkout cache can fetch.
-    let sig = git2::Signature::now("Test", "test@example.com").expect("sig");
-    let mut index = repo.index().expect("index");
-    let tree_id = index.write_tree().expect("write_tree");
-    let tree = repo.find_tree(tree_id).expect("find_tree");
-    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-        .expect("commit");
-    repo.head()
-        .expect("head")
-        .shorthand()
-        .expect("shorthand")
-        .to_owned()
-}
-
 async fn sync_with_flag(
     started: &StartedCoreNode,
     node_root: &Path,
@@ -1292,8 +1273,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
     // checkout should land on disk.
     let source_repo_parent = tempdir().expect("source repo parent");
     let source_repo_dir = source_repo_parent.path().join("source-repo");
-    std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-    let branch = init_local_git_repo(&source_repo_dir);
+    git2::Repository::init(&source_repo_dir).expect("git init");
     // Commit two nodes.
     std::fs::create_dir_all(source_repo_dir.join("nodes/dep_a")).expect("dep_a dir");
     std::fs::write(
@@ -1328,20 +1308,8 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
     )
     .expect("write dep_b config");
 
-    // Stage the new files into the repo so a fresh clone sees them.
-    let repo = git2::Repository::open(&source_repo_dir).expect("reopen repo");
-    let mut index = repo.index().expect("index");
-    index
-        .add_all(["nodes/*"].iter(), git2::IndexAddOption::DEFAULT, None)
-        .expect("add_all");
-    index.write().expect("write index");
-    let tree_id = index.write_tree().expect("write_tree");
-    let tree = repo.find_tree(tree_id).expect("find_tree");
-    let parent_oid = repo.head().unwrap().target().unwrap();
-    let parent = repo.find_commit(parent_oid).expect("find_commit");
-    let sig = git2::Signature::now("Test", "test@example.com").expect("sig");
-    repo.commit(Some("HEAD"), &sig, &sig, "add nodes", &tree, &[&parent])
-        .expect("commit");
+    // Commit the nodes so a fresh clone sees them.
+    let branch = common::commit_work_tree(&source_repo_dir);
 
     let repo_url = source_repo_dir.display().to_string();
     TestPackagesCache::new()
@@ -1704,8 +1672,7 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
     // same repo-relative location the real `interfaces_hub` uses.
     let source_parent = tempdir().expect("source parent tempdir");
     let source_repo_dir = source_parent.path().join("interfaces_hub");
-    std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-    let branch = init_local_git_repo(&source_repo_dir);
+    git2::Repository::init(&source_repo_dir).expect("git init");
 
     const CONTRACT_BODY: &str = r#"{
         peppy_schema: "contract/v1",
@@ -1724,21 +1691,8 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
     )
     .expect("write contract file");
 
-    // Stage and commit the contract file on top of the initial empty
-    // commit so a fresh clone sees it on the resolved ref.
-    let repo = git2::Repository::open(&source_repo_dir).expect("reopen repo");
-    let mut index = repo.index().expect("index");
-    index
-        .add_all(["cameras/*"].iter(), git2::IndexAddOption::DEFAULT, None)
-        .expect("add_all");
-    index.write().expect("write index");
-    let tree_id = index.write_tree().expect("write_tree");
-    let tree = repo.find_tree(tree_id).expect("find_tree");
-    let parent_oid = repo.head().unwrap().target().unwrap();
-    let parent = repo.find_commit(parent_oid).expect("find_commit");
-    let sig = git2::Signature::now("Test", "test@example.com").expect("sig");
-    repo.commit(Some("HEAD"), &sig, &sig, "add contract", &tree, &[&parent])
-        .expect("commit contract");
+    // Commit the contract file so a fresh clone sees it on the resolved ref.
+    let branch = common::commit_work_tree(&source_repo_dir);
 
     let repo_url = source_repo_dir.display().to_string();
 
