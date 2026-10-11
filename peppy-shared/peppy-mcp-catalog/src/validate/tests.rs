@@ -92,10 +92,18 @@ fn parse_exposure(exposure_json5: &str) -> McpExposure {
     serde_json5::from_str(exposure_json5).expect("exposure parses")
 }
 
-fn validate(exposure_json5: &str, contracts: &[&Fixture]) -> ValidatedExposure {
+/// The verdict of validating `exposure_json5` against the `contracts`
+/// fixtures.
+fn validation_result(
+    exposure_json5: &str,
+    contracts: &[&Fixture],
+) -> Result<ValidatedExposure, ExposureValidationError> {
     let resolved: Vec<ResolvedContract<'_>> = contracts.iter().map(|f| f.resolved()).collect();
     build_exposure_bundle(&parse_exposure(exposure_json5), &resolved, &[])
-        .expect("exposure validates")
+}
+
+fn validate(exposure_json5: &str, contracts: &[&Fixture]) -> ValidatedExposure {
+    validation_result(exposure_json5, contracts).expect("exposure validates")
 }
 
 fn build(exposure_json5: &str, contracts: &[&Fixture]) -> ExposureBundle {
@@ -103,8 +111,7 @@ fn build(exposure_json5: &str, contracts: &[&Fixture]) -> ExposureBundle {
 }
 
 fn violations_of(exposure_json5: &str, contracts: &[&Fixture]) -> Vec<String> {
-    let resolved: Vec<ResolvedContract<'_>> = contracts.iter().map(|f| f.resolved()).collect();
-    build_exposure_bundle(&parse_exposure(exposure_json5), &resolved, &[])
+    validation_result(exposure_json5, contracts)
         .expect_err("expected the exposure to be refused")
         .violations
 }
@@ -126,6 +133,12 @@ fn camera_exposure(body: &str) -> String {
         camera_sha = sha_of(CAMERA_CONTRACT),
     )
 }
+
+/// The representation fields of a frame carried in members named `frame`,
+/// `encoding`, `width` and `height`, as the camera's frame topic and the
+/// view's response carry it.
+const FRAME_FIELDS: &str =
+    r#"fields: { data: "frame", encoding: "encoding", width: "width", height: "height" }"#;
 
 const INFO_TOOL: &str = r#"services: [
     {
@@ -520,10 +533,6 @@ fn a_bounded_topic_within_its_size_limit_validates() {
 /// a program, each its own resource, both bound to the one contract topic.
 #[test]
 fn two_resources_read_one_topic_with_different_representations() {
-    use crate::ImageCodec;
-
-    let frame_fields =
-        r#"fields: { data: "frame", encoding: "encoding", width: "width", height: "height" }"#;
     let validated = validate(
         &camera_exposure(&format!(
             r#"topics: [
@@ -533,7 +542,7 @@ fn two_resources_read_one_topic_with_different_representations() {
                     description: "Latest frame, JPEG encoded.",
                     freshness: {{ max_age_ms: 2000 }},
                     update: {{ max_hz: 2 }},
-                    representation: {{ image: "jpeg", quality: 80, {frame_fields} }},
+                    representation: {{ image: "jpeg", quality: 80, {FRAME_FIELDS} }},
                     max_result_bytes: 524288,
                     on_oversize: "downscale",
                 }},
@@ -543,7 +552,7 @@ fn two_resources_read_one_topic_with_different_representations() {
                     description: "Latest frame, losslessly encoded.",
                     freshness: {{ max_age_ms: 2000 }},
                     update: {{ max_hz: 2 }},
-                    representation: {{ image: "png16", {frame_fields} }},
+                    representation: {{ image: "png16", {FRAME_FIELDS} }},
                     max_result_bytes: 524288,
                     on_oversize: "downscale",
                 }},
@@ -592,12 +601,10 @@ fn frame_topic(representation: &str) -> String {
 #[test]
 fn the_schema_of_a_resource_leaves_out_the_member_its_blob_carries() {
     let camera = fixture(CAMERA_CONTRACT);
-    let frame_fields =
-        r#"fields: { data: "frame", encoding: "encoding", width: "width", height: "height" }"#;
     for codec in ["jpeg", "png16", "raw"] {
         let bundle = build(
             &frame_topic(&format!(
-                r#"representation: {{ image: "{codec}", {frame_fields} }},"#
+                r#"representation: {{ image: "{codec}", {FRAME_FIELDS} }},"#
             )),
             &[&camera],
         );
@@ -923,7 +930,7 @@ fn a_progress_bound_action_publishes_its_window_in_the_catalog() {
     assert_eq!(
         bundle.tasks[0].bound,
         GoalBound::Progress {
-            window_ms: std::num::NonZeroU64::new(60000).expect("nonzero")
+            window_ms: NonZeroU64::new(60000).expect("nonzero")
         }
     );
     let task = serde_json::to_value(&bundle.tasks[0]).expect("serializes");
@@ -1082,26 +1089,25 @@ fn a_per_robot_bundle_adds_the_routing_arguments_and_resolves_its_listing() {
 fn a_picture_tool_of_a_per_robot_surface_takes_the_routing_arguments_alone() {
     let status = fixture(STATUS_CONTRACT);
     let camera = fixture(CAMERA_CONTRACT);
-    let frame_topic = r#"argument: "camera",
+    let frame_topic = format!(
+        r#"argument: "camera",
         topics: [
-            {
+            {{
                 member: "video_stream",
                 resource: "camera.latest_frame",
                 description: "The camera's latest frame.",
-                freshness: { max_age_ms: 2000 },
-                update: { max_hz: 2 },
-                representation: {
-                    image: "jpeg",
-                    fields: { data: "frame", encoding: "encoding", width: "width", height: "height" },
-                },
+                freshness: {{ max_age_ms: 2000 }},
+                update: {{ max_hz: 2 }},
+                representation: {{ image: "jpeg", {FRAME_FIELDS} }},
                 max_result_bytes: 524288,
                 on_oversize: "downscale",
-                picture: { tool: "camera.look", description: "Look through the camera." },
-            },
-        ],"#;
+                picture: {{ tool: "camera.look", description: "Look through the camera." }},
+            }},
+        ],"#
+    );
     let bundle = build(
         &per_robot_exposure(&sha_of(STATUS_CONTRACT), "")
-            .replace(r#"argument: "camera","#, frame_topic),
+            .replace(r#"argument: "camera","#, &frame_topic),
         &[&status, &camera],
     );
 
@@ -1147,6 +1153,51 @@ fn a_request_field_named_like_a_routing_argument_is_refused() {
     assert_eq!(violations.len(), 1, "{violations:?}");
     assert!(
         violations[0].contains("service `rename`")
+            && violations[0].contains("declares `robot`, the name the server adds"),
+        "{violations:?}"
+    );
+}
+
+/// The recorder's `record_episode` action on a per-robot surface pinned to
+/// the `contract` source, so every goal names its robot.
+fn per_robot_recorder_exposure(contract: &str) -> String {
+    recorder_exposure(contract, "record_episode", "deadline_ms: 60000").replace(
+        r#"server: { title: "Surface" },"#,
+        r#"server: { title: "Surface" },
+        robots: { list: { tool: "robot.list", description: "The robots of the stack." } },"#,
+    )
+}
+
+#[test]
+fn a_per_robot_action_goal_takes_the_routing_argument() {
+    let bundle = build(
+        &per_robot_recorder_exposure(RECORDING_CONTRACT),
+        &[&fixture(RECORDING_CONTRACT)],
+    );
+    let task = &bundle.tasks[0];
+    assert_eq!(
+        task.input_schema["required"],
+        serde_json::json!(["task_name", "episode_index", "robot"])
+    );
+    assert_eq!(
+        task.input_schema["properties"]["robot"],
+        serde_json::json!({ "type": "string" })
+    );
+}
+
+#[test]
+fn an_action_goal_field_named_like_a_routing_argument_is_refused() {
+    let contract = RECORDING_CONTRACT.replace(
+        r#"task_name: "string","#,
+        r#"task_name: "string", robot: "string","#,
+    );
+    let violations = violations_of(
+        &per_robot_recorder_exposure(&contract),
+        &[&fixture(&contract)],
+    );
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(
+        violations[0].contains("action `record_episode`")
             && violations[0].contains("declares `robot`, the name the server adds"),
         "{violations:?}"
     );
@@ -1260,11 +1311,9 @@ fn view_exposure(policies: &str) -> String {
 
 #[test]
 fn a_pictured_service_publishes_the_schema_of_its_document_and_the_bundle_carries_the_record() {
-    let frame_fields =
-        r#"fields: { data: "frame", encoding: "encoding", width: "width", height: "height" }"#;
     let bundle = build(
         &view_exposure(&format!(
-            r#"representation: {{ image: "jpeg", quality: 80, {frame_fields} }},
+            r#"representation: {{ image: "jpeg", quality: 80, {FRAME_FIELDS} }},
                max_result_bytes: 524288,
                on_oversize: "downscale","#
         )),
@@ -1358,13 +1407,27 @@ fn daemon_recorder_exposure(member: &str, bound: &str) -> String {
     )
 }
 
-fn validate_daemon(exposure_json5: &str, interface: &Fixture) -> ValidatedExposure {
+/// The verdict of validating `exposure_json5` against the `interface`
+/// fixture served as a daemon interface, with no contract.
+fn daemon_validation_result(
+    exposure_json5: &str,
+    interface: &Fixture,
+) -> Result<ValidatedExposure, ExposureValidationError> {
     build_exposure_bundle(
         &parse_exposure(exposure_json5),
         &[],
         &[interface.interface()],
     )
-    .expect("exposure validates")
+}
+
+fn validate_daemon(exposure_json5: &str, interface: &Fixture) -> ValidatedExposure {
+    daemon_validation_result(exposure_json5, interface).expect("exposure validates")
+}
+
+fn daemon_violations_of(exposure_json5: &str, interface: &Fixture) -> Vec<String> {
+    daemon_validation_result(exposure_json5, interface)
+        .expect_err("expected the exposure to be refused")
+        .violations
 }
 
 #[test]
@@ -1408,16 +1471,10 @@ fn a_daemon_target_derives_its_entries_as_a_contract_target_does() {
 #[test]
 fn a_daemon_target_follows_the_member_rules_of_a_contract_target() {
     let recording = fixture(RECORDING_CONTRACT);
-    let violations = build_exposure_bundle(
-        &parse_exposure(&daemon_recorder_exposure(
-            "no_such_action",
-            "deadline_ms: 60000",
-        )),
-        &[],
-        &[recording.interface()],
-    )
-    .expect_err("the interface declares no such action")
-    .violations;
+    let violations = daemon_violations_of(
+        &daemon_recorder_exposure("no_such_action", "deadline_ms: 60000"),
+        &recording,
+    );
     assert_eq!(violations.len(), 1, "{violations:?}");
     assert!(
         violations[0].contains(
@@ -1427,16 +1484,10 @@ fn a_daemon_target_follows_the_member_rules_of_a_contract_target() {
         "{violations:?}"
     );
 
-    let violations = build_exposure_bundle(
-        &parse_exposure(&daemon_recorder_exposure(
-            "finish_session",
-            "progress_timeout_ms: 60000",
-        )),
-        &[],
-        &[recording.interface()],
-    )
-    .expect_err("a progress window needs a feedback topic")
-    .violations;
+    let violations = daemon_violations_of(
+        &daemon_recorder_exposure("finish_session", "progress_timeout_ms: 60000"),
+        &recording,
+    );
     assert!(
         violations[0]
             .contains("daemon interface `episode_recording:v1` declares no `feedback_topic`"),

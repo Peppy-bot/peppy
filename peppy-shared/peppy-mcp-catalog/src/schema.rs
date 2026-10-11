@@ -18,7 +18,6 @@
 //! Public property names keep the DSL's snake_case spelling, not the
 //! lowerCamelCase spelling the wire encoding uses internally. Every emitted
 //! schema closes with `additionalProperties: false`.
-
 //!
 //! [`SCHEMA_MAPPING_VERSION`](crate::SCHEMA_MAPPING_VERSION) names the
 //! rules in this module; it lives with the bundle format so the runtime
@@ -176,17 +175,19 @@ pub(crate) fn integer_bounds(token: &TypeToken) -> Option<(i64, i64)> {
     }
 }
 
-/// Upper bound on the serialized JSON size of one value of `format`, under
-/// the canonical mapping, or [`MaxSerializedSize::Unbounded`] when any
-/// member (a string, `bytes`, or a variable-length array) has no static
-/// maximum. Optional fields count as present. Validation uses this to check
-/// `max_result_bytes` against members whose payload is finite.
+/// The static maximum of a format's serialized JSON size in bytes, or
+/// `Unbounded` when the format has none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxSerializedSize {
     Bounded(u64),
     Unbounded,
 }
 
+/// Upper bound on the serialized JSON size of one value of `format`, under
+/// the canonical mapping, or [`MaxSerializedSize::Unbounded`] when any
+/// member (a string, `bytes`, or a variable-length array) has no static
+/// maximum. Optional fields count as present. Validation uses this to check
+/// `max_result_bytes` against members whose payload is finite.
 pub fn max_serialized_json_bytes(format: &MessageFormat) -> MaxSerializedSize {
     match max_fields_bytes(format.0.iter()) {
         Some(bytes) => MaxSerializedSize::Bounded(bytes),
