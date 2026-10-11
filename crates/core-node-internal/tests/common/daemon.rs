@@ -542,6 +542,48 @@ pub async fn spawn_real_stuck_instance(
     }
 }
 
+/// Answers the ready probe the daemon sends to `instance_id` of `node`,
+/// standing in for a node process that has started, until the returned guard
+/// drops.
+pub async fn answer_ready_probe(
+    started: &StartedCoreNode,
+    node: &str,
+    instance_id: &str,
+) -> AbortOnDrop<peppylib::PeppyResult<()>> {
+    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    AbortOnDrop(
+        peppylib::services::ready::listen_for_node_ready(
+            &messenger,
+            &started.core_node_name,
+            instance_id,
+            test_node_target(node),
+        )
+        .await
+        .expect("ready service should start"),
+    )
+}
+
+/// Answers the health probes the daemon sends to `instance_id` of `node`,
+/// standing in for a node process that reports healthy, until the returned
+/// guard drops. A test drops the guard to make a running node stop answering.
+pub async fn answer_health_probes(
+    started: &StartedCoreNode,
+    node: &str,
+    instance_id: &str,
+) -> AbortOnDrop<peppylib::PeppyResult<()>> {
+    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    AbortOnDrop(
+        peppylib::services::health::listen_for_node_health(
+            &messenger,
+            &started.core_node_name,
+            instance_id,
+            test_node_target(node),
+        )
+        .await
+        .expect("health service should start"),
+    )
+}
+
 /// Answers the ready and health probes the daemon sends to `instance_id` of
 /// `node`, standing in for a node process that reports healthy, until the
 /// returned guards drop.
@@ -550,28 +592,9 @@ pub async fn answer_readiness(
     node: &str,
     instance_id: &str,
 ) -> Vec<AbortOnDrop<peppylib::PeppyResult<()>>> {
-    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     vec![
-        AbortOnDrop(
-            peppylib::services::ready::listen_for_node_ready(
-                &messenger,
-                &started.core_node_name,
-                instance_id,
-                test_node_target(node),
-            )
-            .await
-            .expect("ready service should start"),
-        ),
-        AbortOnDrop(
-            peppylib::services::health::listen_for_node_health(
-                &messenger,
-                &started.core_node_name,
-                instance_id,
-                test_node_target(node),
-            )
-            .await
-            .expect("health service should start"),
-        ),
+        answer_ready_probe(started, node, instance_id).await,
+        answer_health_probes(started, node, instance_id).await,
     ]
 }
 

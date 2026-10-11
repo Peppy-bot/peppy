@@ -1,19 +1,18 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, answer_readiness,
-    create_test_node_with_name, fast_health_monitor, instance_state_in_any_state, poll_until,
-    send_node_add_then_build, send_node_run_and_wait, send_node_run_and_wait_with_env,
-    start_core_node_with_health_monitor, start_core_node_with_health_timeout,
-    start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
-    wait_until_action_completes, wait_until_process_exits, write_peppy_json5,
+    AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, answer_health_probes,
+    answer_readiness, answer_ready_probe, create_test_node_with_name, fast_health_monitor,
+    instance_state_in_any_state, poll_until, send_node_add_then_build, send_node_run_and_wait,
+    send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
+    start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
+    start_core_node_with_real_messenger, wait_until_action_completes, wait_until_process_exits,
+    write_peppy_json5,
 };
 use config::runtime::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use peppylib::messaging::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -133,17 +132,7 @@ async fn listen_for_node_run_timeout() {
 
     // Set up a ready listener so node_run can proceed to the health-check phase.
     // We intentionally do NOT set up a health listener to force the health check to time out.
-    let ready_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &ready_handle,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start ready service"),
-    );
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     // Create a runtime config for the node_run request
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
@@ -292,17 +281,8 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
     // streamed: that keeps the action's feedback stream open until the output is
     // captured, instead of racing the daemon's start-success stream close (which
     // can fire before a process even emits its first line under load).
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -1655,27 +1635,8 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     .expect("node_add should succeed");
 
     // Set up ready+health listeners so the initial start succeeds
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
+    let health_task = answer_health_probes(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -1818,27 +1779,8 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     .await
     .expect("node_add should succeed");
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
+    let health_task = answer_health_probes(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -1983,27 +1925,8 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
     .await
     .expect("node_add should succeed");
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
+    let health_task = answer_health_probes(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -2152,27 +2075,8 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     .await
     .expect("node_add should succeed");
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
+    let health_task = answer_health_probes(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 

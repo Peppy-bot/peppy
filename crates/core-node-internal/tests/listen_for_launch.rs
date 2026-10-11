@@ -14,7 +14,6 @@ use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
 use peppylib::messaging::{MessengerHandle, ResultStatus};
-use peppylib::services::ready::listen_for_node_ready;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,8 +21,8 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 use crate::common::{
-    StartedCoreNode, TestPackagesCache, TestRunningInstance, answer_readiness, build_staged_node,
-    commit_path, is_process_running, poll_until, send_node_add_and_wait,
+    StartedCoreNode, TestPackagesCache, TestRunningInstance, answer_readiness, answer_ready_probe,
+    build_staged_node, commit_path, is_process_running, poll_until, send_node_add_and_wait,
     spawn_real_running_instance, start_core_node_with_mock_messenger, wait_until_process_exits,
     write_peppy_json5,
 };
@@ -1241,18 +1240,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     let node_b_path = write_node_config(nodes_dir.path(), "node_b", NODE_TAG, &["sleep", "60"]);
 
     // Set up ONLY the ready responder. Do not set up health responder so it times out.
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready_b = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "b1",
-            common::test_node_target("node_b"),
-        )
-        .await
-        .expect("ready should start"),
-    );
+    let _ready_b = answer_ready_probe(&started_core_node, "node_b", "b1").await;
 
     let launch_b = r#"
     { peppy_schema: "launcher/v1", deployments: [ { source: { name: "node_b:v1" }, instances: [ { instance_id: "b1" } ] } ] }
