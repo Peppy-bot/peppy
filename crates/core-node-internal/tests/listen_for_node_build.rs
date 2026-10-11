@@ -305,15 +305,14 @@ wheels = [
     );
 }
 
-/// Polls until `pid_file` exists and holds a non-empty PID, returning it.
-async fn wait_for_pid_file(pid_file: &Path) -> String {
+/// Polls until `pid_file` exists and holds a PID, returning it.
+async fn wait_for_pid_file(pid_file: &Path) -> u32 {
     common::poll_until(
         Duration::from_secs(30),
         "build_cmd did not record its PID within 30s",
         || {
             let contents = std::fs::read_to_string(pid_file).ok()?;
-            let pid = contents.trim();
-            (!pid.is_empty()).then(|| pid.to_string())
+            contents.trim().parse::<u32>().ok()
         },
     )
     .await
@@ -336,22 +335,13 @@ async fn wait_for_building(node_stack: &node_stack::NodeStack, name: &str, tag: 
     .await
 }
 
-/// Polls `kill -0 <pid>` (no `libc`/`unsafe`) until the process is gone.
-async fn wait_until_pid_dead(pid: &str) {
+/// Polls until the process `pid` is gone: absent or a zombie, as
+/// `common::is_process_running` and the daemon define it.
+async fn wait_until_pid_dead(pid: u32) {
     common::poll_until(
         Duration::from_secs(30),
         &format!("build subprocess (pid {pid}) was not killed within 30s"),
-        || {
-            let alive = std::process::Command::new("kill")
-                .arg("-0")
-                .arg(pid)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            (!alive).then_some(())
-        },
+        || (!common::is_process_running(pid)).then_some(()),
     )
     .await
 }
@@ -461,7 +451,7 @@ async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
     };
 
     // The in-flight build's subprocess must actually be killed by the force.
-    wait_until_pid_dead(&first_pid).await;
+    wait_until_pid_dead(first_pid).await;
 
     // Let the (reused) forced build run to completion.
     std::fs::write(&proceed_file, b"").expect("touch proceed file");
@@ -1550,7 +1540,7 @@ async fn stack_reset_cancels_a_running_build_and_allows_a_new_add() {
             .await
         })
     };
-    let pid: u32 = wait_for_pid_file(&pid_file).await.trim().parse().unwrap();
+    let pid = wait_for_pid_file(&pid_file).await;
     let response = peppylib::core_node::transport::poll(
         &core_node_api::encoding::StackResetRequest::new(),
         &started.caller_handle,
