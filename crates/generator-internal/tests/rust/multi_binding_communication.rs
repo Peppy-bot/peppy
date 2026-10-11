@@ -20,21 +20,16 @@ use config::node::TopicRetention;
 
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, EMITTED_TOPIC_EXAMPLE, EXPOSED_SERVICE_EXAMPLE, STUB_NODE_CONFIG,
-    SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, WaitContext, bind_slot_many, compile_project,
-    copy_config_to_output, init_cargo_user_node, init_test_env, multi_consumer_stub_node_config,
-    send_shutdown, spawn_cargo_run, test_peppy_dirs, wait_for_child,
+    SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, WaitContext, assert_exited_successfully, bind_slot_many,
+    compile_project, generate_node_project, init_cargo_user_node, multi_consumer_stub_node_config,
+    save_runtime_config, send_shutdown, spawn_cargo_run, test_node_runtime_config, wait_for_child,
     wait_for_health_service_reachable_or_exit,
 };
-use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
-use config::runtime::NodeInstanceConfig;
-use config::{
-    node::{
-        ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic, NativeExposedService,
-    },
-    runtime::{Name, RuntimeConfig},
+use config::consts::RUNTIME_CONFIG_VAR_NAME;
+use config::node::{
+    ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic, NativeExposedService,
 };
 use generator::LanguageGenerator;
-use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
 
@@ -87,53 +82,42 @@ async fn one_or_more_slot_fans_in_topics_and_directs_services(
     let service_response_format: MessageFormat =
         serde_json5::from_str(crate::helpers::CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
 
-    let (mut generator, consumer_dir, user_node_consumer, consumer_config_path) =
-        init_test_env::<generator::RustGenerator>(
-            &temp_dir_consumer,
-            &multi_consumer_stub_node_config(UVC_CAMERA_NODE_NAME, "v1", "cameras", "one_or_more"),
-        );
     let dependency = generator::DependencyContext::native(
         UVC_CAMERA_NODE_NAME,
         "v1",
         "cameras",
         config::node::Cardinality::OneOrMore,
     );
-    generator
-        .add_consumed_topic(
-            &consumed_topic,
-            topic_format,
-            TopicRetention::LiveOnly,
-            &dependency,
-        )
-        .unwrap();
-    generator
-        .add_consumed_service(
-            &consumed_service,
-            &service_request_format,
-            &service_response_format,
-            &dependency,
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &consumer_dir);
-    generator
-        .build(&consumer_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &consumer_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_consumer,
+        &multi_consumer_stub_node_config(UVC_CAMERA_NODE_NAME, "v1", "cameras", "one_or_more"),
+        |generator| {
+            generator
+                .add_consumed_topic(
+                    &consumed_topic,
+                    topic_format,
+                    TopicRetention::LiveOnly,
+                    &dependency,
+                )
+                .unwrap();
+            generator
+                .add_consumed_service(
+                    &consumed_service,
+                    &service_request_format,
+                    &service_response_format,
+                    &dependency,
+                )
+                .unwrap();
+        },
     );
 
     // Both cameras bound to the ONE `cameras` slot, in declaration order.
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(CONSUMER_INSTANCE_ID).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        CONSUMER_INSTANCE_ID,
+    );
     let consumer_runtime_config = bind_slot_many(
         consumer_runtime_config,
         "cameras",
@@ -141,10 +125,8 @@ async fn one_or_more_slot_fans_in_topics_and_directs_services(
         &[FRONT_CAMERA_INSTANCE_ID, REAR_CAMERA_INSTANCE_ID],
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -236,32 +218,20 @@ fn main() -> Result<()> {
     let emitted_topic: NativeEmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
     let exposed_service: NativeExposedService =
         serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
-    let (mut generator, camera_dir, user_node_camera, camera_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_camera, STUB_NODE_CONFIG);
-    generator.add_emitted_topic(&emitted_topic, None).unwrap();
-    generator
-        .add_exposed_service(&exposed_service, None)
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_camera, &camera_dir);
-    generator
-        .build(&camera_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &camera_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_camera = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_camera,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator.add_emitted_topic(&emitted_topic, None).unwrap();
+            generator
+                .add_exposed_service(&exposed_service, None)
+                .unwrap();
+        },
     );
 
     let camera_runtime_config_path = |instance_id: &str| {
-        let runtime_config = RuntimeConfig::new(
-            &router_host,
-            router_port,
-            NodeInstanceConfig::new(Name::new(instance_id).unwrap()),
-            UVC_CAMERA_NODE_NAME,
-            "v1",
-            TEST_CORE_NODE,
-        )
-        .unwrap();
+        let runtime_config =
+            test_node_runtime_config(&router_host, router_port, UVC_CAMERA_NODE_NAME, instance_id);
         let runtime_config = crate::helpers::apply_topology(runtime_config, topology);
         let path = temp_dir_camera
             .path()
@@ -337,7 +307,6 @@ fn main() -> Result<()> {
     compile_project(&user_node_consumer);
     compile_project(&user_node_camera);
 
-    let consumer_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
     let front_config_str = front_config_path.to_str().unwrap().to_owned();
     let rear_config_str = rear_config_path.to_str().unwrap().to_owned();
 
@@ -433,13 +402,7 @@ fn main() -> Result<()> {
         &user_node_camera,
     );
 
-    let stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer cargo run failed with status: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-        consumer_output.status.code(),
-    );
+    let (stdout, stderr) = assert_exited_successfully("consumer cargo run", &consumer_output);
 
     // Binding declaration order, verbatim.
     assert!(

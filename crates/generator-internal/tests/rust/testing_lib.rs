@@ -13,7 +13,6 @@
 //! boots it as that domain's publisher: the node supplies the instants, the
 //! test reads them back off the domain's stream and never ticks.
 
-use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
     NativeExposedService, TopicRetention,
@@ -23,8 +22,7 @@ use generator::{ConsumedActionMessage, DependencyContext, LanguageGenerator, Pee
 use std::fs;
 
 use crate::helpers::{
-    copy_config_to_output, init_test_env, peppygen_dev_dependency_line, run_cargo_test,
-    test_peppy_dirs, test_wrapper_crate_name,
+    generate_node_project, peppygen_dev_dependency_line, run_cargo_test, test_wrapper_crate_name,
 };
 
 // The manifest must declare the slots the generated code addresses: the
@@ -249,76 +247,69 @@ pub async fn setup_clock_publisher(
 #[test]
 fn generated_mocks_and_fixtures_drive_a_node_end_to_end() {
     let temp_dir = tempfile::TempDir::new_in(config_test_support::test_tmp_root()).unwrap();
-    let (mut generator, output_dir, user_node, _config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir, NODE_CONFIG);
+    let user_node =
+        generate_node_project::<generator::RustGenerator>(&temp_dir, NODE_CONFIG, |generator| {
+            generator.set_node_identity("generated_node", "v1");
 
-    generator.set_node_identity("generated_node", "v1");
+            let status: NativeEmittedTopic = serde_json5::from_str(EMITTED_STATUS).unwrap();
+            generator.add_emitted_topic(&status, None).unwrap();
+            let ping: NativeExposedService = serde_json5::from_str(EXPOSED_PING).unwrap();
+            generator.add_exposed_service(&ping, None).unwrap();
 
-    let status: NativeEmittedTopic = serde_json5::from_str(EMITTED_STATUS).unwrap();
-    generator.add_emitted_topic(&status, None).unwrap();
-    let ping: NativeExposedService = serde_json5::from_str(EXPOSED_PING).unwrap();
-    generator.add_exposed_service(&ping, None).unwrap();
+            let frame_topic: ConsumedTopic = serde_json5::from_str(CONSUMED_FRAME_TOPIC).unwrap();
+            let frame_format: MessageFormat = serde_json5::from_str(CONSUMED_FRAME_FORMAT).unwrap();
+            let camera_dep =
+                DependencyContext::native("uvc_camera", "v1", "camera", Cardinality::One);
+            generator
+                .add_consumed_topic(
+                    &frame_topic,
+                    frame_format,
+                    TopicRetention::LiveOnly,
+                    &camera_dep,
+                )
+                .unwrap();
 
-    let frame_topic: ConsumedTopic = serde_json5::from_str(CONSUMED_FRAME_TOPIC).unwrap();
-    let frame_format: MessageFormat = serde_json5::from_str(CONSUMED_FRAME_FORMAT).unwrap();
-    let camera_dep = DependencyContext::native("uvc_camera", "v1", "camera", Cardinality::One);
-    generator
-        .add_consumed_topic(
-            &frame_topic,
-            frame_format,
-            TopicRetention::LiveOnly,
-            &camera_dep,
-        )
-        .unwrap();
+            let enable: ConsumedService = serde_json5::from_str(CONSUMED_ENABLE_SERVICE).unwrap();
+            let enable_request: MessageFormat =
+                serde_json5::from_str(ENABLE_REQUEST_FORMAT).unwrap();
+            let enable_response: MessageFormat =
+                serde_json5::from_str(ENABLE_RESPONSE_FORMAT).unwrap();
+            generator
+                .add_consumed_service(&enable, &enable_request, &enable_response, &camera_dep)
+                .unwrap();
 
-    let enable: ConsumedService = serde_json5::from_str(CONSUMED_ENABLE_SERVICE).unwrap();
-    let enable_request: MessageFormat = serde_json5::from_str(ENABLE_REQUEST_FORMAT).unwrap();
-    let enable_response: MessageFormat = serde_json5::from_str(ENABLE_RESPONSE_FORMAT).unwrap();
-    generator
-        .add_consumed_service(&enable, &enable_request, &enable_response, &camera_dep)
-        .unwrap();
+            let plan: ConsumedAction = serde_json5::from_str(CONSUMED_PLAN_ACTION).unwrap();
+            let plan_messages = ConsumedActionMessage {
+                goal_request: Some(serde_json5::from_str(PLAN_GOAL_FORMAT).unwrap()),
+                goal_response: Some(serde_json5::from_str(PLAN_GOAL_RESPONSE_FORMAT).unwrap()),
+                feedback: Some(serde_json5::from_str(PLAN_FEEDBACK_FORMAT).unwrap()),
+                result_response: Some(serde_json5::from_str(PLAN_RESULT_FORMAT).unwrap()),
+            };
+            generator
+                .add_consumed_action(
+                    &plan,
+                    &plan_messages,
+                    &DependencyContext::native("brain", "v1", "brain", Cardinality::One),
+                )
+                .unwrap();
 
-    let plan: ConsumedAction = serde_json5::from_str(CONSUMED_PLAN_ACTION).unwrap();
-    let plan_messages = ConsumedActionMessage {
-        goal_request: Some(serde_json5::from_str(PLAN_GOAL_FORMAT).unwrap()),
-        goal_response: Some(serde_json5::from_str(PLAN_GOAL_RESPONSE_FORMAT).unwrap()),
-        feedback: Some(serde_json5::from_str(PLAN_FEEDBACK_FORMAT).unwrap()),
-        result_response: Some(serde_json5::from_str(PLAN_RESULT_FORMAT).unwrap()),
-    };
-    generator
-        .add_consumed_action(
-            &plan,
-            &plan_messages,
-            &DependencyContext::native("brain", "v1", "brain", Cardinality::One),
-        )
-        .unwrap();
-
-    let commands: NativeEmittedTopic = serde_json5::from_str(PEER_COMMANDS).unwrap();
-    let states: NativeEmittedTopic = serde_json5::from_str(PEER_STATES).unwrap();
-    let peer = PeerContext {
-        link_id: "arm".to_string(),
-        pairing_name: "arm_link".to_string(),
-        pairing_tag: "v1".to_string(),
-        cardinality: config::node::Cardinality::One,
-    };
-    generator.add_peer_emitted_topic(&commands, &peer).unwrap();
-    generator.add_peer_consumed_topic(&states, &peer).unwrap();
-    let limbs = PeerContext {
-        link_id: "limbs".to_string(),
-        cardinality: config::node::Cardinality::ZeroOrMore,
-        ..peer
-    };
-    generator.add_peer_emitted_topic(&commands, &limbs).unwrap();
-
-    let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(&output_dir, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &user_node.join(config::consts::NODE_CONFIG_FILE),
-        std::path::Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
+            let commands: NativeEmittedTopic = serde_json5::from_str(PEER_COMMANDS).unwrap();
+            let states: NativeEmittedTopic = serde_json5::from_str(PEER_STATES).unwrap();
+            let peer = PeerContext {
+                link_id: "arm".to_string(),
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+                cardinality: config::node::Cardinality::One,
+            };
+            generator.add_peer_emitted_topic(&commands, &peer).unwrap();
+            generator.add_peer_consumed_topic(&states, &peer).unwrap();
+            let limbs = PeerContext {
+                link_id: "limbs".to_string(),
+                cardinality: config::node::Cardinality::ZeroOrMore,
+                ..peer
+            };
+            generator.add_peer_emitted_topic(&commands, &limbs).unwrap();
+        });
 
     // The node crate: lib.rs holds the importable setup (the split node init
     // scaffolds), the test drives it through the generated harness.

@@ -4,20 +4,16 @@ use crate::helpers::{
 };
 use crate::helpers::{
     CapturedChild, DEFAULT_WAIT_TIMEOUT, RUST_STUB_EXECUTION, STUB_NODE_CONFIG, WaitContext,
-    bind_slot, compile_project, consumer_stub_node_config, contract_consumer_stub_node_config,
-    contract_dep, copy_config_to_output, init_cargo_user_node, init_test_env, native_dep,
-    send_shutdown, spawn_cargo_run, test_contract_target, test_peppy_dirs,
-    wait_for_action_reachable_via_target_or_exit, wait_for_action_service_reachable_or_exit,
-    wait_for_child, wait_for_health_service_reachable_or_exit,
+    assert_exited_successfully, bind_slot, compile_project, consumer_stub_node_config,
+    contract_consumer_stub_node_config, contract_dep, generate_node_project, init_cargo_user_node,
+    native_dep, save_runtime_config, send_shutdown, spawn_cargo_run, test_contract_target,
+    test_node_runtime_config, wait_for_action_reachable_via_target_or_exit,
+    wait_for_action_service_reachable_or_exit, wait_for_child,
+    wait_for_health_service_reachable_or_exit,
 };
-use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
-use config::runtime::NodeInstanceConfig;
-use config::{
-    node::{ConsumedAction, MessageFormat, NativeExposedAction},
-    runtime::{Name, RuntimeConfig},
-};
+use config::consts::RUNTIME_CONFIG_VAR_NAME;
+use config::node::{ConsumedAction, MessageFormat, NativeExposedAction};
 use generator::{ConsumedActionMessage, ContractOrigin, LanguageGenerator};
-use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
 
@@ -66,44 +62,33 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
         feedback: Some(serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap()),
         result_response: Some(serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap()),
     };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(
-            &temp_dir_consumer,
-            &consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            // The manifest link_id rides into codegen so this `one` slot
-            // exposes the singular `bound_producer()` and fire_goal
-            // membership-checks the passed target instead of emitting a
-            // wildcard.
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_consumer,
+        &consumer_stub_node_config("brain", "v1", "brain"),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    // The manifest link_id rides into codegen so this `one` slot
+                    // exposes the singular `bound_producer()` and fire_goal
+                    // membership-checks the passed target instead of emitting a
+                    // wildcard.
+                    &native_dep("brain", "v1", "brain"),
+                )
+                .unwrap();
+        },
     );
 
     // Bind the consumer's pinned slot to the LEFT arm with the full
     // (core_node, instance_id) pair, exactly what the validator stamps
     // when a stack launches with `--link brain@left_arm_instance`.
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(CONSUMER_INSTANCE_ID).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        CONSUMER_INSTANCE_ID,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "brain",
@@ -111,10 +96,8 @@ async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
         LEFT_ARM_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -168,29 +151,16 @@ fn main() -> Result<()> {
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_exposer,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator.add_exposed_action(&exposed_action, None).unwrap();
+        },
     );
 
     let arm_runtime_config = |instance_id: &str| {
-        let cfg = RuntimeConfig::new(
-            &router_host,
-            router_port,
-            NodeInstanceConfig::new(Name::new(instance_id).unwrap()),
-            BRAIN_NODE_NAME,
-            "v1",
-            TEST_CORE_NODE,
-        )
-        .unwrap();
+        let cfg = test_node_runtime_config(&router_host, router_port, BRAIN_NODE_NAME, instance_id);
         crate::helpers::apply_topology(cfg, topology)
     };
     let left_runtime_config_path = temp_dir_exposer.path().join("left_runtime.json5");
@@ -286,7 +256,6 @@ fn main() -> Result<()> {
     )
     .await;
 
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
     let mut consumer_child = spawn_cargo_run(
         &user_node_consumer,
         &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
@@ -340,15 +309,8 @@ fn main() -> Result<()> {
         &user_node_exposer,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, consumer_stderr) =
+        assert_exited_successfully("consumer cargo run", &consumer_output);
     for round in 0..GOAL_ROUNDS {
         assert!(
             consumer_stdout.contains(&format!("round {round} completed success=true")),
@@ -364,24 +326,8 @@ fn main() -> Result<()> {
         consumer_stderr
     );
 
-    let left_stdout = String::from_utf8_lossy(&left_output.stdout).into_owned();
-    let left_stderr = String::from_utf8_lossy(&left_output.stderr).into_owned();
-    let right_stdout = String::from_utf8_lossy(&right_output.stdout).into_owned();
-    let right_stderr = String::from_utf8_lossy(&right_output.stderr).into_owned();
-    assert!(
-        left_output.status.success(),
-        "left arm cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        left_output.status.code(),
-        left_stdout,
-        left_stderr
-    );
-    assert!(
-        right_output.status.success(),
-        "right arm cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        right_output.status.code(),
-        right_stdout,
-        right_stderr
-    );
+    let (left_stdout, _) = assert_exited_successfully("left arm cargo run", &left_output);
+    let (right_stdout, _) = assert_exited_successfully("right arm cargo run", &right_output);
     assert_eq!(
         left_stdout.matches("server received goal").count(),
         GOAL_ROUNDS,
@@ -425,37 +371,26 @@ async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopol
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(
-            &temp_dir_consumer,
-            &consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_consumer,
+        &consumer_stub_node_config("brain", "v1", "brain"),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &native_dep("brain", "v1", "brain"),
+                )
+                .unwrap();
+        },
     );
 
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        consumer_instance_id,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "brain",
@@ -463,10 +398,8 @@ async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopol
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -542,33 +475,23 @@ fn main() -> Result<()> {
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_exposer,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator.add_exposed_action(&exposed_action, None).unwrap();
+        },
     );
 
-    let exposer_runtime_config = RuntimeConfig::new(
+    let exposer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
-        BRAIN_NODE_NAME, // Must match the node name expected by the consumer
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        BRAIN_NODE_NAME,
+        exposer_instance_id,
+    );
     let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = r#"
@@ -630,9 +553,6 @@ fn main() -> Result<()> {
     compile_project(&user_node_consumer);
     compile_project(&user_node_exposer);
 
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
-
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
@@ -723,15 +643,8 @@ fn main() -> Result<()> {
         &user_node_exposer,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, consumer_stderr) =
+        assert_exited_successfully("consumer cargo run", &consumer_output);
     assert!(
         consumer_stdout.contains(
             "rejected goal accepted=false reason=Some(\"arm 99 is reserved\") data_present=false"
@@ -744,15 +657,8 @@ fn main() -> Result<()> {
         consumer_stderr
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
+    let (exposer_stdout, exposer_stderr) =
+        assert_exited_successfully("exposer cargo run", &exposer_output);
     assert!(
         exposer_stdout.contains("server received goal arm_id=7 desired=[10, 20, 30]")
             && exposer_stdout.contains("server emitted feedback message [7, 31, 43]")
@@ -791,37 +697,26 @@ async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::Loc
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(
-            &temp_dir_consumer,
-            &consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_consumer,
+        &consumer_stub_node_config("brain", "v1", "brain"),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &native_dep("brain", "v1", "brain"),
+                )
+                .unwrap();
+        },
     );
 
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        consumer_instance_id,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "brain",
@@ -829,10 +724,8 @@ async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::Loc
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -880,33 +773,23 @@ fn main() -> Result<()> {
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_exposer,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator.add_exposed_action(&exposed_action, None).unwrap();
+        },
     );
 
-    let exposer_runtime_config = RuntimeConfig::new(
+    let exposer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
-        BRAIN_NODE_NAME, // Must match the node name expected by the consumer
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        BRAIN_NODE_NAME,
+        exposer_instance_id,
+    );
     let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = r#"
@@ -958,9 +841,6 @@ fn main() -> Result<()> {
     compile_project(&user_node_consumer);
     compile_project(&user_node_exposer);
 
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
-
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
         .expect("failed to create messenger for test control");
@@ -1051,15 +931,8 @@ fn main() -> Result<()> {
         &user_node_exposer,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, consumer_stderr) =
+        assert_exited_successfully("consumer cargo run", &consumer_output);
     assert!(
         consumer_stdout.contains("goal accepted=true")
             && consumer_stdout.contains("cancel accepted=true error=<none>"),
@@ -1068,15 +941,8 @@ fn main() -> Result<()> {
         consumer_stderr
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
+    let (exposer_stdout, exposer_stderr) =
+        assert_exited_successfully("exposer cargo run", &exposer_output);
     assert!(
         exposer_stdout.contains("server received goal arm_id=7 desired=[10, 20, 30]")
             && exposer_stdout.contains("server observed cancel for goal"),
@@ -1137,37 +1003,26 @@ async fn actions_communication_drain_loop_until_end_signal(
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(
-            &temp_dir_consumer,
-            &consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_consumer,
+        &consumer_stub_node_config("brain", "v1", "brain"),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &native_dep("brain", "v1", "brain"),
+                )
+                .unwrap();
+        },
     );
 
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        consumer_instance_id,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "brain",
@@ -1175,10 +1030,8 @@ async fn actions_communication_drain_loop_until_end_signal(
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -1247,33 +1100,23 @@ fn main() -> Result<()> {
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_exposer,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator.add_exposed_action(&exposed_action, None).unwrap();
+        },
     );
 
-    let exposer_runtime_config = RuntimeConfig::new(
+    let exposer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        exposer_instance_id,
+    );
     let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = r#"
@@ -1331,9 +1174,6 @@ fn main() -> Result<()> {
 
     compile_project(&user_node_consumer);
     compile_project(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
@@ -1423,15 +1263,7 @@ fn main() -> Result<()> {
         &user_node_exposer,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, _) = assert_exited_successfully("consumer cargo run", &consumer_output);
     // Critical assertions: client drained all 3 feedback messages, then
     // the End signal closed the loop, then get_result succeeded.
     assert!(
@@ -1460,15 +1292,8 @@ fn main() -> Result<()> {
         consumer_stdout
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
+    let (exposer_stdout, exposer_stderr) =
+        assert_exited_successfully("exposer cargo run", &exposer_output);
     assert!(
         exposer_stdout.contains("server emitted feedback #3 position=[2, 3, 4]")
             && exposer_stdout.contains("server handled result request"),
@@ -1531,37 +1356,26 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(
-            &temp_dir_consumer,
-            &consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_consumer,
+        &consumer_stub_node_config("brain", "v1", "brain"),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &native_dep("brain", "v1", "brain"),
+                )
+                .unwrap();
+        },
     );
 
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        consumer_instance_id,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "brain",
@@ -1569,10 +1383,8 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -1637,33 +1449,23 @@ fn main() -> Result<()> {
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_exposer,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator.add_exposed_action(&exposed_action, None).unwrap();
+        },
     );
 
-    let exposer_runtime_config = RuntimeConfig::new(
+    let exposer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        exposer_instance_id,
+    );
     let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = r#"
@@ -1714,9 +1516,6 @@ fn main() -> Result<()> {
 
     compile_project(&user_node_consumer);
     compile_project(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
@@ -1806,15 +1605,7 @@ fn main() -> Result<()> {
         &user_node_exposer,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, _) = assert_exited_successfully("consumer cargo run", &consumer_output);
     assert!(
         consumer_stdout.contains("warmup feedback new_position=[1, 2, 3]"),
         "consumer did not receive warmup feedback before cancel.\nstdout:\n{}",
@@ -1836,15 +1627,8 @@ fn main() -> Result<()> {
         consumer_stdout
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
+    let (exposer_stdout, exposer_stderr) =
+        assert_exited_successfully("exposer cargo run", &exposer_output);
     assert!(
         exposer_stdout.contains("server observed cancel"),
         "exposer did not reach the cancel-observed path.\nstdout:\n{}\nstderr:\n{}",
@@ -1910,37 +1694,26 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(
-            &temp_dir_consumer,
-            &consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_consumer,
+        &consumer_stub_node_config("brain", "v1", "brain"),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &native_dep("brain", "v1", "brain"),
+                )
+                .unwrap();
+        },
     );
 
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        consumer_instance_id,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "brain",
@@ -1948,10 +1721,8 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -2027,33 +1798,23 @@ fn main() -> Result<()> {
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_exposer,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator.add_exposed_action(&exposed_action, None).unwrap();
+        },
     );
 
-    let exposer_runtime_config = RuntimeConfig::new(
+    let exposer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        exposer_instance_id,
+    );
     let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = r#"
@@ -2107,9 +1868,6 @@ fn main() -> Result<()> {
 
     compile_project(&user_node_consumer);
     compile_project(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
@@ -2199,15 +1957,7 @@ fn main() -> Result<()> {
         &user_node_exposer,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, _) = assert_exited_successfully("consumer cargo run", &consumer_output);
     assert!(
         consumer_stdout.contains("pre_cancel feedback new_position=[1, 1, 1]"),
         "consumer did not receive pre-cancel feedback.\nstdout:\n{}",
@@ -2234,15 +1984,7 @@ fn main() -> Result<()> {
         consumer_stdout
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
+    let (exposer_stdout, _) = assert_exited_successfully("exposer cargo run", &exposer_output);
     assert!(
         exposer_stdout.contains("server emitted pre-cancel feedback")
             && exposer_stdout.contains("server observed cancel but keeps going")
@@ -2306,37 +2048,26 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
         feedback: Some(feedback_format),
         result_response: Some(result_response_format),
     };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(
-            &temp_dir_consumer,
-            &consumer_stub_node_config("brain", "v1", "brain"),
-        );
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &native_dep("brain", "v1", "brain"),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_consumer,
+        &consumer_stub_node_config("brain", "v1", "brain"),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &native_dep("brain", "v1", "brain"),
+                )
+                .unwrap();
+        },
     );
 
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        consumer_instance_id,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "brain",
@@ -2344,10 +2075,8 @@ async fn actions_communication_producer_sigkill_unblocks_drain_and_abandons(
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -2422,33 +2151,23 @@ fn main() -> Result<()> {
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator.add_exposed_action(&exposed_action, None).unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_exposer,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator.add_exposed_action(&exposed_action, None).unwrap();
+        },
     );
 
-    let exposer_runtime_config = RuntimeConfig::new(
+    let exposer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         BRAIN_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        exposer_instance_id,
+    );
     let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = r#"
@@ -2501,9 +2220,6 @@ fn main() -> Result<()> {
 
     compile_project(&user_node_consumer);
     compile_project(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
@@ -2590,15 +2306,8 @@ fn main() -> Result<()> {
     // its status is unconditionally a failure and is not asserted.
     let consumer_output = consumer.wait(Some(Duration::from_secs(10)), &user_node_consumer);
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, consumer_stderr) =
+        assert_exited_successfully("consumer cargo run", &consumer_output);
     assert!(
         consumer_stdout.contains("goal accepted=true"),
         "consumer goal was not accepted.\nstdout:\n{}",
@@ -2675,43 +2384,32 @@ async fn actions_communication_via_contract_slot(
         feedback: Some(serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap()),
         result_response: Some(serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap()),
     };
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(
-            &temp_dir_consumer,
-            &contract_consumer_stub_node_config(
-                ARM_CONTRACT_NAME,
-                "v1",
-                "arm",
-                "one",
-                RUST_STUB_EXECUTION,
-            ),
-        );
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &contract_dep(ARM_CONTRACT_NAME, "v1", "arm"),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_consumer,
+        &contract_consumer_stub_node_config(
+            ARM_CONTRACT_NAME,
+            "v1",
+            "arm",
+            "one",
+            RUST_STUB_EXECUTION,
+        ),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &contract_dep(ARM_CONTRACT_NAME, "v1", "arm"),
+                )
+                .unwrap();
+        },
     );
 
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        consumer_instance_id,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "arm",
@@ -2719,10 +2417,8 @@ async fn actions_communication_via_contract_slot(
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -2824,42 +2520,32 @@ fn main() -> Result<()> {
         .expect("failed to create temp dir for exposer project");
     let exposed_action: NativeExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator
-        .add_exposed_action(
-            &exposed_action,
-            Some(&ContractOrigin {
-                link_id: "arm_impl".to_string(),
-                contract_name: ARM_CONTRACT_NAME.to_string(),
-                contract_tag: "v1".to_string(),
-            }),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_exposer,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator
+                .add_exposed_action(
+                    &exposed_action,
+                    Some(&ContractOrigin {
+                        link_id: "arm_impl".to_string(),
+                        contract_name: ARM_CONTRACT_NAME.to_string(),
+                        contract_tag: "v1".to_string(),
+                    }),
+                )
+                .unwrap();
+        },
     );
 
-    let exposer_runtime_config = RuntimeConfig::new(
+    let exposer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         ARM_SERVER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        exposer_instance_id,
+    );
     let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = r#"
@@ -2921,9 +2607,6 @@ fn main() -> Result<()> {
 
     compile_project(&user_node_consumer);
     compile_project(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
@@ -3009,15 +2692,8 @@ fn main() -> Result<()> {
         &user_node_exposer,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, consumer_stderr) =
+        assert_exited_successfully("consumer cargo run", &consumer_output);
     assert!(
         consumer_stdout
             .contains("rejected goal accepted=false reason=Some(\"arm 99 is reserved\")")
@@ -3033,15 +2709,8 @@ fn main() -> Result<()> {
         consumer_stderr
     );
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
+    let (exposer_stdout, exposer_stderr) =
+        assert_exited_successfully("exposer cargo run", &exposer_output);
     assert!(
         exposer_stdout.contains("server received goal arm_id=99 desired=[0, 0, 0]")
             && exposer_stdout.contains("server received goal arm_id=7 desired=[10, 20, 30]")
@@ -3087,43 +2756,32 @@ async fn actions_refined_producer_interoperates_with_generic_consumer() {
     let consumed_action: ConsumedAction =
         serde_json5::from_str(r#"{ link_id: "arm", name: "move_arm_joints" }"#).unwrap();
     let action_messages = ConsumedActionMessage::from(&contract_action);
-    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(
-            &temp_dir_consumer,
-            &contract_consumer_stub_node_config(
-                JOINTS_CONTRACT_NAME,
-                "v1",
-                "arm",
-                "one",
-                RUST_STUB_EXECUTION,
-            ),
-        );
-    generator
-        .add_consumed_action(
-            &consumed_action,
-            &action_messages,
-            &contract_dep(JOINTS_CONTRACT_NAME, "v1", "arm"),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
-    generator
-        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_consumer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_consumer,
+        &contract_consumer_stub_node_config(
+            JOINTS_CONTRACT_NAME,
+            "v1",
+            "arm",
+            "one",
+            RUST_STUB_EXECUTION,
+        ),
+        |generator| {
+            generator
+                .add_consumed_action(
+                    &consumed_action,
+                    &action_messages,
+                    &contract_dep(JOINTS_CONTRACT_NAME, "v1", "arm"),
+                )
+                .unwrap();
+        },
     );
 
-    let consumer_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
         CONSUMER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        consumer_instance_id,
+    );
     let consumer_runtime_config = bind_slot(
         consumer_runtime_config,
         "arm",
@@ -3131,10 +2789,8 @@ async fn actions_refined_producer_interoperates_with_generic_consumer() {
         EXPOSER_INSTANCE_ID,
     );
     let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
-    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
-    consumer_runtime_config
-        .save_json5_launch_config(&consumer_runtime_config_path)
-        .unwrap();
+    let consumer_runtime_config_str =
+        save_runtime_config(&consumer_runtime_config, temp_dir_consumer.path());
 
     init_cargo_user_node(&user_node_consumer);
     let consumer_main = r#"
@@ -3212,42 +2868,32 @@ fn main() -> Result<()> {
     let exposed_action = refinement
         .apply(contract_action)
         .expect("the contract member admits both pins");
-    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
-    generator
-        .add_exposed_action(
-            &exposed_action,
-            Some(&ContractOrigin {
-                link_id: "arm_impl".to_string(),
-                contract_name: JOINTS_CONTRACT_NAME.to_string(),
-                contract_tag: "v1".to_string(),
-            }),
-        )
-        .unwrap();
-    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator
-        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
-        .unwrap();
-    fs::remove_file(output_config).unwrap();
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
+    let user_node_exposer = generate_node_project::<generator::RustGenerator>(
+        &temp_dir_exposer,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator
+                .add_exposed_action(
+                    &exposed_action,
+                    Some(&ContractOrigin {
+                        link_id: "arm_impl".to_string(),
+                        contract_name: JOINTS_CONTRACT_NAME.to_string(),
+                        contract_tag: "v1".to_string(),
+                    }),
+                )
+                .unwrap();
+        },
     );
 
-    let exposer_runtime_config = RuntimeConfig::new(
+    let exposer_runtime_config = test_node_runtime_config(
         &router_host,
         router_port,
-        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
         ARM_SERVER_NODE_NAME,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+        exposer_instance_id,
+    );
     let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
-    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
-    exposer_runtime_config
-        .save_json5_launch_config(&exposer_runtime_config_path)
-        .unwrap();
+    let exposer_runtime_config_str =
+        save_runtime_config(&exposer_runtime_config, temp_dir_exposer.path());
 
     init_cargo_user_node(&user_node_exposer);
     let exposer_main = r#"
@@ -3294,9 +2940,6 @@ fn main() -> Result<()> {
 
     compile_project(&user_node_consumer);
     compile_project(&user_node_exposer);
-
-    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
@@ -3380,15 +3023,8 @@ fn main() -> Result<()> {
         &user_node_exposer,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
-    );
+    let (consumer_stdout, consumer_stderr) =
+        assert_exited_successfully("consumer cargo run", &consumer_output);
     for needle in [
         "goal 1 accepted=true",
         "result 1 success=true final=[1.0, 2.0, 3.0]",
@@ -3403,15 +3039,8 @@ fn main() -> Result<()> {
         );
     }
 
-    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
-    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
-    assert!(
-        exposer_output.status.success(),
-        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        exposer_output.status.code(),
-        exposer_stdout,
-        exposer_stderr
-    );
+    let (exposer_stdout, exposer_stderr) =
+        assert_exited_successfully("exposer cargo run", &exposer_output);
     assert!(
         exposer_stdout.contains("server received goal arm_id=1 joints=[0.1, 0.2, 0.3]")
             && exposer_stdout.contains("server received goal arm_id=3 joints=[0.4, 0.5, 0.6]")

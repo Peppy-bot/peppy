@@ -29,18 +29,16 @@
 //! -- the capnp schema generation under test is language-agnostic.
 
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, WaitContext, bind_slot, init_python_project_venv, init_python_user_node,
-    native_dep, send_shutdown, spawn_python_run, test_peppy_dirs,
-    wait_for_action_service_reachable_or_exit, wait_for_child,
-    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
+    DEFAULT_WAIT_TIMEOUT, WaitContext, assert_exited_successfully, bind_slot,
+    init_python_project_venv, init_python_user_node, native_dep, send_shutdown, spawn_python_run,
+    test_node_runtime_config, test_peppy_dirs, wait_for_action_service_reachable_or_exit,
+    wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, NodeConfigParser, PeppygenLanguage,
     TopicRetention,
 };
-use config::runtime::Name;
-use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use generator::{
     ConsumedActionMessage, DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib,
 };
@@ -82,15 +80,7 @@ fn build_runtime_config(
     node_name: &str,
     runtime_config_path: &Path,
 ) {
-    let cfg = RuntimeConfig::new(
-        router_host,
-        router_port,
-        NodeInstanceConfig::new(Name::new(instance_id).unwrap()),
-        node_name,
-        "v1",
-        TEST_CORE_NODE,
-    )
-    .unwrap();
+    let cfg = test_node_runtime_config(router_host, router_port, node_name, instance_id);
     // Consumers declare their dep at link_id "producer"; bind it to the
     // producer instance so the generated call sites resolve their pinned
     // target (producers ignore the extra entry: their manifests declare
@@ -479,15 +469,9 @@ if __name__ == "__main__":
         &producer_dir,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed -- likely producer/consumer capnp wire layout \
-         disagreement for the action's `result_response`.\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
+    let (consumer_stdout, consumer_stderr) = assert_exited_successfully(
+        "consumer process (likely producer/consumer capnp wire layout disagreement for the action's `result_response`)",
+        &consumer_output,
     );
     assert!(
         consumer_stdout.contains("goal accepted=True")
@@ -500,15 +484,7 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let producer_stdout = String::from_utf8_lossy(&producer_output.stdout).into_owned();
-    let producer_stderr = String::from_utf8_lossy(&producer_output.stderr).into_owned();
-    assert!(
-        producer_output.status.success(),
-        "producer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        producer_output.status.code(),
-        producer_stdout,
-        producer_stderr
-    );
+    assert_exited_successfully("producer process", &producer_output);
 }
 
 // ---------------------------------------------------------------------------
@@ -834,15 +810,9 @@ if __name__ == "__main__":
         &producer_dir,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed -- likely producer/consumer capnp wire layout \
-         disagreement for the service's `response_message_format`.\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
+    let (consumer_stdout, consumer_stderr) = assert_exited_successfully(
+        "consumer process (likely producer/consumer capnp wire layout disagreement for the service's `response_message_format`)",
+        &consumer_output,
     );
     assert!(
         consumer_stdout
@@ -852,15 +822,7 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let producer_stdout = String::from_utf8_lossy(&producer_output.stdout).into_owned();
-    let producer_stderr = String::from_utf8_lossy(&producer_output.stderr).into_owned();
-    assert!(
-        producer_output.status.success(),
-        "producer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        producer_output.status.code(),
-        producer_stdout,
-        producer_stderr
-    );
+    assert_exited_successfully("producer process", &producer_output);
 }
 
 // ---------------------------------------------------------------------------
@@ -1180,15 +1142,9 @@ if __name__ == "__main__":
         &producer_dir,
     );
 
-    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
-    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
-    assert!(
-        consumer_output.status.success(),
-        "consumer process failed -- likely producer/consumer capnp wire layout \
-         disagreement for the topic's `message_format`.\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
-        consumer_output.status.code(),
-        consumer_stdout,
-        consumer_stderr
+    let (consumer_stdout, consumer_stderr) = assert_exited_successfully(
+        "consumer process (likely producer/consumer capnp wire layout disagreement for the topic's `message_format`)",
+        &consumer_output,
     );
     assert!(
         consumer_stdout.contains(&format!(
@@ -1199,13 +1155,5 @@ if __name__ == "__main__":
         consumer_stderr
     );
 
-    let producer_stdout = String::from_utf8_lossy(&producer_output.stdout).into_owned();
-    let producer_stderr = String::from_utf8_lossy(&producer_output.stderr).into_owned();
-    assert!(
-        producer_output.status.success(),
-        "producer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        producer_output.status.code(),
-        producer_stdout,
-        producer_stderr
-    );
+    assert_exited_successfully("producer process", &producer_output);
 }
