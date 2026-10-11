@@ -93,13 +93,13 @@ fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
             service: front_service,
             request_format: parse_fmt(FRONT_REQUEST_FORMAT),
             response_format: parse_fmt(FRONT_RESPONSE_FORMAT),
-            dependency: helpers::native_dep("uvc_camera", "v1", "uvc_camera"),
+            dependency: helpers::native_dep("uvc_camera", "v1", "front_cam"),
         }),
         DeploymentInterface::new(InterfaceVariant::ConsumedService {
             service: rear_service,
             request_format: parse_fmt(REAR_REQUEST_FORMAT),
             response_format: parse_fmt(REAR_RESPONSE_FORMAT),
-            dependency: helpers::native_dep("rtsp_camera", "v1", "rtsp_camera"),
+            dependency: helpers::native_dep("rtsp_camera", "v1", "rear_cam"),
         }),
     ];
 
@@ -128,6 +128,17 @@ fn rust_cross_producer_same_service_name_keeps_schemas_separate() {
         "rear consumer module missing at {}",
         rear_module.display()
     );
+    // Each module polls through the slot its consumed service names, the
+    // slot the manifest declares and the runtime binds.
+    for (module, link_id) in [(&front_module, "front_cam"), (&rear_module, "rear_cam")] {
+        let code = fs::read_to_string(module).expect("read consumer module");
+        let link_id_const = format!("const LINK_ID: &str = \"{link_id}\";");
+        assert!(
+            code.contains(&link_id_const),
+            "{} must declare `{link_id_const}`, got:\n{code}",
+            module.display()
+        );
+    }
 
     // The producer-node-scoped schema keys give each producer its own capnp
     // files. If both producers shared one file, one consumer's payload shape
