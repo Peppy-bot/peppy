@@ -179,13 +179,7 @@ fn is_host_local_router(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host.eq_ignore_ascii_case("localhost.")
         || ip_host.parse::<IpAddr>().is_ok_and(|ip| {
-            let ip = match ip {
-                IpAddr::V6(ip) => ip
-                    .to_ipv4_mapped()
-                    .map(IpAddr::V4)
-                    .unwrap_or(IpAddr::V6(ip)),
-                ip => ip,
-            };
+            let ip = ip.to_canonical();
             ip.is_loopback() || ip.is_unspecified()
         })
 }
@@ -277,8 +271,9 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) daemon_defaults: DaemonDefaults,
     pub(crate) shutdown_token: CancellationToken,
     pub(crate) relationships: RelationshipCoordinators,
-    /// Which federated launch holds this machine, read to record the launch an
-    /// instance belongs to.
+    /// Which federated launch holds this machine: admits each `node_run` goal
+    /// before the gate, gives the stack reset token that cancels the goal, and
+    /// records the launch an instance belongs to.
     pub(crate) slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 }
 
@@ -291,7 +286,7 @@ pub(crate) struct NodeRunActionContext {
 /// effective gossip is "configured AND not separate-namespace".
 fn apply_daemon_defaults(
     cfg: &mut RuntimeConfig,
-    defaults: DaemonDefaults,
+    defaults: &DaemonDefaults,
     container_separate_ns: bool,
 ) {
     cfg.discovery.gossip = defaults.gossip && !container_separate_ns;
@@ -342,10 +337,9 @@ pub async fn listen_for_node_run(
             daemon_defaults: config.daemon_defaults,
             shutdown_token: config.shutdown_token,
             relationships: config.relationships,
-            slice_ownership: Arc::clone(&config.slice_ownership),
+            slice_ownership: config.slice_ownership,
         },
         gate: ConcurrencyGate::new(),
-        slice_ownership: config.slice_ownership,
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -357,19 +351,11 @@ pub async fn listen_for_node_run(
 struct NodeRunGoalHandler {
     context: NodeRunActionContext,
     gate: ConcurrencyGate,
-    /// See `NodeAddGoalHandler::slice_ownership`.
-    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 }
 
 impl GoalHandler for NodeRunGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
-        handle_goal_request(
-            pending,
-            self.context.clone(),
-            self.gate.clone(),
-            &self.slice_ownership,
-        )
-        .await
+        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await
     }
 }
 
@@ -583,13 +569,14 @@ pub(crate) async fn assemble_runtime_config(
 /// This is the shared implementation used by both the action-server path
 /// ([`handle_goal_request`]) and the direct-call path from `stack_launch`.
 ///
-/// `cancel_token` lets an outer orchestrator (currently `stack_launch`'s
-/// idle/max-timeout watchdog) request an in-flight abort. When cancelled after
-/// the child process has been spawned but before the `Starting → Started`
-/// commit, the pipeline explicitly calls `abort_started` to SIGKILL the child
-/// and tear down its `Starting` entry; if cancelled before the spawn, it
-/// returns without starting anything. Callers that don't need cancellation
-/// pass `CancellationToken::new()` and never trigger it.
+/// `cancel_token` lets an outer party give up the start in flight: the
+/// idle/max-timeout watchdog of a launch, a stack reset, or the cancel of the
+/// `node_run` goal. Cancelled before the spawn, the pipeline returns without
+/// starting anything. Cancelled after the spawn and before the
+/// `Starting → Running` commit, it gives up the instance through
+/// `StartAbandon::give_up`: an instance that answered ready and still runs is
+/// stopped through its shutdown request, any other has its process group
+/// killed, and `abort_started` then removes its `Starting` entry.
 pub(crate) async fn run_node_run(
     goal: NodeRunGoal,
     runtime_config: RuntimeConfig,
@@ -632,7 +619,6 @@ async fn handle_goal_request(
     pending: PendingGoal,
     action_context: NodeRunActionContext,
     gate: ConcurrencyGate,
-    slice_ownership: &crate::services::federation::SliceOwnership,
 ) {
     let sender_instance_id = pending.instance_id().to_string();
 
@@ -651,7 +637,7 @@ async fn handle_goal_request(
     // Before the gate, because the gate is per-action and this exclusion is
     // per-machine: a coordinator halfway through replacing this stack must not
     // race a locally-typed `peppy node run`.
-    let admission = match slice_ownership.admit_node_goal(&goal) {
+    let admission = match action_context.slice_ownership.admit_node_goal(&goal) {
         Ok(admission) => admission,
         Err(reason) => {
             reject_goal(pending, encode_rejected_start_goal(reason)).await;
@@ -675,11 +661,10 @@ async fn handle_goal_request(
     };
 
     // This daemon owns the runtime identity of every node it spawns, so it
-    // ASSEMBLES the config rather than accepting one. That is what makes the
-    // old identity-mismatch guard unnecessary: `node_name`, `tag`, and
-    // `bound_core_node` now come from the goal and from this daemon's own
-    // state, so they cannot disagree. It is also what lets a peer start a node
-    // a coordinator planned: a coordinator-assembled config would name the
+    // ASSEMBLES the config rather than accepting one: `node_name`, `tag`, and
+    // `bound_core_node` come from the goal and from this daemon's own state,
+    // so they cannot disagree. It is also what lets a peer start a node a
+    // coordinator planned: a coordinator-assembled config would name the
     // coordinator's router, which no node on this machine can reach.
     let runtime_config = match assemble_runtime_config(&goal, &action_context).await {
         Ok(config) => config,
@@ -737,7 +722,7 @@ async fn handle_goal_request(
     let gate_for_task = gate.clone();
     // A stack reset cancels the stack's token; the goal's caller cancels
     // this goal's own, which descends from it.
-    let reset = slice_ownership.stack.cancellation();
+    let reset = action_context.slice_ownership.stack.cancellation();
     let cancellation = reset.child_token();
     let reset_grace = action_context.node_stack.shutdown_grace();
     tokio::spawn(async move {
@@ -814,6 +799,13 @@ fn encode_rejected_start_goal(reason: impl Into<String>) -> PeppyResult<Payload>
         "node_run_goal",
         NodeRunGoalResponse::rejected(reason).encode(),
     )
+}
+
+/// Writes `message` to the run log as an error and returns it as the run's
+/// failure, so the reason is in the file the client is pointed at.
+fn record_run_failure(announcer: &Announcer, message: String) -> NodeRunResult {
+    announcer.log().error(&message);
+    NodeRunResult::failure(message)
 }
 
 /// Closes the add-to-start window.
@@ -945,39 +937,24 @@ async fn process_node_run(
     } = goal;
     let mut env_vars = match super::validate_goal_env_vars(&env_vars) {
         Ok(vars) => vars,
-        Err(e) => {
-            let msg = e.to_string();
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
-        }
+        Err(e) => return record_run_failure(&ctx.announcer, e.to_string()),
     };
 
+    let instance_id = runtime_config.node_instance.instance_id.clone();
     let instance_id_str = runtime_config.node_instance.instance_id.as_str();
-    let instance_id = match Name::new(instance_id_str) {
-        Ok(name) => name,
-        Err(e) => {
-            let msg = format!("Invalid instance_id: {}", e);
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
-        }
-    };
 
     debug!(
         "Processing `node_run` from {sender_instance_id}, node={}:{}, instance_id={}",
         node_name, tag, instance_id_str
     );
 
-    let entity_handle = match ctx.action.node_stack.find(&node_name, &tag) {
-        Some(entity) => entity,
-        None => {
-            let msg = format!(
-                "Node '{node_name}:{tag}' not found in node stack. \
-                 Run `peppy stack list` to see the nodes in the stack, or `peppy node add <dir>` \
-                 to add it from its directory."
-            );
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
-        }
+    let Some(entity_handle) = ctx.action.node_stack.find(&node_name, &tag) else {
+        let msg = format!(
+            "Node '{node_name}:{tag}' not found in node stack. \
+             Run `peppy stack list` to see the nodes in the stack, or `peppy node add <dir>` \
+             to add it from its directory."
+        );
+        return record_run_failure(&ctx.announcer, msg);
     };
 
     // Stack-wide `instance_id` uniqueness (spec rule 7): reject if the
@@ -998,8 +975,7 @@ async fn process_node_run(
             existing_name,
             existing_tag,
         );
-        ctx.announcer.log().error(&msg);
-        return NodeRunResult::failure(msg);
+        return record_run_failure(&ctx.announcer, msg);
     }
 
     // A simulated domain is identified by its name and the machine hosting its
@@ -1015,8 +991,7 @@ async fn process_node_run(
                  start its publisher on `{}`",
                 domain.name, domain.core_node, ctx.action.core_node_name, domain.core_node,
             );
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
+            return record_run_failure(&ctx.announcer, msg);
         }
         if let Some(owner) = ctx.action.node_stack.clock_domain_publisher(&domain.name)
             && owner != instance_id
@@ -1029,8 +1004,7 @@ async fn process_node_run(
                 ctx.action.core_node_name,
                 owner.as_str(),
             );
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
+            return record_run_failure(&ctx.announcer, msg);
         }
     }
 
@@ -1047,8 +1021,7 @@ async fn process_node_run(
                  on `{}`; `peppy clock list` shows each domain and the machine hosting it",
                 domain.core_node, publisher.core_node,
             );
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
+            return record_run_failure(&ctx.announcer, msg);
         }
         if domain.core_node.as_str() == ctx.action.core_node_name {
             match local_publisher_of(&ctx.action.node_stack, domain) {
@@ -1059,8 +1032,7 @@ async fn process_node_run(
                          `peppy node run --publish-clock {}`",
                         ctx.action.core_node_name, domain.name,
                     );
-                    ctx.announcer.log().error(&msg);
-                    return NodeRunResult::failure(msg);
+                    return record_run_failure(&ctx.announcer, msg);
                 }
                 Some(owner) if owner.as_str() != publisher.instance_id => {
                     let msg = format!(
@@ -1070,8 +1042,7 @@ async fn process_node_run(
                         owner.as_str(),
                         publisher.instance_id,
                     );
-                    ctx.announcer.log().error(&msg);
-                    return NodeRunResult::failure(msg);
+                    return record_run_failure(&ctx.announcer, msg);
                 }
                 Some(_) => {}
             }
@@ -1086,8 +1057,7 @@ async fn process_node_run(
                 node_name, tag, node_name, tag
             );
             drop(guard);
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
+            return record_run_failure(&ctx.announcer, msg);
         }
         guard.config().clone()
     };
@@ -1095,8 +1065,7 @@ async fn process_node_run(
     if let Err(msg) =
         refuse_stale_manifest(&node_name, &tag, manifest_sha256.as_deref(), &node_config)
     {
-        ctx.announcer.log().error(&msg);
-        return NodeRunResult::failure(msg);
+        return record_run_failure(&ctx.announcer, msg);
     }
 
     let setup_budget = SetupBudget::resolve(
@@ -1109,7 +1078,7 @@ async fn process_node_run(
     // Pairing pre-spawn check (the trust-boundary twin of the CLI preflight
     // and the launcher validator): coverage of every required slot, and
     // resolution of each requested target to one concrete peer slot. Loud
-    // failure here costs nothing — no process has been spawned yet. The
+    // failure here costs nothing: no process has been spawned yet. The
     // actual registry reservation happens after `prepare_and_spawn`, once
     // this instance exists in the stack (in `Starting`).
     let pairing_deps = node_config
@@ -1130,10 +1099,7 @@ async fn process_node_run(
         .collect::<std::result::Result<std::collections::BTreeMap<_, _>, String>>()
     {
         Ok(reasons) => reasons,
-        Err(msg) => {
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
-        }
+        Err(msg) => return record_run_failure(&ctx.announcer, msg),
     };
 
     // Snapshot + claims are read under two short read locks, and only when
@@ -1179,10 +1145,7 @@ async fn process_node_run(
             &clocks,
         ) {
             Ok(p) => p,
-            Err(msg) => {
-                ctx.announcer.log().error(&msg);
-                return NodeRunResult::failure(msg);
-            }
+            Err(msg) => return record_run_failure(&ctx.announcer, msg),
         }
     };
     for (link_id, reason) in &vacant_reasons {
@@ -1220,9 +1183,10 @@ async fn process_node_run(
         &node_config.execution.parameters,
     );
     if !missing.is_empty() {
-        let msg = format!("Missing required parameters: {}", missing.join(", "));
-        ctx.announcer.log().error(&msg);
-        return NodeRunResult::failure(msg);
+        return record_run_failure(
+            &ctx.announcer,
+            format!("Missing required parameters: {}", missing.join(", ")),
+        );
     }
 
     let is_container = node_config.execution.container.is_some();
@@ -1243,10 +1207,7 @@ async fn process_node_run(
     .and_then(expand_home_in_mount_specs)
     {
         Ok(paths) => paths,
-        Err(msg) => {
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
-        }
+        Err(msg) => return record_run_failure(&ctx.announcer, msg),
     };
 
     // A container's transport depends on whether it shares the host network
@@ -1263,9 +1224,9 @@ async fn process_node_run(
     //    so `127.0.0.1` already reaches the host router and the node follows the
     //    daemon's messaging topology exactly like a process node.
     let container_gateway = if is_container {
-        // Both halves are blocking work — building the facade probes the host
+        // Both halves are blocking work (building the facade probes the host
         // runtime, and the refusal below reads the execution environment's
-        // config off disk — so they share one trip to the blocking pool rather
+        // config off disk), so they share one trip to the blocking pool rather
         // than doing file I/O on an async worker.
         //
         // The refusal is there because starting this container may have to make
@@ -1294,14 +1255,12 @@ async fn process_node_run(
         .await
         {
             Ok(Ok(apptainer)) => apptainer,
-            Ok(Err(msg)) => {
-                ctx.announcer.log().error(&msg);
-                return NodeRunResult::failure(msg);
-            }
+            Ok(Err(msg)) => return record_run_failure(&ctx.announcer, msg),
             Err(e) => {
-                let msg = format!("Apptainer initialization task failed: {}", e);
-                ctx.announcer.log().error(&msg);
-                return NodeRunResult::failure(msg);
+                return record_run_failure(
+                    &ctx.announcer,
+                    format!("Apptainer initialization task failed: {}", e),
+                );
             }
         };
 
@@ -1318,12 +1277,9 @@ async fn process_node_run(
     // container always routes through the router as a client even in the peer
     // topology.
     let mut launch_config = runtime_config.clone();
-    // Kept aside before the defaults are consumed below: the endpoints the
-    // node announces are expanded against these once it is healthy.
-    let host_source = ctx.action.daemon_defaults.host_addresses.clone();
     apply_daemon_defaults(
         &mut launch_config,
-        ctx.action.daemon_defaults.clone(),
+        &ctx.action.daemon_defaults,
         container_gateway.is_some(),
     );
     // The setup budget this daemon waits for, so the node can read it.
@@ -1354,9 +1310,10 @@ async fn process_node_run(
     let runtime_config_json5 = match serde_json5::to_string(&launch_config) {
         Ok(json) => json,
         Err(e) => {
-            let msg = format!("Failed to serialize runtime config: {}", e);
-            ctx.announcer.log().error(&msg);
-            return NodeRunResult::failure(msg);
+            return record_run_failure(
+                &ctx.announcer,
+                format!("Failed to serialize runtime config: {}", e),
+            );
         }
     };
 
@@ -1364,13 +1321,16 @@ async fn process_node_run(
     // feeds the entity's output readers; the forwarder copies lines onto the
     // daemon's external feedback topic and increments published_count so
     // FeedbackSync can detect quiescence.
-    let publish_enabled = Arc::new(AtomicBool::new(true));
-    let feedback_sync = FeedbackSync::new();
+    let feedback = RunFeedback {
+        sync: FeedbackSync::new(),
+        publish_enabled: Arc::new(AtomicBool::new(true)),
+        quiet_window: drain_quiet_window(is_container),
+    };
 
     let (internal_feedback_tx, mut internal_feedback_rx) =
         mpsc::unbounded_channel::<FeedbackLine>();
     let external_feedback_tx = ctx.announcer.feedback_tx().clone();
-    let feedback_sync_publisher = feedback_sync.clone();
+    let feedback_sync_publisher = feedback.sync.clone();
     tokio::spawn(async move {
         while let Some(line) = internal_feedback_rx.recv().await {
             let _ = external_feedback_tx.send(line);
@@ -1397,33 +1357,26 @@ async fn process_node_run(
         peppy_dirs: &ctx.action.peppy_dirs,
         output_sinks: node_stack::OutputSinks {
             announcer: Announcer::new(ctx.announcer.log().clone(), internal_feedback_tx.clone()),
-            publish_enabled: Arc::clone(&publish_enabled),
-            hooks: Arc::new(feedback_sync.clone()),
+            publish_enabled: Arc::clone(&feedback.publish_enabled),
+            hooks: Arc::new(feedback.sync.clone()),
         },
     };
     // Reject early if an outer orchestrator already cancelled us; avoids
     // spawning a child process we're only going to tear down on the next line.
     if cancel_token.is_cancelled() {
         let msg = "cancelled before node process spawn".to_string();
-        ctx.announcer.log().error(&msg);
-        feedback_sync
-            .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+        return feedback
+            .close_on_failure(&ctx.announcer, instance_id_str, msg)
             .await;
-        publish_enabled.store(false, Ordering::Release);
-        return NodeRunResult::failure(msg);
     }
 
     let (child, started_ctx) =
         match node_stack::NodeEntity::prepare_and_spawn(&entity_handle, start_ctx).await {
             Ok(t) => t,
             Err(e) => {
-                let msg = e.to_string();
-                ctx.announcer.log().error(&msg);
-                feedback_sync
-                    .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+                return feedback
+                    .close_on_failure(&ctx.announcer, instance_id_str, e.to_string())
                     .await;
-                publish_enabled.store(false, Ordering::Release);
-                return NodeRunResult::failure(msg);
             }
         };
 
@@ -1434,14 +1387,13 @@ async fn process_node_run(
         node_name: &node_name,
         node_tag: &tag,
         is_container,
-        feedback_sync: &feedback_sync,
-        publish_enabled: &publish_enabled,
+        feedback: &feedback,
     };
 
     // Reserve every planned pair now that this instance is registered (in
     // `Starting`). The registry re-validates under its own lock, so a peer
     // slot claimed by a concurrent `node_run` since the pre-spawn check
-    // fails here — loudly — instead of double-pairing. Pins are NOT
+    // fails here, loudly, instead of double-pairing. Pins are NOT
     // delivered yet; that happens after the instance commits to Running.
     for pair in &planned_pairs {
         let Err(reserve_msg) = ctx.action.relationships.pairing().reserve(pair).await else {
@@ -1522,7 +1474,7 @@ async fn process_node_run(
     // whose manifest declares none is never asked.
     let endpoints = match setup {
         Ok(()) if !node_config.execution.endpoints.is_empty() => {
-            let host = host_addresses(&host_source);
+            let host = host_addresses(&ctx.action.daemon_defaults.host_addresses);
             tokio::select! {
                 biased;
                 _ = cancel_token.cancelled() => Err(StartFailure::cancelled("setup")),
@@ -1563,9 +1515,9 @@ async fn process_node_run(
         "Health check passed for node instance '{}'",
         instance_id_str
     );
-    // Last chance to bail out cleanly: once `commit_started` succeeds
-    // the child is owned by the stack and a late cancel would have to
-    // go through the normal stop path instead of abort_started.
+    // Last chance to bail out cleanly: once `commit_started` succeeds the child
+    // is owned by the stack and a late cancel would have to go through the
+    // normal stop path instead of abort_started.
     if cancel_token.is_cancelled() {
         let reason = "cancelled before commit".to_string();
         debug!(
@@ -1590,145 +1542,8 @@ async fn process_node_run(
         endpoints.clone(),
     )
     .await;
-    match commit_result {
-        Ok(committed_child) => {
-            // Cancelled by the exit watcher once the node's process
-            // exits on its own, so the health monitor stops probing a
-            // now-terminal instance instead of logging a spurious
-            // "became unhealthy" on the way out.
-            let instance_done = CancellationToken::new();
-            let stack_log = StackLog::for_instance(
-                &ctx.action.peppy_dirs,
-                ctx.action.node_stack.log_exporter().clone(),
-                instance_id.as_str(),
-                runtime_config.node_name.as_str(),
-                &tag,
-                launch_id.as_deref(),
-            );
-
-            spawn_exit_watcher(ExitWatcherParams {
-                child: committed_child,
-                entity_handle: Arc::clone(&entity_handle),
-                to_node_name: runtime_config.node_name.as_str().to_owned(),
-                node_tag: tag.clone(),
-                target_instance_id: instance_id.clone(),
-                stack_log: stack_log.clone(),
-                relationships: ctx.action.relationships.clone(),
-                instance_done: instance_done.clone(),
-                shutdown_token: ctx.action.shutdown_token.clone(),
-            });
-
-            spawn_health_monitor(HealthMonitorParams {
-                messenger: ctx.action.messenger.clone(),
-                core_node_name: ctx.action.core_node_name.clone(),
-                caller_instance_id: ctx.action.caller_instance_id.clone(),
-                to_node_name: runtime_config.node_name.as_str().to_owned(),
-                target_core_node: runtime_config.bound_core_node.as_str().to_owned(),
-                target_instance_id: instance_id.clone(),
-                node_tag: tag.clone(),
-                node_stack: Arc::clone(&ctx.action.node_stack),
-                stack_log,
-                policy: ctx.action.health_monitor,
-                shutdown_token: ctx.action.shutdown_token.clone(),
-                instance_done,
-            });
-
-            // Register this instance's own observer slots before the
-            // lifecycle notify below, so the `on_instance_running`
-            // observer branch finds them and delivers each slot's whole
-            // member set. Empty for a non-observer.
-            // Additive: one instance is merged into the live
-            // registry, leaving every other instance's entry standing.
-            if !planned_observations.is_empty() {
-                ctx.action
-                    .relationships
-                    .observation()
-                    .register_instance(instance_id_str, &planned_observations);
-            }
-
-            // The instance is Running: notify the observation
-            // coordinator. If this instance is a source, every slot
-            // observing it is re-delivered whole at a freshly bumped
-            // generation for that member; if it is itself an observer,
-            // it receives every slot it declares, each member stamped
-            // with its own liveness. Best-effort and independent of
-            // pairing, so it always runs (a source need not be paired).
-            ctx.action
-                .relationships
-                .observation()
-                .on_instance_running(instance_id_str)
-                .await;
-
-            // The same event, for the daemons that cannot see it. An
-            // observer on another machine has no local lifecycle event
-            // to react to, so without this its subscription would never
-            // activate and a source restart would go unnoticed. Records
-            // the watchers first: they arrived on this goal, and the
-            // announcement is what they are for.
-            ctx.action
-                .relationships
-                .notifier()
-                .set_watchers(instance_id_str, &lifecycle_watchers);
-            ctx.action
-                .relationships
-                .notifier()
-                .announce_running(instance_id_str)
-                .await;
-
-            // The instance is Running: deliver every reserved pin
-            // live over `peer_update` (boot config is always
-            // all-Unpaired, so this is the only way slots get
-            // paired). The watchers above are already running, so
-            // the process is reaped even if the run fails here.
-            if !planned_pairs.is_empty() {
-                if let Err(reason) = ctx
-                    .action
-                    .relationships
-                    .pairing()
-                    .deliver_pairs_for_instance(instance_id_str, &planned_pairs)
-                    .await
-                {
-                    ctx.action
-                        .relationships
-                        .pairing()
-                        .dissolve_for_instance(instance_id_str)
-                        .await;
-                    let msg = format!(
-                        "node instance '{instance_id_str}' started but pairing \
-                         delivery failed: {reason}. The instance was left running \
-                         with its pairing slots unpaired; stop it with \
-                         `peppy node stop {instance_id_str}`"
-                    );
-                    ctx.announcer.log().error(&msg);
-                    feedback_sync
-                        .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
-                        .await;
-                    publish_enabled.store(false, Ordering::Release);
-                    return NodeRunResult::failure(msg);
-                }
-                for pair in &planned_pairs {
-                    ctx.announcer
-                        .line(format!("paired: {} ⇌ {}", pair.own, pair.peer));
-                }
-            }
-
-            // Wait until the readers have drained the child's startup
-            // output onto the feedback stream before closing it. Keyed
-            // off a positive "reader caught up" signal, so heavy load
-            // delays the close instead of dropping output. Containers
-            // wait for their first stdout line; processes do not, so a
-            // silent process is not penalized.
-            feedback_sync
-                .drain_or_warn(
-                    instance_id_str,
-                    drain_quiet_window(is_container),
-                    is_container,
-                )
-                .await;
-            let result = NodeRunResult::success(pid).with_endpoints(endpoints);
-            publish_enabled.store(false, Ordering::Release);
-            result
-        }
+    let committed_child = match commit_result {
+        Ok(committed_child) => committed_child,
         Err(e) => {
             let msg = format!("Failed to register instance: {}", e);
             ctx.action
@@ -1736,13 +1551,165 @@ async fn process_node_run(
                 .pairing()
                 .dissolve_for_instance(instance_id_str)
                 .await;
-            ctx.announcer.log().error(&msg);
-            feedback_sync
-                .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
+            return feedback
+                .close_on_failure(&ctx.announcer, instance_id_str, msg)
                 .await;
-            publish_enabled.store(false, Ordering::Release);
-            NodeRunResult::failure(msg)
         }
+    };
+
+    // Cancelled by the exit watcher once the node's process exits on its own,
+    // so the health monitor stops probing a now-terminal instance instead of
+    // logging a spurious "became unhealthy" on the way out.
+    let instance_done = CancellationToken::new();
+    let stack_log = StackLog::for_instance(
+        &ctx.action.peppy_dirs,
+        ctx.action.node_stack.log_exporter().clone(),
+        instance_id.as_str(),
+        runtime_config.node_name.as_str(),
+        &tag,
+        launch_id.as_deref(),
+    );
+
+    spawn_exit_watcher(ExitWatcherParams {
+        child: committed_child,
+        entity_handle: Arc::clone(&entity_handle),
+        to_node_name: runtime_config.node_name.as_str().to_owned(),
+        node_tag: tag.clone(),
+        target_instance_id: instance_id.clone(),
+        stack_log: stack_log.clone(),
+        relationships: ctx.action.relationships.clone(),
+        instance_done: instance_done.clone(),
+        shutdown_token: ctx.action.shutdown_token.clone(),
+    });
+
+    spawn_health_monitor(HealthMonitorParams {
+        messenger: ctx.action.messenger.clone(),
+        core_node_name: ctx.action.core_node_name.clone(),
+        caller_instance_id: ctx.action.caller_instance_id.clone(),
+        to_node_name: runtime_config.node_name.as_str().to_owned(),
+        target_core_node: runtime_config.bound_core_node.as_str().to_owned(),
+        target_instance_id: instance_id.clone(),
+        node_tag: tag.clone(),
+        node_stack: Arc::clone(&ctx.action.node_stack),
+        stack_log,
+        policy: ctx.action.health_monitor,
+        shutdown_token: ctx.action.shutdown_token.clone(),
+        instance_done,
+    });
+
+    // Register this instance's own observer slots before the lifecycle notify
+    // below, so the `on_instance_running` observer branch finds them and
+    // delivers each slot's whole member set. Empty for a non-observer.
+    // Additive: one instance is merged into the live registry, leaving every
+    // other instance's entry standing.
+    if !planned_observations.is_empty() {
+        ctx.action
+            .relationships
+            .observation()
+            .register_instance(instance_id_str, &planned_observations);
+    }
+
+    // The instance is Running: notify the observation coordinator. If this
+    // instance is a source, every slot observing it is re-delivered whole at a
+    // freshly bumped generation for that member; if it is itself an observer,
+    // it receives every slot it declares, each member stamped with its own
+    // liveness. Best-effort and independent of pairing, so it always runs (a
+    // source need not be paired).
+    ctx.action
+        .relationships
+        .observation()
+        .on_instance_running(instance_id_str)
+        .await;
+
+    // The same event, for the daemons that cannot see it. An observer on
+    // another machine has no local lifecycle event to react to, so without this
+    // its subscription would never activate and a source restart would go
+    // unnoticed. Records the watchers first: they arrived on this goal, and the
+    // announcement is what they are for.
+    ctx.action
+        .relationships
+        .notifier()
+        .set_watchers(instance_id_str, &lifecycle_watchers);
+    ctx.action
+        .relationships
+        .notifier()
+        .announce_running(instance_id_str)
+        .await;
+
+    // The instance is Running: deliver every reserved pin live over
+    // `peer_update` (boot config is always all-Unpaired, so this is the only
+    // way slots get paired). The watchers above are already running, so the
+    // process is reaped even if the run fails here.
+    if !planned_pairs.is_empty() {
+        if let Err(reason) = ctx
+            .action
+            .relationships
+            .pairing()
+            .deliver_pairs_for_instance(instance_id_str, &planned_pairs)
+            .await
+        {
+            ctx.action
+                .relationships
+                .pairing()
+                .dissolve_for_instance(instance_id_str)
+                .await;
+            let msg = format!(
+                "node instance '{instance_id_str}' started but pairing \
+                 delivery failed: {reason}. The instance was left running \
+                 with its pairing slots unpaired; stop it with \
+                 `peppy node stop {instance_id_str}`"
+            );
+            return feedback
+                .close_on_failure(&ctx.announcer, instance_id_str, msg)
+                .await;
+        }
+        for pair in &planned_pairs {
+            ctx.announcer
+                .line(format!("paired: {} ⇌ {}", pair.own, pair.peer));
+        }
+    }
+
+    // Wait until the readers have drained the child's startup output onto the
+    // feedback stream before closing it. Keyed off a positive "reader caught
+    // up" signal, so heavy load delays the close instead of dropping output.
+    // Containers wait for their first stdout line; processes do not, so a
+    // silent process is not penalized.
+    feedback.close(instance_id_str, is_container).await;
+    NodeRunResult::success(pid).with_endpoints(endpoints)
+}
+
+/// The feedback stream of one `node_run` as the node's output readers see
+/// it: the drain state they report to, and the gate that lets them publish.
+struct RunFeedback {
+    sync: FeedbackSync,
+    publish_enabled: Arc<AtomicBool>,
+    /// See [`drain_quiet_window`].
+    quiet_window: Duration,
+}
+
+impl RunFeedback {
+    /// Ends the run's feedback stream: waits until the readers have drained
+    /// the child's output onto it, then stops them publishing. The readers
+    /// outlive the run, and the lines they read after this go to the log only.
+    async fn close(&self, instance_id: &str, require_stdout: bool) {
+        self.sync
+            .drain_or_warn(instance_id, self.quiet_window, require_stdout)
+            .await;
+        self.publish_enabled.store(false, Ordering::Release);
+    }
+
+    /// Ends a run that fails once its feedback stream is open: records
+    /// `message` in the run log, closes the stream without waiting for
+    /// stdout, and returns `message` as the run's failure.
+    async fn close_on_failure(
+        &self,
+        announcer: &Announcer,
+        instance_id: &str,
+        message: String,
+    ) -> NodeRunResult {
+        let failure = record_run_failure(announcer, message);
+        self.close(instance_id, false).await;
+        failure
     }
 }
 
@@ -1765,8 +1732,7 @@ struct StartAbandon<'a> {
     node_name: &'a str,
     node_tag: &'a str,
     is_container: bool,
-    feedback_sync: &'a FeedbackSync,
-    publish_enabled: &'a AtomicBool,
+    feedback: &'a RunFeedback,
 }
 
 impl StartAbandon<'_> {
@@ -1829,12 +1795,9 @@ impl StartAbandon<'_> {
         .await;
         // The run log is where an operator reads why an instance never
         // started; the reason travels on the result too.
-        self.ctx.announcer.log().error(&msg);
-        self.feedback_sync
-            .drain_or_warn(instance_id, drain_quiet_window(self.is_container), false)
-            .await;
-        self.publish_enabled.store(false, Ordering::Release);
-        NodeRunResult::failure(msg)
+        self.feedback
+            .close_on_failure(&self.ctx.announcer, instance_id, msg)
+            .await
     }
 
     /// The cooperative stop of `peppy node stop`, for a starting instance.
@@ -1897,8 +1860,8 @@ impl std::fmt::Display for StartFailure<'_> {
 ///
 /// Applied only on the machine that runs the instance (never on the launch
 /// coordinator's copies, which travel to peers): from here on, everything
-/// downstream — the restart-refusal check, the bind-source auto-create, Lima
-/// registration, and the apptainer `--bind` — sees the same absolute path,
+/// downstream (the restart-refusal check, the bind-source auto-create, Lima
+/// registration, and the apptainer `--bind`) sees the same absolute path,
 /// instead of treating the literal `~/...` as a path relative to whatever
 /// directory the daemon was started from.
 fn expand_home_in_mount_specs(specs: Vec<String>) -> std::result::Result<Vec<String>, String> {
@@ -2533,7 +2496,7 @@ mod tests {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(true, SubscriberBufferConfig::default()),
+            &daemon_defaults(true, SubscriberBufferConfig::default()),
             false,
         );
         assert!(cfg.discovery.gossip);
@@ -2547,7 +2510,7 @@ mod tests {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(false, SubscriberBufferConfig::default()),
+            &daemon_defaults(false, SubscriberBufferConfig::default()),
             false,
         );
         assert!(!cfg.discovery.gossip);
@@ -2560,7 +2523,7 @@ mod tests {
         let mut cfg = runtime_config_for_test();
         apply_daemon_defaults(
             &mut cfg,
-            daemon_defaults(true, SubscriberBufferConfig::default()),
+            &daemon_defaults(true, SubscriberBufferConfig::default()),
             true,
         );
         assert!(
@@ -2581,7 +2544,7 @@ mod tests {
             let mut cfg = runtime_config_for_test();
             apply_daemon_defaults(
                 &mut cfg,
-                daemon_defaults(gossip, subscriber_buffers),
+                &daemon_defaults(gossip, subscriber_buffers),
                 container_separate_ns,
             );
             assert_eq!(cfg.discovery.standard_buffer_size, 64);
@@ -2631,7 +2594,7 @@ mod tests {
         defaults.namespace =
             config::namespace::Namespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let mut cfg = runtime_config_for_test();
-        apply_daemon_defaults(&mut cfg, defaults, false);
+        apply_daemon_defaults(&mut cfg, &defaults, false);
         assert_eq!(
             cfg.discovery
                 .namespace
@@ -2689,9 +2652,9 @@ mod tests {
         assert!(result.unwrap_err().contains("blocked system directory"));
     }
 
-    /// The `~user` form is rejected during plan resolution — the launch
+    /// The `~user` form is rejected during plan resolution (the launch
     /// coordinator runs this, so a launcher naming an unexpandable source
-    /// fails before any stack is replaced — and the rejection sees the
+    /// fails before any stack is replaced), and the rejection sees the
     /// post-substitution source, so a parameter cannot smuggle one in.
     #[test]
     fn test_resolve_mount_path_parameters_rejects_tilde_user() {

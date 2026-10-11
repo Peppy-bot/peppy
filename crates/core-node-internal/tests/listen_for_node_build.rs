@@ -1,71 +1,20 @@
 mod common;
 
 use common::{
-    NodeAddSource, acquire_container_test_guard, send_node_add_and_wait,
-    send_node_add_and_wait_with_env, send_node_build_and_wait, send_node_build_and_wait_forced,
-    start_core_node_with_mock_messenger, start_core_node_with_mock_messenger_outside_home,
-    write_peppy_json5,
+    NodeAddSource, acquire_container_test_guard, archive_contains_entry, entity_artifact_path,
+    path_env_with_dir_first, read_file_from_archive, send_node_add_and_wait,
+    send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
+    start_core_node_with_mock_messenger_outside_home, write_executable_script, write_peppy_json5,
 };
-use core_node_api::encoding::NodeBuildFeedback;
+use core_node_api::encoding::{NodeBuildFeedback, NodeBuildResult};
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 const BUILD_CMD_MARKER_FILE: &str = "build_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
-
-fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
-    node_stack
-        .find(name, tag)
-        .expect("entity should exist")
-        .read()
-        .artifact_path()
-        .expect("entity should be built")
-        .to_path_buf()
-}
-
-fn archive_contains_entry(archive_path: &Path, entry_name: &str) -> bool {
-    let file = std::fs::File::open(archive_path).expect("failed to open archive");
-    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
-    let mut archive = tar::Archive::new(decoder);
-    archive
-        .entries()
-        .expect("failed to read entries")
-        .any(|entry| {
-            let entry = entry.expect("failed to read entry");
-            let path = entry.path().expect("failed to read entry path");
-            let path_str = path.to_string_lossy();
-            let normalized = path_str.trim_start_matches("./");
-            normalized == entry_name
-        })
-}
-
-fn read_file_from_archive(archive_path: &Path, entry_name: &str) -> String {
-    use std::io::Read;
-    let file = std::fs::File::open(archive_path).expect("failed to open archive");
-    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
-    let mut archive = tar::Archive::new(decoder);
-    for entry in archive.entries().expect("failed to read entries") {
-        let mut entry = entry.expect("failed to read entry");
-        let path = entry.path().expect("failed to read entry path");
-        let path_str = path.to_string_lossy();
-        let normalized = path_str.trim_start_matches("./").to_string();
-        if normalized == entry_name {
-            let mut contents = String::new();
-            entry
-                .read_to_string(&mut contents)
-                .expect("failed to read entry contents");
-            return contents;
-        }
-    }
-    panic!(
-        "entry '{}' not found in archive {}",
-        entry_name,
-        archive_path.display()
-    );
-}
 
 /// Helper: stage a node via `send_node_add_and_wait` and assert success.
 /// Returns (node_name, node_tag) for use in subsequent build calls.
@@ -95,6 +44,67 @@ async fn stage_node_for_build<'a>(
     )
 }
 
+/// Builds a `peppy.json5` document for a Rust node whose build step runs
+/// `build_cmd`, given as a JSON5 array literal.
+fn node_config_with_build_cmd(name: &str, tag: &str, build_cmd: &str) -> String {
+    format!(
+        r#"{{
+            peppy_schema: "node/v1",
+            manifest: {{
+                name: "{name}",
+                tag: "{tag}",
+            }},
+            execution: {{
+                language: "rust",
+                build_cmd: {build_cmd},
+                run_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    )
+}
+
+/// Builds a `peppy.json5` document for a Rust node built from the container
+/// definition `apptainer.def` of its source directory.
+fn container_node_config(name: &str, tag: &str) -> String {
+    format!(
+        r#"{{
+            peppy_schema: "node/v1",
+            manifest: {{
+                name: "{name}",
+                tag: "{tag}",
+            }},
+            execution: {{
+                language: "rust",
+                container: {{
+                    def_file: "apptainer.def",
+                }}
+            }}
+        }}"#
+    )
+}
+
+/// Builds the staged node `(node_name, node_tag)` with no env overrides and
+/// no feedback channel, and returns the result of the build.
+async fn build_node_and_wait(
+    started_core_node: &common::StartedCoreNode,
+    node_name: &str,
+    node_tag: &str,
+    result_timeout: Duration,
+) -> NodeBuildResult {
+    send_node_build_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        node_name,
+        node_tag,
+        GOAL_TIMEOUT,
+        result_timeout,
+        Vec::new(),
+        None,
+    )
+    .await
+    .expect("node_build request should complete")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_runs_build_cmd() {
     const TARGET_NODE_NAME: &str = "add_cmd_node";
@@ -105,38 +115,18 @@ async fn listen_for_node_build_runs_build_cmd() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["touch", "{BUILD_CMD_MARKER_FILE}"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{BUILD_CMD_MARKER_FILE}", BUILD_CMD_MARKER_FILE);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(r#"["touch", "{BUILD_CMD_MARKER_FILE}"]"#),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should succeed");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         build_result.success,
@@ -157,6 +147,69 @@ async fn listen_for_node_build_runs_build_cmd() {
         !source_marker.exists(),
         "build_cmd should NOT have created marker file in source dir at {}",
         source_marker.display()
+    );
+}
+
+/// Only a node in `Added` is built. The core node is the root of the stack,
+/// so a build of it is rejected before anything runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_build_of_a_node_in_another_stage_than_added_is_rejected() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let build_result = build_node_and_wait(
+        &started_core_node,
+        &started_core_node.core_node_name,
+        &started_core_node.core_node_tag,
+        RESULT_TIMEOUT,
+    )
+    .await;
+
+    assert!(!build_result.success);
+    assert_eq!(
+        build_result.error_message,
+        Some(format!(
+            "node `{}:{}` is in stage `Root`; cannot build",
+            started_core_node.core_node_name, started_core_node.core_node_tag
+        ))
+    );
+}
+
+/// A node in the stack without the working dir `peppy node add` stages is
+/// rejected with the command that stages one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_build_of_a_node_without_a_staged_working_dir_is_rejected() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    write_peppy_json5(
+        source_dir.path(),
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "unstaged_node", tag: "v1" },
+            execution: {
+                language: "rust",
+                build_cmd: ["true"],
+                run_cmd: ["sleep", "10"]
+            }
+        }"#,
+    );
+    let config = config::node::NodeConfigParser::from_path(source_dir.path().join("peppy.json5"))
+        .expect("parse config");
+    started_core_node
+        .node_stack
+        .push_config(config, false, source_dir.path())
+        .expect("push_config should succeed");
+
+    let build_result =
+        build_node_and_wait(&started_core_node, "unstaged_node", "v1", RESULT_TIMEOUT).await;
+
+    assert!(!build_result.success);
+    assert_eq!(
+        build_result.error_message.as_deref(),
+        Some(
+            "node `unstaged_node:v1` has no staged working directory; re-run `peppy node add` \
+             to stage one"
+        )
     );
 }
 
@@ -236,18 +289,8 @@ wheels = [
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should succeed");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
     assert!(
         build_result.success,
         "node_build should succeed, got error: {:?}",
@@ -278,15 +321,59 @@ wheels = [
     );
 }
 
-/// Polls until `pid_file` exists and holds a non-empty PID, returning it.
-async fn wait_for_pid_file(pid_file: &Path) -> String {
+/// Asserts that a build wrote its log under `logs_dir_build()` as
+/// `<name>_<tag>_*.log`, and returns the content of the log.
+fn read_build_log(
+    started_core_node: &common::StartedCoreNode,
+    build_result: &NodeBuildResult,
+    node_name: &str,
+    node_tag: &str,
+) -> String {
+    assert!(
+        !build_result.log_path.as_os_str().is_empty(),
+        "log_path should not be empty"
+    );
+    assert!(
+        build_result.log_path.exists(),
+        "log file should exist at {:?}",
+        build_result.log_path
+    );
+
+    let log_dir = started_core_node.peppy_dirs.logs_dir_build();
+    assert!(
+        build_result.log_path.starts_with(&log_dir),
+        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
+        log_dir,
+        build_result.log_path
+    );
+
+    let log_filename = build_result
+        .log_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("should have log filename");
+    assert!(
+        log_filename.starts_with(&format!("{node_name}_{node_tag}_")),
+        "log filename should start with '<node_name>_<tag>_', got: {}",
+        log_filename
+    );
+    assert!(
+        log_filename.ends_with(".log"),
+        "log filename should end with '.log', got: {}",
+        log_filename
+    );
+
+    std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file")
+}
+
+/// Polls until `pid_file` exists and holds a PID, returning it.
+async fn wait_for_pid_file(pid_file: &Path) -> u32 {
     common::poll_until(
         Duration::from_secs(30),
         "build_cmd did not record its PID within 30s",
         || {
             let contents = std::fs::read_to_string(pid_file).ok()?;
-            let pid = contents.trim();
-            (!pid.is_empty()).then(|| pid.to_string())
+            contents.trim().parse::<u32>().ok()
         },
     )
     .await
@@ -304,26 +391,6 @@ async fn wait_for_building(node_stack: &node_stack::NodeStack, name: &str, tag: 
                 node_stack::NodeStage::Building { .. }
             )
             .then_some(())
-        },
-    )
-    .await
-}
-
-/// Polls `kill -0 <pid>` (no `libc`/`unsafe`) until the process is gone.
-async fn wait_until_pid_dead(pid: &str) {
-    common::poll_until(
-        Duration::from_secs(30),
-        &format!("build subprocess (pid {pid}) was not killed within 30s"),
-        || {
-            let alive = std::process::Command::new("kill")
-                .arg("-0")
-                .arg(pid)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            (!alive).then_some(())
         },
     )
     .await
@@ -357,21 +424,11 @@ async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
     );
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["{BUILD_SCRIPT}"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{BUILD_SCRIPT}", &build_script);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(r#"["{build_script}"]"#),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
@@ -434,7 +491,12 @@ async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
     };
 
     // The in-flight build's subprocess must actually be killed by the force.
-    wait_until_pid_dead(&first_pid).await;
+    common::wait_until_process_exits(
+        first_pid,
+        Duration::from_secs(30),
+        &format!("build subprocess (pid {first_pid}) was not killed within 30s"),
+    )
+    .await;
 
     // Let the (reused) forced build run to completion.
     std::fs::write(&proceed_file, b"").expect("touch proceed file");
@@ -475,45 +537,33 @@ async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
     );
 }
 
+/// A `build_cmd` that cannot run, or that exits with a failure, fails the
+/// build, and the error names the command.
+#[rstest::rstest]
+#[case::missing_command(
+    r#"["this_command_does_not_exist_12345"]"#,
+    "this_command_does_not_exist_12345"
+)]
+#[case::nonzero_exit(r#"["sh", "-c", "exit 1"]"#, "exit 1")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_build_cmd_failure_fails_build() {
+async fn listen_for_node_build_fails_when_build_cmd_fails(
+    #[case] build_cmd: &str,
+    #[case] failed_command: &str,
+) {
     const TARGET_NODE_NAME: &str = "add_cmd_fail_node";
     const TARGET_NODE_TAG: &str = "v1";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["this_command_does_not_exist_12345"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let peppy_json5 = node_config_with_build_cmd(TARGET_NODE_NAME, TARGET_NODE_TAG, build_cmd);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should complete");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         !build_result.success,
@@ -523,8 +573,7 @@ async fn listen_for_node_build_cmd_failure_fails_build() {
         build_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("build_cmd failed"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("build_cmd failed")),
         "error message should mention build_cmd failure, got: {:?}",
         build_result.error_message
     );
@@ -532,72 +581,7 @@ async fn listen_for_node_build_cmd_failure_fails_build() {
         build_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("this_command_does_not_exist_12345"))
-            .unwrap_or(false),
-        "error message should include the command that failed, got: {:?}",
-        build_result.error_message
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_build_cmd_nonzero_exit_fails_build() {
-    const TARGET_NODE_NAME: &str = "add_cmd_exit_fail_node";
-    const TARGET_NODE_TAG: &str = "v1";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["sh", "-c", "exit 1"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let (node_name, node_tag) =
-        stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
-
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should complete");
-
-    assert!(
-        !build_result.success,
-        "node_build should fail when build_cmd exits with non-zero status"
-    );
-    assert!(
-        build_result
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("build_cmd failed"))
-            .unwrap_or(false),
-        "error message should mention build_cmd failure, got: {:?}",
-        build_result.error_message
-    );
-    assert!(
-        build_result
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("exit 1"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains(failed_command)),
         "error message should include the command that failed, got: {:?}",
         build_result.error_message
     );
@@ -613,22 +597,11 @@ async fn listen_for_node_build_cmd_streams_stdout_and_stderr() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
-    .replace("{STDERR_MARKER}", STDERR_MARKER);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(r#"["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"]"#),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
@@ -680,39 +653,18 @@ async fn listen_for_node_build_writes_log_file() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
-    .replace("{STDERR_MARKER}", STDERR_MARKER);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(r#"["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"]"#),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should succeed");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         build_result.success,
@@ -720,42 +672,12 @@ async fn listen_for_node_build_writes_log_file() {
         build_result.error_message
     );
 
-    assert!(
-        !build_result.log_path.as_os_str().is_empty(),
-        "log_path should not be empty"
+    let log_content = read_build_log(
+        &started_core_node,
+        &build_result,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
     );
-    assert!(
-        build_result.log_path.exists(),
-        "log file should exist at {:?}",
-        build_result.log_path
-    );
-
-    let log_dir = started_core_node.peppy_dirs.logs_dir_build();
-    assert!(
-        build_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
-        log_dir,
-        build_result.log_path
-    );
-
-    let log_filename = build_result
-        .log_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("should have log filename");
-    assert!(
-        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "log filename should start with '<node_name>_<tag>_', got: {}",
-        log_filename
-    );
-    assert!(
-        log_filename.ends_with(".log"),
-        "log filename should end with '.log', got: {}",
-        log_filename
-    );
-
-    let log_content =
-        std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file");
 
     assert!(
         log_content.contains(&format!("[stdout] {}", STDOUT_MARKER)),
@@ -807,18 +729,8 @@ async fn listen_for_node_build_copies_files_to_storage() {
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should succeed");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         build_result.success,
@@ -861,40 +773,19 @@ async fn listen_for_node_build_uses_env_overrides_for_path() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
-    .replace("{STDERR_MARKER}", STDERR_MARKER);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(r#"["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"]"#),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
     // First build attempt: should fail because `printout` is not on PATH.
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should complete");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
     assert!(
         !build_result.success,
         "build should fail, printout does not exist: {:?}",
@@ -903,42 +794,17 @@ async fn listen_for_node_build_uses_env_overrides_for_path() {
 
     // Create a temp bin directory with a `printout` script.
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
-    let printout_path = bin_dir.path().join("printout");
-    std::fs::write(
-        &printout_path,
+    write_executable_script(
+        bin_dir.path(),
+        "printout",
         "#!/bin/sh
 echo \"$@\"
 ",
-    )
-    .expect("failed to write printout script");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&printout_path)
-            .expect("failed to get printout metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&printout_path, perms)
-            .expect("failed to set printout permissions");
-    }
-
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), current_path);
-    let env_vars = vec![("PATH".to_string(), new_path)];
+    );
+    let env_vars = vec![path_env_with_dir_first(bin_dir.path())];
 
     // Re-stage the node and rebuild with the PATH override.
-    let _ = send_node_add_and_wait_with_env(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-        Vec::new(),
-    )
-    .await
-    .expect("re-add should complete");
+    stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
     let build_result = send_node_build_and_wait(
         &started_core_node.caller_handle,
@@ -967,41 +833,24 @@ async fn listen_for_node_build_injects_runtime_env_vars() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: [
-                    "sh",
-                    "-c",
-                    "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\""
-                ],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &format!(
+            r#"[
+                "sh",
+                "-c",
+                "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\""
+            ]"#
+        ),
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should succeed");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         build_result.success,
@@ -1021,21 +870,7 @@ async fn listen_for_node_build_with_container_success() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        peppy_schema: "node/v1",
-        manifest: {
-            name: "TARGET_NODE_NAME",
-            tag: "TARGET_NODE_TAG",
-        },
-        execution: {
-            language: "rust",
-            container: {
-                def_file: "apptainer.def",
-            }
-        }
-    }"#
-    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    let peppy_json5 = container_node_config(TARGET_NODE_NAME, TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
     let apptainer_def = r#"
 Bootstrap: docker
@@ -1061,18 +896,13 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     )
     .await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
+    let build_result = build_node_and_wait(
+        &started_core_node,
         &node_name,
         &node_tag,
-        GOAL_TIMEOUT,
         CONTAINER_RESULT_TIMEOUT,
-        Vec::new(),
-        None,
     )
-    .await
-    .expect("node_build request should succeed");
+    .await;
 
     assert!(
         build_result.success,
@@ -1123,42 +953,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         "got: {fingerprint}"
     );
 
-    assert!(
-        !build_result.log_path.as_os_str().is_empty(),
-        "log_path should not be empty"
+    let log_content = read_build_log(
+        &started_core_node,
+        &build_result,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
     );
-    assert!(
-        build_result.log_path.exists(),
-        "log file should exist at {:?}",
-        build_result.log_path
-    );
-
-    let log_dir = started_core_node.peppy_dirs.logs_dir_build();
-    assert!(
-        build_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
-        log_dir,
-        build_result.log_path
-    );
-
-    let log_filename = build_result
-        .log_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("should have log filename");
-    assert!(
-        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "log filename should start with '<node_name>_<tag>_', got: {}",
-        log_filename
-    );
-    assert!(
-        log_filename.ends_with(".log"),
-        "log filename should end with '.log', got: {}",
-        log_filename
-    );
-
-    let log_content =
-        std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("[stdout]") || log_content.contains("[stderr]"),
         "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:
@@ -1167,29 +967,30 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
 }
 
-/// Regression test: container builds must succeed when the daemon's peppy
-/// data root sits OUTSIDE `$HOME`, as a `PEPPY_HOME` outside `$HOME` puts it
-/// (on macOS, for example, under `/var/folders/…`).
+/// Container builds must succeed when the daemon's peppy data root sits
+/// OUTSIDE `$HOME`, as a `PEPPY_HOME` outside `$HOME` puts it (on macOS, for
+/// example, under `/var/folders/…`).
 ///
 /// On macOS the Lima guest VM only auto-mounts `$HOME`, so the build's
 /// working dir (under `<root>/tmp`) is invisible to the guest unless the
-/// build flow registers the root via `Apptainer::ensure_host_mounts`. Before
-/// that registration existed, this scenario failed command construction with
-/// "Path … is not accessible inside the Lima VM" — but no test caught it,
-/// because every other starter roots the daemon under `test_tmp_root()`
-/// (inside the repo, under `$HOME`). On Linux the native backend imposes no
-/// mount restriction, so there this test only exercises the plain build flow.
+/// build flow registers the root via `Apptainer::ensure_host_mounts`; without
+/// it, command construction fails with "Path … is not accessible inside the
+/// Lima VM". Every other starter roots the daemon under `test_tmp_root()`
+/// (inside the repo, under `$HOME`), so only this test covers that
+/// registration. On Linux the native backend imposes no mount restriction, so
+/// there this test only exercises the plain build flow.
 ///
 /// The def file deliberately copies a relative `%files` source (like the
 /// generated `%files . /opt/{name}` defs): the build must run with the guest
 /// cwd set to the working dir. Relying on `limactl shell`'s host-cwd
-/// propagation breaks here — the kernel canonicalizes the cwd to
+/// propagation breaks here: the kernel canonicalizes the cwd to
 /// `/private/var/…` while the Lima mount only exists in the guest at the
 /// `/var/folders/…` form, and Lima's failed `cd` is NON-fatal, so the build
-/// silently ran from the home mount and `%files .` copied the user's entire
-/// `$HOME` into the image until the guest tmpfs filled up. The facade now
-/// `cd`s explicitly inside the guest wrapper and aborts if that fails; this
-/// test fails without that fix ("cp: cannot stat './marker.txt'").
+/// would silently run from the home mount and `%files .` would copy the
+/// user's entire `$HOME` into the image until the guest tmpfs filled up. The
+/// facade `cd`s explicitly inside the guest wrapper and aborts if that fails;
+/// a build from any other cwd fails this test with "cp: cannot stat
+/// './marker.txt'".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_build_with_container_from_outside_home_root() {
     let _container_test_guard = acquire_container_test_guard().await;
@@ -1200,21 +1001,7 @@ async fn listen_for_node_build_with_container_from_outside_home_root() {
     let started_core_node = start_core_node_with_mock_messenger_outside_home().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        peppy_schema: "node/v1",
-        manifest: {
-            name: "TARGET_NODE_NAME",
-            tag: "TARGET_NODE_TAG",
-        },
-        execution: {
-            language: "rust",
-            container: {
-                def_file: "apptainer.def",
-            }
-        }
-    }"#
-    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    let peppy_json5 = container_node_config(TARGET_NODE_NAME, TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
     let apptainer_def = format!(
         "Bootstrap: docker\n\
@@ -1241,18 +1028,13 @@ async fn listen_for_node_build_with_container_from_outside_home_root() {
     )
     .await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
+    let build_result = build_node_and_wait(
+        &started_core_node,
         &node_name,
         &node_tag,
-        GOAL_TIMEOUT,
         CONTAINER_RESULT_TIMEOUT,
-        Vec::new(),
-        None,
     )
-    .await
-    .expect("node_build request should succeed");
+    .await;
 
     assert!(
         build_result.success,
@@ -1290,21 +1072,7 @@ async fn listen_for_node_build_container_build_failure_includes_stderr_in_error(
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        peppy_schema: "node/v1",
-        manifest: {
-            name: "TARGET_NODE_NAME",
-            tag: "TARGET_NODE_TAG",
-        },
-        execution: {
-            language: "rust",
-            container: {
-                def_file: "apptainer.def",
-            }
-        }
-    }"#
-    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    let peppy_json5 = container_node_config(TARGET_NODE_NAME, TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let broken_def = format!(
@@ -1398,37 +1166,18 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    let peppy_json5 = node_config_with_build_cmd(
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        r#"["nonexistent_binary_peppy_test_xyz", "--flag"]"#,
+    );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &node_name,
-        &node_tag,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Vec::new(),
-        None,
-    )
-    .await
-    .expect("node_build request should complete");
+    let build_result =
+        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
     assert!(
         !build_result.success,
@@ -1522,17 +1271,13 @@ async fn stack_reset_cancels_a_running_build_and_allows_a_new_add() {
             .await
         })
     };
-    let pid: u32 = wait_for_pid_file(&pid_file).await.trim().parse().unwrap();
-    let response = peppylib::core_node::transport::poll(
+    let pid = wait_for_pid_file(&pid_file).await;
+    let response = common::poll_core_node_with_timeout(
+        &started,
         &core_node_api::encoding::StackResetRequest::new(),
-        &started.caller_handle,
-        &started.core_node_name,
-        common::CALLER_INSTANCE_ID,
-        &started.core_node_name,
         RESULT_TIMEOUT,
     )
-    .await
-    .unwrap();
+    .await;
     assert!(response.success, "{:?}", response.error_message);
     assert!(
         !common::is_process_running(pid),

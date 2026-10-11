@@ -69,7 +69,7 @@ pub fn check_repository_exposures(
         resolved: BTreeMap::new(),
     };
 
-    let mut findings: Vec<ExposureFinding> = walk_directory(&root, &[])
+    let mut findings: Vec<ExposureFinding> = walk_directory(&root)
         .malformed
         .into_iter()
         .filter(|document| document.kind == RepoItemKind::McpExposure)

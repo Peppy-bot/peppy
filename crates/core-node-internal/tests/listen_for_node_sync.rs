@@ -1,28 +1,23 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, StartedCoreNode, TestPackagesCache, start_core_node_with_mock_messenger,
+    StartedCoreNode, TestPackagesCache, poll_core_node, poll_core_node_with_timeout,
+    start_core_node_with_mock_messenger,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use core_node_api::encoding::{NodeSyncRequest, RepoSourceKind};
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
-use peppylib::core_node::transport::poll;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::tempdir;
-
-fn write_node_config(node_dir: &Path, peppy_json5: &str) {
-    let config_path = node_dir.join(NODE_CONFIG_FILE);
-    fs::write(&config_path, peppy_json5).expect("failed to write peppy.json5");
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_sync_success() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -50,16 +45,11 @@ async fn listen_for_node_sync_success() {
     );
 
     let expected_git_hash = "deadbeef";
-    let response = poll(
+    let response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), expected_git_hash, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(
         response.success,
@@ -116,16 +106,11 @@ async fn listen_for_node_sync_success() {
 async fn listen_for_node_sync_missing_node_root_dir_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    let response = poll(
+    let response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new("", common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -147,16 +132,11 @@ async fn listen_for_node_sync_node_root_dir_does_not_exist_fails() {
         missing_dir.display()
     );
 
-    let response = poll(
+    let response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new(missing_dir, common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -176,16 +156,11 @@ async fn listen_for_node_sync_node_root_dir_is_not_a_directory_fails() {
     let file_path = tmp.path().join("not_a_directory");
     fs::write(&file_path, "not a dir").expect("failed to write temp file");
 
-    let response = poll(
+    let response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new(file_path, common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -205,16 +180,11 @@ async fn listen_for_node_sync_missing_peppy_json5_fails() {
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     let cargo_toml_path = node_dir.path().join("Cargo.toml");
 
-    let response = poll(
+    let response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -242,20 +212,15 @@ async fn listen_for_node_sync_invalid_peppy_json5_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(node_dir.path(), r#"{ manifest: [unclosed"#);
+    common::write_plain_peppy_json5(node_dir.path(), r#"{ manifest: [unclosed"#);
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll(
+    let response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -279,7 +244,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
     let node_dir = tempdir().expect("failed to create temp node directory");
     // The node subscribes to `video_stream` from `uvc_camera:v1`, but this node doesn't exist in the node stack
     // so the generation fails since it can't sync the Rust interfaces
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"
         {
@@ -326,16 +291,11 @@ async fn listen_for_node_sync_missing_dependency_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll(
+    let response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -360,7 +320,7 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
     let node_dir = tempdir().expect("failed to create temp node directory");
     // The node subscribes to topics from multiple non-existent nodes, including
     // duplicate subscriptions to the same node (uvc_camera appears twice)
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"
         {
@@ -389,16 +349,11 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll(
+    let response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(!response.success, "node_sync should fail");
     // The error message should contain all three unique missing dependencies
@@ -442,7 +397,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         uvc_camera_node_dir.path(),
         r#"
         {
@@ -492,50 +447,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
         "#,
     );
 
-    // Generate peppygen for the uvc_camera node first
-    let uvc_camera_response = poll(
-        &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_sync request should complete");
-
-    assert!(
-        uvc_camera_response.success,
-        "uvc_camera node_sync should succeed, got error: {}",
-        uvc_camera_response.error_message
-    );
-
-    // Add uvc_camera to the node stack so the brain node can depend on it
-    common::write_peppy_json5(
-        uvc_camera_node_dir.path(),
-        &fs::read_to_string(uvc_camera_node_dir.path().join(NODE_CONFIG_FILE))
-            .expect("failed to read uvc_camera config"),
-    );
-    let add_result = common::send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        uvc_camera_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
-        None,
-    )
-    .await
-    .expect("node_add should succeed");
-
-    assert!(
-        add_result.success,
-        "uvc_camera node_add should succeed, got error: {}",
-        add_result.error_message.unwrap_or_default()
-    );
+    sync_and_add_node(&started_core_node, uvc_camera_node_dir.path()).await;
 
     // The second node depends on the first, and it should work since the first node is now in the node stack
     let brain_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         brain_node_dir.path(),
         r#"
         {
@@ -577,16 +493,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     );
 
     // Generate the brain node - this should succeed now that uvc_camera is in the stack
-    let brain_response = poll(
+    let brain_response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(
         brain_response.success,
@@ -651,173 +562,8 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
-        uvc_camera_node_dir.path(),
-        r#"
-        {
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "uvc_camera",
-                tag: "v1",
-                labels: ["camera"],
-            },
-            interfaces: {
-                topics: {
-                    emits: [],
-                },
-                services: {
-                    exposes: [
-                      {
-                        name: "enable_camera",
-                        request_message_format: {
-                          enable: "bool",
-                        },
-                      }
-                    ],
-                },
-                actions: {
-                    exposes: [],
-                },
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["true"],
-                run_cmd: ["sleep", "10"],
-            },
-        }
-        "#,
-    );
-
-    let uvc_camera_response = poll(
-        &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_sync request should complete");
-
-    assert!(
-        uvc_camera_response.success,
-        "uvc_camera node_sync should succeed, got error: {}",
-        uvc_camera_response.error_message
-    );
-
-    common::write_peppy_json5(
-        uvc_camera_node_dir.path(),
-        &fs::read_to_string(uvc_camera_node_dir.path().join(NODE_CONFIG_FILE))
-            .expect("failed to read uvc_camera config"),
-    );
-    let add_result = common::send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        uvc_camera_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
-        None,
-    )
-    .await
-    .expect("node_add should succeed");
-
-    assert!(
-        add_result.success,
-        "uvc_camera node_add should succeed, got error: {}",
-        add_result.error_message.unwrap_or_default()
-    );
-
-    let brain_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
-        brain_node_dir.path(),
-        r#"
-        {
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "my_robot_brain",
-                tag: "v1",
-                labels: ["brain"],
-                depends_on: {
-                    nodes: [
-                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
-                    ]
-                },
-            },
-            interfaces: {
-                topics: {
-                    emits: [],
-                },
-                services: {
-                    exposes: [],
-                    consumes: [
-                        {
-                          link_id: "uvc_camera",
-                          name: "enable_camera",
-                        }
-                    ],
-                },
-                actions: {
-                    exposes: [],
-                },
-            },
-            execution: {
-                language: "rust",
-                build_cmd: ["true"],
-                run_cmd: ["sleep", "10"],
-            },
-        }
-        "#,
-    );
-
-    let brain_response = poll(
-        &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_sync request should complete");
-
-    assert!(
-        brain_response.success,
-        "my_robot_brain node_sync should succeed, got error: {}",
-        brain_response.error_message
-    );
-
-    let brain_peppygen_dir = brain_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
-    assert!(
-        brain_peppygen_dir.exists(),
-        "peppygen directory should exist at {}",
-        brain_peppygen_dir.display()
-    );
-
-    let consumed_service_path = brain_peppygen_dir
-        .join("src")
-        .join("consumed_services")
-        .join("uvc_camera")
-        .join("enable_camera.rs");
-    assert!(
-        consumed_service_path.exists(),
-        "peppygen uvc_camera/enable_camera.rs should exist at {}",
-        consumed_service_path.display()
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
-        uvc_camera_node_dir.path(),
-        r#"
+/// A `uvc_camera:v1` that emits the `video_stream` topic.
+const CAMERA_EMITS_VIDEO_STREAM: &str = r#"
         {
             peppy_schema: "node/v1",
             manifest: {
@@ -851,52 +597,10 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                 run_cmd: ["sleep", "10"],
             },
         }
-        "#,
-    );
+        "#;
 
-    let uvc_camera_response = poll(
-        &NodeSyncRequest::new(uvc_camera_node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_sync request should complete");
-
-    assert!(
-        uvc_camera_response.success,
-        "uvc_camera node_sync should succeed, got error: {}",
-        uvc_camera_response.error_message
-    );
-
-    common::write_peppy_json5(
-        uvc_camera_node_dir.path(),
-        &fs::read_to_string(uvc_camera_node_dir.path().join(NODE_CONFIG_FILE))
-            .expect("failed to read uvc_camera config"),
-    );
-    let add_result = common::send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        uvc_camera_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
-        None,
-    )
-    .await
-    .expect("node_add should succeed");
-
-    assert!(
-        add_result.success,
-        "uvc_camera node_add should succeed, got error: {}",
-        add_result.error_message.unwrap_or_default()
-    );
-
-    let brain_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
-        brain_node_dir.path(),
-        r#"
+/// A brain that consumes `video_stream` from `uvc_camera:v1`.
+const BRAIN_CONSUMES_VIDEO_STREAM: &str = r#"
         {
             peppy_schema: "node/v1",
             manifest: {
@@ -932,53 +636,84 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                 run_cmd: ["sleep", "10"],
             },
         }
-        "#,
-    );
+        "#;
 
-    let brain_response = poll(
-        &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_sync request should complete");
+/// A `uvc_camera:v1` that exposes the `enable_camera` service.
+const CAMERA_EXPOSES_ENABLE_CAMERA: &str = r#"
+        {
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "uvc_camera",
+                tag: "v1",
+                labels: ["camera"],
+            },
+            interfaces: {
+                topics: {
+                    emits: [],
+                },
+                services: {
+                    exposes: [
+                      {
+                        name: "enable_camera",
+                        request_message_format: {
+                          enable: "bool",
+                        },
+                      }
+                    ],
+                },
+                actions: {
+                    exposes: [],
+                },
+            },
+            execution: {
+                language: "rust",
+                build_cmd: ["true"],
+                run_cmd: ["sleep", "10"],
+            },
+        }
+        "#;
 
-    assert!(
-        brain_response.success,
-        "my_robot_brain node_sync should succeed, got error: {}",
-        brain_response.error_message
-    );
+/// A brain that consumes `enable_camera` from `uvc_camera:v1`.
+const BRAIN_CONSUMES_ENABLE_CAMERA: &str = r#"
+        {
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "my_robot_brain",
+                tag: "v1",
+                labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "v1", link_id: "uvc_camera" }
+                    ]
+                },
+            },
+            interfaces: {
+                topics: {
+                    emits: [],
+                },
+                services: {
+                    exposes: [],
+                    consumes: [
+                        {
+                          link_id: "uvc_camera",
+                          name: "enable_camera",
+                        }
+                    ],
+                },
+                actions: {
+                    exposes: [],
+                },
+            },
+            execution: {
+                language: "rust",
+                build_cmd: ["true"],
+                run_cmd: ["sleep", "10"],
+            },
+        }
+        "#;
 
-    let brain_peppygen_dir = brain_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
-    assert!(
-        brain_peppygen_dir.exists(),
-        "peppygen directory should exist at {}",
-        brain_peppygen_dir.display()
-    );
-
-    let consumed_topic_path = brain_peppygen_dir
-        .join("src")
-        .join("consumed_topics")
-        .join("uvc_camera")
-        .join("video_stream.rs");
-    assert!(
-        consumed_topic_path.exists(),
-        "peppygen uvc_camera/video_stream.rs should exist at {}",
-        consumed_topic_path.display()
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let action_server_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
-        action_server_node_dir.path(),
-        r#"
+/// A `brain:v1` that exposes the `move_arm` action.
+const BRAIN_EXPOSES_MOVE_ARM: &str = r#"
         {
             peppy_schema: "node/v1",
             manifest: {
@@ -1018,52 +753,10 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                 run_cmd: ["sleep", "10"],
             },
         }
-        "#,
-    );
+        "#;
 
-    let action_server_response = poll(
-        &NodeSyncRequest::new(action_server_node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_sync request should complete");
-
-    assert!(
-        action_server_response.success,
-        "brain node_sync should succeed, got error: {}",
-        action_server_response.error_message
-    );
-
-    common::write_peppy_json5(
-        action_server_node_dir.path(),
-        &fs::read_to_string(action_server_node_dir.path().join(NODE_CONFIG_FILE))
-            .expect("failed to read brain config"),
-    );
-    let add_result = common::send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        action_server_node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
-        None,
-    )
-    .await
-    .expect("node_add should succeed");
-
-    assert!(
-        add_result.success,
-        "brain node_add should succeed, got error: {}",
-        add_result.error_message.unwrap_or_default()
-    );
-
-    let controller_node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
-        controller_node_dir.path(),
-        r#"
+/// A controller that consumes `move_arm` from `brain:v1`.
+const CONTROLLER_CONSUMES_MOVE_ARM: &str = r#"
         {
             peppy_schema: "node/v1",
             manifest: {
@@ -1099,42 +792,63 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                 run_cmd: ["sleep", "10"],
             },
         }
-        "#,
-    );
+        "#;
 
-    let controller_response = poll(
-        &NodeSyncRequest::new(controller_node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
+/// A node that consumes a topic, a service or an action of a node on the
+/// stack gets the generated client module for it.
+#[rstest::rstest]
+#[case::topic(
+    CAMERA_EMITS_VIDEO_STREAM,
+    BRAIN_CONSUMES_VIDEO_STREAM,
+    "src/consumed_topics/uvc_camera/video_stream.rs"
+)]
+#[case::service(
+    CAMERA_EXPOSES_ENABLE_CAMERA,
+    BRAIN_CONSUMES_ENABLE_CAMERA,
+    "src/consumed_services/uvc_camera/enable_camera.rs"
+)]
+#[case::action(
+    BRAIN_EXPOSES_MOVE_ARM,
+    CONTROLLER_CONSUMES_MOVE_ARM,
+    "src/consumed_actions/brain/move_arm.rs"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_generates_rust_consumed_interfaces(
+    #[case] provider_config: &str,
+    #[case] consumer_config: &str,
+    #[case] generated_file: &str,
+) {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let provider_node_dir = tempdir().expect("failed to create temp node directory");
+    common::write_plain_peppy_json5(provider_node_dir.path(), provider_config);
+    sync_and_add_node(&started_core_node, provider_node_dir.path()).await;
+
+    let consumer_node_dir = tempdir().expect("failed to create temp node directory");
+    common::write_plain_peppy_json5(consumer_node_dir.path(), consumer_config);
+    let consumer_response = poll_core_node(
+        &started_core_node,
+        &NodeSyncRequest::new(consumer_node_dir.path(), common::TEST_GIT_HASH, false),
     )
-    .await
-    .expect("node_sync request should complete");
-
+    .await;
     assert!(
-        controller_response.success,
-        "controller node_sync should succeed, got error: {}",
-        controller_response.error_message
+        consumer_response.success,
+        "consumer node_sync should succeed, got error: {}",
+        consumer_response.error_message
     );
 
-    let controller_peppygen_dir = controller_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    let consumer_peppygen_dir = consumer_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     assert!(
-        controller_peppygen_dir.exists(),
+        consumer_peppygen_dir.exists(),
         "peppygen directory should exist at {}",
-        controller_peppygen_dir.display()
+        consumer_peppygen_dir.display()
     );
 
-    let consumed_action_path = controller_peppygen_dir
-        .join("src")
-        .join("consumed_actions")
-        .join("brain")
-        .join("move_arm.rs");
+    let generated_path = consumer_peppygen_dir.join(generated_file);
     assert!(
-        consumed_action_path.exists(),
-        "peppygen brain/move_arm.rs should exist at {}",
-        consumed_action_path.display()
+        generated_path.exists(),
+        "peppygen {generated_file} should exist at {}",
+        generated_path.display()
     );
 }
 
@@ -1143,7 +857,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"
         {
@@ -1173,46 +887,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
         "#,
     );
 
-    // Generate peppygen for the uvc_camera node first
-    let response = poll(
-        &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_sync request should complete");
-
-    assert!(
-        response.success,
-        "uvc_camera node_sync should succeed, got error: {}",
-        response.error_message
-    );
-
-    // Add uvc_camera to the node stack so the brain node can depend on it
-    common::write_peppy_json5(
-        node_dir.path(),
-        &fs::read_to_string(node_dir.path().join(NODE_CONFIG_FILE))
-            .expect("failed to read uvc_camera config"),
-    );
-    let add_result = common::send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
-        None,
-    )
-    .await
-    .expect("node_add should succeed");
-
-    assert!(
-        add_result.success,
-        "uvc_camera node_add should succeed, got error: {}",
-        add_result.error_message.unwrap_or_default()
-    );
+    sync_and_add_node(&started_core_node, node_dir.path()).await;
 
     // Verify that the generated Rust code includes the parameters modules
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
@@ -1254,7 +929,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -1270,16 +945,11 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     );
 
     // First generation - creates the .peppy folder
-    let response = poll(
+    let response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(
         response.success,
@@ -1304,16 +974,11 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     );
 
     // Second generation - should delete the .peppy folder and recreate it
-    let response = poll(
+    let response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(
         response.success,
@@ -1351,7 +1016,7 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
     let node_dir = tempdir().expect("failed to create temp node directory");
     // The node consumes a topic from link_id "nonexistent", but this
     // link_id is not declared in depends_on.nodes, so sync should fail.
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"
         {
@@ -1390,16 +1055,11 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll(
+    let response = poll_core_node(
+        &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_sync request should complete");
+    .await;
 
     assert!(!response.success, "node_sync should fail");
     assert!(
@@ -1412,6 +1072,39 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
         !peppygen_dir.exists(),
         "peppygen directory should not exist at {}",
         peppygen_dir.display()
+    );
+}
+
+/// Syncs the node at `node_dir`, then adds it to the stack, so that a node
+/// synced after it can depend on it. Panics if either step fails.
+async fn sync_and_add_node(started: &StartedCoreNode, node_dir: &Path) {
+    let response = poll_core_node(
+        started,
+        &NodeSyncRequest::new(node_dir, common::TEST_GIT_HASH, false),
+    )
+    .await;
+    assert!(
+        response.success,
+        "node_sync of {} should succeed, got error: {}",
+        node_dir.display(),
+        response.error_message
+    );
+
+    let add_result = common::send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        node_dir,
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_result.success,
+        "node_add of {} should succeed, got error: {}",
+        node_dir.display(),
+        add_result.error_message.unwrap_or_default()
     );
 }
 
@@ -1485,40 +1178,17 @@ fn brain_consumes_camera_config() -> &'static str {
     "#
 }
 
-/// Initialise an empty git repo that's locally cloneable (file:// URL).
-/// Returns `(repo_dir, branch_name)`.
-fn init_local_git_repo(repo_dir: &Path) -> String {
-    let repo = git2::Repository::init(repo_dir).expect("git init");
-    // Make a single empty commit so HEAD points at a valid ref the
-    // checkout cache can fetch.
-    let sig = git2::Signature::now("Test", "test@example.com").expect("sig");
-    let mut index = repo.index().expect("index");
-    let tree_id = index.write_tree().expect("write_tree");
-    let tree = repo.find_tree(tree_id).expect("find_tree");
-    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-        .expect("commit");
-    repo.head()
-        .expect("head")
-        .shorthand()
-        .expect("shorthand")
-        .to_owned()
-}
-
 async fn sync_with_flag(
     started: &StartedCoreNode,
     node_root: &Path,
     include_repositories: bool,
 ) -> core_node_api::encoding::NodeSyncResponse {
-    poll(
+    poll_core_node_with_timeout(
+        started,
         &NodeSyncRequest::new(node_root, common::TEST_GIT_HASH, include_repositories),
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
         Duration::from_secs(20),
     )
     .await
-    .expect("node_sync request should complete")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1528,13 +1198,13 @@ async fn include_repositories_false_does_not_resolve_fs_dep_from_repository() {
     // Camera lives only in the repository cache; flag=false means the
     // resolver never looks there, so the dep is missing from the stack.
     let camera_dir = tempdir().expect("camera tempdir");
-    write_node_config(camera_dir.path(), camera_config());
+    common::write_plain_peppy_json5(camera_dir.path(), camera_config());
     TestPackagesCache::new()
         .fs_entry("uvc_camera", "v1", camera_dir.path())
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(brain_dir.path(), brain_consumes_camera_config());
+    common::write_plain_peppy_json5(brain_dir.path(), brain_consumes_camera_config());
 
     let response = sync_with_flag(&started, brain_dir.path(), false).await;
 
@@ -1553,13 +1223,13 @@ async fn include_repositories_true_resolves_fs_dep_from_repository() {
     let started = start_core_node_with_mock_messenger().await;
 
     let camera_dir = tempdir().expect("camera tempdir");
-    write_node_config(camera_dir.path(), camera_config());
+    common::write_plain_peppy_json5(camera_dir.path(), camera_config());
     TestPackagesCache::new()
         .fs_entry("uvc_camera", "v1", camera_dir.path())
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(brain_dir.path(), brain_consumes_camera_config());
+    common::write_plain_peppy_json5(brain_dir.path(), brain_consumes_camera_config());
 
     let response = sync_with_flag(&started, brain_dir.path(), true).await;
 
@@ -1603,8 +1273,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
     // checkout should land on disk.
     let source_repo_parent = tempdir().expect("source repo parent");
     let source_repo_dir = source_repo_parent.path().join("source-repo");
-    std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-    let branch = init_local_git_repo(&source_repo_dir);
+    git2::Repository::init(&source_repo_dir).expect("git init");
     // Commit two nodes.
     std::fs::create_dir_all(source_repo_dir.join("nodes/dep_a")).expect("dep_a dir");
     std::fs::write(
@@ -1639,20 +1308,8 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
     )
     .expect("write dep_b config");
 
-    // Stage the new files into the repo so a fresh clone sees them.
-    let repo = git2::Repository::open(&source_repo_dir).expect("reopen repo");
-    let mut index = repo.index().expect("index");
-    index
-        .add_all(["nodes/*"].iter(), git2::IndexAddOption::DEFAULT, None)
-        .expect("add_all");
-    index.write().expect("write index");
-    let tree_id = index.write_tree().expect("write_tree");
-    let tree = repo.find_tree(tree_id).expect("find_tree");
-    let parent_oid = repo.head().unwrap().target().unwrap();
-    let parent = repo.find_commit(parent_oid).expect("find_commit");
-    let sig = git2::Signature::now("Test", "test@example.com").expect("sig");
-    repo.commit(Some("HEAD"), &sig, &sig, "add nodes", &tree, &[&parent])
-        .expect("commit");
+    // Commit the nodes so a fresh clone sees them.
+    let branch = common::commit_work_tree(&source_repo_dir);
 
     let repo_url = source_repo_dir.display().to_string();
     TestPackagesCache::new()
@@ -1662,7 +1319,7 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
 
     // Brain depends on both deps and consumes one topic from each.
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         brain_dir.path(),
         r#"
         {
@@ -1760,7 +1417,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
 
     // Repo version has only `topic_y`, missing `topic_x`.
     let repo_camera_dir = tempdir().expect("repo camera tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         repo_camera_dir.path(),
         r#"
         {
@@ -1784,7 +1441,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
 
     // Brain consumes `topic_x`; only the stack version exposes it.
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         brain_dir.path(),
         r#"
         {
@@ -1841,7 +1498,7 @@ async fn include_repositories_true_walks_transitive_dep() {
     // All three live only in the repo cache; the BFS in
     // materialize_repo_deps must walk through every level.
     let c_dir = tempdir().expect("c tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         c_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -1856,7 +1513,7 @@ async fn include_repositories_true_walks_transitive_dep() {
         }"#,
     );
     let b_dir = tempdir().expect("b tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         b_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -1875,7 +1532,7 @@ async fn include_repositories_true_walks_transitive_dep() {
         }"#,
     );
     let a_dir = tempdir().expect("a tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         a_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -1900,7 +1557,7 @@ async fn include_repositories_true_walks_transitive_dep() {
         .write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         brain_dir.path(),
         r#"{
             peppy_schema: "node/v1",
@@ -1950,7 +1607,7 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
     TestPackagesCache::new().write(&started.peppy_dirs);
 
     let brain_dir = tempdir().expect("brain tempdir");
-    write_node_config(brain_dir.path(), brain_consumes_camera_config());
+    common::write_plain_peppy_json5(brain_dir.path(), brain_consumes_camera_config());
 
     let response = sync_with_flag(&started, brain_dir.path(), true).await;
 
@@ -1969,12 +1626,44 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
     );
 }
 
-/// End-to-end regression for the user-reported bug: a `manifest.implements`
-/// slot resolved from a git-sourced contract cache must materialize the repo
-/// checkout before reading the contract manifest. The contract cache
-/// records a *repo-relative* path (e.g. `cameras/depth_camera.json5`), so
-/// without `ensure_checkout` the daemon would have tried to read that path
-/// from the daemon's CWD and failed.
+/// A dependency that resolves through the repository still has its
+/// exposure checked: consuming a topic it does not emit fails the sync,
+/// names the topic and the dependency, and generates nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn include_repositories_true_topic_the_dependency_does_not_emit_fails() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let camera_dir = tempdir().expect("camera tempdir");
+    common::write_plain_peppy_json5(camera_dir.path(), camera_config());
+    TestPackagesCache::new()
+        .fs_entry("uvc_camera", "v1", camera_dir.path())
+        .write(&started.peppy_dirs);
+
+    let brain_dir = tempdir().expect("brain tempdir");
+    common::write_plain_peppy_json5(
+        brain_dir.path(),
+        &brain_consumes_camera_config().replace("video_stream", "depth_image"),
+    );
+
+    let response = sync_with_flag(&started, brain_dir.path(), true).await;
+
+    assert!(!response.success, "sync should fail on an unexposed topic");
+    assert_eq!(
+        response.error_message,
+        "`my_robot_brain:v1` expects topic `depth_image` from `uvc_camera:v1`, \
+         but it is not exposed"
+    );
+    assert!(
+        !brain_dir.path().join(PEPPYGEN_OUTPUT_PATH).exists(),
+        "a failed sync must not generate peppygen"
+    );
+}
+
+/// A `manifest.implements` slot resolved from a git-sourced contract cache
+/// materializes the repository checkout before it reads the contract
+/// manifest. The contract cache records a *repo-relative* path (e.g.
+/// `cameras/depth_camera.json5`), which resolves only inside the checkout,
+/// not in the daemon's CWD.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_sync_resolves_git_sourced_implements_contract() {
     let started = start_core_node_with_mock_messenger().await;
@@ -1983,8 +1672,7 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
     // same repo-relative location the real `interfaces_hub` uses.
     let source_parent = tempdir().expect("source parent tempdir");
     let source_repo_dir = source_parent.path().join("interfaces_hub");
-    std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-    let branch = init_local_git_repo(&source_repo_dir);
+    git2::Repository::init(&source_repo_dir).expect("git init");
 
     const CONTRACT_BODY: &str = r#"{
         peppy_schema: "contract/v1",
@@ -2003,21 +1691,8 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
     )
     .expect("write contract file");
 
-    // Stage and commit the contract file on top of the initial empty
-    // commit so a fresh clone sees it on the resolved ref.
-    let repo = git2::Repository::open(&source_repo_dir).expect("reopen repo");
-    let mut index = repo.index().expect("index");
-    index
-        .add_all(["cameras/*"].iter(), git2::IndexAddOption::DEFAULT, None)
-        .expect("add_all");
-    index.write().expect("write index");
-    let tree_id = index.write_tree().expect("write_tree");
-    let tree = repo.find_tree(tree_id).expect("find_tree");
-    let parent_oid = repo.head().unwrap().target().unwrap();
-    let parent = repo.find_commit(parent_oid).expect("find_commit");
-    let sig = git2::Signature::now("Test", "test@example.com").expect("sig");
-    repo.commit(Some("HEAD"), &sig, &sig, "add contract", &tree, &[&parent])
-        .expect("commit contract");
+    // Commit the contract file so a fresh clone sees it on the resolved ref.
+    let branch = common::commit_work_tree(&source_repo_dir);
 
     let repo_url = source_repo_dir.display().to_string();
 
@@ -2032,11 +1707,9 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
         )
         .write(&started.peppy_dirs);
 
-    // The node under sync implements the git-sourced contract. Before the
-    // fix, `handle_node_sync_request` errored here
-    // with "failed to read cached contract ... at cameras/depth_camera.json5".
+    // The node under sync implements the git-sourced contract.
     let node_dir = tempdir().expect("node tempdir");
-    write_node_config(
+    common::write_plain_peppy_json5(
         node_dir.path(),
         r#"{
             peppy_schema: "node/v1",

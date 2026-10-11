@@ -1,17 +1,19 @@
 use super::*;
 
-/// Tests that a second goal is rejected when an action is already in progress,
-/// and that the rejection message suggests using `--force`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
+/// Sends a `node_add` goal for a new `node_name` source and returns as soon as
+/// the daemon accepts it, so the test can send a second goal while this add is
+/// still in progress. The test holds the returned source dir and action handle
+/// until it ends.
+async fn send_add_goal_without_waiting(
+    started_core_node: &common::StartedCoreNode,
+    node_name: &str,
+) -> (TempDir, peppylib::messaging::ActionGoalHandle) {
     // The add action stays in Running state while it copies the source
     // directory and processes the node config. build_cmd is not executed
     // during the add phase, so we use a benign no-op here.
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = node_config_with_execution(
-        "slow_add_node",
+        node_name,
         "v1",
         r#"{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }"#,
     );
@@ -20,34 +22,35 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     // Create the .peppy/git.hash file so the first goal's background task does
     // not fail fast on git-hash verification (which would transition the action
     // state from Running → Completed before the second goal arrives, making the
-    // rejection check non-deterministic).
+    // outcome of the second goal non-deterministic).
     let peppy_dir = source_dir.path().join(PEPPY_OUTPUT_DIR);
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
     std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
 
-    // Send first goal; should be accepted and start running the add.
-    let first_goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
-    let first_goal_payload = first_goal.encode().expect("failed to encode goal");
-
-    let first_action_handle = ActionMessenger::send_goal(
+    let goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
+    let action_handle = common::send_daemon_goal(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        common::core_node_target(&started_core_node.core_node_name),
-        ActionId::NodeAdd.name(),
-        None,
-        first_goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
+        &goal,
         GOAL_TIMEOUT,
     )
     .await
     .expect("first goal should be sent");
 
-    let first_response_payload = first_action_handle.goal_reply().body.clone();
-    let first_response = NodeAddGoalResponse::decode(&first_response_payload)
+    let response = NodeAddGoalResponse::decode(&action_handle.goal_reply().body)
         .expect("failed to decode first goal response");
-    assert!(first_response.accepted, "first goal should be accepted");
+    assert!(response.accepted, "first goal should be accepted");
+    (source_dir, action_handle)
+}
+
+/// Tests that a second goal is rejected when an action is already in progress,
+/// and that the rejection message suggests using `--force`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let (source_dir, _first_action_handle) =
+        send_add_goal_without_waiting(&started_core_node, "slow_add_node").await;
 
     // Send second goal (no force); should be rejected.
     let second_result = send_node_add_and_wait(
@@ -88,50 +91,8 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
 
-    // The first add action stays in Running state while it copies the source
-    // directory and processes the node config. build_cmd is not executed
-    // during the add phase, so we use a benign no-op here.
-    let slow_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let slow_peppy_json5 = node_config_with_execution(
-        "slow_node",
-        "v1",
-        r#"{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }"#,
-    );
-    write_peppy_json5(slow_source_dir.path(), &slow_peppy_json5);
-
-    // Create the .peppy/git.hash file so the first goal's background task does
-    // not fail fast on git-hash verification (same race as the rejection test).
-    let peppy_dir = slow_source_dir.path().join(PEPPY_OUTPUT_DIR);
-    std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
-    std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
-
-    // Send first goal; starts the add.
-    let first_goal = NodeAddGoal::new(
-        slow_source_dir.path(),
-        TEST_GIT_HASH,
-        RESULT_TIMEOUT.as_secs(),
-    );
-    let first_goal_payload = first_goal.encode().expect("failed to encode goal");
-
-    let first_action_handle = ActionMessenger::send_goal(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        common::core_node_target(&started_core_node.core_node_name),
-        ActionId::NodeAdd.name(),
-        None,
-        first_goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
-        GOAL_TIMEOUT,
-    )
-    .await
-    .expect("first goal should be sent");
-
-    let first_response_payload = first_action_handle.goal_reply().body.clone();
-    let first_response = NodeAddGoalResponse::decode(&first_response_payload)
-        .expect("failed to decode first goal response");
-    assert!(first_response.accepted, "first goal should be accepted");
+    let (_slow_source_dir, _first_action_handle) =
+        send_add_goal_without_waiting(&started_core_node, "slow_node").await;
 
     // Create a fast node for the second goal.
     let fast_source_dir = tempfile::tempdir().expect("failed to create temp source dir");

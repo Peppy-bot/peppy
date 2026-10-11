@@ -15,6 +15,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+/// Adds one node on this machine, in process, answering with the add's
+/// outcome and its log path. `Ok` carries a successful result only; a
+/// failed add arrives as `Err` with its error message.
 pub(in crate::services::stack) async fn add_node_directly(
     ctx: &StackChangeContext,
     node_add_goal: NodeAddGoal,
@@ -88,7 +91,6 @@ pub(in crate::services::stack) async fn build_node_directly(
     launch_id: &str,
     node_name: String,
     node_tag: String,
-    env_vars: Vec<(String, String)>,
     rebuild: bool,
 ) -> (std::result::Result<(), String>, Option<PathBuf>) {
     let log = match ActionLog::for_build(
@@ -123,7 +125,7 @@ pub(in crate::services::stack) async fn build_node_directly(
         Box::pin(run_node_build_for_entity(
             node_name.clone(),
             node_tag.clone(),
-            env_vars,
+            ctx.env_vars.clone(),
             rebuild,
             action_context,
             Announcer::new(log, feedback_tx),
@@ -153,6 +155,9 @@ pub(in crate::services::stack) async fn build_node_directly(
     }
 }
 
+/// Starts one instance on this machine, in process, answering with the
+/// start's outcome and its log path. `Ok` carries a successful result only;
+/// a failed start arrives as `Err` with its error message.
 pub(in crate::services::stack) async fn start_node_directly(
     ctx: &StackChangeContext,
     node_run_goal: NodeRunGoal,
@@ -268,32 +273,33 @@ pub(in crate::services::stack) async fn fail_and_clear_stack(
     reason
 }
 
-/// Output of [`validate_and_order_dependencies`]: a topological order
-/// of deployments to spawn, plus the resolved per-instance slot
-/// producers produced by the launcher's binding validator. The map is
-/// keyed by `consumer_instance_id`; each inner map is keyed by the
-/// consumer's manifest `link_id` and carries the slot's bound producers
-/// (validation guarantees every declared slot is bound, so an inner
-/// entry is never empty).
+/// The bound producers of every consumer instance's slots, keyed by
+/// `consumer_instance_id` and then by the consumer's manifest `link_id`, as
+/// the launcher's binding validator resolves them. Every declared slot of an
+/// instance appears: a `zero_or_more` slot with no binding and a vacant
+/// `zero_or_one` slot appear with an empty set.
 type ResolvedSlotBindings = std::collections::BTreeMap<String, config::runtime::SlotBindings>;
+
+/// A plan whose dependencies, slot bindings, pairings and observations the
+/// launcher's validators accepted, with the order its nodes start in.
+pub(in crate::services::stack) struct ValidatedPlan {
+    /// Every planned node in a stable dependency order: producers before
+    /// their consumers, and the nodes that are ready together in plan order.
+    pub(in crate::services::stack) ordered: Vec<NodeKey>,
+    pub(in crate::services::stack) slot_bindings: ResolvedSlotBindings,
+    pub(in crate::services::stack) pairings: Vec<daemon_config::launcher::PlannedPairing>,
+    pub(in crate::services::stack) observations: Vec<daemon_config::launcher::PlannedObservation>,
+}
 
 /// Validates dependencies and computes a stable topological order.
 pub(in crate::services::stack) async fn validate_and_order_dependencies(
     ctx: &StackChangeContext,
     planned: &[PlannedDeployment],
-    root_config: &config::node::NodeConfig,
     placements: &daemon_config::launcher::Placements,
     copies: &daemon_config::launcher::CopyMembership,
     clocks: &daemon_config::launcher::ResolvedClocks,
-) -> std::result::Result<
-    (
-        Vec<NodeKey>,
-        ResolvedSlotBindings,
-        Vec<daemon_config::launcher::PlannedPairing>,
-        Vec<daemon_config::launcher::PlannedObservation>,
-    ),
-    String,
-> {
+) -> std::result::Result<ValidatedPlan, String> {
+    let root_config = ctx.node_stack.root().read().config().clone();
     publish_stdout(
         ctx,
         "Validating dependencies",
@@ -306,24 +312,18 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
         root_config.manifest.tag.as_str(),
     );
 
-    let mut configs_by_key: HashMap<NodeKey, config::node::NodeConfig> = HashMap::new();
-    configs_by_key.insert(root_key.clone(), root_config.clone());
+    let mut configs_by_key: HashMap<NodeKey, &config::node::NodeConfig> = HashMap::new();
+    configs_by_key.insert(root_key.clone(), &root_config);
     for item in planned {
-        configs_by_key.insert(
-            NodeKey::new(&item.node_name, &item.node_tag),
-            item.config.clone(),
-        );
+        configs_by_key.insert(item.key(), &item.config);
     }
 
-    let planned_keys: HashSet<NodeKey> = planned
-        .iter()
-        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
-        .collect();
+    let planned_keys: HashSet<NodeKey> = planned.iter().map(PlannedDeployment::key).collect();
 
     // Validate all dependencies exist and expose the required interfaces.
     // An empty-admitting slot's dependency may be missing from the plan
     // entirely; the binding validation below still decides slot coverage.
-    let dependency_errors: Vec<String> = planned
+    let dependency_errors: Vec<config::ParsingError> = planned
         .iter()
         .flat_map(|item| {
             config::node::validate_dependency_specs(
@@ -332,10 +332,13 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
                 &item.node_name,
                 &item.node_tag,
                 config::node::MissingDependencyPolicy::AllowAbsentWhenSlotAdmitsEmpty,
-                |name, tag| configs_by_key.get(&NodeKey::new(name, tag)).cloned(),
+                |name, tag| {
+                    configs_by_key
+                        .get(&NodeKey::new(name, tag))
+                        .map(|config| (*config).clone())
+                },
             )
         })
-        .map(|e| e.to_string())
         .collect();
 
     if !dependency_errors.is_empty() {
@@ -429,19 +432,15 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
         clocks,
     );
     if !validated.errors.is_empty() {
-        let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
-        let msg = daemon_config::format_bulleted(&errors);
+        let msg = daemon_config::format_bulleted(&validated.errors);
         publish_error(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(msg);
     }
-    let resolved_slot_bindings = validated.slot_bindings;
-    let planned_pairings = validated.planned_pairings;
-    let planned_observations = validated.planned_observations;
 
     // Build the dependency graph for topological ordering.
     let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
     for item in planned {
-        let dependant_key = NodeKey::new(&item.node_name, &item.node_tag);
+        let dependant_key = item.key();
         let mut deps = HashSet::new();
         for spec in config::node::collect_dependency_specs(&item.config) {
             let dep_key = NodeKey::new(&spec.node_name, &spec.node_tag);
@@ -469,12 +468,12 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     )
     .await;
 
-    Ok((
+    Ok(ValidatedPlan {
         ordered,
-        resolved_slot_bindings,
-        planned_pairings,
-        planned_observations,
-    ))
+        slot_bindings: validated.slot_bindings,
+        pairings: validated.planned_pairings,
+        observations: validated.planned_observations,
+    })
 }
 
 /// Perform a stable topological sort.
@@ -485,10 +484,7 @@ fn topological_sort(
     let mut in_degree: HashMap<NodeKey, usize> = HashMap::new();
     let mut dependents: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
 
-    for key in planned
-        .iter()
-        .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
-    {
+    for key in planned.iter().map(PlannedDeployment::key) {
         in_degree.entry(key.clone()).or_insert(0);
         dependents.entry(key).or_default();
     }
@@ -506,7 +502,7 @@ fn topological_sort(
     let order_index: HashMap<NodeKey, usize> = planned
         .iter()
         .enumerate()
-        .map(|(idx, p)| (NodeKey::new(&p.node_name, &p.node_tag), idx))
+        .map(|(idx, p)| (p.key(), idx))
         .collect();
 
     let mut ready: Vec<NodeKey> = in_degree
@@ -582,6 +578,7 @@ pub(in crate::services::stack) async fn teardown_and_reset_stack(ctx: &StackChan
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::stack::fixtures::planned_deployment;
 
     /// The size of the future a function returns, from the function item
     /// alone: nothing is constructed or run.
@@ -613,6 +610,87 @@ mod tests {
             size <= ADD_NODE_DIRECTLY_FUTURE_BUDGET,
             "add_node_directly's future is {size} bytes, over the {ADD_NODE_DIRECTLY_FUTURE_BUDGET} byte budget: \
              the add pipeline must be pinned on the heap before it enters the phase wrappers"
+        );
+    }
+
+    /// The start order of a plan that lists `plan` in that order, where each
+    /// `(node, deps)` pair makes `node` wait for every node of `deps`.
+    fn start_order(plan: &[&str], deps: &[(&str, &[&str])]) -> Result<Vec<String>, String> {
+        let planned: Vec<PlannedDeployment> = plan
+            .iter()
+            .map(|name| planned_deployment(name, &[]))
+            .collect();
+        let mut deps_for: HashMap<NodeKey, HashSet<NodeKey>> = planned
+            .iter()
+            .map(|item| (item.key(), HashSet::new()))
+            .collect();
+        for (node, node_deps) in deps {
+            deps_for.insert(
+                NodeKey::new(*node, "v1"),
+                node_deps
+                    .iter()
+                    .map(|dep| NodeKey::new(*dep, "v1"))
+                    .collect(),
+            );
+        }
+        topological_sort(&planned, &deps_for)
+            .map(|ordered| ordered.iter().map(NodeKey::label).collect())
+    }
+
+    /// A node starts after every node it depends on, and the nodes that are
+    /// ready together start in the order the plan lists them, whatever order
+    /// that is.
+    #[test]
+    fn a_node_starts_after_its_dependencies_and_ready_nodes_follow_the_plan() {
+        let order = start_order(
+            &["dashboard", "planner", "camera", "driver"],
+            &[
+                ("dashboard", &["planner", "camera"]),
+                ("planner", &["driver"]),
+                ("camera", &["driver"]),
+            ],
+        );
+
+        assert_eq!(
+            order.unwrap(),
+            ["driver:v1", "planner:v1", "camera:v1", "dashboard:v1"]
+        );
+    }
+
+    /// A node that becomes ready starts before a ready node the plan lists
+    /// after it, even when that node was ready first.
+    #[test]
+    fn a_node_that_becomes_ready_takes_its_plan_place_among_the_ready_nodes() {
+        let order = start_order(
+            &["arm_controller", "camera", "arm_driver", "viewer"],
+            &[("arm_controller", &["arm_driver"]), ("viewer", &["camera"])],
+        );
+
+        assert_eq!(
+            order.unwrap(),
+            [
+                "camera:v1",
+                "arm_driver:v1",
+                "arm_controller:v1",
+                "viewer:v1"
+            ]
+        );
+    }
+
+    /// Nodes that wait for each other never become ready, and the refusal
+    /// names each of them in sorted order, leaving out the nodes that
+    /// started.
+    #[test]
+    fn a_dependency_cycle_is_refused_naming_the_nodes_left_waiting() {
+        let order = start_order(
+            &["planner", "driver", "camera"],
+            &[("planner", &["driver"]), ("driver", &["planner"])],
+        );
+
+        assert_eq!(
+            order.unwrap_err(),
+            "unable to resolve dependency order (cycle suspected). Remaining nodes: driver:v1, \
+             planner:v1"
         );
     }
 }

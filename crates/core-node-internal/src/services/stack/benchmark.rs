@@ -19,6 +19,7 @@
 
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_contract_doc;
 use config::node::{
@@ -40,9 +41,7 @@ use peppylib::messaging::{
     ConcurrentAction, NODE_HEALTH_SERVICE, PendingGoal, SenderTarget, ServiceTarget,
 };
 use peppylib::types::Payload;
-use peppylib::{
-    ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger, TopicMessenger,
-};
+use peppylib::{ActionMessenger, MessengerHandle, PeppyResult, ServiceMessenger, TopicMessenger};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,7 +49,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-/// Gate budget: rejects a concurrent benchmark goal with a remaining-time hint.
+/// Gate budget of one benchmark goal. A concurrent goal is rejected with "a
+/// stack benchmark is already in progress", without the remaining time.
 const BENCHMARK_GATE_TIMEOUT_SECS: u64 = 1800;
 /// Absolute floor below which a measured producer offset is treated as same-host
 /// regardless of the round trip: at this magnitude the clocks share a host and
@@ -120,21 +120,17 @@ struct BenchmarkActionContext {
 }
 
 fn encode_accepted() -> PeppyResult<Payload> {
-    StackBenchmarkGoalResponse::accepted()
-        .encode()
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: ActionId::StackBenchmark.name().to_string(),
-            reason: e.to_string(),
-        })
+    encode_response_or_err(
+        ActionId::StackBenchmark.name(),
+        StackBenchmarkGoalResponse::accepted().encode(),
+    )
 }
 
 fn encode_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
-    StackBenchmarkGoalResponse::rejected(reason)
-        .encode()
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: ActionId::StackBenchmark.name().to_string(),
-            reason: e.to_string(),
-        })
+    encode_response_or_err(
+        ActionId::StackBenchmark.name(),
+        StackBenchmarkGoalResponse::rejected(reason).encode(),
+    )
 }
 
 impl GoalHandler for StackBenchmarkGoalHandler {
@@ -323,6 +319,15 @@ fn producer_topic_qos(producer: Option<&NodeConfig>, topic_name: &str) -> QoSPro
         .unwrap_or_default()
 }
 
+/// Each config keyed by its `(name, tag)`, so the QoS and probe-size passes
+/// look a producer up the same way.
+fn configs_by_identity(configs: &[NodeConfig]) -> HashMap<(&str, &str), &NodeConfig> {
+    configs
+        .iter()
+        .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
+        .collect()
+}
+
 /// Walk every node's consumed interfaces and resolve each to one edge per
 /// producer. A direct node dep yields one edge; a contract dep yields one per
 /// implementing producer. Topic QoS for contract-implementation edges is left
@@ -330,10 +335,7 @@ fn producer_topic_qos(producer: Option<&NodeConfig>, topic_name: &str) -> QoSPro
 /// [`resolve_contract_topic_qos`] (the shape and qos of a contract-backed
 /// entry live in the contract document, not the producer's manifest).
 fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
-    let by_key: HashMap<(&str, &str), &NodeConfig> = configs
-        .iter()
-        .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
-        .collect();
+    let by_key = configs_by_identity(configs);
 
     let mut edges = Vec::new();
     for config in configs {
@@ -463,10 +465,7 @@ fn resolve_probe_sizes(
     contract_cache: &mut ContractDocCache,
     peppy_dirs: &PeppyDirs,
 ) {
-    let by_key: HashMap<(&str, &str), &NodeConfig> = configs
-        .iter()
-        .map(|c| ((c.manifest.name.as_str(), c.manifest.tag.as_str()), c))
-        .collect();
+    let by_key = configs_by_identity(configs);
 
     for edge in edges.iter_mut() {
         let (req, resp) = match &edge.origin {
@@ -675,70 +674,24 @@ async fn run_benchmark(
     let mut rows: Vec<InterfaceLatency> = Vec::new();
 
     for edge in &edges {
-        match edge.kind {
-            InterfaceKind::Service => {
-                emit_feedback(
-                    tx,
-                    BenchmarkFeedbackStep::Probing,
-                    format!("Probing {}", edge_label(edge)),
-                );
-                rows.push(
-                    measure_probe(
-                        ctx,
-                        edge,
-                        warmup,
-                        samples,
-                        timeout,
-                        MeasurementKind::ServiceProbe,
-                    )
-                    .await,
-                );
-            }
-            InterfaceKind::Action => {
-                emit_feedback(
-                    tx,
-                    BenchmarkFeedbackStep::Probing,
-                    format!("Probing {}", edge_label(edge)),
-                );
-                rows.push(
-                    measure_probe(
-                        ctx,
-                        edge,
-                        warmup,
-                        samples,
-                        timeout,
-                        MeasurementKind::ActionProbe,
-                    )
-                    .await,
-                );
-            }
-            // A topic edge yields two rows: a synthetic node-probe (handler-free
-            // round-trip with a topic-schema-sized reply) and the observe-only
-            // delivery measurement on live traffic.
-            InterfaceKind::Topic => {
-                emit_feedback(
-                    tx,
-                    BenchmarkFeedbackStep::Probing,
-                    format!("Probing producer node of {}", edge_label(edge)),
-                );
-                rows.push(
-                    measure_probe(
-                        ctx,
-                        edge,
-                        warmup,
-                        samples,
-                        timeout,
-                        MeasurementKind::NodeProbe,
-                    )
-                    .await,
-                );
-                emit_feedback(
-                    tx,
-                    BenchmarkFeedbackStep::TopicDelivery,
-                    format!("Measuring delivery {}", edge_label(edge)),
-                );
-                rows.push(measure_topic_delivery(ctx, edge, warmup, samples, timeout).await);
-            }
+        let probe_target = ProbeTarget::of(edge.kind);
+        let probing = match probe_target {
+            ProbeTarget::Node => format!("Probing producer node of {}", edge_label(edge)),
+            ProbeTarget::Service | ProbeTarget::Action => format!("Probing {}", edge_label(edge)),
+        };
+        emit_feedback(tx, BenchmarkFeedbackStep::Probing, probing);
+        rows.push(measure_probe(ctx, edge, warmup, samples, timeout, probe_target).await);
+
+        // A topic edge yields two rows: a synthetic node-probe (handler-free
+        // round-trip with a topic-schema-sized reply) and the observe-only
+        // delivery measurement on live traffic.
+        if edge.kind == InterfaceKind::Topic {
+            emit_feedback(
+                tx,
+                BenchmarkFeedbackStep::TopicDelivery,
+                format!("Measuring delivery {}", edge_label(edge)),
+            );
+            rows.push(measure_topic_delivery(ctx, edge, warmup, samples, timeout).await);
         }
     }
 
@@ -786,12 +739,43 @@ fn row_from_samples(
     }
 }
 
-/// Timed `Probe` round-trips, dispatched by `measurement`:
-/// - [`MeasurementKind::ServiceProbe`] / [`MeasurementKind::ActionProbe`] target
-///   the edge's own service (or the action's goal service);
-/// - [`MeasurementKind::NodeProbe`] (topic edges) targets the producer node's
-///   always-on `node_health` framework service, asking for a reply sized from
-///   the topic's message schema; the real topic key is never published.
+/// What a timed probe round-trip targets, chosen by the kind of the edge it
+/// measures.
+#[derive(Clone, Copy)]
+enum ProbeTarget {
+    /// The edge's own service.
+    Service,
+    /// The action's goal service.
+    Action,
+    /// The producer node of a topic edge, through its always-on `node_health`
+    /// framework service.
+    Node,
+}
+
+impl ProbeTarget {
+    fn of(kind: InterfaceKind) -> Self {
+        match kind {
+            InterfaceKind::Service => ProbeTarget::Service,
+            InterfaceKind::Action => ProbeTarget::Action,
+            InterfaceKind::Topic => ProbeTarget::Node,
+        }
+    }
+
+    fn measurement(self) -> MeasurementKind {
+        match self {
+            ProbeTarget::Service => MeasurementKind::ServiceProbe,
+            ProbeTarget::Action => MeasurementKind::ActionProbe,
+            ProbeTarget::Node => MeasurementKind::NodeProbe,
+        }
+    }
+}
+
+/// Timed `Probe` round-trips, dispatched by `probe_target`:
+/// - [`ProbeTarget::Service`] / [`ProbeTarget::Action`] target the edge's own service (or
+///   the action's goal service);
+/// - [`ProbeTarget::Node`] (topic edges) targets the producer node's always-on
+///   `node_health` framework service, asking for a reply sized from the
+///   topic's message schema; the real topic key is never published.
 ///
 /// The user handler never runs; the measurement is clock-independent.
 async fn measure_probe(
@@ -800,14 +784,15 @@ async fn measure_probe(
     warmup: u32,
     samples: u32,
     timeout: Duration,
-    measurement: MeasurementKind,
+    probe_target: ProbeTarget,
 ) -> InterfaceLatency {
+    let measurement = probe_target.measurement();
     // The node-probe rides the node-keyed wire path regardless of how the topic
     // itself is keyed: `node_health` is a per-node framework service, so an
     // contract-implementation edge still probes the producer node directly.
-    let target = match measurement {
-        MeasurementKind::NodeProbe => SenderTarget::node(&edge.to_node, &edge.to_tag),
-        _ => edge.target(),
+    let target = match probe_target {
+        ProbeTarget::Node => SenderTarget::node(&edge.to_node, &edge.to_tag),
+        ProbeTarget::Service | ProbeTarget::Action => edge.target(),
     };
     let target = match target {
         Ok(t) => t,
@@ -821,9 +806,9 @@ async fn measure_probe(
             );
         }
     };
-    let service_name = match measurement {
-        MeasurementKind::NodeProbe => NODE_HEALTH_SERVICE,
-        _ => edge.interface.as_str(),
+    let service_name = match probe_target {
+        ProbeTarget::Node => NODE_HEALTH_SERVICE,
+        ProbeTarget::Service | ProbeTarget::Action => edge.interface.as_str(),
     };
 
     // Carry a real-payload-sized request and ask the producer to reply with the
@@ -843,8 +828,8 @@ async fn measure_probe(
     // sample, which would make the note flicker depending on ordering.
     let mut honored_full = false;
     for i in 0..total {
-        let result = match measurement {
-            MeasurementKind::ActionProbe => {
+        let result = match probe_target {
+            ProbeTarget::Action => {
                 ActionMessenger::probe_latency(
                     &ctx.messenger,
                     &ctx.bound_core_node,
@@ -858,7 +843,7 @@ async fn measure_probe(
                 )
                 .await
             }
-            _ => {
+            ProbeTarget::Service | ProbeTarget::Node => {
                 ServiceMessenger::probe_latency(
                     &ctx.messenger,
                     &ctx.bound_core_node,
@@ -1076,10 +1061,7 @@ async fn measure_topic_delivery(
     let mut out = Vec::new();
     let mut had_implausible = false;
 
-    loop {
-        if measured >= samples {
-            break;
-        }
+    while measured < samples {
         match tokio::time::timeout(per_sample_timeout, subscription.on_next_message()).await {
             Ok(Some(msg)) => {
                 // Every session enables timestamping for its own role (see

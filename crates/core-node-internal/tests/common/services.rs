@@ -4,85 +4,78 @@ use super::daemon::StartedCoreNode;
 use super::{CALLER_INSTANCE_ID, core_node_target};
 use config::node::QoSProfile;
 use core_node_api::encoding::{
-    ClockRequest, ClockResponse, ClockTick, DatastoreGetRequest, DatastoreGetResponse,
-    DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
-    DatastoreStoreRequest, DatastoreStoreResponse,
+    ClockRequest, ClockTick, DatastoreGetRequest, DatastoreGetResponse, DatastoreListRequest,
+    DatastoreListResponse, DatastoreRemoveRequest, DatastoreStoreRequest,
 };
-use core_node_api::{ServiceId, TopicId};
+use core_node_api::{ServiceRequest, TopicId};
 use peppylib::clock::wall_now_ns;
-use peppylib::messaging::{ServiceTarget, TopicMessenger};
-use peppylib::{Message, Payload, ServiceMessenger};
+use peppylib::messaging::TopicMessenger;
 use std::time::Duration;
 
-/// Polls a datastore service on the started core node using the shared test
-/// routing and 5-second timeout, returning the response message. Panics on any
-/// transport failure; the datastore endpoints should always answer a
+/// [`poll_core_node_with_timeout`] with the 5-second timeout that a request
+/// the daemon answers without long work needs.
+pub async fn poll_core_node<R: ServiceRequest>(
+    started: &StartedCoreNode,
+    request: &R,
+) -> R::Response {
+    poll_core_node_with_timeout(started, request, Duration::from_secs(5)).await
+}
+
+/// Polls the core-node service that `request` belongs to on the started core
+/// node, with the shared test caller identity, and returns the decoded
+/// response. Panics on any transport or decode failure, or when no response
+/// arrives within `timeout`; the daemon's services should always answer a
 /// well-formed request.
-async fn poll_datastore(started: &StartedCoreNode, service: &str, payload: Payload) -> Message {
-    ServiceMessenger::poll(
+pub async fn poll_core_node_with_timeout<R: ServiceRequest>(
+    started: &StartedCoreNode,
+    request: &R,
+    timeout: Duration,
+) -> R::Response {
+    peppylib::core_node::transport::poll(
+        request,
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
-        core_node_target(&started.core_node_name),
-        service,
-        ServiceTarget::Any, // discover the daemon's random per-boot service instance
-        payload,
-        Duration::from_secs(5),
+        &started.core_node_name,
+        timeout,
     )
     .await
-    .unwrap_or_else(|e| panic!("datastore {service} poll should succeed: {e}"))
+    .unwrap_or_else(|e| panic!("{} poll should succeed: {e}", R::ID.name()))
 }
 
-/// Sends a `datastore_store` request to the started core node and decodes the
-/// (empty) acknowledgement. Panics on any transport or decode failure; the
-/// store endpoint should always succeed for a well-formed request.
+/// Sends a `datastore_store` request to the started core node. Panics on any
+/// transport or decode failure; the store endpoint should always succeed for
+/// a well-formed request.
 pub async fn datastore_store(started: &StartedCoreNode, key: &str, value: &[u8], encoding: &str) {
-    let payload = DatastoreStoreRequest::new(key, value.to_vec(), encoding)
-        .expect("test key should be a valid datastore key")
-        .encode()
-        .expect("encode store request should succeed");
-    let response = poll_datastore(started, ServiceId::DatastoreStore.name(), payload).await;
-    DatastoreStoreResponse::decode(&response.payload()).expect("decode store response");
+    let request = DatastoreStoreRequest::new(key, value.to_vec(), encoding)
+        .expect("test key should be a valid datastore key");
+    poll_core_node(started, &request).await;
 }
 
 /// Sends a `datastore_get` request to the started core node and returns the
 /// decoded response. Panics on any transport or decode failure.
 pub async fn datastore_get(started: &StartedCoreNode, key: &str) -> DatastoreGetResponse {
-    let payload = DatastoreGetRequest::new(key)
-        .expect("test key should be a valid datastore key")
-        .encode()
-        .expect("encode get request should succeed");
-    let response = poll_datastore(started, ServiceId::DatastoreGet.name(), payload).await;
-    DatastoreGetResponse::decode(&response.payload()).expect("decode get response")
+    let request = DatastoreGetRequest::new(key).expect("test key should be a valid datastore key");
+    poll_core_node(started, &request).await
 }
 
 /// Sends a `datastore_list` request to the started core node and returns the
 /// decoded response. Panics on any transport or decode failure.
 pub async fn datastore_list(started: &StartedCoreNode) -> DatastoreListResponse {
-    let payload = DatastoreListRequest::new()
-        .encode()
-        .expect("encode list request should succeed");
-    let response = poll_datastore(started, ServiceId::DatastoreList.name(), payload).await;
-    DatastoreListResponse::decode(&response.payload()).expect("decode list response")
+    poll_core_node(started, &DatastoreListRequest::new()).await
 }
 
 /// Sends a `datastore_remove` request to the started core node and returns
 /// whether the key existed. Panics on any transport or decode failure.
 pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
-    let payload = DatastoreRemoveRequest::new(key)
-        .expect("test key should be a valid datastore key")
-        .encode()
-        .expect("encode remove request should succeed");
-    let response = poll_datastore(started, ServiceId::DatastoreRemove.name(), payload).await;
-    DatastoreRemoveResponse::decode(&response.payload())
-        .expect("decode remove response")
-        .removed
+    let request =
+        DatastoreRemoveRequest::new(key).expect("test key should be a valid datastore key");
+    poll_core_node(started, &request).await.removed
 }
 
 /// Stores an arbitrary binary value, reads it back, and asserts the value and
-/// encoding survive the round trip. Shared between the mock-messenger and
-/// real-zenoh datastore tests; the latter exercises real cross-process
-/// serialization of the Cap'n Proto `Data` field.
+/// encoding survive the round trip. The real-zenoh datastore tests use it to
+/// exercise real cross-process serialization of the Cap'n Proto `Data` field.
 pub async fn assert_datastore_binary_round_trip(started: &StartedCoreNode) {
     let key = "binary_key_1";
     let value = vec![0u8, 255, 0x80, 0xFE, 0x00, 0x42];
@@ -109,25 +102,8 @@ pub async fn assert_datastore_binary_round_trip(started: &StartedCoreNode) {
 /// real-zenoh round-trip tests.
 pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
     let t0 = wall_now_ns().expect("system clock should be available");
-    let request_payload = ClockRequest::new(t0)
-        .encode()
-        .expect("encode should succeed");
-
-    let response = ServiceMessenger::poll(
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(&started.core_node_name),
-        ServiceId::Clock.name(),
-        ServiceTarget::Any, // discover the daemon's random per-boot service instance
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("clock service poll should succeed");
-
+    let clock_response = poll_core_node(started, &ClockRequest::new(t0)).await;
     let t3 = wall_now_ns().expect("system clock should be available");
-    let clock_response = ClockResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert_eq!(
         clock_response.client_send_time, t0,
@@ -152,14 +128,12 @@ pub async fn assert_clock_round_trip(started: &StartedCoreNode) {
 /// and real-zenoh publish tests.
 pub async fn assert_clock_topic_emits_monotonic_ticks(
     started: &StartedCoreNode,
-    caller_core_node: &str,
-    caller_instance_id: &str,
     tick_timeout: Duration,
 ) {
     let mut subscription = TopicMessenger::subscribe_target_scoped(
         &started.caller_handle,
-        caller_core_node,
-        caller_instance_id,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
         core_node_target(&started.core_node_name),
         TopicId::Clock.name(),
         QoSProfile::SensorData,

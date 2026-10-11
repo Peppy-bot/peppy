@@ -29,10 +29,15 @@ use crate::Result;
 pub(crate) struct HostedDomain {
     pub(crate) domain: ClockDomainId,
     pub(crate) publisher_instance_id: Name,
-    /// Whether the domain has published an instant this daemon has seen.
-    pub(crate) ready: bool,
     /// The last instant seen, or `None` when none has been.
     pub(crate) last_tick_ns: Option<u64>,
+}
+
+impl HostedDomain {
+    /// Whether the domain has published an instant this daemon has seen.
+    pub(crate) fn is_ready(&self) -> bool {
+        self.last_tick_ns.is_some()
+    }
 }
 
 struct Watch {
@@ -129,7 +134,6 @@ impl ClockWatches {
                 HostedDomain {
                     domain: watch.domain.clone(),
                     publisher_instance_id: publisher_instance_id.clone(),
-                    ready: last != 0,
                     last_tick_ns: (last != 0).then_some(last),
                 }
             })
@@ -191,7 +195,10 @@ mod tests {
         let hosted = watches.snapshot();
         assert_eq!(hosted.len(), 1, "one publisher, one watch");
         assert_eq!(hosted[0].domain, robot);
-        assert!(!hosted[0].ready, "no tick has arrived on the mock session");
+        assert!(
+            !hosted[0].is_ready(),
+            "no tick has arrived on the mock session"
+        );
         assert_eq!(hosted[0].last_tick_ns, None);
     }
 

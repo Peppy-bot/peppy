@@ -194,7 +194,7 @@ async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
     );
 }
 
-/// Verifies the explicit `node_name` override still wins over the machine-uid default.
+/// Verifies the explicit `node_name` override wins over the machine-uid default.
 #[tokio::test]
 async fn core_node_explicit_name_overrides_machine_uid() {
     let messenger = create_mock_messenger().await;
@@ -257,10 +257,13 @@ fn derived_name_has_compact_two_word_shape() {
 /// re-running the destructive setup and double-registering listeners.
 #[tokio::test]
 async fn start_with_ready_rejects_a_second_start() {
+    // The boot clears the instances dir and writes the repositories file, so
+    // it runs on a root of its own.
+    let root = tempfile::tempdir().expect("tempdir");
     let core_node = Arc::new(CoreNode::new(test_core_node_config(
         create_mock_messenger().await,
         Some("dup_start_node"),
-        PeppyDirs::new(std::env::temp_dir()),
+        PeppyDirs::new(root.path()),
     )));
 
     // Drive the first start on a task: it registers listeners then serves until
@@ -284,7 +287,7 @@ async fn start_with_ready_rejects_a_second_start() {
 
 /// Boot refuses with `CoreNodeNameTaken` when a foreign daemon presence token
 /// already claims the same core-node name. The refusal must also happen before
-/// any destructive setup — the instances dir survives.
+/// any destructive setup: the instances dir survives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_refuses_to_boot_when_name_already_claimed() {
     let messenger = create_mock_messenger().await;

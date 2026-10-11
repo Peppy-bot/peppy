@@ -184,9 +184,8 @@ pub(in crate::services::stack) async fn start_node_instances(
         // coordinator holds both and has already checked them against each
         // other, so it sends that verdict along with the request. A
         // same-daemon pair carries none, and the receiver's own manifests
-        // decide as before.
-        // `host` is the machine running the instance that receives the goal;
-        // `peer` is the endpoint on the other end of the pair.
+        // decide it. `host` is the endpoint whose instance receives the
+        // goal; `peer` is the endpoint on the other end of the pair.
         let pair_target =
             |host: &daemon_config::launcher::PlannedPairEndpoint,
              peer: &daemon_config::launcher::PlannedPairEndpoint| {
@@ -358,24 +357,17 @@ async fn start_locally(
     )?;
     let (result, log_path) = start_node_directly(ctx, node_run_goal, log).await;
 
-    let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
     if let Some(path) = log_path {
         run_log_paths.push(NodeRunLogEntry {
             instance_id: instance_id.to_string(),
             node_label: key.label(),
             log_path: path,
-            failed,
+            failed: result.is_err(),
             core_node: ctx.bound_core_node.clone(),
         });
     }
 
-    match result {
-        Ok(result) if result.success => Ok(result),
-        Ok(result) => Err(result
-            .error_message
-            .unwrap_or_else(|| "node_run failed".to_string())),
-        Err(err) => Err(err),
-    }
+    result
 }
 
 /// Starts one instance on a peer, pinning the manifest this coordinator

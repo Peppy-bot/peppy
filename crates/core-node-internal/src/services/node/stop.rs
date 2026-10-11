@@ -201,10 +201,10 @@ async fn handle_node_stop_request_inner(
     // Cooperative-then-force, identical to the SIGINT teardown for this one
     // instance: ask the node to shut down, give it a bounded grace window, then
     // SIGKILL its process group if it ignored us, and wait for it to be gone.
-    // A stuck/non-responsive node is now force-killed (and reported as success)
-    // rather than left alive behind a timeout error. We deliberately keep the
-    // live registry entry until after the kill+reap so a retried or racing
-    // caller can still observe the in-flight shutdown.
+    // A stuck or non-responsive node is force-killed and reported as success,
+    // not left alive behind a timeout error. The live registry entry stays
+    // until after the kill and reap, so a retried or racing caller can still
+    // observe the in-flight shutdown.
     let target = DoomedInstance {
         node_name: node_name.clone(),
         node_tag: node_tag.clone(),
@@ -247,7 +247,7 @@ async fn handle_node_stop_request_inner(
 /// callers can back off and retry once `commit_started`/`abort_started` has
 /// resolved the in-flight start.
 fn find_running_instance_and_entity(
-    node_stack: &Arc<NodeStack>,
+    node_stack: &NodeStack,
     instance_id: &Name,
     raw_instance_id: &str,
 ) -> std::result::Result<(TrackedNodeInstance, EntityHandle), NodeStopResponse> {
@@ -272,7 +272,7 @@ fn find_running_instance_and_entity(
 /// back empty: "mid-start, retry later" when the id exists in `Starting`
 /// state, "not found" otherwise.
 fn stop_lookup_failure(
-    node_stack: &Arc<NodeStack>,
+    node_stack: &NodeStack,
     instance_id: &Name,
     raw_instance_id: &str,
 ) -> NodeStopResponse {
@@ -292,12 +292,19 @@ fn stop_lookup_failure(
 /// Returns `true` if any tracked entity contains an instance with the
 /// given id in `InstanceState::Starting`. Used to disambiguate "instance does
 /// not exist" from "instance exists but is mid-start" in the stop handler.
-fn instance_is_in_starting(node_stack: &Arc<NodeStack>, instance_id: &Name) -> bool {
+fn instance_is_in_starting(node_stack: &NodeStack, instance_id: &Name) -> bool {
     node_stack.snapshot().into_iter().any(|handle| {
-        handle.read().instances().iter().any(|inst| {
-            inst.instance_id() == instance_id && inst.state() == node_stack::InstanceState::Starting
-        })
+        handle
+            .read()
+            .instances()
+            .iter()
+            .any(|inst| is_starting_instance(inst, instance_id))
     })
+}
+
+/// Whether `instance` is the instance `instance_id` and is mid-start.
+fn is_starting_instance(instance: &TrackedNodeInstance, instance_id: &Name) -> bool {
+    instance.instance_id() == instance_id && instance.state() == node_stack::InstanceState::Starting
 }
 
 /// Sends a `SHUTDOWN_SERVICE` request and returns once the receiver
@@ -582,7 +589,7 @@ async fn terminate_failed_container_instances_best_effort(doomed: &[&DoomedInsta
 /// Removes a `Running` instance from the entity's registry. Called only
 /// after the OS process has been confirmed terminated.
 fn remove_instance_from_registry(
-    node_stack: &Arc<NodeStack>,
+    node_stack: &NodeStack,
     node_name: &str,
     node_tag: &str,
     instance_id: &Name,
@@ -591,28 +598,29 @@ fn remove_instance_from_registry(
         return;
     };
     let mut guard = handle.write();
-    let removed = guard.stop_instance(instance_id);
-    if !removed {
-        let starting = guard.instances().iter().any(|inst| {
-            inst.instance_id() == instance_id && inst.state() == node_stack::InstanceState::Starting
-        });
-        if starting {
-            debug!(
-                "Node instance '{}' is in Starting state on {}:{}; cannot stop via stop_instance \
-                 (will resolve via abort_started)",
-                instance_id.as_str(),
-                node_name,
-                node_tag
-            );
-        } else {
-            debug!(
-                "Node instance '{}' was not tracked in entity {}:{}",
-                instance_id.as_str(),
-                node_name,
-                node_tag
-            );
-        }
+    if guard.stop_instance(instance_id) {
+        return;
     }
+    if guard
+        .instances()
+        .iter()
+        .any(|inst| is_starting_instance(inst, instance_id))
+    {
+        debug!(
+            "Node instance '{}' is in Starting state on {}:{}; cannot stop via stop_instance \
+             (will resolve via abort_started)",
+            instance_id.as_str(),
+            node_name,
+            node_tag
+        );
+        return;
+    }
+    debug!(
+        "Node instance '{}' was not tracked in entity {}:{}",
+        instance_id.as_str(),
+        node_name,
+        node_tag
+    );
 }
 
 /// Cooperative-then-force stop of the given running instances of one entity,
@@ -645,33 +653,33 @@ pub(crate) async fn stop_instances(
     // after shutdown) avoids a race with any concurrent registry mutation. An
     // instance that is no longer tracked resolves to a pid-less target: the
     // cooperative send is still attempted, and there is nothing to kill.
-    let doomed: Vec<DoomedInstance> = match node_stack.find(node_name, node_tag) {
-        Some(handle) => {
-            let guard = handle.read();
-            let is_container = guard.config().execution.container.is_some();
-            instance_ids
-                .iter()
-                .map(|instance_id| {
-                    // Claim each instance for termination before it is signaled,
-                    // so its exit watcher leaves the state to this path's removal
-                    // and does not record an intentional stop as a self-exit.
-                    let pid = guard
-                        .instances()
-                        .iter()
-                        .find(|inst| inst.instance_id() == instance_id)
-                        .inspect(|inst| inst.mark_stopping())
-                        .and_then(|inst| inst.pid());
-                    DoomedInstance {
-                        node_name: node_name.to_owned(),
-                        node_tag: node_tag.to_owned(),
-                        instance_id: instance_id.clone(),
-                        pid,
-                        is_container,
-                    }
-                })
-                .collect()
-        }
-        None => return, // Entity already gone; nothing to stop.
+    let doomed: Vec<DoomedInstance> = {
+        let Some(handle) = node_stack.find(node_name, node_tag) else {
+            return; // Entity already gone; nothing to stop.
+        };
+        let guard = handle.read();
+        let is_container = guard.config().execution.container.is_some();
+        instance_ids
+            .iter()
+            .map(|instance_id| {
+                // Claim each instance for termination before it is signaled,
+                // so its exit watcher leaves the state to this path's removal
+                // and does not record an intentional stop as a self-exit.
+                let pid = guard
+                    .instances()
+                    .iter()
+                    .find(|inst| inst.instance_id() == instance_id)
+                    .inspect(|inst| inst.mark_stopping())
+                    .and_then(|inst| inst.pid());
+                DoomedInstance {
+                    node_name: node_name.to_owned(),
+                    node_tag: node_tag.to_owned(),
+                    instance_id: instance_id.clone(),
+                    pid,
+                    is_container,
+                }
+            })
+            .collect()
     };
 
     // force_stop_instances warns (daemon-side) when it has to force-kill, which
@@ -784,7 +792,7 @@ async fn force_stop_and_forget(
     messenger: &MessengerHandle,
     core_node_node: &str,
     core_instance_id: &str,
-    node_stack: &Arc<NodeStack>,
+    node_stack: &NodeStack,
     doomed: &[DoomedInstance],
 ) {
     force_stop_instances(
@@ -907,7 +915,7 @@ pub async fn teardown_all_instances(
 /// shutdown token), but the reset and launch-clear callers do: they tear the
 /// stack down while the daemon keeps running, so without the claim each
 /// force-killed instance would be recorded as `Failed` by its watcher.
-fn collect_doomed_instances(node_stack: &Arc<NodeStack>) -> Vec<DoomedInstance> {
+fn collect_doomed_instances(node_stack: &NodeStack) -> Vec<DoomedInstance> {
     let root = node_stack.root();
     let mut doomed = Vec::new();
     for handle in node_stack.snapshot() {

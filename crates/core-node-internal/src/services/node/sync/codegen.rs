@@ -1,7 +1,6 @@
 use super::interfaces::{collect_all_deployment_interfaces, stack_resolver};
 use crate::services::node::Report;
 use daemon_config::consts::PeppyDirs;
-use generator::DeploymentInterface;
 use node_stack::NodeStack;
 use tracing::debug;
 
@@ -26,20 +25,6 @@ use tracing::debug;
 pub(super) fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
     let peppy_output_dir = node_root_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
 
-    // Path-string sanity check; pure CPU, no syscall.
-    if peppy_output_dir.file_name()
-        != Some(std::ffi::OsStr::new(
-            daemon_config::consts::PEPPY_OUTPUT_DIR,
-        ))
-    {
-        debug!(
-            "Unexpected directory name, expected {}: {}",
-            daemon_config::consts::PEPPY_OUTPUT_DIR,
-            peppy_output_dir.display()
-        );
-        return;
-    }
-
     // One `metadata` call decides "missing", "is a file", or "is a dir".
     // We refuse to rename a non-directory because a stray file at this
     // path would otherwise be silently moved to `.peppy-old-{pid}-{ts}`
@@ -63,12 +48,7 @@ pub(super) fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
         }
     }
 
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let old_peppy_dir =
-        node_root_dir.join(format!(".peppy-old-{}-{}", std::process::id(), timestamp));
+    let old_peppy_dir = unique_sibling_dir(node_root_dir, ".peppy-old");
 
     match std::fs::rename(&peppy_output_dir, &old_peppy_dir) {
         Ok(()) => {
@@ -87,14 +67,26 @@ pub(super) fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
             // Directory was already removed by another process, that's fine
         }
         Err(e) => {
-            // Log warning but proceed - generator will create directories as needed.
-            // This handles edge cases like permission issues or concurrent renames.
+            // Proceed: the generator creates the directories it needs. This
+            // handles edge cases like permission issues or concurrent renames.
             debug!(
                 "Failed to move old .peppy directory: {}, proceeding with generation",
                 e
             );
         }
     }
+}
+
+/// The path `{prefix}-{pid}-{nanos}` in `node_root_dir`. The process id and
+/// the current time keep the names of concurrent generations for the same
+/// node apart, so their `.peppy` directories do not move onto the same path.
+/// A clock before the Unix epoch gives 0 nanoseconds.
+fn unique_sibling_dir(node_root_dir: &std::path::Path, prefix: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    node_root_dir.join(format!("{prefix}-{}-{nanos}", std::process::id()))
 }
 
 /// Returns `true` when the `.peppy` directory under `node_root_dir` is absent
@@ -149,118 +141,82 @@ pub fn auto_sync_if_missing(
     node_stack: &NodeStack,
     peppy_dirs: &PeppyDirs,
 ) -> crate::Result<()> {
+    if !needs_sync(params.node_dir) {
+        return Ok(());
+    }
+
+    // Back up existing .peppy so we can restore it on failure.
     let peppy_dir = params
         .node_dir
         .join(daemon_config::consts::PEPPY_OUTPUT_DIR);
-    if needs_sync(params.node_dir) {
-        // Back up existing .peppy so we can restore it on failure.
-        let backup_dir = params.node_dir.join(format!(
-            ".peppy-backup-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        let had_backup = match std::fs::rename(&peppy_dir, &backup_dir) {
-            Ok(()) => true,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => return Err(crate::Error::Io(e)),
-        };
+    let backup_dir = unique_sibling_dir(params.node_dir, ".peppy-backup");
+    let had_backup = match std::fs::rename(&peppy_dir, &backup_dir) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(crate::Error::Io(e)),
+    };
 
-        let gen_result: crate::Result<()> = (|| {
-            let consumed = collect_all_deployment_interfaces(
-                params.manifest,
-                params.interfaces,
-                stack_resolver(node_stack),
-                peppy_dirs,
-                None,
-                params.on_feedback,
-            )
-            .map_err(|reason| crate::Error::Io(std::io::Error::other(reason)))?;
-            generate_peppygen_for_node(
-                params.execution_language,
-                params.node_dir,
-                consumed,
-                params.git_hash,
-                peppy_dirs,
-                generator::CrateDeployMode::default(),
-                None,
-                generator::NodeTree::Source,
-            )?;
-            Ok(())
-        })();
-
-        match gen_result {
-            Ok(()) => {
-                // Clean up the backup synchronously. We *must not* defer this
-                // to a background thread: the next stage (`process_node_add`)
-                // copies the source directory recursively, walks
-                // `.peppy-backup-PID-NANOS` (which is not in the excluded
-                // list), and would race with a concurrent deletion, surfacing
-                // as intermittent "No such file or directory" errors.
-                //
-                // A failure here must be surfaced rather than silently
-                // ignored: leaving the backup behind would still trip the
-                // recursive copy described above.
-                if had_backup {
-                    std::fs::remove_dir_all(&backup_dir).map_err(|e| {
-                        crate::Error::Io(std::io::Error::other(format!(
-                            "failed to clean up .peppy backup at {}: {}",
-                            backup_dir.display(),
-                            e
-                        )))
-                    })?;
-                }
-            }
-            Err(e) => {
-                // Generation failed; remove partial .peppy and restore backup.
-                let _ = std::fs::remove_dir_all(&peppy_dir);
-                if had_backup && let Err(restore_err) = std::fs::rename(&backup_dir, &peppy_dir) {
-                    tracing::error!(
-                        "Failed to restore .peppy backup from {}: {}",
-                        backup_dir.display(),
-                        restore_err,
-                    );
-                }
-                return Err(e);
-            }
+    if let Err(e) = generate_peppy_dir(&params, node_stack, peppy_dirs) {
+        // Generation failed; remove partial .peppy and restore backup.
+        let _ = std::fs::remove_dir_all(&peppy_dir);
+        if had_backup && let Err(restore_err) = std::fs::rename(&backup_dir, &peppy_dir) {
+            tracing::error!(
+                "Failed to restore .peppy backup from {}: {}",
+                backup_dir.display(),
+                restore_err,
+            );
         }
+        return Err(e);
+    }
+
+    // Clean up the backup synchronously. We *must not* defer this to a
+    // background thread: the next stage (`process_node_add`) copies the
+    // source directory recursively, walks `.peppy-backup-PID-NANOS` (which
+    // is not in the excluded list), and would race with a concurrent
+    // deletion, surfacing as intermittent "No such file or directory"
+    // errors.
+    //
+    // A failure here must be surfaced rather than silently ignored: leaving
+    // the backup behind would still trip the recursive copy described above.
+    if had_backup {
+        std::fs::remove_dir_all(&backup_dir).map_err(|e| {
+            crate::Error::Io(std::io::Error::other(format!(
+                "failed to clean up .peppy backup at {}: {}",
+                backup_dir.display(),
+                e
+            )))
+        })?;
     }
 
     Ok(())
 }
 
-/// Generates the peppygen library for a node.
-///
-/// This function takes the pre-collected data and generates the peppygen
-/// library in the node directory. Use `collect_consumed_interfaces` to
-/// gather the consumed interfaces before calling this function.
-///
-/// This function is designed to be called from within `spawn_blocking` contexts
-/// where the data has already been extracted and can be moved into the closure.
-#[allow(clippy::too_many_arguments)]
-pub fn generate_peppygen_for_node(
-    language: config::node::PeppygenLanguage,
-    node_dir: impl AsRef<std::path::Path>,
-    consumed_interfaces: Vec<DeploymentInterface>,
-    git_hash: &str,
+/// Collects every interface the node deploys against the stack alone and
+/// generates its `.peppy` directory in `params.node_dir`.
+fn generate_peppy_dir(
+    params: &AutoSyncParams<'_>,
+    node_stack: &NodeStack,
     peppy_dirs: &PeppyDirs,
-    deploy_mode: generator::CrateDeployMode,
-    config_path: Option<&std::path::Path>,
-    node_tree: generator::NodeTree,
 ) -> crate::Result<()> {
-    generator::generate_peppygen_lib(
-        language,
-        node_dir,
-        consumed_interfaces,
-        git_hash,
+    let consumed = collect_all_deployment_interfaces(
+        params.manifest,
+        params.interfaces,
+        stack_resolver(node_stack),
         peppy_dirs,
-        deploy_mode,
-        config_path,
-        node_tree,
+        None,
+        params.on_feedback,
+    )
+    .map_err(|reason| crate::Error::Io(std::io::Error::other(reason)))?;
+    generator::generate_peppygen_lib(
+        params.execution_language,
+        params.node_dir,
+        consumed,
+        params.git_hash,
+        peppy_dirs,
+        generator::CrateDeployMode::default(),
+        None,
+        generator::NodeTree::Source,
     )?;
-
     Ok(())
 }
 
@@ -308,5 +264,100 @@ mod tests {
         std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
         std::fs::write(peppygen.join("peppy.json5.sha256"), b"deadbeef").unwrap();
         assert!(!needs_sync(tmp.path()));
+    }
+
+    #[test]
+    fn unique_sibling_dir_names_the_process_and_a_timestamp() {
+        let node_root_dir = std::path::Path::new("/nodes/camera");
+        let dir = unique_sibling_dir(node_root_dir, ".peppy-old");
+
+        assert_eq!(dir.parent(), Some(node_root_dir));
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        let pid_prefix = format!(".peppy-old-{}-", std::process::id());
+        let nanos = name
+            .strip_prefix(&pid_prefix)
+            .unwrap_or_else(|| panic!("{name} must start with {pid_prefix}"));
+        assert!(
+            nanos.parse::<u128>().is_ok(),
+            "{name} must end with a decimal timestamp"
+        );
+    }
+
+    const ROOT_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: { name: "core_root", tag: "v1" },
+        execution: { language: "rust", run_cmd: ["true"] },
+    }"#;
+
+    /// Runs [`auto_sync_if_missing`] for a node without dependencies in
+    /// `node_dir`, against an empty stack and an empty peppy root. The node
+    /// directory holds no `peppy.json5`, so a generation that runs fails.
+    fn auto_sync_node_without_config(node_dir: &std::path::Path) -> crate::Result<()> {
+        let stack_dir = tempfile::tempdir().unwrap();
+        let root_config = config::node::NodeConfigParser::from_content(ROOT_CONFIG).unwrap();
+        let node_stack = NodeStack::new(root_config, None, stack_dir.path());
+        let peppy_home = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_home.path().to_path_buf());
+        let manifest: config::node::Manifest =
+            serde_json5::from_str(r#"{ name: "fresh_node", tag: "v1" }"#).unwrap();
+        let interfaces = config::node::Interfaces::default();
+        auto_sync_if_missing(
+            AutoSyncParams {
+                node_dir,
+                execution_language: config::node::PeppygenLanguage::Rust,
+                manifest: &manifest,
+                interfaces: &interfaces,
+                git_hash: "abc123",
+                on_feedback: &|_| {},
+            },
+            &node_stack,
+            &peppy_dirs,
+        )
+    }
+
+    fn entry_names(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn auto_sync_leaves_a_complete_peppy_dir_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy = tmp.path().join(".peppy");
+        let peppygen = peppy.join("libs/peppygen");
+        std::fs::create_dir_all(&peppygen).unwrap();
+        std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
+        std::fs::write(peppygen.join("peppy.json5.sha256"), b"deadbeef").unwrap();
+
+        auto_sync_node_without_config(tmp.path()).expect("a complete .peppy needs no sync");
+
+        assert_eq!(entry_names(tmp.path()), vec![".peppy".to_owned()]);
+        assert_eq!(std::fs::read(peppy.join("git.hash")).unwrap(), b"abc123");
+    }
+
+    #[test]
+    fn auto_sync_restores_the_previous_peppy_dir_when_generation_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy = tmp.path().join(".peppy");
+        std::fs::create_dir_all(&peppy).unwrap();
+        std::fs::write(peppy.join("marker"), b"previous").unwrap();
+
+        let result = auto_sync_node_without_config(tmp.path());
+
+        assert!(
+            matches!(result, Err(crate::Error::GeneratorError(_))),
+            "a missing peppy.json5 must fail the generation, got {result:?}"
+        );
+        assert_eq!(std::fs::read(peppy.join("marker")).unwrap(), b"previous");
+        assert_eq!(entry_names(&peppy), vec!["marker".to_owned()]);
+        assert_eq!(
+            entry_names(tmp.path()),
+            vec![".peppy".to_owned()],
+            "no backup directory may remain next to the restored .peppy"
+        );
     }
 }

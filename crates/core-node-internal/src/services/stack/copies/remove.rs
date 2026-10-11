@@ -5,7 +5,7 @@
 
 use super::super::action::StackChangeContext;
 use super::super::launch::feedback::{publish_stdout, publish_warning};
-use super::super::launch::orchestrate::validate_and_order_dependencies;
+use super::super::launch::orchestrate::{ValidatedPlan, validate_and_order_dependencies};
 use super::super::launch::preflight::preflight_change;
 use super::super::launch::watchers::{LifecycleWatchers, lifecycle_watchers, watchers_replacing};
 use super::super::launch::{PlannedDeployment, federated};
@@ -16,13 +16,17 @@ use super::changed_slots::{
     holds_any, whole_sets,
 };
 use super::live::{live_machines, report_offline_sets, split_by_liveness};
-use super::{change_active_launch, plan::selected_instances, stack_list_on};
+use super::{
+    change_active_launch,
+    plan::{planned_from, selected_instances},
+    stack_list_on,
+};
 use crate::services::node::{named_instances, stop_named_instance};
 use config::runtime::Name;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, ParticipantInstancesRemoveRequest, StackRemoveGoal,
 };
-use daemon_config::launcher::{CopyMembership, DeploymentInstance, PeppyLauncher};
+use daemon_config::launcher::{CopyMembership, DeploymentInstance};
 use peppylib::core_node::transport::poll;
 use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
@@ -49,28 +53,6 @@ pub(in crate::services::stack) async fn remove(
     .await
 }
 
-/// The deployments the launcher now holds, each carrying the pins the launch
-/// resolved for its source, the way a join plans what it adds.
-fn planned_from(
-    launcher: &PeppyLauncher,
-    resolved: &[PlannedDeployment],
-) -> Vec<PlannedDeployment> {
-    launcher
-        .deployments
-        .iter()
-        .map(|deployment| {
-            let item = resolved
-                .iter()
-                .find(|item| item.deployment.source == deployment.source)
-                .expect("every deployment on the stack was resolved by the launch or by a join");
-            PlannedDeployment {
-                deployment: deployment.clone(),
-                ..item.clone()
-            }
-        })
-        .collect()
-}
-
 async fn remove_inner(
     name: &Name,
     active: &mut ActiveLaunch,
@@ -91,7 +73,7 @@ async fn remove_inner(
     let shrunk_slots = changed_slots(&copy.record, &active.planned, Change::Removal)?;
     check_not_emptied(&copy.record, &shrunk_slots, &remaining)?;
     let removed: HashSet<_> = copy.record.instance_ids().map(Name::as_str).collect();
-    let remaining_planned = planned_from(&remaining, &active.resolved);
+    let remaining_planned = planned_from(&remaining, active.resolved.iter());
     let copies = CopyMembership::of(&staying);
     // The copy supplies a clock when one of its instances publishes a domain
     // this stack reads.
@@ -116,11 +98,13 @@ async fn remove_inner(
             return Err(consumers.refusal(name, &removed_domains));
         }
     }
-    let root = ctx.node_stack.root().read().config().clone();
-    let (_, bindings, _, observations) = validate_and_order_dependencies(
+    let ValidatedPlan {
+        slot_bindings: bindings,
+        observations,
+        ..
+    } = validate_and_order_dependencies(
         ctx,
         &remaining_planned,
-        &root,
         &active.placements,
         &copies,
         &active.resolved_clocks,

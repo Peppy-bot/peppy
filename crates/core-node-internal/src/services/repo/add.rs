@@ -1,7 +1,10 @@
 use crate::Result;
-use crate::services::repo::cache::repositories_list_path;
+use crate::services::repo::cache::{UNOWNED_REPO_ID, repositories_list_path};
 use crate::services::repo::refresh::read_or_create_repos;
-use crate::services::repo::{entry_identity, repo_source_to_json, source_identity};
+use crate::services::repo::{
+    attributable_repo_id, has_entry_with_identity, repo_entry_id, repo_source_to_json,
+    source_identity, write_repo_entries,
+};
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
@@ -11,6 +14,7 @@ use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use serde_json::Value;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -64,16 +68,14 @@ fn handle_repo_add_request_inner(
         request.source, request.id
     );
 
-    // An explicit id and top priority answer the same question (which id the
-    // new entry takes) in incompatible ways; deriving one while pinning the
-    // other would silently ignore half the request.
-    if request.id.is_some() && request.top {
-        return RepoAddResponse::failure(
-            "cannot combine an explicit id with top priority: --id pins the id, --top derives one",
-        )
-        .encode()
-        .map_err(Into::into);
-    }
+    let placement = match RepoIdPlacement::from_request(&request) {
+        Ok(placement) => placement,
+        Err(reason) => {
+            return RepoAddResponse::failure(reason)
+                .encode()
+                .map_err(Into::into);
+        }
+    };
 
     let identity = source_identity(&request.source);
     if identity.trim().is_empty() {
@@ -96,79 +98,110 @@ fn handle_repo_add_request_inner(
     };
 
     let new_identity = identity.trim();
-    let is_duplicate = repos
-        .iter()
-        .any(|entry| entry_identity(entry).is_some_and(|existing| existing == new_identity));
-
-    if is_duplicate {
+    if has_entry_with_identity(&repos, new_identity) {
         return RepoAddResponse::failure(format!("repository '{}' already exists", new_identity))
             .encode()
             .map_err(Into::into);
     }
 
-    let next_id = if let Some(id) = request.id {
+    let next_id = match next_repo_id(&repos, placement) {
+        Ok(id) => id,
+        Err(reason) => {
+            return RepoAddResponse::failure(reason)
+                .encode()
+                .map_err(Into::into);
+        }
+    };
+
+    repos.push(repo_source_to_json(next_id, &request.source));
+    write_repo_entries(&repos_path, &repos, "repositories")?;
+
+    drop(_guard);
+
+    RepoAddResponse::success().encode().map_err(Into::into)
+}
+
+/// The id an auto-assigned entry takes when the list holds no id yet.
+const DEFAULT_FIRST_REPO_ID: u64 = 1000;
+
+/// Which id a new `repositories.json5` entry takes, parsed from the `id`
+/// and `top` fields of a [`RepoAddRequest`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepoIdPlacement {
+    /// The caller pinned this id.
+    Pinned(u64),
+    /// One below the lowest existing id, so the repository takes priority
+    /// over every other one.
+    BeforeAll,
+    /// One above the highest existing id.
+    AfterAll,
+}
+
+impl RepoIdPlacement {
+    /// Refuses a request that both pins an id and asks for top priority:
+    /// the two answer the same question (which id the new entry takes) in
+    /// incompatible ways, and honouring one would silently ignore the other.
+    fn from_request(request: &RepoAddRequest) -> std::result::Result<Self, &'static str> {
+        match (request.id, request.top) {
+            (Some(_), true) => Err(
+                "cannot combine an explicit id with top priority: --id pins the id, --top derives one",
+            ),
+            (Some(id), false) => Ok(Self::Pinned(id)),
+            (None, true) => Ok(Self::BeforeAll),
+            (None, false) => Ok(Self::AfterAll),
+        }
+    }
+}
+
+/// The id the new entry takes in `repos` at `placement`, or the refusal
+/// the caller sends back.
+///
+/// The id must be one a cache entry can be attributed to (below
+/// [`UNOWNED_REPO_ID`]): `repo list` skips any other repository and its
+/// nodes rank as unowned. Above `i64::MAX` the id would also make
+/// `repositories.json5` unreadable, since serde_json5 reads integers as
+/// `i64`, and every later repo, node and launch command would fail on it.
+fn next_repo_id(repos: &[Value], placement: RepoIdPlacement) -> std::result::Result<u64, String> {
+    let mut ids = repos.iter().filter_map(repo_entry_id);
+    let id = match placement {
         // The caller pinned this id (typically from the >= 2000 band
         // reserved for organization-added repositories) so it stays stable
         // across re-runs of whatever setup registered it. Claiming an id
         // another entry already holds would merge two repositories' entries
         // under one owner, so it is a refusal naming the id.
-        if repos
-            .iter()
-            .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
-            .any(|existing| existing == id)
-        {
-            return RepoAddResponse::failure(format!(
-                "repository id {id} is already in use; pick another (ids >= 2000 are reserved \
-                 for manually pinned repositories)"
-            ))
-            .encode()
-            .map_err(Into::into);
+        RepoIdPlacement::Pinned(id) => {
+            if ids.any(|existing| existing == id) {
+                return Err(format!(
+                    "repository id {id} is already in use; pick another (ids >= 2000 are reserved \
+                     for manually pinned repositories)"
+                ));
+            }
+            id
         }
-        id
-    } else if request.top {
-        match repos
-            .iter()
-            .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
-            .min()
-        {
-            Some(min) => match min.checked_sub(1) {
-                Some(n) => n,
-                None => {
-                    return RepoAddResponse::failure(
-                        "cannot add repo with top priority: existing minimum id is 0 (would underflow)",
-                    )
-                    .encode().map_err(Into::into);
-                }
-            },
-            None => 1000,
-        }
-    } else {
-        match repos
-            .iter()
-            .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
-            .max()
-        {
-            Some(max) => match max.checked_add(1) {
-                Some(n) => n,
-                None => {
-                    return RepoAddResponse::failure(
-                        "cannot add repo: existing maximum id is u64::MAX (would overflow)",
-                    )
-                    .encode()
-                    .map_err(Into::into);
-                }
-            },
-            None => 1000,
-        }
+        RepoIdPlacement::BeforeAll => match ids.min() {
+            None => DEFAULT_FIRST_REPO_ID,
+            Some(min) => min.checked_sub(1).ok_or_else(|| {
+                "cannot add repo with top priority: existing minimum id is 0 (would underflow)"
+                    .to_owned()
+            })?,
+        },
+        RepoIdPlacement::AfterAll => match ids.max() {
+            None => DEFAULT_FIRST_REPO_ID,
+            Some(max) => max.checked_add(1).ok_or_else(|| {
+                "cannot add repo: existing maximum id is u64::MAX (would overflow)".to_owned()
+            })?,
+        },
     };
-
-    repos.push(repo_source_to_json(next_id, &request.source));
-    let content = json5_pretty::to_string_pretty(&repos).map_err(|e| {
-        core_node_api::Error::Encoding(format!("failed to serialize repositories: {e}"))
-    })?;
-    std::fs::write(&repos_path, content)?;
-
-    drop(_guard);
-
-    RepoAddResponse::success().encode().map_err(Into::into)
+    if attributable_repo_id(id).is_none() {
+        return Err(match placement {
+            RepoIdPlacement::Pinned(_) => {
+                format!("repository id {id} is out of range; pick an id below {UNOWNED_REPO_ID}")
+            }
+            RepoIdPlacement::BeforeAll | RepoIdPlacement::AfterAll => format!(
+                "cannot add repo: the assigned id {id} is out of range; repository ids must be \
+                 below {UNOWNED_REPO_ID}"
+            ),
+        });
+    }
+    Ok(id)
 }

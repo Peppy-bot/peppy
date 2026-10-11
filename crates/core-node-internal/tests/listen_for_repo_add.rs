@@ -1,23 +1,11 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
+use common::{
+    StartedCoreNode, poll_core_node, read_json5_array, start_core_node_with_mock_messenger,
+    write_repositories_json5,
+};
 use core_node::repositories_list_path;
-use core_node_api::encoding::{GitRepoRef, RepoAddRequest, RepoAddResponse};
-use peppylib::core_node::transport::poll;
-use std::time::Duration;
-
-async fn send_repo_add(started: &StartedCoreNode, request: &RepoAddRequest) -> RepoAddResponse {
-    poll(
-        request,
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("repo_add poll should succeed")
-}
+use core_node_api::encoding::{GitRepoRef, RepoAddRequest};
 
 /// Assert the most recently appended repo got the next-available id:
 /// exactly `max(other_ids) + 1`. Avoids hardcoding a specific value, which
@@ -44,7 +32,7 @@ fn assert_last_got_next_id(repos: &[serde_json::Value]) {
 async fn listen_for_repo_add_second_git_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
@@ -52,10 +40,7 @@ async fn listen_for_repo_add_second_git_succeed() {
     assert!(resp.success, "repo_add should succeed");
     assert!(resp.error_message.is_empty());
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     // Last entry is the one we just added, with the next available id
     let last = repos.last().unwrap();
@@ -68,7 +53,7 @@ async fn listen_for_repo_add_second_git_succeed() {
 async fn listen_for_repo_add_git_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git(
             "https://github.com/example/repo.git",
@@ -78,10 +63,7 @@ async fn listen_for_repo_add_git_succeed() {
     .await;
     assert!(resp.success, "repo_add should succeed");
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let last = repos.last().unwrap();
     assert_eq!(last["type"], "git");
@@ -94,13 +76,10 @@ async fn listen_for_repo_add_git_succeed() {
 async fn listen_for_repo_add_fs_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = send_repo_add(&started, &RepoAddRequest::new_fs("/tmp/my-local-repo")).await;
+    let resp = poll_core_node(&started, &RepoAddRequest::new_fs("/tmp/my-local-repo")).await;
     assert!(resp.success, "repo_add should succeed");
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let last = repos.last().unwrap();
     assert_eq!(last["type"], "fs");
@@ -116,23 +95,17 @@ async fn listen_for_repo_add_duplicate_fails() {
         RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead);
 
     // First add should succeed
-    let resp = send_repo_add(&started, &request).await;
+    let resp = poll_core_node(&started, &request).await;
     assert!(resp.success);
 
     // Second add of the same URL should fail
-    let resp = send_repo_add(&started, &request).await;
+    let resp = poll_core_node(&started, &request).await;
     assert!(!resp.success, "duplicate add should fail");
     assert!(
         resp.error_message.contains("already exists"),
         "error should mention 'already exists', got: {}",
         resp.error_message
     );
-}
-
-fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -148,7 +121,7 @@ async fn listen_for_repo_add_fails_when_duplicate_ids_in_file() {
         ]"#,
     );
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/new.git", GitRepoRef::RemoteHead),
     )
@@ -174,17 +147,14 @@ async fn listen_for_repo_add_assigns_id_after_manual_entry() {
         r#"[{ "id": 42, "type": "fs", "path": "/manual-repo" }]"#,
     );
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
     .await;
     assert!(resp.success, "repo_add should succeed");
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 2);
 
@@ -215,7 +185,7 @@ async fn listen_for_repo_add_top_assigns_min_minus_one() {
         ]"#,
     );
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead)
             .with_top(true),
@@ -223,10 +193,7 @@ async fn listen_for_repo_add_top_assigns_min_minus_one() {
     .await;
     assert!(resp.success, "repo_add with top should succeed");
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let added = repos
         .iter()
@@ -247,7 +214,7 @@ async fn listen_for_repo_add_top_sorts_first() {
         ]"#,
     );
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead)
             .with_top(true),
@@ -255,10 +222,7 @@ async fn listen_for_repo_add_top_sorts_first() {
     .await;
     assert!(resp.success);
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     // Lower id = higher priority once the list is sorted on read.
     let lowest = repos
@@ -269,52 +233,29 @@ async fn listen_for_repo_add_top_sorts_first() {
     assert_eq!(lowest["id"], 999);
 }
 
+/// On an empty list, the added entry takes the 1000 floor whether or not it
+/// asks for top priority.
+#[rstest::rstest]
+#[case::top(true)]
+#[case::no_top(false)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_repo_add_top_on_empty_uses_default_floor() {
+async fn listen_for_repo_add_on_empty_uses_default_floor(#[case] top: bool) {
     let started = start_core_node_with_mock_messenger().await;
     write_repositories_json5(&started, "[]");
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
-        &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
-            .with_top(true),
+        &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead).with_top(top),
     )
     .await;
     assert!(resp.success);
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 1);
     assert_eq!(
         repos[0]["id"], 1000,
-        "empty list + top=true should fall back to the 1000 floor"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_repo_add_no_top_on_empty_uses_default_floor() {
-    let started = start_core_node_with_mock_messenger().await;
-    write_repositories_json5(&started, "[]");
-
-    let resp = send_repo_add(
-        &started,
-        &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead),
-    )
-    .await;
-    assert!(resp.success);
-
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
-
-    assert_eq!(repos.len(), 1);
-    assert_eq!(
-        repos[0]["id"], 1000,
-        "empty list + top=false should also fall back to the 1000 floor"
+        "empty list + top={top} should fall back to the 1000 floor"
     );
 }
 
@@ -324,7 +265,7 @@ async fn listen_for_repo_add_top_fails_when_min_is_zero() {
 
     write_repositories_json5(&started, r#"[{ "id": 0, "type": "fs", "path": "/a" }]"#);
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
             .with_top(true),
@@ -344,7 +285,7 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
 
     write_repositories_json5(&started, r#"[{ "id": 1000, "type": "fs", "path": "/a" }]"#);
 
-    let resp1 = send_repo_add(
+    let resp1 = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/first.git", GitRepoRef::RemoteHead)
             .with_top(true),
@@ -352,7 +293,7 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
     .await;
     assert!(resp1.success);
 
-    let resp2 = send_repo_add(
+    let resp2 = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/second.git", GitRepoRef::RemoteHead)
             .with_top(true),
@@ -360,10 +301,7 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
     .await;
     assert!(resp2.success);
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let first = repos
         .iter()
@@ -390,7 +328,7 @@ async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
 
     write_repositories_json5(&started, r#"[{ "id": 1000, "type": "fs", "path": "/a" }]"#);
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
             .with_top(false),
@@ -398,10 +336,7 @@ async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
     .await;
     assert!(resp.success);
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let added = repos
         .iter()
@@ -412,12 +347,12 @@ async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
-    // Regression for RepoSource::identity() collapsing git entries by url
-    // alone: adding the same clone URL with different refs must produce two
-    // distinct entries instead of rejecting the second as a duplicate.
+    // Git entries are identified by url and ref together: the same clone URL
+    // with different refs gives two distinct entries, not a duplicate
+    // rejection.
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp_main = send_repo_add(
+    let resp_main = poll_core_node(
         &started,
         &RepoAddRequest::new_git(
             "https://github.com/example/repo.git",
@@ -427,7 +362,7 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
     .await;
     assert!(resp_main.success, "first add should succeed");
 
-    let resp_dev = send_repo_add(
+    let resp_dev = poll_core_node(
         &started,
         &RepoAddRequest::new_git(
             "https://github.com/example/repo.git",
@@ -441,10 +376,7 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
         resp_dev.error_message
     );
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let git_entries: Vec<&serde_json::Value> = repos
         .iter()
@@ -467,17 +399,14 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
 async fn listen_for_repo_add_explicit_id_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_fs("/tmp/private-hub").with_id(2000),
     )
     .await;
     assert!(resp.success, "repo_add with explicit id should succeed");
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
     let added = repos
         .iter()
@@ -497,7 +426,7 @@ async fn listen_for_repo_add_explicit_id_collision_fails() {
 
     // 1000 is the id of the first bundled default; claiming it would merge
     // the new repository's entries under that default's owner.
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_fs("/tmp/private-hub").with_id(1000),
     )
@@ -509,10 +438,7 @@ async fn listen_for_repo_add_explicit_id_collision_fails() {
         resp.error_message
     );
 
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
     assert!(
         repos.iter().all(|e| e["path"] != "/tmp/private-hub"),
         "refused entry must not be persisted"
@@ -523,7 +449,7 @@ async fn listen_for_repo_add_explicit_id_collision_fails() {
 async fn listen_for_repo_add_explicit_id_with_top_fails() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = send_repo_add(
+    let resp = poll_core_node(
         &started,
         &RepoAddRequest::new_fs("/tmp/private-hub")
             .with_id(2000)
@@ -537,4 +463,74 @@ async fn listen_for_repo_add_explicit_id_with_top_fails() {
         "error should explain the conflict, got: {}",
         resp.error_message
     );
+}
+
+/// Reads repositories.json5 back and asserts that it still parses and holds
+/// no entry for `path`: a refused add leaves the file readable and does not
+/// persist the refused entry.
+fn assert_repos_file_lacks_path(started: &StartedCoreNode, path: &str) {
+    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
+    assert!(
+        repos.iter().all(|e| e["path"] != path),
+        "refused entry must not be persisted: {repos:?}"
+    );
+}
+
+/// An id at or above `u32::MAX` names no repository a cache entry can be
+/// attributed to (and one above `i64::MAX` cannot even be read back), so
+/// pinning one is a refusal naming the id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_explicit_id_out_of_range_fails() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    for id in [u64::MAX, u64::from(u32::MAX)] {
+        let resp = poll_core_node(
+            &started,
+            &RepoAddRequest::new_fs("/tmp/far-hub").with_id(id),
+        )
+        .await;
+        assert!(!resp.success, "add pinning id {id} should fail");
+        assert!(
+            resp.error_message
+                .contains(&format!("repository id {id} is out of range")),
+            "error should name the id {id}, got: {}",
+            resp.error_message
+        );
+        assert_repos_file_lacks_path(&started, "/tmp/far-hub");
+    }
+}
+
+/// A derived id that reaches `u32::MAX` is refused as well, whether it
+/// comes after the highest existing id or before the lowest one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_derived_id_out_of_range_fails() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let cases = [
+        (u64::from(u32::MAX) - 1, false),
+        (u64::from(u32::MAX) + 1, true),
+    ];
+    for (existing_id, top) in cases {
+        write_repositories_json5(
+            &started,
+            &format!(r#"[{{ "id": {existing_id}, "type": "fs", "path": "/a" }}]"#),
+        );
+
+        let resp = poll_core_node(
+            &started,
+            &RepoAddRequest::new_fs("/tmp/far-hub").with_top(top),
+        )
+        .await;
+        assert!(
+            !resp.success,
+            "add next to id {existing_id} (top={top}) should fail"
+        );
+        assert!(
+            resp.error_message
+                .contains(&format!("assigned id {} is out of range", u32::MAX)),
+            "error should name the derived id, got: {}",
+            resp.error_message
+        );
+        assert_repos_file_lacks_path(&started, "/tmp/far-hub");
+    }
 }

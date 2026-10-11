@@ -5,8 +5,7 @@
 //! asyncio event-loop thread (bounded by `EVENT_LOOP_JOIN_BUDGET_SECS`), then
 //! the interpreter finalizes. The deadline is derived once by
 //! `core_node::force_kill_deadline`; these tests pin the invariant to that
-//! single source so it cannot silently drift back to "deadline == grace" (the
-//! original force-kill bug).
+//! single source, so a deadline equal to the grace fails them.
 
 use std::time::Duration;
 
@@ -24,8 +23,9 @@ fn node_bounded_exit(grace: Duration) -> Duration {
 
 #[test]
 fn deadline_exceeds_node_bounded_exit_for_every_accepted_grace() {
-    // Check across the full range of accepted grace values (minimum accepted is
-    // 1s), not just the default, so the invariant holds for any configured grace.
+    // Check every grace from the minimum the config accepts (1 s) up to 600 s,
+    // not just the default. The config sets no upper bound; the deadline is
+    // linear in the grace, so this range covers the invariant.
     for grace_secs in 1..=600 {
         let grace = Duration::from_secs(grace_secs);
         let deadline = force_kill_deadline(grace);

@@ -33,9 +33,8 @@ pub(in crate::services::stack) fn plan_clocks(
             incarnations.insert(domain.clone(), daemon_config::launcher::mint_incarnation());
         }
     }
-    let resolved = resolve_clocks(flat, placements, &incarnations).map_err(|errors| {
-        daemon_config::format_bulleted(errors.iter().map(ToString::to_string).collect::<Vec<_>>())
-    })?;
+    let resolved = resolve_clocks(flat, placements, &incarnations)
+        .map_err(|errors| daemon_config::format_bulleted(&errors))?;
     Ok((resolved, incarnations))
 }
 
@@ -62,5 +61,47 @@ pub(in crate::services::stack) async fn announce_clock_domains(
             LaunchFeedbackStep::LauncherStep,
         )
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::stack::fixtures::placements_with;
+    use daemon_config::launcher::PeppyLauncherParser;
+
+    /// Every clock refusal of a launcher reaches the operator as one
+    /// bulleted list, one line per refusal, in the order the rules found
+    /// them.
+    #[test]
+    fn every_clock_refusal_is_listed_as_one_bullet() {
+        let flat = PeppyLauncherParser::from_content(
+            r#"{
+                peppy_schema: "launcher/v1",
+                framework: { clocks: {
+                    sim_a: { publisher: "ghost_a" },
+                    sim_b: { publisher: "ghost_b" },
+                } },
+                deployments: [
+                    { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+                ],
+            }"#,
+        )
+        .expect("the launcher parses");
+
+        let error = plan_clocks(
+            &flat,
+            &placements_with("cn-robot", &[]),
+            &ClockIncarnations::new(),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "\n  - clock domain `sim_a` names `ghost_a` as its publisher, which this launch does \
+             not deploy. Name an instance it deploys: `arm_inst`\
+             \n  - clock domain `sim_b` names `ghost_b` as its publisher, which this launch does \
+             not deploy. Name an instance it deploys: `arm_inst`"
+        );
     }
 }

@@ -1,27 +1,21 @@
-#![allow(dead_code)]
-
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, add_and_build_forking_node,
-    build_staged_node, create_tar_zst_from_dir, is_process_running, poll_until,
+    AbortOnDrop, NodeAddSource, TEST_GIT_HASH, add_and_build_forking_node, build_staged_node,
+    commit_path, create_tar_zst_from_dir, entity_artifact_path, is_process_running,
     send_node_add_and_wait, send_node_add_and_wait_with_force, spawn_real_stuck_instance,
-    start_core_node_with_mock_messenger, wait_until_action_completes, wait_until_service_reachable,
-    write_peppy_json5,
+    start_core_node_with_mock_messenger, wait_until_action_completes, wait_until_process_exits,
+    wait_until_service_reachable, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use config::node::QoSProfile;
 use config_test_support as test_helpers;
-use core_node_api::ActionId;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeRemoveRequest,
 };
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
 use gix_url::Url as GitUrl;
-use peppylib::ActionMessenger;
-use peppylib::core_node::transport::poll;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -32,22 +26,6 @@ use {
 
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Returns the current `artifact_path` of the entity at `(name, tag)` as an owned
-/// `PathBuf`. Panics if the entity is missing or is not yet `Built`.
-///
-/// The entity lookup uses the new `Arc<RwLock<NodeEntity>>` API: most call
-/// sites used to call `entity.root_path()` directly; this helper encapsulates
-/// the `read()` + `artifact_path().expect(...)` boilerplate.
-fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
-    node_stack
-        .find(name, tag)
-        .expect("entity should exist")
-        .read()
-        .artifact_path()
-        .expect("entity should be built")
-        .to_path_buf()
-}
 
 /// Returns the number of tracked instances for the entity at `(name, tag)`.
 fn entity_instance_count(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> usize {
@@ -107,30 +85,22 @@ fn node_config_with_execution(name: &str, tag: &str, execution_body: &str) -> St
     )
 }
 
-/// Creates a minimal node bundle (peppy.json5 + tar.zst) suitable for HTTP source tests.
-/// Returns the temp directory (must be kept alive) and the compressed bundle bytes.
-fn create_minimal_http_bundle(node_name: &str, node_tag: &str) -> (TempDir, Vec<u8>) {
+/// Creates a minimal node bundle (a [`minimal_node_config`] in a tar.zst)
+/// suitable for HTTP source tests, and returns the compressed bundle bytes.
+fn create_minimal_http_bundle(node_name: &str, node_tag: &str) -> Vec<u8> {
     let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
-    let peppy_json5 = format!(
-        r#"{{
-            peppy_schema: "node/v1",
-            manifest: {{
-                name: "{node_name}",
-                tag: "{node_tag}",
-            }},
-            interfaces: {{}},
-            execution: {{
-                language: "rust",
-                run_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
-    let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
-    std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
+    // The archive goes next to the source dir, not inside it: the archive
+    // file exists while the dir is walked, so inside it would be archived too.
+    let source_dir = bundle_dir.path().join("source");
+    std::fs::create_dir(&source_dir).expect("failed to create bundle source dir");
+    std::fs::write(
+        source_dir.join(NODE_CONFIG_FILE),
+        minimal_node_config(node_name, node_tag, &[]),
+    )
+    .expect("failed to write manifest");
     let bundle_path = bundle_dir.path().join("node.tar.zst");
-    create_tar_zst_from_dir(bundle_dir.path(), &bundle_path, ".");
-    let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
-    (bundle_dir, bundle_bytes)
+    create_tar_zst_from_dir(&source_dir, &bundle_path, ".");
+    std::fs::read(&bundle_path).expect("failed to read bundle")
 }
 
 /// Starts an HTTP mock server serving `bundle_bytes` at `/bundles/node.tar.zst`.
@@ -146,52 +116,10 @@ fn serve_bundle_over_http(bundle_bytes: Vec<u8>) -> (Server, url::Url) {
     (server, url)
 }
 
-/// Returns true if the given tar.zst archive contains an entry matching `entry_name`.
-fn archive_contains_entry(archive_path: &Path, entry_name: &str) -> bool {
-    let file = std::fs::File::open(archive_path).expect("failed to open archive");
-    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
-    let mut archive = tar::Archive::new(decoder);
-    archive
-        .entries()
-        .expect("failed to read entries")
-        .any(|entry| {
-            let entry = entry.expect("failed to read entry");
-            let path = entry.path().expect("failed to read entry path");
-            let path_str = path.to_string_lossy();
-            let normalized = path_str.trim_start_matches("./");
-            normalized == entry_name
-        })
-}
-
-/// Reads a file from a tar.zst archive and returns its contents as a String.
-fn read_file_from_archive(archive_path: &Path, entry_name: &str) -> String {
-    let file = std::fs::File::open(archive_path).expect("failed to open archive");
-    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
-    let mut archive = tar::Archive::new(decoder);
-    for entry in archive.entries().expect("failed to read entries") {
-        let mut entry = entry.expect("failed to read entry");
-        let path = entry.path().expect("failed to read entry path");
-        let path_str = path.to_string_lossy();
-        let normalized = path_str.trim_start_matches("./").to_string();
-        if normalized == entry_name {
-            let mut contents = String::new();
-            entry
-                .read_to_string(&mut contents)
-                .expect("failed to read entry contents");
-            return contents;
-        }
-    }
-    panic!(
-        "entry '{}' not found in archive {}",
-        entry_name,
-        archive_path.display()
-    );
-}
-
-/// Lists all file entries in a tar.zst archive (normalized paths without leading "./").
-fn list_archive_entries(archive_path: &Path) -> Vec<String> {
-    let file = std::fs::File::open(archive_path).expect("failed to open archive");
-    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
+/// Lists all file entries in tar.zst archive bytes (normalized paths without leading "./").
+fn list_archive_entries(archive_bytes: &[u8]) -> Vec<String> {
+    let decoder =
+        zstd::stream::read::Decoder::new(archive_bytes).expect("failed to create decoder");
     let mut archive = tar::Archive::new(decoder);
     archive
         .entries()
@@ -206,6 +134,13 @@ fn list_archive_entries(archive_path: &Path) -> Vec<String> {
             if s.is_empty() { None } else { Some(s) }
         })
         .collect()
+}
+
+#[test]
+fn minimal_http_bundle_holds_only_the_node_config() {
+    let bundle_bytes = create_minimal_http_bundle("bundle_node", "v1");
+
+    assert_eq!(list_archive_entries(&bundle_bytes), [NODE_CONFIG_FILE]);
 }
 
 fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
@@ -243,27 +178,13 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     )
     .expect("failed to write uvc node v0.1.0");
 
-    let mut index = repo.index().expect("failed to open index");
-    index
-        .add_path(&rel_config_path)
-        .expect("failed to add uvc node");
-    index.write().expect("failed to write index");
-
-    let tree_id = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_id).expect("failed to find tree");
-    let commit_v1 = repo
-        .commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "uvc_camera v0.1.0",
-            &tree,
-            &[],
-        )
-        .expect("failed to commit v0.1.0");
-    let commit_v1 = repo
-        .find_commit(commit_v1)
-        .expect("failed to find v0.1.0 commit");
+    let commit_v1 = commit_path(
+        &repo,
+        &signature,
+        &rel_config_path,
+        "uvc_camera v0.1.0",
+        &[],
+    );
     repo.tag("v0.1.0", commit_v1.as_object(), &signature, "v0.1.0", false)
         .expect("failed to create v0.1.0 tag");
 
@@ -290,27 +211,13 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     )
     .expect("failed to write uvc node v0.2.0");
 
-    let mut index = repo.index().expect("failed to open index");
-    index
-        .add_path(&rel_config_path)
-        .expect("failed to add uvc node");
-    index.write().expect("failed to write index");
-
-    let tree_id = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_id).expect("failed to find tree");
-    let commit_v2 = repo
-        .commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "uvc_camera v0.2.0",
-            &tree,
-            &[&commit_v1],
-        )
-        .expect("failed to commit v0.2.0");
-    let commit_v2 = repo
-        .find_commit(commit_v2)
-        .expect("failed to find v0.2.0 commit");
+    let commit_v2 = commit_path(
+        &repo,
+        &signature,
+        &rel_config_path,
+        "uvc_camera v0.2.0",
+        &[&commit_v1],
+    );
     repo.tag("v0.2.0", commit_v2.as_object(), &signature, "v0.2.0", false)
         .expect("failed to create v0.2.0 tag");
 
@@ -342,21 +249,7 @@ fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
     )
     .expect("write invalid config");
 
-    let mut index = repo.index().expect("open index");
-    index.add_path(config_rel).expect("add config");
-    index.write().expect("write index");
-
-    let tree_id = index.write_tree().expect("write tree");
-    let tree = repo.find_tree(tree_id).expect("find tree");
-    repo.commit(
-        Some("HEAD"),
-        &signature,
-        &signature,
-        "initial commit",
-        &tree,
-        &[],
-    )
-    .expect("commit");
+    commit_path(&repo, &signature, config_rel, "initial commit", &[]);
 
     repo_path
 }

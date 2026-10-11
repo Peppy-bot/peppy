@@ -14,8 +14,8 @@
 //!
 //! Concurrency is serialized with an in-process mutex map keyed by
 //! `<slug>-<hash>` so two concurrent batches inside the same daemon
-//! can't race on the same directory. Cross-process safety is not a
-//! concern yet; the daemon is the only writer.
+//! can't race on the same directory. The locks do not span processes:
+//! the daemon is the only writer.
 
 use super::super::checkout_repo_ref;
 use super::super::git_utils::{clone_repo_shallow, fetch_with_progress, head_commit};
@@ -67,7 +67,7 @@ fn forget_reuse_announced(dir: &Path) {
 /// How long a checkout that no cache entry names any more is kept.
 ///
 /// A caller is handed a path and reads from it after the lock is released
-/// — `node add` copies the tree out — so a checkout that stops being
+/// (`node add` copies the tree out), so a checkout that stops being
 /// referenced mid-add must not vanish underneath it. The window runs from
 /// the last hand-out, which is long enough to cover any single add and
 /// short enough that a superseded pin does not linger for a day.
@@ -184,8 +184,8 @@ pub fn materialized_checkout(
 /// directory.
 ///
 /// The clone brings every head the remote publishes at depth 1, so a
-/// commit that is any of their tips — which is what a pin read from a
-/// freshly refreshed repository is — is already here and the checkout is
+/// commit that is any of their tips (which is what a pin read from a
+/// freshly refreshed repository is) is already here and the checkout is
 /// the whole job. A commit the refs have since moved past is fetched by
 /// its own hash, falling back to deepening `read_ref`, the ref the entry was
 /// read at; one the remote no longer holds is refused rather than silently
@@ -252,7 +252,7 @@ pub fn ensure_checkout_at_commit(
 /// tree again the first time anything from it is added.
 ///
 /// `dir` must be a working tree whose HEAD is `commit`, and must sit on the
-/// same filesystem as the cache — both hold for a clone made under
+/// same filesystem as the cache. Both hold for a clone made under
 /// [`PeppyDirs::tmp_dir`]. Ownership of `dir` passes here either way.
 ///
 /// Best-effort, and infallible from the caller's side: whatever goes wrong,
@@ -461,6 +461,61 @@ mod tests {
             .to_owned()
     }
 
+    /// A source repository with one commit per entry of its contents, and
+    /// the Peppy home whose checkout cache reads it. The temp dirs live as
+    /// long as the fixture.
+    struct SourceRepo {
+        _home: tempfile::TempDir,
+        peppy_dirs: PeppyDirs,
+        _source: tempfile::TempDir,
+        source_dir: PathBuf,
+        commits: Vec<GitCommit>,
+        url: String,
+        branch: String,
+    }
+
+    impl SourceRepo {
+        fn new(contents: &[&str]) -> Self {
+            let home = tempfile::tempdir().unwrap();
+            let peppy_dirs = PeppyDirs::new(home.path());
+            let source = tempfile::tempdir().unwrap();
+            let source_dir = source.path().join("source-repo");
+            let commits = repo_with_commits(&source_dir, contents);
+            let url = source_dir.display().to_string();
+            let branch = head_branch(&source_dir);
+            Self {
+                _home: home,
+                peppy_dirs,
+                _source: source,
+                source_dir,
+                commits,
+                url,
+                branch,
+            }
+        }
+
+        /// Ensures the checkout of `commit` from this source, read at
+        /// `read_ref`.
+        fn checkout(&self, read_ref: Option<&str>, commit: &GitCommit) -> Result<PathBuf, String> {
+            ensure_checkout_at_commit(&self.peppy_dirs, &self.url, read_ref, commit, &|_| {})
+        }
+
+        /// The same, returning beside the checkout the feedback lines the
+        /// call reported.
+        fn checkout_recording_lines(
+            &self,
+            read_ref: Option<&str>,
+            commit: &GitCommit,
+        ) -> (Result<PathBuf, String>, Vec<String>) {
+            let lines = std::cell::RefCell::new(Vec::new());
+            let checkout =
+                ensure_checkout_at_commit(&self.peppy_dirs, &self.url, read_ref, commit, &|line| {
+                    lines.borrow_mut().push(line.text().to_owned())
+                });
+            (checkout, lines.into_inner())
+        }
+    }
+
     #[test]
     fn a_checkout_dir_is_named_after_the_url_as_shown() {
         let tmp = tempfile::tempdir().unwrap();
@@ -503,17 +558,12 @@ mod tests {
 
     #[test]
     fn ensure_checkout_at_commit_reuses_a_populated_dir_without_fetching() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let source = tempfile::tempdir().unwrap();
-        let source_dir = source.path().join("source-repo");
-        let commits = repo_with_commits(&source_dir, &["first"]);
-        let url = source_dir.display().to_string();
-        let branch = head_branch(&source_dir);
+        let repo = SourceRepo::new(&["first"]);
+        let commit = &repo.commits[0];
 
-        let checkout =
-            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
-                .expect("initial checkout");
+        let checkout = repo
+            .checkout(Some(&repo.branch), commit)
+            .expect("initial checkout");
         assert_eq!(
             std::fs::read_to_string(checkout.join("tracked.txt")).unwrap(),
             "first"
@@ -521,19 +571,15 @@ mod tests {
 
         // Deleting the source proves the second call touched no network:
         // a clone or fetch against a missing path fails outright.
-        std::fs::remove_dir_all(&source_dir).expect("remove source repo");
-        let lines = std::cell::RefCell::new(Vec::new());
-        let reused =
-            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-                lines.borrow_mut().push(l.text().to_owned())
-            })
-            .expect("a populated checkout needs no remote");
+        std::fs::remove_dir_all(&repo.source_dir).expect("remove source repo");
+        let (reused, lines) = repo.checkout_recording_lines(Some(&repo.branch), commit);
+        let reused = reused.expect("a populated checkout needs no remote");
         assert_eq!(checkout, reused);
         assert_eq!(
-            lines.into_inner(),
+            lines,
             vec![format!(
                 "Reusing cached checkout of {} at {}",
-                commits[0],
+                commit,
                 reused.display()
             )]
         );
@@ -541,15 +587,11 @@ mod tests {
         // The reuse was announced the first time; a launch resolves dozens
         // of items out of one checkout, so a repeat would bury the lines
         // that matter.
-        let lines = std::cell::RefCell::new(Vec::new());
-        let again =
-            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-                lines.borrow_mut().push(l.text().to_owned())
-            })
-            .expect("a populated checkout needs no remote");
+        let (again, lines) = repo.checkout_recording_lines(Some(&repo.branch), commit);
+        let again = again.expect("a populated checkout needs no remote");
         assert_eq!(reused, again);
         assert_eq!(
-            lines.into_inner(),
+            lines,
             Vec::<String>::new(),
             "an already-announced reuse reports nothing"
         );
@@ -560,39 +602,28 @@ mod tests {
     /// once-per-population rule cannot outlive the bytes it described.
     #[test]
     fn ensure_checkout_at_commit_reannounces_a_rematerialized_checkout() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let source = tempfile::tempdir().unwrap();
-        let source_dir = source.path().join("source-repo");
-        let commits = repo_with_commits(&source_dir, &["first"]);
-        let url = source_dir.display().to_string();
-        let branch = head_branch(&source_dir);
+        let repo = SourceRepo::new(&["first"]);
+        let commit = &repo.commits[0];
 
-        let checkout =
-            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
-                .expect("initial checkout");
-        let lines = std::cell::RefCell::new(Vec::new());
-        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-            lines.borrow_mut().push(l.text().to_owned())
-        })
-        .expect("first reuse");
-        assert_eq!(lines.into_inner().len(), 1);
+        let checkout = repo
+            .checkout(Some(&repo.branch), commit)
+            .expect("initial checkout");
+        let (reused, lines) = repo.checkout_recording_lines(Some(&repo.branch), commit);
+        reused.expect("first reuse");
+        assert_eq!(lines.len(), 1);
 
         // Strip the git dir, the state a clone killed half-way through
         // leaves, so the next call cannot trust the directory and clones
         // afresh rather than reusing it.
         std::fs::remove_dir_all(checkout.join(".git")).expect("break the checkout");
 
-        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
+        repo.checkout(Some(&repo.branch), commit)
             .expect("re-materialized checkout");
 
-        let lines = std::cell::RefCell::new(Vec::new());
-        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-            lines.borrow_mut().push(l.text().to_owned())
-        })
-        .expect("reuse of the new population");
+        let (reused, lines) = repo.checkout_recording_lines(Some(&repo.branch), commit);
+        reused.expect("reuse of the new population");
         assert_eq!(
-            lines.into_inner().len(),
+            lines.len(),
             1,
             "the first reuse of a re-materialized checkout is announced again"
         );
@@ -603,39 +634,28 @@ mod tests {
     /// a new population announced on its own first reuse.
     #[test]
     fn prune_checkouts_forgets_the_reuse_announcement() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let source = tempfile::tempdir().unwrap();
-        let source_dir = source.path().join("source-repo");
-        let commits = repo_with_commits(&source_dir, &["first"]);
-        let url = source_dir.display().to_string();
-        let branch = head_branch(&source_dir);
+        let repo = SourceRepo::new(&["first"]);
+        let commit = &repo.commits[0];
 
-        let checkout =
-            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
-                .expect("initial checkout");
-        let lines = std::cell::RefCell::new(Vec::new());
-        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-            lines.borrow_mut().push(l.text().to_owned())
-        })
-        .expect("first reuse");
-        assert_eq!(lines.into_inner().len(), 1);
+        let checkout = repo
+            .checkout(Some(&repo.branch), commit)
+            .expect("initial checkout");
+        let (reused, lines) = repo.checkout_recording_lines(Some(&repo.branch), commit);
+        reused.expect("first reuse");
+        assert_eq!(lines.len(), 1);
 
         // The grace marker would keep a checkout just handed out; removing
         // it stands in for the grace period having elapsed.
         std::fs::remove_file(last_used_marker(&checkout)).expect("drop the grace marker");
-        assert_eq!(prune_checkouts(&peppy_dirs, std::iter::empty()), 1);
+        assert_eq!(prune_checkouts(&repo.peppy_dirs, std::iter::empty()), 1);
 
-        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
+        repo.checkout(Some(&repo.branch), commit)
             .expect("checkout cloned again");
 
-        let lines = std::cell::RefCell::new(Vec::new());
-        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-            lines.borrow_mut().push(l.text().to_owned())
-        })
-        .expect("reuse of the new population");
+        let (reused, lines) = repo.checkout_recording_lines(Some(&repo.branch), commit);
+        reused.expect("reuse of the new population");
         assert_eq!(
-            lines.into_inner().len(),
+            lines.len(),
             1,
             "the first reuse of a pruned-and-recloned checkout is announced again"
         );
@@ -643,25 +663,20 @@ mod tests {
 
     #[test]
     fn ensure_checkout_at_commit_resolves_a_commit_the_branch_moved_past() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let source = tempfile::tempdir().unwrap();
-        let source_dir = source.path().join("source-repo");
-        let commits = repo_with_commits(&source_dir, &["first", "second"]);
-        let url = source_dir.display().to_string();
-        let branch = head_branch(&source_dir);
+        let repo = SourceRepo::new(&["first", "second"]);
 
         // The branch now points at "second"; the pin names "first".
-        let checkout =
-            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
-                .expect("a commit behind the branch tip still resolves");
+        let checkout = repo
+            .checkout(Some(&repo.branch), &repo.commits[0])
+            .expect("a commit behind the branch tip still resolves");
         assert_eq!(
             std::fs::read_to_string(checkout.join("tracked.txt")).unwrap(),
             "first",
             "the pinned commit is what gets checked out, not the branch tip"
         );
 
-        let tip = ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[1], &|_| {})
+        let tip = repo
+            .checkout(Some(&repo.branch), &repo.commits[1])
             .expect("the tip resolves too");
         assert_ne!(checkout, tip, "two commits are two checkouts");
         assert_eq!(
@@ -672,16 +687,11 @@ mod tests {
 
     #[test]
     fn ensure_checkout_at_commit_refuses_a_commit_the_remote_does_not_have() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let source = tempfile::tempdir().unwrap();
-        let source_dir = source.path().join("source-repo");
-        repo_with_commits(&source_dir, &["first"]);
-        let url = source_dir.display().to_string();
-        let branch = head_branch(&source_dir);
+        let repo = SourceRepo::new(&["first"]);
         let absent = GitCommit::parse(&"0".repeat(40)).unwrap();
 
-        let error = ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &absent, &|_| {})
+        let error = repo
+            .checkout(Some(&repo.branch), &absent)
             .expect_err("a commit the remote never had cannot be checked out");
         assert!(
             error.contains(absent.as_str()) && error.contains("not reachable"),
@@ -692,63 +702,54 @@ mod tests {
     /// The donation is the whole point of the cache being keyed by commit:
     /// a clone somebody else already paid for is the same bytes, so nothing
     /// is fetched afterwards. Proven by deleting the source repository
-    /// before asking for the checkout — a clone or fetch would fail.
+    /// before asking for the checkout: a clone or fetch would fail.
     #[test]
     fn adopt_checkout_takes_over_a_clone_made_elsewhere() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let source = tempfile::tempdir().unwrap();
-        let source_dir = source.path().join("source-repo");
-        let commits = repo_with_commits(&source_dir, &["first"]);
-        let url = source_dir.display().to_string();
+        let repo = SourceRepo::new(&["first"]);
+        let commit = &repo.commits[0];
 
-        let tmp_root = peppy_dirs.tmp_dir();
+        let tmp_root = repo.peppy_dirs.tmp_dir();
         std::fs::create_dir_all(&tmp_root).expect("create the tmp root");
         let donor = tempfile::tempdir_in(&tmp_root).unwrap();
         let clone = donor.path().join("clone");
-        clone_repo_shallow(&url, &clone, &mut |_| {}).expect("clone the source");
-        adopt_checkout(&peppy_dirs, &url, &commits[0], clone);
+        clone_repo_shallow(&repo.url, &clone, &mut |_| {}).expect("clone the source");
+        adopt_checkout(&repo.peppy_dirs, &repo.url, commit, clone);
 
-        std::fs::remove_dir_all(&source_dir).expect("remove source repo");
-        let lines = std::cell::RefCell::new(Vec::new());
-        let checkout = ensure_checkout_at_commit(&peppy_dirs, &url, None, &commits[0], &|l| {
-            lines.borrow_mut().push(l.text().to_owned())
-        })
-        .expect("the donated clone needs no remote");
+        std::fs::remove_dir_all(&repo.source_dir).expect("remove source repo");
+        let (checkout, lines) = repo.checkout_recording_lines(None, commit);
+        let checkout = checkout.expect("the donated clone needs no remote");
 
-        assert_eq!(checkout, checkout_dir_for(&peppy_dirs, &url, &commits[0]));
+        assert_eq!(
+            checkout,
+            checkout_dir_for(&repo.peppy_dirs, &repo.url, commit)
+        );
         assert_eq!(
             std::fs::read_to_string(checkout.join("tracked.txt")).unwrap(),
             "first"
         );
         assert!(
-            lines.into_inner()[0].starts_with("Reusing cached checkout"),
+            lines[0].starts_with("Reusing cached checkout"),
             "the donated clone is reused, not re-cloned"
         );
     }
 
     /// A key that already holds the commit already holds the same bytes, so
-    /// the donation is dropped rather than swapped in — and the donor never
+    /// the donation is dropped rather than swapped in, and the donor never
     /// leaks either way.
     #[test]
     fn adopt_checkout_keeps_the_checkout_already_at_the_key() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let source = tempfile::tempdir().unwrap();
-        let source_dir = source.path().join("source-repo");
-        let commits = repo_with_commits(&source_dir, &["first"]);
-        let url = source_dir.display().to_string();
+        let repo = SourceRepo::new(&["first"]);
+        let commit = &repo.commits[0];
 
-        let existing = ensure_checkout_at_commit(&peppy_dirs, &url, None, &commits[0], &|_| {})
-            .expect("initial checkout");
+        let existing = repo.checkout(None, commit).expect("initial checkout");
         std::fs::write(existing.join("marker.txt"), "original").expect("mark the original");
 
-        let tmp_root = peppy_dirs.tmp_dir();
+        let tmp_root = repo.peppy_dirs.tmp_dir();
         std::fs::create_dir_all(&tmp_root).expect("create the tmp root");
         let donor = tempfile::tempdir_in(&tmp_root).unwrap();
         let clone = donor.path().join("clone");
-        clone_repo_shallow(&url, &clone, &mut |_| {}).expect("clone the source");
-        adopt_checkout(&peppy_dirs, &url, &commits[0], clone.clone());
+        clone_repo_shallow(&repo.url, &clone, &mut |_| {}).expect("clone the source");
+        adopt_checkout(&repo.peppy_dirs, &repo.url, commit, clone.clone());
 
         assert!(
             existing.join("marker.txt").exists(),
@@ -780,22 +781,18 @@ mod tests {
     }
 
     /// A caller is handed a path and keeps reading from it after the lock
-    /// is released — `node add` copies the tree out — so a refresh that
+    /// is released (`node add` copies the tree out), so a refresh that
     /// supersedes the pin mid-add must not pull the directory out from
     /// under it.
     #[test]
     fn prune_checkouts_keeps_a_checkout_handed_out_recently() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let source = tempfile::tempdir().unwrap();
-        let source_dir = source.path().join("source-repo");
-        let commits = repo_with_commits(&source_dir, &["first"]);
-        let url = source_dir.display().to_string();
+        let repo = SourceRepo::new(&["first"]);
 
-        let checkout = ensure_checkout_at_commit(&peppy_dirs, &url, None, &commits[0], &|_| {})
+        let checkout = repo
+            .checkout(None, &repo.commits[0])
             .expect("initial checkout");
 
-        assert_eq!(prune_checkouts(&peppy_dirs, std::iter::empty()), 0);
+        assert_eq!(prune_checkouts(&repo.peppy_dirs, std::iter::empty()), 0);
         assert!(
             checkout.exists(),
             "a checkout just handed out is still in use"
@@ -804,23 +801,18 @@ mod tests {
 
     #[test]
     fn ensure_checkout_at_commit_replaces_an_incomplete_checkout() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let source = tempfile::tempdir().unwrap();
-        let source_dir = source.path().join("source-repo");
-        let commits = repo_with_commits(&source_dir, &["first"]);
-        let url = source_dir.display().to_string();
-        let branch = head_branch(&source_dir);
+        let repo = SourceRepo::new(&["first"]);
+        let commit = &repo.commits[0];
 
         // A directory at the key with no `.git`: what a clone killed
         // half-way through leaves behind.
-        let dir = checkout_dir_for(&peppy_dirs, &url, &commits[0]);
+        let dir = checkout_dir_for(&repo.peppy_dirs, &repo.url, commit);
         std::fs::create_dir_all(&dir).expect("create partial checkout");
         std::fs::write(dir.join("tracked.txt"), "garbage").expect("write partial content");
 
-        let checkout =
-            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
-                .expect("an incomplete checkout is replaced rather than trusted");
+        let checkout = repo
+            .checkout(Some(&repo.branch), commit)
+            .expect("an incomplete checkout is replaced rather than trusted");
         assert_eq!(checkout, dir);
         assert_eq!(
             std::fs::read_to_string(checkout.join("tracked.txt")).unwrap(),

@@ -78,8 +78,8 @@ pub(crate) fn unlogged_step_sink(
 
 /// Spawns a task that consumes `FeedbackLine` values from `feedback_rx`,
 /// converts each one via `encode` and publishes the resulting payload. Shared
-/// by the add/build/start goal handlers, which all run the same
-/// consumer-side forwarder over differently-typed feedback encoders.
+/// by the add and build goal handlers, which run the same consumer-side
+/// forwarder over differently-typed feedback encoders.
 ///
 /// `encode` returns a [`peppylib::messaging::NonEmptyPayload`] so the
 /// publish path is type-guaranteed not to send the empty end-of-stream

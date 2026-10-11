@@ -32,7 +32,6 @@ pub async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     Arc::new(Mutex::new(messenger))
 }
 
-#[allow(dead_code)]
 pub struct StartedCoreNode {
     pub shared_messenger: Arc<Mutex<Messenger>>,
     pub caller_handle: MessengerHandle,
@@ -102,7 +101,7 @@ pub fn new_test_data_dir() -> TempDir {
 /// system temp dir, i.e. outside `$HOME`, mirroring a `PEPPY_HOME` outside
 /// `$HOME` (see `daemon_config::consts::resolve_root`).
 ///
-/// Regression harness for container builds/runs from an outside-`$HOME` root:
+/// The harness for container builds/runs from an outside-`$HOME` root:
 /// on macOS the Lima guest VM only auto-mounts `$HOME`, so container
 /// operations from this root only work when the daemon registers the root as
 /// an extra Lima mount (`Apptainer::ensure_host_mounts`). Every other starter
@@ -116,17 +115,14 @@ pub fn new_test_data_dir() -> TempDir {
 /// machine. Contents are wiped on entry so runs stay independent.
 pub async fn start_core_node_with_mock_messenger_outside_home() -> StartedCoreNode {
     let root = std::env::temp_dir().join("peppy-test-outside-home-root");
-    if root.exists() {
-        for entry in std::fs::read_dir(&root).expect("read stable outside-home test root") {
-            let path = entry.expect("read dir entry").path();
-            if path.is_dir() {
-                std::fs::remove_dir_all(&path).expect("wipe stale test root subdir");
-            } else {
-                std::fs::remove_file(&path).expect("wipe stale test root file");
-            }
+    std::fs::create_dir_all(&root).expect("create stable outside-home test root");
+    for entry in std::fs::read_dir(&root).expect("read stable outside-home test root") {
+        let path = entry.expect("read dir entry").path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).expect("wipe stale test root subdir");
+        } else {
+            std::fs::remove_file(&path).expect("wipe stale test root file");
         }
-    } else {
-        std::fs::create_dir_all(&root).expect("create stable outside-home test root");
     }
     let peppy_dirs = PeppyDirs::new(&root);
     let shared_messenger = create_mock_messenger().await;
@@ -146,44 +142,38 @@ pub fn setup_budget(secs: u64) -> SetupTimeout {
 }
 
 pub async fn start_core_node_with_real_messenger() -> StartedCoreNode {
-    start_core_node_with_real_messenger_and_timeouts(Duration::from_secs(10), setup_budget(30))
-        .await
+    start_real_core_node(
+        default_node_arguments(),
+        daemon_config::peppy_config::LocalNodesTopology::Peer,
+    )
+    .await
 }
 
-/// Convenience wrapper over [`start_core_node_with_real_messenger_in_topology`]
-/// with the default timeouts, for the dual-topology e2e tests parameterized
-/// over the topology.
+/// Variant of [`start_core_node_with_real_messenger`] in an explicit messaging
+/// `topology`, for the dual-topology e2e tests parameterized over the
+/// topology.
 pub async fn start_core_node_with_real_messenger_topology(
     topology: daemon_config::peppy_config::LocalNodesTopology,
 ) -> StartedCoreNode {
-    start_core_node_with_real_messenger_in_topology(
-        Duration::from_secs(10),
-        setup_budget(30),
-        topology,
-    )
-    .await
+    start_real_core_node(default_node_arguments(), topology).await
 }
 
 pub async fn start_core_node_with_real_messenger_and_timeouts(
     node_startup_timeout: Duration,
     default_setup_timeout: SetupTimeout,
 ) -> StartedCoreNode {
-    start_core_node_with_real_messenger_in_topology(
-        node_startup_timeout,
-        default_setup_timeout,
-        daemon_config::peppy_config::LocalNodesTopology::Peer,
-    )
-    .await
+    let mut args = default_node_arguments();
+    args.node_startup_timeout = node_startup_timeout;
+    args.default_setup_timeout = default_setup_timeout;
+    start_real_core_node(args, daemon_config::peppy_config::LocalNodesTopology::Peer).await
 }
 
-/// Like [`start_core_node_with_real_messenger_and_timeouts`] but the messaging
-/// `topology` (peer vs router) is explicit. The core node's own session is
-/// built in that topology, and its `PeppyConfig` carries it so spawned nodes
-/// are injected with the same topology (faithful to production). Used by the
-/// dual-topology e2e tests.
-pub async fn start_core_node_with_real_messenger_in_topology(
-    node_startup_timeout: Duration,
-    default_setup_timeout: SetupTimeout,
+/// Boots the core node on a real zenoh router in the messaging `topology`
+/// (peer vs router). The core node's own session is built in that topology,
+/// and its `PeppyConfig` carries it so spawned nodes are injected with the
+/// same topology (faithful to production).
+async fn start_real_core_node(
+    node_arguments: CoreNodeArguments,
     topology: daemon_config::peppy_config::LocalNodesTopology,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
@@ -207,9 +197,6 @@ pub async fn start_core_node_with_real_messenger_in_topology(
         .await
         .expect("failed to start zenoh session");
     let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-    let mut args = default_node_arguments();
-    args.node_startup_timeout = node_startup_timeout;
-    args.default_setup_timeout = default_setup_timeout;
     let peppy_config = daemon_config::peppy_config::PeppyConfig {
         zenoh: daemon_config::peppy_config::ZenohConfig::Managed(
             daemon_config::peppy_config::ManagedZenohConfig {
@@ -219,7 +206,14 @@ pub async fn start_core_node_with_real_messenger_in_topology(
         ),
         ..Default::default()
     };
-    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs, peppy_config).await
+    start_core_node_with_messenger(
+        shared_messenger,
+        node_arguments,
+        data_dir,
+        peppy_dirs,
+        peppy_config,
+    )
+    .await
 }
 
 /// Variant of [`start_core_node_with_mock_messenger`] with a custom
@@ -228,8 +222,6 @@ pub async fn start_core_node_with_real_messenger_in_topology(
 /// window and need wider margins than the 5s default gives under parallel
 /// test load.
 pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> StartedCoreNode {
-    let (data_dir, peppy_dirs) = init_test_data_dir();
-    let shared_messenger = create_mock_messenger().await;
     let peppy_config = daemon_config::peppy_config::PeppyConfig {
         lifecycle: daemon_config::peppy_config::LifecycleConfig {
             shutdown_grace_secs,
@@ -237,14 +229,7 @@ pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> St
         },
         ..Default::default()
     };
-    start_core_node_with_messenger(
-        shared_messenger,
-        default_node_arguments(),
-        data_dir,
-        peppy_dirs,
-        peppy_config,
-    )
-    .await
+    start_mock_core_node(default_node_arguments(), peppy_config).await
 }
 
 /// Variant of [`start_core_node_with_mock_messenger`] whose config names a
@@ -253,20 +238,11 @@ pub async fn start_core_node_with_shutdown_grace(shutdown_grace_secs: u64) -> St
 pub async fn start_core_node_with_pypi_mirror(
     mirror: daemon_config::peppy_config::PackagesBaseUrl,
 ) -> StartedCoreNode {
-    let (data_dir, peppy_dirs) = init_test_data_dir();
-    let shared_messenger = create_mock_messenger().await;
     let peppy_config = daemon_config::peppy_config::PeppyConfig {
         pypi_mirror: Some(mirror),
         ..Default::default()
     };
-    start_core_node_with_messenger(
-        shared_messenger,
-        default_node_arguments(),
-        data_dir,
-        peppy_dirs,
-        peppy_config,
-    )
-    .await
+    start_mock_core_node(default_node_arguments(), peppy_config).await
 }
 
 /// Variant of [`start_core_node_with_mock_messenger`] whose default setup
@@ -274,18 +250,9 @@ pub async fn start_core_node_with_pypi_mirror(
 pub async fn start_core_node_with_default_setup_timeout(
     default_setup_timeout: SetupTimeout,
 ) -> StartedCoreNode {
-    let (data_dir, peppy_dirs) = init_test_data_dir();
-    let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
     args.default_setup_timeout = default_setup_timeout;
-    start_core_node_with_messenger(
-        shared_messenger,
-        args,
-        data_dir,
-        peppy_dirs,
-        daemon_config::peppy_config::PeppyConfig::default(),
-    )
-    .await
+    start_mock_core_node(args, daemon_config::peppy_config::PeppyConfig::default()).await
 }
 
 /// A health monitor policy that probes every 200ms with a 100ms budget, so
@@ -304,18 +271,9 @@ pub fn fast_health_monitor(failure_threshold: u32) -> HealthMonitorPolicy {
 pub async fn start_core_node_with_health_monitor(
     health_monitor: HealthMonitorPolicy,
 ) -> StartedCoreNode {
-    let (data_dir, peppy_dirs) = init_test_data_dir();
-    let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
     args.health_monitor = health_monitor;
-    start_core_node_with_messenger(
-        shared_messenger,
-        args,
-        data_dir,
-        peppy_dirs,
-        daemon_config::peppy_config::PeppyConfig::default(),
-    )
-    .await
+    start_mock_core_node(args, daemon_config::peppy_config::PeppyConfig::default()).await
 }
 
 /// Variant of [`start_core_node_with_mock_messenger`] whose log files export
@@ -337,6 +295,23 @@ pub async fn start_core_node_with_log_export(
     )
     .await;
     (started, records)
+}
+
+/// Boots the core node on a mock messenger and a fresh test data root.
+async fn start_mock_core_node(
+    node_arguments: CoreNodeArguments,
+    peppy_config: daemon_config::peppy_config::PeppyConfig,
+) -> StartedCoreNode {
+    let (data_dir, peppy_dirs) = init_test_data_dir();
+    let shared_messenger = create_mock_messenger().await;
+    start_core_node_with_messenger(
+        shared_messenger,
+        node_arguments,
+        data_dir,
+        peppy_dirs,
+        peppy_config,
+    )
+    .await
 }
 
 async fn start_core_node_with_messenger(
@@ -384,11 +359,10 @@ async fn start_core_node(
     let core_node_tag = core_node.node_config().manifest.tag.clone();
     let node_stack = core_node.node_stack().clone();
 
-    // Use start_with_ready to properly synchronize instead of a time-based sleep
+    // `start_with_ready` reports once every service is registered, so a test
+    // can send requests as soon as this returns.
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let task = spawn(async move { core_node.start_with_ready(Some(ready_tx)).await });
-
-    // Wait for all services to be fully registered before returning
     ready_rx.await.expect("core node ready signal failed");
 
     StartedCoreNode {
@@ -434,14 +408,22 @@ impl Drop for TestRunningInstance {
 struct NoOpOutputHooks;
 impl node_stack::build_io::OutputReaderHooks for NoOpOutputHooks {}
 
-fn make_real_output_sinks(
-    peppy_dirs: &PeppyDirs,
-    instance_id: &config::runtime::Name,
-) -> (
-    node_stack::OutputSinks,
+/// Opens a feedback channel for an announcer and spawns the task that
+/// discards its lines, as no test reads them.
+fn spawn_feedback_drain() -> (
     tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
     tokio::task::JoinHandle<()>,
 ) {
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
+    let drain = tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
+    (feedback_tx, drain)
+}
+
+fn make_real_output_sinks(
+    peppy_dirs: &PeppyDirs,
+    instance_id: &config::runtime::Name,
+) -> (node_stack::OutputSinks, tokio::task::JoinHandle<()>) {
     use std::sync::atomic::AtomicBool;
 
     let log = node_stack::ActionLog::create(
@@ -451,63 +433,40 @@ fn make_real_output_sinks(
         log_export::LogExporter::disabled(),
     )
     .expect("create run log");
-    let (feedback_tx, mut feedback_rx) =
-        tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
-    let drain = tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
+    let (feedback_tx, drain) = spawn_feedback_drain();
     let output_sinks = node_stack::OutputSinks {
-        announcer: node_stack::Announcer::new(log, feedback_tx.clone()),
+        announcer: node_stack::Announcer::new(log, feedback_tx),
         publish_enabled: Arc::new(AtomicBool::new(true)),
         hooks: Arc::new(NoOpOutputHooks),
     };
-    (output_sinks, feedback_tx, drain)
+    (output_sinks, drain)
 }
 
-/// Drives a real `prepare_and_spawn` + `commit_started` on the entity at
-/// `(name, tag)`, which must already be in `Ready`. Spawns a real child via
-/// the entity's existing `run_cmd`; callers are responsible for ensuring
-/// the node config's run_cmd is spawnable in the test environment (the
-/// listener tests use `["sleep", "10"]`). Also installs a `listen_for_shutdown`
-/// task on the messenger that SIGKILLs the entity-tracked pid when the
-/// production stop/remove flow sends a shutdown signal. This lets the
-/// production stop path observe the child as cooperatively terminated within
-/// its graceful window rather than having to force-kill a stubborn `sleep 10`.
-/// Returns a guard that SIGTERMs the child on drop.
-pub async fn spawn_real_running_instance(
+/// A child that `prepare_and_spawn` started for an instance whose start is
+/// not committed yet.
+struct PreparedChild {
+    handle: node_stack::EntityHandle,
+    child: tokio::process::Child,
+    started_ctx: node_stack::StartedInstanceCtx,
+    pid: u32,
+    feedback_drain: tokio::task::JoinHandle<()>,
+}
+
+/// Drives a real `prepare_and_spawn` on the entity at `(name, tag)`, which
+/// must already be in `Ready`. Spawns a real child via the entity's existing
+/// `run_cmd`; callers are responsible for ensuring the node config's run_cmd
+/// is spawnable in the test environment.
+async fn prepare_and_spawn_on_ready_entity(
     started: &StartedCoreNode,
     name: &str,
     tag: &str,
     instance_id: &config::runtime::Name,
-) -> TestRunningInstance {
-    spawn_real_running_instance_inner(started, name, tag, instance_id, true).await
-}
-
-/// Variant of [`spawn_real_running_instance`] that skips installing a
-/// shutdown listener. Used by tests that specifically want the production
-/// shutdown path to observe a stuck process that never terminates (e.g. the
-/// `node_add_same_node_with_running_instance_and_dependents_fails_on_stopped_node_stuck`
-/// regression test).
-pub async fn spawn_real_stuck_instance(
-    started: &StartedCoreNode,
-    name: &str,
-    tag: &str,
-    instance_id: &config::runtime::Name,
-) -> TestRunningInstance {
-    spawn_real_running_instance_inner(started, name, tag, instance_id, false).await
-}
-
-async fn spawn_real_running_instance_inner(
-    started: &StartedCoreNode,
-    name: &str,
-    tag: &str,
-    instance_id: &config::runtime::Name,
-    install_shutdown_listener: bool,
-) -> TestRunningInstance {
+) -> PreparedChild {
     let handle = started
         .node_stack
         .find(name, tag)
-        .expect("spawn_real_running_instance: entity should exist");
-    let (output_sinks, _feedback_tx, drain) =
-        make_real_output_sinks(&started.peppy_dirs, instance_id);
+        .expect("entity to spawn should exist");
+    let (output_sinks, feedback_drain) = make_real_output_sinks(&started.peppy_dirs, instance_id);
 
     let (child, started_ctx) = node_stack::NodeEntity::prepare_and_spawn(
         &handle,
@@ -527,6 +486,50 @@ async fn spawn_real_running_instance_inner(
     .await
     .expect("prepare_and_spawn should succeed on Ready entity");
     let pid = child.id().expect("child should have pid");
+    PreparedChild {
+        handle,
+        child,
+        started_ctx,
+        pid,
+        feedback_drain,
+    }
+}
+
+/// Drives a real `prepare_and_spawn` + `commit_started` on the entity at
+/// `(name, tag)`, which must already be in `Ready` (the listener tests use a
+/// `run_cmd` of `["sleep", "10"]`). Also installs the shutdown listener of
+/// [`install_kill_on_shutdown_listener`], so the production stop path observes
+/// the child as cooperatively terminated within its graceful window rather
+/// than having to force-kill a stubborn `sleep 10`. Returns a guard that
+/// SIGTERMs the child on drop.
+pub async fn spawn_real_running_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::runtime::Name,
+) -> TestRunningInstance {
+    let mut running = spawn_real_stuck_instance(started, name, tag, instance_id).await;
+    running._shutdown_listener =
+        Some(install_kill_on_shutdown_listener(started, name, instance_id, running.pid).await);
+    running
+}
+
+/// Variant of [`spawn_real_running_instance`] that skips installing a
+/// shutdown listener. Used by tests that want the production shutdown path to
+/// observe a stuck process that never terminates.
+pub async fn spawn_real_stuck_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::runtime::Name,
+) -> TestRunningInstance {
+    let PreparedChild {
+        handle,
+        child,
+        started_ctx,
+        pid,
+        feedback_drain,
+    } = prepare_and_spawn_on_ready_entity(started, name, tag, instance_id).await;
     node_stack::NodeEntity::commit_started(
         &handle,
         child,
@@ -537,43 +540,70 @@ async fn spawn_real_running_instance_inner(
     .await
     .expect("commit_started should succeed");
 
-    // Optionally install a messenger-side shutdown listener that kills the
-    // child when the production stop/remove flow fires a SHUTDOWN_SERVICE
-    // signal, so the cooperative phase succeeds within its graceful window.
-    // Tests that want the production stop path to fall through to force-kill
-    // (a stuck process) use `spawn_real_stuck_instance`, which skips this.
-    let shutdown_listener = if install_shutdown_listener {
-        let shutdown_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-        let (shutdown_task, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
-            &shutdown_handle,
-            &started.core_node_name,
-            instance_id.as_str(),
-            test_node_target(name),
-        )
-        .await
-        .expect("failed to start shutdown listener for test instance");
-        let pid_for_kill = pid;
-        tokio::spawn(async move {
-            if shutdown_rx.await.is_ok() {
-                let _ = std::process::Command::new("kill")
-                    .arg("-KILL")
-                    .arg(pid_for_kill.to_string())
-                    .status();
-            }
-        });
-        Some(AbortOnDrop(shutdown_task))
-    } else {
-        None
-    };
-
     TestRunningInstance {
         pid,
         instance_id: instance_id.clone(),
         handle,
         _working_dir: None,
-        _feedback_drain: drain,
-        _shutdown_listener: shutdown_listener,
+        _feedback_drain: feedback_drain,
+        _shutdown_listener: None,
     }
+}
+
+/// Answers the ready probe the daemon sends to `instance_id` of `node`,
+/// standing in for a node process that has started, until the returned guard
+/// drops.
+pub async fn answer_ready_probe(
+    started: &StartedCoreNode,
+    node: &str,
+    instance_id: &str,
+) -> AbortOnDrop<peppylib::PeppyResult<()>> {
+    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    AbortOnDrop(
+        peppylib::services::ready::listen_for_node_ready(
+            &messenger,
+            &started.core_node_name,
+            instance_id,
+            test_node_target(node),
+        )
+        .await
+        .expect("ready service should start"),
+    )
+}
+
+/// Answers the health probes the daemon sends to `instance_id` of `node`,
+/// standing in for a node process that reports healthy, until the returned
+/// guard drops. A test drops the guard to make a running node stop answering.
+pub async fn answer_health_probes(
+    started: &StartedCoreNode,
+    node: &str,
+    instance_id: &str,
+) -> AbortOnDrop<peppylib::PeppyResult<()>> {
+    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    AbortOnDrop(
+        peppylib::services::health::listen_for_node_health(
+            &messenger,
+            &started.core_node_name,
+            instance_id,
+            test_node_target(node),
+        )
+        .await
+        .expect("health service should start"),
+    )
+}
+
+/// Answers the ready and health probes the daemon sends to `instance_id` of
+/// `node`, standing in for a node process that reports healthy, until the
+/// returned guards drop.
+pub async fn answer_readiness(
+    started: &StartedCoreNode,
+    node: &str,
+    instance_id: &str,
+) -> Vec<AbortOnDrop<peppylib::PeppyResult<()>>> {
+    vec![
+        answer_ready_probe(started, node, instance_id).await,
+        answer_health_probes(started, node, instance_id).await,
+    ]
 }
 
 /// Installs a messenger-side shutdown listener that SIGKILLs `pid` when the
@@ -701,45 +731,26 @@ pub async fn spawn_real_starting_instance(
     tag: &str,
     instance_id: &config::runtime::Name,
 ) -> TestStartingInstance {
-    let handle = started
-        .node_stack
-        .find(name, tag)
-        .expect("spawn_real_starting_instance: entity should exist");
-    let (output_sinks, _feedback_tx, drain) =
-        make_real_output_sinks(&started.peppy_dirs, instance_id);
-
-    let (child, started_ctx) = node_stack::NodeEntity::prepare_and_spawn(
-        &handle,
-        node_stack::StartContext {
-            instance_id,
-            copy: None,
-            runtime_config_json5: "{}",
-            slot_bindings: std::collections::BTreeMap::new(),
-            clock: Default::default(),
-            launch: None,
-            env_vars: &[],
-            mount_paths_resolved: &[],
-            peppy_dirs: &started.peppy_dirs,
-            output_sinks,
-        },
-    )
-    .await
-    .expect("prepare_and_spawn should succeed on Ready entity");
-    let pid = child.id().expect("child should have pid");
+    let PreparedChild {
+        child,
+        started_ctx,
+        pid,
+        feedback_drain,
+        ..
+    } = prepare_and_spawn_on_ready_entity(started, name, tag, instance_id).await;
 
     TestStartingInstance {
         pid,
         instance_id: instance_id.clone(),
         _child: child,
         _started_ctx: started_ctx,
-        _feedback_drain: drain,
+        _feedback_drain: feedback_drain,
     }
 }
 
 /// For tests that push a config directly (bypassing `process_node_add`): drives
 /// the real `NodeEntity::build` (process-node archive path, no container) and
-/// then a real `prepare_and_spawn` + `commit_started`. Replaces the old
-/// `force_built_and_start_instance` backdoor helper.
+/// then a real `prepare_and_spawn` + `commit_started`.
 pub async fn real_build_and_spawn_instance(
     started: &StartedCoreNode,
     name: &str,
@@ -759,10 +770,7 @@ pub async fn real_build_and_spawn_instance(
         log_export::LogExporter::disabled(),
     )
     .expect("create build log");
-    let (build_feedback_tx, mut build_feedback_rx) =
-        tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
-    let build_drain =
-        tokio::spawn(async move { while build_feedback_rx.recv().await.is_some() {} });
+    let (build_feedback_tx, build_drain) = spawn_feedback_drain();
 
     node_stack::NodeEntity::build(
         &handle,

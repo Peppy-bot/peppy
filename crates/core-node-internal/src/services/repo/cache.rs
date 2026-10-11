@@ -1,11 +1,11 @@
-//! Typed loaders for the four repo caches written by `repo_refresh`:
+//! Typed loaders for the five repo caches written by `repo_refresh`:
 //! `~/.peppy/cache/nodes.json5`, `launchers.json5`, `contracts.json5`,
-//! and `pairings.json5`. Each file lists every item of its kind that the
-//! configured repositories publish. This module gives the rest of the
-//! daemon a typed view over those entries so callers don't have to dig
-//! through `serde_json::Value` every time.
+//! `pairings.json5` and `mcp_exposures.json5`. Each file lists every item
+//! of its kind that the configured repositories publish. This module gives
+//! the rest of the daemon a typed view over those entries so callers don't
+//! have to dig through `serde_json::Value` every time.
 //!
-//! The four caches share one pipeline: every cache concern (atomic
+//! The five caches share one pipeline: every cache concern (atomic
 //! write, load-time `repo_id` tagging, repo-priority lookup, refresh-side
 //! collection) is implemented once, generic over [`RepoCacheEntry`]. The
 //! entry structs stay distinct types because each cache file has its own
@@ -28,8 +28,8 @@
 
 use crate::Result;
 use crate::services::node::Report;
-use crate::services::repo::RepoOwners;
 use crate::services::repo::refresh::read_or_create_repos;
+use crate::services::repo::{RepoOwners, attributable_repo_id};
 use crate::source_url::SourceUrl;
 use config::node::Cardinality;
 use core_node_api::encoding::{ReadRef, RepoItemKind};
@@ -297,11 +297,7 @@ pub(crate) trait RepoCacheEntry:
 
     /// `name:tag` label for log messages (bare name for untagged kinds).
     fn display_id(&self) -> String {
-        if self.tag().is_empty() {
-            self.name().to_owned()
-        } else {
-            format!("{}:{}", self.name(), self.tag())
-        }
+        super::index::format_identity(self.name(), self.tag())
     }
 }
 
@@ -487,8 +483,8 @@ pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Resu
 /// would be an arbitrary choice presented as an answer.
 ///
 /// `repo refresh` refuses a repository that contains such a conflict, so
-/// reaching this at lookup means the cache predates that check or was
-/// hand-edited.
+/// reaching this at lookup means the cache was edited by hand or written
+/// without that check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoAmbiguity {
     /// Singular kind label ("node", "launcher", ...).
@@ -520,7 +516,7 @@ impl std::fmt::Display for RepoAmbiguity {
 /// `(name, tag)`, `None` when nothing matches, or an error when the
 /// winning repository claims the identity more than once.
 ///
-/// The repo-priority tiebreak lives here so all four caches resolve
+/// The repo-priority tiebreak lives here so all five caches resolve
 /// cross-repo name collisions identically. Untagged kinds (launchers)
 /// match with `tag = ""`.
 ///
@@ -625,12 +621,13 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
 /// they kept.
 pub(crate) const UNOWNED_REPO_ID: u32 = u32::MAX;
 
-/// Owning repository id narrowed to the wire's `u32`, falling back to
-/// [`UNOWNED_REPO_ID`] when no repository matches.
+/// Owning repository id narrowed by [`attributable_repo_id`], falling back
+/// to [`UNOWNED_REPO_ID`] when no repository matches or the matching one
+/// has no attributable id.
 fn lookup_repo_id(owners: &RepoOwners, origin: &EntryOrigin) -> u32 {
     owners
         .owner_of(origin)
-        .and_then(|id| u32::try_from(id).ok())
+        .and_then(attributable_repo_id)
         .unwrap_or(UNOWNED_REPO_ID)
 }
 
@@ -699,10 +696,6 @@ pub fn pairings_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     repo_cache_path::<PairingCacheEntry>(peppy_dirs)
 }
 
-pub fn mcp_exposures_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
-    repo_cache_path::<McpExposureCacheEntry>(peppy_dirs)
-}
-
 pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs
         .conf_dir()
@@ -724,11 +717,11 @@ pub fn load_pairing_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<PairingCacheEntr
 /// Looks up `name` in the launcher cache and resolves it to a concrete
 /// on-disk path that the launch flow can open and parse.
 ///
-/// For Git entries this materializes the repo's checkout via
-/// [`crate::services::node::cache::git::ensure_checkout`] (blocking; wrap
-/// callers in `spawn_blocking` when running inside Tokio). `on_feedback`
-/// receives clone/refresh progress lines. Touches no stack state, so
-/// read-only callers (`stack resolve`) share it with the launch flow.
+/// For Git entries this materializes the checkout of the pinned commit via
+/// `node::cache::git::ensure_checkout_at_commit` (blocking; wrap callers in
+/// `spawn_blocking` when running inside Tokio). `on_feedback` receives clone
+/// and fetch progress lines. Touches no stack state, so read-only callers
+/// (`stack resolve`) share it with the launch flow.
 pub fn resolve_repo_launcher_path(
     name: &str,
     peppy_dirs: &PeppyDirs,
@@ -1030,12 +1023,7 @@ pub(crate) fn resolve_pin_to_bytes<E: RepoCacheEntry>(
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<(PathBuf, Vec<u8>), String> {
     if let Some(entry) = lookup_by_content(entries, pin) {
-        match resolve_cached_artifact_path(peppy_dirs, entry.origin(), on_feedback).and_then(
-            |path| match std::fs::read(&path) {
-                Ok(bytes) => Ok((path, bytes)),
-                Err(e) => Err(format!("failed to read {}: {e}", path.display())),
-            },
-        ) {
+        match read_cached_artifact(peppy_dirs, entry.origin(), on_feedback) {
             Ok((path, bytes)) if ManifestFingerprint::of_bytes(&bytes) == pin.sha256 => {
                 return Ok((path, bytes));
             }
@@ -1050,6 +1038,19 @@ pub(crate) fn resolve_pin_to_bytes<E: RepoCacheEntry>(
         }
     }
     resolve_pinned_bytes(peppy_dirs, pin, on_feedback)
+}
+
+/// The on-disk path of a cached artifact and the bytes it holds there,
+/// through [`resolve_cached_artifact_path`] (blocking for a git origin).
+fn read_cached_artifact(
+    peppy_dirs: &PeppyDirs,
+    origin: &EntryOrigin,
+    on_feedback: &dyn Fn(Report<'_>),
+) -> std::result::Result<(PathBuf, Vec<u8>), String> {
+    let path = resolve_cached_artifact_path(peppy_dirs, origin, on_feedback)?;
+    let bytes =
+        std::fs::read(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    Ok((path, bytes))
 }
 
 /// Resolves a pinned contract or pairing document to a parsed value, through
@@ -1139,6 +1140,19 @@ pub(crate) mod test_support {
             crate::services::repo::EXCLUDED_REPOS_FILE,
             content,
         );
+    }
+
+    /// The content of a repository list file (`repositories.json5` or
+    /// `excluded_repositories.json5`) that lists each `(id, path)` as an fs
+    /// repository.
+    pub(crate) fn fs_repos(repos: &[(u64, &Path)]) -> String {
+        let entries: Vec<serde_json::Value> = repos
+            .iter()
+            .map(|(id, path)| {
+                serde_json::json!({ "id": id, "type": "fs", "path": path.to_string_lossy() })
+            })
+            .collect();
+        serde_json::to_string(&entries).expect("a list of fs entries serializes")
     }
 
     fn write_conf_file(peppy_dirs: &PeppyDirs, file_name: &str, content: &str) {
@@ -1309,12 +1323,61 @@ pub(crate) mod test_support {
         entry.repo_id = repo_id;
         entry
     }
+
+    /// A peppy root in a fresh temp dir whose `E` cache holds `entries`. The
+    /// temp dir deletes the root when it drops.
+    pub(crate) fn peppy_dirs_with_cache<E: RepoCacheEntry>(
+        entries: &[E],
+    ) -> (tempfile::TempDir, PeppyDirs) {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let dirs = PeppyDirs::new(tmp.path().to_path_buf());
+        write_repo_cache(&dirs, entries).expect("write the repo cache");
+        (tmp, dirs)
+    }
+
+    /// Initializes a bare-bones git repository at `repo_dir` and writes a
+    /// single committed file at the given repo-relative path. Returns the
+    /// branch name resolved from HEAD and the commit it created.
+    pub(crate) fn init_repo_with_file(
+        repo_dir: &Path,
+        file_path: &str,
+        contents: &str,
+    ) -> (String, GitCommit) {
+        let repo = git2::Repository::init(repo_dir).expect("git init");
+        let abs = repo_dir.join(file_path);
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        std::fs::write(&abs, contents).expect("write committed file");
+
+        let rel = Path::new(file_path);
+        let mut index = repo.index().expect("open index");
+        index.add_path(rel).expect("add file");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let sig = git2::Signature::now("Peppy", "peppy@example.com").expect("signature");
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
+            .expect("commit");
+
+        let branch = repo
+            .head()
+            .expect("head")
+            .shorthand()
+            .expect("shorthand")
+            .to_owned();
+        (
+            branch,
+            GitCommit::parse(&oid.to_string()).expect("a real commit is a full hash"),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daemon_config::repository::{GitCommit, RepoRelativePath};
+    use daemon_config::repository::RepoRelativePath;
 
     use super::test_support::*;
 
@@ -1543,7 +1606,7 @@ mod tests {
         );
     }
 
-    /// A nodes cache written before links were recorded is refused whole,
+    /// A nodes cache whose entries have no `links` field is refused whole,
     /// with the message that names the fix. Reading it with empty links
     /// instead would answer "nobody uses it" for every identity until the
     /// user happened to refresh.
@@ -1723,44 +1786,6 @@ mod tests {
 
     // -- resolve_cached_artifact_path tests --
 
-    /// Initializes a bare-bones git repository at `repo_dir` and writes a
-    /// single committed file at the given repo-relative path. Returns the
-    /// branch name resolved from HEAD and the commit it created.
-    fn init_repo_with_file(
-        repo_dir: &Path,
-        file_path: &str,
-        contents: &str,
-    ) -> (String, GitCommit) {
-        let repo = git2::Repository::init(repo_dir).expect("git init");
-        let abs = repo_dir.join(file_path);
-        if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent).expect("create parent dirs");
-        }
-        std::fs::write(&abs, contents).expect("write committed file");
-
-        let rel = Path::new(file_path);
-        let mut index = repo.index().expect("open index");
-        index.add_path(rel).expect("add file");
-        index.write().expect("write index");
-        let tree_id = index.write_tree().expect("write tree");
-        let tree = repo.find_tree(tree_id).expect("find tree");
-        let sig = git2::Signature::now("Peppy", "peppy@example.com").expect("signature");
-        let oid = repo
-            .commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
-            .expect("commit");
-
-        let branch = repo
-            .head()
-            .expect("head")
-            .shorthand()
-            .expect("shorthand")
-            .to_owned();
-        (
-            branch,
-            GitCommit::parse(&oid.to_string()).expect("a real commit is a full hash"),
-        )
-    }
-
     /// `Fs` entries are already absolute on disk; the helper returns the
     /// recorded path verbatim without touching the git checkout cache.
     #[test]
@@ -1778,12 +1803,9 @@ mod tests {
         assert_eq!(resolved, abs);
     }
 
-    /// Regression for the launcher side of the bug class: a git-sourced
-    /// `LauncherCacheEntry` records a repo-relative `path`, so resolution
-    /// must materialize the checkout and join the relative path on top,
-    /// not just read `entry.path` from the CWD. This test covered nothing
-    /// before; the missing coverage is what let the symmetric contract
-    /// bug land.
+    /// A git-sourced `LauncherCacheEntry` records a repo-relative `path`,
+    /// so resolution must materialize the checkout and join the relative
+    /// path on top, not read `entry.path` from the CWD.
     #[test]
     fn resolve_launcher_git_materializes_checkout() {
         let peppy_tmp = tempfile::tempdir().unwrap();
@@ -1937,6 +1959,66 @@ mod tests {
         assert_eq!(bytes, pinned_body.as_bytes());
     }
 
+    /// A local entry whose file cannot be read is a miss as well: the pin
+    /// falls through to its own origin, and the feedback names the read
+    /// failure.
+    #[test]
+    fn an_unreadable_local_copy_falls_through_to_the_pins_origin() {
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+
+        let source_parent = tempfile::tempdir().unwrap();
+        let source_repo_dir = source_parent.path().join("hub");
+        std::fs::create_dir_all(&source_repo_dir).unwrap();
+        let pinned_body = "{ the pinned bytes }";
+        let (branch, commit) =
+            init_repo_with_file(&source_repo_dir, "camera/peppy.json5", pinned_body);
+        let sha = ManifestFingerprint::of_bytes(pinned_body.as_bytes());
+
+        // A local entry claims the content, but its file is gone.
+        let missing = peppy_tmp.path().join("missing.json5");
+        let mut local_entry = node_entry(
+            "camera",
+            "v1",
+            fs_origin(missing.to_string_lossy().as_ref()),
+        );
+        local_entry.sha256 = sha.clone();
+
+        let pin = pin_for(
+            "camera",
+            "v1",
+            sha,
+            EntryOrigin::Git {
+                repo_url: source_repo_dir.display().to_string(),
+                read_ref: Some(ReadRef::Named(branch.clone())),
+                repo_ref: Some(branch),
+                commit,
+                path: RepoRelativePath::parse("camera/peppy.json5").unwrap(),
+            },
+        );
+
+        let steps = std::cell::RefCell::new(Vec::new());
+        let (path, bytes) = resolve_pin_to_bytes(
+            &peppy_dirs,
+            std::slice::from_ref(&local_entry),
+            &pin,
+            &|report| {
+                if let Report::Step(line) = report {
+                    steps.borrow_mut().push(line.to_owned());
+                }
+            },
+        )
+        .expect("the pin's own origin serves it");
+        assert_ne!(path, missing);
+        assert_eq!(bytes, pinned_body.as_bytes());
+        let unusable = format!("is unusable (failed to read {}: ", missing.display());
+        assert!(
+            steps.borrow().iter().any(|line| line.contains(&unusable)),
+            "feedback should name the read failure: {:?}",
+            steps.borrow()
+        );
+    }
+
     /// Content fetched from the pin's origin that does not fingerprint to
     /// the pin is a refusal naming both fingerprints: the remote moved under
     /// the pin or the location resolved to something else, and neither may
@@ -2009,10 +2091,10 @@ mod tests {
         assert!(err.contains("absent from commit"), "{err}");
     }
 
-    /// The write is atomic: the final file is created via a tmp + rename
-    /// dance so concurrent readers can't observe a half-written cache.
-    /// We can't reliably observe the rename, but we can at least confirm
-    /// no `.tmp` file is left behind on the happy path.
+    /// The write is atomic: the cache is staged in a uniquely named sibling
+    /// file and renamed into place, so concurrent readers can't observe a
+    /// half-written cache. The rename itself cannot be observed, but the
+    /// cache directory can be checked to hold no staging file afterwards.
     #[test]
     fn write_launcher_cache_does_not_leak_tmp_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2027,6 +2109,15 @@ mod tests {
         assert!(
             !tmp_path.exists(),
             "tmp file should be renamed away, not left behind"
+        );
+        let names: Vec<std::ffi::OsString> = std::fs::read_dir(peppy_dirs.cache_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names,
+            vec![std::ffi::OsString::from("launchers.json5")],
+            "only the published cache file remains"
         );
     }
 

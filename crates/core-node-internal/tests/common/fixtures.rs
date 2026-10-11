@@ -4,9 +4,11 @@ use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::PeppygenLanguage;
 use core_node::nodes_repo_cache_path;
 use daemon_config::consts::PeppyDirs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
+
+use super::daemon::StartedCoreNode;
 
 /// Publishes `root`'s `peppy_repository.json5`, which is what a repository
 /// offers a daemon. Call it once the repository holds every item the test
@@ -23,7 +25,13 @@ pub fn publish_repo_index(root: &Path) {
 /// committed, not merely written.
 pub fn publish_and_commit_repo_index(root: &Path) -> String {
     publish_repo_index(root);
+    commit_work_tree(root)
+}
 
+/// Stages everything in the work tree of the repository at `root` and commits
+/// it on HEAD, on top of the current commit if there is one. Returns the
+/// branch HEAD is on.
+pub fn commit_work_tree(root: &Path) -> String {
     let repo = git2::Repository::open(root).expect("open git repository");
     let mut index = repo.index().expect("open index");
     index
@@ -48,10 +56,31 @@ pub fn publish_and_commit_repo_index(root: &Path) -> String {
         &tree,
         &parent_refs,
     )
-    .expect("commit the published repository");
+    .expect("commit the work tree");
 
     let head = repo.head().expect("read HEAD");
     head.shorthand().expect("HEAD is on a branch").to_owned()
+}
+
+/// Stages the work-tree file at `path` (relative to the repository root) and
+/// commits the index on HEAD with `parents`, returning the new commit so a
+/// fixture can tag it or build on it.
+pub fn commit_path<'repo>(
+    repo: &'repo git2::Repository,
+    signature: &git2::Signature<'_>,
+    path: &Path,
+    message: &str,
+    parents: &[&git2::Commit<'_>],
+) -> git2::Commit<'repo> {
+    let mut index = repo.index().expect("open index");
+    index.add_path(path).expect("stage the fixture file");
+    index.write().expect("write index");
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    let commit_id = repo
+        .commit(Some("HEAD"), signature, signature, message, &tree, parents)
+        .expect("commit the fixture file");
+    repo.find_commit(commit_id).expect("find the new commit")
 }
 
 /// Writes a node config file and the corresponding fingerprint file expected by `node_add`.
@@ -59,6 +88,30 @@ pub fn write_peppy_json5(dir: &Path, content: &str) {
     let config_path = dir.join(NODE_CONFIG_FILE);
     std::fs::write(&config_path, content).expect("failed to write peppy.json5");
     config::fingerprint::create_codegen_fingerprint(&config_path, Path::new(PEPPYGEN_OUTPUT_PATH));
+}
+
+/// Writes the executable script `name` with `contents` into `dir`, for a test
+/// that puts a command of its own on the `PATH` a node runs with.
+pub fn write_executable_script(dir: &Path, name: &str, contents: &str) {
+    let script_path = dir.join(name);
+    std::fs::write(&script_path, contents)
+        .unwrap_or_else(|e| panic!("failed to write script {}: {e}", script_path.display()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|e| panic!("failed to make {} executable: {e}", script_path.display()));
+    }
+}
+
+/// The `PATH` override that puts `dir` ahead of the `PATH` of the test
+/// process, as a caller whose `PATH` gained `dir` sends it to the daemon.
+pub fn path_env_with_dir_first(dir: &Path) -> (String, String) {
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    (
+        "PATH".to_string(),
+        format!("{}:{}", dir.display(), current_path),
+    )
 }
 
 pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_root_name: &str) {
@@ -76,10 +129,65 @@ pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_r
     encoder.finish().expect("failed to finalize zstd stream");
 }
 
+/// The `artifact_path` of the built entity at `(name, tag)`. Panics if the
+/// entity is missing or not built.
+pub fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
+    node_stack
+        .find(name, tag)
+        .expect("entity should exist")
+        .read()
+        .artifact_path()
+        .expect("entity should be built")
+        .to_path_buf()
+}
+
+/// Returns true if the given tar.zst archive contains an entry matching `entry_name`.
+pub fn archive_contains_entry(archive_path: &Path, entry_name: &str) -> bool {
+    let file = std::fs::File::open(archive_path).expect("failed to open archive");
+    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
+    let mut archive = tar::Archive::new(decoder);
+    archive
+        .entries()
+        .expect("failed to read entries")
+        .any(|entry| {
+            let entry = entry.expect("failed to read entry");
+            let path = entry.path().expect("failed to read entry path");
+            let path_str = path.to_string_lossy();
+            let normalized = path_str.trim_start_matches("./");
+            normalized == entry_name
+        })
+}
+
+/// Reads a file from a tar.zst archive and returns its contents as a String.
+pub fn read_file_from_archive(archive_path: &Path, entry_name: &str) -> String {
+    use std::io::Read;
+    let file = std::fs::File::open(archive_path).expect("failed to open archive");
+    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive.entries().expect("failed to read entries") {
+        let mut entry = entry.expect("failed to read entry");
+        let path = entry.path().expect("failed to read entry path");
+        let path_str = path.to_string_lossy();
+        let normalized = path_str.trim_start_matches("./").to_string();
+        if normalized == entry_name {
+            let mut contents = String::new();
+            entry
+                .read_to_string(&mut contents)
+                .expect("failed to read entry contents");
+            return contents;
+        }
+    }
+    panic!(
+        "entry '{}' not found in archive {}",
+        entry_name,
+        archive_path.display()
+    );
+}
+
 /// Builder for `nodes.json5`, `launchers.json5`, `contracts.json5` and
 /// `pairings.json5` cache fixtures. Tests call [`TestPackagesCache::fs_entry`]
 /// / `git_entry` / `launcher_fs_entry` / `contract_git_entry` /
-/// `pairing_fs_entry` to declare discovered items, then
+/// `contract_fs_entry` / `pairing_fs_entry` to declare discovered items, then
 /// [`TestPackagesCache::write`] to serialize the files under
 /// `peppy_dirs.cache_dir()`.
 #[derive(Default)]
@@ -353,11 +461,87 @@ pub fn write_plain_peppy_json5(dir: &Path, content: &str) {
     std::fs::write(dir.join(NODE_CONFIG_FILE), content).expect("failed to write peppy.json5");
 }
 
-/// Creates a fresh test node in a new temp directory.
-/// Each call creates a completely new node with its own peppygen generation
-/// and cargo build, ensuring isolation between tests.
-pub fn create_test_node() -> TempDir {
-    init_test_node_project("example_node", "v1", true)
+/// Minimal valid peppy.json5 content for a node with the given name and tag.
+pub fn minimal_peppy_json5(name: &str, tag: &str) -> String {
+    format!(
+        r#"{{
+  peppy_schema: "node/v1",
+  manifest: {{
+    name: "{name}",
+    tag: "{tag}",
+  }},
+  interfaces: {{}},
+  execution: {{
+    language: "rust",
+    build_cmd: ["true"],
+    run_cmd: ["true"],
+  }},
+}}"#
+    )
+}
+
+/// Creates `{name}_{tag}` under `base` with a [`minimal_peppy_json5`] inside it.
+pub fn create_node_dir(base: &Path, name: &str, tag: &str) -> PathBuf {
+    let dir = base.join(format!("{name}_{tag}"));
+    std::fs::create_dir_all(&dir).expect("create node dir");
+    std::fs::write(dir.join(NODE_CONFIG_FILE), minimal_peppy_json5(name, tag))
+        .expect("write peppy.json5");
+    dir
+}
+
+/// Writes a repositories.json5 file in the conf_dir of the started core node.
+pub fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
+    write_repositories_json5_in(&started.peppy_dirs, content);
+}
+
+/// Writes a repositories.json5 file in the conf_dir of `peppy_dirs`.
+pub fn write_repositories_json5_in(peppy_dirs: &PeppyDirs, content: &str) {
+    std::fs::create_dir_all(peppy_dirs.conf_dir()).expect("create conf dir");
+    std::fs::write(core_node::repositories_list_path(peppy_dirs), content)
+        .expect("write repos file");
+}
+
+/// The content of a repositories.json5 (or excluded_repositories.json5) that
+/// lists the fs repositories at `paths`, with ids 1, 2, ... in order.
+pub fn fs_repositories_json(paths: &[&Path]) -> String {
+    let entries: Vec<serde_json::Value> = paths
+        .iter()
+        .zip(1u64..)
+        .map(|(path, id)| {
+            serde_json::json!({ "id": id, "type": "fs", "path": path.to_string_lossy() })
+        })
+        .collect();
+    serde_json::to_string(&entries).expect("serialize fs repository entries")
+}
+
+/// The excluded_repositories.json5 file in the conf_dir of `peppy_dirs`.
+pub fn excluded_repositories_path(peppy_dirs: &PeppyDirs) -> PathBuf {
+    peppy_dirs.conf_dir().join("excluded_repositories.json5")
+}
+
+/// Writes an excluded_repositories.json5 file in the conf_dir of the started
+/// core node.
+pub fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
+    std::fs::create_dir_all(started.peppy_dirs.conf_dir()).expect("create conf dir");
+    std::fs::write(excluded_repositories_path(&started.peppy_dirs), content)
+        .expect("write excluded repos file");
+}
+
+/// Reads the JSON5 array at `path`, the shape of the repository lists and the
+/// repository caches the daemon writes. Panics when the file cannot be read or
+/// does not hold an array.
+pub fn read_json5_array(path: &Path) -> Vec<serde_json::Value> {
+    let content = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    serde_json5::from_str(&content)
+        .unwrap_or_else(|e| panic!("failed to parse {} as a JSON5 array: {e}", path.display()))
+}
+
+/// Writes a nodes.json5 cache file in the cache_dir of the started core node.
+pub fn write_packages_cache(started: &StartedCoreNode, content: &str) {
+    let cache_dir = started.peppy_dirs.cache_dir();
+    std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+    std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
 }
 
 /// Creates a fresh test node in a new temp directory.
@@ -369,10 +553,6 @@ pub fn create_test_node() -> TempDir {
 /// build artifacts. Bind it for as long as the node is needed (e.g. for the
 /// whole test body) and let it drop at scope end.
 pub fn create_test_node_with_name(node_name: &str, node_tag: &str) -> TempDir {
-    init_test_node_project(node_name, node_tag, true)
-}
-
-pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bool) -> TempDir {
     // Build under the shared test-tmp root (see `config_test_support::test_tmp_root`) and keep the
     // `TempDir` guard rather than `.keep()`-ing it, so the directory and its
     // ~2 GB cargo build are reclaimed when the returned guard drops.
@@ -389,7 +569,7 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
         PeppygenLanguage::Rust,
         node_dir.path(),
         Vec::new(),
-        "test-hash",
+        super::TEST_GIT_HASH,
         &peppy_dirs,
         Default::default(),
         None,
@@ -397,9 +577,7 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
     )
     .expect("failed to generate peppygen for test node");
 
-    if build_project {
-        build_cargo_project(node_dir.path());
-    }
+    build_cargo_project(node_dir.path());
 
     node_dir
 }

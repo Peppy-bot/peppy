@@ -52,7 +52,7 @@ pub(crate) use stop::{
 };
 pub use sync::listen_for_node_sync;
 
-pub(crate) use add::{NodeAddActionContext, create_add_log, dispatch_node_add};
+pub(crate) use add::{NodeAddActionContext, create_add_log, dispatch_node_add, record_add_failure};
 pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
 pub use feedback::Report;
 pub(crate) use feedback::{
@@ -60,8 +60,7 @@ pub(crate) use feedback::{
     unlogged_step_sink,
 };
 pub(crate) use git_utils::{
-    checkout_read_ref, checkout_repo_ref, clone_repo_shallow, clone_with_progress, format_bytes,
-    head_commit,
+    checkout_read_ref, checkout_repo_ref, clone_repo_shallow, clone_with_progress, head_commit,
 };
 pub(crate) use run::{
     NodeRunActionContext, assemble_runtime_config, resolve_mount_path_parameters, run_node_run,
@@ -76,7 +75,9 @@ use archive::{
     extract_tar_zst, is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
     resolve_local_archive_source,
 };
-use common::{encode_response_or_err, generate_random_id, panic_message};
+use common::{
+    encode_hex, encode_response_or_err, generate_random_id, panic_message, parse_node_config_file,
+};
 use env::{inject_node_runtime_env, inject_rust_build_env, validate_goal_env_vars};
 use feedback::spawn_feedback_forwarder;
 use git_utils::sanitize_repo_path;
@@ -106,15 +107,9 @@ use std::path::{Path, PathBuf};
 pub(crate) fn manifest_fingerprint(config: &NodeConfig) -> std::result::Result<String, String> {
     let serialized = json5_pretty::to_string_pretty(config)
         .map_err(|e| format!("failed to serialize node config for fingerprinting: {e}"))?;
-    Ok(manifest_fingerprint_of_json5(&serialized))
-}
-
-/// The same fingerprint, for a caller that already holds the canonical
-/// serialization and would otherwise pay to produce it twice. The fingerprint
-/// is defined over exactly these bytes, so this is the same definition rather
-/// than a second one.
-pub(crate) fn manifest_fingerprint_of_json5(config_json5: &str) -> String {
-    config::fingerprint::fingerprint_for_bytes(config_json5.as_bytes())
+    Ok(config::fingerprint::fingerprint_for_bytes(
+        serialized.as_bytes(),
+    ))
 }
 
 /// The daemon authorities responsible for relationships between node instances.
@@ -239,6 +234,14 @@ mod tests {
         encoder.finish().unwrap();
     }
 
+    /// The value `env_vars` holds for `key`, if any.
+    fn env_value<'a>(env_vars: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        env_vars
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+    }
+
     /// A manifest without `execution.setup_timeout_secs` keeps the
     /// fingerprint it has in every peppy release, so a federated launch
     /// between daemons of two releases agrees on it. The value is pinned.
@@ -275,11 +278,7 @@ mod tests {
             "should not duplicate RUSTC_WRAPPER"
         );
         assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == "RUSTC_WRAPPER")
-                .unwrap()
-                .1,
+            env_value(&env_vars, "RUSTC_WRAPPER").unwrap(),
             "custom_wrapper",
             "should keep user-provided RUSTC_WRAPPER value"
         );
@@ -295,10 +294,7 @@ mod tests {
         let mut env_vars = Vec::new();
         inject_node_runtime_env(&mut env_vars, "uvc_camera", "v1");
 
-        let apptainer_bin = env_vars
-            .iter()
-            .find(|(k, _)| k == PEPPY_APPTAINER_BIN_ENV_VAR)
-            .map(|(_, v)| v)
+        let apptainer_bin = env_value(&env_vars, PEPPY_APPTAINER_BIN_ENV_VAR)
             .expect("PEPPY_APPTAINER_BIN should be injected");
         assert!(
             !apptainer_bin.trim().is_empty(),
@@ -306,19 +302,10 @@ mod tests {
         );
 
         assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == PEPPY_NODE_NAME_ENV_VAR)
-                .map(|(_, v)| v.as_str()),
+            env_value(&env_vars, PEPPY_NODE_NAME_ENV_VAR),
             Some("uvc_camera")
         );
-        assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == PEPPY_NODE_TAG_ENV_VAR)
-                .map(|(_, v)| v.as_str()),
-            Some("v1")
-        );
+        assert_eq!(env_value(&env_vars, PEPPY_NODE_TAG_ENV_VAR), Some("v1"));
     }
 
     #[test]
@@ -345,44 +332,25 @@ mod tests {
             1
         );
         assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == PEPPY_APPTAINER_BIN_ENV_VAR)
-                .map(|(_, v)| v.as_str()),
+            env_value(&env_vars, PEPPY_APPTAINER_BIN_ENV_VAR),
             Some("/custom/apptainer")
         );
         assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == PEPPY_NODE_NAME_ENV_VAR)
-                .map(|(_, v)| v.as_str()),
+            env_value(&env_vars, PEPPY_NODE_NAME_ENV_VAR),
             Some("custom_node")
         );
-        assert_eq!(
-            env_vars
-                .iter()
-                .find(|(k, _)| k == PEPPY_NODE_TAG_ENV_VAR)
-                .map(|(_, v)| v.as_str()),
-            Some("v999")
-        );
+        assert_eq!(env_value(&env_vars, PEPPY_NODE_TAG_ENV_VAR), Some("v999"));
     }
 
-    #[test]
-    fn sanitize_repo_path_accepts_relative_path() {
-        let result = sanitize_repo_path("some/path");
-        assert_eq!(result.unwrap(), PathBuf::from("some/path"));
-    }
-
-    #[test]
-    fn sanitize_repo_path_strips_leading_slashes() {
-        let result = sanitize_repo_path("///some/path");
-        assert_eq!(result.unwrap(), PathBuf::from("some/path"));
-    }
-
-    #[test]
-    fn sanitize_repo_path_strips_leading_backslashes() {
-        let result = sanitize_repo_path("\\\\some\\path");
-        assert_eq!(result.unwrap(), PathBuf::from("some\\path"));
+    #[rstest::rstest]
+    #[case::relative("some/path", "some/path")]
+    #[case::leading_slashes("///some/path", "some/path")]
+    #[case::leading_backslashes("\\\\some\\path", "some\\path")]
+    fn sanitize_repo_path_accepts_a_path_inside_the_repository(
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(sanitize_repo_path(input).unwrap(), PathBuf::from(expected));
     }
 
     #[test]
@@ -399,40 +367,19 @@ mod tests {
         assert!(sanitize_repo_path("///").is_err());
     }
 
-    #[test]
-    fn is_supported_http_archive_accepts_tar_zst() {
-        let url = url::Url::parse("https://example.com/bundle.tar.zst").unwrap();
-        assert!(is_supported_http_archive(&url));
-    }
-
-    #[test]
-    fn is_supported_http_archive_accepts_tar_zstd() {
-        let url = url::Url::parse("https://example.com/bundle.tar.zstd").unwrap();
-        assert!(is_supported_http_archive(&url));
-    }
-
-    #[test]
-    fn is_supported_http_archive_accepts_tzst() {
-        let url = url::Url::parse("https://example.com/bundle.tzst").unwrap();
-        assert!(is_supported_http_archive(&url));
-    }
-
-    #[test]
-    fn is_supported_http_archive_rejects_tar_gz() {
-        let url = url::Url::parse("https://example.com/bundle.tar.gz").unwrap();
-        assert!(!is_supported_http_archive(&url));
-    }
-
-    #[test]
-    fn is_supported_http_archive_rejects_plain_url() {
-        let url = url::Url::parse("https://example.com/page").unwrap();
-        assert!(!is_supported_http_archive(&url));
-    }
-
-    #[test]
-    fn is_supported_http_archive_is_case_insensitive() {
-        let url = url::Url::parse("https://example.com/BUNDLE.TAR.ZST").unwrap();
-        assert!(is_supported_http_archive(&url));
+    #[rstest::rstest]
+    #[case::tar_zst("https://example.com/bundle.tar.zst", true)]
+    #[case::tar_zstd("https://example.com/bundle.tar.zstd", true)]
+    #[case::tzst("https://example.com/bundle.tzst", true)]
+    #[case::tar_gz("https://example.com/bundle.tar.gz", false)]
+    #[case::plain_url("https://example.com/page", false)]
+    #[case::upper_case("https://example.com/BUNDLE.TAR.ZST", true)]
+    fn is_supported_http_archive_accepts_only_zstd_tarballs(
+        #[case] url: &str,
+        #[case] expected: bool,
+    ) {
+        let url = url::Url::parse(url).unwrap();
+        assert_eq!(is_supported_http_archive(&url), expected);
     }
 
     #[test]

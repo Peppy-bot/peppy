@@ -1,16 +1,17 @@
 mod common;
 
+use std::ops::ControlFlow;
 use std::time::Duration;
 
-use common::{CALLER_INSTANCE_ID, core_node_target, start_core_node_with_mock_messenger};
-use config::node::{NodeConfigParser, QoSProfile};
-use core_node_api::ActionId;
+use common::{
+    FeedbackDrainOutcome, drain_feedback, fetch_result, send_daemon_goal,
+    start_core_node_with_mock_messenger,
+};
+use config::node::NodeConfigParser;
 use core_node_api::encoding::{InterfaceKind, MeasurementKind};
 use core_node_api::encoding::{
     StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
-use peppylib::ActionMessenger;
-use peppylib::messaging::ResultStatus;
 
 /// Drives the `stack_benchmark` action end-to-end against the in-process daemon
 /// and returns the decoded result plus the count of feedback messages received.
@@ -18,18 +19,10 @@ async fn run_benchmark_goal(
     started: &common::StartedCoreNode,
     goal: StackBenchmarkGoal,
 ) -> (StackBenchmarkResult, usize) {
-    let goal_payload = goal.encode().expect("encode goal");
-
-    let mut action_handle = ActionMessenger::send_goal(
+    let mut action_handle = send_daemon_goal(
         &started.caller_handle,
         &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        core_node_target(&started.core_node_name),
-        ActionId::StackBenchmark.name(),
-        None,
-        goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
+        &goal,
         Duration::from_secs(5),
     )
     .await
@@ -42,38 +35,29 @@ async fn run_benchmark_goal(
     // Drain feedback to end-of-stream with a generous overall deadline.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut feedback_count = 0usize;
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            panic!("timed out draining benchmark feedback");
-        }
-        match tokio::time::timeout(Duration::from_millis(50), action_handle.on_next_feedback())
-            .await
-        {
-            Ok(Ok(msg)) => {
-                StackBenchmarkFeedback::decode(&msg.payload()).expect("decode feedback");
-                feedback_count += 1;
-            }
-            Ok(Err(_)) => break, // end-of-stream
-            Err(_) => {}
-        }
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| StackBenchmarkFeedback::decode(payload).expect("decode feedback"),
+        |_feedback| {
+            feedback_count += 1;
+            ControlFlow::Continue(())
+        },
+        deadline,
+    )
+    .await;
+    if matches!(drained, FeedbackDrainOutcome::TimedOut) {
+        panic!("timed out draining benchmark feedback");
     }
 
-    let reply = ActionMessenger::request_result(
+    let result = fetch_result(
         &started.caller_handle,
         &action_handle,
         Duration::from_secs(10),
+        StackBenchmarkResult::decode,
+        "benchmark result",
     )
     .await
-    .expect("fetch benchmark result");
-    assert!(
-        matches!(
-            reply.status,
-            ResultStatus::Completed | ResultStatus::Cancelled
-        ),
-        "benchmark should complete, got {:?}",
-        reply.status
-    );
-    let result = StackBenchmarkResult::decode(reply.body.as_ref()).expect("decode result");
+    .unwrap_or_else(|err| panic!("{err}"));
     (result, feedback_count)
 }
 
@@ -99,14 +83,12 @@ async fn stack_benchmark_empty_stack_completes() {
     );
 }
 
-/// A second concurrent benchmark goal while one is in flight is rejected, not
-/// queued; that is the single-goal gate. We approximate this by firing two goals back
-/// to back; at least one must be accepted, and the action must remain healthy.
+/// Two benchmark goals sent one after the other both succeed: the single-goal
+/// gate is released when a run completes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_benchmark_runs_repeatedly() {
     let started = start_core_node_with_mock_messenger().await;
 
-    // Two sequential runs must both succeed (the gate is released between them).
     for _ in 0..2 {
         let goal = StackBenchmarkGoal::new(1, 0, 200);
         let (result, _) = run_benchmark_goal(&started, goal).await;
@@ -185,10 +167,7 @@ async fn stack_benchmark_enumerates_wired_service_edge() {
     );
 }
 
-/// A consumer that wires the *same* interface from the *same* producer via two
-/// distinct `depends_on` links produces two separate rows, identical in
-/// producer/interface but differing only by `link_id`. Regression guard for the
-/// duplicate, indistinguishable rows that prompted carrying `link_id` end-to-end.
+/// A consumer that wires `bench_svc` of `bench_provider` through two links.
 fn two_link_consumer_config() -> &'static str {
     r#"{
         peppy_schema: "node/v1",
@@ -208,6 +187,10 @@ fn two_link_consumer_config() -> &'static str {
     }"#
 }
 
+/// A consumer that wires the *same* interface from the *same* producer via two
+/// distinct `depends_on` links produces two separate rows, identical in
+/// producer/interface but differing only by `link_id`, which the benchmark
+/// carries end to end so the two rows can be told apart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_benchmark_distinguishes_edges_by_link_id() {
     let started = start_core_node_with_mock_messenger().await;
@@ -253,5 +236,86 @@ async fn stack_benchmark_distinguishes_edges_by_link_id() {
         links,
         ["left", "right"],
         "the two links must be distinguishable by link_id"
+    );
+}
+
+fn action_and_topic_provider_config() -> &'static str {
+    r#"{
+        peppy_schema: "node/v1",
+        manifest: { name: "bench_provider", tag: "v1" },
+        interfaces: {
+            topics: { emits: [{ name: "bench_topic" }] },
+            actions: { exposes: [{ name: "bench_act" }] }
+        },
+        execution: { language: "rust", run_cmd: ["sleep", "10"] }
+    }"#
+}
+
+fn action_and_topic_consumer_config() -> &'static str {
+    r#"{
+        peppy_schema: "node/v1",
+        manifest: {
+            name: "bench_consumer",
+            tag: "v1",
+            depends_on: { nodes: [{ name: "bench_provider", tag: "v1", link_id: "prov" }] }
+        },
+        interfaces: {
+            topics: { consumes: [{ link_id: "prov", name: "bench_topic" }] },
+            actions: { consumes: [{ link_id: "prov", name: "bench_act" }] }
+        },
+        execution: { language: "rust", run_cmd: ["sleep", "10"] }
+    }"#
+}
+
+/// Each edge kind is measured the way its kind calls for, in edge order: a
+/// topic edge yields a probe of its producer node followed by the delivery
+/// measurement, and an action edge yields one action probe. No producer
+/// instance runs, so every row is empty, but the measurement each row names
+/// does not depend on a reply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_benchmark_measures_each_edge_kind_its_own_way() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let provider = NodeConfigParser::from_content(action_and_topic_provider_config())
+        .expect("provider parses");
+    started
+        .node_stack
+        .push_config(provider, false, "/tmp/bench_provider")
+        .expect("push provider");
+    let consumer = NodeConfigParser::from_content(action_and_topic_consumer_config())
+        .expect("consumer parses");
+    started
+        .node_stack
+        .push_config(consumer, false, "/tmp/bench_consumer")
+        .expect("push consumer");
+
+    let goal = StackBenchmarkGoal::new(2, 0, 200);
+    let (result, _) = run_benchmark_goal(&started, goal).await;
+
+    assert!(result.success, "benchmark should succeed");
+    let measured: Vec<(&str, InterfaceKind, MeasurementKind)> = result
+        .rows
+        .iter()
+        .map(|row| (row.interface_name.as_str(), row.kind, row.measurement))
+        .collect();
+    assert_eq!(
+        measured,
+        [
+            (
+                "bench_topic",
+                InterfaceKind::Topic,
+                MeasurementKind::NodeProbe
+            ),
+            (
+                "bench_topic",
+                InterfaceKind::Topic,
+                MeasurementKind::TopicDelivery
+            ),
+            (
+                "bench_act",
+                InterfaceKind::Action,
+                MeasurementKind::ActionProbe
+            ),
+        ]
     );
 }

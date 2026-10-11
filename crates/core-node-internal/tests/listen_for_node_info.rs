@@ -1,39 +1,16 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, real_build_and_spawn_instance,
-    send_node_add_then_build, send_node_run_and_wait, start_core_node_with_mock_messenger,
-    write_peppy_json5,
+    AbortOnDrop, NodeRunTestTimeouts, answer_readiness, poll_core_node_with_timeout,
+    real_build_and_spawn_instance, send_node_add_then_build, send_node_run_and_wait,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
-use peppylib::core_node::transport::poll as transport_poll;
 use peppylib::messaging::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
-
-/// Sends a `NODE_INFO` poll request and returns the raw response enum.
-///
-/// Most tests assert on the `Found` body and use `poll_node_info_found`
-/// below; the negative-lookup test uses this variant directly.
-async fn poll_node_info_raw(
-    started_core_node: &common::StartedCoreNode,
-    request: &NodeInfoRequest,
-    timeout: Duration,
-) -> peppylib::PeppyResult<NodeInfoResponse> {
-    transport_poll(
-        request,
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        timeout,
-    )
-    .await
-}
 
 /// Sends a `NODE_INFO` poll request and unwraps the `Found` body. Panics
 /// if the daemon answers `NotInStack`; happy-path tests expect the node
@@ -42,9 +19,9 @@ async fn poll_node_info(
     started_core_node: &common::StartedCoreNode,
     request: &NodeInfoRequest,
     timeout: Duration,
-) -> peppylib::PeppyResult<NodeInfo> {
-    match poll_node_info_raw(started_core_node, request, timeout).await? {
-        NodeInfoResponse::Found(info) => Ok(*info),
+) -> NodeInfo {
+    match poll_core_node_with_timeout(started_core_node, request, timeout).await {
+        NodeInfoResponse::Found(info) => *info,
         NodeInfoResponse::NotInStack => panic!(
             "node_info unexpectedly reported `{}:{}` as not in the stack",
             request.node_name, request.node_tag
@@ -54,7 +31,6 @@ async fn poll_node_info(
 
 /// Happy path: add a node + start an instance, then `node info` reports the
 /// stage, instance list, run logs, and (after it's set) the add log path.
-/// This is the rewrite of `listen_for_node_info_on_fs_node_success`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     const TARGET_NODE_NAME: &str = "fs_node";
@@ -97,9 +73,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     .await;
 
     let request = NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG);
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info request should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5)).await;
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -131,7 +105,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     assert_eq!(info_response.run_log_paths[0], expected_run_log);
     assert!(
         info_response.add_log_path.is_none(),
-        "force_built bypass does not record an add log"
+        "a node pushed straight onto the stack records no add log"
     );
 
     // Record an add log path via the public setter and re-poll; the response
@@ -146,8 +120,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
         Duration::from_secs(5),
     )
-    .await
-    .expect("node_info request should succeed");
+    .await;
     assert_eq!(
         info_response.add_log_path.as_deref(),
         Some(recorded_add_log.as_path())
@@ -168,8 +141,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
         Duration::from_secs(5),
     )
-    .await
-    .expect("node_info request should succeed");
+    .await;
     assert!(
         !info_response.instances[0].healthy,
         "node info should report the instance unhealthy after set_healthy(false)"
@@ -178,8 +150,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
 
 /// Full add-then-build-then-run-then-info: verifies that after two instances
 /// are spawned through the real goal pipeline, `node info` reports both of
-/// them with their per-instance state. Direct port of
-/// `listen_for_node_info_has_instance_ids` with the request input swapped.
+/// them with their per-instance state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_has_instance_ids() {
     const TARGET_NODE_NAME: &str = "instance_ids_node";
@@ -203,7 +174,7 @@ async fn node_info_has_instance_ids() {
         }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
 
-    let add_result = send_node_add_then_build(
+    send_node_add_then_build(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir.path(),
@@ -213,64 +184,19 @@ async fn node_info_has_instance_ids() {
     .await
     .expect("node_add should complete");
 
-    assert!(
-        add_result.success,
-        "node_build should succeed, got error: {:?}",
-        add_result.error_message
-    );
-
     // Simulate each instance exposing ready/health services so the node_run
     // action can proceed against the mock messenger (we start `sleep` rather
     // than a real node).
-    let node_handle = MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready_task_1 = AbortOnDrop(
-        listen_for_node_ready(
-            &node_handle,
-            &started_core_node.core_node_name,
-            TARGET_INSTANCE_ID_1,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start node_ready service (instance 1)"),
-    );
-    let _health_task_1 = AbortOnDrop(
-        listen_for_node_health(
-            &node_handle,
-            &started_core_node.core_node_name,
-            TARGET_INSTANCE_ID_1,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start node_health service (instance 1)"),
-    );
-    let _ready_task_2 = AbortOnDrop(
-        listen_for_node_ready(
-            &node_handle,
-            &started_core_node.core_node_name,
-            TARGET_INSTANCE_ID_2,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start node_ready service (instance 2)"),
-    );
-    let _health_task_2 = AbortOnDrop(
-        listen_for_node_health(
-            &node_handle,
-            &started_core_node.core_node_name,
-            TARGET_INSTANCE_ID_2,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start node_health service (instance 2)"),
-    );
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut responders =
+        answer_readiness(&started_core_node, TARGET_NODE_NAME, TARGET_INSTANCE_ID_1).await;
+    responders
+        .extend(answer_readiness(&started_core_node, TARGET_NODE_NAME, TARGET_INSTANCE_ID_2).await);
 
     let instance_plan_1 = common::default_instance_plan(TARGET_INSTANCE_ID_1);
     let start_response_1 = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        instance_plan_1.clone(),
+        instance_plan_1,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -291,7 +217,7 @@ async fn node_info_has_instance_ids() {
     let start_response_2 = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        instance_plan_2.clone(),
+        instance_plan_2,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -313,8 +239,7 @@ async fn node_info_has_instance_ids() {
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
         Duration::from_secs(5),
     )
-    .await
-    .expect("node_info request should succeed");
+    .await;
 
     let mut instance_ids: Vec<String> = info_response
         .instances
@@ -340,10 +265,9 @@ async fn node_info_has_instance_ids() {
 }
 
 /// An unknown `(name, tag)` should be reported as a *successful*
-/// `NodeInfoResponse::NotInStack` rather than a protocol-level error; this
-/// is the whole point of the breaking response-shape change. The listener
-/// must also remain healthy after a negative lookup and serve a follow-up
-/// valid request.
+/// `NodeInfoResponse::NotInStack` rather than a protocol-level error. The
+/// listener must also remain healthy after a negative lookup and serve a
+/// follow-up valid request.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_info_reports_not_in_stack_and_recovers() {
     const TARGET_NODE_NAME: &str = "fs_node";
@@ -353,13 +277,12 @@ async fn node_info_reports_not_in_stack_and_recovers() {
 
     // First: an unknown node; the daemon answers `NotInStack` on the
     // successful response channel. No error log, no transport fault.
-    let response = poll_node_info_raw(
+    let response = poll_core_node_with_timeout(
         &started_core_node,
         &NodeInfoRequest::new("ghost_node", "v999"),
         Duration::from_secs(2),
     )
-    .await
-    .expect("node_info should return a successful response for an unknown node");
+    .await;
     assert!(
         matches!(response, NodeInfoResponse::NotInStack),
         "expected NotInStack for an unknown `(name, tag)`, got: {response:?}"
@@ -393,8 +316,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
         Duration::from_secs(5),
     )
-    .await
-    .expect("node_info should still work after a failed request");
+    .await;
     assert_eq!(
         info_response.config.manifest.name.as_str(),
         TARGET_NODE_NAME
@@ -426,7 +348,7 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
         }"#
         .replace("{NODE_NAME}", NODE_NAME),
     );
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         node_dir.path(),
@@ -435,30 +357,10 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(add_response.success, "{:?}", add_response.error_message);
 
     let node_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _responders = answer_readiness(&started_core_node, NODE_NAME, INSTANCE_ID).await;
     let _endpoints = AbortOnDrop(
         peppylib::services::endpoints::listen_for_node_endpoints(
             &node_messenger,
@@ -477,7 +379,6 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
         .await
         .expect("node endpoints service should start"),
     );
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let start_response = send_node_run_and_wait(
         &started_core_node.caller_handle,
@@ -504,8 +405,7 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
         &NodeInfoRequest::new(NODE_NAME, "v1"),
         Duration::from_secs(5),
     )
-    .await
-    .expect("node_info request should succeed");
+    .await;
     assert_eq!(info.instances.len(), 1);
     assert_eq!(
         info.instances[0].endpoints,

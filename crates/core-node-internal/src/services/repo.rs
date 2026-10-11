@@ -152,12 +152,27 @@ pub(crate) fn source_identity(source: &RepoSource) -> String {
     }
 }
 
+/// The `id` of one `repositories.json5` or `excluded_repositories.json5`
+/// entry, `None` when it has none.
+pub(crate) fn repo_entry_id(entry: &Value) -> Option<u64> {
+    entry.get("id").and_then(Value::as_u64)
+}
+
 /// The identity of a persisted entry, `None` when the entry describes no
 /// repository peppy can read (see [`parse_repo_entry`]).
 pub(crate) fn entry_identity(entry: &Value) -> Option<String> {
     parse_repo_entry(entry)
         .ok()
         .map(|source| source_identity(&source))
+}
+
+/// Whether an entry of `entries` already describes the repository with
+/// this `identity`: the duplicate rule of `repositories.json5` and
+/// `excluded_repositories.json5`.
+pub(crate) fn has_entry_with_identity(entries: &[Value], identity: &str) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry_identity(entry).is_some_and(|existing| existing == identity))
 }
 
 /// The configured repositories, resolved once so that attributing a whole
@@ -216,7 +231,7 @@ impl RepoOwners {
                             repo_ref,
                         },
                     };
-                    Some((repo.get("id").and_then(|v| v.as_u64()), owner))
+                    Some((repo_entry_id(repo), owner))
                 })
                 .collect(),
         )
@@ -267,6 +282,13 @@ fn canonical_root(configured: &Path) -> PathBuf {
     std::fs::canonicalize(configured).unwrap_or_else(|_| configured.to_path_buf())
 }
 
+/// `id` narrowed to the wire's `u32`, or `None` when no cache entry can be
+/// attributed to a repository with this id: above `u32`, or the id
+/// reserved for unowned entries ([`UNOWNED_REPO_ID`]).
+pub(crate) fn attributable_repo_id(id: u64) -> Option<u32> {
+    u32::try_from(id).ok().filter(|id| *id != UNOWNED_REPO_ID)
+}
+
 /// One configured repository as `repo list` and a search show it.
 pub(crate) struct ListedRepo {
     pub id: u32,
@@ -302,17 +324,14 @@ pub(crate) fn listed_repositories(peppy_dirs: &PeppyDirs) -> crate::Result<Vec<L
             continue;
         }
 
-        let repo_id_u64 = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-        let id = match u32::try_from(repo_id_u64) {
-            Ok(id) if id != UNOWNED_REPO_ID => id,
-            _ => {
-                warn!(
-                    "Skipping repository entry with id {} (not a repository id cache entries \
-                     can be attributed to)",
-                    repo_id_u64
-                );
-                continue;
-            }
+        let repo_id_u64 = repo_entry_id(entry).unwrap_or(0);
+        let Some(id) = attributable_repo_id(repo_id_u64) else {
+            warn!(
+                "Skipping repository entry with id {} (not a repository id cache entries \
+                 can be attributed to)",
+                repo_id_u64
+            );
+            continue;
         };
 
         listed.push(ListedRepo {
@@ -351,45 +370,37 @@ pub(crate) fn nodes_by_repository<'a>(
     cached: &'a [NodeCacheEntry],
 ) -> Vec<RepoNodes<'a>> {
     let mut winners: HashMap<(&str, &str), &ListedRepo> = HashMap::new();
-    repos
-        .iter()
-        .map(|repo| {
-            let nodes = cached
-                .iter()
-                .filter(|node| node.repo_id == repo.id)
-                .map(|entry| {
-                    let key = (entry.node_name.as_str(), entry.node_tag.as_str());
-                    let shadowed_by = match winners.entry(key) {
-                        Entry::Occupied(winner) => Some(*winner.get()),
-                        Entry::Vacant(vacant) => {
-                            vacant.insert(repo);
-                            None
-                        }
-                    };
-                    AttributedNode { entry, shadowed_by }
-                })
-                .collect();
-            RepoNodes { repo, nodes }
-        })
-        .collect()
+    let mut groups = Vec::with_capacity(repos.len());
+    for repo in repos {
+        let mut nodes = Vec::new();
+        for entry in cached.iter().filter(|node| node.repo_id == repo.id) {
+            let key = (entry.node_name.as_str(), entry.node_tag.as_str());
+            let shadowed_by = match winners.entry(key) {
+                Entry::Occupied(winner) => Some(*winner.get()),
+                Entry::Vacant(vacant) => {
+                    vacant.insert(repo);
+                    None
+                }
+            };
+            nodes.push(AttributedNode { entry, shadowed_by });
+        }
+        groups.push(RepoNodes { repo, nodes });
+    }
+    groups
 }
 
 /// Normalize a list of repo JSON entries: auto-assign missing `id` fields,
 /// detect duplicate ids, sort by id, and write back if any ids were assigned.
 pub(crate) fn normalize_repo_entries(
-    repos: &mut Vec<Value>,
+    repos: &mut [Value],
     file_path: &Path,
     desc: &str,
 ) -> crate::Result<()> {
-    let mut max_id: u64 = repos
-        .iter()
-        .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
-        .max()
-        .unwrap_or(0);
+    let mut max_id: u64 = repos.iter().filter_map(repo_entry_id).max().unwrap_or(0);
 
     let mut needs_write = false;
     for entry in repos.iter_mut() {
-        if entry.get("id").and_then(|v| v.as_u64()).is_none() {
+        if repo_entry_id(entry).is_none() {
             max_id += 1;
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert("id".to_string(), Value::Number(max_id.into()));
@@ -401,7 +412,7 @@ pub(crate) fn normalize_repo_entries(
     // Detect duplicate ids; a user may manually edit the file and introduce collisions.
     let mut seen_ids = HashSet::new();
     for entry in repos.iter() {
-        if let Some(id) = entry.get("id").and_then(|v| v.as_u64())
+        if let Some(id) = repo_entry_id(entry)
             && !seen_ids.insert(id)
         {
             let file = file_path
@@ -412,37 +423,38 @@ pub(crate) fn normalize_repo_entries(
         }
     }
 
-    let ids_before: Vec<u64> = repos
-        .iter()
-        .map(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0))
-        .collect();
-    repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
-    let ids_after: Vec<u64> = repos
-        .iter()
-        .map(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0))
-        .collect();
-    if ids_before != ids_after {
+    if !repos.is_sorted_by_key(|e| repo_entry_id(e).unwrap_or(0)) {
+        repos.sort_by_key(|e| repo_entry_id(e).unwrap_or(0));
         needs_write = true;
     }
 
     if needs_write {
-        let content = json5_pretty::to_string_pretty(repos).map_err(|e| {
-            core_node_api::Error::Encoding(format!("failed to serialize {desc}: {e}"))
-        })?;
-        std::fs::write(file_path, content)?;
+        write_repo_entries(file_path, repos, desc)?;
     }
 
     Ok(())
 }
 
+/// Writes a user-editable repository list (`repositories.json5` or the
+/// excluded list) to `file_path`. Every handler that rewrites one of these
+/// files goes through here, so they all keep the same format. `desc` names
+/// the list in the serialization error.
+pub(crate) fn write_repo_entries(
+    file_path: &Path,
+    repos: &[Value],
+    desc: &str,
+) -> crate::Result<()> {
+    let content = json5_pretty::to_string_pretty(repos)
+        .map_err(|e| core_node_api::Error::Encoding(format!("failed to serialize {desc}: {e}")))?;
+    std::fs::write(file_path, content)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    // Coverage for `source_identity` (relocated here from `core-node-api`
-    // alongside the function, which moved out of the pure wire-codec crate
-    // because its `Fs` arm canonicalizes against the real filesystem).
     use super::{
         ListedRepo, RepoEntryError, RepoOwners, listed_repositories, nodes_by_repository,
-        parse_repo_entry, source_identity,
+        normalize_repo_entries, parse_repo_entry, repo_entry_id, source_identity,
     };
     use crate::services::repo::cache::test_support::{node_entry, owned_by};
     use crate::services::repo::cache::{EntryOrigin, UNOWNED_REPO_ID, repositories_list_path};
@@ -883,5 +895,47 @@ mod tests {
 
         let fs = serde_json::json!({ "type": "fs", "path": "/home/user/workspace" });
         assert!(!owns(&fs, &git_origin("main")));
+    }
+
+    /// The ids of `repos`, in order.
+    fn ids_of(repos: &[Value]) -> Vec<Option<u64>> {
+        repos.iter().map(repo_entry_id).collect()
+    }
+
+    /// A list whose entries all carry distinct ids but sit out of id order
+    /// is sorted, and the sorted list is written back.
+    #[test]
+    fn normalize_sorts_and_rewrites_a_list_out_of_id_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("repositories.json5");
+        let mut repos = vec![
+            serde_json::json!({ "id": 2, "type": "fs", "path": "/b" }),
+            serde_json::json!({ "id": 1, "type": "fs", "path": "/a" }),
+        ];
+
+        normalize_repo_entries(&mut repos, &path, "repositories").unwrap();
+
+        assert_eq!(ids_of(&repos), vec![Some(1), Some(2)]);
+        let written: Vec<Value> =
+            serde_json5::from_str(&std::fs::read_to_string(&path).expect("list is written"))
+                .unwrap();
+        assert_eq!(ids_of(&written), vec![Some(1), Some(2)]);
+    }
+
+    /// A list already in id order with every id present needs no change,
+    /// so nothing is written.
+    #[test]
+    fn normalize_leaves_a_sorted_list_unwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("repositories.json5");
+        let mut repos = vec![
+            serde_json::json!({ "id": 1, "type": "fs", "path": "/a" }),
+            serde_json::json!({ "id": 2, "type": "fs", "path": "/b" }),
+        ];
+
+        normalize_repo_entries(&mut repos, &path, "repositories").unwrap();
+
+        assert_eq!(ids_of(&repos), vec![Some(1), Some(2)]);
+        assert!(!path.exists(), "a list that needs no change is not written");
     }
 }

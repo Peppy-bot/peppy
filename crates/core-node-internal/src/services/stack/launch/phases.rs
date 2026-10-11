@@ -56,7 +56,7 @@ pub(super) struct DrainOnCancel {
 }
 
 /// Outcome of a per-phase operation wrapped with idle + (optional) launch-deadline enforcement.
-pub(super) enum PhaseOutcome<T> {
+enum PhaseOutcome<T> {
     Completed(T),
     IdleTimeout,
     MaxTimeout,
@@ -115,7 +115,7 @@ where
 }
 
 /// Timeout behavior for phases whose futures are cancellation-safe via `Drop`
-/// (currently: add, build).
+/// (add and build).
 async fn run_phase_drop_on_timeout<F, T>(
     phase: Pin<Box<F>>,
     activity_notify: Arc<Notify>,
@@ -151,7 +151,7 @@ where
 /// awaits the phase future for up to the drain's budget so it can run its own
 /// teardown (stop or kill the instance, unregister the `Starting` instance,
 /// remove temp files) before we return the timeout outcome.
-pub(super) async fn run_phase_cancel_on_timeout<F, T>(
+async fn run_phase_cancel_on_timeout<F, T>(
     mut phase: Pin<Box<F>>,
     activity_notify: Arc<Notify>,
     idle_timeout: Duration,
@@ -161,8 +161,8 @@ pub(super) async fn run_phase_cancel_on_timeout<F, T>(
 where
     F: std::future::Future<Output = T> + ?Sized,
 {
-    // `sleep_until(past-instant)` resolves immediately, so we model "no
-    // deadline" as a far-future sleep and let idle/phase race win.
+    // With no deadline this arm waits on a future that never resolves, so
+    // only the idle watcher or the phase can end the race.
     let deadline_sleep = async {
         match change_deadline {
             Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -429,15 +429,9 @@ mod tests {
     async fn cancel_on_timeout_returns_value_when_phase_completes_first() {
         let notify = Arc::new(Notify::new());
         let token = CancellationToken::new();
-        let cleanup_ran = Arc::new(AtomicBool::new(false));
-        let cleanup_ran_for_phase = Arc::clone(&cleanup_ran);
 
         // Phase completes immediately with a value; no timeout should fire.
-        let phase = async move {
-            // Reset-like ping proves we keep the happy-path contract (no cancel signal).
-            let _ = cleanup_ran_for_phase;
-            "ok"
-        };
+        let phase = async { "ok" };
 
         let outcome = run_phase_cancel_on_timeout(
             Box::pin(phase),

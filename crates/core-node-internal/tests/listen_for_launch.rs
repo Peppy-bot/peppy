@@ -2,37 +2,37 @@ mod common;
 #[path = "listen_for_launch/copies.rs"]
 mod copies;
 
-use common::{AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_default_setup_timeout};
+use common::{
+    AbortOnDrop, CALLER_INSTANCE_ID, FeedbackDrainOutcome, drain_feedback, fetch_result,
+    send_daemon_goal, start_core_node_with_default_setup_timeout,
+};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::NodeConfigParser;
 use config::runtime::Name;
-use core_node_api::ActionId;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult, LauncherOrigin, StackBudgets,
 };
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
-use peppylib::messaging::{MessengerHandle, ResultStatus};
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
+use peppylib::messaging::MessengerHandle;
 use std::fs;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 
 use crate::common::{
-    StartedCoreNode, TestPackagesCache, TestRunningInstance, build_staged_node, is_process_running,
-    poll_until, send_node_add_and_wait, spawn_real_running_instance,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    StartedCoreNode, TestPackagesCache, TestRunningInstance, answer_readiness, answer_ready_probe,
+    build_staged_node, commit_path, is_process_running, path_env_with_dir_first, poll_until,
+    send_node_add_and_wait, spawn_real_running_instance, start_core_node_with_mock_messenger,
+    wait_until_process_exits, write_executable_script, write_peppy_json5,
 };
 
 struct NodeConfigOptions<'a> {
     build_cmd: &'a [&'a str],
     run_cmd: &'a [&'a str],
-    expects_uvc_camera: bool,
-    emits_camera_stream: bool,
     /// The manifest's `depends_on` object, written as is; empty for none.
     depends_on: &'a str,
     /// The node's `interfaces` object, written as is; empty for none.
@@ -44,8 +44,6 @@ impl Default for NodeConfigOptions<'_> {
         Self {
             build_cmd: &["true"],
             run_cmd: &[],
-            expects_uvc_camera: false,
-            emits_camera_stream: false,
             depends_on: "",
             interfaces: "",
         }
@@ -164,25 +162,29 @@ const LAUNCHER_EXAMPLE1: &str = r#"
 
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+/// The launch id `send_node_launch_and_wait` launches under.
+const TEST_LAUNCH_ID: &str = "launch-test-fixture";
+
+/// The `depends_on` of a node that consumes the `camera_stream` of a
+/// `uvc_camera:v1` through its `front_camera` link.
+const DEPENDS_ON_FRONT_CAMERA: &str =
+    r#"{ nodes: [{ name: "uvc_camera", tag: "v1", link_id: "front_camera" }] }"#;
+/// The `interfaces` that go with [`DEPENDS_ON_FRONT_CAMERA`].
+const CONSUMES_FRONT_CAMERA_STREAM: &str =
+    r#"{ topics: { consumes: [{ link_id: "front_camera", name: "camera_stream" }] } }"#;
 
 fn write_node_config(
     nodes_directory: &Path,
     node_name: &str,
     node_tag: &str,
-    git_hash: &str,
     run_cmd: &[&str],
-    expects_uvc_camera: bool,
-    emits_camera_stream: bool,
 ) -> PathBuf {
     write_node_config_with_options(
         nodes_directory,
         node_name,
         node_tag,
-        git_hash,
         NodeConfigOptions {
             run_cmd,
-            expects_uvc_camera,
-            emits_camera_stream,
             ..Default::default()
         },
     )
@@ -192,25 +194,14 @@ fn write_node_config_with_options(
     nodes_directory: &Path,
     node_name: &str,
     node_tag: &str,
-    git_hash: &str,
     options: NodeConfigOptions<'_>,
 ) -> PathBuf {
     let NodeConfigOptions {
         build_cmd,
         run_cmd,
-        expects_uvc_camera,
-        emits_camera_stream,
         depends_on: raw_depends_on,
         interfaces: raw_interfaces,
     } = options;
-    assert!(
-        raw_depends_on.is_empty() || !expects_uvc_camera,
-        "a node config takes its `depends_on` from one option"
-    );
-    assert!(
-        raw_interfaces.is_empty() || !(emits_camera_stream || expects_uvc_camera),
-        "a node config takes its `interfaces` from one option"
-    );
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
 
@@ -226,48 +217,16 @@ fn write_node_config_with_options(
         .collect::<Vec<_>>()
         .join(", ");
 
-    let emits_topics = if emits_camera_stream {
-        r#"emits: [
-                  { name: "camera_stream" }
-                ],"#
+    let interfaces = if raw_interfaces.is_empty() {
+        String::new()
     } else {
-        ""
-    };
-
-    let expects_topics = if expects_uvc_camera {
-        r#"consumes: [
-                  { link_id: "front_camera", name: "camera_stream" }
-                ],"#
-    } else {
-        ""
-    };
-
-    let interfaces = if !raw_interfaces.is_empty() {
         format!("interfaces: {raw_interfaces},")
-    } else if emits_camera_stream || expects_uvc_camera {
-        format!(
-            r#"interfaces: {{
-                topics: {{
-                  {emits_topics}
-                  {expects_topics}
-                }}
-              }},"#
-        )
-    } else {
-        String::new()
     };
 
-    let depends_on = if !raw_depends_on.is_empty() {
-        format!("depends_on: {raw_depends_on},")
-    } else if expects_uvc_camera {
-        r#"depends_on: {
-                    nodes: [
-                        { name: "uvc_camera", tag: "v1", link_id: "front_camera" }
-                    ]
-                },"#
-        .to_string()
-    } else {
+    let depends_on = if raw_depends_on.is_empty() {
         String::new()
+    } else {
+        format!("depends_on: {raw_depends_on},")
     };
 
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
@@ -303,7 +262,8 @@ fn write_node_config_with_options(
 
     let peppy_output_dir = node_dir.join(PEPPY_OUTPUT_DIR);
     fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
-    fs::write(peppy_output_dir.join("git.hash"), git_hash).expect("failed to write node git hash");
+    fs::write(peppy_output_dir.join("git.hash"), common::TEST_GIT_HASH)
+        .expect("failed to write node git hash");
 
     node_dir
 }
@@ -345,31 +305,37 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
     )
     .expect("failed to write uvc_camera peppy.json5");
 
-    let mut index = repo.index().expect("failed to open index");
-    index
-        .add_path(&rel_config_path)
-        .expect("failed to add uvc config");
-    index.write().expect("failed to write index");
-
-    let tree_id = index.write_tree().expect("failed to write tree");
-    let tree = repo.find_tree(tree_id).expect("failed to find tree");
-    let commit_id = repo
-        .commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "uvc_camera initial",
-            &tree,
-            &[],
-        )
-        .expect("failed to commit");
-    let commit = repo.find_commit(commit_id).expect("failed to find commit");
+    let commit = commit_path(
+        &repo,
+        &signature,
+        &rel_config_path,
+        "uvc_camera initial",
+        &[],
+    );
 
     // Tag the commit so deployments can reference it via `tag`.
     repo.tag(node_tag, commit.as_object(), &signature, node_tag, false)
         .expect("failed to create tag");
 
     repo_path
+}
+
+/// Writes a `sleep 60` node config and pushes it onto the stack without a
+/// build: a node that a refused launch must leave in place. Returns the node's
+/// directory.
+fn push_unbuilt_node_onto_stack(
+    node_stack: &node_stack::NodeStack,
+    nodes_directory: &Path,
+    node_name: &str,
+    node_tag: &str,
+) -> PathBuf {
+    let node_dir = write_node_config(nodes_directory, node_name, node_tag, &["sleep", "60"]);
+    let config = NodeConfigParser::from_path(node_dir.join(NODE_CONFIG_FILE))
+        .expect("existing node config should parse");
+    node_stack
+        .push_config(config, false, &node_dir)
+        .expect("should seed stack");
+    node_dir
 }
 
 async fn send_node_launch_and_wait(
@@ -443,30 +409,14 @@ async fn send_launch_origin_and_wait_observing(
 ) -> Result<(LaunchGoalResponse, LaunchResult), String> {
     let goal = LaunchGoal::new(
         launcher_origin,
-        "launch-test-fixture",
+        TEST_LAUNCH_ID,
         StackBudgets::new(300, 300, 300, Some(3600)).with_env_vars(env_vars),
     );
-    let goal_payload = goal
-        .encode()
-        .map_err(|e| format!("Failed to encode launch goal: {e}"))?;
+    let mut action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
+        .await
+        .map_err(|e| format!("Failed to send launch goal: {e}"))?;
 
-    let mut action_handle = ActionMessenger::send_goal(
-        messenger,
-        core_node_name,
-        CALLER_INSTANCE_ID,
-        common::core_node_target(core_node_name),
-        ActionId::StackLaunch.name(),
-        None,
-        goal_payload,
-        config::node::QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
-        goal_timeout,
-    )
-    .await
-    .map_err(|e| format!("Failed to send launch goal: {e}"))?;
-
-    let goal_response_payload = action_handle.goal_reply().body.clone();
-    let goal_response = LaunchGoalResponse::decode(&goal_response_payload)
+    let goal_response = LaunchGoalResponse::decode(&action_handle.goal_reply().body)
         .map_err(|e| format!("Failed to decode goal response: {e}"))?;
 
     if !goal_response.accepted {
@@ -476,46 +426,35 @@ async fn send_launch_origin_and_wait_observing(
     }
 
     let absolute_deadline = tokio::time::Instant::now() + result_timeout;
-    let mut last_activity = tokio::time::Instant::now();
 
     // Drain feedback until the server closes the stream on completion, then
     // fetch the buffered result once.
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= absolute_deadline {
-            return Err("Timeout waiting for launch result".to_string());
-        }
-        if now.duration_since(last_activity) >= result_timeout {
-            return Err("Timeout waiting for launch result (idle)".to_string());
-        }
-        let drain_timeout = Duration::from_millis(50);
-        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                last_activity = tokio::time::Instant::now();
-                let payload = msg.payload();
-                if let Ok(feedback) = LaunchFeedback::decode(&payload) {
-                    on_feedback(feedback);
-                }
-            }
-            Ok(Err(_)) => break,
-            Err(_) => {}
-        }
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| LaunchFeedback::decode(payload).expect("failed to decode LaunchFeedback"),
+        |feedback| {
+            on_feedback(feedback);
+            ControlFlow::Continue(())
+        },
+        absolute_deadline,
+    )
+    .await;
+    if matches!(drained, FeedbackDrainOutcome::TimedOut) {
+        return Err("Timeout waiting for launch result".to_string());
     }
 
     let fetch_timeout = absolute_deadline
         .saturating_duration_since(tokio::time::Instant::now())
         .max(Duration::from_secs(1));
-    match ActionMessenger::request_result(messenger, &action_handle, fetch_timeout).await {
-        Ok(reply) => match reply.status {
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                let result = LaunchResult::decode(reply.body.as_ref())
-                    .map_err(|err| format!("Failed to decode launch result: {err}"))?;
-                Ok((goal_response, result))
-            }
-            other => Err(format!("launch did not complete with a result: {other:?}")),
-        },
-        Err(err) => Err(format!("Failed to get launch result: {err}")),
-    }
+    let result = fetch_result(
+        messenger,
+        &action_handle,
+        fetch_timeout,
+        LaunchResult::decode,
+        "launch result",
+    )
+    .await?;
+    Ok((goal_response, result))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -528,8 +467,6 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
     let peppy_dirs = started_core_node.peppy_dirs.clone();
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
 
     // Copy launch assets to a temp directory. The stack_launch process will generate
     // peppygen files (including git.hash) automatically using the "stack-launch" marker.
@@ -554,89 +491,15 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     cache.write(&peppy_dirs);
 
     // Set up ready/health responders for all instances in the launcher config.
-    let _ready_camera_front = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_front",
-            common::test_node_target(FAKE_UVC_CAMERA),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_camera_front = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_front",
-            common::test_node_target(FAKE_UVC_CAMERA),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_camera_rear = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_rear",
-            common::test_node_target(FAKE_UVC_CAMERA),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_camera_rear = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_rear",
-            common::test_node_target(FAKE_UVC_CAMERA),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_brain = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_brain",
-            common::test_node_target(FAKE_ROBOT_BRAIN),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_brain = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_brain",
-            common::test_node_target(FAKE_ROBOT_BRAIN),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_controller = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_nervous_system",
-            common::test_node_target(FAKE_OPENARM01_CONTROLLER),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_controller = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_nervous_system",
-            common::test_node_target(FAKE_OPENARM01_CONTROLLER),
-        )
-        .await
-        .expect("health service should start"),
-    );
-
-    // Allow listeners to establish.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut responders = Vec::new();
+    for (node, instance_id) in [
+        (FAKE_UVC_CAMERA, "camera_front"),
+        (FAKE_UVC_CAMERA, "camera_rear"),
+        (FAKE_ROBOT_BRAIN, "the_brain"),
+        (FAKE_OPENARM01_CONTROLLER, "the_nervous_system"),
+    ] {
+        responders.extend(answer_readiness(&started_core_node, node, instance_id).await);
+    }
 
     let (_goal_response, result) = send_node_launch_and_wait(
         &started_core_node.caller_handle,
@@ -699,82 +562,27 @@ async fn listen_for_launch_configuration_succeed() {
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
     let uvc_repo_path = create_uvc_camera_repo(nodes_dir.path(), NODE_TAG);
-    let robot_brain_path = write_node_config(
+    let robot_brain_path = write_node_config_with_options(
         nodes_dir.path(),
         ROBOT_NODE_NAME,
         NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        true,
-        false,
+        NodeConfigOptions {
+            run_cmd: &["sleep", "60"],
+            depends_on: DEPENDS_ON_FRONT_CAMERA,
+            interfaces: CONSUMES_FRONT_CAMERA_STREAM,
+            ..Default::default()
+        },
     );
 
     // Set up ready/health responders for all instances in LAUNCHER_EXAMPLE1.
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready_front = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_front",
-            common::test_node_target(UVC_NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_front = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_front",
-            common::test_node_target(UVC_NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_rear = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_rear",
-            common::test_node_target(UVC_NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_rear = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "camera_rear",
-            common::test_node_target(UVC_NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_brain = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "main_robot_brain",
-            common::test_node_target(ROBOT_NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_brain = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "main_robot_brain",
-            common::test_node_target(ROBOT_NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
-
-    // Allow listeners to establish.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut responders = Vec::new();
+    for (node, instance_id) in [
+        (UVC_NODE_NAME, "camera_front"),
+        (UVC_NODE_NAME, "camera_rear"),
+        (ROBOT_NODE_NAME, "main_robot_brain"),
+    ] {
+        responders.extend(answer_readiness(&started_core_node, node, instance_id).await);
+    }
 
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, LAUNCHER_EXAMPLE1).expect("failed to write launch file");
@@ -970,29 +778,11 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
     let peppy_dirs = started_core_node.peppy_dirs.clone();
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
 
     // On-disk node configs referenced by the packages cache.
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
-    let brain_dir = write_node_config(
-        nodes_dir.path(),
-        BRAIN_NODE,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
-    let arm_dir = write_node_config(
-        nodes_dir.path(),
-        ARM_NODE,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
+    let brain_dir = write_node_config(nodes_dir.path(), BRAIN_NODE, NODE_TAG, &["sleep", "60"]);
+    let arm_dir = write_node_config(nodes_dir.path(), ARM_NODE, NODE_TAG, &["sleep", "60"]);
 
     // Map both nodes into the user-repo cache. This is what the
     // `{ name, tag }` launcher shape resolves against.
@@ -1002,47 +792,8 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
         .fs_entry(ARM_NODE, NODE_TAG, &arm_dir)
         .write(&peppy_dirs);
 
-    let _ready_brain = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_brain",
-            common::test_node_target(BRAIN_NODE),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_brain = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_brain",
-            common::test_node_target(BRAIN_NODE),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    let _ready_arm = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_arm",
-            common::test_node_target(ARM_NODE),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_arm = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "the_arm",
-            common::test_node_target(ARM_NODE),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut responders = answer_readiness(&started_core_node, BRAIN_NODE, "the_brain").await;
+    responders.extend(answer_readiness(&started_core_node, ARM_NODE, "the_arm").await);
 
     // Real peppy_launcher.json5 file exercising both the long-form and the
     // `name:tag` shorthand.
@@ -1114,20 +865,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let existing_path = write_node_config(
-        nodes_dir.path(),
-        EXISTING_NODE,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
-    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
-    node_stack
-        .push_config(existing_config, false, &existing_path)
-        .expect("should seed stack");
+    push_unbuilt_node_onto_stack(&node_stack, nodes_dir.path(), EXISTING_NODE, NODE_TAG);
 
     let bad_launcher_json5 = r#"{ peppy_schema: "launcher/v1", deployments: [ }"#;
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
@@ -1161,20 +899,7 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let existing_path = write_node_config(
-        nodes_dir.path(),
-        EXISTING_NODE,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
-    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
-    node_stack
-        .push_config(existing_config, false, &existing_path)
-        .expect("should seed stack");
+    push_unbuilt_node_onto_stack(&node_stack, nodes_dir.path(), EXISTING_NODE, NODE_TAG);
 
     // A launch path that names a directory, not a file.
     let bad_launch_file = nodes_dir.path().join("not_a_file_dir");
@@ -1200,6 +925,70 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
     );
 }
 
+/// A launcher that parses but whose options fail to load, here because
+/// option `real` declares an axis named like the launcher's own `robot`
+/// axis, fails the launch and names the reason in the launch feedback and
+/// the launch log, as every other refusal of the launcher does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launcher_whose_options_fail_to_load_reports_why_in_the_feedback() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let launcher_dir = tempdir().expect("failed to create launcher dir");
+    let launch_file_path = launcher_dir.path().join("peppy_launcher.json5");
+    // No cache fixture: the options fail to load before any deployment is
+    // resolved, so nothing reads `nodes.json5`.
+    fs::write(
+        &launch_file_path,
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [{ name: "robot", cardinality: "zero_or_more", options: {
+                real: {
+                    deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
+                    components: [{ name: "robot", options: {
+                        arm: { deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [{ instance_id: "inner_inst" }] }] },
+                    } }],
+                },
+            } }],
+        }"#,
+    )
+    .expect("failed to write launch file");
+
+    let mut feedback_lines: Vec<String> = Vec::new();
+    let (_goal_response, result) = send_launch_origin_and_wait_observing(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        LauncherOrigin::Fs(launch_file_path),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        vec![],
+        &mut |feedback| feedback_lines.push(feedback.line),
+    )
+    .await
+    .expect("launch should return a result");
+
+    assert!(
+        !result.success,
+        "launch should fail when the launcher's options fail to load"
+    );
+    let error_message = result
+        .error_message
+        .clone()
+        .expect("a failed launch names its reason");
+    assert!(
+        feedback_lines
+            .iter()
+            .any(|line| line.contains(&error_message)),
+        "the reason `{error_message}` reaches the launch feedback; feedback:\n{}",
+        feedback_lines.join("\n")
+    );
+    let launch_log = fs::read_to_string(&result.log_path).expect("read the launch log");
+    assert!(
+        launch_log.contains(&error_message),
+        "the reason `{error_message}` is on record in the launch log at {}:\n{launch_log}",
+        result.log_path.display()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_config_missing_required_deployment_does_not_apply_partial_plan() {
     const EXISTING_NODE: &str = "existing_node";
@@ -1209,20 +998,8 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let existing_path = write_node_config(
-        nodes_dir.path(),
-        EXISTING_NODE,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
-    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
-    node_stack
-        .push_config(existing_config, false, &existing_path)
-        .expect("should seed stack");
+    let existing_path =
+        push_unbuilt_node_onto_stack(&node_stack, nodes_dir.path(), EXISTING_NODE, NODE_TAG);
 
     // One deployment resolves through the cache, the other is missing from it.
     let launcher_json5 = r#"
@@ -1270,41 +1047,22 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let uvc_path = write_node_config(
-        nodes_dir.path(),
-        UVC_NODE_NAME,
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        // Intentionally do NOT emit camera_stream so dependency validation fails.
-        false,
-    );
-    let brain_path = write_node_config(
+    // Intentionally do NOT emit camera_stream so dependency validation fails.
+    let uvc_path = write_node_config(nodes_dir.path(), UVC_NODE_NAME, NODE_TAG, &["sleep", "60"]);
+    let brain_path = write_node_config_with_options(
         nodes_dir.path(),
         ROBOT_NODE_NAME,
         NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        true,
-        false,
+        NodeConfigOptions {
+            run_cmd: &["sleep", "60"],
+            depends_on: DEPENDS_ON_FRONT_CAMERA,
+            interfaces: CONSUMES_FRONT_CAMERA_STREAM,
+            ..Default::default()
+        },
     );
 
     // Seed stack with a node so we can assert rollback behavior.
-    let existing_path = write_node_config(
-        nodes_dir.path(),
-        "existing_node",
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
-    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
-    node_stack
-        .push_config(existing_config, false, &existing_path)
-        .expect("should seed stack");
+    push_unbuilt_node_onto_stack(&node_stack, nodes_dir.path(), "existing_node", NODE_TAG);
 
     let launcher_json5 = r#"
     {
@@ -1350,68 +1108,11 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     let node_stack = started_core_node.node_stack.clone();
     let nodes_dir = tempdir().expect("failed to create nodes dir");
 
-    let node_a_path = write_node_config(
-        nodes_dir.path(),
-        "node_a",
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
-    let node_b_path = write_node_config(
-        nodes_dir.path(),
-        "node_b",
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
+    let node_a_path = write_node_config(nodes_dir.path(), "node_a", NODE_TAG, &["sleep", "60"]);
+    let node_b_path = write_node_config(nodes_dir.path(), "node_b", NODE_TAG, &["sleep", "60"]);
 
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready_a = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "a1",
-            common::test_node_target("node_a"),
-        )
-        .await
-        .expect("ready should start"),
-    );
-    let _health_a = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "a1",
-            common::test_node_target("node_a"),
-        )
-        .await
-        .expect("health should start"),
-    );
-    let _ready_b = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "b1",
-            common::test_node_target("node_b"),
-        )
-        .await
-        .expect("ready should start"),
-    );
-    let _health_b = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "b1",
-            common::test_node_target("node_b"),
-        )
-        .await
-        .expect("health should start"),
-    );
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut responders = answer_readiness(&started_core_node, "node_a", "a1").await;
+    responders.extend(answer_readiness(&started_core_node, "node_b", "b1").await);
 
     let launch_a = r#"
     { peppy_schema: "launcher/v1", deployments: [ { source: { name: "node_a:v1" }, instances: [ { instance_id: "a1" } ] } ] }
@@ -1476,13 +1177,13 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
         "second request should replace existing stack (add node_b)"
     );
 
-    // Core regression: the relaunch must terminate the previous stack's process,
-    // not orphan it. Before the fix, node_a's OS process survived the relaunch,
-    // detached from the daemon and invisible to `stack list`.
-    poll_until(
+    // The relaunch must terminate the previous stack's process: an orphan
+    // would outlive the relaunch, detached from the daemon and invisible to
+    // `stack list`.
+    wait_until_process_exits(
+        pid_a,
         Duration::from_secs(10),
         &format!("node_a process {pid_a} should be terminated by the relaunch, not orphaned"),
-        || (!is_process_running(pid_a)).then_some(()),
     )
     .await;
 }
@@ -1510,29 +1211,10 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     .await;
 
     // Node to be launched: starts a real process but never reports healthy.
-    let node_b_path = write_node_config(
-        nodes_dir.path(),
-        "node_b",
-        NODE_TAG,
-        "test-hash",
-        &["sleep", "60"],
-        false,
-        false,
-    );
+    let node_b_path = write_node_config(nodes_dir.path(), "node_b", NODE_TAG, &["sleep", "60"]);
 
     // Set up ONLY the ready responder. Do not set up health responder so it times out.
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready_b = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "b1",
-            common::test_node_target("node_b"),
-        )
-        .await
-        .expect("ready should start"),
-    );
+    let _ready_b = answer_ready_probe(&started_core_node, "node_b", "b1").await;
     // An instance that answered ready is stopped through its shutdown
     // request; this one ends at once instead of at its force-kill deadline.
     let (_shutdown_b, _) = common::install_shutdown_listener_for_instance(
@@ -1553,8 +1235,8 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         .write(&started_core_node.peppy_dirs);
 
     // Drive the launch concurrently so we can capture node_b's started pid
-    // before the health-timeout failure tears the stack down. Without the fix,
-    // that partially-started instance would be orphaned by the failure path.
+    // before the health-timeout failure tears the stack down, and check that
+    // the failure path terminates that partially-started instance.
     let caller = started_core_node.caller_handle.clone();
     let core_name = started_core_node.core_node_name.clone();
     let launch_task = tokio::spawn(async move {
@@ -1599,7 +1281,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         "the failure names the default setup budget and the key: {reason}"
     );
 
-    // New contract: a failed launch leaves a clean empty stack.
+    // A failed launch leaves a clean empty stack.
     assert_eq!(
         node_stack.len(),
         1,
@@ -1616,16 +1298,16 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
 
     // Neither the previous stack's process nor the partially-started new
     // instance may be orphaned by the failure path.
-    poll_until(
+    wait_until_process_exits(
+        existing_pid,
         Duration::from_secs(15),
         &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
-        || (!is_process_running(existing_pid)).then_some(()),
     )
     .await;
-    poll_until(
+    wait_until_process_exits(
+        node_b_pid,
         Duration::from_secs(15),
         &format!("partial new instance {node_b_pid} should be terminated, not orphaned"),
-        || (!is_process_running(node_b_pid)).then_some(()),
     )
     .await;
 }
@@ -1654,7 +1336,6 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
         nodes_dir.path(),
         "failing_node",
         NODE_TAG,
-        "test-hash",
         NodeConfigOptions {
             build_cmd: &["false"], // This command always fails with exit code 1
             run_cmd: &["sleep", "60"],
@@ -1694,7 +1375,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
         "error message should contain the node name:tag, got: {error_message}"
     );
 
-    // New contract: a failed launch leaves a clean empty stack. The previous
+    // A failed launch leaves a clean empty stack. The previous
     // stack is torn down at the clear step, not rolled back.
     assert_eq!(
         node_stack.len(),
@@ -1711,10 +1392,10 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
     );
 
     // The previous stack's process must be terminated, not orphaned.
-    poll_until(
+    wait_until_process_exits(
+        existing_pid,
         Duration::from_secs(10),
         &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
-        || (!is_process_running(existing_pid)).then_some(()),
     )
     .await;
 }
@@ -1745,7 +1426,6 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
         nodes_dir.path(),
         NODE_NAME,
         NODE_TAG,
-        "test-hash",
         NodeConfigOptions {
             build_cmd: &["true"],
             run_cmd: &["false"], // exits immediately with status 1
@@ -1789,7 +1469,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
         "error message should contain the instance ID, got: {error_message}"
     );
 
-    // New contract: a failed launch leaves a clean empty stack. The previous
+    // A failed launch leaves a clean empty stack. The previous
     // stack is torn down at the clear step, not rolled back.
     assert_eq!(
         node_stack.len(),
@@ -1806,10 +1486,10 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     );
 
     // The previous stack's process must be terminated, not orphaned.
-    poll_until(
+    wait_until_process_exits(
+        existing_pid,
         Duration::from_secs(10),
         &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
-        || (!is_process_running(existing_pid)).then_some(()),
     )
     .await;
 
@@ -1885,10 +1565,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
         nodes_dir.path(),
         NODE_NAME,
         NODE_TAG,
-        "test-hash",
         &["printout", "60"], // run_cmd that sleeps via printout
-        false,
-        false,
     );
     let launch_json5 = format!(
         r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
@@ -1918,59 +1595,20 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
 
     // Create a temp bin directory with a `printout` script that sleeps
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
-    let printout_path = bin_dir.path().join("printout");
-    std::fs::write(
-        &printout_path,
+    write_executable_script(
+        bin_dir.path(),
+        "printout",
         "#!/bin/sh
 sleep \"${1:-60}\"
 ",
-    )
-    .expect("failed to write printout script");
-
-    // Make it executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&printout_path)
-            .expect("failed to get printout metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&printout_path, perms)
-            .expect("failed to set printout permissions");
-    }
+    );
 
     // Set up ready/health responders for the instance
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
-
-    // Allow listeners to establish.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _responders = answer_readiness(&started_core_node, NODE_NAME, INSTANCE_ID).await;
 
     // Pass the bin directory in PATH via env overrides to simulate the caller having an updated
     // PATH without restarting the daemon.
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), current_path);
-    let env_vars = vec![("PATH".to_string(), new_path)];
+    let env_vars = vec![path_env_with_dir_first(bin_dir.path())];
 
     let (_, launch_result) = send_node_launch_and_wait_with_env(
         &started_core_node.caller_handle,
@@ -2017,10 +1655,7 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
         nodes_dir.path(),
         NODE_NAME,
         NODE_TAG,
-        "test-hash",
         &["sh", "-c", probe_script.as_str()],
-        false,
-        false,
     );
 
     let launcher_json5 = format!(
@@ -2032,31 +1667,7 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
         .fs_entry(NODE_NAME, NODE_TAG, &node_path)
         .write(&started_core_node.peppy_dirs);
 
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let _ready = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
-
-    // Allow listeners to establish.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _responders = answer_readiness(&started_core_node, NODE_NAME, INSTANCE_ID).await;
 
     // The caller environment carries the same key with a different value, so a
     // matching probe can only come from the instance's own declaration.
@@ -2102,41 +1713,17 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
     let peppy_dirs = started_core_node.peppy_dirs.clone();
-    let node_messenger =
-        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
     let brain_path = write_node_config(
         nodes_dir.path(),
         ROBOT_NODE_NAME,
         NODE_TAG,
-        "test-hash",
         &["sleep", "60"],
-        false,
-        false,
     );
 
-    let _ready_brain = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "main_robot_brain",
-            common::test_node_target(ROBOT_NODE_NAME),
-        )
-        .await
-        .expect("ready service should start"),
-    );
-    let _health_brain = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started_core_node.core_node_name,
-            "main_robot_brain",
-            common::test_node_target(ROBOT_NODE_NAME),
-        )
-        .await
-        .expect("health service should start"),
-    );
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _responders =
+        answer_readiness(&started_core_node, ROBOT_NODE_NAME, "main_robot_brain").await;
 
     // Launcher file references the node by its `name:tag` in the nodes cache.
     let launcher_json5 = format!(
@@ -2461,7 +2048,6 @@ async fn launch_scripted_node_above(
         nodes_dir.path(),
         "scripted_node",
         "v1",
-        "test-hash",
         NodeConfigOptions {
             build_cmd: &["sh", "-c", build_script],
             run_cmd: &["sh", "-c", run_script],
@@ -2510,8 +2096,6 @@ async fn launch_scripted_node_above(
     (result, records, started_core_node)
 }
 
-/// The launch id `send_node_launch_and_wait` launches under.
-const TEST_LAUNCH_ID: &str = "launch-test-fixture";
 /// A line a scripted node prints. The script that prints it does not hold it,
 /// so an error that quotes the script does not hold it either.
 const SCRIPT_OUTPUT: &str = "the-node-printed-this-line";

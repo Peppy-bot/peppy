@@ -6,8 +6,8 @@ mod fixtures;
 mod poll;
 mod services;
 
-// Flat re-exports so existing `common::foo()` call sites keep working; each
-// test binary uses a different subset of the groups.
+// Flat re-exports, so a test calls `common::foo()` whichever group defines
+// it; each test binary uses a different subset of the groups.
 #[allow(unused_imports)]
 pub use actions::*;
 #[allow(unused_imports)]

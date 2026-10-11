@@ -1,18 +1,18 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, create_test_node_with_name,
-    fast_health_monitor, instance_state_in_any_state, poll_until, send_node_add_then_build,
+    AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, answer_health_probes,
+    answer_readiness, answer_ready_probe, create_test_node_with_name, fast_health_monitor,
+    instance_state_in_any_state, path_env_with_dir_first, poll_until, send_node_add_then_build,
     send_node_run_and_wait, send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
     start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
-    wait_until_action_completes, write_peppy_json5,
+    wait_until_action_completes, wait_until_process_exits, write_executable_script,
+    write_peppy_json5,
 };
 use config::runtime::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use peppylib::messaging::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -26,7 +26,6 @@ fn create_node_config_dir(peppy_json5: &str) -> TempDir {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_success() {
-    // These must match the values used in create_test_node()
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
@@ -39,7 +38,7 @@ async fn listen_for_node_run_success() {
     let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     // Add the node to the core node's node stack
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         node_dir.path(),
@@ -51,29 +50,13 @@ async fn listen_for_node_run_success() {
     .await
     .expect("node_add should succeed");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
-    // Intentionally keep the started node process running: nodes are expected to linger
-    // and the test should still tear down cleanly.
-    let _artifact_path = add_response.artifact_path;
-
-    // Get the actual messaging endpoint from the Zenoh session
-    let (_messaging_host, _messaging_port) = started_core_node
-        .caller_handle
-        .messaging_endpoint()
-        .await
-        .expect("zenoh endpoint should be available");
-
     // Create a runtime config for the node_run request
-    let instance_plan = common::instance_plan(TARGET_INSTANCE_ID, Default::default());
+    let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -92,14 +75,10 @@ async fn listen_for_node_run_success() {
         start_response.result.error_message
     );
 
-    // Verify that the PID is returned on success
     assert!(
-        start_response.result.pid.is_some(),
-        "node_run should return a PID on success"
-    );
-    assert!(
-        start_response.result.pid.unwrap() > 0,
-        "node_run PID should be a positive number"
+        start_response.result.pid.is_some_and(|pid| pid > 0),
+        "node_run should return a positive PID on success, got {:?}",
+        start_response.result.pid
     );
 
     // Verify that the instance was added to the node stack
@@ -145,7 +124,7 @@ async fn listen_for_node_run_timeout() {
     let temp_dir = create_node_config_dir(&peppy_json5);
 
     // Add the node to the core node's node stack
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -155,25 +134,9 @@ async fn listen_for_node_run_timeout() {
     .await
     .expect("node_add should succeed");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
-
     // Set up a ready listener so node_run can proceed to the health-check phase.
     // We intentionally do NOT set up a health listener to force the health check to time out.
-    let ready_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &ready_handle,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start ready service"),
-    );
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let (_shutdown_task, shutdown_requested) = common::install_shutdown_listener_for_instance(
         &started,
@@ -183,9 +146,6 @@ async fn listen_for_node_run_timeout() {
     )
     .await;
 
-    // Allow the ready service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
     // Create a runtime config for the node_run request
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -193,7 +153,7 @@ async fn listen_for_node_run_timeout() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -215,11 +175,10 @@ async fn listen_for_node_run_timeout() {
             .result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains(
+            .is_some_and(|msg| msg.contains(
                 "the setup did not end within 1 s, the setup budget `runnable_node:v1` \
                  declares in `execution.setup_timeout_secs`"
-            ))
-            .unwrap_or(false),
+            )),
         "error message should name the declared setup budget, got: {:?}",
         start_response.result.error_message
     );
@@ -260,7 +219,7 @@ async fn listen_for_node_run_not_found() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -282,8 +241,7 @@ async fn listen_for_node_run_not_found() {
             .result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("not found in node stack"))
-            .unwrap_or(false),
+            .is_some_and(|msg| msg.contains("not found in node stack")),
         "error message should indicate node not found, got: {:?}",
         start_response.result.error_message
     );
@@ -326,7 +284,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
     .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -336,31 +294,13 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
     .await
     .expect("node_add should succeed");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
-
     // Bring up only the ready responder. The health responder is deliberately
     // delayed by `send_node_run_with_delayed_health` until both markers have
     // streamed: that keeps the action's feedback stream open until the output is
     // captured, instead of racing the daemon's start-success stream close (which
     // can fire before a process even emits its first line under load).
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-
-    // Allow the ready service to establish its listener.
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -378,7 +318,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
         &started.caller_handle,
         &node_messenger,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
@@ -438,7 +378,7 @@ async fn listen_for_node_run_writes_log_file() {
     .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -448,43 +388,14 @@ async fn listen_for_node_run_writes_log_file() {
     .await
     .expect("node_add should succeed");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
-
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
-
-    // Allow ready/health services to establish listeners.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -580,7 +491,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -590,12 +501,6 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
     .await
     .expect("node_add should succeed");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
-
     // Create a runtime config WITHOUT providing any parameters
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -603,7 +508,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -698,7 +603,7 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -707,12 +612,6 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
     )
     .await
     .expect("node_add should succeed");
-
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Create a runtime config with SOME parameters provided (device is complete, video is missing)
     use config::AnyType;
@@ -738,7 +637,7 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -802,10 +701,6 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
 /// (goal accepted but result never polled).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
-    use config::node::QoSProfile;
-    use core_node_api::encoding::NodeRunGoal;
-    use peppylib::ActionMessenger;
-
     const FIRST_NODE_NAME: &str = "abandoned_start_node";
     const FIRST_NODE_TAG: &str = "v1";
     const FIRST_INSTANCE_ID: &str = "abandoned_start_instance";
@@ -832,7 +727,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     .replace("{FIRST_NODE_TAG}", FIRST_NODE_TAG);
     write_peppy_json5(first_source_dir.path(), &first_peppy_json5);
 
-    let first_add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         first_source_dir.path(),
@@ -841,12 +736,6 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     )
     .await
     .expect("first node_add should succeed");
-
-    assert!(
-        first_add_response.success,
-        "first node_add should succeed, got error: {:?}",
-        first_add_response.error_message
-    );
 
     // Create and add second node
     let second_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -865,7 +754,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     .replace("{SECOND_NODE_TAG}", SECOND_NODE_TAG);
     write_peppy_json5(second_source_dir.path(), &second_peppy_json5);
 
-    let second_add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         second_source_dir.path(),
@@ -875,96 +764,23 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     .await
     .expect("second node_add should succeed");
 
-    assert!(
-        second_add_response.success,
-        "second node_add should succeed, got error: {:?}",
-        second_add_response.error_message
-    );
-
     // Set up ready/health services for both nodes
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-
-    let _first_ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            FIRST_INSTANCE_ID,
-            common::test_node_target(FIRST_NODE_NAME),
-        )
-        .await
-        .expect("first ready service should start"),
-    );
-    let _first_health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            FIRST_INSTANCE_ID,
-            common::test_node_target(FIRST_NODE_NAME),
-        )
-        .await
-        .expect("first health service should start"),
-    );
-
-    let _second_ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            SECOND_INSTANCE_ID,
-            common::test_node_target(SECOND_NODE_NAME),
-        )
-        .await
-        .expect("second ready service should start"),
-    );
-    let _second_health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            SECOND_INSTANCE_ID,
-            common::test_node_target(SECOND_NODE_NAME),
-        )
-        .await
-        .expect("second health service should start"),
-    );
-
-    // Allow ready/health services to establish listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Create runtime config for first node
-    let first_instance_plan = common::default_instance_plan(FIRST_INSTANCE_ID);
+    let mut responders = answer_readiness(&started, FIRST_NODE_NAME, FIRST_INSTANCE_ID).await;
+    responders.extend(answer_readiness(&started, SECOND_NODE_NAME, SECOND_INSTANCE_ID).await);
 
     // Send first goal but DON'T wait for result (simulating abandoned action)
-    let first_goal = NodeRunGoal::new(
-        first_instance_plan.clone(),
-        FIRST_NODE_NAME,
-        FIRST_NODE_TAG,
-        60,
-    );
-    let first_goal_payload = first_goal.encode().expect("failed to encode first goal");
-
-    let mut first_action_handle = ActionMessenger::send_goal(
+    let (mut first_action_handle, _) = common::send_node_run_goal(
         &started.caller_handle,
         &started.core_node_name,
-        common::CALLER_INSTANCE_ID,
-        common::core_node_target(&started.core_node_name),
-        core_node_api::ActionId::NodeRun.name(),
-        None,
-        first_goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
+        common::default_instance_plan(FIRST_INSTANCE_ID),
+        FIRST_NODE_NAME,
+        FIRST_NODE_TAG,
         Duration::from_secs(5),
+        60,
+        Vec::new(),
     )
     .await
-    .expect("first goal should be sent");
-
-    // Verify first goal was accepted
-    let first_goal_response_payload = first_action_handle.goal_reply().body.clone();
-    let first_goal_response =
-        core_node_api::encoding::NodeRunGoalResponse::decode(&first_goal_response_payload)
-            .expect("failed to decode first goal response");
-    assert!(
-        first_goal_response.accepted,
-        "first goal should be accepted"
-    );
+    .expect("first goal should be accepted");
 
     // Settle the first action without ever fetching its result, the whole
     // point of this test: the daemon closes the feedback stream only after
@@ -978,7 +794,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     let second_start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        second_instance_plan.clone(),
+        second_instance_plan,
         SECOND_NODE_NAME,
         SECOND_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1036,7 +852,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1045,35 +861,8 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
-    let instance_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &instance_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start ready service"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &instance_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start health service"),
-    );
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
@@ -1109,34 +898,20 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
 
     // Create a temp bin directory with a `printout` script.
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
-    let printout_path = bin_dir.path().join("printout");
-    std::fs::write(
-        &printout_path,
+    write_executable_script(
+        bin_dir.path(),
+        "printout",
         "#!/bin/sh
 sleep \"${1:-3}\"
 ",
-    )
-    .expect("failed to write printout script");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&printout_path)
-            .expect("failed to get printout metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&printout_path, perms)
-            .expect("failed to set printout permissions");
-    }
-
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), current_path);
-    let env_vars = vec![("PATH".to_string(), new_path)];
+    );
+    let env_vars = vec![path_env_with_dir_first(bin_dir.path())];
 
     // Second attempt with env overrides: printout should be found.
     let start_response = send_node_run_and_wait_with_env(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1184,7 +959,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1193,42 +968,15 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
-    let instance_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &instance_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start ready service"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &instance_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("failed to start health service"),
-    );
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1307,7 +1055,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1317,37 +1065,8 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     .await
     .expect("node_add should succeed");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
-
     // Set up ready/health services for the container instance
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
-
-    // Allow ready/health services to establish listeners.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     // Create a runtime config for the node_run request
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
@@ -1357,7 +1076,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let start_response = send_node_run_and_wait_with_env(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1377,14 +1096,10 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         start_response.result.error_message
     );
 
-    // Verify that the PID is returned on success
     assert!(
-        start_response.result.pid.is_some(),
-        "node_run should return a PID on success"
-    );
-    assert!(
-        start_response.result.pid.unwrap() > 0,
-        "node_run PID should be a positive number"
+        start_response.result.pid.is_some_and(|pid| pid > 0),
+        "node_run should return a positive PID on success, got {:?}",
+        start_response.result.pid
     );
 
     // Verify that the instance was added to the node stack
@@ -1452,11 +1167,11 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
 /// Verifies that `start_container_node` auto-creates a missing bind-mount
 /// source directory AND emits a loud warning about it to the per-instance
-/// start log. The auto-create restores the dev-branch ergonomics for nodes
-/// that declare scratch / output directories (e.g. `/tmp/<node>`); the
-/// warning is the contract that prevents a typo'd file bind from silently
-/// becoming an empty directory. Both halves of the contract are asserted;
-/// if a future refactor drops the warning, this test must fail.
+/// start log. The auto-create lets nodes declare scratch / output directories
+/// (e.g. `/tmp/<node>`) that do not exist yet; the warning is the contract
+/// that prevents a typo'd file bind from silently becoming an empty
+/// directory. Both halves of the contract are asserted, so a change that
+/// drops the warning fails this test.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns() {
     let _container_test_guard = acquire_container_test_guard().await;
@@ -1514,7 +1229,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1524,44 +1239,16 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     .await
     .expect("node_add should succeed");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
-
     // Set up ready/health services for the container instance. The container
     // will actually launch (auto-create succeeds), so these need to be live.
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1666,7 +1353,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (builds the .sif image).
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1676,12 +1363,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     .await
     .expect("node_add should succeed");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
-
     // Do NOT set up ready/health services; the process will exit immediately
     // which means the ready signal will fail (process died).
 
@@ -1690,7 +1371,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1765,7 +1446,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -1775,18 +1456,12 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     .await
     .expect("node_add should succeed");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
-
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1848,6 +1523,84 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     );
 }
 
+/// A node that spawns and then exits before its ready signal is torn down by
+/// the daemon, and the run log is where an operator reads why: the node's own
+/// output alone does not say that the daemon gave up on it, or what to do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_run_logs_why_a_node_that_exits_before_ready_never_started() {
+    const TARGET_NODE_NAME: &str = "early_exit_node";
+    const TARGET_NODE_TAG: &str = "v1";
+    const TARGET_INSTANCE_ID: &str = "early_exit_instance";
+    const EXIT_REASON: &str = "node process exited during startup";
+
+    let started = start_core_node_with_mock_messenger().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["sh", "-c", "exit 3"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+
+    let start_response = send_node_run_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        common::default_instance_plan(TARGET_INSTANCE_ID),
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(20),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete");
+
+    assert!(
+        !start_response.result.success,
+        "node_run should fail because the node exits before it is ready"
+    );
+    let error_msg = start_response
+        .result
+        .error_message
+        .as_ref()
+        .expect("error_message should be present");
+    assert!(
+        error_msg.contains(EXIT_REASON),
+        "error should say the node exited during startup, got: {error_msg}"
+    );
+
+    let log_path = &start_response.goal_response.log_path;
+    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
+    assert!(
+        log_content
+            .lines()
+            .any(|line| line.contains("[error]") && line.contains(EXIT_REASON)),
+        "log file should contain the daemon's reason as an [error] entry, got:
+{log_content}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     const TARGET_NODE_NAME: &str = "health_monitor_node";
@@ -1875,7 +1628,7 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
 
     let temp_dir = create_node_config_dir(&peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -1885,44 +1638,16 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     .await
     .expect("node_add should succeed");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
-
     // Set up ready+health listeners so the initial start succeeds
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
-
-    // Allow ready/health services to establish listeners
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
+    let health_task = answer_health_probes(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -1968,20 +1693,18 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     // unhealthy. With interval=200ms, timeout=100ms and a threshold of three
     // misses the flag flips within ~1s; give it 5 seconds for CI safety. The
     // instance must stay in the stack the whole time, only its health flag flips.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        match started.node_stack.find_by_instance_id(&instance_id) {
-            Some(instance) if !instance.healthy() => break,
-            Some(_) => {}
-            None => {
-                panic!("instance was removed from the stack; it should only be marked unhealthy")
-            }
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("instance was not marked unhealthy within timeout");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    poll_until(
+        Duration::from_secs(5),
+        "instance was not marked unhealthy within timeout",
+        || {
+            let instance = started
+                .node_stack
+                .find_by_instance_id(&instance_id)
+                .expect("instance was removed from the stack; it should only be marked unhealthy");
+            (!instance.healthy()).then_some(())
+        },
+    )
+    .await;
 
     // The unhealthy instance stays tracked, so `stack list` / `node info` keep
     // reporting it instead of it vanishing from the stack.
@@ -2022,9 +1745,8 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
 /// by the exit watcher (`Failed` for an unclean (signal / non-zero) exit)
 /// instead of being left `Running` and merely flagged unhealthy. The instance
 /// stays tracked so it remains visible in `stack list`, but as a terminal state,
-/// and the `Running`-only lookup no longer returns it. Regression guard for the
-/// one-shot/crashed-node fix: a dead process must never read as
-/// "running / unhealthy".
+/// and the `Running`-only lookup does not return it: a dead process must never
+/// read as "running / unhealthy".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     const TARGET_NODE_NAME: &str = "exit_watcher_node";
@@ -2051,7 +1773,7 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
 
     let temp_dir = create_node_config_dir(&peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -2060,42 +1782,16 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
+    let health_task = answer_health_probes(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -2223,7 +1919,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
 
     let temp_dir = create_node_config_dir(&peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -2232,42 +1928,16 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
+    let health_task = answer_health_probes(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -2372,8 +2042,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
 /// unhealthy" warning for a node being torn down on purpose. Both behaviors
 /// hang off the daemon `shutdown_token`; this drives the real token (the same
 /// one the core node threads into every node's watcher and monitor) and asserts
-/// the suppression end to end. Regression guard for the "suppress shutdown-time
-/// health warnings" / "never relabel an intentional kill as a crash" fix.
+/// the suppression end to end.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     const TARGET_NODE_NAME: &str = "shutdown_suppressed_node";
@@ -2400,7 +2069,7 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
 
     let temp_dir = create_node_config_dir(&peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -2409,42 +2078,16 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ready_task = answer_ready_probe(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
+    let health_task = answer_health_probes(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -2490,10 +2133,10 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     // Sync on the process actually being gone (a zombie counts as gone): by now
     // the watcher's `child.wait()` would have fired had the token not pre-empted
     // it, so any (wrong) terminal transition would already have happened.
-    poll_until(
+    wait_until_process_exits(
+        pid,
         Duration::from_secs(5),
         "node process should be gone after the force-kill",
-        || (!common::is_process_running(pid)).then_some(()),
     )
     .await;
 
@@ -2560,10 +2203,10 @@ fn panel_binding() -> peppylib::runtime::EndpointBinding {
     }
 }
 
-/// Adds the panel node, installs the ready and health responders, the
-/// `node_endpoints` responder answering `announced`, and the shutdown
-/// request, which a node serves from its ready signal on: a start given up
-/// after the ready signal stops the instance through it.
+/// Adds and builds the panel node, then installs its ready and health
+/// responders, a `node_endpoints` responder that answers `announced`, and the
+/// shutdown request, which a node serves from its ready signal on: a start
+/// given up after the ready signal stops the instance through it.
 async fn add_panel_node_with_services(
     started: &common::StartedCoreNode,
     node_name: &str,
@@ -2572,7 +2215,7 @@ async fn add_panel_node_with_services(
 ) -> Vec<AbortOnDrop<peppylib::PeppyResult<()>>> {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     write_peppy_json5(source_dir.path(), &panel_node_json5(node_name));
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -2581,35 +2224,9 @@ async fn add_panel_node_with_services(
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
+    let mut services = answer_readiness(started, node_name, instance_id).await;
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let mut services = vec![
-        AbortOnDrop(
-            listen_for_node_ready(
-                &node_messenger,
-                &started.core_node_name,
-                instance_id,
-                common::test_node_target(node_name),
-            )
-            .await
-            .expect("node ready service should start"),
-        ),
-        AbortOnDrop(
-            listen_for_node_health(
-                &node_messenger,
-                &started.core_node_name,
-                instance_id,
-                common::test_node_target(node_name),
-            )
-            .await
-            .expect("node health service should start"),
-        ),
-    ];
     services.push(AbortOnDrop(
         peppylib::services::endpoints::listen_for_node_endpoints(
             &node_messenger,
@@ -2624,8 +2241,6 @@ async fn add_panel_node_with_services(
     let (shutdown, _requested) =
         common::install_shutdown_listener_for_instance(started, node_name, "v1", instance_id).await;
     services.push(shutdown);
-    // Allow the services to establish their listeners.
-    tokio::time::sleep(Duration::from_millis(50)).await;
     services
 }
 
@@ -2802,7 +2417,7 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
     .to_string();
     let temp_dir = create_node_config_dir(&peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
@@ -2811,33 +2426,8 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
@@ -2966,20 +2556,25 @@ async fn a_start_that_fails_before_its_ready_signal_leaves_no_process_of_its_gro
         .await
         .expect("the daemon takes the cancel");
     wait_until_action_completes(&mut goal, Duration::from_secs(60)).await;
-    let result =
-        common::fetch_node_run_result(&started.caller_handle, &goal, Duration::from_secs(5))
-            .await
-            .expect("the start answers its result");
+    let result = common::fetch_result(
+        &started.caller_handle,
+        &goal,
+        Duration::from_secs(5),
+        core_node_api::encoding::NodeRunResult::decode,
+        "result",
+    )
+    .await
+    .expect("the start answers its result");
     assert!(
         !result.success,
         "the start ends without its ready signal: {result:?}"
     );
 
     for process in std::iter::once(pid).chain(children) {
-        poll_until(
+        wait_until_process_exits(
+            process,
             Duration::from_secs(5),
             &format!("process {process} of the instance's group should be gone"),
-            || (!common::is_process_running(process)).then_some(()),
         )
         .await;
     }
@@ -3017,9 +2612,15 @@ async fn start_result(
     goal: &mut peppylib::messaging::ActionGoalHandle,
 ) -> core_node_api::encoding::NodeRunResult {
     wait_until_action_completes(goal, Duration::from_secs(60)).await;
-    common::fetch_node_run_result(&started.caller_handle, goal, Duration::from_secs(5))
-        .await
-        .expect("the start answers its result")
+    common::fetch_result(
+        &started.caller_handle,
+        goal,
+        Duration::from_secs(5),
+        core_node_api::encoding::NodeRunResult::decode,
+        "result",
+    )
+    .await
+    .expect("the start answers its result")
 }
 
 /// The process whose pid [`forking_leader`] wrote into `pid_file` ends: the
@@ -3119,17 +2720,7 @@ async fn a_start_whose_leader_exits_during_its_setup_leaves_no_process_of_its_gr
 
     // The test answers the ready signal of the instance, and nothing
     // answers its health signal: its setup does not end.
-    let ready_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &ready_handle,
-            &started.core_node_name,
-            INSTANCE_ID,
-            common::test_node_target(NODE_NAME),
-        )
-        .await
-        .expect("the ready service listens"),
-    );
+    let _ready_task = answer_ready_probe(&started, NODE_NAME, INSTANCE_ID).await;
 
     let (mut goal, _accepted) = common::send_node_run_goal(
         &started.caller_handle,

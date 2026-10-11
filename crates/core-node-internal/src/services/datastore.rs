@@ -11,7 +11,7 @@ use parking_lot::RwLock;
 use peppylib::messaging::{SenderTarget, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, ServiceMessenger};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -35,7 +35,7 @@ pub struct StoredValue {
 /// arbitrary bytes.
 #[derive(Debug, Default)]
 pub struct Datastore {
-    map: RwLock<HashMap<String, StoredValue>>,
+    map: RwLock<BTreeMap<String, StoredValue>>,
 }
 
 impl Datastore {
@@ -61,9 +61,8 @@ impl Datastore {
         self.map.read().get(key).cloned()
     }
 
-    /// Returns the metadata (key, encoding, last writer) of every stored key.
-    /// Values are deliberately omitted to keep the list cheap. Order is
-    /// unspecified: the store is a `HashMap`.
+    /// Returns the metadata (key, encoding, last writer) of every stored key,
+    /// in key order. Values are deliberately omitted to keep the list cheap.
     pub fn list(&self) -> Vec<DatastoreListEntry> {
         self.map
             .read()
@@ -373,6 +372,22 @@ mod tests {
         assert_eq!(entries[1].key, "b");
         assert_eq!(entries[1].encoding, "application/json");
         assert_eq!(entries[1].last_modified_by, "node_b");
+    }
+
+    #[test]
+    fn list_returns_the_keys_in_order() {
+        let store = Datastore::new();
+        for key in ["b", "c", "a"] {
+            store.store(
+                key.to_string(),
+                b"v".to_vec(),
+                "text/plain".to_string(),
+                "w".to_string(),
+            );
+        }
+
+        let keys: Vec<String> = store.list().into_iter().map(|entry| entry.key).collect();
+        assert_eq!(keys, ["a", "b", "c"]);
     }
 
     #[test]

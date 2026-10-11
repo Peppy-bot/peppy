@@ -3,6 +3,7 @@
 //! a human-readable prefix derived from the repository URL, the hash
 //! disambiguates the commits cached for that same URL.
 
+use crate::services::node::common::encode_hex;
 use sha2::{Digest, Sha256};
 
 /// Returns a short sanitized slug derived from `raw`. Keeps
@@ -35,11 +36,7 @@ pub(super) fn short_hash(url: &str, qualifier: &str) -> String {
     hasher.update([0u8]);
     hasher.update(qualifier.as_bytes());
     let digest = hasher.finalize();
-    let mut out = String::with_capacity(16);
-    for b in &digest[..8] {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
+    encode_hex(&digest[..8])
 }
 
 #[cfg(test)]

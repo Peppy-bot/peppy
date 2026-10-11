@@ -72,7 +72,7 @@ fn resolve_pairing_doc_cached(
 /// pairing artifact instead: with the name and sha256 pin it forms the
 /// `(name, tag, sha256)` key each slot's document is looked up and cached
 /// under.
-pub(crate) fn validate_pairing_specs(
+fn validate_pairing_specs(
     manifest: &config::node::Manifest,
     peppy_dirs: &PeppyDirs,
     doc_pins: Option<&crate::services::node::pins::DocPins>,
@@ -157,7 +157,7 @@ fn pairing_slots(manifest: &config::node::Manifest) -> Vec<PairingSlotRef<'_>> {
 /// entries. Mirrors `ImplementsError`: coverage problems are aggregated per
 /// slot so a node with several wrong entries produces one readable report.
 #[derive(Debug)]
-pub enum PairingError {
+pub(super) enum PairingError {
     /// One aggregated set-diff per broken slot.
     Coverage(Vec<PairingCoverageMismatch>),
     /// One aggregated problem list per entry whose `refine` block the
@@ -213,7 +213,7 @@ struct SlotCoverage {
 ///
 /// Runs [`validate_pairing_specs`] first, so role errors and cache misses
 /// surface before any of this.
-pub fn collect_pairing_interfaces(
+pub(super) fn collect_pairing_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
@@ -564,6 +564,7 @@ fn duplicated_consumes(coverage: &SlotCoverage) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::repo::cache::test_support::peppy_dirs_with_cache;
     use std::fs;
     use tempfile::TempDir;
 
@@ -594,20 +595,6 @@ mod tests {
         }
     }
 
-    fn make_peppy_dirs_with_cache(
-        entries: &[repo_cache::PairingCacheEntry],
-    ) -> (TempDir, PeppyDirs) {
-        let tmp = TempDir::new().expect("temp dir");
-        let dirs = PeppyDirs::new(tmp.path().to_path_buf());
-        fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
-        fs::write(
-            repo_cache::pairings_repo_cache_path(&dirs),
-            serde_json5::to_string(&entries.to_vec()).expect("serialize cache"),
-        )
-        .expect("write cache file");
-        (tmp, dirs)
-    }
-
     fn manifest(json5: &str) -> config::node::Manifest {
         serde_json5::from_str(json5).expect("manifest parses")
     }
@@ -632,7 +619,7 @@ mod tests {
     fn seeded_dirs() -> (TempDir, TempDir, PeppyDirs) {
         let tmp = TempDir::new().expect("temp dir");
         let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (cache_tmp, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (cache_tmp, dirs) = peppy_dirs_with_cache(&[entry]);
         (tmp, cache_tmp, dirs)
     }
 
@@ -734,7 +721,7 @@ mod tests {
     fn joint_link_dirs() -> (TempDir, TempDir, PeppyDirs) {
         let tmp = TempDir::new().expect("temp dir");
         let entry = seed_pairing(tmp.path(), "joint_link", "v1", JOINT_LINK_BODY);
-        let (cache_tmp, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (cache_tmp, dirs) = peppy_dirs_with_cache(&[entry]);
         (tmp, cache_tmp, dirs)
     }
 
@@ -863,6 +850,9 @@ mod tests {
         );
     }
 
+    /// Whether a slot ends up paired at launch has no bearing on what the node
+    /// must declare about it: the role's topics are covered or the manifest is
+    /// wrong.
     #[test]
     fn missing_emit_entry_is_rejected_naming_the_topic() {
         let (_t, _c, dirs) = seeded_dirs();
@@ -1006,9 +996,7 @@ mod tests {
 
     #[test]
     fn two_slots_with_one_broken_names_only_the_broken_slot() {
-        let tmp = TempDir::new().unwrap();
-        let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (_c, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_t, _c, dirs) = seeded_dirs();
         let m = manifest(
             r#"{
                 name: "commander", tag: "v1",
@@ -1030,9 +1018,7 @@ mod tests {
     /// each generates its own nested module directory.
     #[test]
     fn two_slots_of_one_document_resolve_independently() {
-        let tmp = TempDir::new().unwrap();
-        let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (_c, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_t, _c, dirs) = seeded_dirs();
         let m = manifest(
             r#"{
                 name: "commander", tag: "v1",
@@ -1065,29 +1051,6 @@ mod tests {
             "each slot nests under its own link_id, both directions together; \
              `right` legitimately has no consume module"
         );
-    }
-
-    /// Whether a slot ends up paired at launch has no bearing on what the node
-    /// must declare about it: the role's topics are covered or the manifest is
-    /// wrong.
-    #[test]
-    fn a_participant_slot_declaring_no_interfaces_is_coverage_checked() {
-        let tmp = TempDir::new().unwrap();
-        let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (_c, dirs) = make_peppy_dirs_with_cache(&[entry]);
-        let m = manifest(
-            r#"{
-                name: "robot_arm", tag: "v1",
-                depends_on: { pairings: [
-                    { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" },
-                ] }
-            }"#,
-        );
-        let mismatches = coverage(
-            collect(&m, &config::node::Interfaces::default(), &dirs)
-                .expect_err("a declared slot needs exact emit coverage"),
-        );
-        assert_eq!(mismatches[0].missing_emits, vec!["joint_states"]);
     }
 
     /// Entries naming other slot kinds belong to the implements and consumed
@@ -1124,18 +1087,8 @@ mod tests {
 
     #[test]
     fn resolves_valid_role_and_returns_doc() {
-        let tmp = TempDir::new().unwrap();
-        let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (_t, dirs) = make_peppy_dirs_with_cache(&[entry]);
-
-        let m = manifest(
-            r#"{
-                name: "robot_arm", tag: "v1",
-                depends_on: {
-                    pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }]
-                }
-            }"#,
-        );
+        let (_t, _c, dirs) = seeded_dirs();
+        let m = arm_manifest();
         let docs = validate_pairing_specs(&m, &dirs, None, &|_| {}).expect("valid role resolves");
         let doc = docs.get("controller").expect("doc keyed by link_id");
         assert_eq!(doc.manifest.name.as_str(), "arm_link");
@@ -1144,10 +1097,7 @@ mod tests {
 
     #[test]
     fn undeclared_role_is_rejected_naming_the_declared_roles() {
-        let tmp = TempDir::new().unwrap();
-        let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
-        let (_t, dirs) = make_peppy_dirs_with_cache(&[entry]);
-
+        let (_t, _c, dirs) = seeded_dirs();
         let m = manifest(
             r#"{
                 name: "robot_arm", tag: "v1",
@@ -1165,15 +1115,8 @@ mod tests {
 
     #[test]
     fn cache_miss_suggests_repo_refresh() {
-        let (_t, dirs) = make_peppy_dirs_with_cache(&[]);
-        let m = manifest(
-            r#"{
-                name: "robot_arm", tag: "v1",
-                depends_on: {
-                    pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }]
-                }
-            }"#,
-        );
+        let (_t, dirs) = peppy_dirs_with_cache::<repo_cache::PairingCacheEntry>(&[]);
+        let m = arm_manifest();
         let err = validate_pairing_specs(&m, &dirs, None, &|_| {}).expect_err("miss must error");
         assert!(
             err.contains("arm_link:v1") && err.contains("peppy repo refresh"),
@@ -1187,7 +1130,7 @@ mod tests {
         let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
         let good_sha = entry.sha256.clone();
         let path = entry.origin.path_str().to_owned();
-        let (_t, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let (_t, dirs) = peppy_dirs_with_cache(&[entry]);
 
         // Pin to a sha not in the cache.
         let err = resolve_pairing_doc(&dirs, "arm_link", "v1", Some("beef"), &|_| {})

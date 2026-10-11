@@ -1,46 +1,13 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
-use config::consts::NODE_CONFIG_FILE;
-use core_node::{nodes_repo_cache_path, repositories_list_path};
-use core_node_api::encoding::{
-    RepoListRepoFailureKind, RepoListRequest, RepoListResponse, RepoSourceKind,
+use common::{
+    StartedCoreNode, create_node_dir, fs_repositories_json, poll_core_node, read_json5_array,
+    start_core_node_with_mock_messenger, write_excluded_repositories_json5, write_packages_cache,
+    write_repositories_json5,
 };
-use peppylib::core_node::transport::poll;
-use std::time::Duration;
-
-/// Minimal valid peppy.json5 content for a node with the given name and tag.
-fn minimal_peppy_json5(name: &str, tag: &str) -> String {
-    format!(
-        r#"{{
-  peppy_schema: "node/v1",
-  manifest: {{
-    name: "{name}",
-    tag: "{tag}",
-  }},
-  interfaces: {{}},
-  execution: {{
-    language: "rust",
-    build_cmd: ["true"],
-    run_cmd: ["true"],
-  }},
-}}"#
-    )
-}
-
-/// Write a repositories.json5 file in the conf_dir of the started core node.
-fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
-}
-
-/// Write a nodes.json5 cache file in the cache_dir of the started core node.
-fn write_packages_cache(started: &StartedCoreNode, content: &str) {
-    let cache_dir = started.peppy_dirs.cache_dir();
-    std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-    std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
-}
+use config::consts::NODE_CONFIG_FILE;
+use core_node::repositories_list_path;
+use core_node_api::encoding::{RepoListRepoFailureKind, RepoListRequest, RepoSourceKind};
 
 /// One `nodes.json5` entry for an fs-discovered node, shaped exactly as
 /// `repo refresh` records it: the origin's path points at the manifest file.
@@ -91,35 +58,13 @@ fn index_nodes(started: &StartedCoreNode, entries: Vec<serde_json::Value>) {
     );
 }
 
-/// Create a directory with a valid peppy.json5 inside it.
-fn create_node_dir(base: &std::path::Path, name: &str, tag: &str) -> std::path::PathBuf {
-    let dir = base.join(format!("{name}_{tag}"));
-    std::fs::create_dir_all(&dir).expect("create node dir");
-    std::fs::write(dir.join(NODE_CONFIG_FILE), minimal_peppy_json5(name, tag))
-        .expect("write peppy.json5");
-    dir
-}
-
-async fn send_repo_list(started: &StartedCoreNode) -> RepoListResponse {
-    poll(
-        &RepoListRequest,
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("repo_list poll should succeed")
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_default_repos_creates_repositories_file() {
     let started = start_core_node_with_mock_messenger().await;
 
     let repos_path = repositories_list_path(&started.peppy_dirs);
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success, "repo_list should succeed");
     assert!(resp.error_message.is_none());
 
@@ -128,9 +73,7 @@ async fn list_default_repos_creates_repositories_file() {
         "repositories.json5 should be created with default entries on core node startup"
     );
 
-    let content = std::fs::read_to_string(&repos_path).expect("read created file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse created file");
+    let repos = read_json5_array(&repos_path);
     // Don't pin the count; the shipped defaults grow over time. Just
     // verify the canonical nodes-hub entry is there.
     let nodes_hub = repos
@@ -151,13 +94,7 @@ async fn list_finds_nodes_in_fs_repo() {
     let sensor_dir = create_node_dir(&repo_dir, "my_sensor", "v1");
     let actuator_dir = create_node_dir(&repo_dir, "my_actuator", "v2");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo_dir.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
     index_nodes(
         &started,
         vec![
@@ -166,7 +103,7 @@ async fn list_finds_nodes_in_fs_repo() {
         ],
     );
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success, "repo_list should succeed");
     assert_eq!(resp.nodes.len(), 2, "should find 2 nodes");
 
@@ -206,7 +143,7 @@ async fn list_reads_git_nodes_from_cache() {
         ],
     );
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success, "repo_list should succeed");
     assert_eq!(resp.nodes.len(), 2, "should find 2 git nodes from cache");
 
@@ -247,14 +184,7 @@ async fn list_marks_cross_repo_duplicates_fs() {
     let shared_b = create_node_dir(&repo_b, "shared", "v1");
     let unique_b = create_node_dir(&repo_b, "unique_b", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo_a.to_string_lossy() },
-            { "id": 2, "type": "fs", "path": repo_b.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
     index_nodes(
         &started,
         vec![
@@ -264,7 +194,7 @@ async fn list_marks_cross_repo_duplicates_fs() {
         ],
     );
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success);
     assert_eq!(
         resp.nodes.len(),
@@ -339,7 +269,7 @@ async fn list_marks_git_duplicate_of_fs() {
         ],
     );
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success);
     assert_eq!(
         resp.nodes.len(),
@@ -373,21 +303,13 @@ async fn list_marks_git_duplicate_of_fs() {
     assert_eq!(git_entry.repo_label, git_url);
 }
 
-/// Write an excluded_repositories.json5 file in the conf_dir.
-fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("excluded_repositories.json5"), content)
-        .expect("write excluded repos file");
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_empty_repos_file() {
     let started = start_core_node_with_mock_messenger().await;
 
     write_repositories_json5(&started, "[]");
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success, "repo_list should succeed");
     assert!(resp.nodes.is_empty(), "should have no nodes");
 }
@@ -402,14 +324,7 @@ async fn list_excludes_fs_repo() {
     let node_a = create_node_dir(&repo_a, "node_a", "v1");
     let node_b = create_node_dir(&repo_b, "node_b", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo_a.to_string_lossy() },
-            { "id": 2, "type": "fs", "path": repo_b.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
     // Both are indexed; the exclusion is what keeps repo_b out of the list.
     index_nodes(
         &started,
@@ -418,15 +333,9 @@ async fn list_excludes_fs_repo() {
             fs_cache_entry(&node_b, "node_b", "v1"),
         ],
     );
-    write_excluded_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo_b.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_excluded_repositories_json5(&started, &fs_repositories_json(&[&repo_b]));
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success);
     assert_eq!(resp.nodes.len(), 1, "only node_a should be listed");
     assert_eq!(resp.nodes[0].node_name, "node_a");
@@ -446,16 +355,10 @@ async fn list_omits_nodes_that_are_on_disk_but_not_indexed() {
     let indexed = create_node_dir(&repo, "keep_node", "v1");
     create_node_dir(&repo, "added_since_the_last_refresh", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo]));
     index_nodes(&started, vec![fs_cache_entry(&indexed, "keep_node", "v1")]);
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success);
     assert_eq!(
         resp.nodes.len(),
@@ -498,7 +401,7 @@ async fn list_excludes_git_repo() {
         .unwrap(),
     );
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success);
     assert_eq!(resp.nodes.len(), 1, "only fs_node should be listed");
     assert_eq!(resp.nodes[0].node_name, "fs_node");
@@ -507,8 +410,7 @@ async fn list_excludes_git_repo() {
 
 /// Two repositories claiming one identity and one repository claiming it
 /// twice are different situations and must be labelled differently.
-/// Reporting a conflict as harmless shadowing is what let the original
-/// defect hide.
+/// Reporting a conflict as harmless shadowing would hide it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
     let started = start_core_node_with_mock_messenger().await;
@@ -518,14 +420,7 @@ async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
     let shadowed_a = create_node_dir(&repo_a, "shadowed", "v1");
     let shadowed_b = create_node_dir(&repo_b, "shadowed", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo_a.to_string_lossy() },
-            { "id": 2, "type": "fs", "path": repo_b.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
     index_nodes(
         &started,
         vec![
@@ -534,7 +429,7 @@ async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
         ],
     );
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success);
 
     let shadowed: Vec<_> = resp
@@ -569,13 +464,7 @@ async fn list_reports_retained_entries_and_the_failure_reason() {
     let repo = started.peppy_dirs.root().join("stale_repo");
     let node = create_node_dir(&repo, "kept", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo]));
     index_nodes(&started, vec![fs_cache_entry(&node, "kept", "v1")]);
     std::fs::write(
         started.peppy_dirs.cache_dir().join("repo_status.json5"),
@@ -594,7 +483,7 @@ async fn list_reports_retained_entries_and_the_failure_reason() {
     )
     .expect("write repo status");
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success);
 
     assert_eq!(resp.repos.len(), 1);
@@ -627,13 +516,7 @@ async fn list_reports_a_healthy_repository_as_current() {
     let repo = started.peppy_dirs.root().join("healthy_repo");
     let node = create_node_dir(&repo, "fresh", "v1");
 
-    write_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo.to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo]));
     index_nodes(&started, vec![fs_cache_entry(&node, "fresh", "v1")]);
     std::fs::write(
         started.peppy_dirs.cache_dir().join("repo_status.json5"),
@@ -647,7 +530,7 @@ async fn list_reports_a_healthy_repository_as_current() {
     )
     .expect("write repo status");
 
-    let resp = send_repo_list(&started).await;
+    let resp = poll_core_node(&started, &RepoListRequest).await;
     assert!(resp.success);
     assert_eq!(resp.repos.len(), 1);
     assert!(!resp.repos[0].retained);

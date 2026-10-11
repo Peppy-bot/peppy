@@ -16,8 +16,8 @@ struct EmbeddedTemplates;
 #[template(path = "node_init/rust/Cargo.toml.j2")]
 pub struct RustCargoToml<'a> {
     pub node_name: &'a str,
-    pub pepygen_path: &'a str,
-    pub pepylib_path: &'a str,
+    pub peppygen_path: &'a str,
+    pub peppylib_path: &'a str,
 }
 
 /// Template for Python pyproject.toml file
@@ -25,8 +25,8 @@ pub struct RustCargoToml<'a> {
 #[template(path = "node_init/python/pyproject.toml.j2")]
 pub struct PythonPyprojectToml<'a> {
     pub node_name: &'a str,
-    pub pepygen_path: &'a str,
-    pub pepylib_path: &'a str,
+    pub peppygen_path: &'a str,
+    pub peppylib_path: &'a str,
     pub python_min_version: &'a str,
     pub python_max_version: &'a str,
 }
@@ -127,8 +127,8 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bo
     // Apply Cargo.toml template
     let cargo_toml = RustCargoToml {
         node_name,
-        pepygen_path: config::consts::PEPPYGEN_OUTPUT_PATH,
-        pepylib_path: daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
+        peppygen_path: config::consts::PEPPYGEN_OUTPUT_PATH,
+        peppylib_path: daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
     };
     std::fs::write(node_dir.join("Cargo.toml"), cargo_toml.render()?)?;
 
@@ -178,8 +178,8 @@ pub fn apply_python_templates(
     // Apply pyproject.toml template
     let pyproject_toml = PythonPyprojectToml {
         node_name,
-        pepygen_path: config::consts::PEPPYGEN_OUTPUT_PATH,
-        pepylib_path: daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
+        peppygen_path: config::consts::PEPPYGEN_OUTPUT_PATH,
+        peppylib_path: daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
         python_min_version: config::consts::PYTHON_MIN_VERSION,
         python_max_version: config::consts::PYTHON_MAX_VERSION,
     };

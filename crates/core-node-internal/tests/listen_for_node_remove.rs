@@ -1,16 +1,17 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, build_staged_node, send_node_add_and_wait,
-    spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
+    AbortOnDrop, build_staged_node, send_node_add_and_wait, spawn_real_running_instance,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger, wait_until_service_reachable,
+    write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::NodeRemoveRequest;
-use peppylib::core_node::transport::poll;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::oneshot::error::TryRecvError;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_remove_success() {
@@ -65,16 +66,11 @@ async fn listen_for_node_remove_success() {
         "node should have no instances"
     );
 
-    let response = poll(
+    let response = common::poll_core_node(
+        &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
 
     assert!(
         response.success,
@@ -103,16 +99,11 @@ async fn listen_for_node_remove_node_name_not_found_fails() {
     let node_stack = started_core_node.node_stack.clone();
     let before_len = node_stack.len();
 
-    let response = poll(
+    let response = common::poll_core_node(
+        &started_core_node,
         &NodeRemoveRequest::new(MISSING_NODE_NAME, MISSING_NODE_TAG),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
 
     assert!(!response.success, "node_remove should fail");
     let error_message = response
@@ -130,6 +121,38 @@ async fn listen_for_node_remove_node_name_not_found_fails() {
         error_message
     );
 
+    assert_eq!(node_stack.len(), before_len, "stack should be unchanged");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_remove_refuses_the_core_node() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+    let before_len = node_stack.len();
+    let (root_name, root_tag) = {
+        let root = node_stack.root();
+        let guard = root.read();
+        (
+            guard.config().manifest.name.as_str().to_owned(),
+            guard.config().manifest.tag.clone(),
+        )
+    };
+
+    let response = common::poll_core_node(
+        &started_core_node,
+        &NodeRemoveRequest::new(&root_name, &root_tag).with_stop_instances(true),
+    )
+    .await;
+
+    assert!(!response.success, "node_remove should fail");
+    assert_eq!(
+        response.error_message.as_deref(),
+        Some("Cannot remove the core node from the node stack"),
+    );
+    assert!(
+        node_stack.contains(&root_name, &root_tag),
+        "the core node should still be in the stack"
+    );
     assert_eq!(node_stack.len(), before_len, "stack should be unchanged");
 }
 
@@ -178,7 +201,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _running = spawn_real_running_instance(
+    let _running = spawn_real_stuck_instance(
         &started_core_node,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
@@ -186,10 +209,14 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     )
     .await;
 
-    // Simulate the node exposing the shutdown service, so node_remove detects it as running.
+    // Simulate the node exposing the shutdown service: node_remove probes it to
+    // tell a running instance from an unreachable one. The stuck variant above
+    // installs no shutdown listener, so this one is the only SHUTDOWN_SERVICE
+    // responder of the instance and sees every shutdown request node_remove
+    // sends.
     let shutdown_handle =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let (shutdown_task, shutdown_rx) = listen_for_shutdown(
+    let (shutdown_task, mut shutdown_rx) = listen_for_shutdown(
         &shutdown_handle,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
@@ -198,20 +225,23 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     .await
     .expect("failed to start shutdown service");
     let _shutdown_task = AbortOnDrop(shutdown_task);
+    wait_until_service_reachable(
+        &shutdown_handle,
+        &started_core_node.core_node_name,
+        TARGET_NODE_NAME,
+        peppylib::messaging::SHUTDOWN_SERVICE,
+        &started_core_node.core_node_name,
+        TARGET_INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
 
-    // Allow the shutdown service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let response = poll(
+    let response = common::poll_core_node_with_timeout(
+        &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
         Duration::from_secs(10),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
 
     assert!(
         response.success,
@@ -219,10 +249,11 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         response.error_message
     );
 
-    tokio::time::timeout(Duration::from_millis(100), shutdown_rx)
-        .await
-        .expect("shutdown signal should be received within timeout")
-        .expect("shutdown channel should not be dropped");
+    // The listener's handler fires the signal before it answers, and
+    // node_remove answers only after the shutdown request got its answer.
+    shutdown_rx
+        .try_recv()
+        .expect("shutdown signal should be received before node_remove answers");
 
     assert!(
         !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
@@ -234,10 +265,10 @@ async fn listen_for_node_remove_stop_running_instances_first() {
 /// A one-shot (or crashed) node whose instance exited on its own sits in a
 /// terminal state but stays tracked. `node remove` must still clear it: the gate
 /// counts it (so a plain remove is rejected), and with `stop_instances` it is
-/// removed and the node config goes with it. Regression guard: before the fix
-/// the remove collector ignored non-`Running` instances, so a terminal instance
-/// was never cleared and `remove_config` rejected the node as "still has
-/// instances", making a finished node impossible to remove.
+/// removed and the node config goes with it. A remove collector that skipped
+/// non-`Running` instances would never clear a terminal instance, and
+/// `remove_config` would reject the node as "still has instances", making a
+/// finished node impossible to remove.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_remove_clears_a_terminal_instance() {
     const TARGET_NODE_NAME: &str = "finished_node";
@@ -305,16 +336,11 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
     );
 
     // Without `stop_instances`, the tracked terminal instance still gates the remove.
-    let gated = poll(
+    let gated = common::poll_core_node(
+        &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
     assert!(
         !gated.success,
         "a tracked terminal instance must gate a plain remove"
@@ -325,16 +351,12 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
     );
 
     // With `stop_instances`, the terminal instance is cleared and the node removed.
-    let response = poll(
+    let response = common::poll_core_node_with_timeout(
+        &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
         Duration::from_secs(10),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
     assert!(
         response.success,
         "node_remove should clear a terminal instance, got error: {:?}",
@@ -392,7 +414,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _running = spawn_real_running_instance(
+    let _running = spawn_real_stuck_instance(
         &started_core_node,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
@@ -400,10 +422,14 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     )
     .await;
 
-    // Simulate the node exposing the shutdown service, so node_remove detects it as running.
+    // Simulate the node exposing the shutdown service: node_remove probes it to
+    // tell a running instance from an unreachable one. The stuck variant above
+    // installs no shutdown listener, so this one is the only SHUTDOWN_SERVICE
+    // responder of the instance and sees every shutdown request node_remove
+    // sends.
     let shutdown_handle =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let (shutdown_task, shutdown_rx) = listen_for_shutdown(
+    let (shutdown_task, mut shutdown_rx) = listen_for_shutdown(
         &shutdown_handle,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
@@ -412,22 +438,24 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     .await
     .expect("failed to start shutdown service");
     let _shutdown_task = AbortOnDrop(shutdown_task);
-
-    // Allow the shutdown service to fully establish its listener
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until_service_reachable(
+        &shutdown_handle,
+        &started_core_node.core_node_name,
+        TARGET_NODE_NAME,
+        peppylib::messaging::SHUTDOWN_SERVICE,
+        &started_core_node.core_node_name,
+        TARGET_INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
 
     let before_len = node_stack.len();
 
-    let response = poll(
+    let response = common::poll_core_node(
+        &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("node_remove request should complete");
+    .await;
 
     assert!(
         !response.success,
@@ -474,10 +502,9 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         );
     }
 
+    // node_remove rejects the request before it sends any shutdown request.
     assert!(
-        tokio::time::timeout(Duration::from_millis(100), shutdown_rx)
-            .await
-            .is_err(),
+        matches!(shutdown_rx.try_recv(), Err(TryRecvError::Empty)),
         "shutdown service should not be invoked when stop_instances=false"
     );
 }

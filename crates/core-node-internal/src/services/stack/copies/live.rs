@@ -14,7 +14,7 @@ use super::changed_slots::ChangedSlot;
 use super::stack_list_on;
 use config::runtime::Name;
 use core_node_api::encoding::LaunchFeedbackStep;
-use daemon_config::launcher::Placements;
+use daemon_config::launcher::{PeppyLauncher, Placements};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// What `host` holds for `node`.
@@ -127,8 +127,7 @@ pub(super) async fn check_live_stack(
                     item.node_name, item.node_tag
                 ));
             }
-            let response =
-                node_info_on(ctx, host, &NodeKey::new(&item.node_name, &item.node_tag)).await?;
+            let response = node_info_on(ctx, host, &item.key()).await?;
             if !matches!(response, core_node_api::encoding::NodeInfoResponse::Found(info) if info.config_integrity == item.config_sha256)
             {
                 return Err(format!(
@@ -137,75 +136,117 @@ pub(super) async fn check_live_stack(
                 ));
             }
             reusable.insert(HostedNode {
-                node: NodeKey::new(&item.node_name, &item.node_tag),
+                node: item.key(),
                 core_node: config::runtime::CoreNodeName::new(host)
                     .map_err(|error| error.to_string())?,
             });
         }
-        for instance in graph.nodes.iter().flat_map(|node| &node.instances) {
-            if new_ids.contains(&instance.instance_id) {
-                return Err(format!(
-                    "instance `{}` already exists on `{host}`; choose another name for the copy",
-                    instance.instance_id
-                ));
-            }
-        }
-        for slot in grown_slots
-            .iter()
-            .filter(|slot| placements.of(slot.instance_id.as_str()) == host)
-        {
-            let state = graph
-                .nodes
-                .iter()
-                .flat_map(|node| &node.instances)
-                .find(|live| live.instance_id == slot.instance_id.as_str())
-                .map(|live| live.state);
-            match state {
-                Some(core_node_api::InstanceState::Running) => {}
-                Some(core_node_api::InstanceState::Starting) => {
-                    return Err(format!(
-                        "joining grows {}, but `{}` is starting on `{host}`; join again once it \
-                         is running, or join an option whose fragments do not add to that slot",
-                        slot.field(),
-                        slot.instance_id
-                    ));
-                }
-                _ => {
-                    return Err(format!(
-                        "joining grows {}, but `{}` is not running on `{host}`; launch the \
-                         stack again so `{host}` runs it, or join an option whose fragments do \
-                         not add to that slot",
-                        slot.field(),
-                        slot.instance_id
-                    ));
-                }
-            }
-        }
-        for instance in active
-            .flat
-            .deployments
-            .iter()
-            .flat_map(|d| &d.instances)
-            .filter(|instance| required_ids.contains(instance.instance_id.as_str()))
-            .filter(|instance| active.placements.of(instance.instance_id.as_str()) == host)
-        {
-            if !graph
-                .nodes
-                .iter()
-                .flat_map(|node| &node.instances)
-                .any(|live| live.instance_id == instance.instance_id.as_str())
-            {
-                return Err(format!(
-                    "required instance `{}` is missing from `{host}`; restore its copy or launch the stack again before adding this one",
-                    instance.instance_id
-                ));
-            }
-        }
+        check_instance_names_free(host, &graph, new_ids)?;
+        check_grown_slots_running(host, &graph, grown_slots, placements)?;
+        check_required_instances_present(
+            host,
+            &graph,
+            &active.flat,
+            &active.placements,
+            required_ids,
+        )?;
     }
     Ok(LiveStack {
         reusable,
         fresh_hosts,
     })
+}
+
+/// Refuses a join that brings an instance named like one `host` already
+/// holds, in any node and any state.
+fn check_instance_names_free(
+    host: &str,
+    graph: &core_node_api::SerializedNodeGraph,
+    new_ids: &HashSet<String>,
+) -> ChangeResult<()> {
+    for instance in graph.nodes.iter().flat_map(|node| &node.instances) {
+        if new_ids.contains(&instance.instance_id) {
+            return Err(format!(
+                "instance `{}` already exists on `{host}`; choose another name for the copy",
+                instance.instance_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a join that grows a set slot of an instance `placements` puts on
+/// `host` while `graph` does not show that instance running there: only a
+/// running instance takes the grown set.
+pub(super) fn check_grown_slots_running(
+    host: &str,
+    graph: &core_node_api::SerializedNodeGraph,
+    grown_slots: &[ChangedSlot],
+    placements: &Placements,
+) -> ChangeResult<()> {
+    for slot in grown_slots
+        .iter()
+        .filter(|slot| placements.of(slot.instance_id.as_str()) == host)
+    {
+        let state = graph
+            .nodes
+            .iter()
+            .flat_map(|node| &node.instances)
+            .find(|live| live.instance_id == slot.instance_id.as_str())
+            .map(|live| live.state);
+        match state {
+            Some(core_node_api::InstanceState::Running) => {}
+            Some(core_node_api::InstanceState::Starting) => {
+                return Err(format!(
+                    "joining grows {}, but `{}` is starting on `{host}`; join again once it \
+                     is running, or join an option whose fragments do not add to that slot",
+                    slot.field(),
+                    slot.instance_id
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "joining grows {}, but `{}` is not running on `{host}`; launch the \
+                     stack again so `{host}` runs it, or join an option whose fragments do \
+                     not add to that slot",
+                    slot.field(),
+                    slot.instance_id
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a join when an instance of `flat` it requires, which
+/// `placements` puts on `host`, is missing from `host`'s graph.
+fn check_required_instances_present(
+    host: &str,
+    graph: &core_node_api::SerializedNodeGraph,
+    flat: &PeppyLauncher,
+    placements: &Placements,
+    required_ids: &HashSet<String>,
+) -> ChangeResult<()> {
+    for instance in flat
+        .deployments
+        .iter()
+        .flat_map(|d| &d.instances)
+        .filter(|instance| required_ids.contains(instance.instance_id.as_str()))
+        .filter(|instance| placements.of(instance.instance_id.as_str()) == host)
+    {
+        if !graph
+            .nodes
+            .iter()
+            .flat_map(|node| &node.instances)
+            .any(|live| live.instance_id == instance.instance_id.as_str())
+        {
+            return Err(format!(
+                "required instance `{}` is missing from `{host}`; restore its copy or launch the stack again before adding this one",
+                instance.instance_id
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The core nodes live on the federation, this daemon included, asked once per
@@ -298,5 +339,74 @@ pub(super) async fn report_offline_sets(
             LaunchFeedbackStep::LauncherStep,
         )
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::stack::fixtures::{graph_holding, placements_with};
+    use core_node_api::InstanceState;
+    use daemon_config::launcher::PeppyLauncherParser;
+
+    /// A new instance named like one the host holds is refused, whatever
+    /// state the held one is in, and a fresh name passes.
+    #[test]
+    fn a_new_instance_named_like_one_the_host_holds_is_refused() {
+        let graph = graph_holding(&[("alpha_arm_inst", InstanceState::Failed)]);
+
+        let taken = HashSet::from(["alpha_arm_inst".to_owned()]);
+        assert_eq!(
+            check_instance_names_free("cn-robot", &graph, &taken).unwrap_err(),
+            "instance `alpha_arm_inst` already exists on `cn-robot`; choose another name for the \
+             copy"
+        );
+        let fresh = HashSet::from(["bravo_arm_inst".to_owned()]);
+        check_instance_names_free("cn-robot", &graph, &fresh).expect("a fresh name passes");
+    }
+
+    /// Every instance the join requires that the launch placed on a host must
+    /// be in that host's graph. An instance placed on another host, and one
+    /// the join does not require, are not asked of this host.
+    #[test]
+    fn a_required_instance_missing_from_its_host_is_refused() {
+        let flat = PeppyLauncherParser::from_content(
+            r#"{
+                peppy_schema: "launcher/v1",
+                deployments: [
+                    { source: { name: "robot", tag: "v1" },
+                      instances: [
+                          { instance_id: "arm_inst" },
+                          { instance_id: "cloud_arm_inst" },
+                          { instance_id: "spare_arm_inst" },
+                      ] },
+                ],
+            }"#,
+        )
+        .expect("the launcher parses");
+        let placements = placements_with("cn-robot", &[("cloud_arm_inst", "cn-cloud")]);
+        let required = HashSet::from(["arm_inst".to_owned(), "cloud_arm_inst".to_owned()]);
+
+        let error = check_required_instances_present(
+            "cn-robot",
+            &graph_holding(&[]),
+            &flat,
+            &placements,
+            &required,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "required instance `arm_inst` is missing from `cn-robot`; restore its copy or launch \
+             the stack again before adding this one"
+        );
+        check_required_instances_present(
+            "cn-robot",
+            &graph_holding(&[("arm_inst", InstanceState::Running)]),
+            &flat,
+            &placements,
+            &required,
+        )
+        .expect("the host holds every required instance placed on it");
     }
 }

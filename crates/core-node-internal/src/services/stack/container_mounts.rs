@@ -16,11 +16,11 @@
 //! Sources may arrive as raw `~/...` tokens: the coordinator resolves the
 //! plan's mount paths but deliberately leaves `~` alone, because a peer's home
 //! is not the coordinator's. This is the place they become this machine's
-//! absolute paths — before anything is created or registered.
+//! absolute paths, before anything is created or registered.
 
 use super::action::StackChangeContext;
+use super::launch::PlannedDeployment;
 use super::launch::feedback::{publish_stdout, publish_warning};
-use super::launch::{NodeKey, PlannedDeployment};
 use crate::services::node::resolve_mount_path_parameters;
 use config::apply_parameter_defaults;
 use containers::{Apptainer, is_host_provided_mount_source};
@@ -41,22 +41,12 @@ use std::path::{Path, PathBuf};
 /// like when the name is misspelled. A `~` source is reported (and created,
 /// registered) in its expanded form: the expanded path is what actually lands
 /// on this machine's disk.
+///
+/// `mounts` says which stack the sources are for, and so whether registering
+/// them may restart the container VM.
 pub(crate) async fn prepare_container_mounts(
     mount_sources: &[String],
-) -> std::result::Result<Vec<String>, String> {
-    prepare_mounts(mount_sources, true).await
-}
-
-/// Adds bind sources to the VM while it keeps hosting the stack's containers.
-pub(crate) async fn prepare_additional_container_mounts(
-    mount_sources: &[String],
-) -> std::result::Result<Vec<String>, String> {
-    prepare_mounts(mount_sources, false).await
-}
-
-async fn prepare_mounts(
-    mount_sources: &[String],
-    allow_vm_restart: bool,
+    mounts: LocalMounts,
 ) -> std::result::Result<Vec<String>, String> {
     // Expanding here and at instance start through the one shared helper keeps
     // both sides byte-identical: `host_mounts_need_restart` at start compares
@@ -88,7 +78,7 @@ async fn prepare_mounts(
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        if !allow_vm_restart
+        if !mounts.may_restart_vm()
             && apptainer
                 .host_mounts_need_restart(&refs)
                 .map_err(|e| e.to_string())?
@@ -154,13 +144,23 @@ fn absolute_mount_source(src: &str) -> PathBuf {
 
 /// Which stack this machine's bind sources are prepared for.
 #[derive(Clone, Copy)]
-pub(in crate::services::stack) enum LocalMounts {
+pub(crate) enum LocalMounts {
     /// The whole stack a launch is starting, which holds no container yet, so
     /// registering a source may restart the container VM.
     WholeStack,
-    /// The instances a join adds, alongside the containers the VM already
-    /// hosts for the running stack.
+    /// The instances added to a running stack (a join, or a slice appended to
+    /// it), alongside the containers the VM already hosts for that stack. The
+    /// VM keeps hosting them, so registering a source must not restart it.
     AddedToRunningStack,
+}
+
+impl LocalMounts {
+    fn may_restart_vm(self) -> bool {
+        match self {
+            LocalMounts::WholeStack => true,
+            LocalMounts::AddedToRunningStack => false,
+        }
+    }
 }
 
 /// Prepares this machine's bind sources and reports each one it had to
@@ -199,12 +199,7 @@ pub(in crate::services::stack) async fn prepare_local_container_mounts(
     )
     .await;
 
-    let auto_created = match mounts {
-        LocalMounts::WholeStack => prepare_container_mounts(&mount_sources).await?,
-        LocalMounts::AddedToRunningStack => {
-            prepare_additional_container_mounts(&mount_sources).await?
-        }
-    };
+    let auto_created = prepare_container_mounts(&mount_sources, mounts).await?;
     for src in auto_created {
         publish_warning(
             ctx,
@@ -258,7 +253,7 @@ pub(super) fn container_mount_sources_by_machine(
         if raw_mount_paths.is_empty() {
             continue;
         }
-        let label = NodeKey::new(&item.node_name, &item.node_tag).label();
+        let label = item.key().label();
 
         for instance in &item.deployment.instances {
             let machine = placements.of(instance.instance_id.as_str());
@@ -301,6 +296,14 @@ mod tests {
     use config::AnyType;
     use std::collections::BTreeMap;
 
+    /// Only a stack that holds no container yet may pay for a VM restart: a
+    /// restart takes every container already running in the VM.
+    #[test]
+    fn only_the_whole_stack_may_restart_the_container_vm() {
+        assert!(LocalMounts::WholeStack.may_restart_vm());
+        assert!(!LocalMounts::AddedToRunningStack.may_restart_vm());
+    }
+
     #[tokio::test]
     async fn prepare_reports_only_the_sources_it_created() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -308,10 +311,13 @@ mod tests {
         std::fs::create_dir(&existing).expect("mkdir");
         let missing = root.path().join("scratch").join("output");
 
-        let auto_created = prepare_container_mounts(&[
-            existing.to_string_lossy().into_owned(),
-            missing.to_string_lossy().into_owned(),
-        ])
+        let auto_created = prepare_container_mounts(
+            &[
+                existing.to_string_lossy().into_owned(),
+                missing.to_string_lossy().into_owned(),
+            ],
+            LocalMounts::WholeStack,
+        )
         .await
         .expect("both sources are preparable");
 
@@ -337,21 +343,24 @@ mod tests {
         std::os::unix::fs::symlink(root.path().join("no_such_target"), &target)
             .expect("plant a dangling symlink");
 
-        let error = prepare_container_mounts(&[target.to_string_lossy().into_owned()])
-            .await
-            .expect_err("an uncreatable source must fail");
+        let error = prepare_container_mounts(
+            &[target.to_string_lossy().into_owned()],
+            LocalMounts::WholeStack,
+        )
+        .await
+        .expect_err("an uncreatable source must fail");
         assert!(
             error.contains(target.to_string_lossy().as_ref()),
             "the failure must name the offending path, got: {error}"
         );
     }
 
-    /// The regression this module's expansion exists for: a `~` source arriving
-    /// from the coordinator must be expanded to this machine's home BEFORE the
-    /// auto-create, not `mkdir -p`'d as a literal relative path. The home
-    /// already exists, so nothing is created and nothing is reported — and in
-    /// particular no stray `~/` directory appears under the process cwd, which
-    /// is exactly what the unexpanded token used to produce.
+    /// What this module's expansion exists for: a `~` source arriving from the
+    /// coordinator is expanded to this machine's home BEFORE the auto-create,
+    /// not `mkdir -p`'d as a literal relative path. The home already exists, so
+    /// nothing is created and nothing is reported. In particular no stray `~/`
+    /// directory appears under the process cwd, which is what an unexpanded
+    /// token produces.
     #[tokio::test]
     async fn prepare_expands_home_relative_sources() {
         let Some(home) = dirs::home_dir() else {
@@ -359,7 +368,7 @@ mod tests {
         };
         assert!(home.exists(), "the test needs a real home to expand into");
 
-        let auto_created = prepare_container_mounts(&["~".to_string()])
+        let auto_created = prepare_container_mounts(&["~".to_string()], LocalMounts::WholeStack)
             .await
             .expect("a home-relative source must be preparable");
         assert!(
@@ -579,9 +588,6 @@ mod tests {
         assert!(error.contains("robot_inst"), "got: {error}");
     }
 
-    /// One deployment of plain instances, each optionally placed. Enough for
-    /// the placement-derived checks, which read instance ids and nothing else.
-
     #[test]
     fn launch_mount_preflight_resolves_parameterized_sources() {
         let mut video = BTreeMap::new();
@@ -604,9 +610,6 @@ mod tests {
             "/tmp/video_reconstruction"
         );
     }
-
-    /// An instance's `env_vars` are added to the forwarded caller environment
-    /// and win on a shared key, leaving exactly one entry per key so the spawn
 
     #[test]
     fn launch_mount_preflight_rejects_non_string_parameter_sources() {

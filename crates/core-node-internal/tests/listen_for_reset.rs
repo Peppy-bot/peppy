@@ -1,23 +1,33 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node,
-    add_and_build_process_node, build_staged_node, children_of, install_kill_on_shutdown_listener,
-    instance_state_in_any_state, is_process_running, poll_until, send_node_add_and_wait,
+    NodeRunTestTimeouts, add_and_build_forking_node, add_and_build_process_node, answer_readiness,
+    build_staged_node, install_kill_on_shutdown_listener, instance_state_in_any_state,
+    is_process_running, poll_core_node, poll_core_node_with_timeout, send_node_add_and_wait,
     send_node_add_then_build, send_node_run_and_wait, send_node_run_and_wait_with_env,
     spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger, write_peppy_json5,
+    start_core_node_with_real_messenger, wait_for_forked_grandchildren,
+    wait_until_grandchildren_exit, wait_until_process_exits, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::StackResetRequest;
 use node_stack::NodeStack;
-use peppylib::core_node::transport::poll;
-use peppylib::messaging::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
+
+/// The instance id of the stack's root, which is the core node itself. A
+/// reset keeps it.
+fn root_instance_id(node_stack: &node_stack::NodeStack) -> String {
+    node_stack
+        .root()
+        .read()
+        .instances()
+        .first()
+        .expect("root should have exactly one instance")
+        .instance_id()
+        .as_str()
+        .to_owned()
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_reset_clears_node_stack() {
@@ -30,15 +40,7 @@ async fn listen_for_node_reset_clears_node_stack() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
-    let root_instance_id_before = node_stack
-        .root()
-        .read()
-        .instances()
-        .first()
-        .expect("root should have exactly one instance")
-        .instance_id()
-        .as_str()
-        .to_owned();
+    let root_instance_id_before = root_instance_id(&node_stack);
 
     let source_dir_a = tempfile::tempdir().expect("failed to create temp source dir");
     let source_dir_b = tempfile::tempdir().expect("failed to create temp source dir");
@@ -138,16 +140,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     );
     drop(entity_a);
 
-    let reset_response = poll(
-        &StackResetRequest::new(),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_reset request should complete");
+    let reset_response = poll_core_node(&started_core_node, &StackResetRequest::new()).await;
 
     assert!(
         reset_response.success,
@@ -170,14 +163,14 @@ async fn listen_for_node_reset_clears_node_stack() {
         "node B should be removed from node stack"
     );
 
-    // The reset must terminate the running instance's process, not just drop it
-    // from tracking. Before this fix the OS process was orphaned and stayed
-    // alive after the stack was cleared. `running_a` is still alive here, so the
-    // reset is the only thing that could have killed it.
-    poll_until(
+    // The reset must terminate the running instance's process, not only drop it
+    // from tracking, or the process outlives the cleared stack as an orphan.
+    // `running_a` is still alive here, so the reset is the only thing that
+    // could have killed it.
+    wait_until_process_exits(
+        node_a_pid,
         Duration::from_secs(10),
         &format!("node A process {node_a_pid} should be terminated by reset, not orphaned"),
-        || (!is_process_running(node_a_pid)).then_some(()),
     )
     .await;
 
@@ -193,14 +186,8 @@ async fn listen_for_node_reset_clears_node_stack() {
         started_core_node.core_node_tag,
         "root node tag should be preserved"
     );
-    let root_instance_id_after = root_guard
-        .instances()
-        .first()
-        .expect("root should have exactly one instance")
-        .instance_id()
-        .as_str()
-        .to_owned();
     drop(root_guard);
+    let root_instance_id_after = root_instance_id(&node_stack);
     assert_eq!(
         root_instance_id_after, root_instance_id_before,
         "root instance id should be preserved"
@@ -234,13 +221,7 @@ async fn node_reset_force_kills_whole_process_group() {
     // success path the reset already reaped everything, so the guard's
     // stop-on-drop is a harmless no-op.
 
-    poll_until(
-        Duration::from_secs(5),
-        "expected the node to fork two grandchildren",
-        || (children_of(node_pid).len() >= 2).then_some(()),
-    )
-    .await;
-    let grandchildren = children_of(node_pid);
+    let grandchildren = wait_for_forked_grandchildren(node_pid).await;
     assert!(
         is_process_running(node_pid),
         "node process {node_pid} should be running before reset"
@@ -255,16 +236,12 @@ async fn node_reset_force_kills_whole_process_group() {
     // The reset request waits out the stuck node's cooperative window, then
     // force-kills its group, so the client timeout must exceed
     // force_kill_deadline(grace) + reap. Default grace is 5s.
-    let reset_response = poll(
+    let reset_response = poll_core_node_with_timeout(
+        &started_core_node,
         &StackResetRequest::new(),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
         Duration::from_secs(30),
     )
-    .await
-    .expect("node_reset request should complete");
+    .await;
     assert!(
         reset_response.success,
         "node_reset should succeed, got error: {:?}",
@@ -274,20 +251,13 @@ async fn node_reset_force_kills_whole_process_group() {
     assert_eq!(node_stack.len(), 1, "only root should remain after reset");
 
     // The node and every grandchild must be gone, with no orphans left behind.
-    poll_until(
+    wait_until_process_exits(
+        node_pid,
         Duration::from_secs(5),
         &format!("node process {node_pid} should be gone after reset"),
-        || (!is_process_running(node_pid)).then_some(()),
     )
     .await;
-    for &gc in &grandchildren {
-        poll_until(
-            Duration::from_secs(5),
-            &format!("grandchild {gc} should be gone after reset (group kill)"),
-            || (!is_process_running(gc)).then_some(()),
-        )
-        .await;
-    }
+    wait_until_grandchildren_exit(&grandchildren, "reset").await;
 
     // The root/core node, which is this test process, must be untouched.
     assert!(
@@ -302,39 +272,14 @@ async fn listen_for_node_reset_is_idempotent() {
     let node_stack = started_core_node.node_stack.clone();
     assert_eq!(node_stack.len(), 1, "only root should exist initially");
 
-    let root_instance_id_before = node_stack
-        .root()
-        .read()
-        .instances()
-        .first()
-        .expect("root should have exactly one instance")
-        .instance_id()
-        .as_str()
-        .to_owned();
+    let root_instance_id_before = root_instance_id(&node_stack);
 
-    let response = poll(
-        &StackResetRequest::new(),
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_reset request should complete");
+    let response = poll_core_node(&started_core_node, &StackResetRequest::new()).await;
 
     assert!(response.success, "node_reset should succeed");
     assert_eq!(node_stack.len(), 1, "only root should remain after reset");
 
-    let root_instance_id_after = node_stack
-        .root()
-        .read()
-        .instances()
-        .first()
-        .expect("root should have exactly one instance")
-        .instance_id()
-        .as_str()
-        .to_owned();
+    let root_instance_id_after = root_instance_id(&node_stack);
     assert_eq!(
         root_instance_id_after, root_instance_id_before,
         "root instance id should be preserved"
@@ -374,7 +319,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
@@ -383,42 +328,16 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
 
     // Mocks satisfy the readiness gate so the real node_run path commits the
     // instance and spawns its exit watcher.
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.core_node_name,
-            TARGET_INSTANCE_ID,
-            common::test_node_target(TARGET_NODE_NAME),
-        )
-        .await
-        .expect("node health service should start"),
-    );
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
     let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        instance_plan.clone(),
+        instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &NodeRunTestTimeouts {
@@ -446,16 +365,9 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     let _kill_on_shutdown =
         install_kill_on_shutdown_listener(&started, TARGET_NODE_NAME, &instance_id, pid).await;
 
-    let reset_response = poll(
-        &StackResetRequest::new(),
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        Duration::from_secs(30),
-    )
-    .await
-    .expect("node_reset request should complete");
+    let reset_response =
+        poll_core_node_with_timeout(&started, &StackResetRequest::new(), Duration::from_secs(30))
+            .await;
     assert!(
         reset_response.success,
         "node_reset should succeed, got error: {:?}",
@@ -467,10 +379,10 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
         1,
         "only the root should remain after reset"
     );
-    poll_until(
+    wait_until_process_exits(
+        pid,
         Duration::from_secs(5),
         "node process should be gone after reset",
-        || (!is_process_running(pid)).then_some(()),
     )
     .await;
 
@@ -633,16 +545,12 @@ async fn a_start_stopped_by_a_reset_runs_the_node_s_shutdown_hook() {
         "the setup still waits, and the hook has not run"
     );
 
-    let reset_response = poll(
+    let reset_response = poll_core_node_with_timeout(
+        &started,
         &StackResetRequest::new(),
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
         core_node::stack_reset_timeout(started.node_stack.shutdown_grace().as_secs()),
     )
-    .await
-    .expect("the reset should complete");
+    .await;
     assert!(
         reset_response.success,
         "the reset should succeed: {:?}",

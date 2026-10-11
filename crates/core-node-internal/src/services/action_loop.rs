@@ -6,9 +6,9 @@
 //! goals. The loop pulls goals from a [`ConcurrentAction`] and hands each to the
 //! action's [`GoalHandler`], which owns the full accept/reject decision.
 //!
-//! Results are delivered by the engine's goal/result rendezvous, not the old
-//! poll-based `"result pending"` protocol: on acceptance the handler replies and
-//! registers a per-goal [`peppylib::messaging::GoalContext`] (both happen inside
+//! Results are delivered by the engine's goal/result rendezvous: on acceptance
+//! the handler replies and registers a per-goal
+//! [`peppylib::messaging::GoalContext`] (both happen inside
 //! [`PendingGoal::accept`]), then spawns the work that drives the goal to
 //! [`peppylib::messaging::GoalContext::complete`]. The client drains feedback to
 //! end-of-stream, then fetches the buffered result once.

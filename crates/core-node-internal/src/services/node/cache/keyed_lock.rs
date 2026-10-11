@@ -3,9 +3,9 @@
 //!
 //! A cache module declares its own `static LOCKS: KeyedLocks` and keys it by
 //! directory path, so two callers racing on one cache directory serialize
-//! while callers on different ones do not. [`super::git`] is currently the
-//! only such module; a second cache would get its own namespace rather than
-//! sharing this one's GC and contention behavior.
+//! while callers on different ones do not. [`super::git`] is the only such
+//! module. A static per module keeps the GC and contention of each cache's
+//! locks to that cache.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;

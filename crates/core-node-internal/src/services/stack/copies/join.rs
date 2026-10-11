@@ -9,13 +9,13 @@ use super::super::container_mounts::{
 use super::super::launch::clock::plan_clocks;
 use super::super::launch::feedback::publish_stdout;
 use super::super::launch::nodes::add_nodes_to_stack;
-use super::super::launch::orchestrate::validate_and_order_dependencies;
+use super::super::launch::orchestrate::{ValidatedPlan, validate_and_order_dependencies};
 use super::super::launch::preflight::preflight_change;
 use super::super::launch::start::start_node_instances;
 use super::super::launch::watchers::{lifecycle_watchers, watchers_replacing};
 use super::super::launch::{
-    HostedNode, JoinScope, NodeKey, PhaseChange, PhaseGoal, UnresolvedAdd,
-    check_planned_daemon_scopes, federated,
+    HostedNode, JoinScope, PhaseChange, PhaseGoal, UnresolvedAdd, check_planned_daemon_scopes,
+    federated,
 };
 use super::super::state::{ActiveLaunch, StackCopy, copy_in_start_order};
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
@@ -119,16 +119,18 @@ async fn join_inner(
     let grown_slots = changed_slots(&copy, &planned, Change::Join)?;
     let live = live_machines(ctx, &placements).await?;
     check_hosts_live(&copy.name, &grown_slots, &placements, &live)?;
-    let root = ctx.node_stack.root().read().config().clone();
     // A join follows the domains the stack already publishes: its known
     // lifetimes go in, so a copy binding to a running simulation reads the
     // clock that simulation is already supplying.
     let (clocks, incarnations) = plan_clocks(&combined, &placements, &active.clocks)?;
     let copies = CopyMembership::of(active.copy_records().chain([&copy]));
     check_planned_daemon_scopes(&active.prepared, &planned, &copies)?;
-    let (ordered, bindings, pairings, observations) =
-        validate_and_order_dependencies(ctx, &planned, &root, &placements, &copies, &clocks)
-            .await?;
+    let ValidatedPlan {
+        ordered,
+        slot_bindings: bindings,
+        pairings,
+        observations,
+    } = validate_and_order_dependencies(ctx, &planned, &placements, &copies, &clocks).await?;
     let grown_sets = whole_sets(&grown_slots, &bindings, &observations);
     let watchers = lifecycle_watchers(&observations, &placements)?;
     // The instances supplying the clocks this join reads take part in it: a
@@ -152,14 +154,15 @@ async fn join_inner(
         new_ids.contains(instance.instance_id.as_str())
     })
     .into_iter()
-    .map(|item| (NodeKey::new(&item.node_name, &item.node_tag), item))
+    .map(|item| (item.key(), item))
     .collect();
+    // `copy` is held past the record's move into the launch: a failed
+    // delivery puts the sets this copy's instances joined back the way they
+    // were.
     let record = StackCopy {
         record: copy_in_start_order(copy.clone(), &planned, &ordered),
         core_node: host,
     };
-    // Held past the record's move into the launch: a failed delivery puts the
-    // sets this copy's instances joined back the way they were.
     let phase = PhaseGoal {
         launch_id: active.launch_id.clone(),
         rebuild: false,
@@ -202,7 +205,7 @@ async fn join_inner(
             .values()
             .flat_map(|item| {
                 item.deployment.instances.iter().map(|instance| HostedNode {
-                    node: NodeKey::new(&item.node_name, &item.node_tag),
+                    node: item.key(),
                     core_node: placements
                         .core_node_of(instance.instance_id.as_str())
                         .clone(),
@@ -228,7 +231,7 @@ async fn join_inner(
             &change.mounts,
             &watchers,
             &placements,
-            true,
+            federated::SliceBegin::Append,
         )
         .await
         .map_err(|refusal| {
@@ -348,15 +351,14 @@ async fn rollback_join(
         }
         if plan.removes_added_nodes {
             for hosted in scope.added_nodes() {
-                if scope.fresh_hosts.contains(&hosted.core_node.to_string()) {
+                let is_on_fresh_host = scope
+                    .fresh_hosts
+                    .iter()
+                    .any(|host| host == hosted.core_node.as_str());
+                if is_on_fresh_host {
                     continue;
                 }
-                let present = landed(&logs.add, hosted)
-                    || match logs.unresolved.iter().find(|add| add.hosted == *hosted) {
-                        Some(add) => holds_node(ctx, hosted, &add.config_sha256).await?,
-                        None => false,
-                    };
-                if present {
+                if holds_added_node(ctx, logs, hosted).await? {
                     remove_node(ctx, launch_id, hosted).await?;
                 }
             }
@@ -385,6 +387,23 @@ async fn rollback_join(
     })?;
     *active = previous;
     Ok(())
+}
+
+/// Whether the join left `hosted` on its machine: its add landed, or an add
+/// that outlived its budget left the join's entity there. The machine is
+/// asked only in the second case.
+async fn holds_added_node(
+    ctx: &StackChangeContext,
+    logs: &JoinLogs,
+    hosted: &HostedNode,
+) -> ChangeResult<bool> {
+    if landed(&logs.add, hosted) {
+        return Ok(true);
+    }
+    let Some(add) = logs.unresolved.iter().find(|add| add.hosted == *hosted) else {
+        return Ok(false);
+    };
+    holds_node(ctx, hosted, &add.config_sha256).await
 }
 
 /// Whether `hosted`'s machine holds the node the join added, asked after
@@ -458,6 +477,7 @@ async fn remove_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::stack::launch::NodeKey;
     use config::runtime::CoreNodeName;
     use std::path::PathBuf;
 

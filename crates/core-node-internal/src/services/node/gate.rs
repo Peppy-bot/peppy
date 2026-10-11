@@ -13,11 +13,11 @@
 //! Actions without force simply never pass `force = true`.
 //!
 //! All gate state lives behind a single `parking_lot::Mutex`, so admission
-//! decisions never await. Unlike a poll-based design, the gate does not retain
-//! the completed goal's context: the work task calls
-//! [`peppylib::messaging::GoalContext::complete`] and drops the context, and the
-//! SDK keeps the result fetchable for its retention grace, which comfortably
-//! covers the client's immediate single fetch.
+//! decisions never await. The gate does not retain the completed goal's
+//! context: the work task calls [`peppylib::messaging::GoalContext::complete`]
+//! and drops the context, and the SDK keeps the result fetchable for its
+//! retention grace, which comfortably covers the client's immediate single
+//! fetch.
 //!
 //! ## Concurrency model
 //!
@@ -48,22 +48,24 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 /// Bounded wait for a gate-cancelled task's cooperative teardown after its
-/// `CancellationToken` has been signaled. Both single-goal callers that signal
-/// a cancel and then await the doomed task rely on this same budget:
+/// `CancellationToken` has been signaled, for a task that stops no instance:
 ///
 /// - `services/node/builder.rs` on a `--force` `node_build`: after `try_admit`
 ///   signals the displaced build's token, it awaits the superseded handle for
 ///   up to this long so the old build SIGKILLs + reaps its child and rolls the
 ///   entity back to `Added` before the new build starts.
-/// - `services/stack/launch/phases.rs` on a run-phase idle/max timeout: after
-///   signaling the run-phase token it awaits the phase future for up to this
-///   long so it can SIGKILL the child, unregister the `Starting` instance, and
-///   clear temp files before the failure is returned.
+/// - `services/node/builder.rs` on a `stack reset`: [`finish_on_reset`] gives
+///   the cancelled build this long, since its cleanup kills its own build
+///   command at once.
 /// - [`reset_drain_budget`] on a `stack reset`: the reset cancels every
 ///   admitted goal and gives each at least this long to finish its own cleanup.
 ///
-/// On expiry both callers fall back to dropping the future and surface a
-/// transient/timeout failure rather than wedging.
+/// A start gives up its instance within `start_give_up_budget` instead, and
+/// the run phase of a launch (`services/stack/launch/phases.rs`) waits that
+/// long on an idle or max timeout.
+///
+/// On expiry each of them drops the future it awaits and reports a transient
+/// or timeout failure rather than wedging.
 pub(crate) const COOPERATIVE_TEARDOWN_BUDGET: Duration = Duration::from_secs(30);
 
 /// How long a stack reset gives each admitted goal to finish its own cleanup

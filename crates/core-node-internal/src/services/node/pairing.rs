@@ -5,9 +5,11 @@
 //! Every establish/dissolve goes through the one [`PairingCoordinator`]
 //! instance the daemon owns, whose `op_lock` serializes operations so two
 //! concurrent `node_run`s can never interleave a reserve/deliver/revert
-//! sequence. Its only callers are the node-run/launch establishment hooks and
-//! the death/stop clear paths — there is no runtime pairing service; pairs
-//! are only ever established at instance start.
+//! sequence. Its callers are the node-run/launch establishment hooks, the
+//! death/stop clear paths, and the federation service, which hands it a peer
+//! daemon's `pair_commit` requests and instance-stopped notifications. There
+//! is no pairing service a user calls: pairs are only ever established at
+//! instance start.
 //!
 //! Delivery protocol per pair `(a, b)`: send `a`'s pin, then `b`'s. If `a`
 //! fails, revert the registry commit (nothing was delivered). If `b` fails,
@@ -92,7 +94,7 @@ impl PairingCoordinator {
     }
 
     /// Delivers the current pin state of every pair involving `instance_id`
-    /// to both endpoints — the post-commit-to-Running step of `node_run`.
+    /// to both endpoints: the post-commit-to-Running step of `node_run`.
     /// Endpoints that are not live are skipped (they will receive their pins
     /// from their own `node_run` flow; `peer_update` is absolute-state and
     /// idempotent, so double delivery converges).
@@ -565,7 +567,7 @@ pub struct PairingRequest<'a> {
     /// `links: { <link_id>: { vacant: "<why>" } }`).
     pub vacant: &'a std::collections::BTreeMap<String, VacantReason>,
     /// Launch-mechanism markers: slots a later-starting instance of the
-    /// same launch will claim ([`NodeRunGoal::covered_pairs`] — see its doc
+    /// same launch will claim ([`NodeRunGoal::covered_pairs`]; see its doc
     /// for the covered-vs-vacant distinction).
     ///
     /// [`NodeRunGoal::covered_pairs`]: core_node_api::encoding::NodeRunGoal::covered_pairs
@@ -584,7 +586,7 @@ fn flatten_pairs(
         .flat_map(|(link_id, targets)| targets.iter().map(move |target| (link_id, target)))
 }
 
-/// The daemon-side re-check of a `node_run` goal's pairing arguments — the
+/// The daemon-side re-check of a `node_run` goal's pairing arguments: the
 /// trust-boundary twin of the CLI preflight and the launcher validator,
 /// sharing their [`validate_pairings`] core so the plan-phase rule set
 /// (declared-slot keys, one-fate-per-slot, required-slot coverage,
@@ -642,8 +644,7 @@ pub fn plan_requested_pairs(
     // participant pairing slots. `validate_pairings` intentionally SKIPS keys
     // that are not participant slots (the unified `links` map lets producer and
     // observer keys share the namespace), so this boundary, where the goal has
-    // already classified pairs, is where a stray key is caught. This restores
-    // the old dead-key rejection that the by-validator classification dropped.
+    // already classified pairs, is where a stray key is caught.
     let slot_cardinality: std::collections::BTreeMap<&str, config::node::Cardinality> =
         pairing_deps
             .iter()
@@ -713,7 +714,7 @@ pub fn plan_requested_pairs(
     // one of its rules reads the peer's manifest, and this daemon holds only
     // its own. The planner that dispatched this goal holds both and already
     // checked them against each other, so those pairs are split out here and
-    // built from that verdict. The local ones are validated exactly as before.
+    // built from that verdict. The local ones go through the local validator.
     let (remote_requested, local_requested): (Vec<_>, Vec<_>) =
         flatten_pairs(requested).partition(|(_, target)| target.peer.core_node != local_core_node);
 
@@ -813,8 +814,7 @@ pub fn plan_requested_pairs(
 
     let validated = validate_pairings(&items, &already_paired, &externally_covered);
     if !validated.errors.is_empty() {
-        let errors: Vec<String> = validated.errors.iter().map(|e| e.to_string()).collect();
-        return Err(daemon_config::format_bulleted(&errors));
+        return Err(daemon_config::format_bulleted(&validated.errors));
     }
 
     // A pair joins two instances reading one timeline, each interpreting
@@ -827,8 +827,7 @@ pub fn plan_requested_pairs(
         &[],
     );
     if !clock_errors.is_empty() {
-        let errors: Vec<String> = clock_errors.iter().map(|e| e.to_string()).collect();
-        return Err(daemon_config::format_bulleted(&errors));
+        return Err(daemon_config::format_bulleted(&clock_errors));
     }
 
     let mut planned: Vec<PlannedPair> = validated
@@ -1057,8 +1056,7 @@ mod tests {
         }
     }
 
-    /// Both endpoints local: nothing to reorder, and the declared order is
-    /// preserved so the delivery protocol reads the same as before.
+    /// Both endpoints local: nothing to reorder, and the declared order is kept.
     #[test]
     fn a_same_daemon_pair_keeps_its_declared_delivery_order() {
         let pairing = pair(
@@ -1487,7 +1485,7 @@ mod tests {
         )
     }
 
-    /// A covered slot — one a later-starting launch peer will claim —
+    /// A covered slot (one a later-starting launch peer will claim)
     /// satisfies the coverage rule, while a covered key naming an unknown slot
     /// fails loudly.
     #[test]
@@ -1696,22 +1694,10 @@ mod tests {
     /// peer (the `already_paired` wiring from [`NodeStack::live_pairs`]).
     #[test]
     fn already_paired_peer_slot_is_rejected_with_peer_named() {
-        use node_stack::PairEndpoint;
-
-        let live = vec![Pairing {
-            pairing_name: "arm_link".to_string(),
-            pairing_tag: "v1".to_string(),
-            a: PairEndpoint {
-                slot: SlotAddr::new(TEST_CORE, "arm_1", "controller"),
-                role: "arm".to_string(),
-                copy: None,
-            },
-            b: PairEndpoint {
-                slot: SlotAddr::new(TEST_CORE, "ctrl_0", "arm"),
-                role: "controller".to_string(),
-                copy: None,
-            },
-        }];
+        let live = vec![pair(
+            endpoint(TEST_CORE, "arm_1", "controller", "arm"),
+            endpoint(TEST_CORE, "ctrl_0", "arm", "controller"),
+        )];
         let deps = [dep("controller", "arm")];
         let err = plan_requested_pairs(
             &arm_snapshot(),
@@ -1737,8 +1723,6 @@ mod tests {
 
     #[test]
     fn missing_planned_pair_is_detected_in_either_endpoint_order() {
-        use node_stack::PairEndpoint;
-
         let registry_pair = |a: SlotAddr, b: SlotAddr| Pairing {
             pairing_name: "arm_link".to_string(),
             pairing_tag: "v1".to_string(),

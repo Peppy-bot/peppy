@@ -1,9 +1,9 @@
 //! Datastore service round-trip tests against the mock messenger.
 //!
 //! These exercise the `datastore_store` / `datastore_get` endpoints end to end
-//! through `ServiceMessenger::poll`, covering the contract that matters for a
-//! key/value store: arbitrary byte values, node-name-style keys, missing keys,
-//! overwrite semantics, and empty values.
+//! through `peppylib::core_node::transport::poll`, covering the contract that
+//! matters for a key/value store: arbitrary byte values, node-name-style keys,
+//! missing keys, overwrite semantics, and empty values.
 
 mod common;
 

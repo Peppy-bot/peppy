@@ -3,7 +3,10 @@
 
 use super::launch::PlannedDeployment;
 use config::AnyType;
-use config::runtime::{CoreNodeName, Name};
+use config::runtime::{ClockBinding, CoreNodeName, Name, SlotBindings};
+use core_node_api::{
+    InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
+};
 use daemon_config::launcher::{
     Deployment, DeploymentInstance, DeploymentSource, MemberAddressing, Placements,
 };
@@ -123,4 +126,32 @@ pub(super) fn planned_deployment(
             .map(|(id, core_node)| (*id, *core_node, BTreeMap::new()))
             .collect::<Vec<_>>(),
     )
+}
+
+/// A machine's stack graph as its `stack list` reports it: one `holder:v1`
+/// node whose instances are `instances`, each in its state.
+pub(super) fn graph_holding(instances: &[(&str, InstanceState)]) -> SerializedNodeGraph {
+    SerializedNodeGraph {
+        nodes: vec![SerializedNode {
+            name: "holder".to_owned(),
+            tag: "v1".to_owned(),
+            core_node: "cn-robot".to_owned(),
+            config_path: String::new(),
+            artifact_path: None,
+            stage: NodeStage::Ready,
+            instances: instances
+                .iter()
+                .map(|(instance_id, state)| SerializedInstance {
+                    instance_id: (*instance_id).to_owned(),
+                    state: *state,
+                    healthy: true,
+                    clock: ClockBinding::default(),
+                    slot_bindings: SlotBindings::default(),
+                    pairing_slots: BTreeMap::new(),
+                    endpoints: Vec::new(),
+                })
+                .collect(),
+        }],
+        edges: Vec::new(),
+    }
 }

@@ -50,10 +50,15 @@ pub(super) struct ChangedSlot {
     cardinality: Cardinality,
 }
 
+/// The slot `link_id` of `instance` as a refusal names it.
+fn slot_field(instance: &Name, link_id: &str) -> String {
+    format!("`{instance}.links.{link_id}`")
+}
+
 impl ChangedSlot {
     /// This slot as a refusal names it.
     pub(super) fn field(&self) -> String {
-        format!("`{}.links.{}`", self.instance_id, self.link_id)
+        slot_field(&self.instance_id, &self.link_id)
     }
 
     /// The machine the slot's instance runs on.
@@ -90,7 +95,7 @@ fn changed_slot(
     slot: &str,
     change: Change,
 ) -> Result<Option<ChangedSlot>, String> {
-    let field = format!("`{instance}.links.{slot}`");
+    let field = slot_field(instance, slot);
     let item = planned
         .iter()
         .find(|item| {
@@ -148,28 +153,39 @@ fn changed_slot(
             )),
             Change::Removal => Ok(None),
         },
-        None => {
-            let set_slots: Vec<&str> = declared
-                .iter()
-                .filter(|(_, _, cardinality)| !cardinality.is_scalar())
-                .map(|(link_id, ..)| *link_id)
-                .collect();
-            Err(if set_slots.is_empty() {
-                format!(
-                    "copy `{copy_name}` has a member in {field}, which `{node}` does not \
-                     declare; declare a `one_or_more` or `zero_or_more` slot in `{node}`'s \
-                     `depends_on`, run `peppy node sync` and launch again, or drop `{slot}` from \
-                     the option's `add_links`"
-                )
-            } else {
-                format!(
-                    "copy `{copy_name}` has a member in {field}, which `{node}` does not \
-                     declare; name one of its set slots in the option's `add_links`: {}",
-                    daemon_config::format_quoted_list(set_slots)
-                )
-            })
-        }
+        None => Err(undeclared_slot_refusal(
+            copy_name, &field, &node, slot, &declared,
+        )),
     }
+}
+
+/// The refusal of a member of copy `copy_name` in `slot` (named `field`),
+/// which `node` does not declare. It names the node's set slots to use
+/// instead, or the manifest fix when the node declares none.
+fn undeclared_slot_refusal(
+    copy_name: &Name,
+    field: &str,
+    node: &str,
+    slot: &str,
+    declared: &[(&str, SetKind, Cardinality)],
+) -> String {
+    let set_slots: Vec<&str> = declared
+        .iter()
+        .filter(|(_, _, cardinality)| !cardinality.is_scalar())
+        .map(|(link_id, ..)| *link_id)
+        .collect();
+    if set_slots.is_empty() {
+        return format!(
+            "copy `{copy_name}` has a member in {field}, which `{node}` does not declare; \
+             declare a `one_or_more` or `zero_or_more` slot in `{node}`'s `depends_on`, run \
+             `peppy node sync` and launch again, or drop `{slot}` from the option's `add_links`"
+        );
+    }
+    format!(
+        "copy `{copy_name}` has a member in {field}, which `{node}` does not declare; name one \
+         of its set slots in the option's `add_links`: {}",
+        daemon_config::format_quoted_list(set_slots)
+    )
 }
 
 /// Refuses a removal of `copy` that would leave a `one_or_more` slot of `slots`
@@ -454,7 +470,7 @@ async fn replace_on_participant(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::stack::fixtures::planned_deployment;
+    use crate::services::stack::fixtures::{graph_holding, placements_with, planned_deployment};
     use config::runtime::ProducerRef;
     use core_node_api::encoding::ObservationTarget;
     use core_node_api::encoding::SetMember;
@@ -600,6 +616,26 @@ mod tests {
         );
     }
 
+    /// A node that declares no set slot leaves nothing to name in
+    /// `add_links`, so the refusal names the manifest fix instead.
+    #[test]
+    fn adding_to_a_node_without_set_slots_is_refused_with_the_manifest_fix() {
+        let monitor_without_slots = planned_deployment("monitor", &[("monitor_inst", None)]);
+        let error = changed_slots(
+            &copy_adding(&[("ghosts", "alpha_arm_inst")]),
+            &[monitor_without_slots],
+            Change::Join,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "copy `alpha` has a member in `monitor_inst.links.ghosts`, which `monitor:v1` does \
+             not declare; declare a `one_or_more` or `zero_or_more` slot in `monitor:v1`'s \
+             `depends_on`, run `peppy node sync` and launch again, or drop `ghosts` from the \
+             option's `add_links`"
+        );
+    }
+
     #[test]
     fn a_removal_emptying_one_or_more_sets_is_refused_naming_each_and_one_leaving_a_member_passes()
     {
@@ -671,11 +707,7 @@ mod tests {
     #[test]
     fn a_set_on_a_machine_that_is_not_live_is_refused_at_join_and_set_aside_at_removal() {
         use super::super::live::{check_hosts_live, split_by_liveness};
-        let core_node = |name: &str| config::runtime::CoreNodeName::new(name).unwrap();
-        let placements = Placements::new(
-            core_node("cn-robot"),
-            BTreeMap::from([("monitor_inst".to_string(), core_node("cn-cloud"))]),
-        );
+        let placements = placements_with("cn-robot", &[("monitor_inst", "cn-cloud")]);
         let slots = || slots_of(&[("robots", "alpha_arm_inst")], Change::Join).unwrap();
         let alpha = Name::new("alpha").unwrap();
         let coordinator_alone = BTreeSet::from(["cn-robot".to_string()]);
@@ -695,6 +727,44 @@ mod tests {
         let (reachable, offline) = split_by_liveness(slots(), &placements, &both);
         assert_eq!(reachable.len(), 1);
         assert!(offline.is_empty());
+    }
+
+    /// A join grows a set only on an instance its host runs: one starting,
+    /// ended or absent is refused with the way out, and an instance placed on
+    /// another host is not asked of this one.
+    #[test]
+    fn a_join_grows_a_set_only_on_an_instance_its_host_runs() {
+        use super::super::live::check_grown_slots_running;
+        use core_node_api::InstanceState;
+        let slots = slots_of(&[("robots", "alpha_arm_inst")], Change::Join).unwrap();
+        let on_robot = placements_with("cn-robot", &[]);
+        let not_running = "joining grows `monitor_inst.links.robots`, but `monitor_inst` is not \
+                           running on `cn-robot`; launch the stack again so `cn-robot` runs it, \
+                           or join an option whose fragments do not add to that slot";
+
+        let starting = graph_holding(&[("monitor_inst", InstanceState::Starting)]);
+        assert_eq!(
+            check_grown_slots_running("cn-robot", &starting, &slots, &on_robot).unwrap_err(),
+            "joining grows `monitor_inst.links.robots`, but `monitor_inst` is starting on \
+             `cn-robot`; join again once it is running, or join an option whose fragments do not \
+             add to that slot"
+        );
+        let finished = graph_holding(&[("monitor_inst", InstanceState::Finished)]);
+        assert_eq!(
+            check_grown_slots_running("cn-robot", &finished, &slots, &on_robot).unwrap_err(),
+            not_running
+        );
+        let absent = graph_holding(&[]);
+        assert_eq!(
+            check_grown_slots_running("cn-robot", &absent, &slots, &on_robot).unwrap_err(),
+            not_running
+        );
+        let running = graph_holding(&[("monitor_inst", InstanceState::Running)]);
+        check_grown_slots_running("cn-robot", &running, &slots, &on_robot)
+            .expect("a running instance takes the grown set");
+        let on_cloud = placements_with("cn-robot", &[("monitor_inst", "cn-cloud")]);
+        check_grown_slots_running("cn-robot", &absent, &slots, &on_cloud)
+            .expect("an instance on another host is not asked of this one");
     }
 
     fn observation(source: &str) -> PlannedObservation {

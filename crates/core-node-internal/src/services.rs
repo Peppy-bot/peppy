@@ -137,7 +137,8 @@ pub struct CoreNodeConfig {
     pub messenger: Arc<Mutex<Messenger>>,
     /// Explicit node name; `None` derives a deterministic machine-based default.
     pub node_name: Option<String>,
-    /// Timeouts, intervals, and the daemon-wide sim-time flag.
+    /// Timeouts, intervals, the health-monitor policy and the settle window of
+    /// the boot name claim.
     pub arguments: CoreNodeArguments,
     /// Root directory the node stack is anchored at.
     pub root_dir: PathBuf,
@@ -274,7 +275,9 @@ fn format_core_node_name(generated: &str) -> Name {
         .expect("names_generator2 output always ends in a numeric segment");
     debug_assert_eq!(digits.len(), 3);
     debug_assert!(digits.chars().all(|c| c.is_ascii_digit()));
-    Name::new(format!("cn-{words}")).unwrap()
+    Name::new(format!("cn-{words}")).expect(
+        "names_generator2 words are lowercase ASCII letters joined by `-`, which a Name allows",
+    )
 }
 
 /// A pending listener registration, as collected by
@@ -302,7 +305,7 @@ struct ListenerCtx<'a> {
 
 /// Why a daemon-side registration for a registry method deliberately does
 /// not exist. Every variant is a documented decision surfaced by the
-/// exhaustive match in [`CoreNode::service_task`] — not a silent gap.
+/// exhaustive match in [`CoreNode::service_task`], not a silent gap.
 enum NotHostedHere {
     /// Hosted by spawned nodes; the daemon is the caller (`clock_offset`).
     SpawnedNode,
@@ -357,7 +360,9 @@ impl CoreNode {
         };
 
         let messenger = MessengerHandle::from_shared(messenger);
-        let instance_id = Name::new(get_random(rng())).unwrap();
+        let instance_id = Name::new(get_random(rng())).expect(
+            "names_generator2 output is lowercase ASCII letters, `-` and digits, which a Name allows",
+        );
         // The core node is the root of the node stack. Resolve the cooperative
         // shutdown grace and the PyPI mirror from config once and pin them on
         // the stack, with the log exporter, so every stop path (teardown,
@@ -473,7 +478,7 @@ impl CoreNode {
     /// The daemon-side registration for one registry **service**, or the
     /// documented reason it does not exist here.
     ///
-    /// EXHAUSTIVE on purpose — no wildcard arm: a new [`ServiceId`] variant
+    /// EXHAUSTIVE on purpose, with no wildcard arm: a new [`ServiceId`] variant
     /// fails compilation here until the daemon decides how (or explicitly
     /// why not) to host it.
     fn service_task<'a>(
@@ -690,7 +695,7 @@ impl CoreNode {
 
     /// The daemon-side registration for one registry **action**. All actions
     /// are daemon-hosted, so unlike [`Self::service_task`] there is no
-    /// not-hosted-here escape. EXHAUSTIVE — no wildcard arm.
+    /// not-hosted-here escape. EXHAUSTIVE: no wildcard arm.
     fn action_task<'a>(&'a self, id: ActionId, ctx: &ListenerCtx<'a>) -> ListenerSetup<'a> {
         match id {
             ActionId::StackLaunch
@@ -786,7 +791,7 @@ impl CoreNode {
     }
 
     /// The daemon-side task fulfilling one registry **topic**. All topics are
-    /// daemon-hosted. EXHAUSTIVE — no wildcard arm.
+    /// daemon-hosted. EXHAUSTIVE: no wildcard arm.
     fn topic_task<'a>(&'a self, id: TopicId, ctx: &ListenerCtx<'a>) -> ListenerSetup<'a> {
         match id {
             // The daemon publishes its own machine's wall ticks whatever its
@@ -998,7 +1003,7 @@ impl CoreNode {
         // Wait for all service handlers, surfacing the FIRST task that returns
         // an error while the others still run. (`try_join_all` over
         // `JoinHandle`s short-circuits only on a panic; an inner `Err` would
-        // wait for every other listener — which run until shutdown — and never
+        // wait for all the other listeners, which run until shutdown, and never
         // surface.) A listener dying with an error leaves the daemon broken;
         // aborting the core node lets the daemon exit for its supervisor
         // instead of running on half-alive.

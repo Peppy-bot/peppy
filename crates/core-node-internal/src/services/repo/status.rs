@@ -9,7 +9,7 @@
 //! what keeps that visible instead of a machine sitting on stale bytes
 //! believing it is current.
 //!
-//! This lives beside the four entry caches rather than as fields on the
+//! This lives beside the five entry caches rather than as fields on the
 //! entries themselves: it is per repository, not per entry, and keeping
 //! it separate leaves the entry caches' on-disk shape untouched.
 //!

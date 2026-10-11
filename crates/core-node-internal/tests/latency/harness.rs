@@ -147,11 +147,9 @@ pub fn ceiling_ms(lang: Lang, transport: Transport) -> u64 {
 }
 
 /// Latency distribution reported by the driver for one `bench_control` run.
-/// All durations are in nanoseconds; `total` is the summed roundtrip time of
-/// the measured iterations.
+/// All durations are in nanoseconds.
 #[derive(Clone, Copy, Debug)]
 pub struct LatencyStats {
-    total_ns: u64,
     p50_ns: u64,
     p90_ns: u64,
     mean_ns: u64,
@@ -162,8 +160,9 @@ impl LatencyStats {
     fn decode(bytes: &[u8]) -> Self {
         assert_eq!(bytes.len(), 40, "bench_control response must be 40 bytes");
         let read = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
+        // Word 0 carries the summed roundtrip time of the measured iterations,
+        // which the harness does not read.
         Self {
-            total_ns: read(0),
             p50_ns: read(1),
             p90_ns: read(2),
             mean_ns: read(3),
@@ -171,9 +170,6 @@ impl LatencyStats {
         }
     }
 
-    pub fn total(&self) -> u64 {
-        self.total_ns
-    }
     pub fn p50(&self) -> Duration {
         Duration::from_nanos(self.p50_ns)
     }
@@ -304,52 +300,52 @@ fn spawn_rust_node_release(dir: &Path, env_vars: &[(&str, &str)]) -> std::proces
     command.spawn().expect("spawn release node binary")
 }
 
-/// Codegen an (interface-less) peppygen library + fingerprint into a fresh node
-/// dir so the process is a real peppygen node, write `main`, and build it.
-/// Returns the built node directory. The `TempDir` is intentionally leaked so
-/// the built artifacts survive for the process lifetime (cached reuse).
-fn build_rust_node(main_src: &str) -> PathBuf {
+/// Codegen an (interface-less) peppygen library + fingerprint for
+/// `node_config` into a fresh node dir, so the process built there is a real
+/// peppygen node. Returns the `TempDir` that owns the node dir and the user
+/// node directory inside it.
+fn generate_peppygen_node<G: LanguageGenerator + Default>(node_config: &str) -> (TempDir, PathBuf) {
     let temp_dir = TempDir::new().expect("temp dir");
     let (generator, output_dir, user_node, peppy_config_path) =
-        helpers::init_test_env::<generator::RustGenerator>(&temp_dir, STUB_NODE_CONFIG);
+        helpers::init_test_env::<G>(&temp_dir, node_config);
     let output_config = helpers::copy_config_to_output(&user_node, &output_dir);
     generator
         .build(&output_dir, &helpers::test_peppy_dirs(), Default::default())
-        .expect("codegen peppygen (rust)");
+        .expect("codegen peppygen");
     std::fs::remove_file(output_config).expect("remove staged config");
     config::fingerprint::create_codegen_fingerprint(
         &peppy_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
+    (temp_dir, user_node)
+}
 
+/// Generates a Rust peppygen node, writes `main`, and builds it. Returns the
+/// built node directory. The directory is kept on disk once the build
+/// succeeds, so the built artifacts survive for the process lifetime (cached
+/// reuse); a failed build removes it.
+fn build_rust_node(main_src: &str) -> PathBuf {
+    let (temp_dir, user_node) =
+        generate_peppygen_node::<generator::RustGenerator>(STUB_NODE_CONFIG);
     helpers::init_cargo_user_node(&user_node);
     ensure_peppylib_dep(&user_node);
     std::fs::write(user_node.join("src").join("main.rs"), main_src).expect("write main.rs");
     compile_rust_node_release(&user_node);
 
-    std::mem::forget(temp_dir);
+    let _ = temp_dir.keep();
     user_node
 }
 
+/// The Python counterpart of [`build_rust_node`]: generates the node, writes
+/// `main.py`, and sets up its project venv.
 fn build_python_node(main_src: &str) -> PathBuf {
-    let temp_dir = TempDir::new().expect("temp dir");
-    let (generator, output_dir, user_node, peppy_config_path) =
-        helpers::init_test_env::<generator::PythonGenerator>(&temp_dir, STUB_PYTHON_NODE_CONFIG);
-    let output_config = helpers::copy_config_to_output(&user_node, &output_dir);
-    generator
-        .build(&output_dir, &helpers::test_peppy_dirs(), Default::default())
-        .expect("codegen peppygen (python)");
-    std::fs::remove_file(output_config).expect("remove staged config");
-    config::fingerprint::create_codegen_fingerprint(
-        &peppy_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
+    let (temp_dir, user_node) =
+        generate_peppygen_node::<generator::PythonGenerator>(STUB_PYTHON_NODE_CONFIG);
     helpers::init_python_user_node(&user_node);
     std::fs::write(user_node.join("main.py"), main_src).expect("write main.py");
     helpers::init_python_project_venv(&user_node);
 
-    std::mem::forget(temp_dir);
+    let _ = temp_dir.keep();
     user_node
 }
 
@@ -366,16 +362,6 @@ fn responder_rust_dir() -> &'static Path {
 fn responder_python_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| build_python_node(RESPONDER_MAIN_PY))
-}
-
-/// Eagerly build all node binaries (driver + both responders). Useful for the
-/// bench so the build cost is not attributed to the first measured scenario.
-pub fn build_all_nodes(include_python: bool) {
-    driver_node_dir();
-    responder_rust_dir();
-    if include_python {
-        responder_python_dir();
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -601,14 +587,6 @@ impl Drop for Scenario {
         let _ = self.responder_child.kill();
         let _ = self.responder_child.wait();
     }
-}
-
-/// Convenience for the threshold test: full spawn -> measure -> shutdown.
-pub async fn run_once(lang: Lang, transport: Transport, warmup: u64, iters: u64) -> LatencyStats {
-    let scenario = start_scenario(lang).await;
-    let stats = scenario.run(transport, warmup, iters).await;
-    scenario.shutdown().await;
-    stats
 }
 
 // ---------------------------------------------------------------------------

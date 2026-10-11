@@ -14,6 +14,7 @@ use core_node_api::encoding::ReadRef;
 use daemon_config::repository::GitCommit;
 use git2::Repository;
 use git2::build::{CheckoutBuilder, RepoBuilder};
+use node_stack::build_io::format_bytes;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 use tracing::debug;
@@ -28,12 +29,6 @@ const PROGRESS_REPORT_INTERVAL: Duration = Duration::from_millis(500);
 /// "shallow fetch is not supported by the local transport".
 fn is_local_url(repo_url: &str) -> bool {
     repo_url.starts_with('/') || repo_url.starts_with("file://")
-}
-
-/// Renders byte counts in the compact `KB`/`MB`/`GB` form shared by all of
-/// peppy's progress lines (delegates to the one formatter in `node-stack`).
-pub(crate) fn format_bytes(bytes: usize) -> String {
-    node_stack::build_io::format_bytes(bytes as u64)
 }
 
 pub(crate) fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
@@ -140,16 +135,6 @@ fn tag_refspec(tag: &str) -> String {
     format!("+{tag}:{tag}")
 }
 
-/// Clone `repo_url` into `dst` and check out `repo_ref` if set, emitting
-/// throttled (~500ms) `transfer_progress` lines via `on_progress` so callers
-/// can surface live byte/object counts instead of sitting silent for the
-/// duration of the clone.
-///
-/// Each progress line is formatted as
-/// `"Cloning {repo_url}: received {recv}/{total} objects ({bytes})"`.
-///
-/// `shallow` requests a `depth=1` fetch, but is silently downgraded to a
-/// full clone when `repo_url` targets the local transport.
 /// The commit `repo`'s working tree is sitting on.
 ///
 /// The one place a `git2::Oid` becomes a [`GitCommit`], so a caller that
@@ -189,6 +174,16 @@ pub(crate) fn clone_repo_shallow(
     clone_with_progress(repo_url, None, dst, true, on_progress)
 }
 
+/// Clone `repo_url` into `dst` and check out `repo_ref` if set, emitting
+/// throttled (~500ms) `transfer_progress` lines via `on_progress` so callers
+/// can surface live byte/object counts instead of sitting silent for the
+/// duration of the clone.
+///
+/// Each progress line is formatted as
+/// `"Cloning {repo_url}: received {recv}/{total} objects ({bytes})"`.
+///
+/// `shallow` requests a `depth=1` fetch, but is silently downgraded to a
+/// full clone when `repo_url` targets the local transport.
 pub(crate) fn clone_with_progress(
     repo_url: &str,
     repo_ref: Option<&str>,
@@ -197,12 +192,7 @@ pub(crate) fn clone_with_progress(
     on_progress: &mut dyn FnMut(&str),
 ) -> std::result::Result<Repository, String> {
     let mut builder = RepoBuilder::new();
-    let mut fetch_opts = git2::FetchOptions::new();
-    if shallow && !is_local_url(repo_url) {
-        fetch_opts.depth(1);
-    }
-    fetch_opts.remote_callbacks(progress_callbacks(repo_url, "Cloning", on_progress));
-    builder.fetch_options(fetch_opts);
+    builder.fetch_options(fetch_options(repo_url, shallow, "Cloning", on_progress));
 
     let repo = builder.clone(repo_url, dst).map_err(|e| {
         let shown_url = SourceUrl::new(repo_url);
@@ -230,12 +220,27 @@ pub(crate) fn fetch_with_progress(
     shallow: bool,
     on_progress: &mut dyn FnMut(&str),
 ) -> std::result::Result<(), git2::Error> {
+    let mut fetch_opts = fetch_options(repo_url, shallow, "Fetching", on_progress);
+    remote.fetch(&[refspec], Some(&mut fetch_opts), None)
+}
+
+/// The fetch options of a clone or a fetch of `repo_url`, reporting progress
+/// lines that start with `verb` through `on_progress`.
+///
+/// `shallow` requests a `depth=1` fetch, which is dropped when `repo_url`
+/// targets the local transport (see [`is_local_url`]).
+fn fetch_options<'cb>(
+    repo_url: &str,
+    shallow: bool,
+    verb: &'static str,
+    on_progress: &'cb mut dyn FnMut(&str),
+) -> git2::FetchOptions<'cb> {
     let mut fetch_opts = git2::FetchOptions::new();
     if shallow && !is_local_url(repo_url) {
         fetch_opts.depth(1);
     }
-    fetch_opts.remote_callbacks(progress_callbacks(repo_url, "Fetching", on_progress));
-    remote.fetch(&[refspec], Some(&mut fetch_opts), None)
+    fetch_opts.remote_callbacks(progress_callbacks(repo_url, verb, on_progress));
+    fetch_opts
 }
 
 fn progress_callbacks<'cb>(
@@ -256,7 +261,7 @@ fn progress_callbacks<'cb>(
                 "{verb} {shown_url}: received {recv}/{total} objects ({bytes})",
                 recv = progress.received_objects(),
                 total = progress.total_objects(),
-                bytes = format_bytes(progress.received_bytes()),
+                bytes = format_bytes(progress.received_bytes() as u64),
             ));
         }
         true

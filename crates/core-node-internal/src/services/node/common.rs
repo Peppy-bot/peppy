@@ -1,13 +1,15 @@
 //! Small glue helpers shared by the node command handlers that don't fit
 //! in one of the more specific submodules: panic payload decoding,
-//! random id generation, response encoding, and daemon-to-instance slot
-//! update delivery.
+//! random id generation, hex encoding, node config file parsing,
+//! response encoding, and daemon-to-instance slot update delivery.
 
+use config::node::{NodeConfig, NodeConfigParser};
 use config::runtime::Name;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use peppylib::encoding::slot_update::SlotUpdateResponse;
 use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -154,10 +156,22 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
+/// Parses the node config at `config_path`, naming the file in the error.
+pub(crate) fn parse_node_config_file(config_path: &Path) -> Result<NodeConfig, String> {
+    NodeConfigParser::from_path(config_path).map_err(|e| {
+        format!(
+            "Failed to parse node config at {}: {}",
+            config_path.display(),
+            e
+        )
+    })
+}
+
 /// Maps an encoding `Result` to a `PeppyResult`, wrapping the error as an
-/// `InternalEncodingError` so it can be returned directly from a goal handler.
-/// Used in place of open-coding the same `map_err` at every rejection and
-/// accepted-response encoding site in the add/build/start handlers.
+/// `InternalEncodingError` attributed to `identifier` so it can be returned
+/// directly from a goal handler. Used in place of open-coding the same
+/// `map_err` at every rejection and accepted-response encoding site of the
+/// goal handlers.
 pub(crate) fn encode_response_or_err(
     identifier: &'static str,
     result: core_node_api::Result<peppylib::types::Payload>,
@@ -172,5 +186,10 @@ pub(crate) fn generate_random_id() -> String {
     use rand::RngExt;
     let mut rng = rand::rng();
     let bytes: [u8; 6] = rng.random();
+    encode_hex(&bytes)
+}
+
+/// Lowercase hexadecimal of `bytes`, two digits per byte.
+pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }

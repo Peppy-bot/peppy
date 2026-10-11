@@ -1,41 +1,17 @@
 mod common;
 
-use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
-use core_node_api::encoding::{GitRepoRef, RepoExcludeRequest, RepoExcludeResponse};
-use peppylib::core_node::transport::poll;
-use std::time::Duration;
+use common::{
+    StartedCoreNode, excluded_repositories_path, poll_core_node, read_json5_array,
+    start_core_node_with_mock_messenger, write_excluded_repositories_json5,
+};
+use core_node_api::encoding::{GitRepoRef, RepoExcludeRequest};
 
-async fn send_repo_exclude(
-    started: &StartedCoreNode,
-    request: &RepoExcludeRequest,
-) -> RepoExcludeResponse {
-    poll(
-        request,
-        &started.caller_handle,
-        &started.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started.core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("repo_exclude poll should succeed")
-}
-
-fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("excluded_repositories.json5"), content)
-        .expect("write excluded repos file");
-}
-
-/// Pre-writes an empty `repositories.json5` so the exclude handler's
-/// post-response refresh step does not fall back to the default template,
-/// which points at the real user `$HOME` and would make `process_refresh`
-/// walk the entire home directory (causing 5s poll timeouts).
+/// Overwrites the default entries the daemon wrote at start with an empty
+/// `repositories.json5`. The exclude handler re-indexes every repository
+/// before it responds, and the defaults are git hubs that the re-index would
+/// clone over the network.
 fn write_empty_repositories_json5(started: &StartedCoreNode) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("repositories.json5"), "[]").expect("write repos file");
+    common::write_repositories_json5(started, "[]");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -43,7 +19,7 @@ async fn exclude_git_without_ref_succeed() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
-    let resp = send_repo_exclude(
+    let resp = poll_core_node(
         &started,
         &RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
@@ -52,13 +28,7 @@ async fn exclude_git_without_ref_succeed() {
     assert!(resp.error_message.is_empty());
 
     // Verify the file was created with the new entry
-    let repos_path = started
-        .peppy_dirs
-        .conf_dir()
-        .join("excluded_repositories.json5");
-    let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 1);
     let entry = &repos[0];
@@ -76,7 +46,7 @@ async fn exclude_git_succeed() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
-    let resp = send_repo_exclude(
+    let resp = poll_core_node(
         &started,
         &RepoExcludeRequest::new_git(
             "https://github.com/example/repo.git",
@@ -86,13 +56,7 @@ async fn exclude_git_succeed() {
     .await;
     assert!(resp.success, "repo_exclude should succeed");
 
-    let repos_path = started
-        .peppy_dirs
-        .conf_dir()
-        .join("excluded_repositories.json5");
-    let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 1);
     let entry = &repos[0];
@@ -107,16 +71,10 @@ async fn exclude_fs_succeed() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
-    let resp = send_repo_exclude(&started, &RepoExcludeRequest::new_fs("/tmp/my-local-repo")).await;
+    let resp = poll_core_node(&started, &RepoExcludeRequest::new_fs("/tmp/my-local-repo")).await;
     assert!(resp.success, "repo_exclude should succeed");
 
-    let repos_path = started
-        .peppy_dirs
-        .conf_dir()
-        .join("excluded_repositories.json5");
-    let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 1);
     let entry = &repos[0];
@@ -134,11 +92,11 @@ async fn exclude_duplicate_fails() {
         RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead);
 
     // First exclude should succeed
-    let resp = send_repo_exclude(&started, &request).await;
+    let resp = poll_core_node(&started, &request).await;
     assert!(resp.success);
 
     // Second exclude of the same URL should fail
-    let resp = send_repo_exclude(&started, &request).await;
+    let resp = poll_core_node(&started, &request).await;
     assert!(!resp.success, "duplicate exclude should fail");
     assert!(
         resp.error_message.contains("already exists"),
@@ -160,7 +118,7 @@ async fn exclude_fails_when_duplicate_ids_in_file() {
         ]"#,
     );
 
-    let resp = send_repo_exclude(
+    let resp = poll_core_node(
         &started,
         &RepoExcludeRequest::new_git("https://example.com/new.git", GitRepoRef::RemoteHead),
     )
@@ -187,20 +145,14 @@ async fn exclude_assigns_id_after_manual_entry() {
         r#"[{ "id": 42, "type": "fs", "path": "/manual-repo" }]"#,
     );
 
-    let resp = send_repo_exclude(
+    let resp = poll_core_node(
         &started,
         &RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
     .await;
     assert!(resp.success, "repo_exclude should succeed");
 
-    let repos_path = started
-        .peppy_dirs
-        .conf_dir()
-        .join("excluded_repositories.json5");
-    let content = std::fs::read_to_string(&repos_path).expect("read excluded repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
 
     assert_eq!(repos.len(), 2);
 

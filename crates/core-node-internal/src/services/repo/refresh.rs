@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::cache as node_cache;
+use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::{checkout_read_ref, clone_repo_shallow, head_commit};
 use crate::services::repo::cache::{RepoCacheEntry, RepoItems, write_repo_cache};
@@ -11,13 +12,14 @@ use crate::services::repo::index::{
 use crate::services::repo::init::write_default_repos;
 use crate::services::repo::status::{self, RepoStatus, RepoStatusFailure};
 use crate::services::repo::{
-    REPOS_FILE, RepoOwners, normalize_repo_entries, parse_repo_entry, source_identity,
+    REPOS_FILE, RepoOwners, normalize_repo_entries, parse_repo_entry, repo_entry_id,
+    source_identity,
 };
 use crate::source_url::SourceUrl;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
-    GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, ReadRef, RepoRefreshFeedback, RepoRefreshGoal,
-    RepoRefreshGoalResponse, RepoRefreshResult, RepoSource, RepoSourceKind,
+    GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, ReadRef, RepoItemKind, RepoRefreshFeedback,
+    RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource, RepoSourceKind,
 };
 use core_node_api::names;
 use daemon_config::consts::{PeppyDirs, peppy_build};
@@ -25,7 +27,7 @@ use daemon_config::repository::GitCommit;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult};
+use peppylib::{MessengerHandle, PeppyResult};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
@@ -67,21 +69,17 @@ struct RepoRefreshGoalHandler {
 }
 
 fn encode_refresh_accepted() -> PeppyResult<Payload> {
-    RepoRefreshGoalResponse::accepted()
-        .encode()
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: ActionId::RepoRefresh.name().to_string(),
-            reason: e.to_string(),
-        })
+    encode_response_or_err(
+        ActionId::RepoRefresh.name(),
+        RepoRefreshGoalResponse::accepted().encode(),
+    )
 }
 
 fn encode_refresh_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
-    RepoRefreshGoalResponse::rejected(reason)
-        .encode()
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: ActionId::RepoRefresh.name().to_string(),
-            reason: e.to_string(),
-        })
+    encode_response_or_err(
+        ActionId::RepoRefresh.name(),
+        RepoRefreshGoalResponse::rejected(reason).encode(),
+    )
 }
 
 impl GoalHandler for RepoRefreshGoalHandler {
@@ -280,7 +278,7 @@ pub(crate) fn release_repositories_read_for_another_version(
     repos
         .iter()
         .filter_map(|entry| {
-            let id = entry.get("id")?.as_u64()?;
+            let id = repo_entry_id(entry)?;
             let source = parse_repo_entry(entry).ok()?;
             let RepoSource::Git {
                 repo_ref: GitRepoRef::PeppyRelease,
@@ -424,7 +422,7 @@ pub(crate) struct RepoFailure {
     pub(crate) kind: RepoFailureKind,
     pub(crate) detail: String,
     /// Previous entries kept in place for this repository, across all
-    /// four kinds. Zero on a machine that has never read it successfully.
+    /// five kinds. Zero on a machine that has never read it successfully.
     pub(crate) retained: usize,
 }
 
@@ -613,10 +611,9 @@ impl RefreshScope {
 /// while every other repository updates normally. The caller decides
 /// what a non-empty `failures` means for the run as a whole. One
 /// consequence is deliberate and worth knowing: a cache can then hold
-/// entries read at two different times. The caches never had a notion of
-/// a synchronised snapshot across repositories, so this is not a new
-/// class of skew, but anything that later needs one coherent set of
-/// bytes must establish that itself.
+/// entries read at two different times. The caches hold no synchronised
+/// snapshot across repositories, so anything that needs one coherent set
+/// of bytes must establish that itself.
 /// `now` is passed in rather than read from the clock so that tests are
 /// deterministic.
 ///
@@ -666,7 +663,7 @@ pub(crate) fn process_refresh(
     }
 
     for entry in &repos {
-        let id = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        let id = repo_entry_id(entry).unwrap_or(0);
 
         // An entry peppy cannot parse has no source kind or identity to
         // record, so it is reported but gets no status line.
@@ -786,16 +783,12 @@ pub(crate) fn process_refresh(
     })
 }
 
-/// Every repository's entries, merged in id order, with the `(name, tag)`
-/// identities of each kind seen so far.
+/// Every repository's entries, merged in id order, with the
+/// `(kind, name, tag)` identities seen so far.
 #[derive(Default)]
 struct MergedItems {
     items: RepoItems,
-    seen_nodes: HashSet<(String, String)>,
-    seen_launchers: HashSet<(String, String)>,
-    seen_contracts: HashSet<(String, String)>,
-    seen_pairings: HashSet<(String, String)>,
-    seen_mcp_exposures: HashSet<(String, String)>,
+    seen: HashSet<(RepoItemKind, String, String)>,
 }
 
 impl MergedItems {
@@ -806,31 +799,31 @@ impl MergedItems {
     fn merge(&mut self, items: RepoItems, on_feedback: &mut dyn FnMut(RepoRefreshFeedback)) {
         merge_published(
             items.nodes,
-            &mut self.seen_nodes,
+            &mut self.seen,
             &mut self.items.nodes,
             on_feedback,
         );
         merge_published(
             items.launchers,
-            &mut self.seen_launchers,
+            &mut self.seen,
             &mut self.items.launchers,
             on_feedback,
         );
         merge_published(
             items.contracts,
-            &mut self.seen_contracts,
+            &mut self.seen,
             &mut self.items.contracts,
             on_feedback,
         );
         merge_published(
             items.pairings,
-            &mut self.seen_pairings,
+            &mut self.seen,
             &mut self.items.pairings,
             on_feedback,
         );
         merge_published(
             items.mcp_exposures,
-            &mut self.seen_mcp_exposures,
+            &mut self.seen,
             &mut self.items.mcp_exposures,
             on_feedback,
         );
@@ -839,17 +832,22 @@ impl MergedItems {
 
 /// Appends one repository's entries to the running cross-repo collection,
 /// emitting a `Discovered` feedback the first time each `(name, tag)`
-/// identity is seen. Every entry is kept (including same-identity
-/// duplicates from lower-priority repositories); feedback fires only for
-/// the highest-priority repository, which is read first.
+/// identity of `E`'s kind is seen. Every entry is kept (including
+/// same-identity duplicates from lower-priority repositories); feedback
+/// fires only for the highest-priority repository, which is read first.
 fn merge_published<E: RepoCacheEntry>(
     published: Vec<E>,
-    global_seen: &mut HashSet<(String, String)>,
+    global_seen: &mut HashSet<(RepoItemKind, String, String)>,
     all: &mut Vec<E>,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) {
     for entry in published {
-        if global_seen.insert((entry.name().to_owned(), entry.tag().to_owned())) {
+        let identity = (
+            E::ITEM_KIND,
+            entry.name().to_owned(),
+            entry.tag().to_owned(),
+        );
+        if global_seen.insert(identity) {
             on_feedback(RepoRefreshFeedback::Discovered {
                 kind: E::ITEM_KIND,
                 item_name: entry.name().to_owned(),
@@ -904,7 +902,7 @@ fn read_fs_repo(
 ///
 /// What survives the read is the index the repository published and the
 /// commit it was read at, which is what lets another machine read the same
-/// bytes later — and the clone itself, which goes to the checkout cache
+/// bytes later, and the clone itself, which goes to the checkout cache
 /// because it is already the tree every item read here resolves to.
 fn read_git_repo(
     repo_url: &str,
@@ -1032,9 +1030,12 @@ mod tests {
     }
     use crate::services::node::checkout_repo_ref;
     use crate::services::node::test_git_daemon::GitDaemon;
-    use crate::services::repo::cache::test_support::{write_excluded_repos, write_repos};
+    use crate::services::repo::cache::test_support::{fs_repos, write_excluded_repos, write_repos};
     use crate::services::repo::cache::{
         EntryOrigin, LauncherCacheEntry, NodeCacheEntry, repositories_list_path,
+    };
+    use crate::services::repo::index::test_support::{
+        write_contract_json5, write_launcher_json5, write_node_json5,
     };
     use config::consts::NODE_CONFIG_FILE;
 
@@ -1179,35 +1180,6 @@ mod tests {
         assert_eq!(ids[2], 7, "second missing id should be auto-assigned 7");
     }
 
-    fn write_launcher_json5(path: &Path) {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(
-            path,
-            r#"{
-  peppy_schema: "launcher/v1",
-  deployments: []
-}"#,
-        )
-        .unwrap();
-    }
-
-    fn write_contract_json5(path: &Path, name: &str, tag: &str) -> Vec<u8> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        let body = format!(
-            r#"{{
-  peppy_schema: "contract/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
-  interfaces: {{}}
-}}"#
-        );
-        std::fs::write(path, &body).unwrap();
-        body.into_bytes()
-    }
-
     /// Writes the index a repository publishes, the way `peppy repo index`
     /// does.
     ///
@@ -1268,8 +1240,8 @@ mod tests {
     /// `removed_rel`, leaving a repository that reads fine and states
     /// something untrue about itself.
     ///
-    /// This is what a broken repository looks like now that an index cannot
-    /// claim an identity twice: the statement and the tree disagree.
+    /// An index cannot claim an identity twice, so a broken repository in
+    /// these tests is one whose statement and tree disagree.
     fn stale_index(root: &Path, removed_rel: &str) {
         publish_repo(root);
         std::fs::remove_file(root.join(removed_rel))
@@ -1324,23 +1296,6 @@ mod tests {
         refresh_every(peppy_dirs, now, on_feedback)
     }
 
-    /// Helper: write a minimal valid peppy.json5 into `dir`.
-    fn write_peppy_json5(dir: &Path, name: &str, tag: &str) {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(
-            dir.join(NODE_CONFIG_FILE),
-            format!(
-                r#"{{
-  peppy_schema: "node/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
-  interfaces: {{}},
-  execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
-}}"#
-            ),
-        )
-        .unwrap();
-    }
-
     /// The load-bearing case: a failure is scoped to the repository that
     /// caused it. The healthy repository picks up its change, the broken
     /// one keeps the entries it last published, and only the broken one
@@ -1352,16 +1307,9 @@ mod tests {
 
         let healthy = tmp.path().join("healthy");
         let broken = tmp.path().join("broken");
-        write_peppy_json5(&healthy.join("first"), "first", "v1");
-        write_peppy_json5(&broken.join("kept"), "kept", "v1");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-                healthy.display(),
-                broken.display()
-            ),
-        );
+        write_node_json5(&healthy.join("first"), "first", "v1");
+        write_node_json5(&broken.join("kept"), "kept", "v1");
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &healthy), (2, &broken)]));
 
         // A clean run first, so the broken repository has something to
         // fall back to.
@@ -1370,8 +1318,8 @@ mod tests {
         write_all_caches(&peppy_dirs, &clean).unwrap();
 
         // Now break the second repository and add a node to the first.
-        write_peppy_json5(&healthy.join("second"), "second", "v1");
-        write_peppy_json5(&broken.join("gone"), "gone", "v1");
+        write_node_json5(&healthy.join("second"), "second", "v1");
+        write_node_json5(&broken.join("gone"), "gone", "v1");
         stale_index(&broken, "gone/peppy.json5");
 
         let refreshed =
@@ -1418,14 +1366,8 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("first"), "first", "v1");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_node_json5(&repo.join("first"), "first", "v1");
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
         publish_repo(&repo);
 
         assert_eq!(reindex_after_change(&peppy_dirs).await, None);
@@ -1510,14 +1452,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_node_json5(&repo.join("node_a"), "node_a", "v1");
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         let first_read = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
         let clean = refresh_indexed(&peppy_dirs, first_read, &mut |_| {}).unwrap();
@@ -1527,7 +1463,7 @@ mod tests {
         assert!(!clean.statuses[0].is_retained());
 
         // Break it, and refresh much later.
-        write_peppy_json5(&repo.join("vanished"), "vanished", "v1");
+        write_node_json5(&repo.join("vanished"), "vanished", "v1");
         stale_index(&repo, "vanished/peppy.json5");
         let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(99_000);
         let failed = refresh_publishing(&peppy_dirs, &[], later, &mut |_| {}).unwrap();
@@ -1551,14 +1487,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("vanished"), "vanished", "v1");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_node_json5(&repo.join("vanished"), "vanished", "v1");
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
         stale_index(&repo, "vanished/peppy.json5");
 
         let broken = refresh_publishing(&peppy_dirs, &[], TEST_NOW, &mut |_| {}).unwrap();
@@ -1582,16 +1512,9 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let healthy = tmp.path().join("healthy");
-        write_peppy_json5(&healthy.join("node_a"), "node_a", "v1");
+        write_node_json5(&healthy.join("node_a"), "node_a", "v1");
         let gone = tmp.path().join("not-mounted");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-                healthy.display(),
-                gone.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &healthy), (2, &gone)]));
 
         let refreshed = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
 
@@ -1633,17 +1556,10 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let conflicted = tmp.path().join("conflicted");
-        write_peppy_json5(&conflicted.join("a"), "vanished", "v1");
+        write_node_json5(&conflicted.join("a"), "vanished", "v1");
         stale_index(&conflicted, "a/peppy.json5");
         let gone = tmp.path().join("not-mounted");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 5, "type": "fs", "path": "{}" }}, {{ "id": 9, "type": "fs", "path": "{}" }}]"#,
-                gone.display(),
-                conflicted.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(5, &gone), (9, &conflicted)]));
 
         let refreshed = refresh_publishing(&peppy_dirs, &[], TEST_NOW, &mut |_| {}).unwrap();
 
@@ -1672,21 +1588,14 @@ mod tests {
 
         let one = tmp.path().join("one");
         let two = tmp.path().join("two");
-        write_peppy_json5(&one.join("from_one"), "from_one", "v1");
-        write_peppy_json5(&two.join("from_two"), "from_two", "v1");
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-                one.display(),
-                two.display()
-            ),
-        );
+        write_node_json5(&one.join("from_one"), "from_one", "v1");
+        write_node_json5(&two.join("from_two"), "from_two", "v1");
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &one), (2, &two)]));
         let clean = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         write_all_caches(&peppy_dirs, &clean).unwrap();
 
         // Break repository 2 only.
-        write_peppy_json5(&two.join("vanished"), "vanished", "v1");
+        write_node_json5(&two.join("vanished"), "vanished", "v1");
         stale_index(&two, "vanished/peppy.json5");
         let refreshed = refresh_publishing(&peppy_dirs, &[&one], TEST_NOW, &mut |_| {}).unwrap();
 
@@ -1720,24 +1629,11 @@ mod tests {
 
         let repo_a = tmp.path().join("repo_a");
         let repo_b = tmp.path().join("repo_b");
-        write_peppy_json5(&repo_a.join("node_a"), "node_a", "v1");
-        write_peppy_json5(&repo_b.join("node_b"), "node_b", "v1");
+        write_node_json5(&repo_a.join("node_a"), "node_a", "v1");
+        write_node_json5(&repo_b.join("node_b"), "node_b", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-                repo_a.display(),
-                repo_b.display()
-            ),
-        );
-        write_excluded_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo_b.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo_a), (2, &repo_b)]));
+        write_excluded_repos(&peppy_dirs, &fs_repos(&[(1, &repo_b)]));
 
         let RefreshedRepos {
             items, excluded, ..
@@ -1766,24 +1662,12 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("keep_node"), "keep_node", "v1");
-        write_peppy_json5(&repo.join("secret_node"), "secret_node", "v1");
+        write_node_json5(&repo.join("keep_node"), "keep_node", "v1");
+        write_node_json5(&repo.join("secret_node"), "secret_node", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
         // Exclude the subdirectory, not the whole repo
-        write_excluded_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.join("secret_node").display()
-            ),
-        );
+        write_excluded_repos(&peppy_dirs, &fs_repos(&[(1, &repo.join("secret_node"))]));
 
         let RefreshedRepos {
             items, excluded, ..
@@ -1810,7 +1694,7 @@ mod tests {
     }
 
     /// An excluded subtree is one this machine does not answer for, so its
-    /// files are never opened — which is also what keeps a broken manifest
+    /// files are never opened. That is also what keeps a broken manifest
     /// inside it from failing the repository the user did ask for. The
     /// index still declares the item; only the read is skipped.
     #[test]
@@ -1819,28 +1703,16 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("keep_node"), "keep_node", "v1");
-        write_peppy_json5(&repo.join("secret_node"), "secret_node", "v1");
+        write_node_json5(&repo.join("keep_node"), "keep_node", "v1");
+        write_node_json5(&repo.join("secret_node"), "secret_node", "v1");
         // Published first, so the index declares both, then the excluded
         // one is made unreadable behind peppy's back.
         publish_repo(&repo);
         std::fs::remove_file(repo.join("secret_node").join(NODE_CONFIG_FILE))
             .expect("remove the excluded manifest");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
-        write_excluded_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.join("secret_node").display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
+        write_excluded_repos(&peppy_dirs, &fs_repos(&[(1, &repo.join("secret_node"))]));
 
         let RefreshedRepos {
             items, failures, ..
@@ -1862,7 +1734,7 @@ mod tests {
         let src_tmp = tempfile::tempdir().unwrap();
         let src = src_tmp.path();
         let repo = git2::Repository::init(src).expect("init repo");
-        write_peppy_json5(&src.join("arm"), "arm", "v1");
+        write_node_json5(&src.join("arm"), "arm", "v1");
         let branch = publish_and_commit(&repo, src, &["arm/peppy.json5"]);
 
         let peppy_tmp = tempfile::tempdir().unwrap();
@@ -1894,7 +1766,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
+        write_node_json5(&repo.join("node_a"), "node_a", "v1");
 
         write_repos(
             &peppy_dirs,
@@ -1928,15 +1800,9 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
+        write_node_json5(&repo.join("node_a"), "node_a", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         // No excluded_repositories.json5 file
         let RefreshedRepos {
@@ -1956,13 +1822,7 @@ mod tests {
         let iface_path = repo.join("uvc_camera/peppy.json5");
         let bytes = write_contract_json5(&iface_path, "uvc_camera", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         let contracts = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
             .unwrap()
@@ -1986,7 +1846,7 @@ mod tests {
     }
 
     /// Git-side contract discovery: the cached `path` is relative to
-    /// the repo root, and `resolved_ref` records the branch that was
+    /// the repo root, and `repo_ref` records the branch that was
     /// cloned.
     #[test]
     fn process_refresh_discovers_contracts_from_git_repo() {
@@ -2056,17 +1916,7 @@ mod tests {
         )
         .unwrap();
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[
-                    {{ "id": 1, "type": "fs", "path": "{}" }},
-                    {{ "id": 2, "type": "fs", "path": "{}" }}
-                ]"#,
-                repo_a.display(),
-                repo_b.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo_a), (2, &repo_b)]));
 
         let mut feedbacks = Vec::new();
         let contracts = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |fb| feedbacks.push(fb))
@@ -2120,23 +1970,15 @@ mod tests {
         let repo_a = tmp.path().join("repo_a");
         let repo_b = tmp.path().join("repo_b");
         // Three launchers with arbitrary names in repo_a; one collides
-        // with a launcher named the same in repo_b. Note that none of
-        // them use the legacy `peppy_launcher.json5` name.
+        // with a launcher named the same in repo_b.
         write_launcher_json5(&repo_a.join("openarm01_sim_teleop.json5"));
         write_launcher_json5(&repo_a.join("calibration.json5"));
         write_launcher_json5(&repo_a.join("nested").join("demo.json5"));
         write_launcher_json5(&repo_b.join("openarm01_sim_teleop.json5"));
         // Throw a node into repo_a too so we exercise the mixed walk.
-        write_peppy_json5(&repo_a.join("node_a"), "node_a", "v1");
+        write_node_json5(&repo_a.join("node_a"), "node_a", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-                repo_a.display(),
-                repo_b.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo_a), (2, &repo_b)]));
 
         let items = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
             .unwrap()
@@ -2216,13 +2058,7 @@ mod tests {
         )
         .unwrap();
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         let launchers = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
             .unwrap()
@@ -2248,13 +2084,7 @@ mod tests {
         let repo = tmp.path().join("repo");
         write_launcher_json5(&repo.join("openarm01_sim_teleop.json5"));
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         let launchers = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {})
             .unwrap()
@@ -2375,15 +2205,9 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
 
         let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
+        write_node_json5(&repo.join("node_a"), "node_a", "v1");
 
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-                repo.display()
-            ),
-        );
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
 
         let mut feedbacks: Vec<RepoRefreshFeedback> = Vec::new();
         let _ = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |fb| feedbacks.push(fb)).unwrap();
@@ -2483,42 +2307,29 @@ mod tests {
     /// libgit2's local transport (used for both raw paths and `file://`
     /// URLs) rejects `depth(1)` with "shallow fetch is not supported by the
     /// local transport". The clone helper has to detect those URLs and skip
-    /// the shallow option, otherwise the clone fails outright. These two
-    /// tests lock in that fallback behavior so a regression that re-enables
+    /// the shallow option, otherwise the clone fails outright. These cases
+    /// lock in that fallback behavior so a regression that re-enables
     /// `depth(1)` for local URLs would fail fast.
-    #[test]
-    fn clone_shallow_falls_back_to_full_clone_for_file_url() {
+    #[rstest::rstest]
+    #[case::file_url("file://")]
+    #[case::raw_path("")]
+    fn clone_shallow_falls_back_to_full_clone_for_local_url(#[case] url_prefix: &str) {
         let src_tmp = tempfile::tempdir().unwrap();
         init_repo_with_commits(src_tmp.path(), 3);
 
         let dst_tmp = tempfile::tempdir().unwrap();
         let dst = dst_tmp.path().join("clone");
-        let repo_url = format!("file://{}", src_tmp.path().display());
+        let repo_url = format!("{url_prefix}{}", src_tmp.path().display());
 
-        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {})
-            .expect("file:// clone should succeed (depth must be skipped)");
+        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {}).unwrap_or_else(|e| {
+            panic!("cloning {repo_url} should succeed (depth must be skipped): {e}")
+        });
 
         assert!(
             !dst.join(".git/shallow").exists(),
-            "file:// goes through libgit2's local transport which rejects \
+            "{repo_url} goes through libgit2's local transport which rejects \
              depth(1); .git/shallow should not exist"
         );
-        assert_eq!(count_commits(&repo), 3);
-    }
-
-    #[test]
-    fn clone_shallow_falls_back_to_full_clone_for_raw_path() {
-        let src_tmp = tempfile::tempdir().unwrap();
-        init_repo_with_commits(src_tmp.path(), 3);
-
-        let dst_tmp = tempfile::tempdir().unwrap();
-        let dst = dst_tmp.path().join("clone");
-        let repo_url = src_tmp.path().display().to_string();
-
-        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {})
-            .expect("raw-path clone should succeed (depth must be skipped)");
-
-        assert!(!dst.join(".git/shallow").exists());
         assert_eq!(count_commits(&repo), 3);
     }
 
@@ -2559,7 +2370,7 @@ mod tests {
             .set_bool("uploadpack.allowReachableSHA1InWant", true)
             .expect("allow fetches by hash");
 
-        write_peppy_json5(&src.join("arm"), "arm", "v1");
+        write_node_json5(&src.join("arm"), "arm", "v1");
         publish_and_commit(&repo, &src, &["arm/peppy.json5"]);
         let tagged = repo.head().expect("head").peel_to_commit().expect("commit");
         let signature =
@@ -2753,7 +2564,7 @@ mod tests {
         let served = tempfile::tempdir().unwrap();
         let src = served.path().join("hub");
         let repo = git2::Repository::init(&src).expect("init repo");
-        write_peppy_json5(&src.join("arm"), "arm", "v1");
+        write_node_json5(&src.join("arm"), "arm", "v1");
         publish_and_commit(&repo, &src, &["arm/peppy.json5"]);
         let branched = repo.head().unwrap().peel_to_commit().unwrap();
         repo.branch("peppy-release/v0.31.2", &branched, false)
@@ -2819,7 +2630,7 @@ mod tests {
         let signature = git2::Signature::now("Peppy", "peppy@example.com").unwrap();
         let mut commits = Vec::new();
         for (version, note) in [("v0.31.1", "first"), ("v0.31.2", "second")] {
-            write_peppy_json5(&src.join("arm"), "arm", "v1");
+            write_node_json5(&src.join("arm"), "arm", "v1");
             std::fs::write(src.join("notes.txt"), note).unwrap();
             publish_and_commit(&repo, &src, &["arm/peppy.json5", "notes.txt"]);
             let commit = repo.head().unwrap().peel_to_commit().unwrap();

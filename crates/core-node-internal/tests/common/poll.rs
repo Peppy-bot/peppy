@@ -51,6 +51,16 @@ pub fn is_process_running(pid: u32) -> bool {
     }
 }
 
+/// Polls until the process `pid` has exited (absent or a zombie, as
+/// [`is_process_running`] defines it). If `timeout` elapses first, panics with
+/// `timeout_message`.
+pub async fn wait_until_process_exits(pid: u32, timeout: Duration, timeout_message: &str) {
+    poll_until(timeout, timeout_message, || {
+        (!is_process_running(pid)).then_some(())
+    })
+    .await
+}
+
 /// PIDs of live children of `parent_pid`, via sysinfo's parent links.
 pub fn children_of(parent_pid: u32) -> Vec<u32> {
     let system = sysinfo::System::new_with_specifics(
@@ -65,9 +75,38 @@ pub fn children_of(parent_pid: u32) -> Vec<u32> {
         .collect()
 }
 
+/// Polls until the node process `node_pid` has the two children that a node
+/// from [`add_and_build_forking_node`](super::add_and_build_forking_node)
+/// forks, and returns their pids.
+pub async fn wait_for_forked_grandchildren(node_pid: u32) -> Vec<u32> {
+    poll_until(
+        Duration::from_secs(5),
+        "expected the node to fork two grandchildren",
+        || {
+            let children = children_of(node_pid);
+            (children.len() >= 2).then_some(children)
+        },
+    )
+    .await
+}
+
+/// Polls until every process in `grandchildren` has exited, each within 5 s.
+/// `killed_by` names the action whose group kill must have reaped them, for
+/// the timeout message.
+pub async fn wait_until_grandchildren_exit(grandchildren: &[u32], killed_by: &str) {
+    for &grandchild in grandchildren {
+        wait_until_process_exits(
+            grandchild,
+            Duration::from_secs(5),
+            &format!("grandchild {grandchild} should be gone after {killed_by} (group kill)"),
+        )
+        .await;
+    }
+}
+
 /// The state of an instance regardless of lifecycle stage, including terminal
 /// (`Finished`/`Failed`) instances that the `Running`-only
-/// `NodeStack::find_by_instance_id` no longer returns. Lets a test observe the
+/// `NodeStack::find_by_instance_id` does not return. Lets a test observe the
 /// exit watcher's terminal transition, or confirm an instance is gone from every
 /// state (not lingering as terminal after a stop/reset).
 pub fn instance_state_in_any_state(
@@ -85,9 +124,9 @@ pub fn instance_state_in_any_state(
 }
 
 /// Polls `ServiceMessenger::is_reachable` until the named service responds or
-/// `deadline` expires. Replaces fixed sleeps used as broker-propagation
-/// barriers in tests that spawn a `handle_requests` task and then need to
-/// be sure callers can route to it.
+/// `timeout` expires. It is the broker-propagation barrier for tests that
+/// spawn a `handle_requests` task and then need to be sure callers can route
+/// to it.
 pub async fn wait_until_service_reachable(
     messenger: &MessengerHandle,
     bound_core_node: &str,

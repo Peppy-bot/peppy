@@ -103,7 +103,7 @@ pub struct RepoConflict {
 /// `name:tag`, or the bare name when the tag is empty. The empty string is
 /// how the walk and caches spell an untagged identity (launchers), so this is
 /// the single place that renders a `(name, tag)` pair as its label.
-fn format_identity(name: &str, tag: &str) -> String {
+pub(super) fn format_identity(name: &str, tag: &str) -> String {
     if tag.is_empty() {
         name.to_owned()
     } else {
@@ -131,21 +131,21 @@ impl std::fmt::Display for RepoConflict {
     }
 }
 
-/// Every path that claimed a given `(name, tag)` during one repository
-/// walk, in the order the walker met them. Recording all of them (rather
-/// than remembering only that the identity was seen) is what lets a
+/// Every path that claimed a given `(kind, name, tag)` during one
+/// repository walk, in the order the walker met them. Recording all of them
+/// (rather than remembering only that the identity was seen) is what lets a
 /// conflict name both files instead of silently keeping one.
-type ClaimMap = HashMap<(String, String), Vec<String>>;
+type ClaimMap = HashMap<(RepoItemKind, String, String), Vec<String>>;
 
-/// Turns one kind's claim map into the conflicts it holds: every identity
-/// with more than one claimant. Sorted by identity, with sorted paths, so
-/// the report never inherits the filesystem's walk order and stays
-/// comparable between machines.
-fn conflicts_from_claims(kind: RepoItemKind, claims: ClaimMap) -> Vec<RepoConflict> {
+/// Turns the claim map into the conflicts it holds: every identity with
+/// more than one claimant. Sorted by kind, then identity, with sorted
+/// paths, so the report never inherits the filesystem's walk order and
+/// stays comparable between machines.
+fn conflicts_from_claims(claims: ClaimMap) -> Vec<RepoConflict> {
     let mut conflicts: Vec<RepoConflict> = claims
         .into_iter()
         .filter(|(_, paths)| paths.len() > 1)
-        .map(|((name, tag), mut paths)| {
+        .map(|((kind, name, tag), mut paths)| {
             paths.sort();
             RepoConflict {
                 kind,
@@ -155,8 +155,21 @@ fn conflicts_from_claims(kind: RepoItemKind, claims: ClaimMap) -> Vec<RepoConfli
             }
         })
         .collect();
-    conflicts.sort_by(|a, b| (&a.name, &a.tag).cmp(&(&b.name, &b.tag)));
+    conflicts.sort_by(|a, b| {
+        (kind_rank(a.kind), &a.name, &a.tag).cmp(&(kind_rank(b.kind), &b.name, &b.tag))
+    });
     conflicts
+}
+
+/// Kinds in the order `repo refresh` discovers them.
+pub(crate) fn kind_rank(kind: RepoItemKind) -> u8 {
+    match kind {
+        RepoItemKind::Node => 0,
+        RepoItemKind::Launcher => 1,
+        RepoItemKind::Contract => 2,
+        RepoItemKind::Pairing => 3,
+        RepoItemKind::McpExposure => 4,
+    }
 }
 
 /// One item a repository publishes, resolved against the tree it was read
@@ -310,7 +323,7 @@ pub(crate) fn read_published_items(
     Err(contradictory(problems.join("; ")))
 }
 
-/// Turns published items into the four cache-entry vectors.
+/// Turns published items into the five cache-entry vectors.
 ///
 /// The one place an identity crosses from what a repository declares into
 /// what a machine caches, so the two cannot disagree about which field
@@ -464,7 +477,7 @@ impl std::fmt::Display for IndexDrift {
 
 /// Walks `root` and produces the index it should contain.
 pub fn generate_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
-    let walked = walk_directory(root, &[]);
+    let walked = walk_directory(root);
     if !walked.conflicts.is_empty() {
         return Err(IndexError::ContestedIdentity(walked.conflicts));
     }
@@ -786,21 +799,15 @@ fn identity_label(item: &DeclaredItem<'_>) -> String {
 
 /// Walk a repository's working tree for the files that declare items.
 ///
-/// Any directory whose path matches one of the `excluded_paths` entries is
-/// pruned from the walk (neither descended into nor scanned).
-///
 /// Each `.json5` file is read once and dispatched by the `peppy_schema` value
 /// its body declares. A node manifest is required to declare `node/v1`, so the
 /// filename carries no special meaning here: a node in `peppy.json5` and a node
 /// in any other `.json5` are both found by the same schema dispatch.
-pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkResult {
-    // Canonicalize the root so that paths emitted by the walker share a
-    // common prefix representation with the excluded paths (which come from
-    // `ExclusionSet::load` already canonicalized). Without this, macOS
-    // `/var/...` symlinks break subdirectory exclusion: the walker emits
-    // `/var/...` while excluded paths resolve to `/private/var/...`.
+pub(crate) fn walk_directory(root: &Path) -> WalkResult {
+    // Walked from its canonical form, the same root that
+    // `read_published_items` and `check_repository_index` resolve the
+    // index's entries against.
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let excluded = excluded_paths.to_vec();
     let walker = ignore::WalkBuilder::new(&root)
         .hidden(true)
         // What a repository publishes must not depend on the machine doing
@@ -819,19 +826,11 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
                 return true;
             }
             let name = entry.file_name().to_string_lossy();
-            if PRUNED_DIR_NAMES.iter().any(|pruned| name == *pruned) {
-                return false;
-            }
-            let entry_path = entry.path();
-            !excluded.iter().any(|exc| entry_path.starts_with(exc))
+            !PRUNED_DIR_NAMES.iter().any(|pruned| name == *pruned)
         })
         .build();
 
-    let mut nodes_seen = ClaimMap::new();
-    let mut launchers_seen = ClaimMap::new();
-    let mut contracts_seen = ClaimMap::new();
-    let mut pairings_seen = ClaimMap::new();
-    let mut mcp_exposures_seen = ClaimMap::new();
+    let mut claims = ClaimMap::new();
     let mut items: Vec<WalkedItem> = Vec::new();
     let mut malformed: Vec<MalformedDocument> = Vec::new();
 
@@ -852,81 +851,42 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
                 continue;
             }
         };
+        let Some(kind) = peek_peppy_schema(&bytes).and_then(declared_item_kind) else {
+            continue;
+        };
         let ctx = EntryContext {
             root: &root,
             config_path,
             bytes: &bytes,
         };
-        let Some(schema) = peek_peppy_schema(&bytes) else {
-            continue;
-        };
-        match schema {
-            PeppySchema::NodeV1 => collect_item(
-                &ctx,
-                RepoItemKind::Node,
-                &mut nodes_seen,
-                &mut items,
-                &mut malformed,
-            ),
-            PeppySchema::LauncherV1 => collect_item(
-                &ctx,
-                RepoItemKind::Launcher,
-                &mut launchers_seen,
-                &mut items,
-                &mut malformed,
-            ),
-            PeppySchema::ContractV1 => collect_item(
-                &ctx,
-                RepoItemKind::Contract,
-                &mut contracts_seen,
-                &mut items,
-                &mut malformed,
-            ),
-            PeppySchema::PairingV1 => collect_item(
-                &ctx,
-                RepoItemKind::Pairing,
-                &mut pairings_seen,
-                &mut items,
-                &mut malformed,
-            ),
-            PeppySchema::McpExposureV1 => collect_item(
-                &ctx,
-                RepoItemKind::McpExposure,
-                &mut mcp_exposures_seen,
-                &mut items,
-                &mut malformed,
-            ),
-            // The repository's own index declares no item. It is the
-            // output of this walk, not an input to it.
-            PeppySchema::RepositoryV1 => {}
-            // A fragment file declares no item either: it is a piece of the
-            // launcher whose option references it. The walk recognizes the
-            // tag so a fragment is never mistaken for an unrecognized
-            // schema; the composition checks in `check_repository_index`
-            // read and validate the fragments each launcher references.
-            PeppySchema::LauncherFragmentV1 => {}
-        }
+        collect_item(&ctx, kind, &mut claims, &mut items, &mut malformed);
     }
-
-    let mut conflicts = conflicts_from_claims(RepoItemKind::Node, nodes_seen);
-    conflicts.extend(conflicts_from_claims(
-        RepoItemKind::Launcher,
-        launchers_seen,
-    ));
-    conflicts.extend(conflicts_from_claims(
-        RepoItemKind::Contract,
-        contracts_seen,
-    ));
-    conflicts.extend(conflicts_from_claims(RepoItemKind::Pairing, pairings_seen));
-    conflicts.extend(conflicts_from_claims(
-        RepoItemKind::McpExposure,
-        mcp_exposures_seen,
-    ));
 
     WalkResult {
         items,
-        conflicts,
+        conflicts: conflicts_from_claims(claims),
         malformed,
+    }
+}
+
+/// The kind of item a document of `schema` declares, or `None` for a
+/// schema that declares no item.
+fn declared_item_kind(schema: PeppySchema) -> Option<RepoItemKind> {
+    match schema {
+        PeppySchema::NodeV1 => Some(RepoItemKind::Node),
+        PeppySchema::LauncherV1 => Some(RepoItemKind::Launcher),
+        PeppySchema::ContractV1 => Some(RepoItemKind::Contract),
+        PeppySchema::PairingV1 => Some(RepoItemKind::Pairing),
+        PeppySchema::McpExposureV1 => Some(RepoItemKind::McpExposure),
+        // The repository's own index declares no item. It is the output of
+        // the walk, not an input to it.
+        PeppySchema::RepositoryV1 => None,
+        // A fragment file declares no item either: it is a piece of the
+        // launcher whose option references it. The walk recognizes the tag
+        // so a fragment is never mistaken for an unrecognized schema; the
+        // composition checks in `check_repository_index` read and validate
+        // the fragments each launcher references.
+        PeppySchema::LauncherFragmentV1 => None,
     }
 }
 
@@ -948,9 +908,9 @@ fn peek_peppy_schema(bytes: &[u8]) -> Option<PeppySchema> {
         .map(|p| p.peppy_schema)
 }
 
-/// File context shared by every collector. The collectors only need read
-/// access; bundling these arguments keeps their signatures focused on the
-/// entry-specific state (claim map + output vector).
+/// The file [`collect_item`] reads: where it lies under the walked root,
+/// and its bytes. Bundled so the collector's signature stays on the walk's
+/// own state (claims, items, malformed documents).
 struct EntryContext<'a> {
     root: &'a Path,
     config_path: &'a Path,
@@ -1013,7 +973,7 @@ fn collect_item(
         }
     };
 
-    let claimants = claims.entry((name.clone(), tag.clone())).or_default();
+    let claimants = claims.entry((kind, name.clone(), tag.clone())).or_default();
     claimants.push(relative_path.clone());
     if claimants.len() > 1 {
         return;
@@ -1027,14 +987,15 @@ fn collect_item(
     });
 }
 
+/// Writers of the minimal valid manifest of each kind, for tests that build
+/// a repository on disk.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
     use config::consts::NODE_CONFIG_FILE;
-    use config::fingerprint::fingerprint_for_bytes;
+    use std::path::Path;
 
     /// Helper: write a minimal valid node manifest under `dir`.
-    fn write_node_json5(dir: &Path, name: &str, tag: &str) {
+    pub(crate) fn write_node_json5(dir: &Path, name: &str, tag: &str) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(
             dir.join(NODE_CONFIG_FILE),
@@ -1051,7 +1012,7 @@ mod tests {
     }
 
     /// Helper: write a `.json5` launcher file at `path` (any name accepted).
-    fn write_launcher_json5(path: &Path) {
+    pub(crate) fn write_launcher_json5(path: &Path) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -1065,26 +1026,25 @@ mod tests {
         .unwrap();
     }
 
-    /// Helper: write a minimal valid contract manifest at `path`.
-    fn write_contract_json5(path: &Path, name: &str, tag: &str) {
+    /// Helper: write a minimal valid contract manifest at `path`, returning
+    /// the bytes written.
+    pub(crate) fn write_contract_json5(path: &Path, name: &str, tag: &str) -> Vec<u8> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
-        std::fs::write(
-            path,
-            format!(
-                r#"{{
+        let body = format!(
+            r#"{{
   peppy_schema: "contract/v1",
   manifest: {{ name: "{name}", tag: "{tag}" }},
   interfaces: {{}}
 }}"#
-            ),
-        )
-        .unwrap();
+        );
+        std::fs::write(path, &body).unwrap();
+        body.into_bytes()
     }
 
     /// Helper: write a minimal valid pairing manifest at `path`.
-    fn write_pairing_json5(path: &Path, name: &str, tag: &str) {
+    pub(crate) fn write_pairing_json5(path: &Path, name: &str, tag: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -1108,7 +1068,7 @@ mod tests {
     /// Helper: write a minimal valid MCP exposure manifest at `path`. The
     /// sha256 pin only has to be well-formed here: the walk extracts the
     /// identity and never resolves the pinned contract.
-    fn write_mcp_exposure_json5(path: &Path, name: &str, tag: &str) {
+    pub(crate) fn write_mcp_exposure_json5(path: &Path, name: &str, tag: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -1142,6 +1102,14 @@ mod tests {
         )
         .unwrap();
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::*;
+    use super::*;
+    use config::consts::NODE_CONFIG_FILE;
+    use config::fingerprint::fingerprint_for_bytes;
 
     /// The identities the walk found, of one kind, as `name:tag` labels.
     fn found(walked: &WalkResult, kind: RepoItemKind) -> Vec<String> {
@@ -1174,7 +1142,7 @@ mod tests {
             "v1",
         );
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(found(&walked, RepoItemKind::Node), vec!["my_sensor:v1"]);
         assert_eq!(found(&walked, RepoItemKind::Launcher), vec!["teleop"]);
@@ -1199,7 +1167,7 @@ mod tests {
         write_mcp_exposure_json5(&repo.join("a/surface.json5"), "camera_surface", "v1");
         write_mcp_exposure_json5(&repo.join("b/surface.json5"), "camera_surface", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(walked.conflicts.len(), 1);
         let conflict = walked.conflicts[0].to_string();
@@ -1215,7 +1183,7 @@ mod tests {
         let repo = tmp.path().join("repo");
         write_node_json5(&repo.join("nodes/my_sensor"), "my_sensor", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         let item = &walked.items[0];
         assert_eq!(item.relative_path, "nodes/my_sensor/peppy.json5");
@@ -1234,7 +1202,7 @@ mod tests {
         )
         .unwrap();
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(found(&walked, RepoItemKind::Node), vec!["a:v1"]);
         assert_eq!(walked.items.len(), 1, "the index is not an item");
@@ -1251,7 +1219,7 @@ mod tests {
             write_node_json5(&repo.join(pruned).join("buried"), "buried", "v1");
         }
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(found(&walked, RepoItemKind::Node), vec!["real:v1"]);
     }
@@ -1267,7 +1235,7 @@ mod tests {
         write_node_json5(&repo.join("uvc_recon/rust"), "uvc_recon", "v1");
         write_node_json5(&repo.join("uvc_recon/python"), "uvc_recon", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(walked.conflicts.len(), 1, "one contested identity");
         let conflict = &walked.conflicts[0];
@@ -1297,7 +1265,7 @@ mod tests {
         write_launcher_json5(&repo.join("sim/bringup.json5"));
         write_launcher_json5(&repo.join("real/bringup.json5"));
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(walked.conflicts.len(), 1);
         assert_eq!(walked.conflicts[0].kind, RepoItemKind::Launcher);
@@ -1317,7 +1285,7 @@ mod tests {
         write_pairing_json5(&repo.join("a/joint.json5"), "joint_link", "v1");
         write_pairing_json5(&repo.join("b/joint.json5"), "joint_link", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         let kinds: Vec<RepoItemKind> = walked.conflicts.iter().map(|c| c.kind).collect();
         assert_eq!(
@@ -1342,7 +1310,7 @@ mod tests {
         write_node_json5(&repo.join("one"), "alpha", "v1");
         write_node_json5(&repo.join("two"), "alpha", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         let names: Vec<&str> = walked.conflicts.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "beta"], "sorted by identity");
@@ -1363,7 +1331,7 @@ mod tests {
         write_node_json5(&repo.join("v1"), "my_sensor", "v1");
         write_node_json5(&repo.join("v2"), "my_sensor", "v2");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert!(walked.conflicts.is_empty(), "{:?}", walked.conflicts);
         let mut identities = found(&walked, RepoItemKind::Node);
@@ -1568,10 +1536,9 @@ mod tests {
         assert!(detail.contains("nodes/a/peppy.json5"), "got: {detail}");
     }
 
-    /// The rollout depends on this: a peppy that predates `repository/v1`
-    /// meets the schema tag, fails to recognize it, and skips the file. So
-    /// a repository can commit its index before the peppy that requires
-    /// one exists, and nothing in the fleet notices.
+    /// A schema tag the walk does not recognize is skipped, not refused, so
+    /// a repository can hold a document of a schema this peppy does not
+    /// know without failing its walk.
     #[test]
     fn an_unrecognized_schema_tag_is_skipped_rather_than_refused() {
         assert_eq!(
@@ -1695,7 +1662,7 @@ mod tests {
         assert!(check_repository_index(&repo).expect("checks").is_empty());
     }
 
-    /// The load-bearing test for the migration: what the index reader
+    /// The load-bearing test of the index: what the index reader
     /// resolves from a generated index is exactly what the walk found,
     /// identity for identity, path for path, byte for byte.
     #[test]
@@ -1708,7 +1675,7 @@ mod tests {
         write_contract_json5(&repo.join("interfaces/rgb.json5"), "rgb_camera", "v1");
         write_pairing_json5(&repo.join("robot/joint.json5"), "joint_link", "v1");
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
         let index = generate_repository_index(&repo).expect("generates");
         write_repository_index(&repo, &index).expect("writes");
 
@@ -1955,7 +1922,7 @@ mod tests {
         )
         .unwrap();
 
-        let walked = walk_directory(&repo, &[]);
+        let walked = walk_directory(&repo);
 
         assert_eq!(walked.conflicts, Vec::new());
         assert_eq!(

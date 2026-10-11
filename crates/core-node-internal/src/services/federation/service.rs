@@ -1,5 +1,6 @@
 //! The daemon-to-daemon endpoints of a federated launch: reserve, begin the
-//! slice, release, and the runtime relationship notification.
+//! slice, remove instances, update sets, commit a pair, release, and the
+//! runtime relationship notification.
 //!
 //! Reserving and beginning the slice are deliberately two calls. Reserving is
 //! non-destructive and happens before the coordinator knows whether every
@@ -18,6 +19,7 @@ use crate::Result;
 use crate::services::node::RelationshipCoordinators;
 use crate::services::node::gate::StackHold;
 use crate::services::response::into_service_response;
+use crate::services::stack::LocalMounts;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
     FederationVerdict, LaunchIdentity, PairCommitRequest, ParticipantInstancesRemoveRequest,
@@ -58,11 +60,11 @@ pub(crate) struct FederationServiceContext {
 
 /// Declares the listener for one federation endpoint.
 ///
-/// The six endpoints differ only in which [`ServiceId`] they bind and which
+/// The seven endpoints differ only in which [`ServiceId`] they bind and which
 /// handler they run; binding, spawning, and turning the handler's `Result` into
 /// a service response are identical for all of them. Stating that once is what
-/// stops a change to how these endpoints are served from landing on five of the
-/// six.
+/// stops a change to how these endpoints are served from landing on only some
+/// of them.
 macro_rules! federation_endpoint {
     ($listen:ident, $service:expr, $inner:ident) => {
         pub(crate) async fn $listen(
@@ -158,27 +160,12 @@ fn admit_slice_change(
         .stack
         .try_begin_change()
         .map_err(|busy| FederationVerdict::refused(busy.to_string()))?;
-    if !holds_launch_slice(context, launch_id) {
+    if !context.ownership.holds_slice_of(launch_id) {
         return Err(FederationVerdict::refused(refuse_outside_slice(
             context, launch_id, undone,
         )));
     }
     Ok(mutation)
-}
-
-/// Whether this daemon's reservation and its current stack slice both belong
-/// to `launch_id`, driven by the coordinator holding the reservation.
-fn holds_launch_slice(context: &FederationServiceContext, launch_id: &str) -> bool {
-    let reserved = context.ownership.held_reservation();
-    let slice = context.ownership.slice();
-    reserved
-        .as_ref()
-        .zip(slice.as_ref())
-        .is_some_and(|((launch, coordinator), slice)| {
-            launch.as_str() == launch_id
-                && slice.launch_id == *launch
-                && slice.coordinator_core_node == *coordinator
-        })
 }
 
 /// Replaces set slots of instances this daemon runs, on behalf of the
@@ -518,12 +505,12 @@ async fn slice_begin_inner(
     // Recorded first, prepared second: the slice is already this launch's, so a
     // machine that cannot provide a bind source is a refusal the coordinator
     // acts on, not wreckage nobody can find.
-    let prepared = if decoded.append && crate::services::stack::holds_nodes(&context.node_stack) {
-        crate::services::stack::prepare_additional_container_mounts(&decoded.mount_sources).await
+    let mounts = if decoded.append && crate::services::stack::holds_nodes(&context.node_stack) {
+        LocalMounts::AddedToRunningStack
     } else {
-        crate::services::stack::prepare_container_mounts(&decoded.mount_sources).await
+        LocalMounts::WholeStack
     };
-    match prepared {
+    match crate::services::stack::prepare_container_mounts(&decoded.mount_sources, mounts).await {
         Ok(auto_created) => {
             for (instance, hosts) in decoded.lifecycle_watchers {
                 context.relationships.notifier().set_watchers(

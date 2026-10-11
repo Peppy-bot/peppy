@@ -1,70 +1,21 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger,
+    FeedbackDrainOutcome, StartedCoreNode, create_node_dir, drain_feedback, fetch_result,
+    fs_repositories_json, minimal_peppy_json5, read_json5_array, send_daemon_goal,
+    start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
+    write_excluded_repositories_json5, write_repositories_json5, write_repositories_json5_in,
 };
 use config::consts::NODE_CONFIG_FILE;
-use config::node::QoSProfile;
 use core_node::nodes_repo_cache_path;
-use core_node_api::ActionId;
 use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSourceKind,
 };
 use daemon_config::consts::PeppyDirs;
 use git2::Repository;
-use peppylib::ActionMessenger;
-use peppylib::messaging::ResultStatus;
+use std::ops::ControlFlow;
 use std::time::Duration;
-
-/// Minimal valid peppy.json5 content for a node with the given name and tag.
-fn minimal_peppy_json5(name: &str, tag: &str) -> String {
-    format!(
-        r#"{{
-  peppy_schema: "node/v1",
-  manifest: {{
-    name: "{name}",
-    tag: "{tag}",
-  }},
-  interfaces: {{}},
-  execution: {{
-    language: "rust",
-    build_cmd: ["true"],
-    run_cmd: ["true"],
-  }},
-}}"#
-    )
-}
-
-/// Write a repositories.json5 file in the conf_dir of the started core node.
-fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
-    write_repositories_json5_in(&started.peppy_dirs, content);
-}
-
-/// Write a repositories.json5 file in the conf_dir of `peppy_dirs`.
-fn write_repositories_json5_in(peppy_dirs: &PeppyDirs, content: &str) {
-    let conf_dir = peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
-}
-
-/// Write an excluded_repositories.json5 file in the conf_dir.
-fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
-    let conf_dir = started.peppy_dirs.conf_dir();
-    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
-    std::fs::write(conf_dir.join("excluded_repositories.json5"), content)
-        .expect("write excluded repos file");
-}
-
-/// Create a directory with a valid peppy.json5 inside it.
-fn create_node_dir(base: &std::path::Path, name: &str, tag: &str) -> std::path::PathBuf {
-    let dir = base.join(format!("{name}_{tag}"));
-    std::fs::create_dir_all(&dir).expect("create node dir");
-    std::fs::write(dir.join(NODE_CONFIG_FILE), minimal_peppy_json5(name, tag))
-        .expect("write peppy.json5");
-    dir
-}
 
 struct RefreshTestResult {
     goal_response: RepoRefreshGoalResponse,
@@ -72,135 +23,91 @@ struct RefreshTestResult {
     result: RepoRefreshResult,
 }
 
+impl RefreshTestResult {
+    /// The `Discovered` feedback lines, in arrival order.
+    fn discovered(&self) -> Vec<&RepoRefreshFeedback> {
+        self.feedbacks
+            .iter()
+            .filter(|feedback| matches!(feedback, RepoRefreshFeedback::Discovered { .. }))
+            .collect()
+    }
+
+    /// The `Excluded` feedback lines, in arrival order.
+    fn excluded(&self) -> Vec<&RepoRefreshFeedback> {
+        self.feedbacks
+            .iter()
+            .filter(|feedback| matches!(feedback, RepoRefreshFeedback::Excluded { .. }))
+            .collect()
+    }
+
+    /// The item names of the `Discovered` feedback lines, in arrival order.
+    fn discovered_names(&self) -> Vec<&str> {
+        self.feedbacks
+            .iter()
+            .filter_map(|feedback| match feedback {
+                RepoRefreshFeedback::Discovered { item_name, .. } => Some(item_name.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
 /// Send a refresh goal and wait for the result. The server publishes feedback
 /// with wildcards at caller positions, so a concrete caller identity still
 /// receives feedback over a real messenger; the mock adapter just doesn't
 /// deliver feedback.
 async fn send_refresh_and_wait(started: &StartedCoreNode) -> RefreshTestResult {
-    send_refresh_inner(started, &started.core_node_name, CALLER_INSTANCE_ID).await
-}
-
-async fn send_refresh_and_wait_with_feedback(started: &StartedCoreNode) -> RefreshTestResult {
-    send_refresh_and_wait(started).await
-}
-
-async fn send_refresh_inner(
-    started: &StartedCoreNode,
-    caller_core_node: &str,
-    caller_instance_id: &str,
-) -> RefreshTestResult {
-    let goal = RepoRefreshGoal;
-    let goal_payload = goal.encode().expect("encode goal");
-
-    let mut action_handle = ActionMessenger::send_goal(
+    let mut action_handle = send_daemon_goal(
         &started.caller_handle,
-        caller_core_node,
-        caller_instance_id,
-        common::core_node_target(&started.core_node_name),
-        ActionId::RepoRefresh.name(),
-        None,
-        goal_payload,
-        QoSProfile::default(),
-        peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK,
+        &started.core_node_name,
+        &RepoRefreshGoal,
         Duration::from_secs(5),
     )
     .await
     .expect("send goal should succeed");
 
-    let goal_response_payload = action_handle.goal_reply().body.clone();
-    let goal_response =
-        RepoRefreshGoalResponse::decode(&goal_response_payload).expect("decode goal response");
+    let goal_response = RepoRefreshGoalResponse::decode(&action_handle.goal_reply().body)
+        .expect("decode goal response");
 
     let mut feedbacks = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
 
     // Drain feedback until the server closes the stream on completion, then
     // fetch the buffered result once.
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            panic!("Timeout waiting for repo_refresh result");
-        }
-        let drain_timeout = Duration::from_millis(50);
-        match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                let payload = msg.payload();
-                if let Ok(feedback) = RepoRefreshFeedback::decode(payload.as_ref()) {
-                    feedbacks.push(feedback);
-                }
-            }
-            Ok(Err(_)) => break,
-            Err(_) => {}
-        }
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| RepoRefreshFeedback::decode(payload).expect("decode repo_refresh feedback"),
+        |feedback| {
+            feedbacks.push(feedback);
+            ControlFlow::Continue(())
+        },
+        deadline,
+    )
+    .await;
+    if matches!(drained, FeedbackDrainOutcome::TimedOut) {
+        panic!("Timeout waiting for repo_refresh result");
     }
 
     let fetch_timeout = deadline
         .saturating_duration_since(tokio::time::Instant::now())
         .max(Duration::from_secs(1));
-    match ActionMessenger::request_result(&started.caller_handle, &action_handle, fetch_timeout)
-        .await
-    {
-        Ok(reply) => match reply.status {
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                let result = RepoRefreshResult::decode(reply.body.as_ref())
-                    .expect("decode repo_refresh result");
-                RefreshTestResult {
-                    goal_response,
-                    feedbacks,
-                    result,
-                }
-            }
-            other => panic!("repo_refresh did not complete with a result: {other:?}"),
-        },
-        Err(err) => panic!("Failed to get result: {}", err),
+    let result = fetch_result(
+        &started.caller_handle,
+        &action_handle,
+        fetch_timeout,
+        RepoRefreshResult::decode,
+        "repo_refresh result",
+    )
+    .await
+    .unwrap_or_else(|err| panic!("{err}"));
+    RefreshTestResult {
+        goal_response,
+        feedbacks,
+        result,
     }
 }
 
 // ── Tests with real messenger (feedback assertions) ─────────────
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn refresh_fs_discovers_nodes() {
-    let started = start_core_node_with_real_messenger().await;
-
-    let repo_dir = started.peppy_dirs.root().join("test_repo");
-    create_node_dir(&repo_dir, "my_sensor", "v1");
-    common::publish_repo_index(&repo_dir);
-
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
-    );
-
-    let result = send_refresh_and_wait_with_feedback(&started).await;
-
-    assert!(result.goal_response.accepted, "goal should be accepted");
-    assert!(result.result.success, "refresh should succeed");
-    assert_eq!(
-        result.result.total_nodes_found, 1,
-        "should find exactly 1 node"
-    );
-
-    let discovered: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
-    assert_eq!(discovered.len(), 1, "should receive 1 discovered feedback");
-    let RepoRefreshFeedback::Discovered {
-        item_name,
-        item_tag,
-        source_type,
-        ..
-    } = discovered[0]
-    else {
-        unreachable!()
-    };
-    assert_eq!(item_name, "my_sensor");
-    assert_eq!(item_tag, "v1");
-    assert_eq!(*source_type, RepoSourceKind::Fs);
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_multiple_nodes() {
@@ -211,15 +118,9 @@ async fn refresh_multiple_nodes() {
     create_node_dir(&repo_dir, "node_b", "v2");
     common::publish_repo_index(&repo_dir);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -227,14 +128,7 @@ async fn refresh_multiple_nodes() {
         "should find exactly 2 nodes"
     );
 
-    let names: Vec<&str> = result
-        .feedbacks
-        .iter()
-        .filter_map(|f| match f {
-            RepoRefreshFeedback::Discovered { item_name, .. } => Some(item_name.as_str()),
-            _ => None,
-        })
-        .collect();
+    let names = result.discovered_names();
     assert_eq!(names.len(), 2, "should receive 2 discovered feedbacks");
     assert!(names.contains(&"node_a"), "should contain node_a");
     assert!(names.contains(&"node_b"), "should contain node_b");
@@ -256,16 +150,9 @@ async fn refresh_deduplication() {
     common::publish_repo_index(&repo_dir_b);
 
     // repo_a listed first (lower id), should take precedence
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_dir_a.display(),
-            repo_dir_b.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir_a, &repo_dir_b]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -273,11 +160,7 @@ async fn refresh_deduplication() {
         "dup_node:v1 should appear exactly once"
     );
 
-    let discovered: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
+    let discovered = result.discovered();
     assert_eq!(
         discovered.len(),
         1,
@@ -400,9 +283,7 @@ async fn refresh_cache_written() {
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(cache_path.exists(), "cache file should exist");
 
-    let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse cache JSON5");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(entries.len(), 2, "cache should contain 2 nodes (FS + git)");
 
     let fs_entry = entries
@@ -464,16 +345,9 @@ async fn refresh_cache_includes_duplicates() {
     common::publish_repo_index(&repo_dir_a);
     common::publish_repo_index(&repo_dir_b);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_dir_a.display(),
-            repo_dir_b.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir_a, &repo_dir_b]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -483,14 +357,7 @@ async fn refresh_cache_includes_duplicates() {
 
     // Feedback is emitted once per unique (name, tag); the second
     // repo's shared_node is silently cached but not re-announced.
-    let feedback_names: Vec<&str> = result
-        .feedbacks
-        .iter()
-        .filter_map(|f| match f {
-            RepoRefreshFeedback::Discovered { item_name, .. } => Some(item_name.as_str()),
-            _ => None,
-        })
-        .collect();
+    let feedback_names = result.discovered_names();
     assert_eq!(
         feedback_names.len(),
         2,
@@ -502,8 +369,7 @@ async fn refresh_cache_includes_duplicates() {
     // Cache keeps both `shared_node` entries (no `duplicate` flag; the
     // `sha256` field tells them apart for users who need to pick one).
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(
         entries.len(),
         3,
@@ -587,14 +453,7 @@ async fn refresh_reports_unreadable_repos_without_failing() {
 
     write_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }},
-                {{ "id": 2, "type": "fs", "path": "{}" }},
-                {{ "id": 3, "type": "fs", "path": "{}" }}]"#,
-            healthy.display(),
-            unpublished.display(),
-            never_mounted.display(),
-        ),
+        &fs_repositories_json(&[&healthy, &unpublished, &never_mounted]),
     );
 
     let result = send_refresh_and_wait(&started).await;
@@ -624,8 +483,7 @@ async fn refresh_reports_unreadable_repos_without_failing() {
     );
 
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&cache_path).expect("the node cache is published");
-    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["node_name"], "reachable_node");
 }
@@ -646,23 +504,10 @@ async fn refresh_excludes_fs_repo_with_feedback() {
     common::publish_repo_index(&repo_a);
     common::publish_repo_index(&repo_b);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_a.display(),
-            repo_b.display()
-        ),
-    );
-    write_excluded_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_b.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
+    write_excluded_repositories_json5(&started, &fs_repositories_json(&[&repo_b]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -670,16 +515,8 @@ async fn refresh_excludes_fs_repo_with_feedback() {
         "only node_a should be counted"
     );
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
-        .collect();
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
+    let excluded_feedbacks = result.excluded();
+    let discovered_feedbacks = result.discovered();
 
     assert_eq!(
         excluded_feedbacks.len(),
@@ -722,22 +559,13 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
     create_node_dir(&repo, "secret_node", "v1");
     common::publish_repo_index(&repo);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo]));
     write_excluded_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo.join("secret_node_v1").display()
-        ),
+        &fs_repositories_json(&[&repo.join("secret_node_v1")]),
     );
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -745,22 +573,14 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
         "only keep_node should be found"
     );
 
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
+    let discovered_feedbacks = result.discovered();
     assert_eq!(discovered_feedbacks.len(), 1);
     let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
         unreachable!()
     };
     assert_eq!(item_name, "keep_node");
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
-        .collect();
+    let excluded_feedbacks = result.excluded();
     assert_eq!(
         excluded_feedbacks.len(),
         1,
@@ -795,24 +615,13 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
     common::publish_repo_index(&repo_a);
     common::publish_repo_index(&repo_b);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_a.display(),
-            repo_b.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
     write_excluded_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_b.display(),
-            repo_a.join("secret_node_v1").display()
-        ),
+        &fs_repositories_json(&[&repo_b, &repo_a.join("secret_node_v1")]),
     );
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(
@@ -820,22 +629,14 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
         "only keep_node should be counted"
     );
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
-        .collect();
+    let excluded_feedbacks = result.excluded();
     assert_eq!(
         excluded_feedbacks.len(),
         2,
         "should receive 2 excluded feedbacks (repo-level + subdirectory)"
     );
 
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
+    let discovered_feedbacks = result.discovered();
     assert_eq!(discovered_feedbacks.len(), 1);
     let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
         unreachable!()
@@ -855,29 +656,15 @@ async fn refresh_excluded_repos_not_in_cache() {
     common::publish_repo_index(&repo_a);
     common::publish_repo_index(&repo_b);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_a.display(),
-            repo_b.display()
-        ),
-    );
-    write_excluded_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_b.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_a, &repo_b]));
+    write_excluded_repositories_json5(&started, &fs_repositories_json(&[&repo_b]));
 
     let result = send_refresh_and_wait(&started).await;
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
 
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(
         entries.len(),
         1,
@@ -908,27 +695,19 @@ async fn refresh_excludes_git_repo() {
         r#"[{ "id": 1, "type": "git", "url": "https://example.com/nonexistent.git" }]"#,
     );
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
 
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
 
-    let excluded_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Excluded { .. }))
-        .collect();
+    let excluded_feedbacks = result.excluded();
     assert_eq!(excluded_feedbacks.len(), 1);
     let RepoRefreshFeedback::Excluded { source_type, .. } = excluded_feedbacks[0] else {
         unreachable!()
     };
     assert_eq!(*source_type, RepoSourceKind::Git);
 
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
-        .feedbacks
-        .iter()
-        .filter(|f| matches!(f, RepoRefreshFeedback::Discovered { .. }))
-        .collect();
+    let discovered_feedbacks = result.discovered();
     assert_eq!(discovered_feedbacks.len(), 1);
     let RepoRefreshFeedback::Discovered { item_name, .. } = discovered_feedbacks[0] else {
         unreachable!()
@@ -958,15 +737,9 @@ async fn refresh_discovers_contracts() {
     std::fs::write(iface_dir.join("peppy.json5"), manifest_body).expect("write contract manifest");
     common::publish_repo_index(&repo_dir);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_contracts_found, 1);
 
@@ -996,9 +769,7 @@ async fn refresh_discovers_contracts() {
 
     let cache_path = contracts_repo_cache_path(&started.peppy_dirs);
     assert!(cache_path.exists(), "contracts cache should be written");
-    let content = std::fs::read_to_string(&cache_path).expect("read contracts cache");
-    let entries: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse contracts cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["contract_name"], "uvc_camera");
     assert_eq!(entries[0]["tag"], "v1");
@@ -1018,8 +789,8 @@ async fn refresh_discovers_contracts() {
 
 /// End-to-end coverage of node discovery: refresh writes `nodes.json5`
 /// with the expected shape (node_name + node_tag + sha256), the result
-/// reports the node count, and feedback includes the discovered node
-/// tagged with kind = Node.
+/// reports the node count, and the feedback holds exactly one discovered
+/// line: the fs node, tagged with kind = Node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_discovers_nodes() {
     use core_node_api::encoding::RepoItemKind;
@@ -1030,37 +801,33 @@ async fn refresh_discovers_nodes() {
     create_node_dir(&repo_dir, "my_sensor", "v1");
     common::publish_repo_index(&repo_dir);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
+
+    let result = send_refresh_and_wait(&started).await;
+    assert!(result.goal_response.accepted, "goal should be accepted");
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(
+        result.result.total_nodes_found, 1,
+        "should find exactly 1 node"
     );
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
-    assert!(result.result.success, "refresh should succeed");
-    assert_eq!(result.result.total_nodes_found, 1);
-
-    let Some(RepoRefreshFeedback::Discovered {
+    let discovered = result.discovered();
+    assert_eq!(discovered.len(), 1, "should receive 1 discovered feedback");
+    let RepoRefreshFeedback::Discovered {
         item_name,
         item_tag,
+        source_type,
+        kind,
         sha256,
         ..
-    }) = result.feedbacks.iter().find(|f| {
-        matches!(
-            f,
-            RepoRefreshFeedback::Discovered {
-                kind: RepoItemKind::Node,
-                ..
-            }
-        )
-    })
+    } = discovered[0]
     else {
-        panic!("node discovery feedback")
+        unreachable!()
     };
     assert_eq!(item_name, "my_sensor");
     assert_eq!(item_tag, "v1");
+    assert_eq!(*source_type, RepoSourceKind::Fs);
+    assert_eq!(*kind, RepoItemKind::Node);
     assert!(
         !sha256.is_empty(),
         "feedback should carry the sha256 fingerprint"
@@ -1068,9 +835,7 @@ async fn refresh_discovers_nodes() {
 
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(cache_path.exists(), "nodes cache should be written");
-    let content = std::fs::read_to_string(&cache_path).expect("read nodes cache");
-    let entries: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse nodes cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["node_name"], "my_sensor");
     assert_eq!(entries[0]["node_tag"], "v1");
@@ -1109,15 +874,9 @@ async fn refresh_discovers_launchers() {
         .expect("write launcher manifest");
     common::publish_repo_index(&repo_dir);
 
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
-    );
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
-    let result = send_refresh_and_wait_with_feedback(&started).await;
+    let result = send_refresh_and_wait(&started).await;
     assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_launchers_found, 1);
 
@@ -1150,9 +909,7 @@ async fn refresh_discovers_launchers() {
 
     let cache_path = launchers_repo_cache_path(&started.peppy_dirs);
     assert!(cache_path.exists(), "launchers cache should be written");
-    let content = std::fs::read_to_string(&cache_path).expect("read launchers cache");
-    let entries: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse launchers cache");
+    let entries = read_json5_array(&cache_path);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["launcher_name"], "openarm01_teleop");
     assert_eq!(entries[0]["origin"]["source_type"], "fs");

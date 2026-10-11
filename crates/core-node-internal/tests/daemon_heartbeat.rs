@@ -30,7 +30,7 @@ async fn daemon_publishes_liveness_heartbeats() {
     .expect("daemon_heartbeat subscription should succeed");
 
     // The shared test heartbeat interval is 200ms (see default_node_arguments
-    // in common.rs; production uses 5s), so 20s gives ample slack for two
+    // in common/daemon.rs; production uses 5s), so 20s gives ample slack for two
     // beats even on slow CI machines.
     let beat_timeout = Duration::from_secs(20);
     for n in 0..2 {

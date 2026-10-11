@@ -127,7 +127,7 @@ fn print_environment() {
     println!("\nenv: {}", env.summary_line());
     // Nodes run as Zenoh peers: after gossip via the seed router they exchange
     // data over direct peer-to-peer links rather than relaying through the
-    // router. Shared memory is not yet wired into the publish path.
+    // router. The publish path does not use shared memory.
     println!("transport: peer (gossip discovery, shm=off)");
     if env.is_noisy() {
         println!(

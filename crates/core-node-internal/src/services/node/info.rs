@@ -57,12 +57,10 @@ enum InfoError {
     Internal(String),
 }
 
-// Only `String` is convertible into `InfoError` via `?`, and only as the
-// `Invalid` (caller-fault) variant. The previous blanket
-// `From<E: Display>` swept *every* error type into `Invalid`, which
-// silently routed things like serializer faults to `InvalidServiceRequest`
-// instead of `ServiceError`. With this restricted impl, internal-fault
-// sites must call `InfoError::Internal(...)` explicitly.
+// Only `String` converts into `InfoError` through `?`, and only as the
+// `Invalid` (caller-fault) variant. An internal fault, such as a serializer
+// or encoder error, is wrapped in `InfoError::Internal` explicitly, so it is
+// reported as `ServiceError` rather than `InvalidServiceRequest`.
 impl From<String> for InfoError {
     fn from(reason: String) -> Self {
         InfoError::Invalid(reason)

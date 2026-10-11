@@ -144,9 +144,8 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
         }
     }
 
-    let local = ctx.bound_core_node.as_str();
     let groups = futures::future::join_all(by_core_node.iter().map(|(core_node, keys)| {
-        add_and_build_group(ctx, phase, change, core_node, keys, planned_by_key, local)
+        add_and_build_group(ctx, phase, change, core_node, keys, planned_by_key)
     }))
     .await;
 
@@ -185,7 +184,6 @@ async fn add_and_build_group(
     core_node: &CoreNodeName,
     keys: &[&NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
-    local: &str,
 ) -> GroupOutcome {
     let mut outcome = GroupOutcome::default();
     let mut added_here = Vec::new();
@@ -206,7 +204,7 @@ async fn add_and_build_group(
         )
         .await;
 
-        let added = if core_node.as_str() == local {
+        let added = if core_node.as_str() == ctx.bound_core_node.as_str() {
             add_locally(ctx, phase, key, item, &mut outcome).await
         } else {
             add_and_build_remotely(ctx, phase, core_node, key, item, &mut outcome)
@@ -257,29 +255,16 @@ async fn add_locally(
 
     let (result, log_path) = add_node_directly(ctx, node_add_goal).await;
 
-    let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
     if let Some(path) = log_path {
         outcome.add_logs.push(NodeAddLogEntry {
             node_label: key.label(),
             log_path: path,
-            failed,
+            failed: result.is_err(),
             core_node: ctx.bound_core_node.as_str().to_owned(),
         });
     }
 
-    let added = match result {
-        Ok(result) if result.success => result,
-        Ok(result) => {
-            return Err(format!(
-                "failed to add node {}: {}",
-                key.label(),
-                result
-                    .error_message
-                    .unwrap_or_else(|| "node_add failed".to_string())
-            ));
-        }
-        Err(err) => return Err(format!("failed to add node {}: {err}", key.label())),
-    };
+    let added = result.map_err(|reason| format!("failed to add node {}: {reason}", key.label()))?;
 
     if is_built_in(item) {
         return Ok(None);
@@ -314,7 +299,6 @@ async fn build_locally(
                 &phase.launch_id,
                 node.node_name.clone(),
                 node.node_tag.clone(),
-                ctx.env_vars.clone(),
                 phase.rebuild,
             )
         },

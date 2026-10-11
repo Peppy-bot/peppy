@@ -55,6 +55,31 @@ pub async fn listen_for_node_build(
     Ok(handle)
 }
 
+/// Why an entity has nothing to build.
+enum Unbuildable {
+    /// Its stage admits no build; carries the stage's name.
+    Stage(&'static str),
+    /// It holds no working directory staged by an add.
+    NoWorkingDir,
+}
+
+/// The staged working dir of `entity` and the generation it was read at,
+/// when its stage admits a build. Both come from one read guard, so the
+/// generation is the one the working dir belongs to.
+fn buildable_working_dir(
+    entity: &node_stack::EntityHandle,
+) -> std::result::Result<(Arc<node_stack::WorkingDirGuard>, u64), Unbuildable> {
+    let guard = entity.read();
+    guard
+        .stage()
+        .ensure_buildable()
+        .map_err(Unbuildable::Stage)?;
+    let working_dir = guard
+        .pending_working_dir()
+        .ok_or(Unbuildable::NoWorkingDir)?;
+    Ok((working_dir, guard.generation()))
+}
+
 /// Inputs required to drive a single `node_build` run to completion.
 struct NodeBuildRun {
     node_name: String,
@@ -77,7 +102,6 @@ struct NodeBuildRun {
 /// Drives a build for the entity named `(node_name, node_tag)` that is
 /// currently in `Added`. The caller supplies the log file/path and the
 /// feedback channel; everything else is recovered from the entity itself.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_node_build_for_entity(
     node_name: String,
     node_tag: String,
@@ -97,26 +121,21 @@ pub(crate) async fn run_node_build_for_entity(
         }
     };
 
-    let (working_dir_guard, captured_generation) = {
-        let guard = entity_handle.read();
-        if let Err(stage) = guard.stage().ensure_buildable() {
-            let msg = format!(
-                "node `{}:{}` is in stage `{}`; cannot build",
-                node_name, node_tag, stage
-            );
-            log.error(&msg);
-            return NodeBuildResult::failure(&log_path, msg);
-        }
-        match guard.pending_working_dir() {
-            Some(g) => (g, guard.generation()),
-            None => {
-                let msg = format!(
+    let (working_dir_guard, captured_generation) = match buildable_working_dir(&entity_handle) {
+        Ok(buildable) => buildable,
+        Err(unbuildable) => {
+            let msg = match unbuildable {
+                Unbuildable::Stage(stage) => format!(
+                    "node `{}:{}` is in stage `{}`; cannot build",
+                    node_name, node_tag, stage
+                ),
+                Unbuildable::NoWorkingDir => format!(
                     "node `{}:{}` has no staged working directory",
                     node_name, node_tag
-                );
-                log.error(&msg);
-                return NodeBuildResult::failure(&log_path, msg);
-            }
+                ),
+            };
+            log.error(&msg);
+            return NodeBuildResult::failure(&log_path, msg);
         }
     };
 
@@ -247,40 +266,24 @@ impl NodeBuildGoalHandler {
             }
         };
 
-        let buildable = {
-            let guard = entity_handle.read();
-            match guard.stage().ensure_buildable() {
-                Ok(()) => Ok((guard.pending_working_dir(), guard.generation())),
-                Err(stage) => Err(stage.to_string()),
-            }
-        };
-        let (working_dir_guard, captured_generation) = match buildable {
-            Err(stage) => {
-                self.gate.clear_running();
-                reject_goal(
-                    pending,
-                    encode_rejected_goal(format!(
+        let (working_dir_guard, captured_generation) = match buildable_working_dir(&entity_handle) {
+            Ok(buildable) => buildable,
+            Err(unbuildable) => {
+                let reason = match unbuildable {
+                    Unbuildable::Stage(stage) => format!(
                         "node `{}:{}` is in stage `{}`; cannot build",
                         goal.node_name, goal.node_tag, stage
-                    )),
-                )
-                .await;
-                return;
-            }
-            Ok((None, _)) => {
-                self.gate.clear_running();
-                reject_goal(
-                    pending,
-                    encode_rejected_goal(format!(
+                    ),
+                    Unbuildable::NoWorkingDir => format!(
                         "node `{}:{}` has no staged working directory; \
                          re-run `peppy node add` to stage one",
                         goal.node_name, goal.node_tag
-                    )),
-                )
-                .await;
+                    ),
+                };
+                self.gate.clear_running();
+                reject_goal(pending, encode_rejected_goal(reason)).await;
                 return;
             }
-            Ok((Some(g), generation)) => (g, generation),
         };
 
         let log = match ActionLog::for_build(
@@ -396,19 +399,11 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
 
     let log = announcer.log().clone();
     let log_path = log.path();
-    let log_for_panic = log.clone();
 
-    // Clones for panic-handler entity cleanup. After
-    // `take_pending_working_dir_if_generation` succeeds the entity is in
-    // `Building` state; if the async block panics we must roll it out of the
-    // stack the same way the normal `Err(e)` path does.
-    let node_stack_for_panic = Arc::clone(&action_context.node_stack);
-    let node_name_for_panic = node_name.clone();
-    let node_tag_for_panic = node_tag.clone();
-    let entity_handle_for_panic = entity_handle.clone();
-    let generation_for_panic = captured_generation;
-    let working_dir_detached = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let working_dir_detached_for_panic = Arc::clone(&working_dir_detached);
+    // Set once the entity's working dir is detached, which leaves the entity
+    // in `Building`: a panic after that point rolls the entity out of the
+    // stack as the normal `Err(e)` path does.
+    let working_dir_detached = std::sync::atomic::AtomicBool::new(false);
 
     match AssertUnwindSafe(async {
         let mut env_vars = match super::validate_goal_env_vars(&goal_env_vars) {
@@ -451,7 +446,6 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         }
 
         let working_dir_path = working_dir_guard.path().to_path_buf();
-        let expected_generation = captured_generation;
 
         let build_result = node_stack::NodeEntity::build(
             &entity_handle,
@@ -488,7 +482,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     &node_name,
                     &node_tag,
                     &entity_handle,
-                    expected_generation,
+                    captured_generation,
                     Arc::clone(&working_dir_guard),
                 );
                 NodeBuildResult::failure(&log_path, "build cancelled".to_string())
@@ -500,7 +494,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     &node_name,
                     &node_tag,
                     &entity_handle,
-                    expected_generation,
+                    captured_generation,
                 );
                 let msg = format!("Failed to build node: {}", e);
                 log.error(&msg);
@@ -518,18 +512,88 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 super::panic_message(&*panic_payload)
             );
             tracing::error!("{}", msg);
-            log_for_panic.error(&msg);
+            log.error(&msg);
             // If the working dir was already detached the entity is in
             // `Building` state; roll it out so it doesn't stay stuck.
-            if working_dir_detached_for_panic.load(std::sync::atomic::Ordering::Acquire) {
-                let _ = node_stack_for_panic.remove_config_if_matches(
-                    &node_name_for_panic,
-                    &node_tag_for_panic,
-                    &entity_handle_for_panic,
-                    generation_for_panic,
+            if working_dir_detached.load(std::sync::atomic::Ordering::Acquire) {
+                let _ = action_context.node_stack.remove_config_if_matches(
+                    &node_name,
+                    &node_tag,
+                    &entity_handle,
+                    captured_generation,
                 );
             }
-            NodeBuildResult::failure(log_for_panic.path(), msg)
+            NodeBuildResult::failure(log.path(), msg)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use log_export::{LogExporter, LogKind};
+
+    const ROOT_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: { name: "core_root", tag: "v1" },
+        execution: { language: "rust", run_cmd: ["true"] },
+    }"#;
+
+    const UNSTAGED_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: { name: "unstaged", tag: "v1" },
+        execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] },
+    }"#;
+
+    /// Runs a build of `name:tag` in a stack rooted at `core_root:v1` that
+    /// also holds `unstaged:v1`, pushed without the working dir an add
+    /// stages for it.
+    async fn build_entity(name: &str, tag: &str) -> NodeBuildResult {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root_config =
+            config::node::NodeConfigParser::from_content(ROOT_CONFIG).expect("root config parses");
+        let node_stack = Arc::new(NodeStack::new(root_config, None, dir.path()));
+        let unstaged = config::node::NodeConfigParser::from_content(UNSTAGED_CONFIG)
+            .expect("node config parses");
+        node_stack
+            .push_config(unstaged, false, dir.path().join("unstaged"))
+            .expect("push the unstaged node");
+        let (exporter, _records) = LogExporter::channel(None);
+        let log = ActionLog::create(dir.path(), "build.log", LogKind::Build, exporter)
+            .expect("create the build log");
+        let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
+        let action_context = NodeBuildActionContext {
+            node_stack,
+            peppy_dirs: PeppyDirs::new(dir.path()),
+        };
+        run_node_build_for_entity(
+            name.to_owned(),
+            tag.to_owned(),
+            Vec::new(),
+            false,
+            action_context,
+            Announcer::new(log, feedback_tx),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_node_in_another_stage_than_added_is_not_built() {
+        let result = build_entity("core_root", "v1").await;
+        assert!(!result.success);
+        assert_eq!(
+            result.error_message.as_deref(),
+            Some("node `core_root:v1` is in stage `Root`; cannot build")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_without_a_staged_working_dir_is_not_built() {
+        let result = build_entity("unstaged", "v1").await;
+        assert!(!result.success);
+        assert_eq!(
+            result.error_message.as_deref(),
+            Some("node `unstaged:v1` has no staged working directory")
+        );
     }
 }

@@ -102,6 +102,14 @@ impl ObserverRecord {
     fn source(&self) -> SourceKey {
         SourceKey::from_producer(&self.pin.producer)
     }
+
+    /// Whether this record observes the `source` instance. Compares the
+    /// address in place instead of building the record's key, because the
+    /// registry scans ask it of every record on every lifecycle event.
+    fn observes(&self, source: &SourceKey) -> bool {
+        self.pin.producer.core_node == source.core_node
+            && self.pin.producer.instance_id == source.instance_id
+    }
 }
 
 /// One observer slot: the instance that declares it and its own link_id. The
@@ -143,10 +151,10 @@ struct Registry {
     /// answer different questions: the generation is an incarnation counter
     /// that is deliberately RETAINED across a source's own down/up (so a
     /// restart is strictly newer), while this is the up/down state itself.
-    /// Reading liveness off the retained generation reported a remote source
-    /// live for as long as anything still observed it, which is precisely
-    /// after it went down. A local source needs no entry here: the node stack
-    /// is the authority for instances this daemon runs.
+    /// Liveness cannot be read off the retained generation: that would report
+    /// a remote source live for as long as anything still observes it,
+    /// including after it went down. A local source needs no entry here: the
+    /// node stack is the authority for instances this daemon runs.
     remote_live: BTreeSet<SourceKey>,
 }
 
@@ -203,7 +211,7 @@ impl ObservationCoordinator {
     /// the whole stack down at once, so without this a re-run of the same
     /// instance ids inherits stale observations and a source coming back up
     /// would deliver a pin the user never linked this time. `stack launch` does
-    /// not need it because [`register_planned`] already replaces the registry.
+    /// not need it because [`Self::register_planned`] already replaces the registry.
     pub fn clear(&self) {
         *self.registry.lock().unwrap() = Registry::default();
     }
@@ -229,20 +237,13 @@ impl ObservationCoordinator {
             Self::insert_record(
                 registry,
                 &obs.observer_instance_id,
-                ObserverRecord {
-                    observer_link_id: obs.observer_link_id.clone(),
-                    pin: ObservedSource {
-                        producer: obs.source.clone(),
-                        source_link_id: obs.source_link_id.clone(),
-                        peer: obs.peer.as_ref().map(PeerInfo::from),
-                    },
-                },
+                ObserverRecord::observing(&obs.observer_link_id, &obs.target()),
             );
         }
     }
 
     /// Registers ONE `node run` instance's observer slots into the live
-    /// registry without disturbing the rest of it. Unlike [`register_planned`]
+    /// registry without disturbing the rest of it. Unlike [`Self::register_planned`]
     /// (which replaces the whole stack at launch), a `node run` adds a single
     /// instance to an already-running stack, so any prior records for this same
     /// observer id (a re-run) are cleared and its new ones merged in.
@@ -347,8 +348,8 @@ impl ObservationCoordinator {
             .collect()
     }
 
-    /// Inserts one resolved observer record. Shared by [`register_planned`]
-    /// and [`register_instance`].
+    /// Inserts one resolved observer record. Shared by
+    /// [`Self::register_planned`] and [`Self::register_instance`].
     fn insert_record(registry: &mut Registry, observer_instance_id: &str, record: ObserverRecord) {
         registry
             .by_observer
@@ -391,7 +392,7 @@ impl ObservationCoordinator {
                     .map(|target| {
                         let source = SourceKey::from_producer(&target.source);
                         let (source_generation, source_live) =
-                            self.stamp_source(&registry, &source, &live_instances, &None);
+                            self.stamp_source(&registry, &source, &live_instances, None);
                         config::runtime::ObservationSeedMember {
                             source: target.source.clone(),
                             source_link_id: target.source_link_id.clone(),
@@ -463,8 +464,8 @@ impl ObservationCoordinator {
         // and the observer registers itself later) still hand that observer a
         // generation >= 1, distinct from the boot sentinel 0, when the observer
         // comes up and reads it. Under `stack launch` observers are registered
-        // first, so this already held; making it unconditional makes the two
-        // paths deliver identically regardless of start order.
+        // first; bumping unconditionally makes the two orderings deliver
+        // identically.
         let is_local_source = source.core_node == self.updates.core_node_name();
         let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
         let deliveries = {
@@ -524,7 +525,7 @@ impl ObservationCoordinator {
         registry: &Registry,
         source: &SourceKey,
         live_local_instances: &HashSet<String>,
-        verdict: &Option<LivenessVerdict<'_>>,
+        verdict: Option<&LivenessVerdict<'_>>,
     ) -> (u64, bool) {
         let generation = registry.source_generation.get(source).copied().unwrap_or(0);
         let live =
@@ -541,7 +542,7 @@ impl ObservationCoordinator {
         registry: &Registry,
         source: &SourceKey,
         live_local_instances: &HashSet<String>,
-        verdict: &Option<LivenessVerdict<'_>>,
+        verdict: Option<&LivenessVerdict<'_>>,
     ) -> bool {
         if let Some(verdict) = verdict
             && verdict.source == source
@@ -612,6 +613,7 @@ impl ObservationCoordinator {
     /// One function for the up and down paths because they must reach exactly
     /// the same slots: a "went down" addressed to fewer slots than the matching
     /// "came up" leaves the difference permanently stale.
+    ///
     /// A set, not a list: one slot may observe a source through several of the
     /// source's own participant slots, and it is still one delivery. Collecting
     /// into a `BTreeSet` is what makes that true here and at every caller, so
@@ -623,7 +625,7 @@ impl ObservationCoordinator {
             .flat_map(|(observer_id, records)| {
                 records
                     .iter()
-                    .filter(|record| &record.source() == source)
+                    .filter(|record| record.observes(source))
                     .map(move |record| SlotKey {
                         observer_instance_id: observer_id.clone(),
                         observer_link_id: record.observer_link_id.clone(),
@@ -668,8 +670,12 @@ impl ObservationCoordinator {
                     .filter(|record| record.observer_link_id == slot.observer_link_id)
                     .map(|record| {
                         let source = record.source();
-                        let (source_generation, source_live) =
-                            self.stamp_source(registry, &source, live_local_instances, &verdict);
+                        let (source_generation, source_live) = self.stamp_source(
+                            registry,
+                            &source,
+                            live_local_instances,
+                            verdict.as_ref(),
+                        );
                         ObservedMemberState {
                             source_generation,
                             source_live,
@@ -689,7 +695,7 @@ impl ObservationCoordinator {
             .by_observer
             .values()
             .flatten()
-            .any(|record| &record.source() == source);
+            .any(|record| record.observes(source));
         if !still_observed {
             registry.source_generation.remove(source);
         }

@@ -8,12 +8,12 @@ use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::git_utils::install_credentials;
 use super::sync::{
-    self, AutoSyncParams, DepClosure, collect_all_deployment_interfaces,
-    generate_peppygen_for_node, materialize_repo_deps, stack_resolver, stack_then_repo_resolver,
+    self, AutoSyncParams, DepClosure, MaterializedDeps, collect_all_deployment_interfaces,
+    materialize_repo_deps, stack_resolver, stack_then_repo_resolver,
 };
 use super::{
-    clone_with_progress, extract_tar_zst, format_bytes, generate_random_id,
-    is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
+    clone_with_progress, encode_hex, extract_tar_zst, generate_random_id, is_supported_fs_archive,
+    is_supported_http_archive, locate_node_root_dir, parse_node_config_file,
     resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
@@ -30,6 +30,7 @@ use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
+use node_stack::build_io::format_bytes;
 use node_stack::{ActionLog, Announcer, InstanceState, NodeStack, WorkingDirGuard};
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
@@ -110,14 +111,14 @@ impl GoalHandler for NodeAddGoalHandler {
     }
 }
 
-pub(super) struct CleanupDir(Option<PathBuf>);
+struct CleanupDir(Option<PathBuf>);
 
 impl CleanupDir {
-    pub(super) fn new(dir: Option<PathBuf>) -> Self {
+    fn new(dir: Option<PathBuf>) -> Self {
         Self(dir)
     }
 
-    pub(super) fn take(&mut self) -> Option<PathBuf> {
+    fn take(&mut self) -> Option<PathBuf> {
         self.0.take()
     }
 }
@@ -130,16 +131,16 @@ impl Drop for CleanupDir {
     }
 }
 
-pub(crate) struct ResolvedNodeAddSource {
-    pub(crate) source_path: PathBuf,
-    pub(crate) node_config: NodeConfig,
-    pub(crate) cleanup_dir: Option<PathBuf>,
+struct ResolvedNodeAddSource {
+    source_path: PathBuf,
+    node_config: NodeConfig,
+    cleanup_dir: Option<PathBuf>,
 }
 
 /// Result of downloading and extracting an HTTP bundle without parsing the node config.
-pub(crate) struct ExtractedHttpSource {
-    pub(crate) source_path: PathBuf,
-    pub(crate) cleanup_dir: Option<PathBuf>,
+struct ExtractedHttpSource {
+    source_path: PathBuf,
+    cleanup_dir: Option<PathBuf>,
 }
 
 /// Distinguishes between a definitively invalid config (no point doing a full
@@ -227,15 +228,7 @@ fn shallow_validate_config(
         .map_err(|e| ShallowCheckError::ShallowFetchFailed(format!("Failed to get tree: {}", e)))?;
 
     // Navigate the tree to find the config blob.
-    let config_tree_path = if repo_relative_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
-    {
-        repo_relative_path.to_path_buf()
-    } else {
-        repo_relative_path.join(NODE_CONFIG_FILE)
-    };
+    let config_tree_path = node_config_path(repo_relative_path);
 
     let entry = tree.get_path(&config_tree_path).map_err(|e| {
         ShallowCheckError::InvalidConfig(format!(
@@ -373,25 +366,29 @@ async fn clone_repo_to_temp(
     Ok(checkout_dir)
 }
 
-/// Phase 3 of [`resolve_git_source`]: locate and parse the node config inside
-/// the cloned checkout (a `.json5` repo_path points at the file itself,
-/// anything else is a directory containing the default config file). On parse
-/// failure the checkout is removed.
+/// The node config a repository path names: a path with a `.json5`
+/// extension (of any case) is the config file itself, any other path is the
+/// directory holding [`NODE_CONFIG_FILE`]. The shallow probe and the full
+/// clone both resolve the repo path here, so they read the same file.
+fn node_config_path(path: &Path) -> PathBuf {
+    let names_config_file = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"));
+    if names_config_file {
+        return path.to_path_buf();
+    }
+    path.join(NODE_CONFIG_FILE)
+}
+
+/// Phase 3 of [`resolve_git_source`]: locate the node config inside the
+/// cloned checkout with [`node_config_path`] and parse it. On parse failure
+/// the checkout is removed.
 fn parse_config_from_checkout(
     checkout_dir: PathBuf,
     repo_relative_path: &Path,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
-    let candidate_path = checkout_dir.join(repo_relative_path);
-
-    let config_path = if candidate_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
-    {
-        candidate_path
-    } else {
-        candidate_path.join(NODE_CONFIG_FILE)
-    };
+    let config_path = node_config_path(&checkout_dir.join(repo_relative_path));
 
     let node_root_dir = config_path
         .parent()
@@ -402,14 +399,9 @@ fn parse_config_from_checkout(
     // in phase 1 is only a preflight hint; its result is not trusted as
     // the final config, since the probe and the clone could in principle
     // disagree (e.g. a force-push between the two fetches).
-    let node_config = match NodeConfigParser::from_path(&config_path) {
+    let node_config = match parse_node_config_file(&config_path) {
         Ok(cfg) => cfg,
-        Err(e) => {
-            let msg = format!(
-                "Failed to parse node config at {}: {}",
-                config_path.display(),
-                e
-            );
+        Err(msg) => {
             std::fs::remove_dir_all(&checkout_dir).ok();
             return Err(msg);
         }
@@ -589,22 +581,7 @@ fn download_http_bundle_once(
             && last_report.elapsed() >= Duration::from_millis(500)
         {
             last_report = Instant::now();
-            let progress_msg = if let Some(total) = total_size {
-                let pct = if total > 0 {
-                    (bytes_downloaded as f64 / total as f64 * 100.0) as u64
-                } else {
-                    0
-                };
-                format!(
-                    "Downloading: {} / {} ({}%)",
-                    format_bytes(bytes_downloaded as usize),
-                    format_bytes(total as usize),
-                    pct,
-                )
-            } else {
-                format!("Downloading: {}", format_bytes(bytes_downloaded as usize))
-            };
-            announcer.progress(progress_msg);
+            announcer.progress(download_progress_line(bytes_downloaded, total_size));
         }
     }
     file.flush().map_err(|e| {
@@ -631,26 +608,49 @@ fn download_http_bundle_once(
     Ok(())
 }
 
+/// The progress line of a bundle download: the bytes received so far, and
+/// the total with a percentage when the server sent a `content-length`. A
+/// zero total reads as 0% rather than dividing by zero.
+fn download_progress_line(downloaded: u64, total: Option<u64>) -> String {
+    let Some(total) = total else {
+        return format!("Downloading: {}", format_bytes(downloaded));
+    };
+    let percent = match total {
+        0 => 0,
+        _ => (downloaded as f64 / total as f64 * 100.0) as u64,
+    };
+    format!(
+        "Downloading: {} / {} ({}%)",
+        format_bytes(downloaded),
+        format_bytes(total),
+        percent,
+    )
+}
+
 fn decode_sha256_hex(input: &str) -> std::result::Result<Vec<u8>, String> {
     let bytes = input.as_bytes();
     if bytes.len() != 64 {
         return Err(format!("expected 64 hex characters, got {}", bytes.len()));
     }
-    // Input is already validated as lowercase hex by config parsing (source.rs),
-    // so we can convert directly without error handling per digit.
     // The length check above leaves no remainder to drop.
     let (digit_pairs, _) = bytes.as_chunks::<2>();
     let mut output = Vec::with_capacity(32);
     for &[high_digit, low_digit] in digit_pairs {
-        let high = (high_digit as char).to_digit(16).unwrap() as u8;
-        let low = (low_digit as char).to_digit(16).unwrap() as u8;
+        // The digest comes from the goal as the client sent it, so a digit
+        // that is not hexadecimal is refused here rather than trusted.
+        let (Some(high), Some(low)) = (hex_digit_value(high_digit), hex_digit_value(low_digit))
+        else {
+            return Err(format!("`{input}` is not a hexadecimal string"));
+        };
         output.push((high << 4) | low);
     }
     Ok(output)
 }
 
-fn encode_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+/// The value of one hexadecimal digit of either case, or `None` for any
+/// other byte.
+fn hex_digit_value(digit: u8) -> Option<u8> {
+    (digit as char).to_digit(16).map(|value| value as u8)
 }
 
 fn extract_http_bundle(
@@ -738,14 +738,7 @@ fn resolve_http_source_blocking(
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let extracted =
         resolve_http_source_download_and_extract(url, peppy_dirs, expected_sha256, announcer)?;
-    let config_path = extracted.source_path.join(NODE_CONFIG_FILE);
-    let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
-        format!(
-            "Failed to parse node config at {}: {}",
-            config_path.display(),
-            e
-        )
-    })?;
+    let node_config = parse_node_config_file(&extracted.source_path.join(NODE_CONFIG_FILE))?;
 
     Ok(ResolvedNodeAddSource {
         source_path: extracted.source_path,
@@ -846,14 +839,7 @@ async fn resolve_node_add_source(
                 });
             }
 
-            let config_path = path.join(NODE_CONFIG_FILE);
-            let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
-                format!(
-                    "Failed to parse node config at {}: {}",
-                    config_path.display(),
-                    e
-                )
-            })?;
+            let node_config = parse_node_config_file(&path.join(NODE_CONFIG_FILE))?;
             Ok(ResolvedNodeAddSource {
                 source_path: path.clone(),
                 node_config,
@@ -904,6 +890,13 @@ fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
     )
 }
 
+/// Writes `message` to the add log and returns the failure result that
+/// names that log, so the reason is in the file the client is pointed at.
+pub(crate) fn record_add_failure(announcer: &Announcer, message: String) -> NodeAddResult {
+    announcer.log().error(&message);
+    NodeAddResult::failure(announcer.log().path(), message)
+}
+
 /// The one place a node-add goal picks its pipeline: an exposures source
 /// registers the built-in MCP server, a pinned source (or a `name:tag`
 /// reference this daemon resolves into one) is a closure of nodes and takes
@@ -918,15 +911,16 @@ pub(crate) async fn dispatch_node_add(
     action_context: NodeAddActionContext,
     announcer: Announcer,
 ) -> NodeAddResult {
-    if matches!(goal.source, NodeSource::Exposures { .. }) {
-        crate::services::mcp::built_in::run_built_in_add(goal, action_context, announcer).await
-    } else if matches!(
-        goal.source,
-        NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. }
-    ) {
-        super::add_batch::run_pinned_add(goal, action_context, announcer).await
-    } else {
-        run_node_add(goal, action_context, announcer).await
+    match goal.source {
+        NodeSource::Exposures { .. } => {
+            crate::services::mcp::built_in::run_built_in_add(goal, action_context, announcer).await
+        }
+        NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. } => {
+            super::add_batch::run_pinned_add(goal, action_context, announcer).await
+        }
+        NodeSource::Fs(_) | NodeSource::Git { .. } | NodeSource::Http { .. } => {
+            run_node_add(goal, action_context, announcer).await
+        }
     }
 }
 
@@ -944,18 +938,16 @@ pub(crate) async fn run_node_add(
     action_context: NodeAddActionContext,
     announcer: Announcer,
 ) -> NodeAddResult {
+    // The async block takes `announcer`, so the panic arm keeps its own
+    // handle on the same log.
     let log = announcer.log().clone();
-    let log_for_panic = log.clone();
 
     match AssertUnwindSafe(async {
         // Resolve source (git clone, HTTP download, or local config check).
         let mut resolved =
             match resolve_node_add_source(&goal, &action_context.peppy_dirs, &announcer).await {
                 Ok(r) => r,
-                Err(error_msg) => {
-                    log.error(&error_msg);
-                    return NodeAddResult::failure(log.path(), error_msg);
-                }
+                Err(error_msg) => return record_add_failure(&announcer, error_msg),
             };
 
         // RAII guard: ensures resolved.cleanup_dir is removed on any early return
@@ -966,15 +958,18 @@ pub(crate) async fn run_node_add(
         let node_config: NodeConfig = resolved.node_config;
         let root_execution_language = node_config.execution.language;
 
+        // A local directory that `peppy node sync` prepares: it is auto-synced
+        // when `.peppy` is missing and checked against its recorded git hash.
+        // A stack launch and an archive skip both.
+        let is_synced_local_directory = goal.git_hash != STACK_LAUNCH_GIT_HASH
+            && matches!(&goal.source, NodeSource::Fs(path) if !is_supported_fs_archive(path));
+
         // Auto-generate .peppy directory if missing (e.g. fresh clone never synced).
         // Must run before git hash verification since sync also writes git.hash.
         //
         // Generation and filesystem I/O are blocking; offload to spawn_blocking
         // to avoid stalling the Tokio runtime (mirrors the daemon node-sync path).
-        if goal.git_hash != STACK_LAUNCH_GIT_HASH
-            && let NodeSource::Fs(original_path) = &goal.source
-            && !is_supported_fs_archive(original_path)
-        {
+        if is_synced_local_directory {
             let sync_node_dir = root_source_path.clone();
             let sync_execution_language = root_execution_language;
             let sync_manifest = node_config.manifest.clone();
@@ -1004,14 +999,10 @@ pub(crate) async fn run_node_add(
             match sync_result {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    let msg = format!("Auto-sync failed: {}", e);
-                    log.error(&msg);
-                    return NodeAddResult::failure(log.path(), msg);
+                    return record_add_failure(&announcer, format!("Auto-sync failed: {}", e));
                 }
                 Err(e) => {
-                    let msg = format!("Auto-sync task failed: {}", e);
-                    log.error(&msg);
-                    return NodeAddResult::failure(log.path(), msg);
+                    return record_add_failure(&announcer, format!("Auto-sync task failed: {}", e));
                 }
             }
         }
@@ -1020,13 +1011,10 @@ pub(crate) async fn run_node_add(
         //
         // The .peppy/git.hash file is always written by `peppy node sync` at
         // the root level (alongside the peppy.json5 that contains the manifest).
-        if goal.git_hash != STACK_LAUNCH_GIT_HASH
-            && let NodeSource::Fs(original_path) = &goal.source
-            && !is_supported_fs_archive(original_path)
+        if is_synced_local_directory
             && let Err(error_msg) = verify_git_hash(&root_source_path, &goal.git_hash)
         {
-            log.error(&error_msg);
-            return NodeAddResult::failure(log.path(), error_msg);
+            return record_add_failure(&announcer, error_msg);
         }
 
         let cleanup_dir = resolved_cleanup_guard.take();
@@ -1039,7 +1027,7 @@ pub(crate) async fn run_node_add(
 
         // The resolved config names the node: the log takes its canonical
         // {name}_{tag}_{timestamp}.log name.
-        log.rename_for_node(
+        announcer.log().rename_for_node(
             node_config.manifest.name.as_str(),
             &node_config.manifest.tag,
         );
@@ -1068,8 +1056,8 @@ pub(crate) async fn run_node_add(
                 super::panic_message(&*panic_payload)
             );
             tracing::error!("{}", msg);
-            log_for_panic.error(&msg);
-            NodeAddResult::failure(log_for_panic.path(), msg)
+            log.error(&msg);
+            NodeAddResult::failure(log.path(), msg)
         }
     }
 }
@@ -1361,10 +1349,7 @@ async fn process_node_add(
     .await
     {
         Ok(result) => result,
-        Err(msg) => {
-            ctx.announcer.log().error(&msg);
-            NodeAddResult::failure(ctx.announcer.log().path(), msg)
-        }
+        Err(msg) => record_add_failure(&ctx.announcer, msg),
     }
 }
 
@@ -1430,7 +1415,11 @@ async fn process_node_add_inner(
     // consumed modules peppygen generates, so it must resolve through the
     // repository cache instead, and exposure is re-checked against the exact
     // configs the generator consumes.
-    let (repo_resolved, repo_provenance, _) = materialize_repo_deps(
+    let MaterializedDeps {
+        configs: repo_resolved,
+        provenance: repo_provenance,
+        ..
+    } = materialize_repo_deps(
         &node_config.manifest,
         &ctx.action.node_stack,
         &ctx.action.peppy_dirs,
@@ -1500,7 +1489,7 @@ async fn process_node_add_inner(
     let git_hash = goal.git_hash.clone();
     let peppy_dirs = ctx.action.peppy_dirs.clone();
     run_staged_job(generation, move |staging_dir| {
-        generate_peppygen_for_node(
+        generator::generate_peppygen_lib(
             language,
             staging_dir,
             consumed_interfaces,
@@ -1718,5 +1707,83 @@ mod tests {
 
         let err = download_http_bundle(&url, &dest, None, None).unwrap_err();
         assert!(err.contains("404"), "error should carry the status: {err}");
+    }
+
+    #[test]
+    fn node_config_path_names_a_json5_file_or_a_directory() {
+        let cases = [
+            ("nodes/camera", "nodes/camera/peppy.json5"),
+            ("nodes/camera/custom.json5", "nodes/camera/custom.json5"),
+            ("nodes/camera/CUSTOM.JSON5", "nodes/camera/CUSTOM.JSON5"),
+            ("nodes/camera.json", "nodes/camera.json/peppy.json5"),
+        ];
+        for (repo_path, expected) in cases {
+            assert_eq!(
+                node_config_path(Path::new(repo_path)),
+                PathBuf::from(expected),
+                "repo path {repo_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn download_progress_line_formats_known_and_unknown_totals() {
+        let cases = [
+            (512, None, "Downloading: 512 B"),
+            (1, Some(4), "Downloading: 1 B / 4 B (25%)"),
+            (7, Some(0), "Downloading: 7 B / 0 B (0%)"),
+            (
+                3 * 1024 * 1024 / 2,
+                Some(3 * 1024 * 1024),
+                "Downloading: 1.5 MB / 3.0 MB (50%)",
+            ),
+        ];
+        for (downloaded, total, expected) in cases {
+            assert_eq!(download_progress_line(downloaded, total), expected);
+        }
+    }
+
+    #[test]
+    fn decode_sha256_hex_refuses_non_hex_digits() {
+        let err = decode_sha256_hex(&"z".repeat(64)).unwrap_err();
+        assert!(err.contains("not a hexadecimal string"), "{err}");
+    }
+
+    #[test]
+    fn decode_sha256_hex_accepts_either_case() {
+        let lower = "0123456789abcdef".repeat(4);
+        let decoded = decode_sha256_hex(&lower).expect("lowercase hex decodes");
+        assert_eq!(decoded.len(), 32);
+        assert_eq!(
+            &decoded[..8],
+            &[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]
+        );
+        assert_eq!(
+            decode_sha256_hex(&lower.to_uppercase()).expect("uppercase hex decodes"),
+            decoded
+        );
+    }
+
+    /// The digest is decoded before any request is sent, so a malformed one
+    /// is refused without downloading anything.
+    #[test]
+    fn download_http_bundle_refuses_a_non_hex_sha256() {
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .times(0)
+                .respond_with(status_code(200)),
+        );
+
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("bundle.tar.zst");
+
+        let err = download_http_bundle(&url, &dest, Some(&"g".repeat(64)), None).unwrap_err();
+        assert!(err.contains("Invalid SHA256"), "{err}");
+        assert!(
+            !dest.exists(),
+            "nothing is downloaded for a malformed digest"
+        );
     }
 }

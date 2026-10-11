@@ -116,6 +116,17 @@ struct OwnershipState {
     slice: Option<LaunchIdentity>,
 }
 
+impl OwnershipState {
+    /// Whether the current slice came from the launch `held` reserves this
+    /// daemon for, driven by the coordinator holding that reservation.
+    fn slice_came_from(&self, held: &HeldReservation) -> bool {
+        self.slice.as_ref().is_some_and(|slice| {
+            slice.launch_id == held.launch_id
+                && slice.coordinator_core_node == held.coordinator_core_node
+        })
+    }
+}
+
 /// Outcome of [`SliceOwnership::try_reserve`].
 #[derive(Debug, Clone)]
 pub enum ReserveOutcome {
@@ -292,11 +303,7 @@ impl SliceOwnership {
             return Ok(admission);
         };
         if launch_id == Some(held.launch_id.as_str()) {
-            let holds_slice = state.slice.as_ref().is_some_and(|slice| {
-                slice.launch_id == held.launch_id
-                    && slice.coordinator_core_node == held.coordinator_core_node
-            });
-            if holds_slice {
+            if state.slice_came_from(held) {
                 return Ok(admission);
             }
             return Err(format!(
@@ -336,6 +343,18 @@ impl SliceOwnership {
             .slice
             .clone()
             .filter(|slice| slice.launch_id == launch_id)
+    }
+
+    /// Whether this daemon is reserved for `launch_id` and its current slice
+    /// came from that launch, driven by the coordinator holding the
+    /// reservation. Both are read under one lock, so a release or a reset
+    /// cannot pair a reservation with a slice from another moment.
+    pub(crate) fn holds_slice_of(&self, launch_id: &str) -> bool {
+        let state = self.state.lock();
+        state
+            .reservation
+            .as_ref()
+            .is_some_and(|held| held.launch_id == launch_id && state.slice_came_from(held))
     }
 
     /// The reservation currently held, as `(launch_id, coordinator)`.
@@ -678,6 +697,37 @@ mod tests {
         ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-8"));
         ownership.try_reserve("launch-a", "cn-robot-7");
         assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_err());
+    }
+
+    /// A launch holds a slice of this daemon only while it holds the
+    /// reservation and the slice came from it, driven by the same
+    /// coordinator.
+    #[test]
+    fn a_launch_holds_the_slice_only_beside_its_reservation() {
+        let ownership = SliceOwnership::new("cn-held");
+        assert!(!ownership.holds_slice_of("launch-a"), "nothing is reserved");
+
+        ownership.try_reserve("launch-a", "cn-robot-7");
+        assert!(!ownership.holds_slice_of("launch-a"), "no slice has begun");
+
+        ownership.record_slice(LaunchIdentity::new("launch-b", "cn-robot-7"));
+        assert!(
+            !ownership.holds_slice_of("launch-a"),
+            "the slice came from another launch"
+        );
+
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-8"));
+        assert!(
+            !ownership.holds_slice_of("launch-a"),
+            "the slice came from another coordinator"
+        );
+
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
+        assert!(ownership.holds_slice_of("launch-a"));
+        assert!(
+            !ownership.holds_slice_of("launch-b"),
+            "the reservation belongs to another launch"
+        );
     }
 
     #[test]

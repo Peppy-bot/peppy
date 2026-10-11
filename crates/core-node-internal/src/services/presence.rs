@@ -16,7 +16,7 @@ const NAME_COLLISION_ALARM_COOLDOWN: Duration = Duration::from_secs(60);
 ///
 /// A liveliness query is answered from the local router's token registry,
 /// which converges only after the router's configured `connect` links come up
-/// and their declaration exchange flushes — so a daemon booting into an
+/// and their declaration exchange flushes, so a daemon booting into an
 /// established mesh would otherwise win a one-horse election and commit
 /// before the incumbent's token arrives. Holding the candidacy open until
 /// the view has been clean for this long makes "whoever committed first
@@ -128,8 +128,8 @@ pub(crate) async fn claim_name(
     // check-then-declare gap. A committed (non-candidate) token always wins;
     // otherwise simultaneous candidates deterministically keep only the
     // smallest generation id. The winner waits until losers have dropped
-    // their candidate tokens — and until the settle window has passed with a
-    // clean view — before committing its real presence token.
+    // their candidate tokens, and until the settle window has passed with a
+    // clean view, before committing its real presence token.
     //
     // Every read is first vetted for self-visibility: we hold our candidate
     // token live, so a read that does not report it is degraded (a query
@@ -198,7 +198,7 @@ pub(crate) async fn claim_name(
 
         // Waiting on the settle clock is paced; waiting only for a losing
         // candidate to drop its token is not (that is sub-millisecond on the
-        // same broker, and the pre-settle behavior).
+        // same broker).
         if claimed_at.elapsed() < settle {
             tokio::time::sleep(NAME_CLAIM_SETTLE_POLL).await;
         } else {
@@ -405,7 +405,7 @@ mod tests {
         );
     }
 
-    /// A clean settle window commits — after, not before, the window passes —
+    /// A clean settle window commits after the window passes, not before,
     /// and a zero window commits immediately (the standalone-router path).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn settling_claim_commits_after_a_clean_window() {
@@ -435,9 +435,8 @@ mod tests {
     /// The election must arbitrate only on liveliness reads that contain our
     /// own live candidate token. A read without it is degraded (a query that
     /// timed out under load returns an empty or partial reply set) and proves
-    /// nothing about the name. Refusing on such a read was the CI-only boot
-    /// flake: a starved single-daemon boot saw an empty read and misdiagnosed
-    /// its own free name as taken.
+    /// nothing about the name. Refusing on such a read would make a starved
+    /// single-daemon boot misdiagnose its own free name as taken.
     #[test]
     fn claim_arbitration_treats_a_read_without_our_candidate_as_inconclusive() {
         assert_eq!(

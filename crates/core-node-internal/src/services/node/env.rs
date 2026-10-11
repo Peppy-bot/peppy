@@ -12,8 +12,10 @@ pub(crate) const PEPPY_APPTAINER_BIN_ENV_VAR: &str = "PEPPY_APPTAINER_BIN";
 pub(crate) const PEPPY_NODE_NAME_ENV_VAR: &str = "PEPPY_NODE_NAME";
 pub(crate) const PEPPY_NODE_TAG_ENV_VAR: &str = "PEPPY_NODE_TAG";
 
-/// Validates environment variables, rejecting any that are in the forbidden list.
-/// Returns an error if any forbidden env var is found.
+/// Parses the env vars of a goal: trims each key and refuses an empty key, a
+/// key holding `=` or a NUL byte, a value holding a NUL byte, and a key in
+/// [`FORBIDDEN_ENV_KEYS`] (compared case-insensitively). Returns the pairs
+/// with trimmed keys.
 pub(crate) fn validate_goal_env_vars(
     env_vars: &[(String, String)],
 ) -> Result<Vec<(String, String)>> {

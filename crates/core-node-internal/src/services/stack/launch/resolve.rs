@@ -9,14 +9,10 @@ use core_node_api::encoding::{LaunchFeedbackStep, LaunchGoal, LauncherOrigin, Pl
 use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
 use daemon_config::repository::{DeploymentRoot, PinnedItem};
-use parking_lot::Mutex as StdMutex;
+use parking_lot::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-
-fn deployment_label(deployment: &Deployment) -> String {
-    deployment.source.label()
-}
 
 /// The launcher as the coordinator read it: the document its copies join
 /// onto, the composition the launch selection produced, and where each
@@ -37,6 +33,8 @@ pub(in crate::services::stack) struct ParsedLaunch {
 /// caller that resolved selections itself could do so for a filesystem
 /// launcher and not for a repository one, and the two origins would drift
 /// into meaning different things.
+///
+/// Every refusal is published as the launch's error before it is returned.
 pub(in crate::services::stack) async fn parse_launcher_config(
     ctx: &StackChangeContext,
     goal: &LaunchGoal,
@@ -48,76 +46,66 @@ pub(in crate::services::stack) async fn parse_launcher_config(
     )
     .await;
 
-    let launch_file = match resolve_launcher_origin(ctx, &goal.launcher_origin).await {
-        Ok(path) => path,
-        Err(msg) => {
-            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(msg);
-        }
-    };
+    let parsed = read_launcher_config(ctx, goal).await;
+    if let Err(reason) = &parsed {
+        publish_error(ctx, reason, LaunchFeedbackStep::LauncherStep).await;
+    }
+    parsed
+}
+
+/// The steps of [`parse_launcher_config`], which publishes the reason of
+/// whichever step refuses.
+async fn read_launcher_config(
+    ctx: &StackChangeContext,
+    goal: &LaunchGoal,
+) -> std::result::Result<ParsedLaunch, String> {
+    let launch_file = resolve_launcher_origin(ctx, &goal.launcher_origin).await?;
 
     if !launch_file.exists() {
-        let msg = format!("launch file does not exist: {}", launch_file.display());
-        publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(msg);
+        return Err(format!(
+            "launch file does not exist: {}",
+            launch_file.display()
+        ));
     }
 
     if !launch_file.is_file() {
-        let msg = format!("launch file path must be a file: {}", launch_file.display());
-        publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(msg);
+        return Err(format!(
+            "launch file path must be a file: {}",
+            launch_file.display()
+        ));
     }
 
-    let parsed = match PeppyLauncherParser::from_path(&launch_file) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            let msg = format!("Invalid launcher config: {e}");
-            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(msg);
-        }
-    };
+    let parsed = PeppyLauncherParser::from_path(&launch_file)
+        .map_err(|e| format!("Invalid launcher config: {e}"))?;
 
     let prepared = daemon_config::launcher::PreparedLauncher::load(&parsed, &launch_file)
         .map_err(|e| e.to_string())?;
-    let composed = match prepared.launch(&goal.selections, &goal.joins) {
-        Ok(composed) => {
-            if !parsed.components.is_empty() {
-                // The full resolution is echoed before anything runs, so the
-                // operator sees which stack this launch is of, and which
-                // copies, while there is still time to interrupt it.
-                for line in composed.report.selection_lines() {
-                    publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
-                }
-            }
-            composed
+    // Not a parse failure: the document was already read fine. The
+    // composition errors themselves name the axis and its options, so the
+    // prefix only says which step refused.
+    let composed = prepared
+        .launch(&goal.selections, &goal.joins)
+        .map_err(|e| format!("Cannot resolve the launcher's components: {e}"))?;
+    if !parsed.components.is_empty() {
+        // The full resolution is echoed before anything runs, so the
+        // operator sees which stack this launch is of, and which copies,
+        // while there is still time to interrupt it.
+        for line in composed.report.selection_lines() {
+            publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
         }
-        Err(e) => {
-            // Not a parse failure: the document was already read fine. The
-            // composition errors themselves name the axis and its options,
-            // so the prefix only says which step refused.
-            let msg = format!("Cannot resolve the launcher's components: {e}");
-            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(msg);
-        }
-    };
+    }
 
     let copy_names: Vec<&str> = composed
         .copies()
         .iter()
         .map(|copy| copy.name.as_str())
         .collect();
-    let placements = match resolve_placements(
+    let placements = resolve_placements(
         &composed.launcher,
         goal,
         &copy_names,
         ctx.bound_core_node.as_str(),
-    ) {
-        Ok(placements) => placements,
-        Err(msg) => {
-            publish_error(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(msg);
-        }
-    };
+    )?;
 
     Ok(ParsedLaunch {
         prepared,
@@ -130,9 +118,9 @@ pub(in crate::services::stack) async fn parse_launcher_config(
 /// asked for, then resolves every instance to the core node it runs on.
 ///
 /// The coordinator owns this, not the CLI, and it owns the EXPANSION as well as
-/// the check. Only the daemon has the resolved document — a `Repository`
+/// the check. Only the daemon has the resolved document: a `Repository`
 /// launcher (the shape every hub launcher uses) is read from the daemon's own
-/// repo cache and the CLI may never have seen it — so `--local` arrives as an
+/// repo cache, and the CLI may never have seen it. So `--local` arrives as an
 /// intent and is expanded here against what the document actually declares.
 /// Expanding it caller-side would work for a file launcher and silently do
 /// nothing for a repository one.
@@ -195,7 +183,7 @@ pub(in crate::services::stack) fn resolve_placements(
 ///
 /// The `--place` targets are VALIDATED here, not taken on trust. They arrived
 /// on the wire, and while the CLI checks what a user types, a daemon cannot
-/// assume its caller was the CLI — this is where an unchecked name would
+/// assume its caller was the CLI: this is where an unchecked name would
 /// otherwise enter the plan and be stamped onto every producer address.
 fn wire_core_node_links<'a>(
     placement: &PlacementSpec,
@@ -276,11 +264,10 @@ fn wire_core_node_links<'a>(
 ///
 /// `Fs` is a no-op; `Repository` looks up the launcher in the cache and, for git-sourced
 /// entries, materializes the checkout via `ensure_checkout`. Progress lines emitted by the
-/// (blocking) checkout STREAM to the launch feedback topic as they happen — a slow clone
-/// used to buffer them until the checkout returned, leaving the CLI watchdog staring at
-/// silence for the whole download. `activity_notify: None` is correct here: no daemon
-/// idle watcher runs during resolve; the streaming exists for the CLI watchdog, which
-/// resets on any published feedback.
+/// (blocking) checkout STREAM to the launch feedback topic as they happen, so a slow clone
+/// keeps the CLI watchdog fed for the whole download. `activity_notify: None` is correct
+/// here: no daemon idle watcher runs during resolve; the streaming exists for the CLI
+/// watchdog, which resets on any published feedback.
 async fn resolve_launcher_origin(
     ctx: &StackChangeContext,
     origin: &LauncherOrigin,
@@ -365,7 +352,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
         if deployment.instances.is_empty() {
             planning_errors.push(format!(
                 "deployment {} must have at least one instance",
-                deployment_label(&deployment)
+                deployment.source.label()
             ));
             continue;
         }
@@ -375,8 +362,8 @@ pub(in crate::services::stack) async fn resolve_deployments(
         // `resolve_launcher_origin` uses) so a slow clone shows live progress
         // instead of a silent stretch that trips the CLI watchdog. The
         // forwarder is drained before the "resolved" line below is published,
-        // preserving the old per-deployment ordering. Single channel, single
-        // consumer: lines stay in emission order.
+        // so each deployment's progress lines come before its "resolved"
+        // line. Single channel, single consumer: lines stay in emission order.
         let (feedback_tx, forwarder) = spawn_feedback_forwarder(
             &ctx.feedback_publisher,
             LaunchFeedbackStep::LauncherStep,
@@ -427,7 +414,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
                 DeploymentSource::Exposures { .. } => format!(
                     "duplicate deployment: {} are already deployed as {}; to serve one set on \
                      several hosts, declare one deployment with one instance per host",
-                    deployment_label(&deployment),
+                    deployment.source.label(),
                     key.label()
                 ),
             });
@@ -518,7 +505,7 @@ async fn resolve_one(
     node_entries: &Arc<Vec<repo_cache::NodeCacheEntry>>,
     feedback_tx: &tokio::sync::mpsc::UnboundedSender<FeedbackLine>,
 ) -> std::result::Result<ResolvedDeployment, String> {
-    let label = deployment_label(deployment);
+    let label = deployment.source.label();
     let remote = has_remote_instances(deployment, placements);
     let feedback: crate::services::node::cache::MaterializeFeedback =
         Arc::new(unlogged_step_sink(feedback_tx.clone()));
@@ -612,7 +599,7 @@ pub(in crate::services::stack) async fn mint_doc_pins(
     // caches, on one blocking thread: both are read and parsed per load, and
     // a launch with N deployments otherwise paid N of each, sequentially, on
     // the critical path.
-    let collected = Arc::new(StdMutex::new(Vec::<String>::new()));
+    let collected = Arc::new(Mutex::new(Vec::<String>::new()));
     let sets: Vec<Vec<config::node::Manifest>> = planned
         .iter()
         .map(|item| item.pin_manifests.clone())
@@ -641,19 +628,21 @@ pub(in crate::services::stack) async fn mint_doc_pins(
 
     let mut problems: Vec<String> = Vec::new();
     for (item, minted) in planned.iter_mut().zip(minted) {
-        let label = deployment_label(&item.deployment);
-        match minted {
-            Ok(doc_pins) => {
-                if has_remote_instances(&item.deployment, placements)
-                    && let Err(reason) = refuse_unportable_pins(&label, doc_pins.iter())
-                {
-                    problems.push(reason);
-                    continue;
-                }
-                item.closure_pins.extend(doc_pins);
+        let label = item.deployment.source.label();
+        let doc_pins = match minted {
+            Ok(doc_pins) => doc_pins,
+            Err(reason) => {
+                problems.push(format!("deployment {label}: {reason}"));
+                continue;
             }
-            Err(reason) => problems.push(format!("deployment {label}: {reason}")),
+        };
+        if has_remote_instances(&item.deployment, placements)
+            && let Err(reason) = refuse_unportable_pins(&label, doc_pins.iter())
+        {
+            problems.push(reason);
+            continue;
         }
+        item.closure_pins.extend(doc_pins);
     }
     if !problems.is_empty() {
         let msg = daemon_config::format_bulleted(&problems);
@@ -666,10 +655,9 @@ pub(in crate::services::stack) async fn mint_doc_pins(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::stack::fixtures::{placements_with, test_root_pin};
     use daemon_config::launcher::{DeploymentInstance, DeploymentSource};
-    use daemon_config::repository::{
-        EntryOrigin, GitCommit, ItemName, ItemTag, ManifestFingerprint, PinKind, RepoRelativePath,
-    };
+    use daemon_config::repository::EntryOrigin;
 
     fn source(json5: &str) -> DeploymentSource {
         serde_json5::from_str(json5).expect("valid deployment source")
@@ -687,33 +675,13 @@ mod tests {
         }
     }
 
-    fn placed(pairs: &[(&str, &str)]) -> Placements {
-        Placements::new(
-            core_node("cn-robot"),
-            pairs
-                .iter()
-                .map(|(id, target)| ((*id).to_owned(), core_node(target)))
-                .collect(),
-        )
-    }
-
-    fn test_pin(origin: EntryOrigin) -> PinnedItem {
-        PinnedItem {
-            kind: PinKind::Node,
-            name: ItemName::parse("planner").expect("valid name"),
-            tag: ItemTag::parse("v1").expect("valid tag"),
-            sha256: ManifestFingerprint::parse(&"a".repeat(64)).expect("valid sha"),
-            origin,
-        }
-    }
-
     /// A deployment with every instance on the coordinator obliges its pins
     /// to nothing; one with any instance elsewhere obliges every pin it
     /// resolves to to be readable off this machine.
     #[test]
     fn only_off_coordinator_instances_oblige_portable_pins() {
         let local_only = deployment(r#"{ name: "planner", tag: "v1" }"#, &["planner_1"]);
-        let placements = placed(&[("cam_cloud", "cn-atlas")]);
+        let placements = placements_with("cn-robot", &[("cam_cloud", "cn-atlas")]);
         assert!(!has_remote_instances(&local_only, &placements));
 
         let split = deployment(
@@ -728,21 +696,18 @@ mod tests {
     /// machine can read, and the message says what still works.
     #[test]
     fn a_filesystem_backed_pin_is_refused_for_a_remote_placement() {
-        let fs_pin = test_pin(EntryOrigin::Fs {
-            path: "/repo/planner/peppy.json5".into(),
-        });
+        let fs_pin = PinnedItem {
+            origin: EntryOrigin::Fs {
+                path: "/repo/planner/peppy.json5".into(),
+            },
+            ..test_root_pin("planner")
+        };
         let error = refuse_unportable_pins("planner:v1", std::iter::once(&fs_pin))
             .expect_err("a filesystem origin cannot cross machines");
         assert!(error.contains("coordinator's filesystem"), "got: {error}");
         assert!(error.contains("git repository"), "got: {error}");
 
-        let git_pin = test_pin(EntryOrigin::Git {
-            repo_url: "https://example.com/hub".to_owned(),
-            repo_ref: Some("main".to_owned()),
-            read_ref: Some(core_node_api::encoding::ReadRef::Named("main".to_owned())),
-            commit: GitCommit::parse(&"b".repeat(40)).expect("valid commit"),
-            path: RepoRelativePath::parse("planner/peppy.json5").expect("valid path"),
-        });
+        let git_pin = test_root_pin("planner");
         assert!(refuse_unportable_pins("planner:v1", std::iter::once(&git_pin)).is_ok());
     }
 
@@ -767,7 +732,7 @@ mod tests {
 
     /// The case the CLI cannot serve: `--local` against a launcher whose
     /// document only the coordinator has read. Expanding here is what makes
-    /// `peppy stack launch --local <name>` work at all — a repository launcher
+    /// `peppy stack launch --local <name>` work at all: a repository launcher
     /// is the shape every hub launcher uses, and the CLI never sees it.
     #[test]
     fn local_wires_every_declared_link_to_the_coordinator() {
@@ -827,7 +792,7 @@ mod tests {
     }
 
     /// Every declared link is wired here, so the only thing left to object to
-    /// is the extra one — which is what isolates this rule from the
+    /// is the extra one, which is what isolates this rule from the
     /// unwired-link check that runs before it.
     #[test]
     fn placing_a_link_the_launcher_does_not_declare_is_refused() {
