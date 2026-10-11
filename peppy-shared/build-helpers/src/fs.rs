@@ -1,5 +1,6 @@
 //! Filesystem helpers: cache directories, change-aware writes/copies, and locking.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Returns a cache directory under `~/.peppy/tmp/{suffix}`, creating it if needed.
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 /// current user. Suffixes must therefore be unique across consumer crates and
 /// version-keyed when their contents are version-specific (existing
 /// convention: `ruff-{version}`, `lima-{version}-{os}-{arch}`). Nothing ever
-/// cleans the cache — stale entries persist until removed manually with
+/// cleans the cache: stale entries persist until removed manually with
 /// `rm -rf ~/.peppy/tmp/<suffix>`. In production runs the peppy runtime's
 /// `PeppyDirs::tmp_dir()` (peppy `daemon-config`) resolves to the same
 /// `~/.peppy/tmp`, so neither side may ever bulk-clean the directory.
@@ -76,7 +77,16 @@ pub fn write_if_changed(path: &Path, contents: &[u8]) -> bool {
     true
 }
 
+/// Size of the blocks in which [`files_are_identical`] compares two files.
+///
+/// Build scripts compare tool binaries of tens of megabytes, which a read of
+/// each whole file would hold in memory twice.
+const COMPARE_BLOCK_BYTES: usize = 64 * 1024;
+
 /// Returns `true` if both files exist, have the same size, and identical content.
+///
+/// The content is compared block by block, and the comparison stops at the
+/// first block that differs.
 fn files_are_identical(a: &Path, b: &Path) -> bool {
     let Ok(a_meta) = std::fs::metadata(a) else {
         return false;
@@ -87,13 +97,45 @@ fn files_are_identical(a: &Path, b: &Path) -> bool {
     if a_meta.len() != b_meta.len() {
         return false;
     }
-    let Ok(a_bytes) = std::fs::read(a) else {
+    let Ok(mut a_file) = std::fs::File::open(a) else {
         return false;
     };
-    let Ok(b_bytes) = std::fs::read(b) else {
+    let Ok(mut b_file) = std::fs::File::open(b) else {
         return false;
     };
-    a_bytes == b_bytes
+    let mut a_block = vec![0; COMPARE_BLOCK_BYTES];
+    let mut b_block = vec![0; COMPARE_BLOCK_BYTES];
+    loop {
+        let Ok(a_len) = read_block(&mut a_file, &mut a_block) else {
+            return false;
+        };
+        let Ok(b_len) = read_block(&mut b_file, &mut b_block) else {
+            return false;
+        };
+        if a_block[..a_len] != b_block[..b_len] {
+            return false;
+        }
+        // The two blocks are equal, so a block shorter than the buffer is
+        // the end of both files.
+        if a_len < COMPARE_BLOCK_BYTES {
+            return true;
+        }
+    }
+}
+
+/// Fills `block` from `reader` and returns how many bytes it holds, which is
+/// fewer than `block.len()` only at the end of the input.
+fn read_block(reader: &mut impl Read, block: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < block.len() {
+        match reader.read(&mut block[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(filled)
 }
 
 /// Copy `src` to `dst` only if `dst` does not exist or differs in size/content.
@@ -182,7 +224,7 @@ fn move_file_with(src: &Path, dst: &Path, rename: impl Fn(&Path, &Path) -> std::
 /// Acquire an exclusive file lock for serializing concurrent build invocations.
 ///
 /// Creates the lock directory if needed, opens the lock file, and acquires
-/// an exclusive lock. Returns the `File` handle — the lock is held as long
+/// an exclusive lock. Returns the `File` handle; the lock is held as long
 /// as the handle is alive.
 pub fn acquire_file_lock(lock_path: &Path) -> std::fs::File {
     let lock_dir = lock_path
@@ -343,6 +385,97 @@ mod tests {
             std::fs::read(&dst).expect("read dst"),
             b"much longer payload"
         );
+    }
+
+    /// Payload sizes that span several comparison blocks: one that ends on a
+    /// block boundary and one that ends inside a block.
+    const MULTI_BLOCK_SIZES: [usize; 2] = [2 * COMPARE_BLOCK_BYTES, 2 * COMPARE_BLOCK_BYTES + 1];
+
+    /// A payload of `size` bytes whose bytes are not all equal, so a
+    /// comparison that skips or repeats a block sees a difference.
+    fn multi_block_payload(size: usize) -> Vec<u8> {
+        (0..size).map(|index| (index % 251) as u8).collect()
+    }
+
+    /// The skip check at the edges of the block comparison: an empty file, a
+    /// file that ends on a block boundary, and a file that ends inside a block.
+    #[test]
+    fn copy_if_changed_skips_identical_dst_at_block_edges() {
+        for size in [0, 2 * COMPARE_BLOCK_BYTES, 2 * COMPARE_BLOCK_BYTES + 1] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let src = dir.path().join("src.bin");
+            let dst = dir.path().join("dst.bin");
+            std::fs::write(&src, multi_block_payload(size)).expect("write src");
+            assert!(copy_if_changed(&src, &dst), "size {size}");
+            assert!(!copy_if_changed(&src, &dst), "size {size}");
+        }
+    }
+
+    #[test]
+    fn copy_if_changed_recopies_when_only_the_last_byte_differs() {
+        for size in MULTI_BLOCK_SIZES {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let src = dir.path().join("src.bin");
+            let dst = dir.path().join("dst.bin");
+            let mut payload = multi_block_payload(size);
+            std::fs::write(&src, &payload).expect("write src");
+            assert!(copy_if_changed(&src, &dst), "size {size}");
+            *payload.last_mut().expect("payload is not empty") ^= 0xff;
+            std::fs::write(&src, &payload).expect("rewrite src");
+            assert!(copy_if_changed(&src, &dst), "size {size}");
+            assert_eq!(std::fs::read(&dst).expect("read dst"), payload);
+        }
+    }
+
+    /// A reader that hands out its bytes one at a time and fails with
+    /// `Interrupted` before each one, the way a signal can split a read.
+    struct TrickleReader {
+        bytes: &'static [u8],
+        is_interrupt_due: bool,
+    }
+
+    impl Read for TrickleReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.is_interrupt_due {
+                self.is_interrupt_due = false;
+                return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+            }
+            self.is_interrupt_due = true;
+            let (Some(&byte), Some(slot)) = (self.bytes.first(), buf.first_mut()) else {
+                return Ok(0);
+            };
+            *slot = byte;
+            self.bytes = &self.bytes[1..];
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn read_block_fills_the_block_across_short_and_interrupted_reads() {
+        let mut reader = TrickleReader {
+            bytes: b"abcde",
+            is_interrupt_due: true,
+        };
+        let mut block = [0; 3];
+
+        assert_eq!(read_block(&mut reader, &mut block).expect("first block"), 3);
+        assert_eq!(&block, b"abc");
+        assert_eq!(read_block(&mut reader, &mut block).expect("last block"), 2);
+        assert_eq!(&block[..2], b"de");
+        assert_eq!(read_block(&mut reader, &mut block).expect("at the end"), 0);
+    }
+
+    #[test]
+    fn read_block_returns_an_error_other_than_interrupted() {
+        struct FailingReader;
+        impl Read for FailingReader {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            }
+        }
+
+        let error = read_block(&mut FailingReader, &mut [0; 3]).expect_err("read fails");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     #[test]

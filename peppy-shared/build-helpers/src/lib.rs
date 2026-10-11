@@ -8,7 +8,7 @@
 //! consumer instead, so this crate stays free of reverse paths into `peppy`.
 //!
 //! Functionality is grouped into focused submodules and re-exported flat so
-//! build scripts can keep calling `build_helpers::<fn>`.
+//! build scripts call `build_helpers::<fn>`.
 
 #![forbid(unsafe_code)]
 

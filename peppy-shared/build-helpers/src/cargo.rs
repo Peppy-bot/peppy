@@ -61,20 +61,12 @@ enum CapnpPlatform {
 impl CapnpPlatform {
     /// Returns the platform on which the build script itself is running.
     fn current_host() -> Option<Self> {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        {
-            return Some(Self::LinuxX86_64);
+        match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("linux", "x86_64") => Some(Self::LinuxX86_64),
+            ("linux", "aarch64") => Some(Self::LinuxAarch64),
+            ("macos", "aarch64") => Some(Self::MacosAarch64),
+            _ => None,
         }
-        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-        {
-            return Some(Self::LinuxAarch64);
-        }
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        {
-            return Some(Self::MacosAarch64);
-        }
-        #[allow(unreachable_code)]
-        None
     }
 
     fn binary_name(self) -> &'static str {
@@ -256,8 +248,8 @@ fn find_peppy_shared_dir(start: &Path) -> Option<PathBuf> {
 /// Uses a separate `CARGO_TARGET_DIR` to avoid lock conflicts with the outer
 /// cargo build. Concurrent installs of the same tool sharing a `cache_dir`
 /// (for example, two worktrees building at once) are serialized with a file
-/// lock — acquisition blocks until the lock is free and panics if the lock
-/// cannot be taken — and the cached binary is published with an atomic
+/// lock (acquisition blocks until the lock is free and panics if the lock
+/// cannot be taken), and the cached binary is published with an atomic
 /// rename so a concurrent reader can never observe a partially written file.
 pub fn cargo_install_binary(
     name: &str,
@@ -341,8 +333,8 @@ fn cargo_install_binary_with(
 
     // Publish atomically: stage next to the cache key, then rename onto it,
     // so the lock-free fast path above never observes a torn binary. The
-    // fixed staging name cannot collide — staging only happens under the
-    // lock — and a leftover from a killed build is truncated by the copy.
+    // fixed staging name cannot collide, because staging only happens under
+    // the lock, and a leftover from a killed build is truncated by the copy.
     let staged = cache_dir.join(format!("{name}-{version}-{target}.tmp"));
     let published = std::fs::copy(&built_binary, &staged)
         .and_then(|_| std::fs::rename(&staged, &cached_binary));
