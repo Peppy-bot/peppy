@@ -233,15 +233,19 @@ async fn listen_for_repo_add_top_sorts_first() {
     assert_eq!(lowest["id"], 999);
 }
 
+/// On an empty list, the added entry takes the 1000 floor whether or not it
+/// asks for top priority.
+#[rstest::rstest]
+#[case::top(true)]
+#[case::no_top(false)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_repo_add_top_on_empty_uses_default_floor() {
+async fn listen_for_repo_add_on_empty_uses_default_floor(#[case] top: bool) {
     let started = start_core_node_with_mock_messenger().await;
     write_repositories_json5(&started, "[]");
 
     let resp = poll_core_node(
         &started,
-        &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
-            .with_top(true),
+        &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead).with_top(top),
     )
     .await;
     assert!(resp.success);
@@ -251,28 +255,7 @@ async fn listen_for_repo_add_top_on_empty_uses_default_floor() {
     assert_eq!(repos.len(), 1);
     assert_eq!(
         repos[0]["id"], 1000,
-        "empty list + top=true should fall back to the 1000 floor"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_repo_add_no_top_on_empty_uses_default_floor() {
-    let started = start_core_node_with_mock_messenger().await;
-    write_repositories_json5(&started, "[]");
-
-    let resp = poll_core_node(
-        &started,
-        &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead),
-    )
-    .await;
-    assert!(resp.success);
-
-    let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
-
-    assert_eq!(repos.len(), 1);
-    assert_eq!(
-        repos[0]["id"], 1000,
-        "empty list + top=false should also fall back to the 1000 floor"
+        "empty list + top={top} should fall back to the 1000 floor"
     );
 }
 
