@@ -12,7 +12,7 @@ use core_node_api::encoding::{
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use gix_url::Url as GitUrl;
 use peppylib::core_node::transport::send_goal;
-use peppylib::messaging::{ActionGoalHandle, MessengerHandle, ResultStatus};
+use peppylib::messaging::{ActionGoalHandle, MessengerHandle};
 use peppylib::services::health::listen_for_node_health;
 use peppylib::{ActionMessenger, PeppyError};
 use std::fmt::Display;
@@ -141,7 +141,8 @@ fn forward_until_closed<F>(
 }
 
 /// Fetches the buffered result of a completed action and decodes it with
-/// `decode`. `what` names the result in the errors.
+/// `decode`. `what` names the result in the errors. A goal that ends without
+/// a result body (abandoned or expired) is an error.
 pub async fn fetch_result<R, E: Display>(
     messenger: &MessengerHandle,
     action_handle: &ActionGoalHandle,
@@ -149,15 +150,10 @@ pub async fn fetch_result<R, E: Display>(
     decode: impl Fn(&[u8]) -> Result<R, E>,
     what: &str,
 ) -> Result<R, String> {
-    let reply = ActionMessenger::request_result(messenger, action_handle, fetch_timeout)
+    let body = ActionMessenger::request_result_body(messenger, action_handle, fetch_timeout)
         .await
         .map_err(|err| format!("Failed to get {what}: {err}"))?;
-    match reply.status {
-        ResultStatus::Completed | ResultStatus::Cancelled => {
-            decode(reply.body.as_ref()).map_err(|err| format!("Failed to decode {what}: {err}"))
-        }
-        other => Err(format!("action did not complete with a result: {other:?}")),
-    }
+    decode(body.as_ref()).map_err(|err| format!("Failed to decode {what}: {err}"))
 }
 
 /// Sends `goal` to the daemon action it belongs to on `core_node_name`, from
