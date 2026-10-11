@@ -171,13 +171,35 @@ pub(super) struct PlannedDeployment {
     /// How this deployment's node reads the sets its slots hold, which the
     /// binding validator holds the launcher to.
     pub(super) addressing: daemon_config::launcher::MemberAddressing,
+    /// The targets the exposures of a built-in MCP deployment serve, which
+    /// the launch checks of daemon scopes read; empty for a node.
+    pub(super) targets: daemon_config::mcp_deployment::DeploymentTargets,
+}
+
+/// The launch checks of daemon scopes over a planned stack: every scope
+/// parsed into its interface's type and held against `prepared`, the
+/// launcher the stack was composed from. A launch and each join run them
+/// once the deployments are resolved and before the link rules, which would
+/// read a link to a daemon target as one to an unknown slot.
+pub(super) fn check_planned_daemon_scopes(
+    prepared: &daemon_config::launcher::PreparedLauncher,
+    planned: &[PlannedDeployment],
+    copies: &CopyMembership,
+) -> Result<(), String> {
+    daemon_config::launcher::check_daemon_scopes(
+        prepared,
+        planned.iter().map(|item| (&item.deployment, &item.targets)),
+        copies,
+    )
+    .map_err(|refusals| refusals.to_string())
 }
 
 /// Process a stack launch request.
 ///
 /// This function orchestrates the complete launch sequence:
 /// 1. Parse launcher configuration
-/// 2. Resolve deployments and mint their node pins
+/// 2. Resolve deployments and mint their node pins, then check the scopes
+///    of the daemon targets
 /// 3. Validate dependencies and compute order, then mint the doc pins
 /// 4. Federated preflight, carrying the pins
 /// 5. Snapshot and clear stack
@@ -214,6 +236,14 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         Ok(result) => result,
         Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
     };
+
+    // Step 2a: The resolution knows which targets are daemon targets, so
+    // every scope is parsed into its interface's type here, before anything
+    // starts.
+    if let Err(reason) = check_planned_daemon_scopes(&prepared, &planned, &copy_membership) {
+        publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return LaunchResult::failure(ctx.log.path(), reason);
+    }
 
     // Step 2b: The clock every instance reads, with a fresh lifetime minted
     // for each simulated domain this launch declares. A replacement therefore

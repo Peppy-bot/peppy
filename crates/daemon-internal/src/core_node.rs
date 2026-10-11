@@ -81,7 +81,7 @@ impl CoreNodeRunner {
         messenger: Arc<Mutex<Messenger>>,
         core_node_name: Option<String>,
         node_startup_timeout: Duration,
-        node_start_health_timeout: Duration,
+        default_setup_timeout: config::node::SetupTimeout,
         root_dir: PathBuf,
         peppy_dirs: PeppyDirs,
         messaging_ready: Option<watch::Receiver<bool>>,
@@ -94,7 +94,7 @@ impl CoreNodeRunner {
     ) -> Self {
         let node_arguments = CoreNodeArguments {
             node_startup_timeout,
-            node_start_health_timeout,
+            default_setup_timeout,
             health_monitor: HEALTH_MONITOR,
             // 10 Hz: high enough to correlate logs across nodes, low enough to
             // avoid flooding the bus.

@@ -142,6 +142,7 @@ Let's go through the different options:
    - `build_cmd`: Command run during the build phase of the node (e.g. via `peppy node build`, `peppy node add --build`, or the combined shorthands `peppy node add -sb` / `-sr`). This is typically the place where you want to run heavy operations like code compilation.
    - `run_cmd`: Command run when a node instance is started
    - `endpoints`: The sockets the node binds during setup, when it serves something an operator opens (see [Serving a page or an MCP endpoint](#serving-a-page-or-an-mcp-endpoint))
+   - `setup_timeout_secs`: Optional. The setup budget of the node: how long the daemon waits for the node's `setup` function to return, from 1 to 540 seconds. Without it, the default setup budget of 15 seconds applies (see [How an instance starts](/guides/node_stack/#how-an-instance-starts))
  - `interfaces`: This is where the interfaces used to communicate with the other nodes are defined
 
 :::note[Tag format]
@@ -186,7 +187,7 @@ Additionally, the tag and name assigned to your node provide contract isolation.
 
 ## Graceful shutdown
 
-A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides/node_stack/#stopping-your-node) stops it on demand, `peppy node add` stops running instances when it replaces a node, the daemon tears every node down when it shuts down cleanly, and a plain `SIGINT`/`SIGTERM` works too. Every one of these paths gives your node the same two things:
+A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides/node_stack/#stopping-your-node) stops it on demand, `peppy node add` stops running instances when it replaces a node, the daemon tears every node down when it shuts down cleanly, the daemon stops a start that it gives up after the node answered ready (a setup that outlasts its [setup budget](/guides/node_stack/#how-an-instance-starts), a `peppy stack reset`), and a plain `SIGINT`/`SIGTERM` works too. Every one of these paths gives your node the same two things:
 
 - The **cancellation token** (`node_runner.cancellation_token()`) fires. This is the signal to *stop working*: have long-running tasks watch it and break out of their loops.
 - **Shutdown hooks** registered with `node_runner.on_shutdown(...)` then run to completion, with messaging still connected. This is where *cleanup* belongs (parking actuators, releasing hardware, flushing state): unlike a task watching the token, a hook is awaited before the node exits on every path above. A node that ends any other way runs no hook: a `SIGKILL`, an abort, the OOM killer and a power cut end the process where it stands. So a hook carries the work only the node can do. An exclusive claim on a device belongs on something the kernel releases when the process dies, such as a file lock. The [shutdown lifecycle guide](/advanced_guides/shutdown/) says what a killed node leaves behind.

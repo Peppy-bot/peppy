@@ -1137,6 +1137,7 @@ dependencies = [
  "const_format",
  "core-node-api",
  "dirs 7.0.0",
+ "jsonschema",
  "peppy-config-model",
  "peppy-mcp-catalog",
  "serde",
@@ -3067,6 +3068,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 name = "mcp-server"
 version = "0.0.1"
 dependencies = [
+ "core-node-api",
  "daemon-config",
  "message-codec",
  "peppy-config-model",
@@ -3077,6 +3079,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "stack-goal",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
@@ -3740,6 +3743,7 @@ dependencies = [
  "serde_json",
  "serde_json5",
  "service-manager",
+ "stack-goal",
  "tempfile",
  "testcontainers",
  "tokio",
@@ -5330,6 +5334,20 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "stack-goal"
+version = "0.0.1"
+dependencies = [
+ "core-node-api",
+ "futures",
+ "peppy-config-model",
+ "peppylib-rs",
+ "pmi",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "static_assertions"

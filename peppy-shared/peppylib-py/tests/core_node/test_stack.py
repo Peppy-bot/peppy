@@ -60,11 +60,19 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
             ],
         }
     ]
+    copy_change = {"action": "join", "name": "bravo", "option": "so101_sim"}
     response = StackListResponse(
-        graph_json, "core", "gen-1", "robo-a", copies, shutdown_grace_secs=11
+        graph_json,
+        "core",
+        "gen-1",
+        "robo-a",
+        copies,
+        shutdown_grace_secs=11,
+        copy_change=copy_change,
     )
     assert response.copies == copies
     assert response.shutdown_grace_secs == 11
+    assert response.copy_change == copy_change
     response_bytes = response.encode()
 
     result = await call_against_stub_service(
@@ -74,6 +82,7 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
     graph = result.graph
     assert result.copies == copies
     assert result.shutdown_grace_secs == 11
+    assert result.copy_change == copy_change
     assert [n["name"] for n in graph["nodes"]] == ["brain", "sensor"]
     brain = next(n for n in graph["nodes"] if n["name"] == "brain")
     assert brain["core_node"] == "core"
@@ -129,6 +138,13 @@ async def _stack_list_with_mixed_state(tmp_path):
     return await call_against_stub_service(
         tmp_path, "stack_list", response_bytes, lambda runner: stack.list(runner, 3.0)
     )
+
+
+@pytest.mark.asyncio
+async def test_stack_list_reports_no_copy_change_while_none_runs(tmp_path):
+    """A daemon whose stack no join or removal holds reports `None`."""
+    result = await _stack_list_with_mixed_state(tmp_path)
+    assert result.copy_change is None
 
 
 @pytest.mark.asyncio

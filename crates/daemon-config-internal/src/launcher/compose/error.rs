@@ -339,6 +339,20 @@ pub enum CompositionError {
     },
 
     #[error(
+        "copy `{copy}` of option `{option}` sets the scope of daemon target `{daemon_target}` on \
+         instance `{instance}` ({origin}); a scope belongs to the stack and lasts as long as it \
+         does, so give it in the launcher's top-level `adjustments`, in an option of an axis \
+         that does not run as copies, or in the instance's own `daemon_scopes`"
+    )]
+    CopySetsDaemonScope {
+        copy: String,
+        option: String,
+        instance: String,
+        daemon_target: String,
+        origin: String,
+    },
+
+    #[error(
         "`--with {word}` names no option of axis `{axis}`, which runs as copies; add one with \
          `peppy stack join OPTION:NAME`, choosing from:{menu}"
     )]

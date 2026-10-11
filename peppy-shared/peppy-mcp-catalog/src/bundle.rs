@@ -42,11 +42,12 @@ pub fn is_canonical_i64_decimal(text: &str) -> bool {
     }
 }
 
-/// The product of validating one exposure document against its contracts:
-/// the public catalog (stable names, prose, policies, derived JSON Schemas)
-/// plus the identity the endpoint advertises and the contract slots its
-/// targets become. A server derives it when it starts, and the catalog
-/// command prints it on demand; it is never an artifact of its own.
+/// The product of validating one exposure document against its contracts
+/// and daemon interfaces: the public catalog (stable names, prose, policies,
+/// derived JSON Schemas) plus the identity the endpoint advertises, the
+/// contract slots its contract targets become and the interfaces its daemon
+/// targets name. A server derives it when it starts, and the catalog command
+/// prints it on demand; it is never an artifact of its own.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawExposureBundle", into = "RawExposureBundle")]
 pub struct ExposureBundle {
@@ -75,13 +76,17 @@ pub struct CallRecordEntry {
     pub keep: u32,
 }
 
-/// What a bundle serves: the contract slots of a fixed surface, or the
-/// robots of a stack, each filling every slot.
+/// What a bundle serves: the contract slots and daemon targets of a fixed
+/// surface, or the robots of a stack, each filling every slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BundleSurface {
-    /// Each slot is filled by the instance a launcher binds to it, and a
-    /// tool call carries the member's own request alone.
-    Fixed { contracts: Vec<BundleContractPin> },
+    /// Each slot is filled by the instance a launcher binds to it, each
+    /// daemon target by the daemon that started the server, and a tool call
+    /// carries the member's own request alone.
+    Fixed {
+        contracts: Vec<BundleContractPin>,
+        daemon_targets: Vec<BundleDaemonTarget>,
+    },
     /// Every slot is a `zero_or_more` slot the stack's robots fill, and
     /// every tool takes the robot's name.
     PerRobot {
@@ -91,11 +96,20 @@ pub enum BundleSurface {
 }
 
 impl BundleSurface {
-    /// The contract slot of every target, in catalog order.
+    /// The contract slot of every contract target, in catalog order. A
+    /// daemon target has no slot and is not in it.
     pub fn contracts(&self) -> Vec<&BundleContractPin> {
         match self {
-            Self::Fixed { contracts } => contracts.iter().collect(),
+            Self::Fixed { contracts, .. } => contracts.iter().collect(),
             Self::PerRobot { contracts, .. } => contracts.iter().map(|pin| &pin.pin).collect(),
+        }
+    }
+
+    /// Every daemon target, in catalog order: empty on a per-robot surface.
+    pub fn daemon_targets(&self) -> &[BundleDaemonTarget] {
+        match self {
+            Self::Fixed { daemon_targets, .. } => daemon_targets,
+            Self::PerRobot { .. } => &[],
         }
     }
 }
@@ -112,9 +126,13 @@ struct RawExposureBundle {
     server: BundleServer,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     robots: Option<RobotCatalog>,
-    /// The contract slot each logical target becomes: one slot per pin,
+    /// The contract slot each contract target becomes: one slot per pin,
     /// with the pin's `link_id` as the slot the launcher fills.
     contracts: Vec<RawBundleContractPin>,
+    /// The daemon interface each daemon target names, which a fixed surface
+    /// alone takes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    daemon_targets: Vec<BundleDaemonTarget>,
     resources: Vec<ResourceEntry>,
     tools: Vec<ToolEntry>,
     tasks: Vec<TaskEntry>,
@@ -129,6 +147,13 @@ impl TryFrom<RawExposureBundle> for ExposureBundle {
 
     fn try_from(raw: RawExposureBundle) -> Result<Self, String> {
         let surface = match raw.robots {
+            Some(_) if !raw.daemon_targets.is_empty() => {
+                return Err(format!(
+                    "daemon target `{}` is on a per-robot surface; a daemon target belongs to a \
+                     bundle without `robots`",
+                    raw.daemon_targets[0].target
+                ));
+            }
             Some(robots) => BundleSurface::PerRobot {
                 robots,
                 contracts: raw
@@ -150,7 +175,10 @@ impl TryFrom<RawExposureBundle> for ExposureBundle {
                     }
                     contracts.push(RobotContractPin::from(pin).pin);
                 }
-                BundleSurface::Fixed { contracts }
+                BundleSurface::Fixed {
+                    contracts,
+                    daemon_targets: raw.daemon_targets,
+                }
             }
         };
         Ok(Self {
@@ -170,13 +198,17 @@ impl TryFrom<RawExposureBundle> for ExposureBundle {
 
 impl From<ExposureBundle> for RawExposureBundle {
     fn from(bundle: ExposureBundle) -> Self {
-        let (robots, contracts) = match bundle.surface {
-            BundleSurface::Fixed { contracts } => (
+        let (robots, contracts, daemon_targets) = match bundle.surface {
+            BundleSurface::Fixed {
+                contracts,
+                daemon_targets,
+            } => (
                 None,
                 contracts
                     .into_iter()
                     .map(|pin| RawBundleContractPin::new(pin, None))
                     .collect(),
+                daemon_targets,
             ),
             BundleSurface::PerRobot { robots, contracts } => (
                 Some(robots),
@@ -184,6 +216,7 @@ impl From<ExposureBundle> for RawExposureBundle {
                     .into_iter()
                     .map(|pin| RawBundleContractPin::new(pin.pin, pin.argument))
                     .collect(),
+                Vec::new(),
             ),
         };
         Self {
@@ -193,6 +226,7 @@ impl From<ExposureBundle> for RawExposureBundle {
             server: bundle.server,
             robots,
             contracts,
+            daemon_targets,
             resources: bundle.resources,
             tools: bundle.tools,
             tasks: bundle.tasks,
@@ -275,6 +309,17 @@ pub struct BundleContractPin {
     pub tag: String,
     pub sha256: String,
     pub link_id: String,
+}
+
+/// One daemon target: the target's name, and the daemon interface it draws
+/// its members from. The daemon that started the server serves it, so it
+/// takes no slot and no pin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleDaemonTarget {
+    pub target: String,
+    pub name: String,
+    pub tag: String,
 }
 
 /// One pinned contract slot of a per-robot surface, and how a robot fills it.
@@ -682,6 +727,62 @@ mod tests {
         let reparsed = ExposureBundle::from_json_str(&bundle.to_json_string())
             .expect("round trips through its wire shape");
         assert_eq!(reparsed, bundle);
+    }
+
+    /// `minimal_bundle_json` with the daemon target `stack` beside its slot.
+    fn bundle_with_daemon_target() -> String {
+        minimal_bundle_json(1, 1).replace(
+            r#""resources": ["#,
+            r#""daemon_targets": [
+    { "target": "stack", "name": "stack_copies", "tag": "v1" }
+  ],
+  "resources": ["#,
+        )
+    }
+
+    #[test]
+    fn a_fixed_bundle_marks_its_daemon_targets_apart_from_its_slots() {
+        let bundle = ExposureBundle::from_json_str(&bundle_with_daemon_target()).expect("parses");
+        assert_eq!(
+            bundle.surface.daemon_targets(),
+            [BundleDaemonTarget {
+                target: "stack".to_string(),
+                name: "stack_copies".to_string(),
+                tag: "v1".to_string(),
+            }]
+        );
+        let slots: Vec<&str> = bundle
+            .surface
+            .contracts()
+            .iter()
+            .map(|pin| pin.link_id.as_str())
+            .collect();
+        assert_eq!(slots, ["front_camera"], "a daemon target is no slot");
+        let reparsed = ExposureBundle::from_json_str(&bundle.to_json_string())
+            .expect("round trips through its wire shape");
+        assert_eq!(reparsed, bundle);
+
+        let without = ExposureBundle::from_json_str(&minimal_bundle_json(1, 1)).expect("parses");
+        assert!(without.surface.daemon_targets().is_empty());
+        assert!(
+            !without.to_json_string().contains("daemon_targets"),
+            "a bundle with no daemon target writes no `daemon_targets`"
+        );
+    }
+
+    #[test]
+    fn refuses_a_daemon_target_on_a_per_robot_bundle() {
+        let content = bundle_with_daemon_target().replace(
+            r#""server": { "title": "Camera" },"#,
+            r#""server": { "title": "Camera" },
+  "robots": { "list": { "name": "robot.list", "description": "The robots." } },"#,
+        );
+        let error = ExposureBundle::from_json_str(&content)
+            .expect_err("a per-robot bundle takes no daemon target");
+        assert!(
+            error.contains("daemon target `stack` is on a per-robot surface"),
+            "{error}"
+        );
     }
 
     /// `minimal_bundle_json` with one task, bounded by the `bound` fields.
