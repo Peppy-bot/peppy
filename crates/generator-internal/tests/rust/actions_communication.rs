@@ -64,9 +64,7 @@ const BIMANUAL_CONSUMER_NODE_CONFIG: &str = r#"{
 /// runtime-config parse (`slot_bindings` producer lists of `ProducerRef`s)
 /// → processor filter resolution → generated `fire_goal` target splice →
 /// pinned wire delivery. Every goal must run on the bound instance and the
-/// sibling instance must never execute a goal handler; pre-`ProducerRef`,
-/// this exact shape ran a discovery probe per call and timed out whenever
-/// the producer was busy (the bimanual `fire_goal` timeout).
+/// sibling instance must never execute a goal handler.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_pinned_binding_routes_to_bound_instance_of_two() {
     const LEFT_ARM_INSTANCE_ID: &str = "left_arm_instance";
@@ -147,8 +145,8 @@ use peppygen::Result;
 use std::time::Duration;
 
 async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
-    // Fire repeatedly: the pre-ProducerRef bug only had to be hit once per
-    // call, so a single success could mask a per-call discovery cliff.
+    // Fire repeatedly: every call resolves its target, so one success does
+    // not prove that each call reaches the bound arm.
     for round in 0..3u32 {
         let request = brain_move_arm::GoalRequest {
             arm_id: 7,
@@ -1118,10 +1116,6 @@ fn main() -> Result<()> {
 /// publisher) when it delivers the result. Without that sentinel the loop
 /// would hang forever, because the feedback channel never closes on its own.
 ///
-/// This is the regression test for the original "stuck on draining
-/// feedback" hang seen in `openarm01_nodes/{action_server,action_client}`,
-/// which is what motivated the per-goal feedback closure signal.
-///
 /// End-to-end flow exercised here:
 ///   1. Client `fire_goal`, server accepts.
 ///   2. Server emits 3 feedback messages.
@@ -1634,8 +1628,9 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     );
     println!("cancel accepted={}", accepted);
 
-    // After cancel-accept, the server's codegen publishes the end-of-stream
-    // sentinel. The next on_next_feedback_message must error.
+    // The worker honours the cancel with complete_cancelled, which publishes
+    // the end-of-stream sentinel, so the next on_next_feedback_message must
+    // error.
     match action_handle.on_next_feedback_message().await {
         Ok(msg) => {
             println!("UNEXPECTED feedback after cancel-accept new_position={:?}", msg.new_position);
@@ -2010,8 +2005,8 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     );
     println!("cancel accepted={} error=<none>", accepted);
 
-    // CRITICAL: feedback after cancel-reject must still arrive; the goal
-    // continues running and the stream stays open.
+    // The worker ignores the cancel, so the goal keeps running and its
+    // feedback still arrives.
     let post_cancel = action_handle.on_next_feedback_message().await?;
     println!("post_cancel feedback new_position={:?}", post_cancel.new_position);
 
@@ -2023,7 +2018,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         other => panic!("expected Completed outcome, got {other:?}"),
     }
 
-    // Now the result-handler step has closed the stream.
+    // Completing the goal closed the stream.
     match action_handle.on_next_feedback_message().await {
         Ok(msg) => {
             println!("UNEXPECTED feedback after result new_position={:?}", msg.new_position);
@@ -2045,9 +2040,9 @@ fn main() -> Result<()> {
     let main_file = user_node_consumer.join("src").join("main.rs");
     fs::write(main_file, consumer_main).expect("failed to write consumer main");
 
-    // --- Exposer (server) project. Cancel handler returns accepted=false,
-    // so codegen must NOT publish the end-of-stream sentinel; subsequent
-    // publish_feedback calls must continue to reach the client.
+    // --- Exposer (server) project. The worker observes the cancel and keeps
+    // going, so no end-of-stream sentinel is published until it completes the
+    // goal, and later publish_feedback calls still reach the client.
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(config_test_support::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
@@ -2677,8 +2672,6 @@ const CONSUMED_ACTION_CONTRACT_EXAMPLE: &str = r#"
 /// contract carries the shared identity. Covers the full lifecycle over a
 /// live router: framework rejection, accept with declared response, feedback,
 /// completed result, then cancel driving a cancelled result on a second goal.
-/// Production nodes consume actions only via node slots, so before this test
-/// the consumer side of contract-backed actions had no end-to-end coverage.
 #[rstest::rstest]
 #[case::peer(crate::helpers::LocalNodesTopology::Peer)]
 #[case::router(crate::helpers::LocalNodesTopology::Router)]

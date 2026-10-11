@@ -1,8 +1,8 @@
 //! Generator-level test that a node exposing the same action `move_arm` both
 //! natively and via two contract-backed slots (`arm:v1`, `arm:v2`, each with a
 //! `ContractOrigin`) produces distinct generated files AND each
-//! `ActionMessenger::expose` call inside those files passes the matching
-//! `contract_name`/`contract_tag` literals.
+//! `peppylib::messaging::ConcurrentAction::expose` call inside those files
+//! passes the matching `contract_name`/`contract_tag` literals.
 
 use crate::helpers::{prepare_directories, test_peppy_dirs};
 use crate::implements_fixtures::{contract_backed_action, make_move_arm_action};
@@ -44,9 +44,10 @@ const NODE_CONFIG: &str = r#"{
 ///      stays flat at `exposed_actions/move_arm.rs`.
 ///   2. The category `exposed_actions.rs` lists the native leaf and one
 ///      module entry per implemented contract.
-///   3. Each leaf calls `peppylib::ActionMessenger::expose` with the matching
-///      sender target: `SenderTarget::contract("name", "tag")?` for contract-backed
-///      leaves and `SenderTarget::node("name", "tag")?` for the native leaf.
+///   3. Each leaf calls `peppylib::messaging::ConcurrentAction::expose` with
+///      the matching sender target: `SenderTarget::contract("name", "tag")?`
+///      for contract-backed leaves and `SenderTarget::node("name", "tag")?`
+///      for the native leaf.
 ///   4. Per-interface marker fields land in the right file.
 #[test]
 fn nests_contract_backed_actions_under_link_id() {
