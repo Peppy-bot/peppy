@@ -18,6 +18,7 @@ from functions.release_notes import (
     fetch_release_body_html,
     generate_release_notes_file,
     release_notes_file,
+    release_page_path,
 )
 
 SLUG = RepoSlug(owner="test-owner", repo="test-repo")
@@ -27,6 +28,11 @@ HTML_ACCEPT = "application/vnd.github.v3.html+json"
 
 def test_release_notes_file_is_named_after_the_tag() -> None:
     assert release_notes_file("v0.3.0") == Path("docs/src/content/releases/v0.3.0.html")
+
+
+def test_release_page_path_is_the_slug_the_docs_site_gives_the_release() -> None:
+    # releaseSlugFromVersion in docs/src/lib/releaseEntry.js.
+    assert release_page_path("v0.31.12") == "/releases/v0-31-12/"
 
 
 def _notes_input(description: str) -> ReleaseNotesInput:

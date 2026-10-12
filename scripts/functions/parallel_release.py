@@ -22,6 +22,9 @@ platform, all three at once, and no stage starts a VM:
   fast-forwarded to them. Merges into `dev` since the build go into the next
   release. A publish started again after a failure does only the steps the
   failure left undone.
+- `live-check` (any host): peppy.bot and docs.peppy.bot read until they serve
+  the published release: install.sh, every archive, and the notes on the
+  changelog page (see release_live_check.py).
 
 The provisioning stages exist because a native build cannot produce everything
 it embeds. Every peppy binary carries the peppylib bindings of all three
@@ -111,7 +114,9 @@ from .release_line import (
     verify_publish_branch_state,
     verify_release_branch_state,
 )
+from .release_live_check import release_live_checks, wait_until_live
 from .release_notes import (
+    CHANGELOG_URL,
     ReleaseNotesInput,
     fetch_release_body_html,
     generate_release_notes_file,
@@ -1055,8 +1060,7 @@ def run_publish(*, plan_path: Path, archives_dir: Path, hub_set_path: Path) -> N
     console.print(
         f"[green]Release notes merged into '{RELEASE_BRANCH}' and "
         f"'{ALIGNED_BRANCH}' fast-forwarded to them.[/green] They feed "
-        "https://forum.peppy.bot/c/peppy-os/announcements/6 and "
-        "https://docs.peppy.bot/reference/changelog/"
+        f"https://forum.peppy.bot/c/peppy-os/announcements/6 and {CHANGELOG_URL}"
     )
     # Last, so the run's output ends on the outcome and where to read it.
     # soft_wrap keeps the URL whole on a narrow CI console.
@@ -1106,6 +1110,26 @@ def run_hub_launch(*, hub_set_path: Path, peppy_run_id: int) -> None:
         f"[/green] {run.html_url}",
         soft_wrap=True,
     )
+
+
+# --- live-check ---
+
+# install.sh, relative to the repository root.
+INSTALL_SCRIPT = Path("scripts/install.sh")
+
+
+def run_live_check(*, tag: str) -> None:
+    """Wait until peppy.bot and docs.peppy.bot serve the published release
+    *tag*: install.sh, every archive, and its notes on the changelog page.
+
+    Run from a checkout of the release commit, whose install.sh is the one
+    `main` holds once publish fast-forwarded it.
+    """
+    install_script = (get_repo_root() / INSTALL_SCRIPT).read_bytes()
+    checks = release_live_checks(tag, github_repo_slug(), install_script)
+    with httpx.Client(follow_redirects=True, timeout=30.0) as client:
+        wait_until_live(checks, client, sleep=time.sleep, clock=time.monotonic)
+    console.print(f"\n[bold green]Users get {tag}.[/bold green]")
 
 
 # --- command line ---
@@ -1268,6 +1292,17 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="The hub set of the release: the hub commits publish tags.",
     )
 
+    live_check = stages.add_parser(
+        "live-check",
+        help="Wait until peppy.bot and docs.peppy.bot serve the published release.",
+    )
+    live_check.add_argument(
+        "--tag",
+        required=True,
+        type=_release_tag,
+        help="Tag of the published release (example: v0.31.2).",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -1302,6 +1337,8 @@ def _run_stage(args: argparse.Namespace) -> None:
                 archives_dir=args.archives,
                 hub_set_path=args.hub_set,
             )
+        case "live-check":
+            run_live_check(tag=args.tag)
 
 
 def main() -> None:
