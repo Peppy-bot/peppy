@@ -34,7 +34,7 @@ fn adjustments_match_any_option_on_every_named_axis() {
     for robot in ["real", "sim", "other"] {
         for commander in ["web", "xr", "mcp"] {
             let flat = launcher
-                .launch(&[robot.into(), commander.into()], &[])
+                .launch(&[robot.parse().unwrap(), commander.parse().unwrap()], &[])
                 .unwrap()
                 .launcher;
             let encoded = serde_json::to_value(flat).unwrap();
@@ -59,7 +59,8 @@ fn constraint_lists_use_the_same_matching_as_adjustments() {
         let launcher = prepared(constraint);
         for robot in ["real", "sim"] {
             for commander in ["web", "xr", "mcp"] {
-                let result = launcher.launch(&[robot.into(), commander.into()], &[]);
+                let result =
+                    launcher.launch(&[robot.parse().unwrap(), commander.parse().unwrap()], &[]);
                 assert_eq!(
                     result.is_ok(),
                     commander != "mcp",

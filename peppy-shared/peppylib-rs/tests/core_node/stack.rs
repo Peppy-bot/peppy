@@ -37,11 +37,14 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
                     StackListResponse::new(graph_json, CORE_NODE, SERVER_INSTANCE, host_name);
                 response.shutdown_grace_secs = 11;
                 response.copies = vec![CopyInfo {
-                    name: config::runtime::Name::new("alpha").unwrap(),
+                    name: config::runtime::CopyName::new("alpha").unwrap(),
                     option: "real".into(),
                     core_node: config::runtime::CoreNodeName::new(CORE_NODE).unwrap(),
-                    instance_ids: vec![config::runtime::Name::new("alpha_arm_inst").unwrap()],
-                    selections: vec!["commander=web".into()],
+                    instance_ids: vec![
+                        config::runtime::Name::new("alpha_arm_inst").unwrap(),
+                        config::runtime::Name::new("alpha_commander_inst").unwrap(),
+                    ],
+                    selections: vec!["commander=web@cn-gpu-box".parse().unwrap()],
                     set_members: Vec::new(),
                 }];
                 Ok(response.encode().expect("encode StackListResponse"))
@@ -113,8 +116,16 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
     assert_eq!(result.copies.len(), 1);
     assert_eq!(result.copies[0].name, "alpha");
     assert_eq!(result.copies[0].option, "real");
-    assert_eq!(result.copies[0].instance_ids, ["alpha_arm_inst"]);
-    assert_eq!(result.copies[0].selections, ["commander=web"]);
+    assert_eq!(
+        result.copies[0].instance_ids,
+        ["alpha_arm_inst", "alpha_commander_inst"]
+    );
+    let selections: Vec<String> = result.copies[0]
+        .selections
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(selections, ["commander=web@cn-gpu-box"]);
     assert_eq!(result.copies[0].core_node.as_str(), CORE_NODE);
     let brain = result
         .graph

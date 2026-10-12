@@ -5,7 +5,7 @@
 use super::super::composition::{ArgumentOverrides, OriginatedAdjustment};
 use super::super::types::{
     Deployment, DeploymentInstance, LauncherFramework, LinkTargets, LinkValue, PeppyLauncher,
-    Selection, split_link_target,
+    Placements, Selection, split_link_target,
 };
 use super::adjustments::Routed;
 use super::constraints::{self, ConstraintInPlay, ConstraintScope};
@@ -17,26 +17,30 @@ use super::expand::{
 use super::load::{LoadedFragment, LoadedOption, node_ids};
 use super::prepared::PreparedLauncher;
 use super::report::{AppliedAdjustment, AppliedChange, SkippedAdjustment, render, render_option};
-use super::select::{CopyOrigin, UnitSelection, resolve_copy};
-use config::runtime::{CopyTag, CoreNodeName, CoreNodeNameError, Name, instance_id_in_copy};
-use core_node_api::encoding::{ArgumentOverride, SetMember};
+use super::select::{CopyOrigin, PartMachines, UnitSelection, resolve_copy};
+use config::runtime::{CopyName, CopyTag, CoreNodeName, Name, instance_id_in_copy};
+use core_node_api::encoding::{ArgumentOverride, AxisSelection, SetMember};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-/// One instance a copy minted: the id the stack runs it under, and the id
-/// the copy's fragment wrote for it. The stack id is
+/// One instance a copy minted: the id the stack runs it under, the id the
+/// copy's fragment wrote for it, and the own axis of the copied option
+/// whose selected option brings it. The stack id is
 /// [`instance_id_in_copy`] of the copy's name and the written one, so every
 /// reader that needs the id inside the copy takes it from here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopyInstance {
     pub instance_id: Name,
     pub in_copy: Name,
+    /// The own axis that brings the instance, a part of the copy, or `None`
+    /// for an instance of the copied option's own fragments, its base.
+    pub own_axis: Option<Name>,
 }
 
 /// One copy on the stack: what it copies, how its axes were filled, and the
 /// instances it minted.
 #[derive(Debug, Clone)]
 pub struct CopyRecord {
-    pub name: Name,
+    pub name: CopyName,
     pub axis: String,
     pub option: String,
     pub selection: UnitSelection,
@@ -67,7 +71,7 @@ impl CopyMembership {
                         (
                             instance.instance_id.as_str().to_string(),
                             CopyTag {
-                                name: copy.name.clone(),
+                                name: copy.name.as_name().clone(),
                                 instance_id: instance.in_copy.clone(),
                             },
                         )
@@ -102,7 +106,7 @@ pub(super) struct StackWriteEntry {
 /// what it writes to the stack it joins.
 #[derive(Debug, Clone)]
 pub(super) struct ComposedCopy {
-    pub name: Name,
+    pub name: CopyName,
     pub axis: String,
     pub option: String,
     /// The copy's own axes: the copied option and the option's axes.
@@ -114,6 +118,10 @@ pub(super) struct ComposedCopy {
     /// must run for the copy to be what its fragments say.
     pub stack_writes: Vec<StackWriteEntry>,
     pub core_nodes: Vec<String>,
+    /// The machine of each part the copy's words place, by the own axis
+    /// that brings it. The launch and the join turn it into the placements
+    /// of the part's instances; the record keeps none of it.
+    pub part_machines: PartMachines,
     pub applied: Vec<AppliedAdjustment>,
     pub skipped: Vec<SkippedAdjustment>,
 }
@@ -145,6 +153,44 @@ impl CopyRecord {
     /// copy's own instances.
     pub fn owns_target(&self, target: &str) -> bool {
         names_one_of(&self.instances, target)
+    }
+
+    /// Each filled own axis of the copy, in the order the copied option
+    /// declares its axes, with the machine of the part it selects when
+    /// `placements` run that part on another machine than `copy_machine`,
+    /// the copy's. `peppy stack join OPTION:NAME@CORE_NODE` with these as
+    /// its words adds the same copy on the same machines.
+    pub fn axis_selections(
+        &self,
+        placements: &Placements,
+        copy_machine: &CoreNodeName,
+    ) -> Vec<AxisSelection> {
+        self.selection
+            .axis_selections(&self.axis)
+            .into_iter()
+            .map(|mut selection| {
+                selection.core_node = self
+                    .instances_of_own_axis(selection.axis.as_str())
+                    .map(|instance| placements.core_node_of(instance.instance_id.as_str()))
+                    .find(|machine| *machine != copy_machine)
+                    .cloned();
+                selection
+            })
+            .collect()
+    }
+
+    /// The instances the own axis `axis` brings: the part of the copy that
+    /// its selected option defines.
+    pub fn instances_of_own_axis<'a>(
+        &'a self,
+        axis: &'a str,
+    ) -> impl Iterator<Item = &'a CopyInstance> {
+        self.instances.iter().filter(move |instance| {
+            instance
+                .own_axis
+                .as_ref()
+                .is_some_and(|own| own.as_str() == axis)
+        })
     }
 }
 
@@ -186,8 +232,10 @@ impl ComposedCopy {
 pub(super) struct CopyRequest<'a> {
     pub axis: &'a str,
     pub loaded: &'a LoadedOption,
-    pub name: &'a Name,
+    pub name: &'a CopyName,
     pub with: &'a BTreeMap<String, String>,
+    /// The machine of each part the copy's words place, by own axis.
+    pub parts: &'a PartMachines,
     pub arguments: &'a ArgumentOverrides,
     /// The copy's own adjustments, run after the launcher's and before
     /// `arguments`.
@@ -195,39 +243,6 @@ pub(super) struct CopyRequest<'a> {
     /// The launcher's adjustments, routed.
     pub routed: &'a [Routed<'a>],
     pub origin: CopyOrigin,
-}
-
-/// A copy's name is its placement link, so it is held to a core node
-/// name's grammar.
-fn check_copy_name(name: &Name) -> Result<(), CompositionError> {
-    CoreNodeName::new(name.as_str())
-        .map(|_| ())
-        .map_err(|error| CompositionError::CopyNameNotPlaceable {
-            copy: name.to_string(),
-            reason: match error {
-                CoreNodeNameError::Reserved => SELF_COPY_NAME_REFUSAL.to_owned(),
-                CoreNodeNameError::Malformed => error.to_string(),
-            },
-        })
-}
-
-/// Why `self` cannot name a copy, told to the file's author and to the
-/// `stack join` caller alike.
-pub const SELF_COPY_NAME_REFUSAL: &str =
-    "`self` names the daemon a launch or join targets; give the copy another name";
-
-/// Parses the name a caller gives a copy to join or to remove. A copy's name
-/// is its placement link, so it is held to a core node name's grammar before
-/// it travels as the [`Name`] the goal carries. The CLI's `stack` commands
-/// and the MCP server's daemon bridge parse a copy name with it.
-pub fn parse_copy_name(raw: &str) -> Result<Name, String> {
-    let placement = CoreNodeName::new(raw).map_err(|error| match error {
-        CoreNodeNameError::Reserved => SELF_COPY_NAME_REFUSAL.to_owned(),
-        CoreNodeNameError::Malformed => {
-            format!("a copy's name is its placement link, so it {error}")
-        }
-    })?;
-    Ok(Name::new(placement.into_string()).expect("a core node name is a name"))
 }
 
 /// One copy's selection `own` laid over the stack `stack`: the whole
@@ -289,18 +304,19 @@ pub(super) fn compose_copy(
         loaded,
         name,
         with,
+        parts,
         arguments,
         adjustments,
         routed,
         origin,
     } = request;
-    check_copy_name(name)?;
     if taken.iter().any(|link| link == name.as_str()) {
         return Err(CompositionError::NameIsCoreNodeLink {
             name: name.to_string(),
         });
     }
     let own = resolve_copy(loaded, axis, name.as_str(), with, origin)?;
+    let own_axis_by_id = loaded.own_axis_by_id(&own);
     let launcher = &prepared.launcher;
     let CopyOverStack {
         selection,
@@ -372,7 +388,7 @@ pub(super) fn compose_copy(
     // Mint the owned ids under the name; every link naming one follows it.
     let mut minted: HashMap<String, Name> = HashMap::new();
     for &id in &owned {
-        let name_for = instance_id_in_copy(name, id);
+        let name_for = instance_id_in_copy(name.as_name(), id);
         if stack_ids.contains(name_for.as_str()) {
             return Err(CompositionError::PrefixedIdCollision {
                 copy: name.to_string(),
@@ -407,11 +423,17 @@ pub(super) fn compose_copy(
                 });
             }
             let in_copy = instance.instance_id.clone();
+            let own_axis = own_axis_by_id
+                .get(in_copy.as_str())
+                .copied()
+                .flatten()
+                .map(|axis| Name::new(axis).expect("an axis name is a name"));
             instance.instance_id = minted.clone();
             instance.core_node = Some(name.to_string());
             instances.push(CopyInstance {
                 instance_id: minted.clone(),
                 in_copy,
+                own_axis,
             });
             owned_instances.push(instance);
         }
@@ -444,7 +466,7 @@ pub(super) fn compose_copy(
         .map(|mut entry| {
             let target = entry.target.as_str();
             if definable.contains(target) && !stack_ids.contains(target) {
-                entry.target = instance_id_in_copy(name, target).to_string();
+                entry.target = instance_id_in_copy(name.as_name(), target).to_string();
             }
             entry
         })
@@ -458,6 +480,7 @@ pub(super) fn compose_copy(
         deployments,
         stack_writes,
         core_nodes,
+        part_machines: parts.clone(),
         applied,
         skipped,
     })
@@ -467,7 +490,7 @@ pub(super) fn compose_copy(
 /// the copy's own instances or on a stack instance, is refused, at launch,
 /// at a join and at a removal alike, since each composes the copy here.
 fn refuse_daemon_scopes(
-    copy: &Name,
+    copy: &CopyName,
     option: &str,
     applied: &[AppliedAdjustment],
 ) -> Result<(), CompositionError> {
@@ -509,7 +532,7 @@ pub(super) fn argument_overrides(
 /// Lays a copy's `arguments` over its own instances, after every
 /// adjustment, each override reported like an adjustment.
 fn apply_overrides(
-    name: &Name,
+    name: &CopyName,
     expanded: &mut Expanded,
     owned: &BTreeSet<&str>,
     arguments: &ArgumentOverrides,
@@ -542,7 +565,7 @@ fn apply_overrides(
 }
 
 fn rewrite_links(
-    copy: &Name,
+    copy: &CopyName,
     instance: &mut DeploymentInstance,
     rewrite: &impl Fn(&str) -> String,
 ) -> Result<(), CompositionError> {
@@ -576,7 +599,7 @@ fn rewrite_link(value: &mut LinkValue, rewrite: &impl Fn(&str) -> String) -> Res
 
 /// Renames the report's targets and link values the way the plan was.
 fn rewrite_report(
-    copy: &Name,
+    copy: &CopyName,
     applied: Vec<AppliedAdjustment>,
     minted: &HashMap<String, Name>,
     rewrite: &impl Fn(&str) -> String,
@@ -614,8 +637,8 @@ fn rewrite_report(
 
 /// Who wrote a stack field so far, for the copies-must-agree rule.
 enum Claim {
-    Value { copy: Name, rendered: String },
-    Appended { copy: Name },
+    Value { copy: CopyName, rendered: String },
+    Appended { copy: CopyName },
 }
 
 /// The stack with its copies folded in: each copy's writes to a stack
@@ -637,16 +660,17 @@ pub(super) fn combine(
     for copy in copies {
         for entry in &copy.stack_writes {
             let key = (entry.instance.clone(), entry.write.field());
-            let conflict = |first: &Name, first_value: String| CompositionError::CopiesConflict {
-                first: first.to_string(),
-                second: copy.name.to_string(),
-                target: format!("{}.{}", entry.instance, entry.write.field()),
-                difference: format!(
-                    "{first} writes {first_value}, {} writes {}",
-                    copy.name,
-                    entry.write.written()
-                ),
-            };
+            let conflict =
+                |first: &CopyName, first_value: String| CompositionError::CopiesConflict {
+                    first: first.to_string(),
+                    second: copy.name.to_string(),
+                    target: format!("{}.{}", entry.instance, entry.write.field()),
+                    difference: format!(
+                        "{first} writes {first_value}, {} writes {}",
+                        copy.name,
+                        entry.write.written()
+                    ),
+                };
             match (claims.get(&key), &entry.write) {
                 (
                     Some(Claim::Value {
@@ -1085,13 +1109,14 @@ mod membership_tests {
     /// A copy of `name` owning the instances its fragment wrote as
     /// `in_copy`, each minted the way composition mints it.
     fn copy(name: &str, in_copy: &[&str]) -> CopyRecord {
-        let name = Name::new(name).unwrap();
+        let name = CopyName::new(name).unwrap();
         CopyRecord {
             instances: in_copy
                 .iter()
                 .map(|id| CopyInstance {
-                    instance_id: instance_id_in_copy(&name, id),
+                    instance_id: instance_id_in_copy(name.as_name(), id),
                     in_copy: Name::new(*id).unwrap(),
+                    own_axis: None,
                 })
                 .collect(),
             name,
@@ -1120,20 +1145,5 @@ mod membership_tests {
         assert_eq!(tag("hub_inst"), None);
         assert_eq!(membership.copy_of("hub_inst"), None);
         assert_eq!(CopyMembership::default().copy_of("alpha_arm_inst"), None);
-    }
-
-    /// A copy name is a core node name, and each refusal says why in the
-    /// words of a copy.
-    #[test]
-    fn a_copy_name_is_parsed_as_a_core_node_name() {
-        assert_eq!(parse_copy_name("bravo_2").unwrap().as_str(), "bravo_2");
-        assert_eq!(parse_copy_name("self").unwrap_err(), SELF_COPY_NAME_REFUSAL);
-        for malformed in ["", "bad/name", &"a".repeat(64)] {
-            let refusal = parse_copy_name(malformed).unwrap_err();
-            assert!(
-                refusal.starts_with("a copy's name is its placement link, so it must be non-empty"),
-                "{malformed:?}: {refusal}"
-            );
-        }
     }
 }

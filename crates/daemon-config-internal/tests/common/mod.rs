@@ -1,6 +1,7 @@
 //! Helpers the launcher test binaries share. Each binary uses a subset.
 #![allow(dead_code)]
 
+use core_node_api::encoding::{LaunchWord, SelectionWord};
 use daemon_config::launcher::{PeppyLauncherParser, PreparedLauncher};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,6 +27,11 @@ pub fn load(document: &str) -> PreparedLauncher {
 }
 
 /// The `--with` words of one launch, as the composer takes them.
-pub fn words(entries: &[&str]) -> Vec<String> {
-    entries.iter().map(|entry| entry.to_string()).collect()
+pub fn words(entries: &[&str]) -> Vec<LaunchWord> {
+    entries.iter().map(|entry| entry.parse().unwrap()).collect()
+}
+
+/// The `--with` words of one join, as the composer takes them.
+pub fn join_words(entries: &[&str]) -> Vec<SelectionWord> {
+    entries.iter().map(|entry| entry.parse().unwrap()).collect()
 }

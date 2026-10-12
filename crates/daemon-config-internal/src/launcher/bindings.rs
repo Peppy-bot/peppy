@@ -609,13 +609,14 @@ mod tests {
     /// A copy named `name` holding one instance per id in `in_copy`, each
     /// running under the id the launch mints for it.
     fn copy_of(name: &str, in_copy: &[&str]) -> CopyRecord {
-        let name = Name::new(name).expect("a copy name");
+        let name = config::runtime::CopyName::new(name).expect("a copy name");
         CopyRecord {
             instances: in_copy
                 .iter()
                 .map(|id| CopyInstance {
-                    instance_id: config::runtime::instance_id_in_copy(&name, id),
+                    instance_id: config::runtime::instance_id_in_copy(name.as_name(), id),
                     in_copy: Name::new(*id).expect("an in-copy instance id"),
+                    own_axis: None,
                 })
                 .collect(),
             name,

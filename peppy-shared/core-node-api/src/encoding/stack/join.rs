@@ -2,38 +2,20 @@
 
 use capnp::message::Builder;
 use config::AnyType;
-use config::runtime::{CoreNodeName, Name, first_duplicate};
+use config::runtime::{Name, first_duplicate};
 
-use crate::encoding::{
-    capnp_list_len, decode_message, encode_message, read_core_node_name, read_name, required_text,
-    write_text_list,
-};
+use crate::encoding::{capnp_list_len, decode_message, encode_message, read_name};
 use crate::{Payload, Result, launch_capnp};
 
 use super::budgets::StackBudgets;
-use super::read_selections;
+use super::words::{
+    CopyReference, SelectionWord, read_copy_reference, read_selection_word, write_copy_reference,
+    write_selection_word,
+};
 
 /// The shape of an override, quoted in every refusal so the message says what
 /// to type.
 const OVERRIDE_USAGE: &str = "an override is written INSTANCE.ARGUMENT=JSON5";
-
-/// Where one copy runs as a whole: on its coordinator, or on one concrete
-/// machine.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum JoinPlacement {
-    #[default]
-    Local,
-    CoreNode(CoreNodeName),
-}
-
-impl JoinPlacement {
-    pub fn resolve(&self, coordinator: &CoreNodeName) -> CoreNodeName {
-        match self {
-            Self::Local => coordinator.clone(),
-            Self::CoreNode(host) => host.clone(),
-        }
-    }
-}
 
 /// A parsed `INSTANCE.ARGUMENT=JSON5` override of one argument of one of the
 /// copy's instances, holding only finite numbers.
@@ -133,26 +115,23 @@ fn repeated_target(arguments: &[ArgumentOverride]) -> Option<(&Name, &Name)> {
     first_duplicate(&targets).copied()
 }
 
-/// Add one copy of `option` to the running stack under `name`, its own axes
-/// selected by `selections`.
+/// Add one copy to the running stack: the copy of its option under its
+/// name, its base on the copy's machine, and its own axes selected by
+/// `selections`, each part on the machine its word names.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackJoinGoal {
-    pub name: Name,
-    pub option: String,
-    pub selections: Vec<String>,
+    pub copy: CopyReference,
+    pub selections: Vec<SelectionWord>,
     pub arguments: Vec<ArgumentOverride>,
-    pub placement: JoinPlacement,
     pub budgets: StackBudgets,
 }
 
 impl StackJoinGoal {
-    pub fn new(name: Name, option: impl Into<String>, budgets: StackBudgets) -> Self {
+    pub fn new(copy: CopyReference, budgets: StackBudgets) -> Self {
         Self {
-            name,
-            option: option.into(),
+            copy,
             selections: Vec::new(),
             arguments: Vec::new(),
-            placement: JoinPlacement::Local,
             budgets,
         }
     }
@@ -160,17 +139,17 @@ impl StackJoinGoal {
     pub fn encode(&self) -> Result<Payload> {
         let mut message = Builder::new_default();
         let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder>();
-        goal.set_name(self.name.as_str());
-        goal.set_option(&self.option);
+        write_copy_reference(goal.reborrow().init_copy(), &self.copy);
         goal.set_node_add_idle_timeout_secs(self.budgets.node_add_idle_timeout_secs);
         goal.set_node_build_idle_timeout_secs(self.budgets.node_build_idle_timeout_secs);
         goal.set_node_run_idle_timeout_secs(self.budgets.node_run_idle_timeout_secs);
         goal.set_max_timeout_secs(self.budgets.max_timeout_secs.unwrap_or(0));
-        write_text_list(
-            goal.reborrow()
-                .init_selections(capnp_list_len(self.selections.len(), "selections")?),
-            &self.selections,
-        );
+        let mut selections = goal
+            .reborrow()
+            .init_selections(capnp_list_len(self.selections.len(), "selections")?);
+        for (index, word) in self.selections.iter().enumerate() {
+            write_selection_word(selections.reborrow().get(index as u32), word);
+        }
         let mut arguments = goal
             .reborrow()
             .init_arguments(capnp_list_len(self.arguments.len(), "arguments")?);
@@ -183,13 +162,6 @@ impl StackJoinGoal {
                     .map_err(|error| crate::Error::Encoding(error.to_string()))?,
             );
         }
-        match &self.placement {
-            JoinPlacement::Local => goal.reborrow().init_placement().set_coordinator(()),
-            JoinPlacement::CoreNode(host) => goal
-                .reborrow()
-                .init_placement()
-                .set_core_node(host.as_str()),
-        }
         self.budgets.write_env_vars(
             goal.init_env_vars(capnp_list_len(self.budgets.env_vars.len(), "env_vars")?),
         );
@@ -197,13 +169,22 @@ impl StackJoinGoal {
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
-        use launch_capnp::stack_join_goal::placement::Which;
-
         let message = decode_message(data)?;
         let goal = message.get_root::<launch_capnp::stack_join_goal::Reader>()?;
-        let name = read_name(goal.get_name()?.to_str()?, "StackJoinGoal.name")?;
-        let option = required_text(goal.get_option()?.to_str()?, "StackJoinGoal.option")?;
-        let selections = read_selections(goal.get_selections()?, "StackJoinGoal.selections")?;
+        if !goal.has_copy() {
+            return Err(crate::Error::Decoding(
+                "`StackJoinGoal.copy` is missing".to_owned(),
+            ));
+        }
+        let copy = read_copy_reference(goal.get_copy()?, "StackJoinGoal.copy")?;
+        let selections = goal
+            .get_selections()?
+            .iter()
+            .enumerate()
+            .map(|(index, word)| {
+                read_selection_word(word, &format!("StackJoinGoal.selections[{index}]"))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let arguments = goal
             .get_arguments()?
             .iter()
@@ -214,12 +195,6 @@ impl StackJoinGoal {
                 "`arguments` overrides `{instance_id}.{argument}` twice"
             )));
         }
-        let placement = match goal.get_placement().which()? {
-            Which::Coordinator(()) => JoinPlacement::Local,
-            Which::CoreNode(host) => {
-                JoinPlacement::CoreNode(read_core_node_name(host?.to_str()?, "placement")?)
-            }
-        };
         let budgets = StackBudgets::decode(
             goal.get_env_vars()?,
             goal.get_node_add_idle_timeout_secs(),
@@ -228,11 +203,9 @@ impl StackJoinGoal {
             goal.get_max_timeout_secs(),
         )?;
         Ok(Self {
-            name,
-            option,
+            copy,
             selections,
             arguments,
-            placement,
             budgets,
         })
     }
@@ -265,18 +238,37 @@ mod tests {
 
     fn goal(name: &str) -> StackJoinGoal {
         StackJoinGoal::new(
-            Name::new(name).unwrap(),
-            "openarm_real",
+            format!("openarm_real:{name}").parse().unwrap(),
             StackBudgets::new(1, 1, 1, None),
         )
+    }
+
+    /// A wire goal of the copy `alpha` of `openarm_real`, on the coordinator,
+    /// with valid budgets, for the tests that write one field by hand.
+    fn wire_goal(
+        message: &mut Builder<capnp::message::HeapAllocator>,
+    ) -> launch_capnp::stack_join_goal::Builder<'_> {
+        let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder>();
+        let mut copy = goal.reborrow().init_copy();
+        copy.set_option("openarm_real");
+        copy.set_name("alpha");
+        copy.init_core_node().set_coordinator(());
+        goal.set_node_add_idle_timeout_secs(1);
+        goal.set_node_build_idle_timeout_secs(1);
+        goal.set_node_run_idle_timeout_secs(1);
+        goal
     }
 
     #[test]
     fn join_goals_round_trip() {
         let mut goal = goal("bravo");
-        goal.selections = vec!["commander=xr_commander".into(), "lerobot_recorder".into()];
+        goal.copy = "openarm_real:bravo@jetson-2".parse().unwrap();
+        goal.selections = vec![
+            "commander=xr_commander".parse().unwrap(),
+            "lerobot_recorder@self".parse().unwrap(),
+            "ai_brain_vla@cn-gpu-box".parse().unwrap(),
+        ];
         goal.arguments = vec!["backbone_inst.speed=0.2".parse().unwrap()];
-        goal.placement = JoinPlacement::CoreNode(CoreNodeName::new("jetson-2").unwrap());
         goal.budgets = StackBudgets::new(42, 900, 73, Some(1200))
             .with_env_vars(vec![("PATH".into(), "/usr/bin".into())]);
         assert_eq!(
@@ -285,27 +277,28 @@ mod tests {
         );
     }
 
-    /// A copy nobody places runs on the coordinator, which is also what an
-    /// absent placement decodes to; `self` is no machine's name.
+    /// A goal with no copy, or whose copy names no machine, is refused: no
+    /// null pointer means the coordinator.
     #[test]
-    fn placement_round_trips_and_resolves() {
-        let decoded = StackJoinGoal::decode(&goal("alpha").encode().unwrap()).unwrap();
-        assert_eq!(decoded.placement, JoinPlacement::Local);
-        let coordinator = CoreNodeName::new("laptop").unwrap();
-        assert_eq!(decoded.placement.resolve(&coordinator), coordinator);
-        let jetson = CoreNodeName::new("jetson-1").unwrap();
-        assert_eq!(
-            JoinPlacement::CoreNode(jetson.clone()).resolve(&coordinator),
-            jetson
+    fn a_goal_without_its_copy_is_refused() {
+        let mut message = Builder::new_default();
+        message.init_root::<launch_capnp::stack_join_goal::Builder>();
+        let refusal = decoding_error(StackJoinGoal::decode(&encode_message(&message).unwrap()));
+        assert!(
+            refusal.contains("`StackJoinGoal.copy` is missing"),
+            "{refusal}"
         );
 
         let mut message = Builder::new_default();
         let mut wire = message.init_root::<launch_capnp::stack_join_goal::Builder>();
-        wire.set_name("alpha");
-        wire.set_option("openarm_v2");
-        wire.init_placement().set_core_node("self");
+        let mut copy = wire.reborrow().init_copy();
+        copy.set_option("openarm_real");
+        copy.set_name("alpha");
         let refusal = decoding_error(StackJoinGoal::decode(&encode_message(&message).unwrap()));
-        assert!(refusal.contains("`placement`"), "{refusal}");
+        assert!(
+            refusal.contains("`StackJoinGoal.copy.core_node` is missing"),
+            "{refusal}"
+        );
     }
 
     /// An idle budget of 0 is refused at the wire, naming its phase.
@@ -317,30 +310,56 @@ mod tests {
         assert!(refusal.contains("node_add_idle_timeout_secs"), "{refusal}");
     }
 
+    /// A bad name, a copy named `self` and a bad machine are refused where
+    /// they arrive, each naming its field.
     #[test]
-    fn an_empty_name_or_option_is_rejected_at_the_wire_boundary() {
-        for (name, option) in [("", ""), ("alpha", ""), ("bad/name", "openarm_v2")] {
+    fn bad_names_are_refused_at_the_wire_boundary() {
+        for (option, name, machine, field) in [
+            ("", "alpha", None, "`StackJoinGoal.copy.option`"),
+            ("openarm_real", "", None, "`StackJoinGoal.copy.name`"),
+            ("openarm_real", "self", None, "`StackJoinGoal.copy.name`"),
+            (
+                "openarm_real",
+                &"a".repeat(64),
+                None,
+                "`StackJoinGoal.copy.name`",
+            ),
+            (
+                "openarm_real",
+                "alpha",
+                Some("self"),
+                "`StackJoinGoal.copy.core_node.named`",
+            ),
+            (
+                "openarm_real",
+                "alpha",
+                Some("bad/name"),
+                "`StackJoinGoal.copy.core_node.named`",
+            ),
+        ] {
             let mut message = Builder::new_default();
-            let mut wire = message.init_root::<launch_capnp::stack_join_goal::Builder>();
-            wire.set_name(name);
-            wire.set_option(option);
-            assert!(StackJoinGoal::decode(&encode_message(&message).unwrap()).is_err());
+            let mut copy = wire_goal(&mut message).init_copy();
+            copy.set_option(option);
+            copy.set_name(name);
+            match machine {
+                Some(machine) => copy.init_core_node().set_named(machine),
+                None => copy.init_core_node().set_coordinator(()),
+            }
+            let refusal = decoding_error(StackJoinGoal::decode(&encode_message(&message).unwrap()));
+            assert!(refusal.contains(field), "{option}:{name}: {refusal}");
         }
-    }
 
-    /// A blank word is the empty segment of a caller's comma list, so the
-    /// refusal names the entry and the shape of a real one.
-    #[test]
-    fn a_blank_selection_is_refused_with_the_shape_of_a_real_one() {
-        let mut goal = goal("alpha");
-        goal.selections.push(String::new());
-        let refusal = decoding_error(StackJoinGoal::decode(&goal.encode().unwrap()));
+        let mut message = Builder::new_default();
+        let mut word = wire_goal(&mut message).init_selections(1).get(0);
+        let mut choice = word.reborrow().init_choice();
+        choice.reborrow().init_axis().set_unnamed(());
+        choice.set_option("bad/option");
+        word.init_core_node().set_with_copy(());
+        let refusal = decoding_error(StackJoinGoal::decode(&encode_message(&message).unwrap()));
         assert!(
-            refusal.contains("`StackJoinGoal.selections[0]` is empty"),
+            refusal.contains("`StackJoinGoal.selections[0].choice.option`"),
             "{refusal}"
         );
-        assert!(refusal.contains("`axis=option`"), "{refusal}");
-        assert!(refusal.contains("stray comma"), "{refusal}");
     }
 
     /// Each refusal of a wire override names what is wrong with it. The goal
@@ -366,13 +385,7 @@ mod tests {
             ("arm", "gain", "{", "`arguments.value`"),
         ] {
             let mut message = Builder::new_default();
-            let mut goal = message.init_root::<launch_capnp::stack_join_goal::Builder>();
-            goal.set_name("alpha");
-            goal.set_option("openarm_real");
-            goal.set_node_add_idle_timeout_secs(1);
-            goal.set_node_build_idle_timeout_secs(1);
-            goal.set_node_run_idle_timeout_secs(1);
-            let mut argument = goal.init_arguments(1).get(0);
+            let mut argument = wire_goal(&mut message).init_arguments(1).get(0);
             argument.set_instance_id(instance);
             argument.set_argument(key);
             argument.set_value(value);

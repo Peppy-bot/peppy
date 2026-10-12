@@ -57,11 +57,11 @@ pub use stack::benchmark::{
     StackBenchmarkResult,
 };
 pub use stack::budgets::{DEFAULT_IDLE_TIMEOUT_SECS, StackBudgets};
-pub use stack::join::{ArgumentOverride, ArgumentOverrideError, JoinPlacement, StackJoinGoal};
+pub use stack::join::{ArgumentOverride, ArgumentOverrideError, StackJoinGoal};
 pub use stack::launch::{
-    InstanceEndpoints, LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse,
-    LaunchJoin, LaunchResult, LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
-    PlacementSpec, StackBuildGoal,
+    InstanceEndpoints, LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalError,
+    LaunchGoalResponse, LaunchResult, LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry,
+    NodeRunLogEntry, PlacementSpec, StackBuildGoal,
 };
 pub use stack::list::{
     CopyAction, CopyChange, CopyInfo, LaunchIdentity, SetMember, StackListRequest,
@@ -69,6 +69,9 @@ pub use stack::list::{
 };
 pub use stack::remove::StackRemoveGoal;
 pub use stack::reset::{StackResetRequest, StackResetResponse};
+pub use stack::words::{
+    AxisSelection, CopyReference, LaunchWord, OptionChoice, SelectionWord, WordError,
+};
 
 use capnp::introspect::Introspect;
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};

@@ -142,8 +142,8 @@ impl StackRequest {
         match self {
             Self::Join(goal) => Some(CopyChange {
                 action: CopyAction::Join,
-                name: goal.name.clone(),
-                option: goal.option.clone(),
+                name: goal.copy.name.clone(),
+                option: goal.copy.option.to_string(),
             }),
             Self::Remove(goal) => Some(CopyChange {
                 action: CopyAction::Remove,

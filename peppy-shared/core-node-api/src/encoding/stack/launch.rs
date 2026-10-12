@@ -11,13 +11,16 @@ use crate::{NonEmptyPayload, Payload, Result};
 use crate::encoding::endpoints::{read_launch_endpoints, write_launch_endpoints};
 use crate::encoding::{
     capnp_list_len, decode_message, encode_fs_path, encode_message, encode_message_non_empty,
-    optional_text, required_text, write_text_list,
+    optional_text, read_name, required_text,
 };
 use crate::graph::InstanceEndpoint;
-use config::runtime::Name;
+use config::runtime::{CoreNodeTarget, Name};
 
 use super::budgets::StackBudgets;
-use super::read_selections;
+use super::words::{
+    CopyReference, LaunchWord, read_copy_reference, read_core_node_target, read_launch_word,
+    write_copy_reference, write_core_node_target, write_launch_word,
+};
 
 /// Where the launcher file lives.
 ///
@@ -40,7 +43,8 @@ impl LauncherOrigin {
     }
 }
 
-/// How a launch places the core node links its launcher declares.
+/// How a launch places the core node links its launcher declares and the
+/// copies its file lists.
 ///
 /// The INTENT, not its expansion. Only the coordinator holds the resolved
 /// launcher: a [`LauncherOrigin::Repository`] is read from the daemon's own
@@ -50,17 +54,19 @@ impl LauncherOrigin {
 /// for both origins instead of working only for the one the caller can read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlacementSpec {
-    /// `--place <core-node-link>@<core-node>` wirings, keyed by the
-    /// placeholder declared in the launcher's `core_nodes` list.
+    /// `--place NAME@CORE_NODE` wirings, keyed by a placeholder declared in
+    /// the launcher's `core_nodes` list or by the name of a copy the file
+    /// lists. `self` travels as [`CoreNodeTarget::Coordinator`].
     ///
     /// Empty means no placement flag was given at all, which only a launcher
     /// declaring no `core_nodes` can satisfy: the coordinator refuses a
-    /// declared-but-unwired link rather than quietly collapsing it onto itself.
+    /// declared-but-unwired link rather than quietly collapsing it onto
+    /// itself. A copy of the file that no key names runs on the coordinator.
     ///
     /// A `BTreeMap` rather than a list because the caller has already rejected
     /// repeats, so "at most one target per placeholder" is a property of the
     /// type instead of a rule the daemon has to re-check.
-    Places(BTreeMap<String, String>),
+    Places(BTreeMap<Name, CoreNodeTarget>),
     /// `--local`: every link the launcher declares runs on the coordinator.
     ///
     /// Carries no map on purpose. Which links exist is a property of the
@@ -72,6 +78,22 @@ impl Default for PlacementSpec {
     fn default() -> Self {
         Self::Places(BTreeMap::new())
     }
+}
+
+/// Why the placement, the `--with` words and the `--join` copies of a launch
+/// do not go together.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LaunchGoalError {
+    #[error(
+        "`--place {name}@...` names the copy `{name}` that `--join {option}:{name}` adds; place \
+         a joined copy where you join it: `--join {option}:{name}@CORE_NODE`"
+    )]
+    PlacedJoinCopy { option: Name, name: Name },
+    #[error(
+        "`--local` runs the whole launch on this machine, so no `--join` and no `--with` word \
+         names a machine; `{word}` names one"
+    )]
+    LocalWithMachine { word: String },
 }
 
 /// Goal message for the Launch action.
@@ -87,33 +109,23 @@ pub struct LaunchGoal {
     pub launch_id: String,
     /// What the caller asked for about placement, for the coordinator to
     /// expand against the document it resolved.
-    pub placement: PlacementSpec,
-    /// The launcher's `--with` selections, verbatim: each entry is `option`
-    /// or `axis=option`, exactly as the caller typed it. The coordinator
-    /// resolves the words against the document it read, for the same reason
-    /// placement travels as intent.
-    pub selections: Vec<String>,
+    placement: PlacementSpec,
+    /// The launcher's `--with` words. The coordinator resolves them against
+    /// the document it read, for the same reason placement travels as
+    /// intent.
+    selections: Vec<LaunchWord>,
     /// Build every node of the launch from its staged sources even when
     /// storage already holds an artifact built from byte-identical sources.
     /// Forwarded to each node build the launch performs, on the coordinator
     /// and on every peer.
     pub rebuild: bool,
-    /// The copies `--join OPTION:NAME` starts with the launch, in the order
-    /// they were given.
-    pub joins: Vec<LaunchJoin>,
-}
-
-/// One `OPTION:NAME` reference to a copy: the copy of `option` that runs
-/// under `name`, built from the launcher's entry for the option. `--join`
-/// composes, validates and starts it with the launch; `stack join` adds the
-/// same copy to a running stack.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaunchJoin {
-    pub option: String,
-    pub name: Name,
+    /// The copies `--join OPTION:NAME@CORE_NODE` starts with the launch, in
+    /// the order they were given.
+    joins: Vec<CopyReference>,
 }
 
 impl LaunchGoal {
+    /// A launch with no placement flag, no word and no joined copy.
     pub fn new(
         launcher_origin: LauncherOrigin,
         launch_id: impl Into<String>,
@@ -130,14 +142,50 @@ impl LaunchGoal {
         }
     }
 
-    pub fn with_placement(mut self, placement: PlacementSpec) -> Self {
+    /// The launch with its placement, its `--with` words and its `--join`
+    /// copies, set together because two rules read them together: a
+    /// `--place` key names no `--join` copy, which takes its machine from its
+    /// own reference, and under `--local` no `--join` and no word names a
+    /// machine. The CLI and [`Self::decode`] both build a goal here, so every
+    /// caller gets the same refusal.
+    pub fn with_layout(
+        mut self,
+        placement: PlacementSpec,
+        selections: Vec<LaunchWord>,
+        joins: Vec<CopyReference>,
+    ) -> std::result::Result<Self, LaunchGoalError> {
+        match &placement {
+            PlacementSpec::Places(places) => {
+                if let Some(join) = joins
+                    .iter()
+                    .find(|join| places.contains_key(join.name.as_name()))
+                {
+                    return Err(LaunchGoalError::PlacedJoinCopy {
+                        option: join.option.clone(),
+                        name: join.name.as_name().clone(),
+                    });
+                }
+            }
+            PlacementSpec::Local => {
+                let placed = joins
+                    .iter()
+                    .find(|join| join.core_node != CoreNodeTarget::Coordinator)
+                    .map(ToString::to_string)
+                    .or_else(|| {
+                        selections
+                            .iter()
+                            .find(|word| word.core_node().is_some())
+                            .map(ToString::to_string)
+                    });
+                if let Some(word) = placed {
+                    return Err(LaunchGoalError::LocalWithMachine { word });
+                }
+            }
+        }
         self.placement = placement;
-        self
-    }
-
-    pub fn with_selections(mut self, selections: Vec<String>) -> Self {
         self.selections = selections;
-        self
+        self.joins = joins;
+        Ok(self)
     }
 
     pub fn with_rebuild(mut self, rebuild: bool) -> Self {
@@ -145,9 +193,16 @@ impl LaunchGoal {
         self
     }
 
-    pub fn with_joins(mut self, joins: Vec<LaunchJoin>) -> Self {
-        self.joins = joins;
-        self
+    pub fn placement(&self) -> &PlacementSpec {
+        &self.placement
+    }
+
+    pub fn selections(&self) -> &[LaunchWord] {
+        &self.selections
+    }
+
+    pub fn joins(&self) -> &[CopyReference] {
+        &self.joins
     }
 
     pub fn encode(&self) -> Result<Payload> {
@@ -175,8 +230,8 @@ impl LaunchGoal {
                     let mut links = goal.reborrow().init_placement().init_places(link_count);
                     for (idx, (link_id, core_node)) in places.iter().enumerate() {
                         let mut link = links.reborrow().get(idx as u32);
-                        link.set_link_id(link_id);
-                        link.set_core_node(core_node);
+                        link.set_link_id(link_id.as_str());
+                        write_core_node_target(link.init_core_node(), core_node);
                     }
                 }
                 PlacementSpec::Local => goal.reborrow().init_placement().set_local(()),
@@ -193,19 +248,17 @@ impl LaunchGoal {
             }
 
             let selection_count = capnp_list_len(self.selections.len(), "LaunchGoal.selections")?;
-            write_text_list(
-                goal.reborrow().init_selections(selection_count),
-                &self.selections,
-            );
+            let mut selections = goal.reborrow().init_selections(selection_count);
+            for (idx, word) in self.selections.iter().enumerate() {
+                write_launch_word(selections.reborrow().get(idx as u32), word);
+            }
 
             goal.reborrow().set_rebuild(self.rebuild);
 
             let join_count = capnp_list_len(self.joins.len(), "LaunchGoal.joins")?;
             let mut joins = goal.reborrow().init_joins(join_count);
             for (idx, join) in self.joins.iter().enumerate() {
-                let mut wire = joins.reborrow().get(idx as u32);
-                wire.set_option(&join.option);
-                wire.set_name(join.name.as_str());
+                write_copy_reference(joins.reborrow().get(idx as u32), join);
             }
         }
         encode_message(&builder)
@@ -264,65 +317,51 @@ impl LaunchGoal {
             PlacementWhich::Places(places) => PlacementSpec::Places(read_places(places?)?),
         };
 
-        let selections = read_selections(goal.get_selections()?, "LaunchGoal.selections")?;
+        let selections = goal
+            .get_selections()?
+            .iter()
+            .enumerate()
+            .map(|(index, word)| read_launch_word(word, &format!("LaunchGoal.selections[{index}]")))
+            .collect::<Result<Vec<_>>>()?;
         let joins = goal
             .get_joins()?
             .iter()
-            .map(read_launch_join)
+            .enumerate()
+            .map(|(index, join)| read_copy_reference(join, &format!("LaunchGoal.joins[{index}]")))
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(Self {
-            launch_id: launch_id.to_owned(),
-            placement,
-            launcher_origin,
-            budgets,
-            selections,
-            rebuild: goal.get_rebuild(),
-            joins,
-        })
+        LaunchGoal::new(launcher_origin, launch_id, budgets)
+            .with_rebuild(goal.get_rebuild())
+            .with_layout(placement, selections, joins)
+            .map_err(|error| crate::Error::Decoding(error.to_string()))
     }
 }
 
-/// Reads the `--place` wirings of a [`LaunchGoal`]. A link with a blank half
-/// is refused, and so is a link wired twice, which keeps "at most one target
-/// per placeholder" true of every decoded [`PlacementSpec::Places`].
+/// Reads the `--place` wirings of a [`LaunchGoal`]. A link that is not a
+/// name, a machine that is not a target, and a link wired twice are
+/// refused, which keeps "at most one target per placeholder" true of every
+/// decoded [`PlacementSpec::Places`].
 fn read_places(
     places: capnp::struct_list::Reader<'_, launch_capnp::core_node_link::Owned>,
-) -> Result<BTreeMap<String, String>> {
+) -> Result<BTreeMap<Name, CoreNodeTarget>> {
     let mut wirings = BTreeMap::new();
     for (index, link) in places.iter().enumerate() {
-        let link_id = link.get_link_id()?.to_str()?;
-        let core_node = link.get_core_node()?.to_str()?;
-        if link_id.is_empty() || core_node.is_empty() {
+        let field = format!("LaunchGoal.placement.places[{index}]");
+        let link_id = read_name(link.get_link_id()?.to_str()?, &format!("{field}.link_id"))?;
+        if !link.has_core_node() {
             return Err(crate::Error::Decoding(format!(
-                "LaunchGoal.placement.places[{index}] has an empty link_id or core_node"
+                "`{field}.core_node` is missing"
             )));
         }
-        if wirings
-            .insert(link_id.to_owned(), core_node.to_owned())
-            .is_some()
-        {
+        let core_node =
+            read_core_node_target(link.get_core_node()?, &format!("{field}.core_node"))?;
+        if wirings.insert(link_id.clone(), core_node).is_some() {
             return Err(crate::Error::Decoding(format!(
                 "LaunchGoal.placement.places wires `{link_id}` more than once"
             )));
         }
     }
     Ok(wirings)
-}
-
-/// Reads one `--join OPTION:NAME` reference of a [`LaunchGoal`]; a blank
-/// option is refused.
-fn read_launch_join(wire: launch_capnp::launch_join::Reader<'_>) -> Result<LaunchJoin> {
-    let option = wire.get_option()?.to_str()?;
-    if option.is_empty() {
-        return Err(crate::Error::Decoding(
-            "LaunchGoal.joins names an empty option".to_owned(),
-        ));
-    }
-    Ok(LaunchJoin {
-        option: option.to_owned(),
-        name: crate::encoding::read_name(wire.get_name()?.to_str()?, "LaunchGoal.joins.name")?,
-    })
 }
 
 /// Goal message for the Build action: the launch `peppy stack build` runs
@@ -755,6 +794,23 @@ mod tests {
     use super::*;
     use crate::encoding::decoding_error;
 
+    fn words(texts: &[&str]) -> Vec<LaunchWord> {
+        texts.iter().map(|text| text.parse().unwrap()).collect()
+    }
+
+    fn copies(texts: &[&str]) -> Vec<CopyReference> {
+        texts.iter().map(|text| text.parse().unwrap()).collect()
+    }
+
+    fn places(pairs: &[(&str, &str)]) -> PlacementSpec {
+        PlacementSpec::Places(
+            pairs
+                .iter()
+                .map(|(link, machine)| (Name::new(*link).unwrap(), machine.parse().unwrap()))
+                .collect(),
+        )
+    }
+
     /// A launch of the repository launcher `name` with the smallest budgets.
     fn repository_goal(name: &str) -> LaunchGoal {
         LaunchGoal::new(
@@ -800,8 +856,9 @@ mod tests {
     /// launch.
     #[test]
     fn a_build_goal_carries_the_launch_it_would_run() {
-        let goal =
-            repository_goal("openarm_simulation").with_selections(vec!["mujoco".to_string()]);
+        let goal = repository_goal("openarm_simulation")
+            .with_layout(PlacementSpec::default(), words(&["mujoco"]), Vec::new())
+            .unwrap();
         let build = StackBuildGoal::from(goal.clone());
 
         let bytes = build.encode().expect("encode");
@@ -810,58 +867,155 @@ mod tests {
     }
 
     #[test]
-    fn launch_goal_roundtrips_joins_in_order_and_refuses_an_empty_option() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "fleet".to_owned(),
-            },
-            "launch-1",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_joins(vec![
-            LaunchJoin {
-                option: "openarm_sim".to_owned(),
-                name: Name::new("alpha").unwrap(),
-            },
-            LaunchJoin {
-                option: "so101_sim".to_owned(),
-                name: Name::new("charlie").unwrap(),
-            },
-        ]);
-        let decoded = LaunchGoal::decode(&goal.encode().unwrap()).unwrap();
-        assert_eq!(decoded.joins, goal.joins);
-        assert!(
-            LaunchGoal::decode(
-                &LaunchGoal::new(
-                    LauncherOrigin::Repository {
-                        name: "fleet".to_owned(),
-                    },
-                    "launch-1",
-                    StackBudgets::new(1, 1, 1, None),
-                )
-                .encode()
-                .unwrap()
+    fn launch_goal_roundtrips_joins_in_order_and_refuses_a_bad_one() {
+        let goal = repository_goal("fleet")
+            .with_layout(
+                PlacementSpec::default(),
+                Vec::new(),
+                copies(&["openarm_sim:alpha", "so101_sim:charlie@cn-jetson-1"]),
             )
-            .unwrap()
-            .joins
-            .is_empty()
+            .unwrap();
+        let decoded = LaunchGoal::decode(&goal.encode().unwrap()).unwrap();
+        assert_eq!(decoded.joins(), goal.joins());
+        assert!(
+            LaunchGoal::decode(&repository_goal("fleet").encode().unwrap())
+                .unwrap()
+                .joins()
+                .is_empty()
+        );
+
+        for (option, name, expected) in [
+            ("", "alpha", "`LaunchGoal.joins[0].option`"),
+            ("openarm_sim", "self", "`LaunchGoal.joins[0].name`"),
+        ] {
+            let mut builder = Builder::new_default();
+            {
+                let mut wire = launch_wire(&mut builder);
+                let mut join = wire.reborrow().init_joins(1).get(0);
+                join.set_option(option);
+                join.set_name(name);
+                join.init_core_node().set_coordinator(());
+            }
+            let refusal = decoding_error(LaunchGoal::decode(&encode_message(&builder).unwrap()));
+            assert!(refusal.contains(expected), "{refusal}");
+        }
+        let mut builder = Builder::new_default();
+        {
+            let mut wire = launch_wire(&mut builder);
+            let mut join = wire.reborrow().init_joins(1).get(0);
+            join.set_option("openarm_sim");
+            join.set_name("alpha");
+        }
+        let refusal = decoding_error(LaunchGoal::decode(&encode_message(&builder).unwrap()));
+        assert!(
+            refusal.contains("`LaunchGoal.joins[0].core_node` is missing"),
+            "{refusal}"
+        );
+    }
+
+    /// A wire launch of the repository launcher `fleet` with valid budgets,
+    /// for the tests that write one field by hand.
+    fn launch_wire(
+        builder: &mut Builder<capnp::message::HeapAllocator>,
+    ) -> launch_capnp::launch_goal::Builder<'_> {
+        let mut wire = builder.init_root::<launch_capnp::launch_goal::Builder>();
+        wire.set_launch_id("launch-1");
+        wire.set_node_add_idle_timeout_secs(1);
+        wire.set_node_build_idle_timeout_secs(1);
+        wire.set_node_run_idle_timeout_secs(1);
+        wire.reborrow()
+            .init_launcher_origin()
+            .set_repository("fleet");
+        wire
+    }
+
+    /// A `--place` key that names a `--join` copy, and `--local` with a
+    /// machine on a `--join` or a word, are refused by the one constructor,
+    /// for the CLI and at decode alike.
+    #[test]
+    fn the_layout_rules_hold_at_construction_and_at_decode() {
+        let refusal = repository_goal("fleet")
+            .with_layout(
+                places(&[("xiaozhu", "cn-gpu-box")]),
+                Vec::new(),
+                copies(&["openarm_sim:xiaozhu"]),
+            )
+            .unwrap_err();
+        assert_eq!(
+            refusal.to_string(),
+            "`--place xiaozhu@...` names the copy `xiaozhu` that `--join openarm_sim:xiaozhu` \
+             adds; place a joined copy where you join it: `--join openarm_sim:xiaozhu@CORE_NODE`"
+        );
+        for (selections, joins, word) in [
+            (
+                Vec::new(),
+                copies(&["openarm_sim:alpha@cn-x"]),
+                "openarm_sim:alpha@cn-x",
+            ),
+            (
+                words(&["alpha.ai_brain_vla@self"]),
+                copies(&["openarm_sim:alpha"]),
+                "alpha.ai_brain_vla@self",
+            ),
+        ] {
+            let refusal = repository_goal("fleet")
+                .with_layout(PlacementSpec::Local, selections, joins)
+                .unwrap_err();
+            assert_eq!(
+                refusal,
+                LaunchGoalError::LocalWithMachine {
+                    word: word.to_owned()
+                }
+            );
+            assert!(
+                refusal
+                    .to_string()
+                    .starts_with("`--local` runs the whole launch on this machine")
+            );
+        }
+        // A copy reference holds the coordinator when it names no machine,
+        // so `@self` on a joined copy is the reference with no machine.
+        assert!(
+            repository_goal("fleet")
+                .with_layout(
+                    PlacementSpec::Local,
+                    words(&["alpha.ai_brain_vla", "mujoco"]),
+                    copies(&["openarm_sim:alpha", "so101_sim:bravo@self"]),
+                )
+                .is_ok()
         );
 
         let mut builder = Builder::new_default();
         {
-            let mut wire = builder.init_root::<launch_capnp::launch_goal::Builder>();
-            wire.set_launch_id("launch-1");
-            wire.set_node_add_idle_timeout_secs(1);
-            wire.set_node_build_idle_timeout_secs(1);
-            wire.set_node_run_idle_timeout_secs(1);
-            wire.reborrow()
-                .init_launcher_origin()
-                .set_repository("fleet");
-            let mut joins = wire.init_joins(1);
-            joins.reborrow().get(0).set_name("alpha");
+            let mut wire = launch_wire(&mut builder);
+            wire.reborrow().init_placement().set_local(());
+            let mut join = wire.init_joins(1).get(0);
+            join.set_option("openarm_sim");
+            join.set_name("alpha");
+            join.init_core_node().set_named("cn-x");
         }
-        let error = LaunchGoal::decode(&encode_message(&builder).unwrap()).unwrap_err();
-        assert!(error.to_string().contains("empty option"), "{error}");
+        let refusal = decoding_error(LaunchGoal::decode(&encode_message(&builder).unwrap()));
+        assert!(
+            refusal.starts_with("`--local` runs the whole launch"),
+            "{refusal}"
+        );
+
+        let mut builder = Builder::new_default();
+        {
+            let mut wire = launch_wire(&mut builder);
+            let mut link = wire.reborrow().init_placement().init_places(1).get(0);
+            link.set_link_id("alpha");
+            link.init_core_node().set_named("cn-x");
+            let mut join = wire.init_joins(1).get(0);
+            join.set_option("openarm_sim");
+            join.set_name("alpha");
+            join.init_core_node().set_coordinator(());
+        }
+        let refusal = decoding_error(LaunchGoal::decode(&encode_message(&builder).unwrap()));
+        assert!(
+            refusal.contains("place a joined copy where you join it"),
+            "{refusal}"
+        );
     }
 
     /// `--rebuild` travels with the launch so every node build it performs,
@@ -878,27 +1032,30 @@ mod tests {
 
     #[test]
     fn launch_goal_roundtrips_core_node_links() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "split_compute_manipulation".to_string(),
-            },
-            "launch-abc123",
-            StackBudgets::new(5, 10, 15, None),
-        )
-        .with_placement(PlacementSpec::Places(BTreeMap::from([
-            ("robot_onboard".to_string(), "cn-robot-7".to_string()),
-            ("cloud_inference".to_string(), "cn-atlas-h100".to_string()),
-        ])));
+        let goal = repository_goal("split_compute_manipulation")
+            .with_layout(
+                places(&[
+                    ("robot_onboard", "self"),
+                    ("cloud_inference", "cn-atlas-h100"),
+                ]),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
 
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert_eq!(goal, decoded);
-        let PlacementSpec::Places(places) = &decoded.placement else {
-            panic!("expected explicit places, got {:?}", decoded.placement);
+        let PlacementSpec::Places(places) = decoded.placement() else {
+            panic!("expected explicit places, got {:?}", decoded.placement());
         };
         assert_eq!(
-            places.get("cloud_inference").map(String::as_str),
-            Some("cn-atlas-h100")
+            places.get(&Name::new("cloud_inference").unwrap()),
+            Some(&"cn-atlas-h100".parse().unwrap())
+        );
+        assert_eq!(
+            places.get(&Name::new("robot_onboard").unwrap()),
+            Some(&CoreNodeTarget::Coordinator)
         );
     }
 
@@ -907,12 +1064,13 @@ mod tests {
     /// had read a document only the coordinator holds.
     #[test]
     fn launch_goal_roundtrips_local_placement() {
-        let goal =
-            repository_goal("split_compute_manipulation").with_placement(PlacementSpec::Local);
+        let goal = repository_goal("split_compute_manipulation")
+            .with_layout(PlacementSpec::Local, Vec::new(), Vec::new())
+            .unwrap();
 
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
-        assert_eq!(decoded.placement, PlacementSpec::Local);
+        assert_eq!(decoded.placement(), &PlacementSpec::Local);
         assert_eq!(goal, decoded);
     }
 
@@ -923,31 +1081,33 @@ mod tests {
         let goal = repository_goal("teleop");
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
-        assert_eq!(decoded.placement, PlacementSpec::Places(BTreeMap::new()));
+        assert_eq!(decoded.placement(), &PlacementSpec::Places(BTreeMap::new()));
     }
 
-    /// The `--with` words travel verbatim: bare option names and
-    /// `axis=option` entries alike reach the coordinator exactly as typed,
+    /// The `--with` words travel as the caller wrote them: bare options,
+    /// `axis=option` and the words of a copy with their machines alike,
     /// because only the coordinator holds the document that gives them
     /// meaning.
     #[test]
-    fn launch_goal_roundtrips_selections_verbatim() {
-        let goal = repository_goal("openarm_v2").with_selections(vec![
-            "mujoco".to_string(),
-            "robot=mujoco".to_string(),
-            "xr_commander".to_string(),
+    fn launch_goal_roundtrips_selections_as_written() {
+        let selections = words(&[
+            "mujoco",
+            "robot=mujoco",
+            "xiaozhu.ai_brain_vla@cn-gpu-box",
+            "xiaozhu.camera_rig=cameras_sim@self",
+            "xiaozhu.xr_commander",
         ]);
+        let goal = repository_goal("openarm_v2")
+            .with_layout(
+                PlacementSpec::default(),
+                selections.clone(),
+                copies(&["openarm_sim:xiaozhu"]),
+            )
+            .unwrap();
 
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
-        assert_eq!(
-            decoded.selections,
-            vec![
-                "mujoco".to_string(),
-                "robot=mujoco".to_string(),
-                "xr_commander".to_string()
-            ]
-        );
+        assert_eq!(decoded.selections(), selections.as_slice());
     }
 
     /// A goal that names no selection decodes with an empty list, which is
@@ -962,40 +1122,42 @@ mod tests {
         );
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
-        assert!(decoded.selections.is_empty());
+        assert!(decoded.selections().is_empty());
     }
 
-    /// A blank `--with` entry is a caller bug (an empty comma segment), not a
-    /// meaningful "select nothing": refuse it at decode so it cannot silently
-    /// pass as one.
+    /// A word whose option is not a name, or whose stack choice is null, is
+    /// refused at decode, naming the entry.
     #[test]
-    fn launch_goal_decode_rejects_an_empty_selection_entry() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Fs("/abs/launcher.json5".into()),
-            "launch-abc123",
-            StackBudgets::new(1, 1, 1, None),
-        )
-        .with_selections(vec!["mujoco".to_string(), String::new()]);
-
-        let refusal = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
+    fn launch_goal_decode_rejects_a_bad_selection_entry() {
+        let mut builder = Builder::new_default();
+        {
+            let mut wire = launch_wire(&mut builder);
+            let mut selections = wire.reborrow().init_selections(2);
+            let mut choice = selections.reborrow().get(0).init_stack();
+            choice.reborrow().init_axis().set_unnamed(());
+            choice.set_option("mujoco");
+            let mut choice = selections.reborrow().get(1).init_stack();
+            choice.reborrow().init_axis().set_unnamed(());
+            choice.set_option("");
+        }
+        let refusal = decoding_error(LaunchGoal::decode(&encode_message(&builder).unwrap()));
         assert!(
-            refusal.contains("`LaunchGoal.selections[1]` is empty"),
+            refusal.contains("`LaunchGoal.selections[1].stack.option`"),
             "{refusal}"
         );
-        assert!(refusal.contains("`axis=option`"), "{refusal}");
-        assert!(refusal.contains("stray comma"), "{refusal}");
     }
 
     /// Wiring two placeholders to the SAME machine is legitimate: a launcher
     /// that describes a two-machine topology must still run on one box.
     #[test]
     fn launch_goal_roundtrips_two_links_wired_to_one_core_node() {
-        let goal = repository_goal("split_compute_manipulation").with_placement(
-            PlacementSpec::Places(BTreeMap::from([
-                ("robot_onboard".to_string(), "cn-solo".to_string()),
-                ("cloud_inference".to_string(), "cn-solo".to_string()),
-            ])),
-        );
+        let goal = repository_goal("split_compute_manipulation")
+            .with_layout(
+                places(&[("robot_onboard", "cn-solo"), ("cloud_inference", "cn-solo")]),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
 
         let bytes = goal.encode().expect("encode");
         assert_eq!(LaunchGoal::decode(&bytes).expect("decode"), goal);
@@ -1021,14 +1183,30 @@ mod tests {
     }
 
     #[test]
-    fn launch_goal_decode_rejects_empty_core_node_link_fields() {
-        for (link_id, core_node) in [("", "cn-atlas"), ("cloud_inference", "")] {
-            let goal =
-                repository_goal("teleop").with_placement(PlacementSpec::Places(BTreeMap::from([
-                    (link_id.to_string(), core_node.to_string()),
-                ])));
-            let msg = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
-            assert!(msg.contains("empty link_id or core_node"), "got: {msg}");
+    fn launch_goal_decode_rejects_bad_core_node_link_fields() {
+        for (link_id, core_node, expected) in [
+            ("", Some("cn-atlas"), "places[0].link_id"),
+            ("cloud_inference", Some(""), "places[0].core_node.named"),
+            ("cloud_inference", Some("self"), "places[0].core_node.named"),
+            (
+                "cloud_inference",
+                None,
+                "`LaunchGoal.placement.places[0].core_node` is missing",
+            ),
+        ] {
+            let mut builder = Builder::new_default();
+            {
+                let mut link = launch_wire(&mut builder)
+                    .init_placement()
+                    .init_places(1)
+                    .get(0);
+                link.set_link_id(link_id);
+                if let Some(core_node) = core_node {
+                    link.init_core_node().set_named(core_node);
+                }
+            }
+            let msg = decoding_error(LaunchGoal::decode(&encode_message(&builder).unwrap()));
+            assert!(msg.contains(expected), "got: {msg}");
         }
     }
 
@@ -1039,19 +1217,11 @@ mod tests {
     fn launch_goal_decode_refuses_a_link_wired_twice() {
         let mut builder = Builder::new_default();
         {
-            let mut wire = builder.init_root::<launch_capnp::launch_goal::Builder>();
-            wire.set_launch_id("launch-1");
-            wire.set_node_add_idle_timeout_secs(1);
-            wire.set_node_build_idle_timeout_secs(1);
-            wire.set_node_run_idle_timeout_secs(1);
-            wire.reborrow()
-                .init_launcher_origin()
-                .set_repository("fleet");
-            let mut places = wire.init_placement().init_places(2);
+            let mut places = launch_wire(&mut builder).init_placement().init_places(2);
             for (index, core_node) in ["cn-a", "cn-b"].into_iter().enumerate() {
                 let mut link = places.reborrow().get(index as u32);
                 link.set_link_id("robot_onboard");
-                link.set_core_node(core_node);
+                link.init_core_node().set_named(core_node);
             }
         }
         let refusal = decoding_error(LaunchGoal::decode(&encode_message(&builder).unwrap()));

@@ -29,8 +29,8 @@
 //!    it until the daemon's work ends.
 //!
 //! [`list_copies`] reads the copies of the stack along the same route, with
-//! the name and the option of each, and the join or the removal of a copy
-//! that holds the stack.
+//! the name, the option, the machine and the selections of each, and the
+//! join or the removal of a copy that holds the stack.
 //!
 //! # Budgets
 //!
@@ -40,22 +40,22 @@
 //! waits for a silent goal waits [`silence_window`] of its budgets, the
 //! largest phase budget plus [`DAEMON_RESPONSE_GRACE`], so the daemon's own
 //! error for the silent phase comes first. A removal carries no budget: the
-//! daemon stops the instances of the copy one at a time, each within its
-//! teardown budget, and on its own machine it sends a line before it stops
-//! each one.
+//! daemon stops the instances of the copy one at a time across its
+//! machines, each within the teardown budget of its machine, and sends a
+//! line before it stops each one.
 //!
 //! # A node that adds a copy to its own stack
 //!
 //! The daemon bridge of the MCP server runs as a node on the coordinator, so
-//! it sends its goals to the daemon it is bound to. A join with no
-//! selection, no argument and no environment, placed on the coordinator,
-//! under the default budgets, relayed as `{step}: {line}`, with a cancel and
-//! a silence window of the caller's own:
+//! it sends its goals to the daemon it is bound to. A join of a copy on the
+//! coordinator with no word, no argument and no environment, under the
+//! default budgets, relayed as `{step}: {line}`, with a cancel and a silence
+//! window of the caller's own:
 //!
 //! ```no_run
 //! use std::time::Duration;
 //!
-//! use core_node_api::encoding::{LaunchResult, StackJoinGoal};
+//! use core_node_api::encoding::{CopyReference, LaunchResult, StackJoinGoal};
 //! use peppylib::runtime::NodeRunner;
 //! use stack_goal::{DEFAULT_BUDGETS, DaemonRoute, SendError, StackGoalEvent};
 //!
@@ -68,13 +68,12 @@
 //!
 //! async fn add_copy(
 //!     node: &NodeRunner,
-//!     name: config::runtime::Name,
-//!     option: &str,
+//!     copy: CopyReference,
 //!     window: Duration,
 //!     cancelled: impl std::future::Future<Output = ()>,
 //!     relay: impl Fn(String),
 //! ) -> Outcome {
-//!     let goal = StackJoinGoal::new(name, option, DEFAULT_BUDGETS);
+//!     let goal = StackJoinGoal::new(copy, DEFAULT_BUDGETS);
 //!     let mut running = match stack_goal::send(DaemonRoute::own_daemon(node), &goal).await {
 //!         Ok(running) => running,
 //!         Err(SendError::Rejected { reason, .. }) => return Outcome::Refused(reason),

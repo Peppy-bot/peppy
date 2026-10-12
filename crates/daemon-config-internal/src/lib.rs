@@ -109,13 +109,13 @@ pub mod launcher {
         CopyMembership, CopyRecord, DaemonScopeError, DaemonScopeRefusals, Deployment,
         DeploymentInstance, DeploymentSource, ExternallyCoveredSlots, FrameworkOverrides,
         JoinRequest, LauncherFragmentParser, LinkTargets, LinkValue, MemberAddressing, OptionSpec,
-        PairingValidationItem, PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation,
-        PlannedPairEndpoint, PlannedPairing, PreparedLauncher, ResolvedClocks, RunningStack,
-        SELF_COPY_NAME_REFUSAL, SETS_READ_WHOLE, Selection, SkipReason, SkippedAdjustment,
-        UnitSelection, VacantReason, WALL_CLOCK, check_composition, check_daemon_scopes,
-        mint_incarnation, parse_copy_name, participant_vacancies, resolve_clocks,
-        split_link_target, validate_bindings, validate_clock_connections, validate_link_plan,
-        validate_pairings,
+        PairingValidationItem, PartMachines, PartRefusal, PeppyLauncher, PeppyLauncherParser,
+        Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing, PreparedLauncher,
+        ResolvedClocks, RunningStack, SETS_READ_WHOLE, ScopeCheck, Selection, SkipReason,
+        SkippedAdjustment, TrialStack, UnitSelection, VacantReason, WALL_CLOCK, WrittenWord,
+        check_composition, check_daemon_scopes, mint_incarnation, participant_vacancies,
+        resolve_clocks, split_link_target, validate_bindings, validate_clock_connections,
+        validate_link_plan, validate_pairings,
     };
 }
 
@@ -130,8 +130,9 @@ pub mod contract {
 // scope type, schema narrowing and launch checks.
 pub mod daemon_interface {
     pub use crate::internal::daemon_interface::{
-        DaemonInterface, DaemonScope, MAX_DESCRIPTION_CHARS, ScopedOption, StackCopiesMember,
-        StackCopiesScope, UnservedInterface, served_interfaces,
+        DaemonInterface, DaemonScope, Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES,
+        PlacedFeature, ScopedFeature, ScopedOption, StackCopiesMember, StackCopiesScope,
+        UnservedInterface, served_interfaces,
     };
 }
 

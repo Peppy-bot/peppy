@@ -13,13 +13,16 @@
 mod stack_copies;
 
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
-use crate::internal::launcher::PreparedLauncher;
+use crate::internal::launcher::{PreparedLauncher, UnitSelection};
 use peppy_mcp_catalog::{
     DaemonInterfaceRef, DeclaredMembers, ExposureBundle, McpExposure, ResolvedInterface,
 };
 use std::sync::LazyLock;
 
-pub use stack_copies::{MAX_DESCRIPTION_CHARS, ScopedOption, StackCopiesMember, StackCopiesScope};
+pub use stack_copies::{
+    Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES, PlacedFeature, ScopedFeature, ScopedOption,
+    StackCopiesMember, StackCopiesScope,
+};
 
 /// One daemon interface this peppy serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -197,11 +200,16 @@ impl DaemonScope {
         }
     }
 
-    /// The checks a launch, a join and `peppy stack resolve` run on the
-    /// scope against the launcher that gives it: one refusal per problem.
-    pub fn check_launch(&self, prepared: &PreparedLauncher) -> Vec<String> {
+    /// The checks a launch and `peppy stack resolve` run on the scope
+    /// against the launcher that gives it and the stack `selection`
+    /// resolves: one refusal per problem.
+    pub fn check_launch(
+        &self,
+        prepared: &PreparedLauncher,
+        selection: &UnitSelection,
+    ) -> Vec<String> {
         match self {
-            Self::StackCopies(scope) => scope.check_launch(prepared),
+            Self::StackCopies(scope) => scope.check_launch(prepared, selection),
         }
     }
 

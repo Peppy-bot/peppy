@@ -454,14 +454,15 @@ mod tests {
         );
         assert_eq!(
             build.placement.places,
-            [("robot_onboard".to_owned(), "self".to_owned())]
+            [(
+                config::runtime::Name::new("robot_onboard").unwrap(),
+                config::runtime::CoreNodeTarget::Coordinator
+            )]
         );
         assert!(!build.placement.local);
         assert!(build.rebuild);
-        assert_eq!(
-            build.with.words,
-            ["mujoco", "extras=on", "alpha.xr_commander"]
-        );
+        let words: Vec<String> = build.with.words.iter().map(ToString::to_string).collect();
+        assert_eq!(words, ["mujoco", "extras=on", "alpha.xr_commander"]);
         assert_eq!(build.timeouts.node_add_idle_timeout_secs, 5);
         assert_eq!(build.timeouts.node_build_idle_timeout_secs, 6);
         assert_eq!(build.timeouts.node_run_idle_timeout_secs, 7);

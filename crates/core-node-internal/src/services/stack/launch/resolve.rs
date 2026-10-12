@@ -4,7 +4,7 @@ use crate::services::node::pins;
 use crate::services::node::{FeedbackLine, Report, unlogged_step_sink};
 use crate::services::repo::cache as repo_cache;
 use crate::services::stack::action::StackChangeContext;
-use config::runtime::CoreNodeName;
+use config::runtime::{CopyName, CoreNodeName, CoreNodeTarget};
 use core_node_api::encoding::{LaunchFeedbackStep, LaunchGoal, LauncherOrigin, PlacementSpec};
 use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
@@ -15,12 +15,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// The launcher as the coordinator read it: the document its copies join
-/// onto, the composition the launch selection produced, and where each
-/// instance runs.
+/// onto, the composition the launch selection produced, where each instance
+/// runs, and each copy's machine.
 pub(in crate::services::stack) struct ParsedLaunch {
     pub(in crate::services::stack) prepared: daemon_config::launcher::PreparedLauncher,
     pub(in crate::services::stack) composed: daemon_config::launcher::ComposedLaunch,
+    pub(in crate::services::stack) placements: LaunchPlacements,
+}
+
+/// Where a launch runs: every instance, and each copy's machine, the
+/// machine its name places, which runs its base.
+#[derive(Debug)]
+pub(in crate::services::stack) struct LaunchPlacements {
     pub(in crate::services::stack) placements: Placements,
+    pub(in crate::services::stack) copy_core_nodes: BTreeMap<CopyName, CoreNodeName>,
 }
 
 /// Parses the launcher configuration from its file path, resolving the
@@ -84,7 +92,7 @@ async fn read_launcher_config(
     // composition errors themselves name the axis and its options, so the
     // prefix only says which step refused.
     let composed = prepared
-        .launch(&goal.selections, &goal.joins)
+        .launch(goal.selections(), goal.joins())
         .map_err(|e| format!("Cannot resolve the launcher's components: {e}"))?;
     if !parsed.components.is_empty() {
         // The full resolution is echoed before anything runs, so the
@@ -95,17 +103,7 @@ async fn read_launcher_config(
         }
     }
 
-    let copy_names: Vec<&str> = composed
-        .copies()
-        .iter()
-        .map(|copy| copy.name.as_str())
-        .collect();
-    let placements = resolve_placements(
-        &composed.launcher,
-        goal,
-        &copy_names,
-        ctx.bound_core_node.as_str(),
-    )?;
+    let placements = resolve_placements(&composed, goal, ctx.bound_core_node.as_str())?;
 
     Ok(ParsedLaunch {
         prepared,
@@ -117,6 +115,13 @@ async fn read_launcher_config(
 /// Binds the launcher's declared core node links to the machines the caller
 /// asked for, then resolves every instance to the core node it runs on.
 ///
+/// Each copy runs where it is named: a `--join` copy on the machine its
+/// reference names, a copy the file lists where `--place NAME@CORE_NODE`
+/// puts it, and either on the coordinator when nothing names a machine. Its
+/// name is the placement link of its machine, which runs its base. Then each
+/// instance of a part a word places runs on the word's machine. `self`
+/// travels as the coordinator, which every target resolves to here.
+///
 /// The coordinator owns this, not the CLI, and it owns the EXPANSION as well as
 /// the check. Only the daemon has the resolved document: a `Repository`
 /// launcher (the shape every hub launcher uses) is read from the daemon's own
@@ -125,27 +130,34 @@ async fn read_launcher_config(
 /// Expanding it caller-side would work for a file launcher and silently do
 /// nothing for a repository one.
 pub(in crate::services::stack) fn resolve_placements(
-    launcher: &daemon_config::launcher::PeppyLauncher,
+    composed: &daemon_config::launcher::ComposedLaunch,
     goal: &LaunchGoal,
-    copies: &[&str],
     coordinator: &str,
-) -> std::result::Result<Placements, String> {
+) -> std::result::Result<LaunchPlacements, String> {
     // The daemon's own name, re-parsed rather than assumed: this is the only
     // way to obtain a `CoreNodeName`, and every name in a `Placements` is one.
     let coordinator = CoreNodeName::new(coordinator)
         .map_err(|reason| format!("this daemon's core node name is invalid: {reason}"))?;
+    let launcher = &composed.launcher;
     let declared: BTreeSet<&str> = launcher.core_nodes.iter().map(String::as_str).collect();
-    // A copy's name is its placement link, and a copy nobody placed runs on
-    // the coordinator.
-    let mut placement = goal.placement.clone();
-    if let PlacementSpec::Places(places) = &mut placement {
-        for copy in copies {
-            places
-                .entry((*copy).to_string())
-                .or_insert_with(|| coordinator.to_string());
-        }
-    }
-    let links = wire_core_node_links(&placement, &declared, &coordinator)?;
+    let copy_core_nodes: BTreeMap<CopyName, CoreNodeName> = composed
+        .copies()
+        .iter()
+        .map(|copy| {
+            let named = goal
+                .joins()
+                .iter()
+                .find(|join| join.name == copy.name)
+                .map(|join| &join.core_node)
+                .or_else(|| match goal.placement() {
+                    PlacementSpec::Places(places) => places.get(copy.name.as_name()),
+                    PlacementSpec::Local => None,
+                })
+                .unwrap_or(&CoreNodeTarget::Coordinator);
+            (copy.name.clone(), named.resolve(&coordinator))
+        })
+        .collect();
+    let links = wire_core_node_links(goal.placement(), &declared, &copy_core_nodes, &coordinator)?;
 
     let mut by_instance = BTreeMap::new();
     for deployment in &launcher.deployments {
@@ -170,24 +182,33 @@ pub(in crate::services::stack) fn resolve_placements(
             by_instance.insert(instance.instance_id.to_string(), core_node.clone());
         }
     }
+    for copy in composed.copies() {
+        for (axis, target) in composed.part_machines_of(&copy.name) {
+            let machine = target.resolve(&coordinator);
+            for instance in copy.instances_of_own_axis(axis.as_str()) {
+                by_instance.insert(instance.instance_id.to_string(), machine.clone());
+            }
+        }
+    }
 
-    Ok(Placements::new(coordinator, by_instance))
+    Ok(LaunchPlacements {
+        placements: Placements::new(coordinator, by_instance),
+        copy_core_nodes,
+    })
 }
 
-/// Every declared core node link, wired to the machine it runs on.
+/// Every declared core node link, wired to the machine it runs on: each
+/// copy's name to the copy's machine, and every other link to the machine
+/// its `--place` wiring names, or to the coordinator under `--local`.
 ///
 /// Splitting this out is what lets `--local` be a real placement mode rather
 /// than a caller-side shortcut: both arms end in the same "every declared link
 /// has exactly one machine" post-condition, so nothing downstream has to know
 /// which flag produced it.
-///
-/// The `--place` targets are VALIDATED here, not taken on trust. They arrived
-/// on the wire, and while the CLI checks what a user types, a daemon cannot
-/// assume its caller was the CLI: this is where an unchecked name would
-/// otherwise enter the plan and be stamped onto every producer address.
 fn wire_core_node_links<'a>(
     placement: &PlacementSpec,
     declared: &BTreeSet<&'a str>,
+    copies: &BTreeMap<CopyName, CoreNodeName>,
     coordinator: &CoreNodeName,
 ) -> std::result::Result<BTreeMap<&'a str, CoreNodeName>, String> {
     let places = match placement {
@@ -211,12 +232,22 @@ fn wire_core_node_links<'a>(
         ));
     }
 
+    let wired: BTreeMap<&str, CoreNodeName> = places
+        .iter()
+        .map(|(link, target)| (link.as_str(), target.resolve(coordinator)))
+        .chain(
+            copies
+                .iter()
+                .map(|(copy, machine)| (copy.as_str(), machine.clone())),
+        )
+        .collect();
+
     // Every declared link must be wired exactly once, and only declared links
     // may be wired. A launcher describes a topology; refusing a partial wiring
     // is what stops half of it from silently collapsing onto the coordinator.
     let missing: Vec<&str> = declared
         .iter()
-        .filter(|link| !places.contains_key(**link))
+        .filter(|link| !wired.contains_key(**link))
         .copied()
         .collect();
     if !missing.is_empty() {
@@ -229,7 +260,7 @@ fn wire_core_node_links<'a>(
     }
     let undeclared: Vec<&str> = places
         .keys()
-        .map(String::as_str)
+        .map(|link| link.as_str())
         .filter(|link| !declared.contains(link))
         .collect();
     if !undeclared.is_empty() {
@@ -244,20 +275,10 @@ fn wire_core_node_links<'a>(
         ));
     }
 
-    places
+    Ok(declared
         .iter()
-        .map(|(link, core_node)| {
-            let name = CoreNodeName::new(core_node.as_str()).map_err(|reason| {
-                format!("--place wires core node link `{link}` to `{core_node}`, which {reason}")
-            })?;
-            // Borrow the DECLARED spelling, not the request's: the two are
-            // equal here, and this keeps the map's keys tied to the document.
-            let link = declared
-                .get(link.as_str())
-                .expect("every wired link was just checked to be declared");
-            Ok((*link, name))
-        })
-        .collect()
+        .map(|link| (*link, wired[link].clone()))
+        .collect())
 }
 
 /// Translate a `LauncherOrigin` into a concrete on-disk path.
@@ -725,9 +746,18 @@ mod tests {
         PlacementSpec::Places(
             pairs
                 .iter()
-                .map(|(link, target)| ((*link).to_owned(), (*target).to_owned()))
+                .map(|(link, target)| {
+                    (
+                        config::runtime::Name::new(*link).unwrap(),
+                        target.parse().unwrap(),
+                    )
+                })
                 .collect(),
         )
+    }
+
+    fn no_copies() -> BTreeMap<CopyName, CoreNodeName> {
+        BTreeMap::new()
     }
 
     /// The case the CLI cannot serve: `--local` against a launcher whose
@@ -739,6 +769,7 @@ mod tests {
         let wired = wire_core_node_links(
             &PlacementSpec::Local,
             &declared(&["robot_onboard", "cloud_inference"]),
+            &no_copies(),
             &core_node("cn-robot-7"),
         )
         .expect("--local always wires");
@@ -754,6 +785,7 @@ mod tests {
         let wired = wire_core_node_links(
             &PlacementSpec::Local,
             &declared(&[]),
+            &no_copies(),
             &core_node("cn-robot-7"),
         )
         .expect("a single-machine launcher is trivially local");
@@ -769,6 +801,7 @@ mod tests {
         let wired = wire_core_node_links(
             &placement,
             &declared(&["robot_onboard", "cloud_inference"]),
+            &no_copies(),
             &core_node("cn-robot-7"),
         )
         .expect("a full wiring");
@@ -784,6 +817,7 @@ mod tests {
         let error = wire_core_node_links(
             &placement,
             &declared(&["robot_onboard", "cloud_inference"]),
+            &no_copies(),
             &core_node("cn-robot-7"),
         )
         .expect_err("a partial wiring must be refused");
@@ -803,6 +837,7 @@ mod tests {
         let error = wire_core_node_links(
             &placement,
             &declared(&["robot_onboard"]),
+            &no_copies(),
             &core_node("cn-robot-7"),
         )
         .expect_err("only declared links may be wired");
@@ -813,8 +848,13 @@ mod tests {
     #[test]
     fn placing_against_a_launcher_that_declares_nothing_is_refused() {
         let placement = places(&[("robot_onboard", "cn-robot-7")]);
-        let error = wire_core_node_links(&placement, &declared(&[]), &core_node("cn-robot-7"))
-            .expect_err("there is nothing to wire");
+        let error = wire_core_node_links(
+            &placement,
+            &declared(&[]),
+            &no_copies(),
+            &core_node("cn-robot-7"),
+        )
+        .expect_err("there is nothing to wire");
         assert!(error.contains("declares no `core_nodes`"), "got: {error}");
     }
 
@@ -826,9 +866,149 @@ mod tests {
         let error = wire_core_node_links(
             &PlacementSpec::default(),
             &declared(&["robot_onboard"]),
+            &no_copies(),
             &core_node("cn-robot-7"),
         )
         .expect_err("an unwired declared link must be refused");
         assert!(error.contains("declared but not wired"), "got: {error}");
+    }
+
+    // --- Placement of copies and of their parts ---
+
+    /// A launcher whose `robot` axis runs as copies: a robot is an arm, its
+    /// base, and a commander, a part its own axis brings. The file lists
+    /// the copy `bravo`.
+    fn robots() -> daemon_config::launcher::PreparedLauncher {
+        let document = r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "robot", cardinality: "zero_or_more", options: {
+                    arm: {
+                        deployments: [
+                            { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+                            { commander: "pad" },
+                        ],
+                        components: [
+                            { name: "commander", options: {
+                                pad: { deployments: [
+                                    { source: { name: "pad", tag: "v1" }, instances: [
+                                        { instance_id: "commander_inst", links: { arm: "arm_inst" } }
+                                    ] }
+                                ] },
+                            } },
+                        ],
+                    },
+                } },
+            ],
+            deployments: [{ robot: "arm", instances: [{ instance_id: "bravo" }] }],
+        }"#;
+        let parsed = daemon_config::launcher::PeppyLauncherParser::from_content(document)
+            .expect("the launcher parses");
+        daemon_config::launcher::PreparedLauncher::load(
+            &parsed,
+            std::path::Path::new("robots.json5"),
+        )
+        .expect("it loads")
+    }
+
+    /// The placements of a launch of `robots` with `words`, `joins` and
+    /// `placement`, on the coordinator `cn-desk`.
+    fn launch_placements(
+        placement: PlacementSpec,
+        words: &[&str],
+        joins: &[&str],
+    ) -> LaunchPlacements {
+        let words: Vec<core_node_api::encoding::LaunchWord> =
+            words.iter().map(|word| word.parse().unwrap()).collect();
+        let joins: Vec<core_node_api::encoding::CopyReference> =
+            joins.iter().map(|join| join.parse().unwrap()).collect();
+        let prepared = robots();
+        let composed = prepared
+            .launch(&words, &joins)
+            .expect("the launch composes");
+        let goal = LaunchGoal::new(
+            LauncherOrigin::repository("robots"),
+            "launch-1",
+            core_node_api::encoding::StackBudgets::new(1, 1, 1, None),
+        )
+        .with_layout(placement, words, joins)
+        .expect("the layout holds");
+        resolve_placements(&composed, &goal, "cn-desk").expect("the placements resolve")
+    }
+
+    fn machine_of(placements: &LaunchPlacements, instance: &str) -> String {
+        placements.placements.of(instance).to_owned()
+    }
+
+    fn copy_machine(placements: &LaunchPlacements, copy: &str) -> String {
+        placements.copy_core_nodes[&CopyName::new(copy).unwrap()].to_string()
+    }
+
+    /// A `--join` copy runs on the machine its reference names, a copy of the
+    /// file where `--place` puts it, and each part of a copy where its word
+    /// says; everything else runs with its copy's base.
+    #[test]
+    fn copies_and_their_parts_run_where_they_are_named() {
+        let placements = launch_placements(
+            places(&[("bravo", "cn-jetson-2")]),
+            &["alpha.pad@cn-gpu-box"],
+            &["arm:alpha@cn-jetson-1"],
+        );
+        assert_eq!(copy_machine(&placements, "alpha"), "cn-jetson-1");
+        assert_eq!(machine_of(&placements, "alpha_arm_inst"), "cn-jetson-1");
+        assert_eq!(
+            machine_of(&placements, "alpha_commander_inst"),
+            "cn-gpu-box"
+        );
+        assert_eq!(copy_machine(&placements, "bravo"), "cn-jetson-2");
+        assert_eq!(machine_of(&placements, "bravo_arm_inst"), "cn-jetson-2");
+        assert_eq!(
+            machine_of(&placements, "bravo_commander_inst"),
+            "cn-jetson-2"
+        );
+    }
+
+    /// `self` travels as the coordinator, which a `--join`, a word and a
+    /// `--place` value all resolve to.
+    #[test]
+    fn the_coordinator_resolves_to_this_daemons_name_everywhere() {
+        let placements = launch_placements(
+            places(&[("bravo", "self")]),
+            &["alpha.pad@self", "bravo.pad@cn-gpu-box"],
+            &["arm:alpha@self"],
+        );
+        assert_eq!(copy_machine(&placements, "alpha"), "cn-desk");
+        assert_eq!(machine_of(&placements, "alpha_commander_inst"), "cn-desk");
+        assert_eq!(copy_machine(&placements, "bravo"), "cn-desk");
+        assert_eq!(machine_of(&placements, "bravo_arm_inst"), "cn-desk");
+        assert_eq!(
+            machine_of(&placements, "bravo_commander_inst"),
+            "cn-gpu-box"
+        );
+        assert!(placements.placements.is_federated());
+
+        // Nothing named: every copy, its base and its parts, on the coordinator.
+        let placements = launch_placements(PlacementSpec::default(), &[], &["arm:alpha"]);
+        assert_eq!(copy_machine(&placements, "alpha"), "cn-desk");
+        assert_eq!(copy_machine(&placements, "bravo"), "cn-desk");
+        assert!(!placements.placements.is_federated());
+    }
+
+    /// Each copy's machine is the one its name places, whatever machine runs
+    /// the instance of the copy that starts first: here only the part runs
+    /// away from the copy, which keeps its own machine.
+    #[test]
+    fn each_copy_keeps_its_own_machine() {
+        let placements = launch_placements(
+            PlacementSpec::default(),
+            &["alpha.pad@cn-gpu-box", "bravo.pad@cn-gpu-box"],
+            &["arm:alpha@cn-jetson-1"],
+        );
+        assert_eq!(copy_machine(&placements, "alpha"), "cn-jetson-1");
+        assert_eq!(copy_machine(&placements, "bravo"), "cn-desk");
+        assert_eq!(
+            machine_of(&placements, "bravo_commander_inst"),
+            "cn-gpu-box"
+        );
     }
 }

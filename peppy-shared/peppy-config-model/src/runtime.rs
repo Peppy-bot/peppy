@@ -1,7 +1,11 @@
 mod clock;
+mod copy_name;
 mod core_node_name;
+mod core_node_target;
 pub use clock::{ClockBinding, ClockDomainId, ClockIncarnation, ClockRole, InvalidIncarnation};
+pub use copy_name::{CopyName, CopyNameError};
 pub use core_node_name::{CoreNodeName, CoreNodeNameError, MAX_CORE_NODE_NAME_LEN, SELF_CORE_NODE};
+pub use core_node_target::CoreNodeTarget;
 
 use crate::common::AnyType;
 use crate::consts::ALLOWED_CONFIG_CHARS;

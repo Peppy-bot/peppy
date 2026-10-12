@@ -525,13 +525,14 @@ mod tests {
         let addressing = MemberAddressing::ByCopy {
             one_per_copy: ["limbs".to_owned()].into_iter().collect(),
         };
-        let alpha = Name::new("alpha").expect("a copy name");
+        let alpha = config::runtime::CopyName::new("alpha").expect("a copy name");
         let copies = CopyMembership::of(&[CopyRecord {
             instances: ["left", "right"]
                 .into_iter()
                 .map(|id| CopyInstance {
-                    instance_id: config::runtime::instance_id_in_copy(&alpha, id),
+                    instance_id: config::runtime::instance_id_in_copy(alpha.as_name(), id),
                     in_copy: Name::new(id).expect("an in-copy instance id"),
+                    own_axis: None,
                 })
                 .collect(),
             name: alpha,

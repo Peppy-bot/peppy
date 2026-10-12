@@ -1414,6 +1414,37 @@ const COPIES_ONLY_LAUNCHER: &str = r#"{
   } }]
 }"#;
 
+const PARTS_FLEET_LAUNCHER_FILE: &str = "parts_fleet.json5";
+/// A station robot whose parts can run away from its base: the base is an
+/// arm and a leader that pairs into the stack's hub, the `commander` axis
+/// brings the pad commander that drives the arm, which the option deploys,
+/// and the `watcher` axis brings an observer of the leader's pair.
+const PARTS_FLEET_LAUNCHER: &str = r#"{
+  peppy_schema: "launcher/v1",
+  deployments: [{ source: { name: "pairing_hub", tag: "v1" },
+    instances: [{ instance_id: "hub_inst" }] }],
+  components: [{ name: "robot", cardinality: "zero_or_more", options: {
+    station: {
+      deployments: [
+        { source: { name: "isolation_arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+        { source: { name: "pairing_leader", tag: "v1" },
+          instances: [{ instance_id: "leader_inst", arguments: { value: 1.0 }, links: { hub: "hub_inst" } }] },
+        { commander: "pad" }
+      ],
+      components: [
+        { name: "commander", provides: ["commander_inst"], options: {
+          pad: { deployments: [{ source: { name: "isolation_commander", tag: "v1" },
+            instances: [{ instance_id: "commander_inst", links: { arm: "arm_inst" } }] }] }
+        } },
+        { name: "watcher", cardinality: "zero_or_one", options: {
+          watch: { deployments: [{ source: { name: "set_watch", tag: "v1" },
+            instances: [{ instance_id: "watch_inst", links: { arms: [], leaders: ["leader_inst/hub"] } }] }] }
+        } }
+      ]
+    }
+  } }]
+}"#;
+
 const PAIRING_FLEET_LAUNCHER_FILE: &str = "pairing_fleet.json5";
 /// One hub holding a pair per leader through a `zero_or_more` slot, and a
 /// leader axis whose copies pair into it from whichever machine they are
@@ -1935,6 +1966,7 @@ impl Substrate {
                 PAIRING_FLEET_LAUNCHER.to_owned(),
             ),
             (ISOLATION_FLEET_LAUNCHER_FILE, isolation_fleet_launcher()),
+            (PARTS_FLEET_LAUNCHER_FILE, PARTS_FLEET_LAUNCHER.to_owned()),
             (
                 MISSING_PUBLISHER_CLOCK_LAUNCHER_FILE,
                 missing_publisher_clock_launcher(),
@@ -3718,7 +3750,7 @@ async fn copies_joining_late_bind_the_stacks_running_domain() {
         require_success(
             fleet
                 .coordinator
-                .peppy(&["stack", "join", &format!("probe:{name}"), "--place", host])
+                .peppy(&["stack", "join", &format!("probe:{name}@{host}")])
                 .await,
             "join late clock consumer",
         );
@@ -3781,7 +3813,7 @@ async fn copies_join_and_remove_with_an_offline_neighbor() {
         require_success(
             federation
                 .robot
-                .peppy(&["stack", "join", &format!("arm:{name}"), "--place", host])
+                .peppy(&["stack", "join", &format!("arm:{name}@{host}")])
                 .await,
             "join copy",
         );
@@ -3873,9 +3905,7 @@ async fn a_join_refused_by_a_machine_with_its_own_stack_leaves_that_stack_alone(
         .peppy(&[
             "stack",
             "join",
-            "arm:alpha",
-            "--place",
-            &federation.cloud_core_node,
+            &format!("arm:alpha@{}", federation.cloud_core_node),
         ])
         .await;
     assert!(!refused.success(), "{}", refused.text);
@@ -3922,9 +3952,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
             .peppy(&[
                 "stack",
                 "join",
-                "arm:bravo",
-                "--place",
-                &federation.cloud_core_node,
+                &format!("arm:bravo@{}", federation.cloud_core_node),
             ])
             .await,
         "join remote arm",
@@ -3932,7 +3960,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
     plant_uncreatable_instance_dir(&federation.cloud, "failed_cam_inst").await;
     let failed = federation
         .robot
-        .peppy(&["stack", "join", "cam:failed", "--place", &place_on_cloud])
+        .peppy(&["stack", "join", &format!("cam:failed@{place_on_cloud}")])
         .await;
     assert!(!failed.success(), "{}", failed.text);
     assert!(failed.text.contains("failed_cam_inst"), "{}", failed.text);
@@ -3960,7 +3988,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
     require_success(
         federation
             .robot
-            .peppy(&["stack", "join", "cam:failed", "--place", &place_on_cloud])
+            .peppy(&["stack", "join", &format!("cam:failed@{place_on_cloud}")])
             .await,
         "rejoin under the freed name",
     );
@@ -4001,9 +4029,7 @@ async fn a_join_whose_peer_work_outlives_its_deadline_leaves_nothing_on_the_peer
         .peppy(&[
             "stack",
             "join",
-            "cam:late",
-            "--place",
-            &federation.cloud_core_node,
+            &format!("cam:late@{}", federation.cloud_core_node),
             "--max-timeout-secs",
             "5",
         ])
@@ -4057,9 +4083,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
                 .peppy(&[
                     "stack",
                     "join",
-                    &format!("arm:{name}"),
-                    "--place",
-                    &federation.cloud_core_node,
+                    &format!("arm:{name}@{}", federation.cloud_core_node),
                 ])
                 .await,
             "join remote arm",
@@ -4113,9 +4137,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
         .peppy(&[
             "stack",
             "join",
-            "arm:failed",
-            "--place",
-            &federation.cloud_core_node,
+            &format!("arm:failed@{}", federation.cloud_core_node),
         ])
         .await;
     assert!(!failed.success(), "{}", failed.text);
@@ -4178,17 +4200,28 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
             .peppy(&[
                 "stack",
                 "join",
-                "arm:bravo",
-                "--place",
-                &federation.cloud_core_node,
+                &format!("arm:bravo@{}", federation.cloud_core_node),
             ])
             .await,
         "rejoin remote bravo",
     );
     let listed = federation.robot.stack_list_json("copy metadata").await;
+    let coordinator = coordinator_section(&listed, &federation.robot_core_node);
+    assert_eq!(copy_names(&coordinator), ["alpha", "bravo", "charlie"]);
+    let machines: Vec<&str> = coordinator["copies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|copy| copy["core_node"].as_str().unwrap())
+        .collect();
     assert_eq!(
-        copy_names(&coordinator_section(&listed, &federation.robot_core_node)),
-        ["alpha", "bravo", "charlie"]
+        machines,
+        [
+            federation.robot_core_node.as_str(),
+            federation.cloud_core_node.as_str(),
+            federation.cloud_core_node.as_str()
+        ],
+        "each copy names the machine of its base: {listed}"
     );
     for name in ["alpha", "bravo", "charlie"] {
         require_success(
@@ -4595,11 +4628,11 @@ fn peer_hold_violations(
 /// and one join's from the next's.
 async fn join_station(federation: &Federation, station: &Station) {
     let label = format!("commander_inst.label=\"{}\"", station.label());
-    let copy = format!("station:{}", station.name);
-    let mut args = vec!["stack", "join", &copy, "--set-arguments", &label];
-    if let Some(core_node) = station.placement.core_node(federation) {
-        args.extend(["--place", core_node]);
-    }
+    let copy = match station.placement.core_node(federation) {
+        Some(core_node) => format!("station:{}@{core_node}", station.name),
+        None => format!("station:{}", station.name),
+    };
+    let args = vec!["stack", "join", &copy, "--set-arguments", &label];
     require_success(
         federation.robot.peppy(&args).await,
         &format!("join station {}", station.name),
@@ -5346,11 +5379,11 @@ async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
     ];
     for (name, value, place) in leaders {
         let argument = format!("leader_inst.value={value}");
-        let copy = format!("limb:{name}");
-        let mut args = vec!["stack", "join", &copy, "--set-arguments", &argument];
-        if let Some(core_node) = place {
-            args.extend(["--place", core_node]);
-        }
+        let copy = match place {
+            Some(core_node) => format!("limb:{name}@{core_node}"),
+            None => format!("limb:{name}"),
+        };
+        let args = vec!["stack", "join", &copy, "--set-arguments", &argument];
         require_success(federation.robot.peppy(&args).await, "join a leader");
         // The hub hears this leader on a pair tagged with its copy.
         federation
@@ -5441,11 +5474,9 @@ async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
             .peppy(&[
                 "stack",
                 "join",
-                "limb:bravo",
+                &format!("limb:bravo@{cloud}"),
                 "--set-arguments",
                 "leader_inst.value=2",
-                "--place",
-                cloud,
             ])
             .await,
         "rejoin a leader",
@@ -5526,7 +5557,7 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
     require_delivered(
         federation
             .robot
-            .peppy(&["stack", "join", "station:alpha", "--place", cloud])
+            .peppy(&["stack", "join", &format!("station:alpha@{cloud}")])
             .await,
         "join a station on the peer",
     );
@@ -5634,7 +5665,7 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     require_delivered(
         federation
             .robot
-            .peppy(&["stack", "join", "member:bravo", "--place", &cloud])
+            .peppy(&["stack", "join", &format!("member:bravo@{cloud}")])
             .await,
         "join bravo on the peer",
     );
@@ -5865,4 +5896,379 @@ async fn a_set_on_an_offline_machine_refuses_a_join_and_stays_on_removal() {
         recorded_bindings(&coordinator, COORDINATOR_GATE, "commander").is_empty(),
         "{listed}"
     );
+}
+
+// --- Parts of a copy on other machines ---
+
+/// Launches the parts fleet from the coordinator of `daemon`.
+async fn launch_parts_fleet(daemon: &Daemon, extra: &[&str]) {
+    let launcher = container_launcher(PARTS_FLEET_LAUNCHER_FILE);
+    let mut args = vec!["stack", "launch"];
+    args.extend_from_slice(extra);
+    args.push(&launcher);
+    require_success(daemon.peppy(&args).await, "launch the parts fleet");
+}
+
+/// The `stack list` line of copy `name`, without the borders of the box
+/// that holds it: `Copy NAME of OPTION on MACHINE: WORDS`.
+fn copy_line<'a>(listed: &'a str, name: &str) -> &'a str {
+    listed
+        .lines()
+        .map(|line| line.trim().trim_matches('│').trim())
+        .find(|line| line.starts_with(&format!("Copy {name} of ")))
+        .unwrap_or_else(|| panic!("no line of copy `{name}`:\n{listed}"))
+}
+
+/// The copy `name` as `stack list --json` gives it, from the coordinator's
+/// section.
+fn listed_copy(listed: &str, coordinator: &str, name: &str) -> serde_json::Value {
+    coordinator_section(listed, coordinator)["copies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|copy| copy["name"] == name)
+        .unwrap_or_else(|| panic!("no copy `{name}`: {listed}"))
+        .clone()
+}
+
+/// A part of a copy runs on the machine its word names, the rest of the
+/// copy on the copy's machine; it binds across the machines as any two
+/// instances do, the listing gives the copy back as the words that add it
+/// again, the removal stops each instance on its machine, and a join whose
+/// part names a machine that is not live is refused before anything starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_runs_a_part_on_another_machine_and_lists_itself_as_its_recipe() {
+    let federation = start_federation("peppy-copy-parts").await;
+    let robot = federation.robot_core_node.as_str();
+    let cloud = federation.cloud_core_node.as_str();
+    launch_parts_fleet(&federation.robot, &[]).await;
+
+    let reference = format!("station:alpha@{cloud}");
+    let part = format!("pad@{robot}");
+    let joined = require_success(
+        federation
+            .robot
+            .peppy(&["stack", "join", &reference, "--with", &part])
+            .await,
+        "join a copy with its commander on the coordinator",
+    );
+    assert!(
+        joined.contains(&format!(
+            "Copy `alpha` of `station` joined on `{cloud}`: commander=pad@{robot}"
+        )),
+        "{joined}"
+    );
+    let local = require_success(
+        federation.robot.stack_list(Some(robot)).await,
+        "robot stack",
+    );
+    assert_holds_exactly(
+        &local,
+        robot,
+        &["hub_inst", "alpha_commander_inst"],
+        &["alpha_arm_inst", "alpha_leader_inst"],
+    );
+    let remote = require_success(
+        federation.cloud.stack_list(Some(cloud)).await,
+        "cloud stack",
+    );
+    assert_holds_exactly(
+        &remote,
+        cloud,
+        &["alpha_arm_inst", "alpha_leader_inst"],
+        &["alpha_commander_inst", "hub_inst"],
+    );
+    let listed = federation
+        .robot
+        .stack_list_json("the copy and its part")
+        .await;
+    let bindings = recorded_bindings(
+        &coordinator_section(&listed, robot),
+        "alpha_commander_inst",
+        "arm",
+    );
+    assert!(
+        bindings.len() == 1 && bindings[0].starts_with(&format!("alpha_arm_inst@{cloud}")),
+        "the part binds the base on the base's machine: {bindings:?}"
+    );
+    let copy = listed_copy(&listed, robot, "alpha");
+    assert_eq!(copy["core_node"], cloud, "{copy}");
+    assert_eq!(
+        copy["selections"],
+        serde_json::json!([{ "axis": "commander", "option": "pad", "core_node": robot }]),
+        "{copy}"
+    );
+    let text = require_success(federation.robot.stack_list(None).await, "stack list text");
+    let line = copy_line(&text, "alpha").to_owned();
+    assert_eq!(
+        line,
+        format!("Copy alpha of station on {cloud}: commander=pad@{robot}")
+    );
+
+    let removed = require_success(
+        federation.robot.peppy(&["stack", "remove", "alpha"]).await,
+        "remove the copy from both machines",
+    );
+    for (instance, on) in [
+        ("alpha_commander_inst", String::new()),
+        ("alpha_leader_inst", format!(" on `{cloud}`")),
+        ("alpha_arm_inst", format!(" on `{cloud}`")),
+    ] {
+        assert!(
+            removed.contains(&format!(
+                "Stopping instance `{instance}` of copy `alpha`{on}"
+            )),
+            "a line for each stop: {removed}"
+        );
+    }
+    federation
+        .robot
+        .wait_until_holding_none(&["alpha_commander_inst"])
+        .await;
+    federation
+        .cloud
+        .wait_until_holding_none(&["alpha_arm_inst", "alpha_leader_inst"])
+        .await;
+
+    // The listed line is the recipe: the copy it adds again is the same copy
+    // on the same machines.
+    let (head, words) = line.split_once(": ").expect("a copy with selections");
+    let machine = head.rsplit(' ').next().expect("the copy's machine");
+    let reference = format!("station:alpha@{machine}");
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "join", &reference, "--with", words])
+            .await,
+        "join the listed copy again",
+    );
+    let relisted = federation.robot.stack_list_json("the rejoined copy").await;
+    let again = listed_copy(&relisted, robot, "alpha");
+    for field in ["option", "core_node", "selections", "instance_ids"] {
+        assert_eq!(again[field], copy[field], "{field}: {again} against {copy}");
+    }
+
+    // A part on a machine that is not live is refused before anything starts.
+    let refused = federation
+        .robot
+        .peppy(&["stack", "join", "station:gamma", "--with", "pad@cn-gone"])
+        .await;
+    assert!(!refused.success(), "{}", refused.text);
+    assert!(
+        refused
+            .text
+            .contains("these core nodes are not live on the federation: `cn-gone`"),
+        "{}",
+        refused.text
+    );
+    assert!(
+        refused.text.contains(&format!("`{cloud}`"))
+            && refused.text.contains(&format!("`{robot}`")),
+        "the refusal lists the live machines: {}",
+        refused.text
+    );
+    let local = require_success(
+        federation.robot.stack_list(Some(robot)).await,
+        "robot stack",
+    );
+    assert_holds_exactly(&local, robot, &["hub_inst"], &["gamma_arm_inst"]);
+}
+
+/// A join whose part cannot start rolls back on every machine it reached:
+/// the base it started on the peer stops, and the copy is not listed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_part_rolls_the_base_back_on_the_peer() {
+    let federation = start_federation("peppy-part-rollback").await;
+    let robot = federation.robot_core_node.as_str();
+    let cloud = federation.cloud_core_node.as_str();
+    launch_parts_fleet(&federation.robot, &[]).await;
+    plant_uncreatable_instance_dir(&federation.robot, "beta_commander_inst").await;
+    let reference = format!("station:beta@{cloud}");
+    let part = format!("pad@{robot}");
+    let failed = federation
+        .robot
+        .peppy(&["stack", "join", &reference, "--with", &part])
+        .await;
+    assert!(!failed.success(), "{}", failed.text);
+    assert!(
+        failed.text.contains("beta_commander_inst"),
+        "{}",
+        failed.text
+    );
+    assert!(!failed.text.contains("cleanup failed"), "{}", failed.text);
+    federation
+        .cloud
+        .wait_until_holding_none(&["beta_arm_inst", "beta_leader_inst"])
+        .await;
+    let listed = federation.robot.stack_list_json("after the rollback").await;
+    assert!(
+        copy_names(&coordinator_section(&listed, robot)).is_empty(),
+        "{listed}"
+    );
+    clear_planted_instance_dir(&federation.robot, "beta_commander_inst").await;
+}
+
+/// A removal stops what it can reach: on a machine someone reset it stops
+/// nothing and says so, and on a machine that is not live it stops nothing
+/// and warns, naming what stays there, whether that machine runs the copy's
+/// part or its base, whose watchers then do not hold the removal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_removal_stops_what_it_reaches_when_a_machine_of_the_copy_is_gone() {
+    let federation = start_federation("peppy-part-removal").await;
+    let robot = federation.robot_core_node.as_str();
+    let cloud = federation.cloud_core_node.as_str();
+    launch_parts_fleet(&federation.robot, &[]).await;
+    let on_cloud = format!("pad@{cloud}");
+
+    // The part's machine is reset: nothing of the launch runs there.
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "join", "station:bravo", "--with", &on_cloud])
+            .await,
+        "join bravo with its commander on cloud",
+    );
+    require_success(
+        federation.cloud.peppy(&["stack", "reset"]).await,
+        "reset cloud",
+    );
+    let removed = require_success(
+        federation.robot.peppy(&["stack", "remove", "bravo"]).await,
+        "remove bravo after cloud was reset",
+    );
+    assert!(
+        removed.contains(&format!(
+            "`{cloud}` holds no instance of this launch, so nothing stops there"
+        )),
+        "{removed}"
+    );
+    federation
+        .robot
+        .wait_until_holding_none(&["bravo_arm_inst", "bravo_leader_inst"])
+        .await;
+
+    // The part's machine, then the base's machine, goes away.
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "join", "station:alpha", "--with", &on_cloud])
+            .await,
+        "join alpha with its commander on cloud",
+    );
+    let base_on_cloud = format!("station:charlie@{cloud}");
+    let watch_here = format!("watch@{robot}");
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "join", &base_on_cloud, "--with", &watch_here])
+            .await,
+        "join charlie on cloud with its watcher on robot",
+    );
+    federation.cloud.stop().await;
+
+    let removed = require_success(
+        federation.robot.peppy(&["stack", "remove", "alpha"]).await,
+        "remove alpha while its part's machine is offline",
+    );
+    assert!(
+        removed.contains(&format!(
+            "`{cloud}` is not live on the federation, so the instances of copy `alpha` there \
+             are not stopped: `alpha_commander_inst`"
+        )),
+        "{removed}"
+    );
+    assert!(
+        removed.contains("that reset also stops every other instance of this launch on it")
+            && removed.contains("`charlie_arm_inst`"),
+        "the warning names the other robot's instances there: {removed}"
+    );
+    federation
+        .robot
+        .wait_until_holding_none(&["alpha_arm_inst", "alpha_leader_inst"])
+        .await;
+
+    let removed = require_success(
+        federation
+            .robot
+            .peppy(&["stack", "remove", "charlie"])
+            .await,
+        "remove charlie while its base's machine is offline",
+    );
+    assert!(
+        removed.contains(&format!(
+            "`{cloud}` is not live on the federation, so the instances of copy `charlie` there"
+        )),
+        "{removed}"
+    );
+    assert!(
+        removed.contains("Stopping instance `charlie_watch_inst` of copy `charlie`"),
+        "the part on the live machine stops: {removed}"
+    );
+    federation
+        .robot
+        .wait_until_holding_none(&["charlie_watch_inst"])
+        .await;
+    let listed = federation.robot.stack_list_json("every copy removed").await;
+    assert!(
+        copy_names(&coordinator_section(&listed, robot)).is_empty(),
+        "{listed}"
+    );
+}
+
+/// The stack `daemon` holds, as its own `stack list` reports it.
+async fn held(daemon: &Daemon, core_node: &str) -> String {
+    require_success(
+        daemon.stack_list(Some(core_node)).await,
+        "a machine's stack",
+    )
+}
+
+/// On a fleet whose coordinator holds no instance of the copy, a launch
+/// places a joined copy's base on one station and its part on the other,
+/// and the removal stops the copy on both remote machines.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launch_places_a_copy_and_its_part_on_two_stations() {
+    let fleet = start_fleet("peppy-fleet-parts").await;
+    let join = format!("station:alpha@{FLEET_STATION_A_CORE_NODE}");
+    let part = format!("alpha.pad@{FLEET_STATION_B_CORE_NODE}");
+    launch_parts_fleet(&fleet.coordinator, &["--join", &join, "--with", &part]).await;
+    assert_holds_exactly(
+        &held(&fleet.station_a, FLEET_STATION_A_CORE_NODE).await,
+        FLEET_STATION_A_CORE_NODE,
+        &["alpha_arm_inst", "alpha_leader_inst"],
+        &["alpha_commander_inst"],
+    );
+    assert_holds_exactly(
+        &held(&fleet.station_b, FLEET_STATION_B_CORE_NODE).await,
+        FLEET_STATION_B_CORE_NODE,
+        &["alpha_commander_inst"],
+        &["alpha_arm_inst", "alpha_leader_inst"],
+    );
+    assert_holds_exactly(
+        &held(&fleet.coordinator, FLEET_COORDINATOR_CORE_NODE).await,
+        FLEET_COORDINATOR_CORE_NODE,
+        &["hub_inst"],
+        &["alpha_arm_inst", "alpha_commander_inst"],
+    );
+
+    let removed = require_success(
+        fleet.coordinator.peppy(&["stack", "remove", "alpha"]).await,
+        "remove the copy from both stations",
+    );
+    assert!(
+        removed.contains(&format!(
+            "Stopping instance `alpha_commander_inst` of copy `alpha` on `{FLEET_STATION_B_CORE_NODE}`"
+        )) && removed.contains(&format!(
+            "Stopping instance `alpha_arm_inst` of copy `alpha` on `{FLEET_STATION_A_CORE_NODE}`"
+        )),
+        "{removed}"
+    );
+    fleet
+        .station_a
+        .wait_until_holding_none(&["alpha_arm_inst", "alpha_leader_inst"])
+        .await;
+    fleet
+        .station_b
+        .wait_until_holding_none(&["alpha_commander_inst"])
+        .await;
 }

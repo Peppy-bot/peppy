@@ -1258,6 +1258,11 @@ impl Placements {
         self.coordinator.as_str()
     }
 
+    /// [`Self::coordinator`] as the parsed name.
+    pub fn coordinator_name(&self) -> &CoreNodeName {
+        &self.coordinator
+    }
+
     /// Whether any instance is placed off the coordinator, i.e. whether this
     /// launch actually spans machines.
     pub fn is_federated(&self) -> bool {

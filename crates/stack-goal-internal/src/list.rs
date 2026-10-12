@@ -12,8 +12,9 @@ use crate::DaemonRoute;
 /// that holds the stack now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackCopies {
-    /// Each copy with its name, its option, its host and its instances. The
-    /// daemon writes a copy into its record only when its join ends.
+    /// Each copy with its name, its option, its machine, its selections and
+    /// its instances. The daemon writes a copy into its record only when its
+    /// join ends.
     pub copies: Vec<CopyInfo>,
     /// The join or the removal that holds the stack, so a join in progress
     /// is here and not in `copies`.

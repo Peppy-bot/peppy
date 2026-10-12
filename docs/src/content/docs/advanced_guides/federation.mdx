@@ -105,11 +105,15 @@ Rules, all checked before anything starts:
 
 - Every declared link must be wired exactly once. A partial wiring is refused
   rather than silently collapsing half the topology onto the coordinator.
-- `--place` may only name links the launcher declares.
+- `--place` may only name links the launcher declares, and the
+  [copies](#adding-copies) the launcher file lists, by name. A listed copy
+  that no `--place` names runs on the coordinator. A copy that `--join`
+  adds runs where its `--join OPTION:NAME@CORE_NODE` says, and `--place` on
+  its name is refused.
 - Two links may share one machine. A two-machine topology must still be
   runnable on one box.
-- `self` means the daemon the launch is sent to. It is reserved: no core node
-  may be named `self`.
+- `self` means the daemon the launch is sent to, in `--place`, `--join` and
+  a `--with` word alike. It is reserved: no core node may be named `self`.
 - `core_node` is **optional** on an instance. One that omits it runs on the
   coordinator.
 
@@ -126,6 +130,9 @@ unmodified.
 It is a flag rather than a key in the file because the launcher's author
 declares a topology and cannot know what machines the person running it has.
 Mixing `--local` with `--place` is an error: pick one way to say where things go.
+For the same reason, under `--local` a `--with` word that names a machine is
+refused, `@self` included, and so is a `--join` copy that names a machine
+other than `self`.
 
 ## The worked example
 
@@ -431,13 +438,13 @@ A launcher whose `components` include a `zero_or_more` or `one_or_more` axis run
 
 ```sh
 peppy stack launch physical
-peppy stack join openarm:alpha --place jetson-1
-peppy stack join openarm:bravo --with xr_commander --place jetson-2
+peppy stack join openarm:alpha@jetson-1
+peppy stack join openarm:bravo@jetson-2 --with xr_commander,ai_brain_vla@cn-gpu-box
 peppy stack list
 peppy stack remove bravo
 peppy stack reset --federated
 ```
 
-A copy's name is its placement link and the prefix of every instance it creates. The whole copy runs on the machine `--place` names, or on the coordinator. Run join and remove on the coordinator, with `--core-node NAME` from another machine. A join reserves the machines it touches, the providers its instances link to, the machines supplying the clocks its instances read, and the machine of every instance whose set it grows. A join is refused when the machine of an instance whose set it grows is offline on the federation; a removal is not, and it names the sets it left unchanged there. A machine outside that set that is offline blocks neither a join nor a removal.
+A copy's name is its placement link and the prefix of every instance it creates. A copy runs where it is named: `OPTION:NAME@CORE_NODE` on `peppy stack join` and on `--join` at launch, `--place NAME@CORE_NODE` for a copy the launcher file lists, and the coordinator when nothing names a machine. Its machine runs its base. A part of the copy, the instances that one of its own axes brings, runs where the word that selects it says: `option@CORE_NODE` or `axis=option@CORE_NODE` at join, `NAME.option@CORE_NODE` at launch. Above, `bravo` runs on `jetson-2` and its brain on `cn-gpu-box`. A join's preflight checks every machine of the copy, and refuses one that is not live before any machine changes, naming the live ones. Run join and remove on the coordinator, with `--core-node NAME` from another machine. A join reserves the machines it touches, the providers its instances link to, the machines supplying the clocks its instances read, and the machine of every instance whose set it grows. A join is refused when the machine of an instance whose set it grows is offline on the federation; a removal is not, and it names the sets it left unchanged there. A machine outside that set that is offline blocks neither a join nor a removal.
 
-Launch replaces every participating slice. Join adds the copy's instances to its host's slice; remove stops the copy alone and refuses while another instance links to it. A removal, and the undo of a failed join, print a line for each instance they stop on the coordinator. The host of a copy placed on another machine stops all the copy's instances in one request, so they print nothing for those instances until that host answers. Reset cancels the operation in flight, waits for its cleanup, and clears the targeted slices; with `--federated` it clears every machine of the launch, which is also how the machines a cancelled join reached are cleared. See [copies](/guides/launch_files/#copies) for argument overrides and the single simulated robot the simulations host today.
+Launch replaces every participating slice. Join adds each of the copy's instances to the slice of its machine; remove stops the copy alone and refuses while another instance links to it. A removal, and the undo of a failed join, stop the copy's instances one at a time, the last started first, across its machines, and print a line for each instance before they stop it: an instance on another machine stops through one request of its own. A removal stops nothing on a machine of the copy that is not live, and warns for it, naming the instances of the launch that a `peppy stack reset` there stops once it returns; it also stops nothing on a live machine that holds no slice of the launch, because someone reset it, and a line says so. Reset cancels the operation in flight, waits for its cleanup, and clears the targeted slices; with `--federated` it clears every machine of the launch, which is also how the machines a cancelled join reached are cleared. See [copies](/guides/launch_files/#copies) for argument overrides, the words that place a part and their refusals, and the listing of a copy, whose line pastes back into `peppy stack join`.

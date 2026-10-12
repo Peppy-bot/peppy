@@ -24,8 +24,8 @@ use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use config::runtime::Name;
-use core_node_api::encoding::LaunchJoin;
+use config::runtime::CopyName;
+use core_node_api::encoding::CopyReference;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_deployment::SPEC_ENV_VAR;
@@ -991,7 +991,7 @@ impl Stack {
     fn launch_launcher(
         &self,
         launcher: &str,
-        joins: Vec<LaunchJoin>,
+        joins: Vec<CopyReference>,
     ) -> Result<(), peppy::error::Error> {
         let launcher_path = self.nodes_dir.path().join("peppy_launcher.json5");
         fs::write(&launcher_path, launcher).expect("write launcher");
@@ -1022,13 +1022,11 @@ impl Stack {
     fn try_join(&self, option: &str, name: &str) -> Result<(), peppy::error::Error> {
         StackCommand {
             command: StackCommands::Join {
-                copy: LaunchJoin {
-                    option: option.to_owned(),
-                    name: copy_name(name),
-                },
+                copy: format!("{option}:{name}")
+                    .parse()
+                    .expect("a copy reference"),
                 with: Default::default(),
                 arguments: Vec::new(),
-                place: None,
                 timeouts: stack_timeouts(),
             },
         }
@@ -1153,8 +1151,8 @@ fn stack_timeouts() -> StackTimeouts {
     }
 }
 
-fn copy_name(name: &str) -> Name {
-    Name::try_from(name.to_owned()).expect("a copy name")
+fn copy_name(name: &str) -> CopyName {
+    CopyName::new(name).expect("a copy name")
 }
 
 /// The two provider deployments every launcher here starts.
@@ -2812,10 +2810,7 @@ async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
                 &["cam"],
                 r#", instances: [{ instance_id: "alpha" }]"#,
             ),
-            vec![LaunchJoin {
-                option: "camera_robot".to_owned(),
-                name: copy_name("charlie"),
-            }],
+            vec!["camera_robot:charlie".parse().expect("a copy reference")],
         )
         .unwrap_or_else(|error| panic!("relaunch failed: {error:?}\n{}", stack.run_logs()));
     wait_for_port(port, || stack.run_logs()).await;
@@ -2956,6 +2951,77 @@ const BROKEN_ROBOT_FRAGMENT: &str = r#"{
         },
     ],
 }"#;
+
+/// A robot whose own axis `extra` brings a second recorder: the part the
+/// scope's feature `spare` adds.
+const FEATURED_ROBOT_FRAGMENT: &str = r#"{
+    peppy_schema: "launcher_fragment/v1",
+    deployments: [
+        {
+            source: { name: "mock_recorder:v1" },
+            instances: [{ instance_id: "recorder" }],
+        },
+    ],
+    components: [
+        {
+            name: "extra",
+            cardinality: "zero_or_one",
+            options: {
+                second: {
+                    deployments: [
+                        {
+                            source: { name: "mock_recorder:v1" },
+                            instances: [{ instance_id: "spare_recorder" }],
+                        },
+                    ],
+                },
+            },
+        },
+    ],
+}"#;
+
+/// The framework's endpoint on `port`, whose scope offers the featured robot
+/// with its feature `spare` and the recorder robot with none, up to three
+/// copies.
+fn featured_framework_launcher(port: u16) -> String {
+    format!(
+        r#"{{
+        peppy_schema: "launcher/v1",
+        components: [
+            {{
+                name: "robot",
+                cardinality: "zero_or_more",
+                options: {{
+                    featured_robot: "featured_robot.json5",
+                    recorder_robot: "recorder_robot.json5",
+                }},
+            }},
+        ],
+        deployments: [
+            {{
+                source: {{ exposures: ["framework_controls:v1"] }},
+                instances: [
+                    {{ instance_id: "framework_controls_inst", arguments: {{ port: {port} }} }},
+                ],
+            }},
+        ],
+        adjustments: [
+            {{
+                target: "framework_controls_inst",
+                set_daemon_scopes: {{ stack: {{
+                    max_copies: 3,
+                    options: [
+                        {{ option: "featured_robot", description: "A robot that records episodes",
+                           features: [{{ feature: "spare", axis: "extra", option: "second",
+                                         description: "A second recorder of the same episodes" }}] }},
+                        {{ option: "recorder_robot", description: "A robot that records episodes" }},
+                    ],
+                }} }},
+            }},
+        ],
+    }}"#
+    )
+}
 
 /// The framework's endpoint on `port`, whose scope offers two of the three
 /// options of the `robot` axis, which runs as copies, up to two copies.
@@ -3125,6 +3191,14 @@ fn tool_error_text(result: &rmcp::model::CallToolResult) -> String {
         .to_owned()
 }
 
+/// The copies `stack.list` reports, as it gives them.
+async fn listed_items(client: &FrameworkClient) -> Vec<Value> {
+    structured(client, "stack.list").await["copies"]
+        .as_array()
+        .expect("copies")
+        .clone()
+}
+
 /// The names of the copies `stack.list` reports.
 async fn listed_copies(client: &FrameworkClient) -> Vec<String> {
     structured(client, "stack.list").await["copies"]
@@ -3133,6 +3207,135 @@ async fn listed_copies(client: &FrameworkClient) -> Vec<String> {
         .iter()
         .map(|copy| copy["name"].as_str().expect("a name").to_owned())
         .collect()
+}
+
+/// A client adds robots with the features it names, on the machines it
+/// names: each listed robot is the goal that adds it again, the machines are
+/// the live daemons now, and a machine that is not live is refused by the
+/// daemon with the live machines named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
+    let stack = Stack::boot(true).await;
+    stack.stage_framework_controls();
+    write_robot_fragment(&stack, "featured_robot", FEATURED_ROBOT_FRAGMENT);
+    write_robot_fragment(&stack, "recorder_robot", RECORDER_ROBOT_FRAGMENT);
+    let port = ephemeral_port();
+    stack.launch_launcher_or_panic(&featured_framework_launcher(port));
+    wait_for_port(port, || stack.run_logs()).await;
+    let (client, _progress) =
+        connect_recording_progress(&endpoint(port, "/framework_controls/v1/mcp")).await;
+
+    let listed = structured(&client, "stack.list").await;
+    let this = listed["this_core_node"]
+        .as_str()
+        .expect("this machine")
+        .to_owned();
+    assert_eq!(listed["core_nodes"], json!([this]), "{listed}");
+    assert_eq!(
+        listed["options"],
+        json!([
+            { "option": "featured_robot", "description": "A robot that records episodes",
+              "features": [{ "feature": "spare", "description": "A second recorder of the same episodes" }] },
+            { "option": "recorder_robot", "description": "A robot that records episodes", "features": [] },
+        ])
+    );
+
+    // --- A robot with its feature, and one without.
+    for (name, features) in [
+        ("alpha", json!([{ "feature": "spare", "core_node": this }])),
+        ("bravo", json!([])),
+    ] {
+        let joined = call(
+            &client,
+            "stack.join",
+            json!({ "name": name, "option": "featured_robot", "core_node": this, "features": features }),
+        )
+        .await;
+        assert_eq!(
+            joined.structured_content,
+            Some(json!({
+                "success": true,
+                "message": format!("{name} (featured_robot) is on the stack"),
+            })),
+            "{joined:?}\n{}",
+            stack.run_logs()
+        );
+    }
+    let items = listed_items(&client).await;
+    assert_eq!(
+        items,
+        [
+            json!({ "name": "alpha", "option": "featured_robot", "core_node": this,
+                    "features": [{ "feature": "spare", "core_node": this }] }),
+            json!({ "name": "bravo", "option": "featured_robot", "core_node": this, "features": [] }),
+        ]
+    );
+
+    // --- A listed robot is the goal that adds it again.
+    let removed = call(&client, "stack.remove", json!({ "name": "alpha" })).await;
+    assert_eq!(
+        removed.structured_content,
+        Some(json!({ "success": true, "message": "alpha is off the stack" }))
+    );
+    let rejoined = call(&client, "stack.join", items[0].clone()).await;
+    assert_eq!(
+        rejoined
+            .structured_content
+            .as_ref()
+            .map(|answer| answer["success"].clone()),
+        Some(json!(true)),
+        "{rejoined:?}"
+    );
+    assert_eq!(listed_items(&client).await, items);
+
+    // --- A daemon that joins the federation is a machine of the next list.
+    let messenger = stack
+        .ctx
+        .messenger_handle()
+        .expect("the CLI context holds a session");
+    let watch = peppylib::CoreNodePresenceMessenger::watch(messenger, "cn-gpu-box")
+        .await
+        .expect("the test watches the machine");
+    let _token = peppylib::CoreNodePresenceMessenger::declare(messenger, "cn-gpu-box", "gen-1")
+        .await
+        .expect("the machine declares its presence");
+    let event = tokio::time::timeout(WAIT, watch.rx.recv_async())
+        .await
+        .expect("the presence arrives")
+        .expect("the watch is open");
+    assert!(
+        matches!(event, peppylib::LivelinessEvent::Alive(_)),
+        "{event:?}"
+    );
+    let mut machines = vec![this.clone(), "cn-gpu-box".to_owned()];
+    machines.sort();
+    assert_eq!(
+        structured(&client, "stack.list").await["core_nodes"],
+        json!(machines)
+    );
+
+    // --- A machine no daemon claims is refused by the daemon, which names
+    // the live machines.
+    let refused = call(
+        &client,
+        "stack.join",
+        json!({ "name": "charlie", "option": "recorder_robot", "core_node": "cn-gone", "features": [] }),
+    )
+    .await;
+    let answer = refused
+        .structured_content
+        .clone()
+        .unwrap_or_else(|| panic!("the join ran and answers: {refused:?}"));
+    assert_eq!(answer["success"], false, "{answer}");
+    let message = answer["message"].as_str().expect("a message");
+    assert!(
+        message.contains("these core nodes are not live on the federation: `cn-gone`")
+            && message.contains("`cn-gpu-box`")
+            && message.contains(&format!("`{this}`")),
+        "{message}"
+    );
+    assert_eq!(listed_copies(&client).await, ["alpha", "bravo"]);
+    client.cancel().await.expect("the client closes");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3172,27 +3375,30 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         join_schema["properties"]["option"]["enum"],
         json!(["recorder_robot", "broken_robot"])
     );
+    let listed = structured(&client, "stack.list").await;
+    let this = listed["this_core_node"]
+        .as_str()
+        .expect("this machine")
+        .to_owned();
     assert_eq!(
-        structured(&client, "stack.list").await,
+        listed,
         json!({
             "options": [
-                { "option": "recorder_robot", "description": "A robot that records episodes" },
-                { "option": "broken_robot", "description": "A robot whose software cannot start" },
+                { "option": "recorder_robot", "description": "A robot that records episodes", "features": [] },
+                { "option": "broken_robot", "description": "A robot whose software cannot start", "features": [] },
             ],
+            "core_nodes": [this],
+            "this_core_node": this,
             "copies": [],
             "max_copies": 2,
         })
     );
+    let goal = |name: &str, option: &str| json!({ "name": name, "option": option, "core_node": this, "features": [] });
 
     // --- Two copies join, each reporting its acceptance first, then the
     // lines of the join, the start of its instance included.
     for copy_name in ["alpha", "bravo"] {
-        let joined = call(
-            &client,
-            "stack.join",
-            json!({ "name": copy_name, "option": "recorder_robot" }),
-        )
-        .await;
+        let joined = call(&client, "stack.join", goal(copy_name, "recorder_robot")).await;
         assert_eq!(
             joined.structured_content,
             Some(json!({
@@ -3217,9 +3423,8 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
     // outside the scope, which the narrowed schema refuses.
     let at_limit = client
         .call_tool(
-            CallToolRequestParams::new("stack.join").with_arguments(object(
-                json!({ "name": "charlie", "option": "recorder_robot" }),
-            )),
+            CallToolRequestParams::new("stack.join")
+                .with_arguments(object(goal("charlie", "recorder_robot"))),
         )
         .await
         .expect("stack.join answers");
@@ -3231,9 +3436,8 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
     );
     let in_use = client
         .call_tool(
-            CallToolRequestParams::new("stack.join").with_arguments(object(
-                json!({ "name": "alpha", "option": "recorder_robot" }),
-            )),
+            CallToolRequestParams::new("stack.join")
+                .with_arguments(object(goal("alpha", "recorder_robot"))),
         )
         .await
         .expect("stack.join answers");
@@ -3244,7 +3448,7 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
     let outside = client
         .call_tool(
             CallToolRequestParams::new("stack.join")
-                .with_arguments(object(json!({ "name": "echo", "option": "camera_robot" }))),
+                .with_arguments(object(goal("echo", "camera_robot"))),
         )
         .await
         .expect_err("an option outside the scope is outside the schema");
@@ -3266,12 +3470,7 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
     assert_eq!(lines[0], accepted, "the acceptance comes first: {lines:?}");
 
     // --- A copy whose node fails its start is undone: no copy of it stays.
-    let failed = call(
-        &client,
-        "stack.join",
-        json!({ "name": "delta", "option": "broken_robot" }),
-    )
-    .await;
+    let failed = call(&client, "stack.join", goal("delta", "broken_robot")).await;
     let failure = failed
         .structured_content
         .clone()

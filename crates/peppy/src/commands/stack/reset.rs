@@ -171,14 +171,12 @@ impl DaemonHoldings {
 async fn federation_holdings(
     conn: &crate::context::DaemonConnection<'_>,
 ) -> Result<Vec<DaemonHoldings>> {
-    let live = CoreNodePresenceMessenger::list_live(
+    let core_nodes: BTreeSet<String> = CoreNodePresenceMessenger::live_core_node_names(
         conn.messenger,
-        None,
+        &conn.target_core_node,
         CoreNodePresenceMessenger::LIST_TIMEOUT,
     )
     .await?;
-
-    let core_nodes: BTreeSet<String> = live.into_iter().map(|claim| claim.core_node).collect();
 
     Ok(join_all(core_nodes.into_iter().map(|core_node| {
         let messenger = conn.messenger;

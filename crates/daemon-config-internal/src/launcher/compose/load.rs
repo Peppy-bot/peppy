@@ -61,17 +61,52 @@ impl LoadedOption {
     }
 
     /// The fragments one run of this option pulls in under `own`, its
-    /// selection: its own fragments, then those of the options `own`
-    /// picks on its axes.
-    pub(super) fn fragments_for(&self, own: &UnitSelection) -> Vec<&LoadedFragment> {
+    /// selection, each with the own axis whose option brings it: its own
+    /// fragments first, with no axis, then for each of its axes in
+    /// declaration order the fragments of the option `own` picks there.
+    fn selected_fragments<'a, 's>(
+        &'a self,
+        own: &'s UnitSelection,
+    ) -> impl Iterator<Item = (Option<&'a str>, &'a LoadedFragment)> + use<'a, 's> {
         self.fragments
             .iter()
-            .chain(self.axes.iter().flat_map(|axis| {
+            .map(|fragment| (None, fragment))
+            .chain(self.axes.iter().flat_map(move |axis| {
                 own.option_of(&axis.name)
                     .map_or(&[][..], |option| self.nested_fragments(&axis.name, option))
                     .iter()
+                    .map(move |fragment| (Some(axis.name.as_str()), fragment))
             }))
+    }
+
+    /// The fragments one run of this option pulls in under `own`, its
+    /// selection: its own fragments, then those of the options `own`
+    /// picks on its axes.
+    pub(super) fn fragments_for(&self, own: &UnitSelection) -> Vec<&LoadedFragment> {
+        self.selected_fragments(own)
+            .map(|(_, fragment)| fragment)
             .collect()
+    }
+
+    /// The own axis that brings each instance one run of this option
+    /// defines under `own`, or `None` for an instance of the option's own
+    /// fragments, its base. Composition defines each id once, so each id
+    /// comes from one fragment.
+    pub(super) fn own_axis_by_id(&self, own: &UnitSelection) -> HashMap<&str, Option<&str>> {
+        self.selected_fragments(own)
+            .flat_map(|(axis, fragment)| {
+                node_ids(std::iter::once(fragment)).map(move |id| (id, axis))
+            })
+            .collect()
+    }
+
+    /// Whether `option` of the own axis `axis` defines at least one
+    /// instance: the part a word with a machine places. A nested fragment's
+    /// deployments carry no condition, so the answer needs no composition.
+    pub(super) fn brings_instances(&self, axis: &str, option: &str) -> bool {
+        node_ids(self.nested_fragments(axis, option).iter())
+            .next()
+            .is_some()
     }
 
     /// The instance ids this option's own fragments define.

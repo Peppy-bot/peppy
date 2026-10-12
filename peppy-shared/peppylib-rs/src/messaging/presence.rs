@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use pmi::{Segment, SenderTargetError};
@@ -53,6 +54,21 @@ impl CoreNodePresenceMessenger {
         messenger
             .list_core_node_presence(core_node.as_ref(), timeout)
             .await
+    }
+
+    /// The machines of the federation now: `own`, the core node name of the
+    /// caller's daemon, and every core node name that presence lists, each
+    /// once, in name order. Presence lists every daemon of the session's
+    /// workspace or project, whatever its launch or version.
+    pub async fn live_core_node_names(
+        messenger: &MessengerHandle,
+        own: &str,
+        timeout: Duration,
+    ) -> Result<BTreeSet<String>> {
+        let live = Self::list_live(messenger, None, timeout).await?;
+        Ok(std::iter::once(own.to_owned())
+            .chain(live.into_iter().map(|claim| claim.core_node))
+            .collect())
     }
 }
 

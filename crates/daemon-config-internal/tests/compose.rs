@@ -1,4 +1,5 @@
 use config::AnyType;
+use core_node_api::encoding::LaunchWord;
 use daemon_config::launcher::{
     AppliedChange, ComponentAxis, CompositionError, CompositionReport, DeploymentSource, LinkValue,
     OptionSpec, PeppyLauncher, PeppyLauncherParser, PreparedLauncher, Selection, SkipReason,
@@ -35,7 +36,7 @@ fn write_launcher(dir: &Path, name: &str, content: &str) -> (PathBuf, PeppyLaunc
 fn compose(
     launcher: &PeppyLauncher,
     file: &Path,
-    words: &[String],
+    words: &[LaunchWord],
 ) -> Result<(PeppyLauncher, CompositionReport), CompositionError> {
     let composed = PreparedLauncher::load(launcher, file)?.launch(words, &[])?;
     Ok((composed.launcher, composed.report))
@@ -1274,8 +1275,8 @@ fn two_different_options_on_one_axis_are_refused() {
         panic!("expected ConflictingSelection, got: {err}");
     };
     assert_eq!(
-        (axis.as_str(), first.as_str(), second.as_str()),
-        ("robot", "mujoco", "real")
+        (axis.as_str(), first.to_string(), second.to_string()),
+        ("robot", "mujoco".to_owned(), "robot=real".to_owned())
     );
     // Repeating the same option is one choice.
     compose(

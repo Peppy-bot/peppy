@@ -101,14 +101,13 @@ async fn refusal(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoa
 /// A join of a copy `name` of `option`, under budgets no test reaches.
 fn robot_goal(name: &str, option: &str) -> StackJoinGoal {
     StackJoinGoal::new(
-        Name::new(name).unwrap(),
-        option,
+        format!("{option}:{name}").parse().unwrap(),
         StackBudgets::new(600, 600, 600, None),
     )
 }
 
 fn remove_goal(name: &str) -> StackRemoveGoal {
-    StackRemoveGoal::new(Name::new(name).unwrap())
+    StackRemoveGoal::new(config::runtime::CopyName::new(name).unwrap())
 }
 
 /// A launch of the fleet `launcher` under `launch_id`, with the budgets every
@@ -398,7 +397,7 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
             list.copy_change,
             Some(CopyChange {
                 action: CopyAction::Join,
-                name: Name::new("alpha").unwrap(),
+                name: config::runtime::CopyName::new("alpha").unwrap(),
                 option: "simulated".to_owned(),
             })
         );
@@ -513,7 +512,7 @@ async fn stack_list_reports_a_removal_while_it_stops_its_copy() {
             list.copy_change,
             Some(CopyChange {
                 action: CopyAction::Remove,
-                name: Name::new("alpha").unwrap(),
+                name: config::runtime::CopyName::new("alpha").unwrap(),
                 option: "real".to_owned(),
             })
         );
@@ -631,7 +630,7 @@ async fn a_joined_copy_starts_from_the_launchers_entry_for_its_option() {
     let result = execute(&started, &robot_goal("bravo", "real")).await;
     assert!(result.success, "{:?}", result.error_message);
     let mut with_a_word = robot_goal("charlie", "real");
-    with_a_word.selections = vec![String::from("gripper")];
+    with_a_word.selections = vec!["gripper".parse().unwrap()];
     let result = execute(&started, &with_a_word).await;
     assert!(result.success, "{:?}", result.error_message);
 
@@ -646,7 +645,10 @@ async fn a_joined_copy_starts_from_the_launchers_entry_for_its_option() {
                     .iter()
                     .map(Name::as_str)
                     .collect::<Vec<_>>(),
-                copy.selections.clone(),
+                copy.selections
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
             )
         })
         .collect();

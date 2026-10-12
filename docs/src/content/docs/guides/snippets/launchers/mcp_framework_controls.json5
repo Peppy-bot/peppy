@@ -9,6 +9,8 @@
       name: "robot",
       cardinality: "zero_or_more",
       options: {
+        // Its fragment declares the own axis `brain`, whose option
+        // `ai_brain_vla` deploys the brain's instance.
         openarm_sim: "robots/fragments/openarm_sim.json5",
         so101_sim: "robots/fragments/so101_sim.json5",
       },
@@ -28,7 +30,21 @@
             stack: {
               max_copies: 4,
               options: [
-                { option: "openarm_sim", description: "A simulated OpenArm v2 standing on the floor: two arms with grippers" },
+                {
+                  option: "openarm_sim",
+                  description: "A simulated OpenArm v2 standing on the floor: two arms with grippers",
+                  // A feature selects one option of one own axis of the
+                  // option, here `brain=ai_brain_vla`. A client adds a robot
+                  // with it, and names the machine of its part.
+                  features: [
+                    {
+                      feature: "ai_brain",
+                      axis: "brain",
+                      option: "ai_brain_vla",
+                      description: "An AI brain that finds items by words, then grabs and places them",
+                    },
+                  ],
+                },
                 { option: "so101_sim", description: "A simulated SO-101 clamped on the edge of a table: one arm with a gripper" },
               ],
             },

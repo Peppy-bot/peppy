@@ -11,7 +11,7 @@ use super::super::state::ActiveLaunch;
 use config::runtime::{CoreNodeName, Name};
 use core_node_api::encoding::StackJoinGoal;
 use daemon_config::launcher::{CopyRecord, JoinRequest, PeppyLauncher, Placements, RunningStack};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// A join composed and planned: the stack's flat document with the copy,
 /// every deployment planned, and what is new.
@@ -20,7 +20,8 @@ pub(super) struct ResolvedJoin {
     pub planned: Vec<PlannedDeployment>,
     pub placements: Placements,
     pub new_ids: HashSet<String>,
-    pub host: CoreNodeName,
+    /// The copy's machine, which runs its base.
+    pub copy_core_node: CoreNodeName,
     pub copy: CopyRecord,
     /// The sources this join resolved for the first time, as the launch's
     /// record keeps them.
@@ -33,19 +34,15 @@ impl ResolvedJoin {
         active: &ActiveLaunch,
         goal: &StackJoinGoal,
     ) -> ChangeResult<Self> {
-        active.check_name(&goal.name)?;
+        active.check_name(&goal.copy.name)?;
         let coordinator = CoreNodeName::new(&ctx.bound_core_node).map_err(|e| e.to_string())?;
-        let host = goal.placement.resolve(&coordinator);
-        let daemon_config::launcher::ComposedJoin {
-            launcher: combined,
-            copy,
-            ..
-        } = active
+        let copy_core_node = goal.copy.core_node.resolve(&coordinator);
+        let composed = active
             .prepared
             .join(
                 JoinRequest {
-                    option: &goal.option,
-                    name: &goal.name,
+                    option: &goal.copy.option,
+                    name: &goal.copy.name,
                     words: &goal.selections,
                     arguments: &goal.arguments,
                 },
@@ -55,6 +52,24 @@ impl ResolvedJoin {
                 },
             )
             .map_err(|e| e.to_string())?;
+        // Each instance of a placed part runs on its word's machine, every
+        // other new instance on the copy's machine.
+        let part_machines: BTreeMap<String, CoreNodeName> = composed
+            .part_machines()
+            .iter()
+            .flat_map(|(axis, target)| {
+                let machine = target.resolve(&coordinator);
+                composed
+                    .copy
+                    .instances_of_own_axis(axis.as_str())
+                    .map(move |instance| (instance.instance_id.to_string(), machine.clone()))
+            })
+            .collect();
+        let daemon_config::launcher::ComposedJoin {
+            launcher: combined,
+            copy,
+            ..
+        } = composed;
         let old_ids = instance_ids(&active.flat);
         let new_ids: HashSet<_> = instance_ids(&combined)
             .difference(&old_ids)
@@ -67,8 +82,12 @@ impl ResolvedJoin {
                 .iter()
                 .flat_map(|d| &d.instances)
                 .map(|instance| {
-                    let placement = if new_ids.contains(instance.instance_id.as_str()) {
-                        host.clone()
+                    let id = instance.instance_id.as_str();
+                    let placement = if new_ids.contains(id) {
+                        part_machines
+                            .get(id)
+                            .cloned()
+                            .unwrap_or_else(|| copy_core_node.clone())
                     } else {
                         active
                             .placements
@@ -101,7 +120,7 @@ impl ResolvedJoin {
             planned,
             placements,
             new_ids,
-            host,
+            copy_core_node,
             copy,
             resolved,
         })

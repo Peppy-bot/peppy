@@ -311,10 +311,7 @@ fn a_scope_written_through_a_joined_copy_is_refused() {
         &dirs,
         path,
         &[],
-        &[core_node_api::encoding::LaunchJoin {
-            option: "openarm_sim".to_owned(),
-            name: config::runtime::Name::new("alpha").expect("a name"),
-        }],
+        &["openarm_sim:alpha".parse().expect("a copy reference")],
     )
     .expect_err("the copy sets a scope")
     .to_string();
@@ -414,6 +411,104 @@ fn an_exposure_document_that_does_not_parse_fails_resolve() {
             && error.contains("exposure `pinned_controls:v1` does not parse")
             && error
                 .contains("target `stack` pins daemon interface `stack_copies:v1` with `sha256`"),
+        "{error}"
+    );
+}
+
+/// A launcher whose framework endpoint scopes the robot option
+/// `featured_sim` with `features`, the option declaring a brain axis and a
+/// commander axis whose `mcp` option brings no instance, under the option's
+/// `constraints`.
+fn featured_launcher(root: &Path, features: &str, constraints: &str) -> PathBuf {
+    let path = root.join("featured.json5");
+    fs::write(
+        &path,
+        format!(
+            r#"{{
+            peppy_schema: "launcher/v1",
+            components: [
+                {{ name: "robot", cardinality: "zero_or_more", options: {{
+                    featured_sim: {{
+                        deployments: [
+                            {{ source: {{ name: "arm", tag: "v1" }}, instances: [{{ instance_id: "arm_inst" }}] }},
+                            {{ commander: "mcp" }},
+                        ],
+                        components: [
+                            {{ name: "commander", options: {{
+                                mcp: {{}},
+                                web: {{ deployments: [{{ source: {{ name: "panel", tag: "v1" }},
+                                    instances: [{{ instance_id: "commander_inst" }}] }}] }},
+                            }} }},
+                            {{ name: "brain", cardinality: "zero_or_one", options: {{
+                                ai_brain_vla: {{ deployments: [{{ source: {{ name: "brain", tag: "v1" }},
+                                    instances: [{{ instance_id: "brain_inst" }}] }}] }},
+                            }} }},
+                        ],
+                        constraints: [{constraints}],
+                    }},
+                }} }},
+            ],
+            deployments: [
+                {{ source: {{ exposures: ["framework_controls:v1"] }}, instances: [{ENDPOINT}] }},
+            ],
+            adjustments: [{{ target: "framework_controls_inst", set_daemon_scopes: {{ stack: {{
+                max_copies: 2,
+                options: [{{ option: "featured_sim", description: "A featured robot",
+                             features: [{features}] }}],
+            }} }} }}],
+        }}"#
+        ),
+    )
+    .expect("launcher");
+    path
+}
+
+/// `peppy stack resolve` holds the features of a scope to the launch checks:
+/// a feature whose axis its option does not declare is refused before any
+/// composition, a feature set that does not compose is refused naming the
+/// option and the features, and a scope whose feature sets compose
+/// resolves.
+#[test]
+fn resolve_holds_the_features_of_a_scope_to_the_launch_checks() {
+    let (dirs, root) = cold_home();
+    let brain =
+        r#"{ feature: "ai_brain", axis: "brain", option: "ai_brain_vla", description: "A brain" }"#;
+    let (_document, report) =
+        resolve_rendered(&dirs, featured_launcher(root.path(), brain, ""), &[], &[])
+            .expect("the scope and its feature hold");
+    assert!(
+        report.join("\n").contains("daemon scopes hold"),
+        "{report:?}"
+    );
+
+    let error = refusal(
+        &dirs,
+        featured_launcher(
+            root.path(),
+            r#"{ feature: "ai_brain", axis: "mind", option: "ai_brain_vla", description: "A brain" }"#,
+            "",
+        ),
+    );
+    assert!(
+        error.contains(
+            "feature `ai_brain` of option `featured_sim` selects `mind=ai_brain_vla`, but \
+             `featured_sim` has no own axis `mind`; its own axes: `commander`, `brain`"
+        ),
+        "{error}"
+    );
+
+    let error = refusal(
+        &dirs,
+        featured_launcher(
+            root.path(),
+            brain,
+            r#"{ when: { brain: "ai_brain_vla" }, requires: [{ commander: "web" }],
+                 reason: "the brain needs the web panel" }"#,
+        ),
+    );
+    assert!(
+        error.contains("option `featured_sim` with the features `ai_brain`: ")
+            && error.contains("the brain needs the web panel"),
         "{error}"
     );
 }

@@ -99,10 +99,10 @@ async fn mesh() -> (Mesh, MockActionServerCore) {
     )
 }
 
-/// The join the bridge sends: no selection, no argument, no environment,
-/// placed on the coordinator, under the default budgets.
+/// The join the bridge sends: the copy on the coordinator, no word, no
+/// argument, no environment, under the default budgets.
 fn join_goal() -> StackJoinGoal {
-    StackJoinGoal::new(Name::new("bravo").unwrap(), "so101_sim", DEFAULT_BUDGETS)
+    StackJoinGoal::new("so101_sim:bravo".parse().unwrap(), DEFAULT_BUDGETS)
 }
 
 /// The daemon's side of the next goal: it checks that the goal arrived as
@@ -401,16 +401,16 @@ async fn the_copies_are_read_from_the_daemon_along_the_route() {
     .await
     .expect("stack_list becomes reachable");
     let bravo = CopyInfo {
-        name: Name::new("bravo").unwrap(),
+        name: config::runtime::CopyName::new("bravo").unwrap(),
         core_node: CoreNodeName::new(COORDINATOR).unwrap(),
         instance_ids: vec![Name::new("bravo_arm_inst").unwrap()],
-        selections: Vec::new(),
+        selections: vec!["commander=pad@cn-gpu-box".parse().unwrap()],
         option: "so101_sim".to_owned(),
         set_members: Vec::new(),
     };
     let charlie = CopyChange {
         action: CopyAction::Join,
-        name: Name::new("charlie").unwrap(),
+        name: config::runtime::CopyName::new("charlie").unwrap(),
         option: "so101_sim".to_owned(),
     };
     let mut answer = StackListResponse::new("{}", COORDINATOR, DAEMON_INSTANCE, "host")

@@ -4,6 +4,7 @@
 
 use super::super::composition::{ArgumentOverrides, ComponentAxis, CopyEntry};
 use super::super::types::PeppyLauncher;
+use super::adjustments::Routed;
 use super::constraints::{
     ConstraintInPlay, ConstraintScope, constraint_satisfied, constraints_in_play, render_constraint,
 };
@@ -13,9 +14,10 @@ use super::expand::Expanded;
 use super::load::{LoadedComposition, LoadedOption, launcher_file_label};
 use super::prepared::PreparedLauncher;
 use super::select::{
-    CopyOrigin, SelectionEntry, SelectionSource, UnitSelection, check_reach, resolve_copy,
+    CopyOrigin, PartMachines, SelectionEntry, SelectionSource, UnitSelection, check_reach,
+    resolve_copy,
 };
-use config::runtime::Name;
+use config::runtime::CopyName;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 
@@ -32,8 +34,9 @@ const CHECK_COPY: &str = "composition_check";
 
 /// The checked copy's name over `bare`: the first of `composition_check`,
 /// `composition_check_2`, ... that the stack neither declares as a core
-/// node link nor prefixes an instance id with.
-fn pick_checked_copy_name(bare: &Expanded) -> Name {
+/// node link nor prefixes an instance id with. `repo index --check` and the
+/// trial joins of a launch's scope checks compose under it.
+pub(super) fn pick_checked_copy_name(bare: &Expanded) -> CopyName {
     let ids: Vec<&str> = bare
         .deployments
         .iter()
@@ -49,8 +52,62 @@ fn pick_checked_copy_name(bare: &Expanded) -> Name {
             let prefix = format!("{name}_");
             !bare.core_nodes.contains(name) && !ids.iter().any(|id| id.starts_with(&prefix))
         })
-        .map(|name| Name::try_from(name).expect("a plain identifier"))
+        .map(|name| CopyName::new(name).expect("a plain identifier of a copy name's length"))
         .expect("the numbered names are unbounded")
+}
+
+/// Where a trial join fails: composing the copy, or attaching it to the
+/// running stack.
+pub(super) enum TrialRefusal {
+    Composed(Box<CompositionError>),
+    Joined(Box<CompositionError>),
+}
+
+/// One copy of `axis.option` named `name`, joined onto the bare stack of
+/// `stack` as `peppy stack join` composes it, under `settings`: composed,
+/// combined with the stack, and attached to `existing`, the stack's flat
+/// document. `repo index --check` tries every own-axis selection of every
+/// copy option this way, and a launch's scope checks every feature set.
+/// Returns the copy's selection.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn compose_trial_join(
+    prepared: &PreparedLauncher,
+    stack: &UnitSelection,
+    existing: &PeppyLauncher,
+    bare: &Expanded,
+    routed: &[Routed<'_>],
+    axis: &str,
+    loaded: &LoadedOption,
+    name: &CopyName,
+    settings: &super::super::composition::CopySettings<'_>,
+) -> Result<UnitSelection, TrialRefusal> {
+    let copy = compose_copy(
+        prepared,
+        stack,
+        bare,
+        CopyRequest {
+            axis,
+            loaded,
+            name,
+            with: &settings.with,
+            parts: &PartMachines::new(),
+            arguments: &settings.arguments,
+            adjustments: &settings.adjustments,
+            routed,
+            origin: CopyOrigin::Join,
+        },
+        &bare.core_nodes,
+    )
+    .map_err(|error| TrialRefusal::Composed(Box::new(error)))?;
+    combine(
+        &prepared.launcher,
+        bare,
+        &existing.framework,
+        std::slice::from_ref(&copy),
+    )
+    .map_err(|error| TrialRefusal::Composed(Box::new(error)))?;
+    attach(existing, &copy).map_err(|error| TrialRefusal::Joined(Box::new(error)))?;
+    Ok(copy.selection)
 }
 
 /// One option of a repeatable axis, as the check enumerates copies of it.
@@ -258,7 +315,8 @@ fn check_file_copies_over(
                 .repeatable_axes()
                 .any(|axis| axis.name == entry.axis);
             let launch_joined = (repeatable && entry.instances.is_empty()).then(|| CopyEntry {
-                instance_id: Name::new(&entry.option).expect("an option name is a name"),
+                instance_id: CopyName::new(&entry.option)
+                    .unwrap_or_else(|_| pick_checked_copy_name(bare)),
                 with: BTreeMap::new(),
                 arguments: ArgumentOverrides::default(),
                 adjustments: Vec::new(),
@@ -320,6 +378,7 @@ fn check_file_copies_over(
                             loaded,
                             name: &instance.instance_id,
                             with,
+                            parts: &PartMachines::new(),
                             arguments: &settings.arguments,
                             adjustments: &settings.adjustments,
                             routed: &routed,
@@ -476,44 +535,30 @@ fn check_copies_over(
                     item.option,
                     copy_selection.echo()
                 );
-                let copy = match compose_copy(
+                match compose_trial_join(
                     prepared,
                     stack,
+                    existing,
                     bare,
-                    CopyRequest {
-                        axis: &item.axis.name,
-                        loaded: item.loaded,
-                        name: &name,
-                        with: &settings.with,
-                        arguments: &settings.arguments,
-                        adjustments: &settings.adjustments,
-                        routed: &routed,
-                        origin: CopyOrigin::Join,
-                    },
-                    &bare.core_nodes,
+                    &routed,
+                    &item.axis.name,
+                    item.loaded,
+                    &name,
+                    &settings,
                 ) {
-                    Ok(copy) => copy,
-                    Err(e) => {
+                    Ok(_) => {}
+                    Err(TrialRefusal::Joined(e))
+                        if matches!(
+                            *e,
+                            CompositionError::JoinChangesExisting { .. }
+                                | CompositionError::JoinAddsStackMember { .. }
+                        ) => {}
+                    Err(TrialRefusal::Composed(e)) => {
                         problems.push(format!("{label} ({echo}): {e}"));
-                        continue;
                     }
-                };
-                if let Err(e) = combine(
-                    launcher,
-                    bare,
-                    &existing.framework,
-                    std::slice::from_ref(&copy),
-                ) {
-                    problems.push(format!("{label} ({echo}): {e}"));
-                    continue;
-                }
-                match attach(existing, &copy) {
-                    Ok(_)
-                    | Err(
-                        CompositionError::JoinChangesExisting { .. }
-                        | CompositionError::JoinAddsStackMember { .. },
-                    ) => {}
-                    Err(e) => problems.push(format!("{label} ({echo}, joined): {e}")),
+                    Err(TrialRefusal::Joined(e)) => {
+                        problems.push(format!("{label} ({echo}, joined): {e}"));
+                    }
                 }
             }
             if legal_somewhere {

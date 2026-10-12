@@ -8,6 +8,7 @@ import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 import { Code } from '@astrojs/starlight/components';
 import viewerLauncher from './snippets/launchers/viewer.json5?raw';
 import zedCameraFragment from './snippets/launchers/viewer_zed_camera.json5?raw';
+import frameworkControlsLauncher from './snippets/launchers/mcp_framework_controls.json5?raw';
 
 Launch files let you start multiple nodes simultaneously, including those with dependencies on each other. 
 With a single launch file, you or your team can recreate an entire node environment using just one command.
@@ -338,26 +339,7 @@ instances: [
 
 The scope of each [daemon target](/advanced_guides/mcp/#daemon-targets) that the instance serves, keyed by the target's name: what a client of the target may do through the daemon interface it names. Only an instance of an [exposure deployment](#serving-mcp-exposures) whose exposures have a daemon target takes it. A daemon target takes a scope and no link.
 
-```json5
-{
-  source: { exposures: ["framework_controls:v1"] },
-  instances: [
-    {
-      instance_id: "framework_controls_inst",
-      arguments: { port: 8903 },
-      daemon_scopes: {
-        stack: {
-          max_copies: 4,
-          options: [
-            { option: "openarm_sim", description: "A simulated OpenArm v2 standing on the floor: two arms with grippers" },
-            { option: "so101_sim", description: "A simulated SO-101 clamped on the edge of a table: one arm with a gripper" },
-          ],
-        },
-      },
-    },
-  ],
-}
-```
+<Code code={frameworkControlsLauncher} lang="json5" title="mcp_framework_controls.json5" />
 
 When the launcher is read, a scope is a free value, because only the resolution of the exposure deployments knows which targets are daemon targets. A launcher that writes its options in its own file and its endpoint in a fragment gives the scope with a top-level [`set_daemon_scopes`](#adjustments) adjustment instead. A scope belongs to the stack: a [copy](#copies) writes none.
 
@@ -366,12 +348,17 @@ The launch, each join and [`peppy stack resolve`](#auditing-a-composed-launch) p
 - `daemon_scopes` on an instance that serves no daemon target;
 - a scope key that is not a daemon target of the instance's exposures; the refusal says so when the key is a contract target, which takes `links`;
 - a daemon target with no scope;
-- a scope that does not parse into the type of its interface, for example a [`stack_copies` scope](/advanced_guides/mcp/#scopes) with no option or with `max_copies` 0;
-- a `stack_copies` scope that names an option that is not an option of an axis that runs as copies, with the menu of the options a join can add; in a launcher that declares no such axis, a flat launcher included, every `stack_copies` scope;
+- a scope that does not parse into the type of its interface, for example a [`stack_copies` scope](/advanced_guides/mcp/#scopes) with no option, with `max_copies` 0, with `features: []`, or with two features of one option on the same axis;
 - an instance that serves a daemon target and does not run on the coordinator: one that declares `core_node`, or one of a copy;
 - a `links` key that names a daemon target: the refusal says that the target takes a scope.
 
-Every refusal is reported at once.
+The launch and `peppy stack resolve` also hold each scope against the launcher and the stack selection, and refuse:
+
+- a `stack_copies` scope that names an option that is not an option of an axis that runs as copies, with the menu of the options a join can add; in a launcher that declares no such axis, a flat launcher included, every `stack_copies` scope;
+- a feature of a `stack_copies` scope that selects an axis that is not an own axis of its option, an option that its axis does not have, or an option that brings no instance;
+- an option of a `stack_copies` scope whose copy does not compose as a join over the bare stack with one of its feature sets (no feature, each feature, each combination), or whose copy with no feature already holds one of its features. The refusal names the option and the features of the set.
+
+Each of these three checks runs only when the ones before it hold (see [the scope checks](/advanced_guides/mcp/#scopes)). A join holds each scope to the first list only: the launcher and the stack selection of a launch do not change, so a join cannot change the verdict of the second. The refusals of every instance are reported at once.
 
 The server reads its scopes from the runtime configuration of its instance when it starts. A server that starts without these checks, for example with `peppy node run` of its node, and finds a daemon target with no scope or a scope that does not parse, serves nothing and stops, and its run log says which target lacks a scope and how to give one (see [Deploy it](/advanced_guides/mcp/#deploy-it)).
 
@@ -477,7 +464,9 @@ Every placeholder the launcher declares must be bound with `--place`; a launch
 that leaves one unwired is refused. The escape hatch is
 `peppy stack launch --local`, which ignores the launcher's placements and runs
 every instance on the daemon you launched from. `--local` and `--place` are
-mutually exclusive.
+mutually exclusive, and under `--local` no `--join` and no `--with` word names
+a machine. A [copy](#copies) runs where it is named, and each part of it where
+the word that selects it says.
 
 ## Swapping parts at launch time
 
@@ -698,7 +687,7 @@ An option's fragment can declare `components` of its own: the axes that belong t
     { name: "camera_rig",
       options: { none: "../../common/fragments/none.json5", cameras_sim: "cameras_sim.json5" } },
     { name: "brain", cardinality: "zero_or_one", provides: ["brain_inst"],
-      options: { ai_brain: "ai_brain.json5" } },
+      options: { ai_brain_vla: "ai_brain_vla.json5" } },
   ],
 }
 ```
@@ -753,7 +742,7 @@ An entry and a copy also take `adjustments`, the same verbs the launcher's adjus
 peppy stack launch openarm_simulation --with mujoco,alpha.xr_commander
 ```
 
-An entry may list no copy. It then says how every copy of the option is set up, and a launch starts none of them; `--join OPTION:NAME` on `stack launch`, once per copy and comma-separated as `--with` is, starts a copy with the launch: a copy of the entry under that name, composed, validated and started with the launch, and failing with it. The words that address a listed copy address it too, `--with NAME.option` and `--place NAME@CORE_NODE`:
+An entry may list no copy. It then says how every copy of the option is set up, and a launch starts none of them; `--join OPTION:NAME` on `stack launch`, once per copy and comma-separated as `--with` is, starts a copy with the launch: a copy of the entry under that name, composed, validated and started with the launch, and failing with it. The words that address a listed copy address it too, `--with NAME.option`, and it runs where its `--join OPTION:NAME@CORE_NODE` names:
 
 ```json5
 deployments: [
@@ -781,20 +770,42 @@ peppy stack launch openarm_simulation --with mujoco
 
 # Another robot in place of the first, on another machine, then its removal.
 peppy stack remove alpha
-peppy stack join openarm_sim:bravo --with xr_commander --place jetson-2
+peppy stack join openarm_sim:bravo@jetson-2 --with xr_commander
 peppy stack list
 peppy stack remove bravo
 
 # A stack with no robot yet, then robots as they arrive.
 peppy stack launch physical
-peppy stack join openarm:alpha --place jetson-1
-peppy stack join openarm:bravo --with v1,xr_commander --place jetson-2
+peppy stack join openarm:alpha@jetson-1
+peppy stack join openarm:bravo@jetson-2 --with v1,xr_commander
 
 # The same two robots, a v2 and a v1, named at launch.
-peppy stack launch physical --join openarm:alpha --join openarm:bravo --with bravo.hardware_version=v1,bravo.xr_commander --place alpha@jetson-1 --place bravo@jetson-2
+peppy stack launch physical --join openarm:alpha@jetson-1 --join openarm:bravo@jetson-2 --with bravo.hardware_version=v1,bravo.xr_commander
 ```
 
-`stack join OPTION:NAME` names the option to copy and the copy's name, the one spelling `--join` takes too. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` at launch and `--place jetson-1` at join run the whole copy there, and a copy with no placement runs on the coordinator.
+`stack join OPTION:NAME` names the option to copy and the copy's name, the one spelling `--join` takes too. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link.
+
+A copy runs where it is named: `OPTION:NAME@CORE_NODE` on `stack join` and on `--join` at launch, and `--place NAME@CORE_NODE` for a copy the launcher file lists. With no machine, the copy runs on the coordinator. The copy's machine runs its base, the instances of the copied option's own fragments. The instances that an own axis of the copy brings, those of the option the copy selects on that axis, are a **part** of the copy, and a part runs where the word that selects it says: a selection word takes a machine after `@`, `option@CORE_NODE` or `axis=option@CORE_NODE`, and at launch `NAME.option@CORE_NODE` or `NAME.axis=option@CORE_NODE`. `self` names the coordinator, after the `@` of a copy as of a word. A word with no machine, and an own axis that no word names, run with the base. To place a part that the launcher entry or the fragment selects, write its option again with a machine: `--with cameras_sim@cn-gpu-box`. When every instance of a copy comes from parts that run elsewhere, the copy's machine runs nothing, and `stack list` still shows it as the copy's machine. Links, pairings and observations between the base and a part, and between two parts, cross machines as they do between any two instances of a [federated launch](/advanced_guides/federation/).
+
+```sh
+# An OpenArm on jetson-1, its brain on a machine with a GPU.
+peppy stack join openarm_sim:delta@jetson-1 --with ai_brain_vla@cn-gpu-box
+
+# The same robot named at launch, and a listed copy's camera rig on the GPU machine.
+peppy stack launch openarm_simulation --join openarm_sim:delta@jetson-1 --with delta.ai_brain_vla@cn-gpu-box,alpha.cameras_sim@cn-gpu-box
+```
+
+A launcher file names no machine for a copy or its parts: the `with` of an entry or a copy takes option names, which hold no `@`; a copy entry or an instance of a copy's fragments that declares `core_node`, and a copy's fragment that declares `core_nodes`, are refused.
+
+These words are refused, each with a text that says what to write instead:
+
+- a placed word whose option brings no instance, such as `--with mcp_commander@cn-gpu-box`: drop the `@`;
+- two words on one own axis whose machines differ as written: `ai_brain_vla` and `ai_brain_vla@cn-gpu-box` differ, and so do `@self` and `@` with the coordinator's name, because `peppy stack resolve` has no coordinator to compare with. The same word written twice is one word;
+- a bare option that two own axes have, with a machine or without one: `axis=option@CORE_NODE` names the axis;
+- at launch, a machine on a word of a stack axis, such as `--with mujoco@cn-gpu-box`: a stack instance runs where its `core_node` link says, `--place LINK@CORE_NODE`;
+- at launch, `--place NAME@CORE_NODE` where `NAME` is a copy that `--join` adds: place a joined copy where you join it, `--join OPTION:NAME@CORE_NODE`;
+- under `--local`, a `--with` word that names a machine, `@self` included, and a `--join` copy that names a machine other than `self`: `--local` runs the whole launch on this machine;
+- on `stack join`, a word `NAME.option`, which selects an own axis of a copy on `stack launch` only.
 
 A joined copy starts from the same settings as a copy the file lists. Weakest first: what the option's fragment deploys, then the `with`, `arguments` and `adjustments` of the launcher's entry for that option, then the join's `--with` words and `--set-arguments`. A word wins on its own axis and the entry's other axes stay selected, so the option's constraints judge the two together, as they do for a launch word `NAME.option`. Under the `xr_commander` entry above, a plain `peppy stack join openarm_sim:charlie` is another headset robot, and `peppy stack remove alpha` followed by `peppy stack join openarm_sim:alpha` brings back the copy the file deployed. One entry speaks for every copy of its option, so a launcher deploys each option of an axis that runs as copies in one entry, and a second entry naming the same option is refused.
 
@@ -853,9 +864,15 @@ The members follow the order the copies joined, and a copy that rejoins under th
 
 One simulation per stack, and each simulated robot joins it as a copy that brings its own model: the `openarm_simulation` launcher ships one copy, an OpenArm v2, `--join OPTION:NAME` names another at launch and `stack join` adds more, of any model the simulation's catalog carries, as many as the machine can run. A physical robot reads wall time and a simulated one the simulation's clock, so the physical robots have a launcher of their own, `physical`.
 
-`stack remove NAME` stops the copy's instances in reverse dependency order, takes the members it added out of the running sets, and takes the copy out of the stack; every instance whose set shrank returns the smaller set at its accessor's next call. Before it stops an instance on the coordinator, it prints a line that names the instance, such as ``Stopping instance `alpha_backbone_inst` of copy `alpha` ``, so a removal of many instances shows each step. The machine of a copy placed elsewhere stops all the copy's instances in one request, and the removal prints nothing for them until that machine answers. A set on a machine that is not live keeps the members it holds, and the removal says so; when the machine returns with the instance still running, the next join or removal changing that slot delivers it whole, and when it returns without it, launch again. Two floors refuse a removal: one that would leave a `one_or_more` slot with no member is refused, naming the slot, and one that would take the last copy of a `one_or_more` axis is refused, naming the copy and the axis. A copy another copy links to is refused until that copy goes first, and a copy a stack instance links to any other way stays until the next launch. Removal leaves the stack's own instances running: removing a simulated robot takes it out of the simulation, which stays up for the next join, and `stack reset` stops everything. A copy that released a stack instance's vacancy to pair into that slot restores the vacancy when it goes, so the slot stands vacant again as the launch declared it, the mirror of pairing into a vacancy above. A failed join stops what it started, with the same line for each instance it stops on the coordinator, removes the nodes it added, and reports the failure; when that cleanup itself fails the copy stays in `stack list` and the message says to retry `stack remove`.
+`stack remove NAME` stops the copy's instances in reverse dependency order, takes the members it added out of the running sets, and takes the copy out of the stack; every instance whose set shrank returns the smaller set at its accessor's next call. It stops them one at a time across all the machines of the copy, the last started first. Before it stops an instance, it prints a line that names the instance, such as ``Stopping instance `alpha_backbone_inst` of copy `alpha` ``, so a removal of many instances shows each step; an instance on another machine stops through one request of its own, after a line that names its machine: ``Stopping instance `alpha_brain_inst` of copy `alpha` on `cn-gpu-box` ``. Each machine of the copy is in one of three states:
 
-`stack list` names each copy, the option it copies, its host, its selection, its instances and the set members it added, one row per slot under `Set members:` (`monitor_inst.links.robots → alpha_backbone_inst`, the target by the id the stack runs it under; the bindings table adds its machine), and its bindings table names the copy beside each member a copy brought (`robots → alpha_backbone_inst@cn-robot [copy alpha]`). A join writes its copy into the stack only when it ends, so while a join or a removal runs, the coordinator's panel names it on a line of its own: `Copy bravo of so101_sim joins the stack now`, or `leaves the stack now` for a removal. `stack list --json` carries the same under `copies` and `copy_change` (`{ "action": "join", "name": "bravo", "option": "so101_sim" }`, or `null`), the members under `set_members`, and each member of a slot's `slot_bindings` under `producer`, with a `copy` key on a member a copy brought, naming the copy and the id its fragment wrote for the instance. The node holding the set reads the same fact through its [`bound_members()`](/advanced_guides/topics/#receiving-messages) accessor. Preview a launch and the copies it starts without starting anything, which composes it and runs the link rules a launch runs, leaving what only a running stack can answer (whether the instance whose set grows is running, and whether its machine is live) to the join itself:
+- live and holding the slice of this launch: the copy's instances there stop;
+- live but holding no slice of this launch, because someone reset it: nothing stops there, and a line says so: `` `cn-gpu-box` holds no instance of this launch, so nothing stops there ``;
+- not live on the federation: nothing stops there, and a warning names the copy's instances that stay there until a `peppy stack reset` on that machine clears them once it returns, and every other instance of this launch that this reset also stops there, the parts of other copies and the stack's own instances.
+
+A source on a machine that is not live, whose watchers the removal changes, does not hold the removal: it keeps its watchers until that machine is reset. A stop that fails skips the later stops on its machine while the other machines still stop, and the removal then fails with every error and keeps the copy in `stack list`, so `stack remove` can run again. A set on a machine that is not live keeps the members it holds, and the removal says so; when the machine returns with the instance still running, the next join or removal changing that slot delivers it whole, and when it returns without it, launch again. Two floors refuse a removal: one that would leave a `one_or_more` slot with no member is refused, naming the slot, and one that would take the last copy of a `one_or_more` axis is refused, naming the copy and the axis. A copy another copy links to is refused until that copy goes first, and a copy a stack instance links to any other way stays until the next launch. Removal leaves the stack's own instances running: removing a simulated robot takes it out of the simulation, which stays up for the next join, and `stack reset` stops everything. A copy that released a stack instance's vacancy to pair into that slot restores the vacancy when it goes, so the slot stands vacant again as the launch declared it, the mirror of pairing into a vacancy above. A failed join stops what it started on the live machines, with the same line for each instance it stops, removes the nodes it added, and reports the failure; when that cleanup itself fails the copy stays in `stack list` and the message says to retry `stack remove`.
+
+`stack list` names each copy on one line with the option it copies, its machine and its selection: `Copy delta of openarm_sim on jetson-1: hardware_version=v2,robot_commander=mcp_commander,camera_rig=cameras_sim,brain=ai_brain_vla@cn-gpu-box`. The selection is each filled own axis, in the order the option declares them, as the word `axis=option` that selects it, with `@machine` after a part that runs on another machine than the copy's, joined by `,`. A listed copy is its own recipe: `peppy stack join openarm_sim:delta@jetson-1 --with` followed by the text after the colon adds the same copy on the same machines. A join ends with the same line, ``Copy `delta` of `openarm_sim` joined on `jetson-1`: hardware_version=v2,…``. Under its line, `stack list` names the copy's instances and the set members it added, one row per slot under `Set members:` (`monitor_inst.links.robots → alpha_backbone_inst`, the target by the id the stack runs it under; the bindings table adds its machine), and its bindings table names the copy beside each member a copy brought (`robots → alpha_backbone_inst@cn-robot [copy alpha]`). A join writes its copy into the stack only when it ends, so while a join or a removal runs, the coordinator's panel names it on a line of its own: `Copy bravo of so101_sim joins the stack now`, or `leaves the stack now` for a removal. `stack list --json` carries the same under `copies`, each selection as `{ "axis", "option" }` with a `core_node` key on a part that runs on another machine than the copy's, and `copy_change` (`{ "action": "join", "name": "bravo", "option": "so101_sim" }`, or `null`), the members under `set_members`, and each member of a slot's `slot_bindings` under `producer`, with a `copy` key on a member a copy brought, naming the copy and the id its fragment wrote for the instance. The node holding the set reads the same fact through its [`bound_members()`](/advanced_guides/topics/#receiving-messages) accessor. Preview a launch and the copies it starts without starting anything, which composes it and runs the link rules a launch runs, leaving what only a running stack can answer (whether the instance whose set grows is running, and whether its machine is live) to the join itself:
 
 ```sh
 peppy stack resolve openarm_simulation --with mujoco
@@ -892,7 +909,7 @@ alpha_recorder_inst: clock `wall`
 link rules hold: slot keys, vacancies, pairing coverage, observation sources and clock agreement checked over 5 node manifest(s)
 ```
 
-Every applied adjustment is listed with the value it replaced and where it was written, the fragment's own entries under the fragment's path and the launcher's under the option that carries them, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. The one exception is a launcher with a [`stack_copies` scope](/advanced_guides/mcp/#scopes): the flat file keeps the scope and declares no axis, so no option of the scope runs as copies in it, and its launch refuses the scope and says why. Launch such a launcher itself, or take the instance that serves the target out of the flat file before you launch it. A launcher that deploys copies resolves with them, one `copy NAME:` line each, and `--join OPTION:NAME` resolves one more, repeatable and comma-separated, each joined onto the plan the ones before it left, exactly as `stack launch` composes them. A copy `--join` names takes its own axes from `--with NAME.option`. The resulting flat launcher declares each copy's name in `core_nodes`; launch that file with `--place NAME@CORE_NODE` or `--local`.
+Every applied adjustment is listed with the value it replaced and where it was written, the fragment's own entries under the fragment's path and the launcher's under the option that carries them, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. The one exception is a launcher with a [`stack_copies` scope](/advanced_guides/mcp/#scopes): the flat file keeps the scope and declares no axis, so no option of the scope runs as copies in it, and its launch refuses the scope and says why. Launch such a launcher itself, or take the instance that serves the target out of the flat file before you launch it. A launcher that deploys copies resolves with them, one `copy NAME:` line each, and `--join OPTION:NAME` resolves one more, repeatable and comma-separated, each joined onto the plan the ones before it left, exactly as `stack launch` composes them. A copy `--join` names takes its own axes from `--with NAME.option`. A `copy NAME:` line writes `@machine` after each part that a word places, as the word wrote it: `brain=ai_brain_vla@cn-gpu-box`. `stack resolve` reads no daemon, so it prints `@self` as written, and its lines name no machine for a copy, which `--join OPTION:NAME@CORE_NODE` or `--place NAME@CORE_NODE` gives at launch. The words that a launch refuses, a part placed twice or a placed part that brings nothing, fail `stack resolve` too. The resulting flat launcher declares each copy's name in `core_nodes` and places each copy whole on its name's link, so a part that a word places runs with its copy when you launch the flat file; launch that file with `--place NAME@CORE_NODE` or `--local`.
 
 The report then holds the flat plan to the [checks of `daemon_scopes`](#daemon_scopes-optional). They read the exposure documents alone, so they run whatever the nodes and contracts caches hold, and a plan that breaks one fails with the launch's own refusal. The `daemon scopes hold` line says how many daemon targets were scoped. When this machine's caches do not hold an exposure document, the report says `daemon scopes not checked` and names the deployment, whose checks it skips; the checks of every other deployment still run. A document in the caches that a launch refuses, for example one that does not parse or that names an interface this peppy does not serve, fails `stack resolve` with that refusal.
 

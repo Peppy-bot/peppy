@@ -33,7 +33,7 @@
 
 use crate::bridges::{Silence, TaskSurface};
 use crate::daemon_bridge::OwnDaemon;
-use config::runtime::Name;
+use config::runtime::{CopyName, Name};
 use core_node_api::encoding::{LaunchFeedback, LaunchFeedbackStep, LaunchResult};
 use peppy_mcp_runtime::{ActionExit, CancelledGoal};
 use serde_json::{Value, json};
@@ -47,9 +47,9 @@ use tokio::sync::{OwnedMutexGuard, mpsc, oneshot};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Change {
     /// A copy `name` of `option` joins the stack.
-    Addition { name: Name, option: Name },
+    Addition { name: CopyName, option: Name },
     /// Copy `name` leaves the stack.
-    Removal { name: Name },
+    Removal { name: CopyName },
 }
 
 impl Change {
@@ -82,12 +82,13 @@ impl Change {
     }
 
     /// The message of a change that failed for `error`, with the log files
-    /// that say more.
+    /// that say more. An `error` that ends its own sentence keeps one period.
     fn failed(&self, error: &str, logs: &[&Path]) -> String {
         let logs: Vec<String> = logs.iter().map(|log| log.display().to_string()).collect();
         format!(
-            "{} failed: {error}. Log files: {}",
+            "{} failed: {}. Log files: {}",
             self.subject(),
+            error.trim_end_matches('.'),
             logs.join(", ")
         )
     }
@@ -391,16 +392,20 @@ mod tests {
         Name::new(name).expect("a name")
     }
 
+    fn copy_name(name: &str) -> CopyName {
+        CopyName::new(name).expect("a copy name")
+    }
+
     fn addition() -> Change {
         Change::Addition {
-            name: name("bravo"),
+            name: copy_name("bravo"),
             option: name("so101_sim"),
         }
     }
 
     fn removal() -> Change {
         Change::Removal {
-            name: name("bravo"),
+            name: copy_name("bravo"),
         }
     }
 
@@ -512,6 +517,16 @@ mod tests {
                 "message": "the removal of bravo failed: copy `bravo` is absent; peppy stack list \
                             shows the copies on the stack. Log files: /logs/stack/remove.log",
             })
+        );
+
+        let not_live = LaunchResult::failure(
+            "/logs/stack/join.log",
+            "these core nodes are not live on the federation: `cn-gone`. Live right now: `cn`.",
+        );
+        assert_eq!(
+            addition().outcome(&not_live)["message"],
+            "the addition of bravo failed: these core nodes are not live on the federation: \
+             `cn-gone`. Live right now: `cn`. Log files: /logs/stack/join.log"
         );
 
         assert_eq!(
