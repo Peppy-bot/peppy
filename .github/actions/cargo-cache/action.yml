@@ -2,7 +2,8 @@ name: Cargo build cache
 description: >-
   Keeps the suite's cargo target directory, the cargo registry, the build
   scripts' tool cache and pixi's package cache on the job's RunsOn sticky
-  disk, so a job compiles only what changed since the suite last ran, and
+  disk, so a job compiles only what changed since the suite last ran. Empties
+  a disk restored more than half full, so a run always has room to build, and
   reports what the disk holds in the job summary (the sticky-disk-report
   action). The job's runs-on label must request the suite's sticky disk
   (`sticky=<suite>:<size>`). Expects the checkout and the Rust toolchain to be
@@ -43,10 +44,11 @@ runs:
     # what a run finds is a hit for the same bytes or a miss, never state one
     # run depends on another having written. Cargo never removes an artifact
     # that a dependency bump or a profile change superseded, so a target
-    # directory only grows: what bounds it is the weekly reset of every
-    # sticky disk (the sticky disk cleanup of the RunsOn stack in infraops),
-    # after which the first run starts empty and pays one cold build. The
-    # peppylib-py targets under ~/.peppy/tmp are the exception, pruned below.
+    # directory only grows. Two things bound the disk: the weekly reset of
+    # every sticky disk (the sticky disk cleanup of the RunsOn stack in
+    # infraops), after which the first run starts empty and pays one cold
+    # build, and the steps below, which drop the peppylib-py targets of
+    # earlier versions and empty a disk restored more than half full.
     - uses: runs-on/action@v2
       with:
         sticky_cache: |
@@ -76,6 +78,30 @@ runs:
         trees=("$HOME"/.peppy/tmp/peppylib-py/target-*)
         [ "${#trees[@]}" -gt 1 ] || exit 0
         ls -dt "${trees[@]}" | tail -n +2 | xargs -r rm -rf
+
+    # A dependency bump rebuilds every test binary of a suite under new names
+    # beside the old ones, so within a week a target directory can grow by
+    # several full builds, tens of GiB for the workspace suite. One run writes
+    # at most about what a cold run of its suite writes, and each sticky disk
+    # holds more than twice that, so a disk at most half full has room for
+    # any one run. A disk that is more than half full after the step above is
+    # emptied here, as the weekly reset empties it: the job builds cold and
+    # leaves a small snapshot for the next one. The caches are emptied and
+    # not removed, because each one is a mount point of the disk. A job that
+    # RunsOn starts without its sticky disk has its caches on the root disk of
+    # a new instance, so there is nothing to empty.
+    - name: Empty the caches of a disk restored more than half full
+      shell: bash
+      run: |
+        set -euo pipefail
+        mountpoint -q "$HOME/.cache/peppy-ci" || exit 0
+        read -r size used < <(df --output=size,used --block-size=1 "$HOME/.cache/peppy-ci" | tail -n 1)
+        [ $((used * 2)) -gt "$size" ] || exit 0
+        echo "::notice title=Sticky disk emptied::The sticky disk holds $((used >> 30)) GiB of $((size >> 30)) GiB, more than half, so this job empties its caches and builds cold."
+        for cache in "$HOME/.cargo/registry" "$HOME/.cargo/git" "$HOME/.peppy/tmp" "$HOME/.cache/rattler" "$HOME/.cache/peppy-ci"; do
+          [ -d "$cache" ] || continue
+          find "$cache" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        done
 
     # Only the suite's target directory is redirected, and through a symlink
     # rather than CARGO_TARGET_DIR: the docs snippet runner builds its nodes
