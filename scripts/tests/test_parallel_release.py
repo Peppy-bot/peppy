@@ -44,6 +44,7 @@ from functions.parallel_release import (
     run_build,
     run_hub_check,
     run_hub_launch,
+    run_live_check,
     run_prepare,
     run_publish,
 )
@@ -258,6 +259,16 @@ def test_hub_launch_takes_the_hub_set_and_the_run_id() -> None:
 def test_hub_launch_refuses_a_run_id_that_is_no_run(run_id: str) -> None:
     with pytest.raises(SystemExit) as exc_info:
         _parse_args(["hub-launch", "--hub-set", "s", "--peppy-run-id", run_id])
+    assert exc_info.value.code == 2
+
+
+def test_live_check_takes_the_tag_of_the_release() -> None:
+    assert _parse_args(["live-check", "--tag", "v0.3.0"]).tag == "v0.3.0"
+
+
+def test_live_check_refuses_a_tag_no_release_publishes() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_args(["live-check", "--tag", "v0.31.2-rc1"])
     assert exc_info.value.code == 2
 
 
@@ -2058,3 +2069,43 @@ def test_hub_launch_dispatches_with_the_release_token_and_reads_with_the_job_tok
     assert owner == SLUG.owner
     assert {r.hub.name: r.commit for r in hub_set.hubs} == HUB_COMMITS
     assert peppy_run_id == 18000000001
+
+
+# --- live-check ---
+
+
+def test_live_check_waits_for_the_install_sh_of_the_checkout_and_this_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_api: respx.MockRouter
+) -> None:
+    monkeypatch.setenv("GITHUB_REPOSITORY", SLUG.full)
+    checkout = tmp_path / "checkout"
+    (checkout / "scripts").mkdir(parents=True)
+    (checkout / "scripts" / "install.sh").write_bytes(b"#!/bin/sh\necho v0.3.0\n")
+    archive_url = "https://peppy.bot/v0.3.0/peppy-x86_64-unknown-linux-gnu.tgz"
+    asset_url = (
+        f"https://github.com/{SLUG.full}/releases/download/v0.3.0/"
+        "peppy-x86_64-unknown-linux-gnu.tgz"
+    )
+    mock_api.get("https://peppy.bot/install.sh").mock(
+        return_value=httpx.Response(200, content=b"#!/bin/sh\necho v0.3.0\n")
+    )
+    mock_api.get(archive_url).mock(
+        return_value=httpx.Response(302, headers={"Location": asset_url})
+    )
+    mock_api.get(asset_url).mock(return_value=httpx.Response(200, content=b"tgz"))
+
+    with (
+        patch("functions.parallel_release.get_repo_root", return_value=checkout),
+        patch("functions.parallel_release.wait_until_live") as wait_until_live,
+    ):
+        run_live_check(tag="v0.3.0")
+
+    checks, client = wait_until_live.call_args.args
+    checks_by_url = {check.url: check for check in checks}
+    install_check = checks_by_url["https://peppy.bot/install.sh"]
+    archive_check = checks_by_url[archive_url]
+    # peppy.bot answers every URL of the checks with a redirect.
+    assert client.follow_redirects
+    with httpx.Client(follow_redirects=True) as reader:
+        assert install_check.probe(reader, install_check.url) is None
+        assert archive_check.probe(reader, archive_check.url) is None

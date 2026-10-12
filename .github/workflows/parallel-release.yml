@@ -5,7 +5,7 @@ name: Parallel release
 # Actions tab. Each archive builds natively on a runner of its own platform,
 # all three at once, so no runner has to start a VM:
 #
-#   prepare ──> provision (x3) ──> build (x3) ─┬─> install-test (x3) ──────┬─> publish
+#   prepare ──> provision (x3) ──> build (x3) ─┬─> install-test (x3) ──────┬─> publish ──> live-check
 #                                              └─> hub-set ──> hub-launch ─┘
 #
 # The provision jobs build what every archive embeds but only one platform
@@ -28,7 +28,8 @@ name: Parallel release
 # launchers-hub run takes up to about 75 minutes and publish waits for it, so
 # publish starts about 75 to 80 minutes after the builds end.
 # Nothing is published when a job before publish fails, or when publish fails
-# before its release step.
+# before its release step. Once publish ends, live-check reads the sites users
+# get the release from until they serve it.
 #
 # A merge into `dev` while the release runs goes into the next release. The
 # release stays the commit the run started from: publish tags that commit,
@@ -39,11 +40,12 @@ name: Parallel release
 # The Linux stages run on RunsOn runners: the x86_64 ones in the shape of the
 # cargo suites of tests.yml with the peppy-ubuntu24 image, the aarch64 ones on
 # `release-arm64` with its arm64 build, peppy-ubuntu24-aarch64 (see
-# .github/runs-on.yml). The 2 vCPU jobs, prepare, hub-set, hub-launch and
-# publish, run on demand, never spot. They cost little, and three of them act
-# outside the run: prepare can push a docs pull request branch, hub-launch
-# starts a launchers-hub run, and publish tags the hubs, creates the release
-# and moves `dev` and `main`. None of those may stop part way and start again.
+# .github/runs-on.yml). The 2 vCPU jobs, prepare, hub-set, hub-launch, publish
+# and live-check, run on demand, never spot. They cost little, and three of
+# them act outside the run: prepare can push a docs pull request branch,
+# hub-launch starts a launchers-hub run, and publish tags the hubs, creates
+# the release and moves `dev` and `main`. None of those may stop part way and
+# start again.
 # The provision and build stages run on spot in attempts 1 and 2 of the run,
 # and on demand from attempt 3 (see .github/runs-on.yml). They only build and
 # upload an artifact, so a stage that AWS interrupts can run again: once
@@ -85,7 +87,7 @@ on:
 # hours. The timeouts of prepare, provision and build are about three times
 # the slowest run of the stage in recent releases; publish has more room,
 # since a publish stopped part way has to be re-run to finish (see publish).
-# hub-set and hub-launch set their own.
+# hub-set, hub-launch and live-check set their own.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -544,3 +546,31 @@ jobs:
             wait "$publish_pid" || status=$?
           done
           exit "$status"
+
+  # Reads what users get once publish made the release live (see
+  # scripts/functions/release_live_check.py): peppy.bot/install.sh, the
+  # archive of every platform through peppy.bot's redirects to GitHub, and the
+  # notes of the release on the changelog page of docs.peppy.bot, which
+  # Railway deploys on each push to `main`. Neither site is served from this
+  # repository, so the stage reads each URL until it serves the release, and
+  # fails after 20 minutes naming each URL that does not. The release is out
+  # by then and a failure here changes nothing of it: once each URL serves the
+  # release, "Re-run failed jobs" runs this job alone again. The checkout is
+  # the release commit, whose install.sh is the one `main` holds once publish
+  # fast-forwarded it.
+  live-check:
+    needs: publish
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a/spot=false  # custom Peppy AMI
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/release-host-env
+
+      - name: Wait until users get the release
+        env:
+          TAG: ${{ inputs.tag }}
+        run: ./scripts/parallel_release.sh live-check --tag "$TAG" < /dev/null

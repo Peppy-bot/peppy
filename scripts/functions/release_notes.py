@@ -33,6 +33,17 @@ _MONTH_NAMES = [
 # docs site builds its changelog from them.
 RELEASE_NOTES_DIR = Path("docs/src/content/releases")
 
+# The docs site, and its page that lists the notes of every release.
+DOCS_SITE = "https://docs.peppy.bot"
+CHANGELOG_URL = f"{DOCS_SITE}/reference/changelog/"
+
+
+def release_page_path(tag: str) -> str:
+    """The path of the docs page of the release tag *tag*, as
+    releaseSlugFromVersion in docs/src/lib/releaseEntry.js names it: the
+    changelog links to it, and the Atom entry of the release is its URL."""
+    return f"/releases/{tag.replace('.', '-')}/"
+
 
 @dataclass(frozen=True)
 class ReleaseNotesInput:
@@ -143,7 +154,7 @@ def generate_release_notes_file(
     )
     updated_iso = updated_dt.isoformat().replace("+00:00", "Z")
 
-    entry_id = f"https://docs.peppy.bot/releases/{tag.replace('.', '-')}/"
+    entry_id = f"{DOCS_SITE}{release_page_path(tag)}"
 
     article = build_article_html(
         tag, notes_input.description, date_text, notes_input.body_html
