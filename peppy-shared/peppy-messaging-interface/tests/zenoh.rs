@@ -13,6 +13,7 @@ mod zenoh_tests {
         MessengerBackend, Payload, PresenceScope, PublisherQoS, RouterId, SubscriberBufferSizes,
         SubscriberQoS, ZenohAdapter, ZenohNetProtocol,
     };
+    use std::net::{Ipv4Addr, SocketAddr};
     use std::time::{Duration, Instant};
 
     /// Opens a fresh (non-reconnecting) publisher session against the router at
@@ -1310,6 +1311,30 @@ mod zenoh_tests {
         );
     }
 
+    /// Holds a loopback port that nothing serves for as long as the returned
+    /// socket lives, and returns the socket with its port.
+    ///
+    /// The socket is bound with `SO_REUSEADDR` and never listens. Linux refuses
+    /// every connection to the port, so the endpoint is dead, and never gives
+    /// the port to an automatic bind (port 0) or to a connect as its source
+    /// port, so no other socket takes it while the caller waits. A port given
+    /// back to the OS has no such guard: the next ephemeral listener can get
+    /// it, and every peer session binds one. A router can still listen on the
+    /// held port, because zenoh binds its listener with `SO_REUSEADDR` too, and
+    /// Linux lets two such sockets share an address and port while at most one
+    /// of them listens.
+    fn hold_dead_loopback_port() -> (tokio::net::TcpSocket, u16) {
+        let socket = tokio::net::TcpSocket::new_v4().expect("dead port socket");
+        socket
+            .set_reuseaddr(true)
+            .expect("SO_REUSEADDR on the dead port socket");
+        socket
+            .bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .expect("hold a loopback port");
+        let port = socket.local_addr().expect("held port address").port();
+        (socket, port)
+    }
+
     /// Pins the asymmetry documented on
     /// [`ZenohAdapter::with_session_reconnect`]: against an endpoint nothing is
     /// serving, the reconnecting config makes `start_session` return
@@ -1343,13 +1368,9 @@ mod zenoh_tests {
         const UNBLOCKS_WITHIN: Duration = Duration::from_secs(20);
         let _lock = ZENOH_SERIAL.lock().await;
 
-        // A port the OS just handed out and nothing holds: dead now, and
-        // bindable by the router below.
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("reserve a port")
-            .local_addr()
-            .expect("reserved port address")
-            .port();
+        // Held until the end of the test: the router below listens on this
+        // port while the socket still holds it.
+        let (_dead_port_holder, port) = hold_dead_loopback_port();
 
         let mut peer = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", port)
             .expect("peer adapter")
