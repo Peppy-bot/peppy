@@ -282,10 +282,10 @@ pub enum RootLifetime {
     /// Peppy never clears the root: a `PEPPY_HOME` root and the production
     /// root `~/.peppy`.
     Persistent,
-    /// Peppy clears the root, except its configuration and its container
-    /// build caches, at the first peppy process of each boot of the machine:
-    /// the default root of a dev build, `~/.cache/peppy-dev`. See
-    /// [`crate::per_boot_root`].
+    /// Peppy clears the root, except its configuration, its container build
+    /// caches and its node builds, at the first peppy process of each boot of
+    /// the machine: the default root of a dev build, `~/.cache/peppy-dev`.
+    /// See [`crate::per_boot_root`].
     PerBoot,
 }
 

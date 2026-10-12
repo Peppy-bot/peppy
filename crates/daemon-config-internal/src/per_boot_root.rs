@@ -20,6 +20,11 @@
 //!   the pinned downloads). Every entry in it is keyed by its content or its
 //!   version, so no boot makes one wrong, and without them the first stack
 //!   launch of a boot compiles and downloads every node from nothing.
+//! - [`PeppyDirs::built_nodes_dir`]: the node builds, one artifact per node
+//!   `name:tag`. Each artifact is keyed by the fingerprint of the staged
+//!   tree it was built from, the peppy version and the platform, so no boot
+//!   makes one wrong, and without them the first stack launch of a boot
+//!   builds every node again.
 //! - the two lock files: a lock file that is unlinked and recreated lets two
 //!   processes lock two different inodes behind the same path.
 //! - the boot record.
@@ -150,11 +155,13 @@ fn recorded_boot_id(peppy_dirs: &PeppyDirs) -> io::Result<Option<BootId>> {
 }
 
 /// The entries of the root that a clear keeps: the configuration, the
-/// container build caches, the lock files and the boot record.
-fn kept_paths(peppy_dirs: &PeppyDirs) -> [PathBuf; 5] {
+/// container build caches, the node builds, the lock files and the boot
+/// record.
+fn kept_paths(peppy_dirs: &PeppyDirs) -> [PathBuf; 6] {
     [
         peppy_dirs.conf_dir(),
         peppy_dirs.container_build_cache_dir(),
+        peppy_dirs.built_nodes_dir(),
         peppy_dirs.daemon_lock_path(),
         peppy_dirs.root_clear_lock_path(),
         peppy_dirs.root_boot_id_path(),
@@ -266,7 +273,12 @@ mod tests {
     fn assert_cleared_to_the_kept_files(peppy_dirs: &PeppyDirs) {
         assert_eq!(
             sorted_entry_names(peppy_dirs.root()),
-            ["cache", "conf", "runtime"]
+            ["built_nodes", "cache", "conf", "runtime"]
+        );
+        assert_eq!(
+            std::fs::read(peppy_dirs.built_nodes_dir().join("node_v1/0123.sif")).unwrap(),
+            vec![b'x'; 10],
+            "a node build stays as it was built"
         );
         assert!(peppy_dirs.conf_dir().join("repositories.json5").exists());
         assert_eq!(
@@ -412,7 +424,8 @@ mod tests {
             }
         );
         assert!(!peppy_dirs.root().join("daemon_state.json5").exists());
-        assert!(!peppy_dirs.built_nodes_dir().exists());
+        assert!(!peppy_dirs.git_checkouts_dir().exists());
+        assert!(peppy_dirs.built_nodes_dir().exists());
         assert!(peppy_dirs.container_build_cache_dir().exists());
     }
 }

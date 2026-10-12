@@ -534,6 +534,46 @@ mod tests {
         assert!(!again.cached, "a directory at the slot is not an artifact");
     }
 
+    /// The first peppy process of a new boot clears a per-boot root and keeps
+    /// its node builds, so a build of the same staged tree after a reboot
+    /// finds its artifact.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn an_artifact_outlives_the_clear_of_a_new_boot() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let peppy_dirs = PeppyDirs::new(root.path().join("peppy-dev"));
+        let working_dir = tempfile::tempdir().expect("tempdir");
+        populate(working_dir.path(), &["main", "manifest"]);
+        let resolve = || {
+            resolve_slot(
+                &peppy_dirs,
+                "sensor",
+                "v1",
+                working_dir.path(),
+                ArtifactKind::Container,
+            )
+            .expect("resolve slot")
+        };
+        let slot = resolve();
+        fs::create_dir_all(slot.path.parent().expect("parent")).expect("mkdir");
+        fs::write(&slot.path, b"SIF").expect("write");
+        fs::create_dir_all(peppy_dirs.runtime_config_dir()).expect("mkdir");
+        fs::write(peppy_dirs.root_boot_id_path(), "an-earlier-boot").expect("write");
+
+        let outcome = daemon_config::per_boot_root::clear_if_new_boot(&peppy_dirs).expect("clear");
+
+        assert!(
+            matches!(
+                outcome,
+                daemon_config::per_boot_root::ClearOutcome::Cleared { .. }
+            ),
+            "the root was used by an earlier boot"
+        );
+        let again = resolve();
+        assert!(again.cached, "the build is still there after the clear");
+        assert_eq!(again.path, slot.path);
+    }
+
     #[test]
     fn resolve_slot_rejects_an_unsafe_tag_before_touching_the_tree() {
         let peppy_dirs = PeppyDirs::new("/nonexistent-peppy-root");
