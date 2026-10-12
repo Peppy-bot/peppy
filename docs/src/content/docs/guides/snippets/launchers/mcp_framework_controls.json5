@@ -32,6 +32,9 @@
               options: [
                 {
                   option: "openarm_sim",
+                  // The robot model a robot of the option is, which a
+                  // client reads before it adds one.
+                  model: "openarm_v2",
                   description: "A simulated OpenArm v2 standing on the floor: two arms with grippers",
                   // A feature selects one option of one own axis of the
                   // option, here `brain=ai_brain_vla`. A client adds a robot
@@ -45,7 +48,11 @@
                     },
                   ],
                 },
-                { option: "so101_sim", description: "A simulated SO-101 clamped on the edge of a table: one arm with a gripper" },
+                {
+                  option: "so101_sim",
+                  model: "so101",
+                  description: "A simulated SO-101 clamped on the edge of a table: one arm with a gripper",
+                },
               ],
             },
           },

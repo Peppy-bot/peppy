@@ -183,5 +183,15 @@ fn docs_stack_copies_scope_parses() {
         ],
         "the scope offers the options and the features the guides describe"
     );
+    let models: Vec<(&str, &str)> = scope
+        .options()
+        .iter()
+        .map(|entry| (entry.option().as_str(), entry.model().as_str()))
+        .collect();
+    assert_eq!(
+        models,
+        [("openarm_sim", "openarm_v2"), ("so101_sim", "so101")],
+        "the scope names the robot model of each option"
+    );
     assert_eq!(scope.max_copies().get(), 4);
 }

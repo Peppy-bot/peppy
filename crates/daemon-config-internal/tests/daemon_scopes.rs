@@ -24,8 +24,8 @@ use common::words;
 const SCOPE: &str = r#"{
     max_copies: 4,
     options: [
-        { option: "openarm_sim", description: "A simulated OpenArm v2 standing on the floor" },
-        { option: "so101_sim", description: "A simulated SO-101 clamped on the edge of a table" },
+        { option: "openarm_sim", model: "openarm_v2", description: "A simulated OpenArm v2 standing on the floor" },
+        { option: "so101_sim", model: "so101", description: "A simulated SO-101 clamped on the edge of a table" },
     ],
 }"#;
 
@@ -266,13 +266,13 @@ fn set_daemon_scopes_replaces_the_scope_of_each_named_target() {
     let prepared = load(&simulation_mcp(
         r#"{ target: "framework_controls_inst",
              set_daemon_scopes: { stack: { max_copies: 1, options: [
-                 { option: "so101_sim", description: "One SO-101" } ] } } },"#,
+                 { option: "so101_sim", model: "so101", description: "One SO-101" } ] } } },"#,
         "",
     ));
     let composed = prepared.launch(&[], &[]).expect("composes");
     assert_eq!(
         instance(&composed.launcher, "framework_controls_inst").daemon_scopes["stack"],
-        json!({ "max_copies": 1, "options": [{ "option": "so101_sim", "description": "One SO-101" }] }),
+        json!({ "max_copies": 1, "options": [{ "option": "so101_sim", "model": "so101", "description": "One SO-101" }] }),
         "the later adjustment wins"
     );
     let changes: Vec<(Option<serde_json::Value>, serde_json::Value)> = composed
@@ -343,7 +343,7 @@ fn a_scope_written_through_a_copy_is_refused() {
     let guarded = simulation_mcp(
         r#"{ target: "framework_controls_inst", when: { robot: "openarm_sim" },
              set_daemon_scopes: { stack: { max_copies: 1, options: [
-                 { option: "openarm_sim", description: "One OpenArm" } ] } } },"#,
+                 { option: "openarm_sim", model: "openarm_v2", description: "One OpenArm" } ] } } },"#,
         "",
     );
     let prepared = load(&guarded);
@@ -393,7 +393,7 @@ fn a_scope_written_under_an_option_that_runs_as_copies_is_refused() {
             adjustments: [
                 { target: "framework_controls_inst",
                   set_daemon_scopes: { stack: { max_copies: 1, options: [
-                      { option: "scoping_sim", description: "One SO-101" } ] } } }
+                      { option: "scoping_sim", model: "so101", description: "One SO-101" } ] } } }
             ],
         },"#,
     );
@@ -567,7 +567,7 @@ fn every_daemon_target_takes_a_scope() {
 fn a_scope_parses_into_its_interfaces_type() {
     let (prepared, launcher) = flat(&format!(
         r#"{FRAMEWORK} {{ instance_id: "mcp_inst", daemon_scopes: {{ stack: {{
-               max_copies: 0, options: [{{ option: "a", description: "One." }}] }} }} }} ] }}"#
+               max_copies: 0, options: [{{ option: "a", model: "m", description: "One." }}] }} }} }} ] }}"#
     ));
     let refused = refusals(&prepared, &launcher);
     assert_eq!(refused.len(), 1, "{refused:?}");
@@ -586,8 +586,8 @@ fn a_stack_copies_scope_names_options_of_an_axis_that_runs_as_copies() {
     let prepared = load(&simulation_mcp(
         r#"{ target: "framework_controls_inst",
              set_daemon_scopes: { stack: { max_copies: 4, options: [
-                 { option: "openarm_sim", description: "An OpenArm" },
-                 { option: "robot_control", description: "Not a robot" } ] } } },"#,
+                 { option: "openarm_sim", model: "openarm_v2", description: "An OpenArm" },
+                 { option: "robot_control", model: "m", description: "Not a robot" } ] } } },"#,
         "",
     ));
     let composed = prepared.launch(&[], &[]).expect("composes");
@@ -791,8 +791,8 @@ fn featured_launcher(entry: &str, features: &[String], constraints: &str) -> Pre
             r#"{{ target: "framework_controls_inst", set_daemon_scopes: {{ stack: {{
                 max_copies: 4,
                 options: [
-                    {{ option: "openarm_sim", description: "An OpenArm" }},
-                    {{ option: "featured_sim", description: "A featured robot",
+                    {{ option: "openarm_sim", model: "openarm_v2", description: "An OpenArm" }},
+                    {{ option: "featured_sim", model: "featured", description: "A featured robot",
                        features: [{}] }},
                 ] }} }} }},"#,
             features.join(", ")
@@ -865,7 +865,7 @@ fn a_feature_is_refused_for_what_its_option_declares() {
         &format!(
             r#"{{ target: "framework_controls_inst", set_daemon_scopes: {{ stack: {{
                 max_copies: 4,
-                options: [{{ option: "so101_sim", description: "An SO-101",
+                options: [{{ option: "so101_sim", model: "so101", description: "An SO-101",
                              features: [{}] }}] }} }} }},"#,
             feature("ai_brain", "brain", "ai_brain_vla")
         ),
@@ -1000,7 +1000,7 @@ fn a_join_runs_no_trial() {
 
     let (prepared, launcher) = flat(&format!(
         r#"{FRAMEWORK} {{ instance_id: "mcp_inst", daemon_scopes: {{ stack: {{
-               max_copies: 0, options: [{{ option: "a", description: "One." }}] }} }} }} ] }}"#
+               max_copies: 0, options: [{{ option: "a", model: "m", description: "One." }}] }} }} }} ] }}"#
     ));
     let refused = check(
         &prepared,
@@ -1116,10 +1116,10 @@ fn two_scopes_give_one_joinable_node_per_source_with_every_option_that_brings_it
             {FRAMEWORK}
                 {{ instance_id: "openarm_controls_inst", arguments: {{ port: 8903 }},
                    daemon_scopes: {{ stack: {{ max_copies: 1, options: [
-                       {{ option: "openarm_sim", description: "An OpenArm" }} ] }} }} }},
+                       {{ option: "openarm_sim", model: "openarm_v2", description: "An OpenArm" }} ] }} }} }},
                 {{ instance_id: "so101_controls_inst", arguments: {{ port: 8904 }},
                    daemon_scopes: {{ stack: {{ max_copies: 1, options: [
-                       {{ option: "so101_sim", description: "An SO-101" }} ] }} }} }},
+                       {{ option: "so101_sim", model: "so101", description: "An SO-101" }} ] }} }} }},
             ] }},
         ],
     }}"#

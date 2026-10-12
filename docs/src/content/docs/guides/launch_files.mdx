@@ -348,7 +348,7 @@ The launch, each join and [`peppy stack resolve`](#auditing-a-composed-launch) p
 - `daemon_scopes` on an instance that serves no daemon target;
 - a scope key that is not a daemon target of the instance's exposures; the refusal says so when the key is a contract target, which takes `links`;
 - a daemon target with no scope;
-- a scope that does not parse into the type of its interface, for example a [`stack_copies` scope](/advanced_guides/mcp/#scopes) with no option, with `max_copies` 0, with `features: []`, or with two features of one option on the same axis;
+- a scope that does not parse into the type of its interface, for example a [`stack_copies` scope](/advanced_guides/mcp/#scopes) with no option, with an option that names no `model`, with `max_copies` 0, with `features: []`, or with two features of one option on the same axis;
 - an instance that serves a daemon target and does not run on the coordinator: one that declares `core_node`, or one of a copy;
 - a `links` key that names a daemon target: the refusal says that the target takes a scope.
 
