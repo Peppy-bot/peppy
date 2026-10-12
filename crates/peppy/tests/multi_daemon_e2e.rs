@@ -5909,12 +5909,12 @@ async fn launch_parts_fleet(daemon: &Daemon, extra: &[&str]) {
     require_success(daemon.peppy(&args).await, "launch the parts fleet");
 }
 
-/// The `stack list` line of copy `name`: `Copy NAME of OPTION on MACHINE:
-/// WORDS`.
+/// The `stack list` line of copy `name`, without the borders of the box
+/// that holds it: `Copy NAME of OPTION on MACHINE: WORDS`.
 fn copy_line<'a>(listed: &'a str, name: &str) -> &'a str {
     listed
         .lines()
-        .map(str::trim)
+        .map(|line| line.trim().trim_matches('│').trim())
         .find(|line| line.starts_with(&format!("Copy {name} of ")))
         .unwrap_or_else(|| panic!("no line of copy `{name}`:\n{listed}"))
 }

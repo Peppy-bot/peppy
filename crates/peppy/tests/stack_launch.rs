@@ -3433,8 +3433,8 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
     .expect_err("two options on one axis must be refused")
     .to_string();
     assert!(
-        msg.contains("robot") && msg.contains("`mujoco`") && msg.contains("`real`"),
-        "the refusal should name the axis and both options: {msg}"
+        msg.contains("axis `robot`") && msg.contains("(`mujoco`, `robot=real`)"),
+        "the refusal should name the axis and both words as they are written: {msg}"
     );
 
     // A selection the launcher's `constraints` refuse is caught by the same
