@@ -1,8 +1,10 @@
 //! The add-and-build phase of a stack change: every node of the plan present
-//! and built on each machine that runs part of it, before any instance starts.
+//! and built on each machine that runs part of it, and every joinable node of
+//! a launch on the coordinator, before any instance starts.
 
 use super::federated::RemoteGoalFailure;
 use super::feedback::publish_stdout;
+use super::joinable::JoinableBuild;
 use super::orchestrate::{add_node_directly, build_node_directly};
 use super::{
     HostedNode, NodeKey, PhaseChange, PhaseGoal, PlannedDeployment, UnresolvedAdd, federated,
@@ -109,9 +111,11 @@ const MAX_CONCURRENT_LOCAL_BUILDS: usize = 2;
 /// where a launch spends nearly all of its wall clock, so serializing across
 /// machines would make a two-machine launch twice as slow for no invariant.
 /// Within a group the nodes are added in dependency order, the order a
-/// single-machine launch starts them in. This machine then builds what it
-/// added, [`MAX_CONCURRENT_LOCAL_BUILDS`] at a time; a peer builds each node
-/// right after its add, as its daemon admits one build at a time.
+/// single-machine launch starts them in. The coordinator's group then adds
+/// each joinable node of a launch that the launch does not already add there.
+/// This machine then builds what it added, [`MAX_CONCURRENT_LOCAL_BUILDS`] at
+/// a time, in the order it added them; a peer builds each node right after
+/// its add, as its daemon admits one build at a time.
 ///
 /// `unresolved` collects the nodes whose add on a peer outlived its budget:
 /// whether each landed is known only by asking that peer.
@@ -134,19 +138,12 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
     )
     .await;
 
-    let mut by_core_node: BTreeMap<CoreNodeName, Vec<&NodeKey>> = BTreeMap::new();
-    for key in ordered {
-        let Some(item) = planned_by_key.get(key) else {
-            continue;
-        };
-        for host in hosts_of(item, placements) {
-            by_core_node.entry(host).or_default().push(key);
-        }
-    }
-
-    let groups = futures::future::join_all(by_core_node.iter().map(|(core_node, keys)| {
-        add_and_build_group(ctx, phase, change, core_node, keys, planned_by_key)
-    }))
+    let by_core_node = add_groups(change, ordered, planned_by_key, placements);
+    let groups = futures::future::join_all(
+        by_core_node
+            .iter()
+            .map(|(core_node, nodes)| add_and_build_group(ctx, phase, change, core_node, nodes)),
+    )
     .await;
 
     let mut failure: Option<String> = None;
@@ -168,6 +165,93 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
     }
 }
 
+/// The nodes each machine adds and builds for the change, each group in the
+/// order the machine adds them: every machine that hosts an instance of a
+/// node of `ordered` adds that node, in dependency order, and the
+/// coordinator then adds each joinable node of the change that it does not
+/// already add, so a node is added and built once per machine.
+fn add_groups<'a>(
+    change: PhaseChange<'a>,
+    ordered: &[NodeKey],
+    planned_by_key: &'a HashMap<NodeKey, PlannedDeployment>,
+    placements: &daemon_config::launcher::Placements,
+) -> BTreeMap<CoreNodeName, Vec<GroupNode<'a>>> {
+    let mut by_core_node: BTreeMap<CoreNodeName, Vec<GroupNode<'a>>> = BTreeMap::new();
+    for key in ordered {
+        let Some(item) = planned_by_key.get(key) else {
+            continue;
+        };
+        for host in hosts_of(item, placements) {
+            by_core_node
+                .entry(host)
+                .or_default()
+                .push(GroupNode::planned(item));
+        }
+    }
+    let joinable = change.joinable_builds();
+    if joinable.is_empty() {
+        return by_core_node;
+    }
+    let coordinator = by_core_node
+        .entry(placements.coordinator_name().clone())
+        .or_default();
+    for build in joinable {
+        let key = build.planned.key();
+        if !coordinator.iter().any(|node| node.key == key) {
+            coordinator.push(GroupNode::joinable(build));
+        }
+    }
+    by_core_node
+}
+
+/// One node of a machine's add-and-build group.
+struct GroupNode<'a> {
+    key: NodeKey,
+    item: &'a PlannedDeployment,
+    /// What a joinable node is built for; `None` for a node the change runs.
+    purpose: Option<String>,
+}
+
+impl<'a> GroupNode<'a> {
+    fn planned(item: &'a PlannedDeployment) -> Self {
+        Self {
+            key: item.key(),
+            item,
+            purpose: None,
+        }
+    }
+
+    fn joinable(build: &'a JoinableBuild) -> Self {
+        Self {
+            key: build.planned.key(),
+            item: &build.planned,
+            purpose: Some(build.purpose()),
+        }
+    }
+
+    /// The node's add line: its label, its machine and, for a joinable
+    /// node, what it is built for.
+    fn add_line(&self, core_node: &CoreNodeName) -> String {
+        match &self.purpose {
+            None => format!("Adding {} on `{core_node}`", self.key.label()),
+            Some(purpose) => format!("Adding {} on `{core_node}` {purpose}", self.key.label()),
+        }
+    }
+}
+
+/// The failure of `step` ("add" or "build") of the node `label`. A joinable
+/// node's failure says what it was built for and names the flag that skips
+/// it.
+fn node_failure(step: &str, label: &str, purpose: Option<&str>, reason: &str) -> String {
+    match purpose {
+        None => format!("failed to {step} node {label}: {reason}"),
+        Some(purpose) => format!(
+            "failed to {step} node {label} {purpose}: {reason}; `--no-prebuild` skips the nodes \
+             built for stack joins"
+        ),
+    }
+}
+
 /// What one machine's add-and-build group produced.
 #[derive(Default)]
 struct GroupOutcome {
@@ -182,32 +266,27 @@ async fn add_and_build_group(
     phase: &PhaseGoal,
     change: PhaseChange<'_>,
     core_node: &CoreNodeName,
-    keys: &[&NodeKey],
-    planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+    nodes: &[GroupNode<'_>],
 ) -> GroupOutcome {
     let mut outcome = GroupOutcome::default();
     let mut added_here = Vec::new();
 
-    for key in keys {
-        let Some(item) = planned_by_key.get(key) else {
-            continue;
-        };
-
-        if change.reuses(key, core_node.as_str()) {
+    for node in nodes {
+        if change.reuses(&node.key, core_node.as_str()) {
             continue;
         }
 
         publish_stdout(
             ctx,
-            format!("Adding {} on `{core_node}`", key.label()),
+            node.add_line(core_node),
             LaunchFeedbackStep::AddingNode,
         )
         .await;
 
         let added = if core_node.as_str() == ctx.bound_core_node.as_str() {
-            add_locally(ctx, phase, key, item, &mut outcome).await
+            add_locally(ctx, phase, node, &mut outcome).await
         } else {
-            add_and_build_remotely(ctx, phase, core_node, key, item, &mut outcome)
+            add_and_build_remotely(ctx, phase, core_node, &node.key, node.item, &mut outcome)
                 .await
                 .map(|()| None)
         };
@@ -230,6 +309,8 @@ struct AddedNode {
     label: String,
     node_name: String,
     node_tag: String,
+    /// What a joinable node is built for; `None` for a node the change runs.
+    purpose: Option<String>,
 }
 
 /// Adds one node on this machine. Returns the node to build, or `None` for
@@ -237,10 +318,10 @@ struct AddedNode {
 async fn add_locally(
     ctx: &StackChangeContext,
     phase: &PhaseGoal,
-    key: &NodeKey,
-    item: &PlannedDeployment,
+    node: &GroupNode<'_>,
     outcome: &mut GroupOutcome,
 ) -> std::result::Result<Option<AddedNode>, String> {
+    let GroupNode { key, item, purpose } = node;
     // The identical source and pins a peer would receive: a launch adds
     // one set of bytes wherever a deployment lands, so the local arm
     // must not get to differ from the dispatched one. The environment is
@@ -264,7 +345,8 @@ async fn add_locally(
         });
     }
 
-    let added = result.map_err(|reason| format!("failed to add node {}: {reason}", key.label()))?;
+    let added =
+        result.map_err(|reason| node_failure("add", &key.label(), purpose.as_deref(), &reason))?;
 
     if is_built_in(item) {
         return Ok(None);
@@ -273,6 +355,7 @@ async fn add_locally(
         label: key.label(),
         node_name: added.node_name.unwrap_or_else(|| key.name.clone()),
         node_tag: added.node_tag.unwrap_or_else(|| key.tag.clone()),
+        purpose: purpose.clone(),
     }))
 }
 
@@ -382,7 +465,7 @@ where
         }),
         failure: result
             .err()
-            .map(|err| format!("failed to build node {}: {err}", node.label)),
+            .map(|err| node_failure("build", &node.label, node.purpose.as_deref(), &err)),
     }
 }
 
@@ -491,6 +574,7 @@ mod tests {
             label: format!("{name}:v1"),
             node_name: name.to_owned(),
             node_tag: "v1".to_owned(),
+            purpose: None,
         }
     }
 
@@ -697,6 +781,122 @@ mod tests {
 
         assert_eq!(outcome.failure, None);
         assert_eq!(outcome.build_logs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_joinable_build_failure_says_what_the_node_is_built_for_and_how_to_skip_it() {
+        let node = AddedNode {
+            purpose: Some("for stack joins of `so101_sim`".to_owned()),
+            ..added("so101_backbone")
+        };
+        let mut outcome = GroupOutcome::default();
+
+        build_added_nodes(
+            std::slice::from_ref(&node),
+            "here",
+            2,
+            |_| async { (Err("cargo failed".to_owned()), None) },
+            &mut outcome,
+        )
+        .await;
+
+        assert_eq!(
+            outcome.failure.as_deref(),
+            Some(
+                "failed to build node so101_backbone:v1 for stack joins of `so101_sim`: cargo \
+                 failed; `--no-prebuild` skips the nodes built for stack joins"
+            )
+        );
+        assert_eq!(
+            node_failure("add", "waldo:v1", None, "no such node"),
+            "failed to add node waldo:v1: no such node",
+            "a node the change runs names no flag"
+        );
+    }
+
+    fn name(value: &str) -> config::runtime::Name {
+        config::runtime::Name::new(value).expect("a name")
+    }
+
+    /// The add line of every node of each machine's group, by machine.
+    fn add_lines(
+        groups: &BTreeMap<CoreNodeName, Vec<GroupNode<'_>>>,
+    ) -> Vec<(String, Vec<String>)> {
+        groups
+            .iter()
+            .map(|(core_node, nodes)| {
+                (
+                    core_node.to_string(),
+                    nodes.iter().map(|node| node.add_line(core_node)).collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// The coordinator adds each joinable node after the launch's own nodes
+    /// there, and once: a node the launch adds on the coordinator is not
+    /// added again, and a node the launch places only on another machine is
+    /// added on the coordinator too.
+    #[test]
+    fn the_coordinator_adds_each_joinable_node_it_does_not_already_add() {
+        use crate::services::stack::fixtures::{placements_with, planned_deployment};
+        let engine = planned_deployment("waldo", &[("waldo_inst", None)]);
+        let shared = planned_deployment("initializer", &[("alpha_init_inst", None)]);
+        let elsewhere = planned_deployment("camera", &[("alpha_cam_inst", None)]);
+        let brain = planned_deployment("brain", &[("composition_check_brain_inst", None)]);
+        let placements = placements_with("cn-desk", &[("alpha_cam_inst", "cn-gpu")]);
+        let ordered = [engine.key(), shared.key(), elsewhere.key()];
+        let planned_by_key: HashMap<NodeKey, PlannedDeployment> =
+            [engine, shared.clone(), elsewhere.clone()]
+                .into_iter()
+                .map(|item| (item.key(), item))
+                .collect();
+        let builds = [
+            JoinableBuild::new(shared, vec![name("openarm_sim"), name("so101_sim")]),
+            JoinableBuild::new(elsewhere, vec![name("openarm_sim")]),
+            JoinableBuild::new(brain, vec![name("openarm_sim")]),
+        ];
+        let copies = daemon_config::launcher::CopyMembership::default();
+        let launch = PhaseChange::Launch {
+            copies: &copies,
+            joinable: &builds,
+        };
+
+        let groups = add_groups(launch, &ordered, &planned_by_key, &placements);
+
+        assert_eq!(
+            add_lines(&groups),
+            [
+                (
+                    "cn-desk".to_owned(),
+                    vec![
+                        "Adding waldo:v1 on `cn-desk`".to_owned(),
+                        "Adding initializer:v1 on `cn-desk`".to_owned(),
+                        "Adding camera:v1 on `cn-desk` for stack joins of `openarm_sim`".to_owned(),
+                        "Adding brain:v1 on `cn-desk` for stack joins of `openarm_sim`".to_owned(),
+                    ]
+                ),
+                (
+                    "cn-gpu".to_owned(),
+                    vec!["Adding camera:v1 on `cn-gpu`".to_owned()]
+                ),
+            ]
+        );
+
+        // With no joinable node, a coordinator that hosts nothing adds
+        // nothing.
+        let launch = PhaseChange::Launch {
+            copies: &copies,
+            joinable: &[],
+        };
+        let groups = add_groups(launch, &ordered[2..], &planned_by_key, &placements);
+        assert_eq!(
+            add_lines(&groups),
+            [(
+                "cn-gpu".to_owned(),
+                vec!["Adding camera:v1 on `cn-gpu`".to_owned()]
+            )]
+        );
     }
 
     #[test]

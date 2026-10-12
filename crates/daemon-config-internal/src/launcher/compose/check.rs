@@ -68,7 +68,7 @@ pub(super) enum TrialRefusal {
 /// combined with the stack, and attached to `existing`, the stack's flat
 /// document. `repo index --check` tries every own-axis selection of every
 /// copy option this way, and a launch's scope checks every feature set.
-/// Returns the copy's selection.
+/// Returns the composed copy.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn compose_trial_join(
     prepared: &PreparedLauncher,
@@ -80,7 +80,7 @@ pub(super) fn compose_trial_join(
     loaded: &LoadedOption,
     name: &CopyName,
     settings: &super::super::composition::CopySettings<'_>,
-) -> Result<UnitSelection, TrialRefusal> {
+) -> Result<ComposedCopy, TrialRefusal> {
     let copy = compose_copy(
         prepared,
         stack,
@@ -107,7 +107,7 @@ pub(super) fn compose_trial_join(
     )
     .map_err(|error| TrialRefusal::Composed(Box::new(error)))?;
     attach(existing, &copy).map_err(|error| TrialRefusal::Joined(Box::new(error)))?;
-    Ok(copy.selection)
+    Ok(copy)
 }
 
 /// One option of a repeatable axis, as the check enumerates copies of it.

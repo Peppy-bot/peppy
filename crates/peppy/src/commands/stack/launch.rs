@@ -218,6 +218,7 @@ where
         joins,
         timeouts,
         rebuild,
+        no_prebuild,
     } = args;
     let words = with.words;
     let joins = joins.joins;
@@ -231,7 +232,8 @@ where
         words,
         joins,
     )?
-    .with_rebuild(rebuild);
+    .with_rebuild(rebuild)
+    .with_prebuild(!no_prebuild);
     // Pre-validate the launcher config locally for `Fs` so the user gets a fast, precise parse
     // error before the daemon round-trip. `Repository` resolution lives daemon-side, so we
     // skip the local check rather than duplicate the lookup here. Only the verdict is

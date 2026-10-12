@@ -81,6 +81,12 @@ struct LaunchGoal {
     # option under that name, its base on the copy's machine, composed,
     # validated and started with the launch.
     joins @12 :List(CopyReference);
+    # Resolve, add and build on the coordinator every joinable node: each
+    # node that a join of an option of a `stack_copies` scope of the launch
+    # can bring, so that such a join on the coordinator builds nothing.
+    # `--no-prebuild` sets it to false: the launch then resolves and builds
+    # only the nodes it runs. Absent decodes as true.
+    prebuild @13 :Bool = true;
 }
 
 # The machine a copy, a part of a copy or a core node link runs on. `self`

@@ -155,6 +155,12 @@ pub struct LauncherArgs {
     /// each node build of the launch, on this daemon and on every peer.
     #[arg(long)]
     pub rebuild: bool,
+    /// Resolve and build only the nodes the launch runs. Without it, the
+    /// launch also builds on this daemon each node that a join of an
+    /// option of a `stack_copies` scope can bring, so that such a join
+    /// here builds nothing.
+    #[arg(long)]
+    pub no_prebuild: bool,
 }
 
 /// The phase budgets a launch or a join runs under, each idle budget a

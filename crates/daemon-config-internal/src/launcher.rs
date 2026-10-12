@@ -3,6 +3,7 @@ mod clocks;
 mod compose;
 mod composition;
 mod daemon_scopes;
+mod joinable;
 mod links;
 mod observations;
 mod pairings;
@@ -20,11 +21,12 @@ pub use clocks::{
 pub use compose::{
     AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyInstance,
     CopyMembership, CopyRecord, JoinRequest, PartMachines, PartRefusal, PreparedLauncher,
-    RunningStack, SkipReason, SkippedAdjustment, TrialStack, UnitSelection, WrittenWord,
+    RunningStack, SkipReason, SkippedAdjustment, TrialCopy, TrialStack, UnitSelection, WrittenWord,
     check_composition,
 };
 pub use composition::{ComponentAxis, LauncherFragmentParser, OptionSpec};
 pub use daemon_scopes::{DaemonScopeError, DaemonScopeRefusals, ScopeCheck, check_daemon_scopes};
+pub use joinable::{JoinableNode, JoinableNodes};
 pub use links::validate_link_plan;
 pub use observations::PlannedObservation;
 pub use pairings::{

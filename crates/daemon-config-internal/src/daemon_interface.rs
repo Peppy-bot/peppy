@@ -13,7 +13,7 @@
 mod stack_copies;
 
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
-use crate::internal::launcher::{PreparedLauncher, UnitSelection};
+use crate::internal::launcher::{JoinableNodes, PreparedLauncher, UnitSelection};
 use peppy_mcp_catalog::{
     DaemonInterfaceRef, DeclaredMembers, ExposureBundle, McpExposure, ResolvedInterface,
 };
@@ -202,12 +202,13 @@ impl DaemonScope {
 
     /// The checks a launch and `peppy stack resolve` run on the scope
     /// against the launcher that gives it and the stack `selection`
-    /// resolves: one refusal per problem.
+    /// resolves: one refusal per problem. When the scope holds, returns the
+    /// nodes that a join the scope allows can bring.
     pub fn check_launch(
         &self,
         prepared: &PreparedLauncher,
         selection: &UnitSelection,
-    ) -> Vec<String> {
+    ) -> Result<JoinableNodes, Vec<String>> {
         match self {
             Self::StackCopies(scope) => scope.check_launch(prepared, selection),
         }

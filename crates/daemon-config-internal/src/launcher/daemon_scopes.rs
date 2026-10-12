@@ -11,12 +11,13 @@
 //! stack resolve` runs them with a cold nodes cache too.
 //!
 //! The launch and `peppy stack resolve` also hold each scope against the
-//! launcher and the stack selection ([`ScopeCheck::Launch`]). A join runs
-//! the rules of each instance alone ([`ScopeCheck::Join`]): the launcher and
-//! the stack selection of a launch do not change, so a join cannot change
-//! that verdict.
+//! launcher and the stack selection ([`ScopeCheck::Launch`]), which gives the
+//! joinable nodes of the launch. A join runs the rules of each instance alone
+//! ([`ScopeCheck::Join`]): the launcher and the stack selection of a launch
+//! do not change, so a join cannot change that verdict.
 
 use super::compose::{CopyMembership, PreparedLauncher, UnitSelection};
+use super::joinable::JoinableNodes;
 use super::types::Deployment;
 use crate::internal::daemon_interface::DaemonInterface;
 use crate::internal::mcp_deployment::DeploymentTargets;
@@ -129,6 +130,14 @@ pub enum ScopeCheck<'a> {
     Join,
 }
 
+/// What the checks of the daemon scopes of one run gather: every refusal,
+/// and the joinable nodes of the scopes that hold.
+#[derive(Default)]
+struct ScopeVerdicts {
+    refusals: Vec<DaemonScopeError>,
+    joinable: JoinableNodes,
+}
+
 /// Checks the daemon scopes of the flat launcher whose deployments
 /// `deployments` lists, each beside the targets its exposures serve (empty
 /// for a node deployment). `prepared` is the launcher the stack was composed
@@ -136,22 +145,26 @@ pub enum ScopeCheck<'a> {
 /// as copies and the copies they compose, for `stack_copies`); `copies`
 /// tells which instances belong to a copy. Every refusal is reported at
 /// once.
+///
+/// When the scopes hold, returns the joinable nodes of the launch: the union
+/// of the nodes that a join each scope allows can bring. A join runs no check
+/// against the launcher, so it gets none.
 pub fn check_daemon_scopes<'a>(
     prepared: &PreparedLauncher,
     deployments: impl IntoIterator<Item = (&'a Deployment, &'a DeploymentTargets)>,
     copies: &CopyMembership,
     check: ScopeCheck<'_>,
-) -> Result<(), DaemonScopeRefusals> {
-    let mut refusals = Vec::new();
+) -> Result<JoinableNodes, DaemonScopeRefusals> {
+    let mut verdicts = ScopeVerdicts::default();
     for (deployment, targets) in deployments {
         for instance in &deployment.instances {
-            check_instance(prepared, instance, targets, copies, check, &mut refusals);
+            check_instance(prepared, instance, targets, copies, check, &mut verdicts);
         }
     }
-    if refusals.is_empty() {
-        Ok(())
+    if verdicts.refusals.is_empty() {
+        Ok(verdicts.joinable)
     } else {
-        Err(DaemonScopeRefusals(refusals))
+        Err(DaemonScopeRefusals(verdicts.refusals))
     }
 }
 
@@ -161,8 +174,9 @@ fn check_instance(
     targets: &DeploymentTargets,
     copies: &CopyMembership,
     check: ScopeCheck<'_>,
-    refusals: &mut Vec<DaemonScopeError>,
+    verdicts: &mut ScopeVerdicts,
 ) {
+    let refusals = &mut verdicts.refusals;
     let id = instance.instance_id.as_str();
     let Some(first_target) = targets.daemon.keys().next() else {
         if !instance.daemon_scopes.is_empty() {
@@ -219,13 +233,14 @@ fn check_instance(
             *interface,
             instance.daemon_scopes.get(daemon_target),
             check,
-            refusals,
+            verdicts,
         );
     }
 }
 
 /// One daemon target's scope: present, parsed into its interface's type,
-/// and, at a launch, held to the interface's checks against the launcher.
+/// and, at a launch, held to the interface's checks against the launcher,
+/// whose joinable nodes join those of the other scopes.
 fn check_scope(
     prepared: &PreparedLauncher,
     instance: &str,
@@ -233,8 +248,9 @@ fn check_scope(
     interface: DaemonInterface,
     scope: Option<&serde_json::Value>,
     check: ScopeCheck<'_>,
-    refusals: &mut Vec<DaemonScopeError>,
+    verdicts: &mut ScopeVerdicts,
 ) {
+    let refusals = &mut verdicts.refusals;
     let Some(scope) = scope else {
         refusals.push(DaemonScopeError::MissingScope {
             instance: instance.to_owned(),
@@ -258,15 +274,15 @@ fn check_scope(
     let ScopeCheck::Launch(selection) = check else {
         return;
     };
-    refusals.extend(
-        parsed
-            .check_launch(prepared, selection)
-            .into_iter()
-            .map(|reason| DaemonScopeError::ScopeRefusedByLauncher {
+    match parsed.check_launch(prepared, selection) {
+        Ok(joinable) => verdicts.joinable.merge(joinable),
+        Err(reasons) => refusals.extend(reasons.into_iter().map(|reason| {
+            DaemonScopeError::ScopeRefusedByLauncher {
                 instance: instance.to_owned(),
                 daemon_target: daemon_target.to_owned(),
                 interface: interface.label(),
                 reason,
-            }),
-    );
+            }
+        })),
+    }
 }

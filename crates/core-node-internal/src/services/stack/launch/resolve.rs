@@ -352,18 +352,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
         return Ok(Vec::new());
     }
 
-    // The node index, loaded ONCE for the whole launch. Every deployment
-    // resolves against the same one, and every materialization shares it
-    // rather than copying it, so a launch pays one read of a file that lists
-    // every node this machine's repositories publish.
-    let node_entries = match repo_cache::load_node_cache(&ctx.peppy_dirs) {
-        Ok(entries) => Arc::new(entries),
-        Err(e) => {
-            let msg = format!("failed to load nodes cache: {e}");
-            publish_error(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return Err(msg);
-        }
-    };
+    let node_entries = load_node_index(ctx).await?;
 
     let mut planned: Vec<PlannedDeployment> = Vec::new();
     let mut planning_errors: Vec<String> = Vec::new();
@@ -378,54 +367,20 @@ pub(in crate::services::stack) async fn resolve_deployments(
             continue;
         }
 
-        // Resolution runs partly on blocking threads; progress lines stream
-        // through a per-deployment forwarder (the same seam
-        // `resolve_launcher_origin` uses) so a slow clone shows live progress
-        // instead of a silent stretch that trips the CLI watchdog. The
-        // forwarder is drained before the "resolved" line below is published,
-        // so each deployment's progress lines come before its "resolved"
-        // line. Single channel, single consumer: lines stay in emission order.
-        let (feedback_tx, forwarder) = spawn_feedback_forwarder(
-            &ctx.feedback_publisher,
-            LaunchFeedbackStep::LauncherStep,
-            &ctx.log,
-            None,
-            None,
-        );
-        let resolved = resolve_one(ctx, &deployment, placements, &node_entries, &feedback_tx).await;
-        drop(feedback_tx);
-        let _ = forwarder.await;
-        let ResolvedDeployment {
-            config,
-            root,
-            closure_pins,
-            pin_manifests,
-            addressing,
-            targets,
-        } = match resolved {
-            Ok(resolved) => resolved,
+        let item = match resolve_planned(ctx, deployment, placements, &node_entries).await {
+            Ok(item) => item,
             Err(err) => {
                 planning_errors.push(err);
                 continue;
             }
         };
-        let config_sha256 = match crate::services::node::manifest_fingerprint(&config) {
-            Ok(fingerprint) => fingerprint,
-            Err(err) => {
-                planning_errors.push(err);
-                continue;
-            }
-        };
-
-        let node_name = config.manifest.name.as_str().to_owned();
-        let node_tag = config.manifest.tag.clone();
 
         // The resolved identity is the source's own: the cache matches
         // `name:tag` exactly and `materialize_pinned_node` refuses bytes
         // declaring anything else, so there is one identity to name here.
-        let key = NodeKey::new(&node_name, &node_tag);
+        let key = item.key();
         if !planned_keys.insert(key.clone()) {
-            planning_errors.push(match &deployment.source {
+            planning_errors.push(match &item.deployment.source {
                 DeploymentSource::Node { .. } => {
                     format!("duplicate deployment for node {}", key.label())
                 }
@@ -435,7 +390,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
                 DeploymentSource::Exposures { .. } => format!(
                     "duplicate deployment: {} are already deployed as {}; to serve one set on \
                      several hosts, declare one deployment with one instance per host",
-                    deployment.source.label(),
+                    item.deployment.source.label(),
                     key.label()
                 ),
             });
@@ -449,18 +404,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
         )
         .await;
 
-        planned.push(PlannedDeployment {
-            deployment,
-            node_name,
-            node_tag,
-            config,
-            config_sha256,
-            root,
-            closure_pins,
-            pin_manifests,
-            addressing,
-            targets,
-        });
+        planned.push(item);
     }
 
     if !planning_errors.is_empty() {
@@ -470,6 +414,74 @@ pub(in crate::services::stack) async fn resolve_deployments(
     }
 
     Ok(planned)
+}
+
+/// The node index, loaded ONCE for a whole resolution. Every deployment
+/// resolves against the same one, and every materialization shares it
+/// rather than copying it, so a resolution pays one read of a file that
+/// lists every node this machine's repositories publish. A failure is
+/// published as the change's error.
+pub(in crate::services::stack) async fn load_node_index(
+    ctx: &StackChangeContext,
+) -> std::result::Result<Arc<Vec<repo_cache::NodeCacheEntry>>, String> {
+    match repo_cache::load_node_cache(&ctx.peppy_dirs) {
+        Ok(entries) => Ok(Arc::new(entries)),
+        Err(e) => {
+            let msg = format!("failed to load nodes cache: {e}");
+            publish_error(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+            Err(msg)
+        }
+    }
+}
+
+/// Resolves one deployment to the node it runs, with that node's pins and
+/// the fingerprint of its manifest. The doc pins come later, from
+/// [`mint_doc_pins`].
+///
+/// Resolution runs partly on blocking threads; progress lines stream
+/// through a per-deployment forwarder (the same seam
+/// `resolve_launcher_origin` uses) so a slow clone shows live progress
+/// instead of a silent stretch that trips the CLI watchdog. The forwarder is
+/// drained before this returns, so the deployment's progress lines come
+/// before any line its caller publishes about it. Single channel, single
+/// consumer: lines stay in emission order.
+pub(in crate::services::stack) async fn resolve_planned(
+    ctx: &StackChangeContext,
+    deployment: Deployment,
+    placements: &Placements,
+    node_entries: &Arc<Vec<repo_cache::NodeCacheEntry>>,
+) -> std::result::Result<PlannedDeployment, String> {
+    let (feedback_tx, forwarder) = spawn_feedback_forwarder(
+        &ctx.feedback_publisher,
+        LaunchFeedbackStep::LauncherStep,
+        &ctx.log,
+        None,
+        None,
+    );
+    let resolved = resolve_one(ctx, &deployment, placements, node_entries, &feedback_tx).await;
+    drop(feedback_tx);
+    let _ = forwarder.await;
+    let ResolvedDeployment {
+        config,
+        root,
+        closure_pins,
+        pin_manifests,
+        addressing,
+        targets,
+    } = resolved?;
+    let config_sha256 = crate::services::node::manifest_fingerprint(&config)?;
+    Ok(PlannedDeployment {
+        deployment,
+        node_name: config.manifest.name.as_str().to_owned(),
+        node_tag: config.manifest.tag.clone(),
+        config,
+        config_sha256,
+        root,
+        closure_pins,
+        pin_manifests,
+        addressing,
+        targets,
+    })
 }
 
 /// What one resolved deployment contributes to the plan, before its identity
@@ -616,37 +628,7 @@ pub(in crate::services::stack) async fn mint_doc_pins(
     planned: &mut [PlannedDeployment],
     placements: &Placements,
 ) -> std::result::Result<(), String> {
-    // Every deployment mints against ONE load of the contract and pairing
-    // caches, on one blocking thread: both are read and parsed per load, and
-    // a launch with N deployments otherwise paid N of each, sequentially, on
-    // the critical path.
-    let collected = Arc::new(Mutex::new(Vec::<String>::new()));
-    let sets: Vec<Vec<config::node::Manifest>> = planned
-        .iter()
-        .map(|item| item.pin_manifests.clone())
-        .collect();
-    let minted = pins::doc_pins_for_manifest_sets_async(&ctx.peppy_dirs, sets, {
-        let sink = Arc::clone(&collected);
-        Arc::new(move |report: Report<'_>| {
-            if let Report::Step(line) = report {
-                sink.lock().push(line.to_owned());
-            }
-        })
-    })
-    .await;
-    let captured: Vec<String> = std::mem::take(&mut *collected.lock());
-    for line in captured {
-        publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
-    }
-
-    let minted = match minted {
-        Ok(minted) => minted,
-        Err(reason) => {
-            publish_error(ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return Err(reason);
-        }
-    };
-
+    let minted = mint_doc_pins_of(ctx, planned).await?;
     let mut problems: Vec<String> = Vec::new();
     for (item, minted) in planned.iter_mut().zip(minted) {
         let label = item.deployment.source.label();
@@ -671,6 +653,42 @@ pub(in crate::services::stack) async fn mint_doc_pins(
         return Err(msg);
     }
     Ok(())
+}
+
+/// The contract and pairing document pins of each deployment of `planned`,
+/// in its order, or why one cannot be minted. The minting's progress lines
+/// are published, and a failure of the caches themselves is published as the
+/// change's error.
+pub(in crate::services::stack) async fn mint_doc_pins_of(
+    ctx: &StackChangeContext,
+    planned: &[PlannedDeployment],
+) -> std::result::Result<Vec<std::result::Result<Vec<PinnedItem>, String>>, String> {
+    // Every deployment mints against ONE load of the contract and pairing
+    // caches, on one blocking thread: both are read and parsed per load, and
+    // a launch with N deployments otherwise paid N of each, sequentially, on
+    // the critical path.
+    let collected = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sets: Vec<Vec<config::node::Manifest>> = planned
+        .iter()
+        .map(|item| item.pin_manifests.clone())
+        .collect();
+    let minted = pins::doc_pins_for_manifest_sets_async(&ctx.peppy_dirs, sets, {
+        let sink = Arc::clone(&collected);
+        Arc::new(move |report: Report<'_>| {
+            if let Report::Step(line) = report {
+                sink.lock().push(line.to_owned());
+            }
+        })
+    })
+    .await;
+    let captured: Vec<String> = std::mem::take(&mut *collected.lock());
+    for line in captured {
+        publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
+    }
+    if let Err(reason) = &minted {
+        publish_error(ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+    }
+    minted
 }
 
 #[cfg(test)]

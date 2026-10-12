@@ -4,7 +4,7 @@
 use super::super::composition::{
     ArgumentOverrides, ComponentCardinality, CopySettings, OptionDeployment,
 };
-use super::super::types::{LauncherFramework, PeppyLauncher};
+use super::super::types::{Deployment, LauncherFramework, PeppyLauncher};
 use super::adjustments::{Routed, route};
 use super::check::{TrialRefusal, compose_trial_join, pick_checked_copy_name};
 use super::constraints::{self, ConstraintScope};
@@ -93,14 +93,24 @@ pub struct TrialStack<'a> {
     name: CopyName,
 }
 
+/// A trial copy joined onto the bare stack: what a join of its option with
+/// the same words brings.
+#[derive(Debug, Clone)]
+pub struct TrialCopy {
+    /// The copy's filled own axes.
+    pub selections: Vec<AxisSelection>,
+    /// The copy's deployments, ids minted under the trial copy's name.
+    pub deployments: Vec<Deployment>,
+}
+
 impl TrialStack<'_> {
     /// A copy of `option` joined onto the bare stack with `words`, under a
-    /// name the stack does not use. Returns the copy's filled own axes.
+    /// name the stack does not use.
     pub fn join(
         &self,
         option: &Name,
         words: &[SelectionWord],
-    ) -> Result<Vec<AxisSelection>, CompositionError> {
+    ) -> Result<TrialCopy, CompositionError> {
         let option = option.as_str();
         let axis = self.prepared.repeatable_axis_of(option)?;
         let loaded = self.prepared.loaded.option(&axis, option);
@@ -111,7 +121,7 @@ impl TrialStack<'_> {
             &words.with,
             &ArgumentOverrides::default(),
         );
-        let selection = compose_trial_join(
+        let copy = compose_trial_join(
             self.prepared,
             self.selection,
             &self.flat,
@@ -125,7 +135,10 @@ impl TrialStack<'_> {
         .map_err(|refusal| match refusal {
             TrialRefusal::Composed(error) | TrialRefusal::Joined(error) => *error,
         })?;
-        Ok(selection.axis_selections(&axis))
+        Ok(TrialCopy {
+            selections: copy.selection.axis_selections(&axis),
+            deployments: copy.deployments,
+        })
     }
 }
 

@@ -1,6 +1,7 @@
 pub(super) mod clock;
 pub(super) mod federated;
 pub(super) mod feedback;
+pub(super) mod joinable;
 pub(super) mod nodes;
 pub(super) mod orchestrate;
 pub(super) mod phases;
@@ -11,6 +12,7 @@ pub(super) mod watchers;
 
 use self::clock::{announce_clock_domains, plan_clocks};
 use self::feedback::{publish_error, publish_stdout};
+use self::joinable::{JoinableBuild, resolve_joinable_nodes};
 use self::nodes::add_nodes_to_stack;
 use self::orchestrate::{
     ValidatedPlan, fail_and_clear_stack, teardown_and_reset_stack, validate_and_order_dependencies,
@@ -29,7 +31,7 @@ use core_node_api::encoding::{
     NodeBuildLogEntry, NodeRunLogEntry,
 };
 use daemon_config::launcher::{
-    ClockIncarnations, CopyMembership, Deployment, Placements, ScopeCheck,
+    ClockIncarnations, CopyMembership, Deployment, JoinableNodes, Placements, ScopeCheck,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -37,20 +39,34 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// a join adding one copy to it.
 #[derive(Clone, Copy)]
 pub(super) enum PhaseChange<'a> {
-    /// A launch, with the copy each instance of its plan belongs to.
-    Launch(&'a CopyMembership),
+    /// A launch, with the copy each instance of its plan belongs to, and the
+    /// joinable nodes it builds on the coordinator beside its own nodes.
+    Launch {
+        copies: &'a CopyMembership,
+        joinable: &'a [JoinableBuild],
+    },
     Join(&'a JoinScope),
 }
 
-impl PhaseChange<'_> {
+impl<'a> PhaseChange<'a> {
     /// The copy `instance_id` belongs to, or `None` for an instance the
     /// launcher deploys outside any copy.
     pub(super) fn copy_of(&self, instance_id: &str) -> Option<config::runtime::Name> {
         let copies = match self {
-            Self::Launch(copies) => copies,
+            Self::Launch { copies, .. } => copies,
             Self::Join(scope) => &scope.copies,
         };
         copies.copy_of(instance_id).cloned()
+    }
+
+    /// The nodes the change adds and builds on the coordinator and starts no
+    /// instance of: the joinable nodes of a launch. A join builds only the
+    /// nodes it runs.
+    pub(super) fn joinable_builds(self) -> &'a [JoinableBuild] {
+        match self {
+            Self::Launch { joinable, .. } => joinable,
+            Self::Join(_) => &[],
+        }
     }
 
     /// Whether the phases add to a running stack: a join reuses the nodes
@@ -62,7 +78,7 @@ impl PhaseChange<'_> {
 
     fn reuses(&self, node: &NodeKey, core_node: &str) -> bool {
         match self {
-            Self::Launch(_) => false,
+            Self::Launch { .. } => false,
             Self::Join(scope) => scope.reuses(node, core_node),
         }
     }
@@ -189,12 +205,14 @@ pub(super) struct PlannedDeployment {
 /// target as one to an unknown slot. A join holds each instance to its
 /// rules alone: the launcher and the stack selection of a launch do not
 /// change, so a join cannot change the launch's verdict.
+///
+/// Returns the joinable nodes of a launch, and none for a join.
 pub(super) fn check_planned_daemon_scopes(
     prepared: &daemon_config::launcher::PreparedLauncher,
     planned: &[PlannedDeployment],
     copies: &CopyMembership,
     check: ScopeCheck<'_>,
-) -> Result<(), String> {
+) -> Result<JoinableNodes, String> {
     daemon_config::launcher::check_daemon_scopes(
         prepared,
         planned.iter().map(|item| (&item.deployment, &item.targets)),
@@ -217,11 +235,13 @@ impl PlannedDeployment {
 /// This function orchestrates the complete launch sequence:
 /// 1. Parse launcher configuration
 /// 2. Resolve deployments and mint their node pins, then check the scopes
-///    of the daemon targets
-/// 3. Validate dependencies and compute order, then mint the doc pins
+///    of the daemon targets, which gives the joinable nodes
+/// 3. Validate dependencies and compute order, then mint the doc pins, then
+///    resolve the joinable nodes and mint theirs
 /// 4. Federated preflight, carrying the pins
 /// 5. Snapshot and clear stack
-/// 6. Add and build nodes in dependency order
+/// 6. Add and build nodes in dependency order, then the joinable nodes on
+///    this machine
 /// 7. Prepare this machine's container host mounts
 /// 8. Start instances in dependency order
 ///
@@ -261,16 +281,20 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
 
     // Step 2a: The resolution knows which targets are daemon targets, so
     // every scope is parsed into its interface's type here, before anything
-    // starts.
-    if let Err(reason) = check_planned_daemon_scopes(
+    // starts. A `stack_copies` scope that holds gives the nodes a join of
+    // its options can bring.
+    let joinable = match check_planned_daemon_scopes(
         &prepared,
         &planned,
         &copy_membership,
         ScopeCheck::Launch(&selection),
     ) {
-        publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return LaunchResult::failure(ctx.log.path(), reason);
-    }
+        Ok(joinable) => joinable,
+        Err(reason) => {
+            publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            return LaunchResult::failure(ctx.log.path(), reason);
+        }
+    };
 
     // Step 2b: The clock every instance reads, with a fresh lifetime minted
     // for each simulated domain this launch declares. A replacement therefore
@@ -348,6 +372,19 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     if let Err(reason) = resolve::mint_doc_pins(&ctx, &mut planned, &placements).await {
         return LaunchResult::failure(ctx.log.path(), reason);
     }
+
+    // Step 3c: The joinable nodes, resolved for this machine with their doc
+    // pins, unless the goal asks for the launch's own nodes alone. A node
+    // the launch runs keeps the launch's resolution.
+    let joinable_builds = if goal.prebuild {
+        match resolve_joinable_nodes(&ctx, joinable, &planned, placements.coordinator_name()).await
+        {
+            Ok(builds) => builds,
+            Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
+        }
+    } else {
+        Vec::new()
+    };
 
     // Step 4: The clock the launch runs on, and the federated preflight:
     // reachability, reservations carrying each participant's pins, and the
@@ -448,7 +485,8 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         planned.clone(),
     )
     .with_clocks(clocks.clone(), incarnations)
-    .with_watchers(watchers);
+    .with_watchers(watchers)
+    .with_joinable_resolutions(&joinable_builds);
     active.record_copies(copies, &ordered, &copy_core_nodes);
     let phase = PhaseGoal {
         launch_id: goal.launch_id.clone(),
@@ -456,6 +494,10 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     };
     let planned_by_key: HashMap<NodeKey, PlannedDeployment> =
         planned.into_iter().map(|item| (item.key(), item)).collect();
+    let phase_change = PhaseChange::Launch {
+        copies: &copy_membership,
+        joinable: &joinable_builds,
+    };
 
     let mut add_log_paths: Vec<NodeAddLogEntry> = Vec::new();
     let mut build_log_paths: Vec<NodeBuildLogEntry> = Vec::new();
@@ -466,6 +508,9 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // concurrently because nothing orders one machine's add against another's,
     // and fetching plus building is where a launch spends its time; within a
     // group the dependency order is preserved exactly as on a single machine.
+    // This machine's group ends with the joinable nodes, so their builds take
+    // the build slots after the launch's own nodes here, and every build ends
+    // before any instance starts.
     //
     // Steps 6-8 short-circuit: each phase appends to the log vectors before
     // returning `Err`, so the logs collected up to a failure are reported
@@ -474,7 +519,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         add_nodes_to_stack(
             &ctx,
             &phase,
-            PhaseChange::Launch(&copy_membership),
+            phase_change,
             &ordered,
             &planned_by_key,
             &placements,
@@ -514,7 +559,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         start_node_instances(
             &ctx,
             &phase,
-            PhaseChange::Launch(&copy_membership),
+            phase_change,
             &ordered,
             &planned_by_key,
             &mut run_log_paths,

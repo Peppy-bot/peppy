@@ -45,7 +45,8 @@ runs:
     # that a dependency bump or a profile change superseded, so a target
     # directory only grows: what bounds it is the weekly reset of every
     # sticky disk (the sticky disk cleanup of the RunsOn stack in infraops),
-    # after which the first run starts empty and pays one cold build.
+    # after which the first run starts empty and pays one cold build. The
+    # peppylib-py targets under ~/.peppy/tmp are the exception, pruned below.
     - uses: runs-on/action@v2
       with:
         sticky_cache: |
@@ -56,6 +57,25 @@ runs:
     # end of the job. Its post step runs before the one of runs-on/action
     # above, which unmounts the disk.
     - uses: ./.github/actions/sticky-disk-report
+
+    # The generator's build script builds peppylib-py in
+    # ~/.peppy/tmp/peppylib-py/target-<hash>, a whole cargo target directory
+    # (about 2 GiB) for each version of the crates the binding depends on,
+    # and leaves the trees of earlier versions in place: on a developer's
+    # machine another checkout can still build in one. A job runs alone on
+    # its instance, so here a tree of an earlier version is dead weight, and
+    # a few changes of those crates within a week fill the disk. The newest
+    # tree, the one of the last version the suite built, stays: a run of the
+    # same version reuses it, and a run of another version builds its own
+    # beside it.
+    - name: Drop the peppylib-py targets of earlier dependency versions
+      shell: bash
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        trees=("$HOME"/.peppy/tmp/peppylib-py/target-*)
+        [ "${#trees[@]}" -gt 1 ] || exit 0
+        ls -dt "${trees[@]}" | tail -n +2 | xargs -r rm -rf
 
     # Only the suite's target directory is redirected, and through a symlink
     # rather than CARGO_TARGET_DIR: the docs snippet runner builds its nodes
