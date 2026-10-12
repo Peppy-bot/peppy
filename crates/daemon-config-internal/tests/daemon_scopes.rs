@@ -9,8 +9,8 @@ use daemon_config::daemon_interface::DaemonInterface;
 use daemon_config::launcher::{
     AppliedChange, ComposedLaunch, CompositionError, CopyMembership, DaemonScopeError,
     DaemonScopeRefusals, Deployment, DeploymentInstance, DeploymentSource, JoinRequest,
-    PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, ScopeCheck, SkipReason,
-    UnitSelection, check_daemon_scopes,
+    JoinableNodes, PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, ScopeCheck,
+    SkipReason, UnitSelection, check_daemon_scopes,
 };
 use daemon_config::mcp_deployment::DeploymentTargets;
 use serde_json::json;
@@ -137,7 +137,7 @@ fn check(
     flat: &PeppyLauncher,
     copies: &CopyMembership,
     scope_check: ScopeCheck<'_>,
-) -> Result<(), DaemonScopeRefusals> {
+) -> Result<JoinableNodes, DaemonScopeRefusals> {
     let targets: Vec<DeploymentTargets> = flat.deployments.iter().map(targets_of).collect();
     check_daemon_scopes(
         prepared,
@@ -810,7 +810,7 @@ fn scope_reasons(prepared: &PreparedLauncher) -> Vec<String> {
         &CopyMembership::default(),
         ScopeCheck::Launch(&composed.selection),
     ) {
-        Ok(()) => Vec::new(),
+        Ok(_) => Vec::new(),
         Err(refusals) => refusals
             .0
             .into_iter()
@@ -989,13 +989,14 @@ fn a_join_runs_no_trial() {
     );
     let composed = prepared.launch(&[], &[]).expect("composes");
     assert_eq!(scope_reasons(&prepared).len(), 1);
-    check(
+    let joinable = check(
         &prepared,
         &composed.launcher,
         &CopyMembership::default(),
         ScopeCheck::Join,
     )
     .expect("a join runs no check against the launcher");
+    assert!(joinable.is_empty(), "a join composes no trial copy");
 
     let (prepared, launcher) = flat(&format!(
         r#"{FRAMEWORK} {{ instance_id: "mcp_inst", daemon_scopes: {{ stack: {{
@@ -1013,4 +1014,149 @@ fn a_join_runs_no_trial() {
         matches!(&refused[..], [DaemonScopeError::InvalidScope { .. }]),
         "{refused:?}"
     );
+}
+
+// -- joinable nodes ------------------------------------------------------
+
+/// Each joinable node of a launch of `prepared` with no word, as
+/// `name:tag`, with the scoped options that bring it.
+fn joinable_of(prepared: &PreparedLauncher) -> Vec<(String, Vec<String>)> {
+    let composed = prepared.launch(&[], &[]).expect("composes");
+    check(
+        prepared,
+        &composed.launcher,
+        &CopyMembership::default(),
+        ScopeCheck::Launch(&composed.selection),
+    )
+    .expect("the scopes hold")
+    .iter()
+    .map(|node| {
+        (
+            node.deployment.source.label(),
+            node.options.iter().map(ToString::to_string).collect(),
+        )
+    })
+    .collect()
+}
+
+fn joinable(entries: &[(&str, &[&str])]) -> Vec<(String, Vec<String>)> {
+    entries
+        .iter()
+        .map(|(node, options)| {
+            (
+                (*node).to_owned(),
+                options.iter().map(|option| (*option).to_owned()).collect(),
+            )
+        })
+        .collect()
+}
+
+/// The launch checks give the nodes of every feature set of every scoped
+/// option: the robot of the launcher entry, and the node each feature adds.
+/// An option of an own axis that no feature and no entry selects brings no
+/// node, and an option outside the scope brings none.
+#[test]
+fn the_joinable_nodes_are_those_of_every_feature_set_of_every_scoped_option() {
+    let prepared = featured_launcher(
+        r#"commander: "mcp""#,
+        &[
+            feature("ai_brain", "brain", "ai_brain_vla"),
+            feature("recorder", "recorder", "lerobot_recorder"),
+        ],
+        "",
+    );
+    assert_eq!(
+        joinable_of(&prepared),
+        joinable(&[
+            ("openarm:v1", &["openarm_sim"]),
+            ("arm:v1", &["featured_sim"]),
+            ("brain:v1", &["featured_sim"]),
+            ("recorder:v1", &["featured_sim"]),
+        ])
+    );
+
+    // The robot the entry selects is the robot of every feature set: under
+    // the web commander, its panel is a joinable node too.
+    let prepared = featured_launcher(
+        r#"commander: "web""#,
+        &[feature("ai_brain", "brain", "ai_brain_vla")],
+        "",
+    );
+    assert_eq!(
+        joinable_of(&prepared),
+        joinable(&[
+            ("openarm:v1", &["openarm_sim"]),
+            ("arm:v1", &["featured_sim"]),
+            ("panel:v1", &["featured_sim"]),
+            ("brain:v1", &["featured_sim"]),
+        ])
+    );
+}
+
+/// Two scopes give the union of the nodes of their options, and a node that
+/// two options bring is one joinable node that names both.
+#[test]
+fn two_scopes_give_one_joinable_node_per_source_with_every_option_that_brings_it() {
+    let prepared = load(&format!(
+        r#"{{
+        peppy_schema: "launcher/v1",
+        components: [
+            {{ name: "robot", cardinality: "zero_or_more", options: {{
+                openarm_sim: {{ deployments: [
+                    {{ source: {{ name: "openarm", tag: "v1" }}, instances: [{{ instance_id: "arm_inst" }}] }},
+                    {{ source: {{ name: "initializer", tag: "v1" }}, instances: [{{ instance_id: "init_inst" }}] }},
+                ] }},
+                so101_sim: {{ deployments: [
+                    {{ source: {{ name: "so101", tag: "v1" }}, instances: [{{ instance_id: "arm_inst" }}] }},
+                    {{ source: {{ name: "initializer", tag: "v1" }}, instances: [{{ instance_id: "init_inst" }}] }},
+                ] }},
+            }} }},
+        ],
+        deployments: [
+            {FRAMEWORK}
+                {{ instance_id: "openarm_controls_inst", arguments: {{ port: 8903 }},
+                   daemon_scopes: {{ stack: {{ max_copies: 1, options: [
+                       {{ option: "openarm_sim", description: "An OpenArm" }} ] }} }} }},
+                {{ instance_id: "so101_controls_inst", arguments: {{ port: 8904 }},
+                   daemon_scopes: {{ stack: {{ max_copies: 1, options: [
+                       {{ option: "so101_sim", description: "An SO-101" }} ] }} }} }},
+            ] }},
+        ],
+    }}"#
+    ));
+    assert_eq!(
+        joinable_of(&prepared),
+        joinable(&[
+            ("openarm:v1", &["openarm_sim"]),
+            ("initializer:v1", &["openarm_sim", "so101_sim"]),
+            ("so101:v1", &["so101_sim"]),
+        ])
+    );
+}
+
+/// The trial copies compose over the bare stack, so a copy the launch
+/// starts changes no joinable node: the nodes of a scoped option it already
+/// runs are joinable nodes too.
+#[test]
+fn a_copy_the_launch_starts_leaves_the_joinable_nodes_as_they_are() {
+    let prepared = featured_launcher(
+        r#"commander: "mcp""#,
+        &[feature("ai_brain", "brain", "ai_brain_vla")],
+        "",
+    );
+    let composed = prepared
+        .launch(&[], &[launch_join("featured_sim", "alpha")])
+        .expect("composes");
+    let launched = check(
+        &prepared,
+        &composed.launcher,
+        &CopyMembership::of(composed.copies()),
+        ScopeCheck::Launch(&composed.selection),
+    )
+    .expect("the scopes hold");
+    let labels: Vec<String> = launched
+        .iter()
+        .map(|node| node.deployment.source.label())
+        .collect();
+    assert_eq!(labels, ["openarm:v1", "arm:v1", "brain:v1"]);
 }

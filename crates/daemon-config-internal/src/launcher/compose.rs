@@ -28,7 +28,7 @@ pub(crate) use error::COPY_PLACEMENT;
 pub use error::CompositionError;
 pub use prepared::{
     ComposedJoin, ComposedLaunch, JoinRequest, PartRefusal, PreparedLauncher, RunningStack,
-    TrialStack,
+    TrialCopy, TrialStack,
 };
 pub use report::{AppliedChange, CompositionReport, SkipReason, SkippedAdjustment};
 pub use select::{PartMachines, UnitSelection, WrittenWord};

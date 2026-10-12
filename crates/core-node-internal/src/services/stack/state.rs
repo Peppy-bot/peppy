@@ -5,6 +5,7 @@
 
 use super::ChangeResult;
 use super::action::StackChangeContext;
+use super::launch::joinable::JoinableBuild;
 use super::launch::watchers::LifecycleWatchers;
 use super::launch::{NodeKey, PlannedDeployment};
 use config::runtime::{CopyName, CoreNodeName};
@@ -28,9 +29,11 @@ pub(crate) struct ActiveLaunch {
     /// The deployments as they run: the instances of every source with at
     /// least one.
     pub(super) planned: Vec<PlannedDeployment>,
-    /// Every source this launch resolved, as it resolved it: a copy joining
-    /// after its source's last instance left runs the launch's node, with
-    /// its pins.
+    /// Every source this launch resolved, as it resolved it: its own
+    /// deployments, its joinable nodes and the sources its joins brought. A
+    /// copy that runs one of these sources runs the launch's node, with its
+    /// pins, however many joins and removals came between: a join of a
+    /// scoped option stages the trees the launch built.
     pub(super) resolved: Vec<PlannedDeployment>,
     pub(super) copies: BTreeMap<CopyName, StackCopy>,
     /// The lifetime minted for each simulated domain this launch declares.
@@ -128,6 +131,22 @@ impl ActiveLaunch {
 
     pub(super) fn with_watchers(mut self, watchers: LifecycleWatchers) -> Self {
         self.watchers = watchers;
+        self
+    }
+
+    /// Records the resolution of each joinable node the launch built, beside
+    /// the resolutions of its own deployments.
+    pub(super) fn with_joinable_resolutions(mut self, builds: &[JoinableBuild]) -> Self {
+        for build in builds {
+            let source = &build.planned.deployment.source;
+            if !self
+                .resolved
+                .iter()
+                .any(|item| &item.deployment.source == source)
+            {
+                self.resolved.push(build.planned.clone());
+            }
+        }
         self
     }
 

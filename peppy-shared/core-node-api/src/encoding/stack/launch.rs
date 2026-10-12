@@ -122,6 +122,12 @@ pub struct LaunchGoal {
     /// The copies `--join OPTION:NAME@CORE_NODE` starts with the launch, in
     /// the order they were given.
     joins: Vec<CopyReference>,
+    /// Resolve, add and build on the coordinator every joinable node: each
+    /// node that a join of an option of a `stack_copies` scope of the launch
+    /// can bring, so that such a join on the coordinator builds nothing.
+    /// `--no-prebuild` clears it, and the launch then resolves and builds
+    /// only the nodes it runs.
+    pub prebuild: bool,
 }
 
 impl LaunchGoal {
@@ -139,6 +145,7 @@ impl LaunchGoal {
             selections: Vec::new(),
             rebuild: false,
             joins: Vec::new(),
+            prebuild: true,
         }
     }
 
@@ -190,6 +197,11 @@ impl LaunchGoal {
 
     pub fn with_rebuild(mut self, rebuild: bool) -> Self {
         self.rebuild = rebuild;
+        self
+    }
+
+    pub fn with_prebuild(mut self, prebuild: bool) -> Self {
+        self.prebuild = prebuild;
         self
     }
 
@@ -260,6 +272,8 @@ impl LaunchGoal {
             for (idx, join) in self.joins.iter().enumerate() {
                 write_copy_reference(joins.reborrow().get(idx as u32), join);
             }
+
+            goal.reborrow().set_prebuild(self.prebuild);
         }
         encode_message(&builder)
     }
@@ -332,6 +346,7 @@ impl LaunchGoal {
 
         LaunchGoal::new(launcher_origin, launch_id, budgets)
             .with_rebuild(goal.get_rebuild())
+            .with_prebuild(goal.get_prebuild())
             .with_layout(placement, selections, joins)
             .map_err(|error| crate::Error::Decoding(error.to_string()))
     }
@@ -849,6 +864,10 @@ mod tests {
         assert_eq!(goal, decoded);
         assert_eq!(decoded.budgets.max_timeout_secs, None);
         assert!(!decoded.rebuild);
+        assert!(
+            decoded.prebuild,
+            "a launch builds its joinable nodes by default"
+        );
     }
 
     /// `peppy stack build` sends the same bytes under its own action, so a
@@ -1027,6 +1046,18 @@ mod tests {
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert!(decoded.rebuild);
+        assert_eq!(goal, decoded);
+    }
+
+    /// `--no-prebuild` travels with the launch, so the coordinator neither
+    /// resolves nor builds its joinable nodes.
+    #[test]
+    fn launch_goal_roundtrips_no_prebuild() {
+        let goal = repository_goal("simulation_mcp").with_prebuild(false);
+
+        let bytes = goal.encode().expect("encode");
+        let decoded = LaunchGoal::decode(&bytes).expect("decode");
+        assert!(!decoded.prebuild);
         assert_eq!(goal, decoded);
     }
 

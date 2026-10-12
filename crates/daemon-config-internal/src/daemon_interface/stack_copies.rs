@@ -3,7 +3,9 @@
 //! description of each and the features a copy of it may hold, and the
 //! most copies of them the stack holds.
 
-use crate::internal::launcher::{CompositionError, PartRefusal, PreparedLauncher, UnitSelection};
+use crate::internal::launcher::{
+    CompositionError, JoinableNodes, PartRefusal, PreparedLauncher, UnitSelection,
+};
 use config::runtime::{CoreNodeName, CoreNodeTarget, Name};
 use core_node_api::encoding::{AxisSelection, OptionChoice, SelectionWord};
 use peppy_mcp_catalog::ExposureBundle;
@@ -371,11 +373,13 @@ impl StackCopiesScope {
     ///    with no feature holds none of its option's features.
     ///
     /// The verdict depends only on the launcher and the stack selection.
+    /// When the scope holds, returns the nodes of the trial copies of step 3:
+    /// every node that a join of a scoped option can bring.
     pub(super) fn check_launch(
         &self,
         prepared: &PreparedLauncher,
         selection: &UnitSelection,
-    ) -> Vec<String> {
+    ) -> Result<JoinableNodes, Vec<String>> {
         let errors: Vec<CompositionError> = self
             .options
             .iter()
@@ -385,11 +389,11 @@ impl StackCopiesScope {
             .iter()
             .any(|error| matches!(error, CompositionError::NoRepeatableAxis))
         {
-            return vec![NO_AXIS_RUNS_AS_COPIES.to_owned()];
+            return Err(vec![NO_AXIS_RUNS_AS_COPIES.to_owned()]);
         }
         if !errors.is_empty() {
             // The join's own refusal names the option and the menu.
-            return errors.iter().map(ToString::to_string).collect();
+            return Err(errors.iter().map(ToString::to_string).collect());
         }
         let features: Vec<String> = self
             .options
@@ -402,38 +406,40 @@ impl StackCopiesScope {
             })
             .collect();
         if !features.is_empty() {
-            return features;
+            return Err(features);
         }
         self.check_trial_joins(prepared, selection)
     }
 
     /// Step 3 of [`Self::check_launch`]: one trial join of each feature set
-    /// of each option over the bare stack.
+    /// of each option over the bare stack, whose nodes are the joinable
+    /// nodes of the scope.
     fn check_trial_joins(
         &self,
         prepared: &PreparedLauncher,
         selection: &UnitSelection,
-    ) -> Vec<String> {
-        let trials = match prepared.trial_stack(selection) {
-            Ok(trials) => trials,
-            Err(error) => return vec![format!("the stack does not compose: {error}")],
-        };
+    ) -> Result<JoinableNodes, Vec<String>> {
+        let trials = prepared
+            .trial_stack(selection)
+            .map_err(|error| vec![format!("the stack does not compose: {error}")])?;
+        let mut joinable = JoinableNodes::default();
         let mut refusals = Vec::new();
         for entry in &self.options {
             for set in feature_sets(&entry.features) {
                 let words: Vec<SelectionWord> =
                     set.iter().map(|feature| feature.word(None)).collect();
-                let selections = match trials.join(&entry.option, &words) {
-                    Ok(selections) => selections,
+                let trial = match trials.join(&entry.option, &words) {
+                    Ok(trial) => trial,
                     Err(error) => {
                         refusals.push(format!("{}: {error}", feature_set_label(entry, &set)));
                         continue;
                     }
                 };
+                joinable.add_copy(&entry.option, trial.deployments);
                 if !set.is_empty() {
                     continue;
                 }
-                let held = entry.features_in(&selections);
+                let held = entry.features_in(&trial.selections);
                 if !held.is_empty() {
                     refusals.push(format!(
                         "option `{}` with no feature already holds the {} {}: its launcher \
@@ -452,7 +458,11 @@ impl StackCopiesScope {
                 }
             }
         }
-        refusals
+        if refusals.is_empty() {
+            Ok(joinable)
+        } else {
+            Err(refusals)
+        }
     }
 
     /// `join.option` takes only the scope's options; `join.name`,

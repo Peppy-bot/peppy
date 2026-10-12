@@ -18,7 +18,8 @@
 use peppy::commands::Command;
 use peppy::commands::mcp::mcp_catalog_rendered;
 use peppy::commands::stack::{
-    LaunchJoins, LauncherArgs, StackCommand, StackCommands, StackTimeouts, list_nodes_collecting,
+    JoinWords, LaunchJoins, LaunchWords, LauncherArgs, StackCommand, StackCommands, StackTimeouts,
+    list_nodes_collecting, list_nodes_json_collecting,
 };
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
@@ -35,6 +36,8 @@ use mcp_test_support::{
     compile_node, confirmation_accept, connect, connect_with_tasks, ephemeral_port,
     poll_task_until, protocol_error, register_contract_members,
 };
+use peppy::commands::repo::{RepoCommand, RepoCommands};
+use peppy::test_support::CACHED_BUILD_REUSE_PREFIX;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientConfig, ErrorCode,
     GetTaskParams, ProgressNotificationParam, ProtocolVersion, ReadResourceRequestParams,
@@ -45,6 +48,7 @@ use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt, RoleClient};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -993,19 +997,29 @@ impl Stack {
         launcher: &str,
         joins: Vec<CopyReference>,
     ) -> Result<(), peppy::error::Error> {
-        let launcher_path = self.nodes_dir.path().join("peppy_launcher.json5");
-        fs::write(&launcher_path, launcher).expect("write launcher");
         StackCommand {
             command: StackCommands::Launch(LauncherArgs {
-                rebuild: false,
-                placement: Default::default(),
                 joins: LaunchJoins { joins },
-                with: Default::default(),
-                launcher_config_path: launcher_path,
-                timeouts: stack_timeouts(),
+                ..self.launcher_args(launcher)
             }),
         }
         .execute(&self.ctx)
+    }
+
+    /// The arguments of a launch of the whole launcher document `launcher`,
+    /// with no word, no copy and no flag.
+    fn launcher_args(&self, launcher: &str) -> LauncherArgs {
+        let launcher_path = self.nodes_dir.path().join("peppy_launcher.json5");
+        fs::write(&launcher_path, launcher).expect("write launcher");
+        LauncherArgs {
+            rebuild: false,
+            no_prebuild: false,
+            placement: Default::default(),
+            joins: LaunchJoins { joins: Vec::new() },
+            with: Default::default(),
+            launcher_config_path: launcher_path,
+            timeouts: stack_timeouts(),
+        }
     }
 
     /// Joins a copy of `option` named `name` onto the running stack.
@@ -1020,12 +1034,27 @@ impl Stack {
     }
 
     fn try_join(&self, option: &str, name: &str) -> Result<(), peppy::error::Error> {
+        self.try_join_with(option, name, &[])
+    }
+
+    /// Joins a copy of `option` named `name` with the `--with` words `words`.
+    fn try_join_with(
+        &self,
+        option: &str,
+        name: &str,
+        words: &[&str],
+    ) -> Result<(), peppy::error::Error> {
         StackCommand {
             command: StackCommands::Join {
                 copy: format!("{option}:{name}")
                     .parse()
                     .expect("a copy reference"),
-                with: Default::default(),
+                with: JoinWords {
+                    words: words
+                        .iter()
+                        .map(|word| word.parse().expect("a selection word"))
+                        .collect(),
+                },
                 arguments: Vec::new(),
                 timeouts: stack_timeouts(),
             },
@@ -3527,4 +3556,648 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         "{record}"
     );
     client.cancel().await.expect("the client closes");
+}
+
+// --- The joinable nodes: a launch builds what a join of its scope brings.
+
+/// A robot whose own axis `rig` brings a camera beside its recorder: the
+/// part the scope's feature `camera` adds.
+const RIG_ROBOT_FRAGMENT: &str = r#"{
+    peppy_schema: "launcher_fragment/v1",
+    deployments: [
+        {
+            source: { name: "mock_recorder:v1" },
+            instances: [{ instance_id: "recorder" }],
+        },
+    ],
+    components: [
+        {
+            name: "rig",
+            cardinality: "zero_or_one",
+            options: {
+                camera: {
+                    deployments: [
+                        {
+                            source: { name: "mock_uvc_camera:v1" },
+                            instances: [{ instance_id: "cam" }],
+                        },
+                    ],
+                },
+            },
+        },
+    ],
+}"#;
+
+/// The framework's endpoint on `port`, deployed by the option `framework` of
+/// the axis `robot_control` (`none` deploys nothing), whose scope offers the
+/// rig robot with its feature `camera` and the recorder robot with none. Its
+/// joinable nodes are `mock_recorder:v1`, which both options bring, and
+/// `mock_uvc_camera:v1`, which the feature brings.
+fn joinable_launcher(port: u16) -> String {
+    format!(
+        r#"{{
+        peppy_schema: "launcher/v1",
+        components: [
+            {{
+                name: "robot_control",
+                cardinality: "one",
+                options: {{
+                    framework: {{
+                        deployments: [
+                            {{
+                                source: {{ exposures: ["framework_controls:v1"] }},
+                                instances: [
+                                    {{ instance_id: "framework_controls_inst", arguments: {{ port: {port} }} }},
+                                ],
+                            }},
+                        ],
+                    }},
+                    none: {{}},
+                }},
+            }},
+            {{
+                name: "robot",
+                cardinality: "zero_or_more",
+                options: {{
+                    rig_robot: "rig_robot.json5",
+                    recorder_robot: "recorder_robot.json5",
+                }},
+            }},
+        ],
+        deployments: [{{ robot_control: "framework" }}],
+        adjustments: [
+            {{
+                target: "framework_controls_inst",
+                set_daemon_scopes: {{ stack: {{
+                    max_copies: 4,
+                    options: [
+                        {{ option: "rig_robot", description: "A robot that records what its camera sees",
+                           features: [{{ feature: "camera", axis: "rig", option: "camera",
+                                         description: "A camera beside the recorder" }}] }},
+                        {{ option: "recorder_robot", description: "A robot that records episodes" }},
+                    ],
+                }} }},
+            }},
+        ],
+    }}"#
+    )
+}
+
+/// The two nodes a join of the joinable launcher's scope brings.
+const JOINABLE_NODES: [&str; 2] = ["mock_recorder", "mock_uvc_camera"];
+
+/// How the log of a stack change starts the line of a build that finds no
+/// artifact to reuse, and so builds the node.
+const BUILDS_A_NODE: &str = "No cached build of";
+
+/// One node on a daemon's stack: its stage and how many instances it runs.
+#[derive(Debug, PartialEq, Eq)]
+struct ListedNode {
+    stage: String,
+    instances: usize,
+}
+
+/// A daemon booted for the joinable launcher: the framework endpoint, the
+/// two robot fragments, and the builds of the two robot nodes counted, each
+/// node still running the binary the fixture compiled.
+struct JoinableStack {
+    stack: Stack,
+    counters: tempfile::TempDir,
+    port: u16,
+}
+
+impl JoinableStack {
+    async fn boot() -> Self {
+        let stack = Stack::boot(true).await;
+        stack.stage_framework_controls();
+        write_robot_fragment(&stack, "rig_robot", RIG_ROBOT_FRAGMENT);
+        write_robot_fragment(&stack, "recorder_robot", RECORDER_ROBOT_FRAGMENT);
+        let counters = tempfile::tempdir().expect("counters dir");
+        let joinable = Self {
+            stack,
+            counters,
+            port: ephemeral_port(),
+        };
+        for node in JOINABLE_NODES {
+            joinable.set_build_cmd(
+                node,
+                super::common::counting_build_cmd(&joinable.counter(node)),
+            );
+        }
+        joinable.refresh_from(&[]);
+        joinable
+    }
+
+    fn counter(&self, node: &str) -> PathBuf {
+        self.counters.path().join(node)
+    }
+
+    /// How many times the hub's `node` was built.
+    fn builds(&self, node: &str) -> usize {
+        super::common::build_count(&self.counter(node))
+    }
+
+    /// The build count of each joinable node, in [`JOINABLE_NODES`] order.
+    fn all_builds(&self) -> [usize; 2] {
+        JOINABLE_NODES.map(|node| self.builds(node))
+    }
+
+    /// Makes the hub's `node` build with `build_cmd`; [`Self::refresh_from`]
+    /// reads it.
+    fn set_build_cmd(&self, node: &str, build_cmd: Vec<String>) {
+        rewrite_manifest(
+            &self.stack.hub.path().join("nodes").join(node),
+            |node_config| {
+                node_config.execution.build_cmd = Some(build_cmd);
+            },
+        );
+    }
+
+    /// Points the daemon at the repositories `first`, then the hub, in that
+    /// priority, and refreshes its caches from them.
+    fn refresh_from(&self, first: &[&Path]) {
+        let repositories: Vec<&Path> = first
+            .iter()
+            .copied()
+            .chain([self.stack.hub.path()])
+            .collect();
+        for repository in &repositories {
+            super::common::publish_repo_index(repository);
+        }
+        super::common::write_fs_repositories(&self.stack.serve, &repositories);
+        RepoCommand {
+            command: RepoCommands::Refresh { strict: false },
+        }
+        .execute(&self.stack.ctx)
+        .expect("repo refresh reads the repositories");
+    }
+
+    /// The arguments of a launch of the joinable launcher with the `--with`
+    /// words `words`.
+    fn launcher_args(&self, words: &[&str]) -> LauncherArgs {
+        LauncherArgs {
+            with: LaunchWords {
+                words: words
+                    .iter()
+                    .map(|word| word.parse().expect("a launch word"))
+                    .collect(),
+            },
+            ..self.stack.launcher_args(&joinable_launcher(self.port))
+        }
+    }
+
+    fn run(&self, command: StackCommands) -> Result<(), peppy::error::Error> {
+        StackCommand { command }.execute(&self.stack.ctx)
+    }
+
+    /// Runs `change`, a stack change that succeeds, and returns its log:
+    /// every line the daemon published for it, in the file whose path the
+    /// command prints.
+    fn change_log_of(&self, change: impl FnOnce() -> Result<(), peppy::error::Error>) -> String {
+        let before = self.stack.log_capture.logs().len();
+        change().unwrap_or_else(|error| {
+            panic!("the change fails: {error:?}\n{}", self.stack.run_logs())
+        });
+        let printed = self.stack.log_capture.logs()[before..].to_owned();
+        let path = printed
+            .lines()
+            .find_map(|line| line.split_once("goal accepted, log file: "))
+            .map(|(_, path)| path.trim().to_owned())
+            .unwrap_or_else(|| panic!("the command prints its log file:\n{printed}"));
+        fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path}: {error}"))
+    }
+
+    /// Launches the joinable launcher, which succeeds, and returns the
+    /// launch's log.
+    fn launch(&self, args: LauncherArgs) -> String {
+        self.change_log_of(|| self.run(StackCommands::Launch(args)))
+    }
+
+    /// Builds the joinable launcher, which succeeds.
+    fn build(&self, args: LauncherArgs) {
+        self.change_log_of(|| self.run(StackCommands::Build(args)));
+    }
+
+    /// Joins `option:name` with `words`, which succeeds, and returns the
+    /// join's log.
+    fn join(&self, option: &str, name: &str, words: &[&str]) -> String {
+        self.change_log_of(|| self.stack.try_join_with(option, name, words))
+    }
+
+    /// Each node of this daemon's stack named in [`JOINABLE_NODES`], by
+    /// name.
+    async fn listed_robot_nodes(&self) -> BTreeMap<String, ListedNode> {
+        let report = list_nodes_json_collecting(&self.stack.ctx)
+            .await
+            .expect("stack list answers");
+        let listed: Value = serde_json::from_str(&report.output).expect("the list is JSON");
+        listed["core_nodes"][0]["stack"]["nodes"]
+            .as_array()
+            .expect("the coordinator reports its nodes")
+            .iter()
+            .filter(|node| JOINABLE_NODES.contains(&node["name"].as_str().expect("a node name")))
+            .map(|node| {
+                (
+                    node["name"].as_str().expect("a node name").to_owned(),
+                    ListedNode {
+                        stage: node["stage"].as_str().expect("a stage").to_owned(),
+                        instances: node["instances"].as_array().expect("instances").len(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The newest build log of the hub's `node`.
+    fn last_build_log(&self, node: &str) -> String {
+        super::common::build_logs_for(self.stack.serve.temp_dir(), node, "v1")
+            .pop()
+            .unwrap_or_else(|| panic!("{node} has a build log"))
+    }
+
+    /// A repository that offers another `mock_uvc_camera:v1`: the hub's
+    /// node, whose build counts in the counter `variant_camera` instead.
+    fn variant_camera_repository(&self) -> tempfile::TempDir {
+        let repository = tempfile::tempdir().expect("variant repository");
+        let node_dir = repository.path().join("nodes/mock_uvc_camera");
+        copy_tree(
+            &self.stack.hub.path().join("nodes/mock_uvc_camera"),
+            &node_dir,
+        );
+        let counter = self.counter("variant_camera");
+        rewrite_manifest(&node_dir, |node_config| {
+            node_config.execution.build_cmd = Some(super::common::counting_build_cmd(&counter));
+        });
+        repository
+    }
+}
+
+/// Copies the directory tree `from` to `to`, a symlink as the same link.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).expect("create the copy");
+    for entry in fs::read_dir(from).expect("read the tree") {
+        let entry = entry.expect("a directory entry");
+        let target = to.join(entry.file_name());
+        let file_type = entry.file_type().expect("a file type");
+        if file_type.is_symlink() {
+            let link = fs::read_link(entry.path()).expect("read the link");
+            std::os::unix::fs::symlink(link, &target).expect("copy the link");
+        } else if file_type.is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).expect("copy a file");
+        }
+    }
+}
+
+fn ready_with_no_instance() -> ListedNode {
+    ListedNode {
+        stage: "Ready".to_owned(),
+        instances: 0,
+    }
+}
+
+/// A launch with a `stack_copies` scope adds and builds on the coordinator
+/// every node of every feature set of every scoped option, starts none of
+/// them, and leaves them `Ready` with no instance. A later join of each
+/// option, with and without the feature, over MCP or from the command line,
+/// runs the launch's pins and reuses each build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launch_builds_the_nodes_a_join_of_its_scope_brings_and_the_joins_build_none() {
+    let joinable = JoinableStack::boot().await;
+    let this = joinable.stack.serve.core_node_name().to_string();
+
+    let output = joinable.launch(joinable.launcher_args(&[]));
+    assert_eq!(joinable.all_builds(), [1, 1], "{output}");
+    for line in [
+        format!(
+            "Adding mock_recorder:v1 on `{this}` for stack joins of `rig_robot`, `recorder_robot`"
+        ),
+        format!("Adding mock_uvc_camera:v1 on `{this}` for stack joins of `rig_robot`"),
+        "Node mock_uvc_camera:v1 resolved for stack joins of `rig_robot`".to_owned(),
+    ] {
+        assert!(output.contains(&line), "{line}\n{output}");
+    }
+    assert_eq!(
+        joinable.listed_robot_nodes().await,
+        BTreeMap::from([
+            ("mock_recorder".to_owned(), ready_with_no_instance()),
+            ("mock_uvc_camera".to_owned(), ready_with_no_instance()),
+        ]),
+        "the launch starts no instance of a joinable node"
+    );
+
+    // --- The recorder robot, from the command line: the join runs the
+    // launch's resolution, adds its node again and reuses its build.
+    let output = joinable.join("recorder_robot", "charlie", &[]);
+    assert!(output.contains("Resolving 0 deployment(s)"), "{output}");
+    assert!(
+        output.contains(&format!("{CACHED_BUILD_REUSE_PREFIX} mock_recorder:v1")),
+        "{output}"
+    );
+    assert!(!output.contains(BUILDS_A_NODE), "{output}");
+    assert_eq!(joinable.all_builds(), [1, 1], "the join builds nothing");
+
+    // --- A robot with its feature, added over MCP on this machine: its
+    // recorder runs already, and its camera reuses the launch's build.
+    wait_for_port(joinable.port, || joinable.stack.run_logs()).await;
+    let (client, _progress) =
+        connect_recording_progress(&endpoint(joinable.port, "/framework_controls/v1/mcp")).await;
+    let joined = call(
+        &client,
+        "stack.join",
+        json!({ "name": "alpha", "option": "rig_robot", "core_node": this,
+                "features": [{ "feature": "camera", "core_node": this }] }),
+    )
+    .await;
+    assert_eq!(
+        joined.structured_content,
+        Some(json!({ "success": true, "message": "alpha (rig_robot) is on the stack" })),
+        "{joined:?}\n{}",
+        joinable.stack.run_logs()
+    );
+    let log = joinable.last_build_log("mock_uvc_camera");
+    assert!(
+        log.contains(&format!("{CACHED_BUILD_REUSE_PREFIX} mock_uvc_camera:v1")),
+        "the join reuses the launch's build of the camera:\n{log}"
+    );
+    assert_eq!(joinable.all_builds(), [1, 1], "the join builds nothing");
+    client.cancel().await.expect("the client closes");
+
+    // --- The robot with no feature, from the command line.
+    let output = joinable.join("rig_robot", "bravo", &[]);
+    assert!(output.contains("Resolving 0 deployment(s)"), "{output}");
+    assert!(!output.contains(BUILDS_A_NODE), "{output}");
+    assert_eq!(joinable.all_builds(), [1, 1], "no join builds a node");
+    assert_eq!(
+        joinable.stack.daemon_copies().await,
+        ["alpha", "bravo", "charlie"]
+    );
+    joinable.stack.reset();
+}
+
+/// A join of a scoped option runs the pins the launch resolved, whatever the
+/// repositories offer after a refresh: here a repository read first offers
+/// another `mock_uvc_camera:v1`, and the join stages the launch's node again
+/// and reuses its build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_join_runs_the_launchs_pins_after_the_repositories_change() {
+    let joinable = JoinableStack::boot().await;
+    joinable.launch(joinable.launcher_args(&[]));
+    assert_eq!(joinable.all_builds(), [1, 1]);
+
+    let variant = joinable.variant_camera_repository();
+    joinable.refresh_from(&[variant.path()]);
+    let output = joinable.join("rig_robot", "alpha", &["camera"]);
+
+    assert!(output.contains("Resolving 0 deployment(s)"), "{output}");
+    assert!(!output.contains(BUILDS_A_NODE), "{output}");
+    assert_eq!(joinable.all_builds(), [1, 1], "{output}");
+    assert_eq!(
+        joinable.builds("variant_camera"),
+        0,
+        "the join runs the launch's node, not the one the refresh found"
+    );
+    joinable.stack.reset();
+}
+
+/// With `--no-prebuild`, a launch resolves and builds only the nodes it
+/// runs, and a join resolves the nodes of its robot against the
+/// repositories as they are then, and builds them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_no_prebuild_a_join_resolves_and_builds_its_robot() {
+    let joinable = JoinableStack::boot().await;
+    let output = joinable.launch(LauncherArgs {
+        no_prebuild: true,
+        ..joinable.launcher_args(&[])
+    });
+    assert_eq!(joinable.all_builds(), [0, 0], "{output}");
+    assert!(!output.contains("for stack joins"), "{output}");
+    assert_eq!(joinable.listed_robot_nodes().await, BTreeMap::new());
+
+    let variant = joinable.variant_camera_repository();
+    joinable.refresh_from(&[variant.path()]);
+    let output = joinable.join("rig_robot", "alpha", &["camera"]);
+
+    assert!(output.contains("Resolving 2 deployment(s)"), "{output}");
+    assert_eq!(joinable.builds("mock_recorder"), 1);
+    assert_eq!(
+        (
+            joinable.builds("mock_uvc_camera"),
+            joinable.builds("variant_camera")
+        ),
+        (0, 1),
+        "the join builds the camera the repositories offer now"
+    );
+    joinable.stack.reset();
+}
+
+/// A node the launch runs on the coordinator and a scoped option brings is
+/// added and built once, as the launch's own node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_the_launch_runs_and_a_join_brings_is_built_once() {
+    let joinable = JoinableStack::boot().await;
+    let this = joinable.stack.serve.core_node_name().to_string();
+    let output = joinable.launch(LauncherArgs {
+        joins: LaunchJoins {
+            joins: vec!["recorder_robot:delta".parse().expect("a copy reference")],
+        },
+        ..joinable.launcher_args(&[])
+    });
+
+    assert_eq!(joinable.all_builds(), [1, 1], "{output}");
+    assert_eq!(
+        output.matches("Adding mock_recorder:v1 on").count(),
+        1,
+        "{output}"
+    );
+    assert!(
+        !output.contains(&format!(
+            "Adding mock_recorder:v1 on `{this}` for stack joins"
+        )),
+        "the launch adds its own node once, as its own:\n{output}"
+    );
+    assert!(
+        output.contains(&format!(
+            "Adding mock_uvc_camera:v1 on `{this}` for stack joins of `rig_robot`"
+        )),
+        "{output}"
+    );
+    assert_eq!(
+        joinable.listed_robot_nodes().await,
+        BTreeMap::from([
+            (
+                "mock_recorder".to_owned(),
+                ListedNode {
+                    stage: "Ready".to_owned(),
+                    instances: 1,
+                }
+            ),
+            ("mock_uvc_camera".to_owned(), ready_with_no_instance()),
+        ])
+    );
+    joinable.stack.reset();
+}
+
+/// A launch of a launcher with no `stack_copies` scope builds nothing more
+/// than the nodes it runs: here the selection deploys no framework endpoint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launch_with_no_scope_builds_no_joinable_node() {
+    let joinable = JoinableStack::boot().await;
+    let output = joinable.launch(joinable.launcher_args(&["robot_control=none"]));
+
+    assert_eq!(joinable.all_builds(), [0, 0], "{output}");
+    assert!(!output.contains("for stack joins"), "{output}");
+    joinable.stack.reset();
+}
+
+/// A joinable node that does not resolve refuses the launch before any
+/// machine changes, so the stack that ran before still runs; the refusal
+/// names the node, the options that bring it and `--no-prebuild`, which
+/// launches without it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_joinable_node_that_does_not_resolve_refuses_the_launch() {
+    let joinable = JoinableStack::boot().await;
+    joinable.launch(joinable.launcher_args(&[]));
+    let running = joinable.listed_robot_nodes().await;
+
+    fs::remove_dir_all(joinable.stack.hub.path().join("nodes/mock_uvc_camera"))
+        .expect("take the camera out of the hub");
+    joinable.refresh_from(&[]);
+    let refusal = joinable.stack.refusal(
+        "launch",
+        joinable.run(StackCommands::Launch(joinable.launcher_args(&[]))),
+    );
+
+    for part in [
+        "the nodes that the launch builds for stack joins do not resolve",
+        "deployment mock_uvc_camera:v1",
+        "(for stack joins of `rig_robot`)",
+        "`--no-prebuild`",
+    ] {
+        assert!(refusal.contains(part), "{part}\n{refusal}");
+    }
+    assert_eq!(
+        joinable.listed_robot_nodes().await,
+        running,
+        "the refused launch left the stack as it was"
+    );
+
+    joinable.launch(LauncherArgs {
+        no_prebuild: true,
+        ..joinable.launcher_args(&[])
+    });
+    joinable.stack.reset();
+}
+
+/// A joinable node that does not build fails the launch, which clears the
+/// stack as any failed launch does; the failure names the node, the options
+/// that bring it and `--no-prebuild`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_joinable_node_that_does_not_build_fails_the_launch() {
+    let joinable = JoinableStack::boot().await;
+    joinable.set_build_cmd("mock_uvc_camera", vec!["false".to_owned()]);
+    joinable.refresh_from(&[]);
+
+    let failure = joinable.stack.refusal(
+        "launch",
+        joinable.run(StackCommands::Launch(joinable.launcher_args(&[]))),
+    );
+
+    for part in [
+        "failed to build node mock_uvc_camera:v1 for stack joins of `rig_robot`",
+        "`--no-prebuild` skips the nodes built for stack joins",
+    ] {
+        assert!(failure.contains(part), "{part}\n{failure}");
+    }
+    assert_eq!(
+        joinable.listed_robot_nodes().await,
+        BTreeMap::new(),
+        "the failed launch cleared the stack"
+    );
+}
+
+/// `stack build` builds the joinable nodes as the launch would, `--rebuild`
+/// builds them again, and a later launch reuses those builds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_build_builds_the_joinable_nodes_and_rebuild_builds_them_again() {
+    let joinable = JoinableStack::boot().await;
+
+    joinable.build(joinable.launcher_args(&[]));
+    assert_eq!(joinable.all_builds(), [1, 1]);
+    assert_eq!(
+        joinable.listed_robot_nodes().await,
+        BTreeMap::from([
+            ("mock_recorder".to_owned(), ready_with_no_instance()),
+            ("mock_uvc_camera".to_owned(), ready_with_no_instance()),
+        ])
+    );
+
+    joinable.build(LauncherArgs {
+        rebuild: true,
+        ..joinable.launcher_args(&[])
+    });
+    assert_eq!(joinable.all_builds(), [2, 2], "--rebuild builds them again");
+
+    joinable.launch(joinable.launcher_args(&[]));
+    assert_eq!(
+        joinable.all_builds(),
+        [2, 2],
+        "the launch reuses the builds of `stack build`"
+    );
+    joinable.stack.reset();
+}
+
+/// A `stack reset` during the build of a joinable node cancels the launch
+/// and stops the build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reset_during_a_joinable_build_cancels_the_launch() {
+    let joinable = JoinableStack::boot().await;
+    let pid_file = joinable.counters.path().join("camera_build.pid");
+    joinable.set_build_cmd(
+        "mock_uvc_camera",
+        vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            format!("echo $$ > '{}'; exec sleep 300", pid_file.display()),
+        ],
+    );
+    joinable.refresh_from(&[]);
+
+    let ctx = Arc::clone(&joinable.stack.ctx);
+    let args = joinable.launcher_args(&[]);
+    let launch = tokio::task::spawn_blocking(move || {
+        StackCommand {
+            command: StackCommands::Launch(args),
+        }
+        .execute(&ctx)
+    });
+    let pid = tokio::time::timeout(WAIT, async {
+        loop {
+            if let Some(pid) = fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the camera's build starts");
+
+    joinable.stack.reset();
+    let error = launch
+        .await
+        .expect("the launch thread ends")
+        .expect_err("the reset cancels the launch")
+        .to_string();
+    assert!(error.contains("reset"), "{error}");
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("kill runs")
+        .success();
+    assert!(!alive, "the reset stops the build");
 }

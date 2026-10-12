@@ -50,6 +50,7 @@ fn launcher_args(launcher_config_path: PathBuf, max_timeout_secs: Option<u64>) -
         joins: Default::default(),
         timeouts: timeouts(max_timeout_secs),
         rebuild: false,
+        no_prebuild: false,
     }
 }
 

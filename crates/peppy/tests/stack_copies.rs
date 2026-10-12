@@ -199,6 +199,27 @@ fn a_launch_places_a_joined_copy_and_the_parts_its_words_select() {
     );
 }
 
+/// `--no-prebuild` on `stack launch` and `stack build` asks for the nodes
+/// the launch runs alone; without it, the launch also builds the nodes a
+/// join of a scoped option brings.
+#[test]
+fn stack_launch_and_build_take_no_prebuild() {
+    for subcommand in ["launch", "build"] {
+        for (flags, no_prebuild) in [(&["--no-prebuild"][..], true), (&[][..], false)] {
+            let cli = StackCli::try_parse_from(
+                ["stack", subcommand, "simulation_mcp"]
+                    .into_iter()
+                    .chain(flags.iter().copied()),
+            )
+            .unwrap();
+            let (StackCommands::Launch(args) | StackCommands::Build(args)) = cli.command else {
+                panic!("{subcommand} takes the launcher arguments")
+            };
+            assert_eq!(args.no_prebuild, no_prebuild, "{subcommand} {flags:?}");
+        }
+    }
+}
+
 #[test]
 fn stack_join_rejects_nonfinite_overrides() {
     for value in [
