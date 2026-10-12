@@ -66,6 +66,7 @@ tokio = { version = "1", features = [
     "sync",
     "rt",
     "macros",
+    "net",
     "time",
     "test-util",
 ] }
