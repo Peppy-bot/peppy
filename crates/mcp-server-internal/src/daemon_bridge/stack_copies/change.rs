@@ -82,12 +82,13 @@ impl Change {
     }
 
     /// The message of a change that failed for `error`, with the log files
-    /// that say more.
+    /// that say more. An `error` that ends its own sentence keeps one period.
     fn failed(&self, error: &str, logs: &[&Path]) -> String {
         let logs: Vec<String> = logs.iter().map(|log| log.display().to_string()).collect();
         format!(
-            "{} failed: {error}. Log files: {}",
+            "{} failed: {}. Log files: {}",
             self.subject(),
+            error.trim_end_matches('.'),
             logs.join(", ")
         )
     }
@@ -516,6 +517,16 @@ mod tests {
                 "message": "the removal of bravo failed: copy `bravo` is absent; peppy stack list \
                             shows the copies on the stack. Log files: /logs/stack/remove.log",
             })
+        );
+
+        let not_live = LaunchResult::failure(
+            "/logs/stack/join.log",
+            "these core nodes are not live on the federation: `cn-gone`. Live right now: `cn`.",
+        );
+        assert_eq!(
+            addition().outcome(&not_live)["message"],
+            "the addition of bravo failed: these core nodes are not live on the federation: \
+             `cn-gone`. Live right now: `cn`. Log files: /logs/stack/join.log"
         );
 
         assert_eq!(
