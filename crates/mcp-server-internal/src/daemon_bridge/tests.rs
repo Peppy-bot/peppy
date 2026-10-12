@@ -62,6 +62,7 @@ fn simulation_scope() -> Value {
         "options": [
             {
                 "option": "openarm_sim",
+                "model": "openarm_v2",
                 "description": "A simulated OpenArm v2 standing on the floor",
                 "features": [
                     { "feature": "ai_brain", "axis": "brain", "option": "ai_brain_vla",
@@ -70,7 +71,8 @@ fn simulation_scope() -> Value {
                       "description": "A recorder of episodes" },
                 ],
             },
-            { "option": "so101_sim", "description": "A simulated SO-101 clamped on the edge of a table" },
+            { "option": "so101_sim", "model": "so101",
+              "description": "A simulated SO-101 clamped on the edge of a table" },
         ],
     })
 }
@@ -79,7 +81,7 @@ fn simulation_scope() -> Value {
 fn single_scope() -> Value {
     json!({
         "max_copies": 1,
-        "options": [{ "option": "so101_sim", "description": "A simulated SO-101" }],
+        "options": [{ "option": "so101_sim", "model": "so101", "description": "A simulated SO-101" }],
     })
 }
 
@@ -490,6 +492,7 @@ async fn list_answers_the_scope_and_its_copies_in_name_order() {
             "options": [
                 {
                     "option": "openarm_sim",
+                    "model": "openarm_v2",
                     "description": "A simulated OpenArm v2 standing on the floor",
                     "features": [
                         { "feature": "ai_brain", "description": "An AI brain that finds items by words" },
@@ -498,6 +501,7 @@ async fn list_answers_the_scope_and_its_copies_in_name_order() {
                 },
                 {
                     "option": "so101_sim",
+                    "model": "so101",
                     "description": "A simulated SO-101 clamped on the edge of a table",
                     "features": [],
                 },

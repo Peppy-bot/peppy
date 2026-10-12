@@ -3040,10 +3040,10 @@ fn featured_framework_launcher(port: u16) -> String {
                 set_daemon_scopes: {{ stack: {{
                     max_copies: 3,
                     options: [
-                        {{ option: "featured_robot", description: "A robot that records episodes",
+                        {{ option: "featured_robot", model: "featured", description: "A robot that records episodes",
                            features: [{{ feature: "spare", axis: "extra", option: "second",
                                          description: "A second recorder of the same episodes" }}] }},
-                        {{ option: "recorder_robot", description: "A robot that records episodes" }},
+                        {{ option: "recorder_robot", model: "recorder", description: "A robot that records episodes" }},
                     ],
                 }} }},
             }},
@@ -3083,8 +3083,8 @@ fn framework_launcher(port: u16) -> String {
                 set_daemon_scopes: {{ stack: {{
                     max_copies: 2,
                     options: [
-                        {{ option: "recorder_robot", description: "A robot that records episodes" }},
-                        {{ option: "broken_robot", description: "A robot whose software cannot start" }},
+                        {{ option: "recorder_robot", model: "recorder", description: "A robot that records episodes" }},
+                        {{ option: "broken_robot", model: "broken", description: "A robot whose software cannot start" }},
                     ],
                 }} }},
             }},
@@ -3263,9 +3263,9 @@ async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
     assert_eq!(
         listed["options"],
         json!([
-            { "option": "featured_robot", "description": "A robot that records episodes",
+            { "option": "featured_robot", "model": "featured", "description": "A robot that records episodes",
               "features": [{ "feature": "spare", "description": "A second recorder of the same episodes" }] },
-            { "option": "recorder_robot", "description": "A robot that records episodes", "features": [] },
+            { "option": "recorder_robot", "model": "recorder", "description": "A robot that records episodes", "features": [] },
         ])
     );
 
@@ -3413,8 +3413,8 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         listed,
         json!({
             "options": [
-                { "option": "recorder_robot", "description": "A robot that records episodes", "features": [] },
-                { "option": "broken_robot", "description": "A robot whose software cannot start", "features": [] },
+                { "option": "recorder_robot", "model": "recorder", "description": "A robot that records episodes", "features": [] },
+                { "option": "broken_robot", "model": "broken", "description": "A robot whose software cannot start", "features": [] },
             ],
             "core_nodes": [this],
             "this_core_node": this,
@@ -3631,10 +3631,10 @@ fn joinable_launcher(port: u16) -> String {
                 set_daemon_scopes: {{ stack: {{
                     max_copies: 4,
                     options: [
-                        {{ option: "rig_robot", description: "A robot that records what its camera sees",
+                        {{ option: "rig_robot", model: "rig", description: "A robot that records what its camera sees",
                            features: [{{ feature: "camera", axis: "rig", option: "camera",
                                          description: "A camera beside the recorder" }}] }},
-                        {{ option: "recorder_robot", description: "A robot that records episodes" }},
+                        {{ option: "recorder_robot", model: "recorder", description: "A robot that records episodes" }},
                     ],
                 }} }},
             }},

@@ -1,8 +1,8 @@
 //! The bridge of `stack_copies:v1`: `list`, `join` and `remove` of the
 //! copies of the running launch, within the scope of a target.
 //!
-//! - `list` answers the scope's options with their descriptions and their
-//!   features, the machines of the federation now (this machine and every
+//! - `list` answers the scope's options with their models, their
+//!   descriptions and their features, the machines of the federation now (this machine and every
 //!   machine presence lists, read on each call), this machine, the copies
 //!   whose option is in the scope, in name order, each with its machine and
 //!   the features its selections hold with the machine of each, `max_copies`,
@@ -173,6 +173,7 @@ impl ScopedStackCopies {
                     .collect();
                 json!({
                     "option": entry.option().as_str(),
+                    "model": entry.model().as_str(),
                     "description": entry.description().as_str(),
                     "features": features,
                 })

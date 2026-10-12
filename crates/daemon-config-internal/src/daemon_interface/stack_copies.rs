@@ -1,7 +1,7 @@
 //! `stack_copies:v1`: the copies of the running launch, listed, added and
-//! removed. Its scope names the launcher options a client may add, with a
-//! description of each and the features a copy of it may hold, and the
-//! most copies of them the stack holds.
+//! removed. Its scope names the launcher options a client may add, with the
+//! robot model and a description of each and the features a copy of it may
+//! hold, and the most copies of them the stack holds.
 
 use crate::internal::launcher::{
     CompositionError, JoinableNodes, PartRefusal, PreparedLauncher, UnitSelection,
@@ -100,9 +100,9 @@ impl Description {
 }
 
 /// The scope of a `stack_copies` target: the launcher options a client may
-/// add, each once and with a description and the features it offers, and
-/// the most copies of these options the stack holds. Parsing holds every
-/// rule, so a value of this type is a scope the server can use.
+/// add, each once and with its robot model, a description and the features
+/// it offers, and the most copies of these options the stack holds. Parsing
+/// holds every rule, so a value of this type is a scope the server can use.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawStackCopiesScope")]
 pub struct StackCopiesScope {
@@ -110,11 +110,12 @@ pub struct StackCopiesScope {
     max_copies: NonZeroU16,
 }
 
-/// One launcher option a client may add a copy of, and the features a copy
-/// of it may hold.
+/// One launcher option a client may add a copy of, the robot model a copy
+/// of it is, and the features a copy of it may hold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedOption {
     option: Name,
+    model: Name,
     description: Description,
     features: Vec<ScopedFeature>,
 }
@@ -151,6 +152,7 @@ struct RawStackCopiesScope {
 #[serde(deny_unknown_fields)]
 struct RawScopedOption {
     option: Name,
+    model: Name,
     description: String,
     #[serde(default)]
     features: Option<Vec<RawScopedFeature>>,
@@ -262,6 +264,7 @@ impl TryFrom<RawScopedOption> for ScopedOption {
         }
         Ok(Self {
             option,
+            model: raw.model,
             description,
             features,
         })
@@ -272,6 +275,11 @@ impl ScopedOption {
     /// The option of an axis that runs as copies: the value `join` takes.
     pub fn option(&self) -> &Name {
         &self.option
+    }
+
+    /// The robot model a copy of the option is, as the scope names it.
+    pub fn model(&self) -> &Name {
+        &self.model
     }
 
     /// One line that says what a copy of the option is.

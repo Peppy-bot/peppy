@@ -9,11 +9,11 @@
   interfaces: {
     services: [
       {
-        // The options of the scope with their features, the machines of the
-        // federation now, the copies of these options on the stack, in name
-        // order, and the addition or removal of a copy of one of them that
-        // runs now. Each copy is a valid `join` goal, which adds the same
-        // copy on the same machines.
+        // The options of the scope with their models and their features, the
+        // machines of the federation now, the copies of these options on the
+        // stack, in name order, and the addition or removal of a copy of one
+        // of them that runs now. Each copy is a valid `join` goal, which adds
+        // the same copy on the same machines.
         name: "list",
         response_message_format: {
           options: {
@@ -22,6 +22,9 @@
               $type: "object",
               // The launcher option, the value `join` takes.
               option: "string",
+              // The robot model a copy of the option is, as the scope names
+              // it.
+              model: "string",
               // The one-line description the scope gives the option.
               description: "string",
               // The features a copy of the option may hold, in the scope's

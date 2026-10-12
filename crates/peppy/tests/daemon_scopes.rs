@@ -18,8 +18,8 @@ const FRAMEWORK_CONTROLS: &str = include_str!(
 const SCOPE: &str = r#"{
     max_copies: 4,
     options: [
-        { option: "openarm_sim", description: "A simulated OpenArm v2 standing on the floor" },
-        { option: "so101_sim", description: "A simulated SO-101 clamped on the edge of a table" },
+        { option: "openarm_sim", model: "openarm_v2", description: "A simulated OpenArm v2 standing on the floor" },
+        { option: "so101_sim", model: "so101", description: "A simulated SO-101 clamped on the edge of a table" },
     ],
 }"#;
 
@@ -241,7 +241,9 @@ fn a_scope_that_does_not_parse_or_names_no_copy_option_is_refused() {
         launcher(
             root.path(),
             ENDPOINT,
-            &scoped(r#"{ max_copies: 4, options: [{ option: "none", description: "Nothing" }] }"#),
+            &scoped(
+                r#"{ max_copies: 4, options: [{ option: "none", model: "none", description: "Nothing" }] }"#,
+            ),
         ),
     );
     assert!(
@@ -453,7 +455,7 @@ fn featured_launcher(root: &Path, features: &str, constraints: &str) -> PathBuf 
             ],
             adjustments: [{{ target: "framework_controls_inst", set_daemon_scopes: {{ stack: {{
                 max_copies: 2,
-                options: [{{ option: "featured_sim", description: "A featured robot",
+                options: [{{ option: "featured_sim", model: "featured", description: "A featured robot",
                              features: [{features}] }}],
             }} }} }}],
         }}"#

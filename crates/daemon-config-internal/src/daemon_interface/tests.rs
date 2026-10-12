@@ -138,6 +138,7 @@ fn simulation_scope() -> serde_json::Value {
         "options": [
             {
                 "option": "openarm_sim",
+                "model": "openarm_v2",
                 "description": "A simulated OpenArm v2 standing on the floor",
                 "features": [{
                     "feature": "ai_brain",
@@ -146,7 +147,7 @@ fn simulation_scope() -> serde_json::Value {
                     "description": "An AI brain that finds items by words, then grabs and places them",
                 }],
             },
-            { "option": "so101_sim", "description": "A simulated SO-101 clamped on the edge of a table" },
+            { "option": "so101_sim", "model": "so101", "description": "A simulated SO-101 clamped on the edge of a table" },
         ],
     })
 }
@@ -156,8 +157,8 @@ fn featureless_scope() -> serde_json::Value {
     json!({
         "max_copies": 4,
         "options": [
-            { "option": "openarm_sim", "description": "A simulated OpenArm v2 standing on the floor" },
-            { "option": "so101_sim", "description": "A simulated SO-101 clamped on the edge of a table" },
+            { "option": "openarm_sim", "model": "openarm_v2", "description": "A simulated OpenArm v2 standing on the floor" },
+            { "option": "so101_sim", "model": "so101", "description": "A simulated SO-101 clamped on the edge of a table" },
         ],
     })
 }
@@ -165,12 +166,13 @@ fn featureless_scope() -> serde_json::Value {
 #[test]
 fn a_stack_copies_scope_parses_into_its_type() {
     let parsed = scope(simulation_scope()).expect("parses");
-    let options: Vec<(&str, &str, Vec<&str>)> = parsed
+    let options: Vec<(&str, &str, &str, Vec<&str>)> = parsed
         .options()
         .iter()
         .map(|entry| {
             (
                 entry.option().as_str(),
+                entry.model().as_str(),
                 entry.description().as_str(),
                 entry
                     .features()
@@ -185,11 +187,13 @@ fn a_stack_copies_scope_parses_into_its_type() {
         [
             (
                 "openarm_sim",
+                "openarm_v2",
                 "A simulated OpenArm v2 standing on the floor",
                 vec!["ai_brain"]
             ),
             (
                 "so101_sim",
+                "so101",
                 "A simulated SO-101 clamped on the edge of a table",
                 vec![]
             ),
@@ -222,6 +226,7 @@ fn a_feature_gives_its_word_and_is_found_in_a_robots_selections() {
         "max_copies": 4,
         "options": [{
             "option": "openarm_sim",
+            "model": "openarm_v2",
             "description": "An OpenArm",
             "features": [
                 { "feature": "recorder", "axis": "recorder", "option": "lerobot_recorder", "description": "Records." },
@@ -274,8 +279,7 @@ fn a_feature_gives_its_word_and_is_found_in_a_robots_selections() {
 
 #[test]
 fn a_stack_copies_scope_holds_its_rules() {
-    let option =
-        |option: &str, description: &str| json!({ "option": option, "description": description });
+    let option = |option: &str, description: &str| json!({ "option": option, "model": "m", "description": description });
     let refused = |value: serde_json::Value| scope(value).expect_err("the scope is refused");
 
     let error = refused(json!({ "options": [], "max_copies": 1 }));
@@ -330,13 +334,18 @@ fn a_stack_copies_scope_holds_its_rules() {
     let error = refused(json!({ "options": [option("a", "One.")], "max_copies": 1, "model": "x" }));
     assert!(error.contains("unknown field `model`"), "{error}");
     let error = refused(json!({
-        "options": [{ "option": "a", "description": "One.", "model": "so101" }],
+        "options": [{ "option": "a", "description": "One." }],
         "max_copies": 1,
     }));
     assert!(
-        error.starts_with("options[0]") && error.contains("unknown field `model`"),
+        error.starts_with("options[0]") && error.contains("missing field `model`"),
         "{error}"
     );
+    let error = refused(json!({
+        "options": [{ "option": "a", "model": "bad model", "description": "One." }],
+        "max_copies": 1,
+    }));
+    assert!(error.starts_with("options[0].model:"), "{error}");
     let error = refused(json!("openarm_sim"));
     assert!(!error.is_empty());
 }
@@ -349,14 +358,14 @@ fn the_features_of_an_option_hold_their_rules() {
     let feature = |name: &str, axis: &str| json!({ "feature": name, "axis": axis, "option": "on", "description": "Adds one." });
     let with_features = |features: serde_json::Value| {
         json!({
-            "options": [{ "option": "a", "description": "One.", "features": features }],
+            "options": [{ "option": "a", "model": "m", "description": "One.", "features": features }],
             "max_copies": 1,
         })
     };
     let refused = |value: serde_json::Value| scope(value).expect_err("the scope is refused");
 
     let none =
-        scope(json!({ "options": [{ "option": "a", "description": "One." }], "max_copies": 1 }))
+        scope(json!({ "options": [{ "option": "a", "model": "m", "description": "One." }], "max_copies": 1 }))
             .expect("an option with no features key offers none");
     assert!(none.options()[0].features().is_empty());
 
