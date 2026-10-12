@@ -107,7 +107,7 @@ CI runs on [RunsOn](https://runs-on.com) runners: each job gets an EC2 instance 
 - **passwordless sudo** for the runner's user. Each container suite installs a peppy release under the job's own directory and runs `peppy container setup`, which writes an AppArmor profile keyed to that install's path, and a job has no terminal for `sudo` to prompt at.
 - **the aarch64 cross toolchain** (`rustup target add aarch64-unknown-linux-gnu` and `gcc-aarch64-linux-gnu`) that the cross-check job builds with.
 
-The workflows install nothing on those images: the first step of every cargo job stops the run naming any tool that is missing. A cargo suite keeps its build cache (its target directory, the cargo registry and the build scripts' tool cache in `~/.peppy/tmp`) on a sticky disk of its own, which RunsOn restores from the newest snapshot of the same branch, or of `dev` for a branch's first run, and snapshots again after the job.
+The workflows install nothing on those images: the first step of every cargo job stops the run naming any tool that is missing. A cargo suite keeps its build cache (its target directory, the cargo registry and the build scripts' tool cache in `~/.peppy/tmp`) on a sticky disk of its own, which RunsOn restores from the newest snapshot of the same branch, or of `dev` for a branch's first run, and snapshots again after the job. A job that finds its disk more than half full empties the caches first and builds cold, so a build always has room.
 
 ### Build
 

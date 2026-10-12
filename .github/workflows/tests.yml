@@ -51,11 +51,13 @@ env:
 # writes a pull request's run back to dev. The sticky disk cleanup of the
 # RunsOn stack (infraops) deletes every snapshot of a disk once a week, so the
 # disk starts blank again, and deletes the snapshot of a pull request that has
-# not run for 2 days. Each job writes what its disk holds and what grew in it
-# to its summary (the sticky-disk-report action). A pull request from a fork
-# runs on the same runners, so what holds fork code is the repository's fork-PR
-# approval policy, which holds every outside contributor's run until a
-# maintainer approves it.
+# not run for 2 days. Between two resets, the cargo-cache action empties a disk
+# restored more than half full, so a run always has room to build. Each job
+# writes what its disk holds and what grew in it to its summary (the
+# sticky-disk-report action). A pull request from a fork runs on the same
+# runners, so what holds fork code is the repository's fork-PR approval
+# policy, which holds every outside contributor's run until a maintainer
+# approves it.
 #
 # From attempt 3 of a run, each RunsOn job runs on demand and not on spot,
 # because RunsOn runs an interrupted job again only after attempt 1 or 2 (see
