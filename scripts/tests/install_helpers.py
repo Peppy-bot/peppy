@@ -15,15 +15,21 @@ probes. A CI job step is not a login session, so on Linux every command of
 the tests goes through SSH to localhost. On macOS the runner already runs in
 the logged-in user's GUI session, the one Terminal shells run in, so the
 commands run there directly.
+
+The tests that need a system of their own (another distribution, another
+board) run install.sh in a Docker container instead, through
+run_in_container.
 """
 
 from __future__ import annotations
 
 import functools
 import os
+import platform
 import shlex
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -49,8 +55,20 @@ APT_GET = "apt-get -o DPkg::Lock::Timeout=300"
 
 IS_LINUX = sys.platform == "linux"
 IS_MACOS = sys.platform == "darwin"
+IS_LINUX_AARCH64 = IS_LINUX and platform.machine() == "aarch64"
 
 linux_only = pytest.mark.skipif(not IS_LINUX, reason="applies to Linux only")
+linux_aarch64_only = pytest.mark.skipif(
+    not IS_LINUX_AARCH64, reason="applies to Linux on aarch64 only"
+)
+
+# Where each container sees the two files it is given, and where it installs.
+CONTAINER_INSTALL_SCRIPT = "/peppy-test/install.sh"
+CONTAINER_PEPPY_HOME = "/peppy-home"
+
+# Where the kernel shows the device tree of the board, the path install.sh
+# reads to identify a Raspberry Pi.
+DEVICE_TREE = "/sys/firmware/devicetree/base"
 
 
 def is_disposable_host() -> bool:
@@ -271,6 +289,92 @@ done
 rm -rf {HOMES_ROOT}
 mkdir -p {HOMES_ROOT}
 """
+
+
+def container_install_cmd() -> str:
+    """install.sh as a container user runs it: no service, since no systemd runs."""
+    archive = f"/peppy-test/{release_archive().name}"
+    return (
+        f"PEPPY_HOME={CONTAINER_PEPPY_HOME} PEPPY_NO_SERVICE_INSTALL=1 "
+        f"sh {CONTAINER_INSTALL_SCRIPT} {archive}"
+    )
+
+
+def run_in_container(
+    image: str,
+    script: str,
+    *,
+    files: Mapping[str, Path] | None = None,
+    device_tree: Path | None = None,
+    timeout: int = 600,
+) -> subprocess.CompletedProcess[str]:
+    """Run *script* with sh in a fresh container of *image*.
+
+    The container gets install.sh and the release archive of this machine's
+    platform read-only, and nothing else of the host. *files* maps a path in
+    the container to a host file that replaces it there, read-only: an
+    /etc/os-release presents install.sh with a distribution the tests have no
+    image of.
+
+    *device_tree* is a host directory the container sees as the device tree
+    of its board, at DEVICE_TREE. Docker hides /sys/firmware from a container
+    and its AppArmor profile denies reading it, so such a container runs with
+    the hidden paths shown, without that profile, and with a tmpfs of its own
+    at /sys/firmware for the directory to be mounted into.
+    """
+    archive = release_archive()
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{INSTALL_SCRIPT}:{CONTAINER_INSTALL_SCRIPT}:ro",
+        "-v",
+        f"{archive}:/peppy-test/{archive.name}:ro",
+    ]
+    for container_path, host_path in (files or {}).items():
+        command += ["-v", f"{host_path}:{container_path}:ro"]
+    if device_tree is not None:
+        command += [
+            "--security-opt",
+            "systempaths=unconfined",
+            "--security-opt",
+            "apparmor=unconfined",
+            "--tmpfs",
+            "/sys/firmware",
+            "-v",
+            f"{device_tree}:{DEVICE_TREE}:ro",
+        ]
+    command += [image, "sh", "-c", script]
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def refusal_script(before: str = "") -> str:
+    """install.sh after *before*, then a line the tests look for when it left a
+    PEPPY_HOME behind, with install.sh's own exit status passed through."""
+    return (
+        f"{before}{container_install_cmd()}; status=$?; "
+        f'[ ! -e {CONTAINER_PEPPY_HOME} ] || echo "PEPPY_HOME was created"; '
+        "exit $status"
+    )
+
+
+def assert_refused(result: subprocess.CompletedProcess[str], message: str) -> None:
+    """Assert install.sh stopped with *message* before it changed anything."""
+    assert result.returncode == 1, (
+        f"install.sh should stop with status 1{diagnostic(result)}"
+    )
+    assert message in result.stderr, f"error should say {message!r}{diagnostic(result)}"
+    assert "PEPPY_HOME was created" not in result.stdout, (
+        f"install.sh should stop before it changes anything{diagnostic(result)}"
+    )
 
 
 def remove_peppy() -> None:

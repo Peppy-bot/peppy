@@ -1,10 +1,11 @@
 name: install.sh tests
 description: >-
   Installs the release archive of this runner's platform with install.sh and
-  runs the install.sh tests against it (scripts/tests/test_install*.py). The
-  tests change the machine they run on, so the action runs only on a
-  GitHub-hosted runner, which is a fresh image for each job and is discarded
-  after it.
+  runs the install.sh tests against it (scripts/tests/test_install*.py). On
+  an aarch64 runner the tests also install it on Raspberry Pi OS, in Docker
+  containers of the official image. The tests change the machine they run
+  on, so the action runs only on a GitHub-hosted runner, which is a fresh
+  image for each job and is discarded after it.
 
 inputs:
   archive:

@@ -295,7 +295,10 @@ jobs:
 
   # Installs each archive with the install.sh of the release commit on a fresh
   # GitHub-hosted runner of its platform, and runs the install.sh tests
-  # against it. peppy.bot/install.sh serves the install.sh of `main` and
+  # against it. The aarch64 leg also installs its archive on Raspberry Pi OS,
+  # in containers of the official image (see
+  # scripts/tests/test_install_raspberry_pi_os.py). peppy.bot/install.sh
+  # serves the install.sh of `main` and
   # peppy.bot/latest the archives of the latest release, and publish moves
   # both to this release at once, so this is the install users get from the
   # moment publish finishes. The tests change the machine they run on, which

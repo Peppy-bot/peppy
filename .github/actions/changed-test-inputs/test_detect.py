@@ -261,9 +261,12 @@ class Detection(unittest.TestCase):
             "scripts/build_release.sh",
             "scripts/run_tests.sh",
             "scripts/tests/install_helpers.py",
+            "scripts/tests/raspberry_pi_os.py",
             "scripts/tests/test_install.py",
             "scripts/tests/test_install_in_docker.py",
+            "scripts/tests/test_install_raspberry_pi_os.py",
             "scripts/functions/build_release.py",
+            "scripts/functions/verify_release.py",
             "scripts/pixi.toml",
             ".github/actions/install-test/action.yml",
         ):

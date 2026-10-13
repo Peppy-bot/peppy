@@ -27,13 +27,16 @@ env:
 # slowest suite rather than the sum of them. Every suite is gated on its inputs
 # by the changes job and waits for that job alone, never for another suite.
 #
-# Every job but one runs on a RunsOn runner: an EC2 instance of its own, booted
-# from the peppy-ubuntu24 image for the job and discarded after it, sized by
-# the job's runs-on label. Every job asks for the AMD families c8a, c7a, m8a
-# and m7a. On these, one vCPU is a full core and not a hyperthread, so a
-# compile gets twice the cores of an Intel instance of the same size for
-# about the same spot price. Four families in each zone give enough spot
-# pools that a spot instance is found at once. The gates take 2 vCPU. The
+# Every job but the two install-script jobs runs on a RunsOn runner: an EC2
+# instance of its own, booted from the peppy-ubuntu24 image for the job and
+# discarded after it, sized by the job's runs-on label. Every one of these
+# jobs but install-archive-aarch64 asks for the AMD families c8a, c7a, m8a and
+# m7a. On these, one vCPU is a full core and not a hyperthread, so a compile
+# gets twice the cores of an Intel instance of the same size for about the
+# same spot price. Four families in each zone give enough spot pools that a
+# spot instance is found at once. install-archive-aarch64 builds on Graviton,
+# from peppy-ubuntu24-aarch64, the arm64 build of the image. The gates take 2
+# vCPU. The
 # cargo suites take 16 vCPU with 32 or 64 GB (the heaviest suite peaks near
 # 11 GB) and a root disk of about twice what the suite writes under
 # RUNNER_TEMP: 100 GB for the multi-daemon suite, whose Docker and apptainer
@@ -63,11 +66,11 @@ env:
 # because RunsOn runs an interrupted job again only after attempt 1 or 2 (see
 # .github/runs-on.yml).
 #
-# The exception is install-script, which runs install.sh on a GitHub-hosted
-# runner. install.sh changes the machine it runs on (apt packages, systemd
-# linger, an AppArmor profile, a user service), and the tests must start from
-# the stock Ubuntu image a user starts from, which the CI image, provisioned
-# for builds, is not.
+# The exceptions are install-script and install-script-aarch64, which run
+# install.sh on GitHub-hosted runners. install.sh changes the machine it runs
+# on (apt packages, systemd linger, an AppArmor profile, a user service), and
+# the tests must start from the stock Ubuntu image a user starts from, which
+# the CI image, provisioned for builds, is not.
 jobs:
   # What the change set requires each gated job to run: a boolean for the jobs
   # that are all or nothing, and a package selection for the job that splits
@@ -279,9 +282,9 @@ jobs:
   # magnitude apart. This job runs the mocked tests, about a second for all of
   # them, on any change under scripts/ and to the resolve.py of the
   # hub-ci-peppy action, which the scripts load. The install.sh tests need a
-  # release archive and a fresh machine, so they run in install-script, on the
-  # archive install-archive builds, gated on the far narrower set of files
-  # that decide what gets installed and how.
+  # release archive and a fresh machine, so they run in the install-script
+  # jobs, on the archives the install-archive jobs build, gated on the far
+  # narrower set of files that decide what gets installed and how.
   release-scripts:
     needs: changes
     if: needs.changes.outputs.scripts == 'true'
@@ -358,8 +361,8 @@ jobs:
   # Installs that archive with this change's install.sh on a fresh Ubuntu
   # x86_64 runner, and runs the container path of install.sh in Docker (see
   # the install-test action). The release workflow runs the same tests on
-  # every platform before it publishes; this job is the early warning for
-  # the one platform a pull request can build cheaply.
+  # every platform before it publishes; this job and install-script-aarch64
+  # are the early warning for the two Linux platforms.
   install-script:
     needs: [changes, install-archive]
     if: needs.changes.outputs.install_script == 'true'
@@ -376,6 +379,67 @@ jobs:
       - uses: ./.github/actions/install-test
         with:
           archive: peppy-dev-x86_64-unknown-linux-gnu
+
+  # Builds the release archive of this change for aarch64 Linux, natively on
+  # Graviton, as install-archive builds the x86_64 one. No hub reads it, so
+  # it builds only for install-script-aarch64, when the install inputs
+  # changed. release-arm64 (.github/runs-on.yml) is the runner that boots
+  # peppy-ubuntu24-aarch64; the labels give this job the disk and the sticky
+  # disk of install-archive.
+  install-archive-aarch64:
+    needs: changes
+    if: needs.changes.outputs.install_script == 'true'
+    runs-on: runs-on=${{ github.run_id }}/runner=release-arm64/volume=50gb:gp3:500mbs:6000iops/sticky=install-archive-aarch64:50gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # image (via runner): peppy-ubuntu24-aarch64, custom Peppy AMI
+    permissions:
+      contents: read
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust-build-env
+
+      - uses: ./.github/actions/cargo-cache
+        with:
+          suite: install-archive-aarch64
+
+      - name: Build the release archive of this runner's platform
+        env:
+          HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ./scripts/build_release.sh --local --tag "dev-${HEAD_COMMIT:0:12}"
+
+      # The installing job runs on ubuntu-24.04-arm, so this runner must
+      # build the aarch64 archive; a runner of another architecture fails
+      # here, by name. Only the job after this one reads it.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: peppy-dev-aarch64-unknown-linux-gnu
+          path: dist/peppy-aarch64-unknown-linux-gnu.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Installs that archive with this change's install.sh on a fresh Ubuntu
+  # aarch64 runner, as install-script does on x86_64, and installs it on
+  # Raspberry Pi OS, whose tests need an arm64 host (see the install-test
+  # action).
+  install-script-aarch64:
+    needs: [changes, install-archive-aarch64]
+    if: needs.changes.outputs.install_script == 'true'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/install-test
+        with:
+          archive: peppy-dev-aarch64-unknown-linux-gnu
 
   # The sealed peppy-shared tree: the cargo packages of its workspace together
   # with the peppylib Python bindings built from them. It runs the units the
@@ -551,6 +615,8 @@ jobs:
       - release-scripts
       - install-archive
       - install-script
+      - install-archive-aarch64
+      - install-script-aarch64
       - peppy-shared
       - cross-check
     # Runs whatever happened above: on the default condition a failed or
