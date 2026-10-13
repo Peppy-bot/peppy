@@ -8,8 +8,10 @@ set -eu
 #   ./install.sh ./peppy-x86_64-unknown-linux-gnu.tgz
 #
 # Supported platforms: Ubuntu and the distributions built on it (x86_64 and
-# aarch64), and macOS on Apple Silicon. On any other system the script stops
-# before it changes anything.
+# aarch64), Raspberry Pi OS (64-bit, based on Debian 13 or later) on the
+# boards built on the BCM2712 SoC (Raspberry Pi 5, Pi 500, Compute Module 5),
+# and macOS on Apple Silicon. On any other system the script stops before it
+# changes anything.
 #
 # Environment variables:
 #   PEPPY_VERSION            Version to install (default: latest)
@@ -198,6 +200,85 @@ EOF
         return 1
     }
 
+    SUPPORTED_LINUX="peppy supports Ubuntu and the distributions built on it, and Raspberry Pi OS (64-bit) on a Raspberry Pi 5."
+
+    # The device tree of the board the kernel runs on. /proc/device-tree is a
+    # link to it. `compatible` names the board, then its SoC, and `model`
+    # names the board for people; both hold NUL-terminated strings.
+    DEVICE_TREE="/sys/firmware/devicetree/base"
+
+    # The release archives are built on Ubuntu 24.04 and need glibc 2.38 or
+    # later. Raspberry Pi OS based on Debian 13 (trixie) has glibc 2.41; the
+    # one based on Debian 12 (bookworm) has glibc 2.36, on which peppy and
+    # apptainer cannot start.
+    RASPBERRY_PI_OS_MIN_DEBIAN_VERSION=13
+
+    # is_raspberry_pi_os FILE: 0 when the os-release FILE and the system
+    # describe Raspberry Pi OS. Its os-release is the one of Debian (ID=debian
+    # in the 64-bit release, ID=raspbian in the 32-bit one), so the
+    # /etc/rpi-issue that every Raspberry Pi OS image writes is what tells it
+    # apart from Debian.
+    is_raspberry_pi_os() {
+        [ -f /etc/rpi-issue ] || return 1
+        case "$(os_release_field ID "$1")" in
+        debian | raspbian) return 0 ;;
+        esac
+        return 1
+    }
+
+    # has_bcm2712_soc: 0 when the device tree names the BCM2712, the SoC of
+    # the Raspberry Pi 5, the Pi 500 and the Compute Module 5. Older boards
+    # name an older SoC (brcm,bcm2711 on the Raspberry Pi 4).
+    has_bcm2712_soc() {
+        [ -r "$DEVICE_TREE/compatible" ] || return 1
+        tr '\0' '\n' <"$DEVICE_TREE/compatible" | grep -qx 'brcm,bcm2712'
+    }
+
+    # board_model: the board name the device tree gives, empty when there is
+    # none to read.
+    board_model() {
+        if [ -r "$DEVICE_TREE/model" ]; then
+            tr -d '\0' <"$DEVICE_TREE/model"
+        fi
+    }
+
+    # check_raspberry_pi_os FILE: stop unless this Raspberry Pi OS runs on a
+    # BCM2712 board, in its 64-bit release, based on a Debian release with
+    # the glibc the archive needs. The checks go from the one only new
+    # hardware fixes to the one an upgrade fixes.
+    check_raspberry_pi_os() {
+        if ! has_bcm2712_soc; then
+            _MODEL="$(board_model)"
+            echo "error: peppy supports Raspberry Pi OS on a Raspberry Pi 5, a Pi 500 or a Compute Module 5 only." >&2
+            if [ -n "$_MODEL" ]; then
+                echo "       This board is a '${_MODEL}'." >&2
+            else
+                echo "       The device tree (${DEVICE_TREE}) names no board." >&2
+            fi
+            exit 1
+        fi
+
+        # On a Raspberry Pi 5 the 32-bit Raspberry Pi OS also runs a 64-bit
+        # kernel, so `uname -m` says aarch64 there too. The architecture of
+        # the installed packages is the one of the userland.
+        _USERLAND_ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
+        if [ "$_USERLAND_ARCH" != "arm64" ]; then
+            echo "error: peppy needs the 64-bit Raspberry Pi OS (arm64), and this system runs '${_USERLAND_ARCH:-an unknown architecture}'." >&2
+            echo "       Install Raspberry Pi OS (64-bit) with Raspberry Pi Imager." >&2
+            exit 1
+        fi
+
+        _DEBIAN_VERSION="$(os_release_field VERSION_ID "$1")"
+        case "$_DEBIAN_VERSION" in
+        '' | *[!0-9]*) _DEBIAN_VERSION=0 ;;
+        esac
+        if [ "$_DEBIAN_VERSION" -lt "$RASPBERRY_PI_OS_MIN_DEBIAN_VERSION" ]; then
+            echo "error: unsupported Raspberry Pi OS release, based on '$(os_release_field PRETTY_NAME "$1")'." >&2
+            echo "       peppy supports Raspberry Pi OS based on Debian ${RASPBERRY_PI_OS_MIN_DEBIAN_VERSION} (trixie) or later." >&2
+            exit 1
+        fi
+    }
+
     PLATFORM="$(uname -s)"
     ARCH="$(uname -m)"
 
@@ -228,13 +309,15 @@ EOF
         done
         if [ -z "$OS_RELEASE" ]; then
             echo "error: cannot identify this Linux distribution (no /etc/os-release or /usr/lib/os-release)." >&2
-            echo "       peppy supports Ubuntu and the distributions built on it." >&2
+            echo "       ${SUPPORTED_LINUX}" >&2
             exit 1
         fi
-        if ! is_ubuntu_based "$OS_RELEASE"; then
+        if is_raspberry_pi_os "$OS_RELEASE"; then
+            check_raspberry_pi_os "$OS_RELEASE"
+        elif ! is_ubuntu_based "$OS_RELEASE"; then
             DISTRO_NAME="$(os_release_field PRETTY_NAME "$OS_RELEASE")"
             echo "error: unsupported Linux distribution '${DISTRO_NAME:-$(os_release_field ID "$OS_RELEASE")}'." >&2
-            echo "       peppy supports Ubuntu and the distributions built on it." >&2
+            echo "       ${SUPPORTED_LINUX}" >&2
             exit 1
         fi
         PLATFORM="unknown-linux-gnu"

@@ -13,7 +13,7 @@ To install `peppy`, run the following command in your terminal:
 curl -fsSL https://peppy.bot/install.sh | sh
 ```
 
-The installer supports Ubuntu and the Linux distributions built on it (x86_64 and aarch64, tested on Ubuntu 24.04), and macOS on Apple Silicon. It recognises an Ubuntu-based distribution by `ID` or `ID_LIKE` in `/etc/os-release`. On any other system, Fedora and Arch Linux among them, it stops with an error before it changes anything.
+The installer supports Ubuntu and the Linux distributions built on it (x86_64 and aarch64, tested on Ubuntu 24.04), Raspberry Pi OS on a Raspberry Pi 5 (see [Raspberry Pi](#raspberry-pi)), and macOS on Apple Silicon. It recognises an Ubuntu-based distribution by `ID` or `ID_LIKE` in `/etc/os-release`. On any other system, Fedora, Arch Linux and Debian among them, it stops with an error before it changes anything.
 
 This installer also sets up the `peppy` background service and populates the repository index that name-based launches resolve from. To skip that step, set `PEPPY_NO_SERVICE_INSTALL=1`. The flag skips the repository setup along with the service, so a launch by name then fails with `nodes.json5 not found or empty` until you run `peppy repo init` and `peppy repo update` yourself.
 
@@ -34,6 +34,16 @@ curl -fsSL https://peppy.bot/install.sh | sh -s -- ./peppy-x86_64-unknown-linux-
 If a daemon is already running, the installer asks for confirmation before replacing it; set `PEPPY_FORCE_REINSTALL=1` for non-interactive installs.
 
 Each Peppy version reads the content of the default repositories that was released with it (see [Repositories](/advanced_guides/repositories/)). Installing another Peppy version therefore also changes the hub content those repositories read, and the daemon reads it again at its next start.
+
+### Raspberry Pi
+
+On a Raspberry Pi, the installer supports Raspberry Pi OS (64-bit) based on Debian 13 (trixie) or later, on the boards built on the BCM2712 SoC: the Raspberry Pi 5, the Raspberry Pi 500 and the Compute Module 5. It recognises Raspberry Pi OS by the `/etc/rpi-issue` file of its image, and the board by `brcm,bcm2712` in the `compatible` entry of the device tree (`/sys/firmware/devicetree/base`). It stops with an error before it changes anything on:
+
+- an older board, such as the Raspberry Pi 4 or the Raspberry Pi 3. The error names the board.
+- the 32-bit Raspberry Pi OS. On a Raspberry Pi 5 it also runs a 64-bit kernel, so the installer reads the architecture of the installed packages (`dpkg --print-architecture`), which must be `arm64`.
+- Raspberry Pi OS based on Debian 12 (bookworm), the release Raspberry Pi Imager lists as Legacy. Its glibc is older than the one peppy needs.
+
+To install Raspberry Pi OS (64-bit), use [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
 
 ### Installer environment variables
 
