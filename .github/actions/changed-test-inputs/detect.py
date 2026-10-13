@@ -72,25 +72,29 @@ WORKSPACE_SUITE = "workspace"
 TREE_SUITES = {
     # pixi run test-fast
     "scripts": ["scripts/**", ".github/actions/hub-ci-peppy/resolve.py"],
-    # The install-script job, and the install-archive job on a push to main.
-    # install.sh is what the runner runs; build_release.sh and
-    # build/build_release/cli produce the archive it installs
-    # (`build_release.sh --local --tag dev-<commit>`), with its build cache
-    # kept by the cargo-cache action and reported by the sticky-disk-report
-    # action it runs; the install-test action, run_tests.sh, conftest and the
-    # two test modules are what drives it; and the manifests pin the pixi
-    # environment the tests run in.
+    # The install-script jobs, the install-archive-aarch64 job, and the
+    # install-archive job on a push to main. install.sh is what the runner
+    # runs; build_release.sh and build/build_release/cli produce the archive
+    # it installs (`build_release.sh --local --tag dev-<commit>`), with its
+    # build cache kept by the cargo-cache action and reported by the
+    # sticky-disk-report action it runs, and verify_release checks that
+    # archive before the build hands it on; the install-test action,
+    # run_tests.sh, conftest, the helpers and the three test modules are what
+    # drives it; and the manifests pin the pixi environment the tests run in.
     "install_script": [
         "scripts/install.sh",
         "scripts/build_release.sh",
         "scripts/functions/build.py",
         "scripts/functions/build_release.py",
         "scripts/functions/cli.py",
+        "scripts/functions/verify_release.py",
         "scripts/run_tests.sh",
         "scripts/tests/conftest.py",
         "scripts/tests/install_helpers.py",
+        "scripts/tests/raspberry_pi_os.py",
         "scripts/tests/test_install.py",
         "scripts/tests/test_install_in_docker.py",
+        "scripts/tests/test_install_raspberry_pi.py",
         "scripts/pixi.toml",
         "scripts/pixi.lock",
         ".github/actions/cargo-cache/**",
@@ -118,7 +122,9 @@ JOBS = {
     "docs-integration": ["docs_integration"],
     "cross-check": ["cross_check"],
     "release-scripts": ["scripts"],
+    "install-archive-aarch64": ["install_script"],
     "install-script": ["install_script"],
+    "install-script-aarch64": ["install_script"],
     "peppy-shared": ["peppy_shared_packages", "peppy_shared_peppylib_py"],
 }
 

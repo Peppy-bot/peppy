@@ -18,7 +18,7 @@ The installer puts the `peppy` CLI on your `PATH`, registers the background serv
 peppy info
 ```
 
-Peppy runs on Ubuntu and the Linux distributions built on it (x86_64/aarch64, tested on Ubuntu 24.04), and on macOS (Apple Silicon). Other Linux distributions, Fedora and Arch Linux among them, are not supported: the installer stops on them before it changes anything.
+Peppy runs on Ubuntu 24.04 or later and the Linux distributions built on it, on Debian 13 or later (x86_64/aarch64, tested on Ubuntu 24.04), on Raspberry Pi OS (64-bit, based on Debian 13 or later), and on macOS (Apple Silicon). Of the Raspberry Pi boards, it runs on the Raspberry Pi 5, the Pi 500 and the Compute Module 5. Other Linux distributions, Fedora and Arch Linux among them, are not supported, and neither are Ubuntu 22.04, Debian 12, 32-bit systems and the older Raspberry Pi boards: the installer stops on them before it changes anything.
 
 The [installation guide](https://docs.peppy.bot/guides/installation/) covers version pinning (`PEPPY_VERSION`), skipping the service install (`PEPPY_NO_SERVICE_INSTALL`), and managing the service afterwards.
 
@@ -102,7 +102,7 @@ When Go is installed from the tarball, add `/usr/local/go/bin` to your `~/.profi
 
 ### CI runners
 
-CI runs on [RunsOn](https://runs-on.com) runners: each job gets an EC2 instance of its own, sized by the job's `runs-on:` label, and the instance is discarded when the job ends. The CI jobs shape the org runner with labels in their workflow; [`.github/runs-on.yml`](./.github/runs-on.yml) defines only the arm64 runner of the release, since RunsOn reads that file from `dev` alone. The exceptions are the install.sh tests, which run on GitHub-hosted runners because they must start from the stock image a user's machine starts from, and the macOS release stages, which run on Blacksmith because RunsOn has no macOS. Every RunsOn job boots `peppy-ubuntu24`, or on the aarch64 release stages its arm64 build `peppy-ubuntu24-aarch64`. Both are built weekly with `setup_machine.sh --ci-runner`, the script that provisions a development machine, so they carry everything listed above, plus two things beyond it:
+CI runs on [RunsOn](https://runs-on.com) runners: each job gets an EC2 instance of its own, sized by the job's `runs-on:` label, and the instance is discarded when the job ends. The CI jobs shape the org runner with labels in their workflow; [`.github/runs-on.yml`](./.github/runs-on.yml) defines only the arm64 runner, which the aarch64 release stages and the aarch64 install archive of a pull request build on, since RunsOn reads that file from `dev` alone. The exceptions are the install.sh tests, which run on GitHub-hosted runners because they must start from the stock image a user's machine starts from, and the macOS release stages, which run on Blacksmith because RunsOn has no macOS. Every RunsOn job boots `peppy-ubuntu24`, or on the aarch64 jobs its arm64 build `peppy-ubuntu24-aarch64`. Both are built weekly with `setup_machine.sh --ci-runner`, the script that provisions a development machine, so they carry everything listed above, plus two things beyond it:
 
 - **passwordless sudo** for the runner's user. Each container suite installs a peppy release under the job's own directory and runs `peppy container setup`, which writes an AppArmor profile keyed to that install's path, and a job has no terminal for `sudo` to prompt at.
 - **the aarch64 cross toolchain** (`rustup target add aarch64-unknown-linux-gnu` and `gcc-aarch64-linux-gnu`) that the cross-check job builds with.

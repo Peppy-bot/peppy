@@ -1117,9 +1117,19 @@ mod tests {
     }
 
     /// A port that nothing listens on: reserved from the kernel, then freed.
-    fn unused_local_port() -> u16 {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
-        listener.local_addr().expect("reserved addr").port()
+    /// A local TCP port that stays closed while the returned socket lives.
+    /// The socket is bound to the port but never listens: a connection to the
+    /// port is refused, and no other socket of the test run can bind it. A
+    /// port that a test only looks up and releases can go to a listener that
+    /// a test running at the same time binds, and the router probe then finds
+    /// it open.
+    fn closed_local_port() -> (u16, tokio::net::TcpSocket) {
+        let socket = tokio::net::TcpSocket::new_v4().expect("create socket");
+        socket
+            .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .expect("bind a local port");
+        let port = socket.local_addr().expect("bound address").port();
+        (port, socket)
     }
 
     /// A child process that has already exited, as a crashed zenohd looks to
@@ -1143,7 +1153,7 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_start_keeps_an_existing_unready_managed_child() {
-        let port = unused_local_port();
+        let (port, _closed_port) = closed_local_port();
         let config_file = router_config_file(port);
 
         let mut facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
@@ -1167,7 +1177,8 @@ mod tests {
 
     #[tokio::test]
     async fn start_reports_and_forgets_a_managed_child_that_exited() {
-        let config_file = router_config_file(unused_local_port());
+        let (port, _closed_port) = closed_local_port();
+        let config_file = router_config_file(port);
         let mut facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
         facade.router_process = Some(exited_child());
 
@@ -1190,9 +1201,9 @@ mod tests {
     /// poll, so its start checks only that the child is still running.
     #[tokio::test]
     async fn start_of_a_non_tcp_router_checks_only_that_its_child_runs() {
+        let (port, _closed_port) = closed_local_port();
         let config_file = json5_config_file(&format!(
-            r#"{{ "listen": {{ "endpoints": {{ "router": ["udp/127.0.0.1:{}"] }} }} }}"#,
-            unused_local_port()
+            r#"{{ "listen": {{ "endpoints": {{ "router": ["udp/127.0.0.1:{port}"] }} }} }}"#
         ));
 
         let mut running = ZenohdFacade::managed(config_file.path()).expect("create facade");
@@ -1226,7 +1237,7 @@ mod tests {
     /// virtual clock while the child keeps running and the port stays closed.
     #[tokio::test(start_paused = true)]
     async fn start_stops_a_child_that_never_accepts_connections() {
-        let port = unused_local_port();
+        let (port, _closed_port) = closed_local_port();
         let config_file = router_config_file(port);
         let mut facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
         let child = running_child();

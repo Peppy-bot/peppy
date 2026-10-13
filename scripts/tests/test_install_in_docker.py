@@ -6,7 +6,10 @@ the machine's state, and a container is a system of its own for each test:
 - The container path. Inside Docker or Podman install.sh skips D-Bus, linger,
   fuse2fs and the Apptainer setup, which the container runtime has no use for.
 - The platform check. install.sh reads os-release before it changes anything
-  and stops on any Linux that is not Ubuntu or built on it.
+  and stops on any Linux that is not Ubuntu, built on it, Debian or Raspberry
+  Pi OS, on a 32-bit system, and on a glibc older than the release archives
+  need. The cases of Raspberry Pi boards need arm64 images, and are in
+  test_install_raspberry_pi.py.
 
 Each container gets install.sh and the release archive of this machine's
 platform read-only, and nothing else of the host. The tests need Docker and
@@ -16,95 +19,43 @@ the archive, so like every install test they run only on a disposable host
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from .install_helpers import (
-    INSTALL_SCRIPT,
+    CONTAINER_PEPPY_HOME,
+    IS_LINUX_AARCH64,
+    assert_binaries_load,
     assert_installed,
+    assert_refused,
+    binaries_load_script,
+    container_install_cmd,
     diagnostic,
+    host_file,
     linux_only,
-    release_archive,
+    refusal_script,
+    run_in_container,
 )
 
 pytestmark = [pytest.mark.install, linux_only]
 
 UBUNTU_IMAGE = "ubuntu:24.04"
+# The newest Ubuntu release whose glibc (2.35) is older than the 2.38 the
+# release archives need.
+UBUNTU_TOO_OLD_IMAGE = "ubuntu:22.04"
+DEBIAN_IMAGE = "debian:trixie"
+# The newest Debian release whose glibc (2.36) is too old.
+DEBIAN_TOO_OLD_IMAGE = "debian:bookworm"
 
-# Where each container sees the two files it is given, and where it installs.
-_CONTAINER_INSTALL_SCRIPT = "/peppy-test/install.sh"
-_CONTAINER_PEPPY_HOME = "/peppy-home"
-
-
-def _container_install_cmd() -> str:
-    """install.sh as a container user runs it: no service, since no systemd runs."""
-    archive = f"/peppy-test/{release_archive().name}"
-    return (
-        f"PEPPY_HOME={_CONTAINER_PEPPY_HOME} PEPPY_NO_SERVICE_INSTALL=1 "
-        f"sh {_CONTAINER_INSTALL_SCRIPT} {archive}"
-    )
-
-
-def _run_in_container(
-    image: str,
-    script: str,
-    *,
-    os_release: Path | None = None,
-    timeout: int = 600,
-) -> subprocess.CompletedProcess[str]:
-    """Run *script* with sh in a fresh container of *image*.
-
-    *os_release* replaces the image's /etc/os-release, to present install.sh
-    with a distribution the tests have no image of.
-    """
-    archive = release_archive()
-    command = [
-        "docker",
-        "run",
-        "--rm",
-        "-v",
-        f"{INSTALL_SCRIPT}:{_CONTAINER_INSTALL_SCRIPT}:ro",
-        "-v",
-        f"{archive}:/peppy-test/{archive.name}:ro",
-    ]
-    if os_release is not None:
-        command += ["-v", f"{os_release}:/etc/os-release:ro"]
-    command += [image, "sh", "-c", script]
-    return subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        stdin=subprocess.DEVNULL,
-        check=False,
-    )
-
-
-# Prints a line the tests look for when install.sh left a PEPPY_HOME behind,
-# after passing install.sh's own exit status through.
-def _refusal_script(before: str = "") -> str:
-    return (
-        f"{before}{_container_install_cmd()}; status=$?; "
-        f'[ ! -e {_CONTAINER_PEPPY_HOME} ] || echo "PEPPY_HOME was created"; '
-        "exit $status"
-    )
-
-
-def _assert_refused(result: subprocess.CompletedProcess[str], message: str) -> None:
-    assert result.returncode == 1, (
-        f"install.sh should stop with status 1{diagnostic(result)}"
-    )
-    assert message in result.stderr, f"error should say {message!r}{diagnostic(result)}"
-    assert "PEPPY_HOME was created" not in result.stdout, (
-        f"install.sh should stop before it changes anything{diagnostic(result)}"
-    )
+# The architecture of the packages of a 32-bit system that a 64-bit kernel of
+# this machine's architecture runs.
+THIRTY_TWO_BIT_PACKAGES = "armhf" if IS_LINUX_AARCH64 else "i386"
 
 
 def test_install_inside_container() -> None:
     """Inside a container install.sh installs peppy and skips the host setup."""
-    result = _run_in_container(UBUNTU_IMAGE, _container_install_cmd())
+    result = run_in_container(UBUNTU_IMAGE, container_install_cmd())
 
     assert_installed(result)
     assert "Skipped Apptainer setup (running inside a container)." in result.stdout, (
@@ -125,11 +76,11 @@ def test_container_setup_has_nothing_to_do_inside_a_container() -> None:
     """
     script = (
         "apt-get update -qq && apt-get install -y -qq uidmap >/dev/null && "
-        f"{_container_install_cmd()} && "
-        f"PEPPY_HOME={_CONTAINER_PEPPY_HOME} {_CONTAINER_PEPPY_HOME}/bin/peppy container setup"
+        f"{container_install_cmd()} && "
+        f"PEPPY_HOME={CONTAINER_PEPPY_HOME} {CONTAINER_PEPPY_HOME}/bin/peppy container setup"
     )
 
-    result = _run_in_container(UBUNTU_IMAGE, script)
+    result = run_in_container(UBUNTU_IMAGE, script)
 
     assert result.returncode == 0, f"peppy container setup failed{diagnostic(result)}"
     assert "AppArmor is not manageable on this system" in result.stdout, (
@@ -149,10 +100,10 @@ def test_install_admits_a_distribution_built_on_ubuntu(tmp_path: Path) -> None:
     )
 
     # The check in front proves the replacement is what install.sh reads.
-    result = _run_in_container(
+    result = run_in_container(
         UBUNTU_IMAGE,
-        f"grep -qx ID=linuxmint /etc/os-release && {_container_install_cmd()}",
-        os_release=os_release,
+        f"grep -qx ID=linuxmint /etc/os-release && {container_install_cmd()}",
+        files={"/etc/os-release": os_release},
     )
 
     assert_installed(result)
@@ -162,10 +113,10 @@ def test_install_reads_usr_lib_os_release_without_etc_os_release() -> None:
     """With no /etc/os-release, install.sh identifies the system by /usr/lib/os-release."""
     script = (
         "rm -f /etc/os-release && [ -r /usr/lib/os-release ] && "
-        f"{_container_install_cmd()}"
+        f"{container_install_cmd()}"
     )
 
-    result = _run_in_container(UBUNTU_IMAGE, script)
+    result = run_in_container(UBUNTU_IMAGE, script)
 
     assert_installed(result)
 
@@ -174,14 +125,15 @@ def test_install_reads_usr_lib_os_release_without_etc_os_release() -> None:
     ("image", "name"),
     [
         ("fedora:latest", "Fedora Linux"),
-        ("debian:stable-slim", "Debian GNU/Linux"),
+        ("alpine:latest", "Alpine Linux"),
     ],
 )
 def test_install_refuses_unsupported_distribution(image: str, name: str) -> None:
-    """install.sh stops on a Linux not built on Ubuntu, before it changes anything."""
-    result = _run_in_container(image, _refusal_script())
+    """install.sh stops on a Linux that is neither Ubuntu, built on it, nor
+    Debian, before it changes anything."""
+    result = run_in_container(image, refusal_script())
 
-    _assert_refused(result, "unsupported Linux distribution")
+    assert_refused(result, "unsupported Linux distribution")
     assert name in result.stderr, (
         f"error should name the distribution{diagnostic(result)}"
     )
@@ -189,9 +141,115 @@ def test_install_refuses_unsupported_distribution(image: str, name: str) -> None
 
 def test_install_refuses_without_os_release() -> None:
     """install.sh stops on a Linux it cannot identify, before it changes anything."""
-    result = _run_in_container(
+    result = run_in_container(
         UBUNTU_IMAGE,
-        _refusal_script(before="rm -f /etc/os-release /usr/lib/os-release; "),
+        refusal_script(before="rm -f /etc/os-release /usr/lib/os-release; "),
     )
 
-    _assert_refused(result, "cannot identify this Linux distribution")
+    assert_refused(result, "cannot identify this Linux distribution")
+
+
+def test_install_refuses_ubuntu_22_04() -> None:
+    """install.sh stops on a glibc older than 2.38, on which peppy cannot start."""
+    result = run_in_container(UBUNTU_TOO_OLD_IMAGE, refusal_script())
+
+    assert_refused(result, "has glibc 2.35, and peppy needs glibc 2.38 or later.")
+    assert "'Ubuntu 22.04" in result.stderr, (
+        f"error should name the distribution{diagnostic(result)}"
+    )
+    assert "Ubuntu 24.04 or later" in result.stderr, (
+        f"error should name the oldest supported release{diagnostic(result)}"
+    )
+
+
+def test_install_refuses_a_distribution_built_on_ubuntu_22_04(tmp_path: Path) -> None:
+    """A distribution built on Ubuntu 22.04 has its glibc, whatever its own version."""
+    os_release = tmp_path / "os-release"
+    os_release.write_text(
+        'NAME="Linux Mint"\nVERSION_ID="21.3"\nID=linuxmint\n'
+        'ID_LIKE="ubuntu debian"\nPRETTY_NAME="Linux Mint 21.3"\n'
+    )
+
+    result = run_in_container(
+        UBUNTU_TOO_OLD_IMAGE,
+        refusal_script(),
+        files={"/etc/os-release": os_release},
+    )
+
+    assert_refused(
+        result,
+        "'Linux Mint 21.3' has glibc 2.35, and peppy needs glibc 2.38 or later.",
+    )
+
+
+def test_install_refuses_without_a_glibc_version() -> None:
+    """install.sh stops when it cannot read the glibc version it checks."""
+    result = run_in_container(
+        UBUNTU_IMAGE, refusal_script(before="rm -f /usr/bin/getconf; ")
+    )
+
+    assert_refused(result, "cannot read the glibc version of this system")
+
+
+def test_every_installed_binary_loads_on_debian_13() -> None:
+    """install.sh installs on Debian 13, whose glibc and libraries every binary finds."""
+    result = run_in_container(DEBIAN_IMAGE, binaries_load_script())
+
+    assert_binaries_load(result)
+
+
+def test_install_refuses_debian_12() -> None:
+    """install.sh stops on Debian 12, whose glibc is 2.36."""
+    result = run_in_container(DEBIAN_TOO_OLD_IMAGE, refusal_script())
+
+    assert_refused(
+        result,
+        "'Debian GNU/Linux 12 (bookworm)' has glibc 2.36, and peppy needs glibc "
+        "2.38 or later.",
+    )
+    assert "peppy supports Debian 13 (trixie) or later." in result.stderr, (
+        f"error should name the oldest supported release{diagnostic(result)}"
+    )
+
+
+def test_install_refuses_a_distribution_only_like_debian(tmp_path: Path) -> None:
+    """A distribution that names debian in ID_LIKE alone is not Debian.
+
+    Some of them run without systemd, which the peppy service needs.
+    """
+    os_release = host_file(
+        tmp_path / "os-release",
+        'PRETTY_NAME="Devuan GNU/Linux 6 (excalibur)"\nNAME="Devuan GNU/Linux"\n'
+        'VERSION_ID="6"\nID=devuan\nID_LIKE=debian\n',
+    )
+
+    result = run_in_container(
+        DEBIAN_IMAGE, refusal_script(), files={"/etc/os-release": os_release}
+    )
+
+    assert_refused(
+        result, "unsupported Linux distribution 'Devuan GNU/Linux 6 (excalibur)'."
+    )
+
+
+def test_install_refuses_a_32_bit_system(tmp_path: Path) -> None:
+    """install.sh stops on 32-bit packages, which a 64-bit kernel can run.
+
+    `uname -m` names the architecture of the kernel, so the container stands
+    for such a system with a dpkg that names 32-bit packages.
+    """
+    dpkg = host_file(
+        tmp_path / "dpkg",
+        f'#!/bin/sh\n[ "$1" = --print-architecture ] && echo '
+        f"{THIRTY_TWO_BIT_PACKAGES}\n",
+        mode=0o755,
+    )
+
+    result = run_in_container(
+        UBUNTU_IMAGE, refusal_script(), files={"/usr/bin/dpkg": dpkg}
+    )
+
+    assert_refused(result, "peppy needs a 64-bit system")
+    assert f"the packages of this system are '{THIRTY_TWO_BIT_PACKAGES}'" in (
+        result.stderr
+    ), f"error should name the architecture of the packages{diagnostic(result)}"
