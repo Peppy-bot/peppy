@@ -67,17 +67,13 @@ BOARD_NOT_SUPPORTED = (
     "Compute Module 5 only."
 )
 
-# The os-release of Raspberry Pi OS based on Debian 12, which is Debian's own.
-BOOKWORM_OS_RELEASE = """\
-PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
-NAME="Debian GNU/Linux"
-VERSION_ID="12"
-VERSION="12 (bookworm)"
-VERSION_CODENAME=bookworm
-ID=debian
-HOME_URL="https://www.debian.org/"
-SUPPORT_URL="https://www.debian.org/support"
-BUG_REPORT_URL="https://bugs.debian.org/"
+# Raspberry Pi OS based on Debian 12 is Debian 12 with the /etc/rpi-issue of
+# its image, and what install.sh reads of it (os-release, glibc, dpkg) is
+# Debian's. So the tests stand for it with the Debian 12 image and this file.
+DEBIAN_12_IMAGE = "debian:bookworm"
+BOOKWORM_RPI_ISSUE = """\
+Raspberry Pi reference 2026-10-06
+Generated using pi-gen, https://github.com/RPi-Distro/pi-gen, stage2
 """
 
 # What the dpkg of the 32-bit Raspberry Pi OS answers install.sh. On a
@@ -220,24 +216,21 @@ def test_install_refuses_the_32_bit_raspberry_pi_os(
     )
 
 
-def test_install_refuses_raspberry_pi_os_based_on_bookworm(
-    raspberry_pi_os: str, tmp_path: Path
-) -> None:
-    """install.sh stops on Raspberry Pi OS based on Debian 12, whose glibc is too old."""
+def test_install_refuses_raspberry_pi_os_based_on_bookworm(tmp_path: Path) -> None:
+    """install.sh stops on Raspberry Pi OS based on Debian 12, whose glibc is 2.36."""
     result = run_in_container(
-        raspberry_pi_os,
+        DEBIAN_12_IMAGE,
         refusal_script(),
-        files={
-            "/etc/os-release": host_file(tmp_path / "os-release", BOOKWORM_OS_RELEASE)
-        },
+        files={"/etc/rpi-issue": host_file(tmp_path / "rpi-issue", BOOKWORM_RPI_ISSUE)},
         device_tree=device_tree(tmp_path / "device-tree", RASPBERRY_PI_5),
     )
 
     assert_refused(
         result,
-        "unsupported Raspberry Pi OS release, based on 'Debian GNU/Linux 12 (bookworm)'.",
+        "'Debian GNU/Linux 12 (bookworm)' has glibc 2.36, and peppy needs glibc "
+        "2.38 or later.",
     )
-    assert "Debian 13 (trixie) or later" in result.stderr, (
+    assert "Raspberry Pi OS based on Debian 13 (trixie) or later" in result.stderr, (
         f"error should name the oldest supported release{diagnostic(result)}"
     )
 

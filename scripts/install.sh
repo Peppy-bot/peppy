@@ -7,10 +7,11 @@ set -eu
 #   curl -fsSL https://peppy.bot/install.sh | sh -s -- ./peppy-x86_64-unknown-linux-gnu.tgz
 #   ./install.sh ./peppy-x86_64-unknown-linux-gnu.tgz
 #
-# Supported platforms: Ubuntu and the distributions built on it (x86_64 and
-# aarch64), Raspberry Pi OS (64-bit, based on Debian 13 or later) on the
-# boards built on the BCM2712 SoC (Raspberry Pi 5, Pi 500, Compute Module 5),
-# and macOS on Apple Silicon. On any other system the script stops before it
+# Supported platforms: Ubuntu 24.04 or later and the distributions built on
+# it (x86_64 and aarch64), Raspberry Pi OS (64-bit, based on Debian 13 or
+# later) on the boards built on the BCM2712 SoC (Raspberry Pi 5, Pi 500,
+# Compute Module 5), and macOS on Apple Silicon. On Linux the system must
+# have glibc 2.38 or later. On any other system the script stops before it
 # changes anything.
 #
 # Environment variables:
@@ -200,18 +201,19 @@ EOF
         return 1
     }
 
-    SUPPORTED_LINUX="peppy supports Ubuntu and the distributions built on it, and Raspberry Pi OS (64-bit) on a Raspberry Pi 5."
+    # distribution_name FILE: the name of the distribution the os-release
+    # FILE describes, for people.
+    distribution_name() {
+        _NAME="$(os_release_field PRETTY_NAME "$1")"
+        echo "${_NAME:-$(os_release_field ID "$1")}"
+    }
+
+    SUPPORTED_LINUX="peppy supports Ubuntu 24.04 or later and the distributions built on it, and Raspberry Pi OS (64-bit) on a Raspberry Pi 5."
 
     # The device tree of the board the kernel runs on. /proc/device-tree is a
     # link to it. `compatible` names the board, then its SoC, and `model`
     # names the board for people; both hold NUL-terminated strings.
     DEVICE_TREE="/sys/firmware/devicetree/base"
-
-    # The release archives are built on Ubuntu 24.04 and need glibc 2.38 or
-    # later. Raspberry Pi OS based on Debian 13 (trixie) has glibc 2.41; the
-    # one based on Debian 12 (bookworm) has glibc 2.36, on which peppy and
-    # apptainer cannot start.
-    RASPBERRY_PI_OS_MIN_DEBIAN_VERSION=13
 
     # is_raspberry_pi_os FILE: 0 when the os-release FILE and the system
     # describe Raspberry Pi OS. Its os-release is the one of Debian (ID=debian
@@ -242,10 +244,10 @@ EOF
         fi
     }
 
-    # check_raspberry_pi_os FILE: stop unless this Raspberry Pi OS runs on a
-    # BCM2712 board, in its 64-bit release, based on a Debian release with
-    # the glibc the archive needs. The checks go from the one only new
-    # hardware fixes to the one an upgrade fixes.
+    # check_raspberry_pi_os: stop unless this Raspberry Pi OS runs on a
+    # BCM2712 board, in its 64-bit release. The checks go from the one only
+    # new hardware fixes to the one a new install fixes; check_glibc then
+    # checks the release, which an upgrade fixes.
     check_raspberry_pi_os() {
         if ! has_bcm2712_soc; then
             _MODEL="$(board_model)"
@@ -267,14 +269,56 @@ EOF
             echo "       Install Raspberry Pi OS (64-bit) with Raspberry Pi Imager." >&2
             exit 1
         fi
+    }
 
-        _DEBIAN_VERSION="$(os_release_field VERSION_ID "$1")"
-        case "$_DEBIAN_VERSION" in
-        '' | *[!0-9]*) _DEBIAN_VERSION=0 ;;
+    # The oldest glibc the release archives run on. They are built on Ubuntu
+    # 24.04, and peppy, apptainer and apptainer's starter call functions that
+    # glibc 2.38 added (__isoc23_strtol), so on an older glibc they cannot
+    # start: Ubuntu 22.04 and the distributions built on it (glibc 2.35), or
+    # Raspberry Pi OS based on Debian 12 (glibc 2.36). The glibc is checked,
+    # and not the release in os-release, because a distribution built on
+    # Ubuntu numbers its releases its own way (Linux Mint 21 is built on
+    # Ubuntu 22.04).
+    MIN_GLIBC_VERSION="2.38"
+
+    # glibc_version: the MAJOR.MINOR of this system's glibc (2.41 for
+    # "glibc 2.41"), empty when getconf does not give one.
+    glibc_version() {
+        _GLIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+        case "$_GLIBC" in
+        "glibc "*.*) _GLIBC="${_GLIBC#glibc }" ;;
+        *) return 0 ;;
         esac
-        if [ "$_DEBIAN_VERSION" -lt "$RASPBERRY_PI_OS_MIN_DEBIAN_VERSION" ]; then
-            echo "error: unsupported Raspberry Pi OS release, based on '$(os_release_field PRETTY_NAME "$1")'." >&2
-            echo "       peppy supports Raspberry Pi OS based on Debian ${RASPBERRY_PI_OS_MIN_DEBIAN_VERSION} (trixie) or later." >&2
+        _GLIBC_MAJOR="${_GLIBC%%.*}"
+        _GLIBC_MINOR="${_GLIBC#*.}"
+        _GLIBC_MINOR="${_GLIBC_MINOR%%[!0-9]*}"
+        case "$_GLIBC_MAJOR" in
+        '' | *[!0-9]*) return 0 ;;
+        esac
+        [ -n "$_GLIBC_MINOR" ] || return 0
+        echo "${_GLIBC_MAJOR}.${_GLIBC_MINOR}"
+    }
+
+    # version_at_least VERSION MINIMUM: 0 when the MAJOR.MINOR VERSION is
+    # MINIMUM or later.
+    version_at_least() {
+        [ "${1%.*}" -gt "${2%.*}" ] && return 0
+        [ "${1%.*}" -eq "${2%.*}" ] && [ "${1#*.}" -ge "${2#*.}" ]
+    }
+
+    # check_glibc FILE RELEASES: stop unless this system has the glibc the
+    # release archives need. FILE is the os-release that names the system,
+    # and RELEASES tells which releases of it peppy supports.
+    check_glibc() {
+        _GLIBC_VERSION="$(glibc_version)"
+        if [ -z "$_GLIBC_VERSION" ]; then
+            echo "error: cannot read the glibc version of this system (getconf GNU_LIBC_VERSION)." >&2
+            echo "       peppy needs glibc ${MIN_GLIBC_VERSION} or later." >&2
+            exit 1
+        fi
+        if ! version_at_least "$_GLIBC_VERSION" "$MIN_GLIBC_VERSION"; then
+            echo "error: '$(distribution_name "$1")' has glibc ${_GLIBC_VERSION}, and peppy needs glibc ${MIN_GLIBC_VERSION} or later." >&2
+            echo "       $2" >&2
             exit 1
         fi
     }
@@ -313,10 +357,12 @@ EOF
             exit 1
         fi
         if is_raspberry_pi_os "$OS_RELEASE"; then
-            check_raspberry_pi_os "$OS_RELEASE"
-        elif ! is_ubuntu_based "$OS_RELEASE"; then
-            DISTRO_NAME="$(os_release_field PRETTY_NAME "$OS_RELEASE")"
-            echo "error: unsupported Linux distribution '${DISTRO_NAME:-$(os_release_field ID "$OS_RELEASE")}'." >&2
+            check_raspberry_pi_os
+            check_glibc "$OS_RELEASE" "peppy supports Raspberry Pi OS based on Debian 13 (trixie) or later."
+        elif is_ubuntu_based "$OS_RELEASE"; then
+            check_glibc "$OS_RELEASE" "peppy supports Ubuntu 24.04 or later and the distributions built on it."
+        else
+            echo "error: unsupported Linux distribution '$(distribution_name "$OS_RELEASE")'." >&2
             echo "       ${SUPPORTED_LINUX}" >&2
             exit 1
         fi

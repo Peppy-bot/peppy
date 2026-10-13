@@ -6,7 +6,8 @@ the machine's state, and a container is a system of its own for each test:
 - The container path. Inside Docker or Podman install.sh skips D-Bus, linger,
   fuse2fs and the Apptainer setup, which the container runtime has no use for.
 - The platform check. install.sh reads os-release before it changes anything
-  and stops on any Linux that is not Ubuntu, built on it, or Raspberry Pi OS.
+  and stops on any Linux that is not Ubuntu, built on it, or Raspberry Pi OS,
+  and on a glibc older than the release archives need.
   The Raspberry Pi OS cases need its arm64 image and a Raspberry Pi board, and
   are in test_install_raspberry_pi_os.py.
 
@@ -36,6 +37,9 @@ from .install_helpers import (
 pytestmark = [pytest.mark.install, linux_only]
 
 UBUNTU_IMAGE = "ubuntu:24.04"
+# The newest Ubuntu release whose glibc (2.35) is older than the 2.38 the
+# release archives need.
+UBUNTU_TOO_OLD_IMAGE = "ubuntu:22.04"
 
 
 def test_install_inside_container() -> None:
@@ -131,3 +135,45 @@ def test_install_refuses_without_os_release() -> None:
     )
 
     assert_refused(result, "cannot identify this Linux distribution")
+
+
+def test_install_refuses_ubuntu_22_04() -> None:
+    """install.sh stops on a glibc older than 2.38, on which peppy cannot start."""
+    result = run_in_container(UBUNTU_TOO_OLD_IMAGE, refusal_script())
+
+    assert_refused(result, "has glibc 2.35, and peppy needs glibc 2.38 or later.")
+    assert "'Ubuntu 22.04" in result.stderr, (
+        f"error should name the distribution{diagnostic(result)}"
+    )
+    assert "Ubuntu 24.04 or later" in result.stderr, (
+        f"error should name the oldest supported release{diagnostic(result)}"
+    )
+
+
+def test_install_refuses_a_distribution_built_on_ubuntu_22_04(tmp_path: Path) -> None:
+    """A distribution built on Ubuntu 22.04 has its glibc, whatever its own version."""
+    os_release = tmp_path / "os-release"
+    os_release.write_text(
+        'NAME="Linux Mint"\nVERSION_ID="21.3"\nID=linuxmint\n'
+        'ID_LIKE="ubuntu debian"\nPRETTY_NAME="Linux Mint 21.3"\n'
+    )
+
+    result = run_in_container(
+        UBUNTU_TOO_OLD_IMAGE,
+        refusal_script(),
+        files={"/etc/os-release": os_release},
+    )
+
+    assert_refused(
+        result,
+        "'Linux Mint 21.3' has glibc 2.35, and peppy needs glibc 2.38 or later.",
+    )
+
+
+def test_install_refuses_without_a_glibc_version() -> None:
+    """install.sh stops when it cannot read the glibc version it checks."""
+    result = run_in_container(
+        UBUNTU_IMAGE, refusal_script(before="rm -f /usr/bin/getconf; ")
+    )
+
+    assert_refused(result, "cannot read the glibc version of this system")

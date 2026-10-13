@@ -18,7 +18,7 @@ The installer puts the `peppy` CLI on your `PATH`, registers the background serv
 peppy info
 ```
 
-Peppy runs on Ubuntu and the Linux distributions built on it (x86_64/aarch64, tested on Ubuntu 24.04), on Raspberry Pi OS (64-bit, based on Debian 13 or later) on a Raspberry Pi 5, a Pi 500 or a Compute Module 5, and on macOS (Apple Silicon). Other Linux distributions, Fedora, Arch Linux and Debian among them, are not supported, and neither are the older Raspberry Pi boards: the installer stops on them before it changes anything.
+Peppy runs on Ubuntu 24.04 or later and the Linux distributions built on it (x86_64/aarch64, tested on Ubuntu 24.04), on Raspberry Pi OS (64-bit, based on Debian 13 or later) on a Raspberry Pi 5, a Pi 500 or a Compute Module 5, and on macOS (Apple Silicon). Other Linux distributions, Fedora, Arch Linux and Debian among them, are not supported, and neither are Ubuntu 22.04 and the older Raspberry Pi boards: the installer stops on them before it changes anything.
 
 The [installation guide](https://docs.peppy.bot/guides/installation/) covers version pinning (`PEPPY_VERSION`), skipping the service install (`PEPPY_NO_SERVICE_INSTALL`), and managing the service afterwards.
 
