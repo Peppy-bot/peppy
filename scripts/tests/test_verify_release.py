@@ -11,15 +11,51 @@ import pytest
 
 from functions.cli import RELEASE_TRIPLES, ReleaseError
 from functions.verify_release import (
+    AARCH64_PAGE_SIZE,
     ELF_MACHINE_BY_ARCH,
     verify_all_releases,
     verify_release_archive,
 )
 
+PT_LOAD = 1
+PT_NOTE = 4
+# What the release builds give every LOAD segment of an aarch64 file.
+RELEASE_LOAD_ALIGNMENT = 0x10000
 
-def _elf_bytes(machine: int) -> bytes:
-    """A minimal ELF header naming `machine`: magic, padding, e_type, e_machine."""
-    return b"\x7fELF" + bytes(12) + b"\x02\x00" + struct.pack("<H", machine)
+
+def _elf_bytes(
+    machine: int,
+    program_headers: tuple[tuple[int, int, int, int], ...] = (
+        (PT_LOAD, 0, 0, RELEASE_LOAD_ALIGNMENT),
+    ),
+    *,
+    elf_class: int = 2,
+) -> bytes:
+    """A minimal little-endian ELF file of *machine*: the ELF64 file header,
+    then one program header per (p_type, p_offset, p_vaddr, p_align)."""
+    ident = b"\x7fELF" + bytes([elf_class, 1, 1]) + bytes(9)
+    header = struct.pack(
+        "<16sHHIQQQIHHHHHH",
+        ident,
+        3,  # e_type: ET_DYN
+        machine,
+        1,  # e_version
+        0,  # e_entry
+        64,  # e_phoff: the program headers follow this header
+        0,  # e_shoff
+        0,  # e_flags
+        64,  # e_ehsize
+        56,  # e_phentsize
+        len(program_headers),
+        64,  # e_shentsize
+        0,  # e_shnum
+        0,  # e_shstrndx
+    )
+    table = b"".join(
+        struct.pack("<IIQQQQQQ", p_type, 5, offset, address, address, 0, 0, align)
+        for p_type, offset, address, align in program_headers
+    )
+    return header + table
 
 
 def _binary_for(triple: str) -> bytes:
@@ -199,6 +235,154 @@ def test_verify_archive_rejects_a_binary_that_is_not_elf(tmp_path: Path) -> None
 
     problems = verify_release_archive(archive, triple)
     assert any("bin/peppy" in p for p in problems), problems
+
+
+def test_verify_archive_rejects_a_binary_that_is_not_elf64(tmp_path: Path) -> None:
+    triple = "aarch64-unknown-linux-gnu"
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    _create_archive(
+        archive,
+        _all_required_members(triple),
+        triple,
+        content_overrides={
+            "bin/zenohd": _elf_bytes(ELF_MACHINE_BY_ARCH["aarch64"], elf_class=1)
+        },
+    )
+
+    problems = verify_release_archive(archive, triple)
+    assert (
+        "bin/zenohd is not a readable ELF file: "
+        "it is not a 64-bit little-endian ELF file"
+    ) in problems
+
+
+def test_verify_archive_rejects_a_truncated_elf(tmp_path: Path) -> None:
+    triple = "x86_64-unknown-linux-gnu"
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    _create_archive(
+        archive,
+        _all_required_members(triple),
+        triple,
+        content_overrides={"bin/peppy": _binary_for(triple)[:70]},
+    )
+
+    problems = verify_release_archive(archive, triple)
+    assert (
+        "bin/peppy is not a readable ELF file: the file ends inside its program headers"
+    ) in problems
+
+
+@pytest.mark.parametrize("alignment", [AARCH64_PAGE_SIZE, RELEASE_LOAD_ALIGNMENT])
+def test_verify_archive_accepts_aarch64_files_that_map_on_16k_pages(
+    tmp_path: Path, alignment: int
+) -> None:
+    triple = "aarch64-unknown-linux-gnu"
+    machine = ELF_MACHINE_BY_ARCH["aarch64"]
+    # Two segments as a linker lays them out: the second one at a file offset
+    # and an address that sit at the same position in a page.
+    elf = _elf_bytes(
+        machine,
+        (
+            (PT_LOAD, 0, 0, alignment),
+            (PT_LOAD, 0x2340, alignment * 3 + 0x2340, alignment),
+        ),
+    )
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    _create_archive(
+        archive,
+        [*_all_required_members(triple), "bin/apptainer/lib/libseccomp.so.2"],
+        triple,
+        content_overrides={"bin/apptainer/lib/libseccomp.so.2": elf},
+    )
+
+    assert verify_release_archive(archive, triple) == []
+
+
+def test_verify_archive_reads_only_the_load_segments(tmp_path: Path) -> None:
+    # A note or the stack header of a real binary is aligned to a few bytes;
+    # the kernel maps no page for it.
+    triple = "aarch64-unknown-linux-gnu"
+    elf = _elf_bytes(
+        ELF_MACHINE_BY_ARCH["aarch64"],
+        ((PT_NOTE, 0x238, 0x238, 4), (PT_LOAD, 0, 0, RELEASE_LOAD_ALIGNMENT)),
+    )
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    _create_archive(
+        archive,
+        _all_required_members(triple),
+        triple,
+        content_overrides={"bin/peppy": elf},
+    )
+
+    assert verify_release_archive(archive, triple) == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["bin/peppy", "bin/apptainer/libexec/apptainer/bin/starter"],
+)
+def test_verify_archive_rejects_an_aarch64_file_aligned_to_4k_pages(
+    tmp_path: Path, name: str
+) -> None:
+    # Every ELF file of the archive counts, not only the required binaries:
+    # the Raspberry Pi 5 kernel maps each one the archive runs.
+    triple = "aarch64-unknown-linux-gnu"
+    elf = _elf_bytes(
+        ELF_MACHINE_BY_ARCH["aarch64"],
+        ((PT_LOAD, 0, 0, RELEASE_LOAD_ALIGNMENT), (PT_LOAD, 0x1000, 0x11000, 0x1000)),
+    )
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    _create_archive(
+        archive,
+        [*_all_required_members(triple), "bin/apptainer/libexec/apptainer/bin/starter"],
+        triple,
+        content_overrides={name: elf},
+    )
+
+    problems = verify_release_archive(archive, triple)
+    assert problems == [
+        f"{name} aligns a LOAD segment to 4096 bytes, and Raspberry Pi OS runs "
+        "the Raspberry Pi 5 with 16384-byte pages"
+    ]
+
+
+def test_verify_archive_rejects_a_load_segment_off_the_16k_page_grid(
+    tmp_path: Path,
+) -> None:
+    triple = "aarch64-unknown-linux-gnu"
+    elf = _elf_bytes(
+        ELF_MACHINE_BY_ARCH["aarch64"],
+        ((PT_LOAD, 0x1000, 0x10000, RELEASE_LOAD_ALIGNMENT),),
+    )
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    _create_archive(
+        archive,
+        _all_required_members(triple),
+        triple,
+        content_overrides={"bin/zenohd": elf},
+    )
+
+    problems = verify_release_archive(archive, triple)
+    assert problems == [
+        "bin/zenohd has a LOAD segment at file offset 0x1000 and address "
+        "0x10000, which fall at different positions in a 16384-byte page, the "
+        "page size Raspberry Pi OS runs the Raspberry Pi 5 with"
+    ]
+
+
+def test_verify_archive_leaves_x86_64_page_alignment_alone(tmp_path: Path) -> None:
+    # Every x86_64 Linux kernel runs 4 KiB pages.
+    triple = "x86_64-unknown-linux-gnu"
+    elf = _elf_bytes(ELF_MACHINE_BY_ARCH["x86_64"], ((PT_LOAD, 0, 0, 0x1000),))
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    _create_archive(
+        archive,
+        _all_required_members(triple),
+        triple,
+        content_overrides={"bin/peppy": elf},
+    )
+
+    assert verify_release_archive(archive, triple) == []
 
 
 def test_verify_archive_rejects_build_host_ownership(tmp_path: Path) -> None:
