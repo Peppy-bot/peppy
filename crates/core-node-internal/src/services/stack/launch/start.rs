@@ -69,6 +69,9 @@ pub(in crate::services::stack) async fn start_node_instances(
     // The clock every instance of the change reads, as it was resolved: the
     // plan each one starts with carries its own.
     clocks: &daemon_config::launcher::ResolvedClocks,
+    // The launcher root's restart policy, which rides each goal with the
+    // instance entry's own say for the spawning daemon to resolve.
+    root_restart: Option<config::node::RestartDeclaration>,
 ) -> std::result::Result<(), String> {
     // Register the planned observations whose OBSERVER runs on this daemon,
     // keyed by observer instance. As each instance reaches Running its
@@ -283,6 +286,10 @@ pub(in crate::services::stack) async fn start_node_instances(
             // and records that launch as the owner of a domain it publishes.
             .with_launch_id(&phase.launch_id)
             .with_env_vars(instance_environment(forwarded_env, &instance.env_vars))
+            .with_restart(daemon_config::launcher::restart_request_of(
+                root_restart,
+                instance,
+            ))
             .with_requested_pairs(
                 requested_by_instance
                     .remove(instance_id)

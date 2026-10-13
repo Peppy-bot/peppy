@@ -6,6 +6,7 @@ mod entity;
 mod pairing;
 mod pypi_mirror;
 mod run_steps;
+mod supervision;
 
 pub use build_artifact_cache::CACHED_BUILD_REUSE_PREFIX;
 use entity::serialize_node_entity;
@@ -14,18 +15,22 @@ pub use entity::{
     StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
 };
 use pairing::PairingRegistry;
-pub use pairing::{PairEndpoint, Pairing, RemoteSlotMeta, SlotAddr};
+pub use pairing::{PairEndpoint, Pairing, PlannedPair, RemoteSlotMeta, SlotAddr};
 pub use run_steps::OUTPUT_READER_JOIN_BUDGET;
+pub use supervision::{
+    Attempt, FirstStart, HealthKill, KeptRelations, ProcessClaim, Registrations, RespawnInputs,
+    RestartBackoff, RunningHealth, SlotLeft, SlotRemoval, SpawnTarget, StartRun, StartingClaim,
+};
 
 use crate::error::{Error, Result};
-use crate::process_group::kill_process_group;
+use crate::process_group::{ProcessGroup, kill_process_group};
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
 use config::node::{
     MissingDependencyPolicy, NodeConfig, PairingParticipantDependency,
     collect_contract_implementation_edges, collect_dependency_specs, validate_dependency_specs,
 };
 use config::runtime::Name;
-use core_node_api::encoding::LaunchIdentity;
+use core_node_api::encoding::{LaunchIdentity, ObservationTargets};
 use core_node_api::{
     InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph, SerializedPairingSlot,
 };
@@ -39,7 +44,12 @@ use petgraph::{
     visit::EdgeRef,
 };
 use rand::rng;
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 /// Shared handle to a `NodeEntity` stored inside a `NodeStack`. All readers
 /// and writers go through the inner `RwLock`; the same `Arc` is held by the
@@ -60,6 +70,14 @@ impl NodeKey {
             tag: tag.trim().to_owned(),
         }
     }
+}
+
+/// An instance the stack tracks, with the entity holding it, as `tracked`
+/// reads them under the entity's read lock.
+struct Tracked<'a> {
+    instance: &'a TrackedNodeInstance,
+    handle: &'a EntityHandle,
+    entity: &'a NodeEntity,
 }
 
 fn key_from_entity(entity: &NodeEntity) -> NodeKey {
@@ -373,22 +391,6 @@ impl NodeStackInner {
         })
     }
 
-    /// Projects the first tracked instance whose id is `instance_id`, in any
-    /// state, together with its entity (see [`Self::find_map_entity`]).
-    fn find_instance_map<T>(
-        &self,
-        instance_id: &str,
-        mut project: impl FnMut(&NodeEntity, &TrackedNodeInstance) -> T,
-    ) -> Option<T> {
-        self.find_map_entity(|_, entity| {
-            entity
-                .instances()
-                .iter()
-                .find(|inst| inst.instance_id().as_str() == instance_id)
-                .map(|inst| project(entity, inst))
-        })
-    }
-
     /// Looks up a tracked instance by id across all entities. **Only matches
     /// `Running` instances**; `Starting` instances are skipped because they
     /// haven't subscribed to messenger services yet, so a handle to one would
@@ -446,6 +448,66 @@ impl NodeStackInner {
                 .any(|inst| is_running_instance(inst, instance_id))
                 .then(|| handle.clone())
         })
+    }
+
+    /// Reads the instance with `instance_id`, in any state, with the entity
+    /// that tracks it.
+    fn tracked<T>(&self, instance_id: &str, read: impl FnOnce(Tracked<'_>) -> T) -> Option<T> {
+        let mut read = Some(read);
+        self.find_map_entity(|handle, entity| {
+            let instance = entity
+                .instances()
+                .iter()
+                .find(|inst| inst.instance_id().as_str() == instance_id)?;
+            read.take().map(|read| {
+                read(Tracked {
+                    instance,
+                    handle,
+                    entity,
+                })
+            })
+        })
+    }
+
+    /// The entity tracking an instance with `instance_id` in any state.
+    fn find_entity_any_state(&self, instance_id: &str) -> Option<EntityHandle> {
+        self.tracked(instance_id, |tracked| tracked.handle.clone())
+    }
+
+    /// The state of the instance with `instance_id`, in any state.
+    fn instance_state(&self, instance_id: &str) -> Option<InstanceState> {
+        self.tracked(instance_id, |tracked| tracked.instance.state())
+    }
+
+    /// The instance with `instance_id` in any state, with its entity.
+    fn find_instance_and_entity_any_state(
+        &self,
+        instance_id: &Name,
+    ) -> Option<(TrackedNodeInstance, EntityHandle)> {
+        self.tracked(instance_id.as_str(), |tracked| {
+            (tracked.instance.clone(), tracked.handle.clone())
+        })
+    }
+
+    /// The `running` instances of every entity but the root, and how many of
+    /// them are healthy.
+    fn running_health(&self) -> RunningHealth {
+        self.graph
+            .node_weights()
+            .fold(RunningHealth::default(), |health, handle| {
+                let guard = handle.read();
+                if self.is_root(&key_from_entity(&guard)) {
+                    return health;
+                }
+                guard
+                    .instances()
+                    .iter()
+                    .filter(|inst| inst.state() == InstanceState::Running)
+                    .fold(health, |health, inst| RunningHealth {
+                        running: health.running + 1,
+                        healthy: health.healthy + usize::from(inst.healthy()),
+                    })
+            })
     }
 
     fn root(&self) -> EntityHandle {
@@ -639,12 +701,12 @@ impl NodeStackInner {
 
     // ── Pairing ──────────────────────────────────────────────────────────
 
-    /// Instance liveness for pairing purposes: tracked with a non-terminal
-    /// state (`Starting` counts: the reserve-before-spawn path pairs a
-    /// slot while its instance is still starting).
+    /// Instance liveness for pairing purposes: tracked with a process
+    /// (`Starting` counts: the reserve-before-spawn path pairs a slot while
+    /// its instance is still starting).
     fn instance_is_live_for_pairing(&self, instance_id: &str) -> bool {
-        self.find_instance_map(instance_id, |_, inst| !inst.state().is_terminal())
-            .unwrap_or(false)
+        self.instance_state(instance_id)
+            .is_some_and(InstanceState::has_process)
     }
 
     /// Every instance id that is live for pairing purposes, collected in a
@@ -658,7 +720,7 @@ impl NodeStackInner {
                 entity
                     .instances()
                     .iter()
-                    .filter(|inst| !inst.state().is_terminal())
+                    .filter(|inst| inst.state().has_process())
                     .map(|inst| inst.instance_id().as_str().to_string()),
             );
         }
@@ -686,10 +748,11 @@ impl NodeStackInner {
     /// current state. Errors when the instance is unknown/terminal or its
     /// manifest declares no such pairing slot.
     fn pairing_slot_meta(&self, slot: &SlotAddr) -> Result<PairingParticipantDependency> {
-        let found = self.find_instance_map(&slot.instance_id, |entity, inst| {
+        let found = self.tracked(&slot.instance_id, |tracked| {
             // Only a participant slot can be paired, so an observer slot with
             // this link_id resolves to no pair slot.
-            let dep = entity
+            let dep = tracked
+                .entity
                 .config()
                 .manifest
                 .depends_on
@@ -701,16 +764,17 @@ impl NodeStackInner {
                         .find(|participant| participant.link_id == slot.link_id)
                         .cloned()
                 });
-            (dep, inst.state())
+            (dep, tracked.instance.state())
         });
         let Some((dep, state)) = found else {
-            return Err(Error::PairingInstanceNotRunning {
+            return Err(Error::PairingInstanceNotInStack {
                 instance_id: slot.instance_id.clone(),
             });
         };
-        if state.is_terminal() {
-            return Err(Error::PairingInstanceNotRunning {
+        if !state.has_process() {
+            return Err(Error::PairingInstanceWithoutProcess {
                 instance_id: slot.instance_id.clone(),
+                state,
             });
         }
         dep.ok_or_else(|| Error::PairingSlotNotFound {
@@ -747,7 +811,7 @@ impl NodeStackInner {
         // without this, a remote slot arriving with no verdict would resolve
         // against whichever local instance happens to share its name.
         if !slot.is_on(&self.root_core_node_name()) {
-            return Err(Error::PairingInstanceNotRunning {
+            return Err(Error::PairingInstanceNotInStack {
                 instance_id: slot.instance_id.clone(),
             });
         }
@@ -764,7 +828,7 @@ impl NodeStackInner {
 
     /// The copy a local instance belongs to, as recorded when it started.
     fn instance_copy(&self, instance_id: &str) -> Option<config::runtime::Name> {
-        self.find_instance_map(instance_id, |_, inst| inst.copy().cloned())
+        self.tracked(instance_id, |tracked| tracked.instance.copy().cloned())
             .flatten()
     }
 
@@ -928,7 +992,7 @@ impl NodeStackInner {
                 continue;
             }
             for instance in &mut node.instances {
-                if instance.state.is_terminal() {
+                if !instance.state.has_process() {
                     continue;
                 }
                 instance.pairing_slots = pairing_slot_view(
@@ -1157,14 +1221,14 @@ impl NodeStack {
     }
 
     /// Finds a node entity by an instance_id it contains.
-    pub fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
+    fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
         let guard = self.shared.read();
         guard.find_entity_by_instance_id(instance_id)
     }
 
-    /// Records the producer set one instance holds in slot `link_id` from now
-    /// on, so `node_info` and `stack list` report the set the daemon delivered.
-    /// Returns `false` when no entity tracks the instance.
+    /// Records the producer set a `running` instance holds in slot `link_id`
+    /// from now on, so `node_info` and `stack list` report the set the daemon
+    /// delivered. Returns `false` when no running instance has the id.
     pub fn set_instance_slot_binding(
         &self,
         instance_id: &Name,
@@ -1177,6 +1241,152 @@ impl NodeStack {
         entity
             .write()
             .set_instance_slot_binding(instance_id, link_id, producers)
+    }
+
+    /// Records the producer set a `restarting` instance takes in slot
+    /// `link_id` at its restart. Returns `false` when no restarting instance
+    /// has the id.
+    pub fn record_slot_binding_for_restart(
+        &self,
+        instance_id: &Name,
+        link_id: &str,
+        producers: config::runtime::BoundProducers,
+    ) -> bool {
+        self.edit_any_state(instance_id.as_str(), |entity| {
+            entity.record_slot_binding_for_restart(instance_id, link_id, producers)
+        })
+        .unwrap_or(false)
+    }
+
+    /// The state of the instance with `instance_id`, in any state.
+    pub fn instance_state(&self, instance_id: &str) -> Option<InstanceState> {
+        self.shared.read().instance_state(instance_id)
+    }
+
+    /// Whether the instance `instance_id` runs the process `pid`.
+    pub fn runs_process(&self, instance_id: &str, pid: u32) -> bool {
+        self.shared
+            .read()
+            .tracked(instance_id, |tracked| tracked.instance.runs_process(pid))
+            .unwrap_or(false)
+    }
+
+    /// Whether the slot `own` keeps a held pair with `peer`, which its
+    /// restarts ask for again.
+    pub fn keeps_held_pair(&self, own: &SlotAddr, peer: &SlotAddr) -> bool {
+        self.shared
+            .read()
+            .tracked(&own.instance_id, |tracked| {
+                tracked.instance.keeps_held_pair(own, peer)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Whether the instance `instance_id` is starting the process of a
+    /// restart.
+    pub fn starts_a_restart(&self, instance_id: &str) -> bool {
+        self.shared
+            .read()
+            .tracked(instance_id, |tracked| tracked.instance.starts_a_restart())
+            .unwrap_or(false)
+    }
+
+    /// The instance with `instance_id` in any state.
+    pub fn find_instance_any_state(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
+        self.find_instance_and_entity_any_state(instance_id)
+            .map(|(instance, _)| instance)
+    }
+
+    /// The instance with `instance_id` in any state, with its entity.
+    pub fn find_instance_and_entity_any_state(
+        &self,
+        instance_id: &Name,
+    ) -> Option<(TrackedNodeInstance, EntityHandle)> {
+        self.shared
+            .read()
+            .find_instance_and_entity_any_state(instance_id)
+    }
+
+    /// Runs `edit` on the entity tracking `instance_id` in any state, under
+    /// its write lock; `None` when no entity tracks the instance.
+    fn edit_any_state<T>(
+        &self,
+        instance_id: &str,
+        edit: impl FnOnce(&mut NodeEntity) -> T,
+    ) -> Option<T> {
+        let entity = self.shared.read().find_entity_any_state(instance_id)?;
+        let mut guard = entity.write();
+        Some(edit(&mut guard))
+    }
+
+    /// Records a pair delivered to the instance of `pair.own`, once and in
+    /// any state, so its next process requests it again; on a slot that
+    /// takes one peer, the pair replaces the ones that slot held, which come
+    /// back as displaced.
+    pub fn record_held_pair(&self, pair: &PlannedPair) -> Vec<PlannedPair> {
+        self.edit_any_state(&pair.own.instance_id, |entity| {
+            entity.record_held_pair(pair)
+        })
+        .flatten()
+        .unwrap_or_default()
+    }
+
+    /// Forgets a pair the instance of `pair.own` held.
+    pub fn forget_held_pair(&self, pair: &PlannedPair) {
+        self.edit_any_state(&pair.own.instance_id, |entity| {
+            entity.forget_held_pair(pair);
+        });
+    }
+
+    /// Forgets, on every instance of this stack, the pairs held with the
+    /// instance `peer_instance_id` of the daemon `peer_core_node`, which a
+    /// deliberate stop ended.
+    pub fn forget_pairs_held_with(&self, peer_core_node: &str, peer_instance_id: &str) {
+        let entities = self.shared.read().entities_snapshot();
+        for entity in entities {
+            entity
+                .write()
+                .forget_pairs_held_with(peer_core_node, peer_instance_id);
+        }
+    }
+
+    /// Upserts the member sets of the named observer slots a `restarting`
+    /// instance observes again at its restart. `false` when no `restarting`
+    /// instance has the id.
+    pub fn record_observations_for_restart(
+        &self,
+        instance_id: &str,
+        observations: &BTreeMap<String, ObservationTargets>,
+    ) -> bool {
+        self.edit_any_state(instance_id, |entity| {
+            entity.record_observations_for_restart(instance_id, observations)
+        })
+        .unwrap_or(false)
+    }
+
+    /// Replaces the lifecycle watchers a `restarting` instance announces to
+    /// at its restart; another state leaves them as they are.
+    pub fn record_watchers_for_restart(&self, instance_id: &str, watchers: &[String]) {
+        self.edit_any_state(instance_id, |entity| {
+            entity.record_watchers_for_restart(instance_id, watchers);
+        });
+    }
+
+    /// Arms the health monitor's `kill` of the `running` instance
+    /// `instance_id`, so its exit counts as a failure, and returns the group
+    /// to signal; `None` when the instance is not `running`, a stop path
+    /// claimed it, or it has no pid.
+    pub fn arm_health_kill(&self, instance_id: &str, kill: HealthKill) -> Option<ProcessGroup> {
+        self.edit_any_state(instance_id, |entity| {
+            entity.arm_health_kill(instance_id, kill)
+        })
+        .flatten()
+    }
+
+    /// The `running` instances of this stack but the root, and how many of
+    /// them are healthy.
+    pub fn running_health(&self) -> RunningHealth {
+        self.shared.read().running_health()
     }
 
     /// Return the `(node_name, node_tag)` of any entity in the stack that
@@ -1193,21 +1403,27 @@ impl NodeStack {
         guard.find_entity_label_for_instance_id_any_state(instance_id)
     }
 
-    /// The clock of every instance this stack still counts on, which is what
-    /// the one-publisher-per-name rule and `clock_list` both read.
+    /// The clock of every instance with a process, which is what `clock_list`
+    /// reads: an instance without one publishes no ticks and reads none.
     pub fn instance_clocks(&self) -> Vec<InstanceClock> {
-        self.snapshot()
-            .iter()
-            .flat_map(|handle| instance_clocks_of(handle.read().instances()))
-            .collect()
+        self.clocks_where(InstanceState::has_process)
     }
 
-    /// The instance publishing clock domain `name` on this machine, if one is
-    /// running. A domain's name and the machine hosting its publisher identify
-    /// one timeline, so holding that to a single instance is what lets
-    /// `--clock <name>` address exactly one stream of ticks.
+    /// The instance holding clock domain `name` on this machine: one with a
+    /// process, or one awaiting its restart, which keeps its domain. A
+    /// domain's name and the machine hosting its publisher identify one
+    /// timeline, so holding that to a single instance is what lets `--clock
+    /// <name>` address exactly one stream of ticks.
     pub fn clock_domain_publisher(&self, name: &Name) -> Option<Name> {
-        clock_domain_publisher_of(&self.instance_clocks(), name)
+        clock_domain_publisher_of(&self.clocks_where(holds_domain_name), name)
+    }
+
+    /// The clocks of the instances whose state `counts` keeps.
+    fn clocks_where(&self, counts: impl Fn(InstanceState) -> bool + Copy) -> Vec<InstanceClock> {
+        self.snapshot()
+            .iter()
+            .flat_map(|handle| instance_clocks_of(handle.read().instances(), counts))
+            .collect()
     }
 
     /// Adds a config to the stack or updates an existing one.
@@ -1398,6 +1614,15 @@ impl NodeStack {
         guard.pair_slots_impl(a, None, b, None)
     }
 
+    /// Establishes the pair `pair` plans: between two local slots, or with
+    /// its remote peer's identity when the peer lives on another daemon.
+    pub fn pair_planned(&self, pair: &PlannedPair) -> Result<Pairing> {
+        match &pair.peer_remote_meta {
+            None => self.pair_slots(&pair.own, &pair.peer),
+            Some(meta) => self.pair_slot_with_remote(&pair.own, &pair.peer, meta),
+        }
+    }
+
     /// Establishes a pair whose peer endpoint lives on ANOTHER daemon.
     ///
     /// This daemon validates the half it owns exactly as it would for a local
@@ -1477,8 +1702,9 @@ impl NodeStack {
 
     /// Dissolves every pair involving `instance_id`, returning them so the
     /// caller can live-notify each survivor. Called from the daemon's stop
-    /// paths and the process-exit watcher (death auto-clears; re-pairing is
-    /// explicit).
+    /// paths and the process-exit watcher (death auto-clears; a restart asks
+    /// again for the pairs the instance held, and any other pair is made by a
+    /// link).
     pub fn dissolve_pairs_for_instance(&self, instance_id: &str) -> Vec<Pairing> {
         let core_node = self.core_node_name();
         let mut guard = self.shared.write();
@@ -1504,8 +1730,8 @@ impl NodeStack {
             .remove_for_instance(core_node, instance_id)
     }
 
-    /// Instance liveness for pairing purposes: tracked with a non-terminal
-    /// state (`Starting` counts). Used by the `PairingCoordinator` to skip
+    /// Instance liveness for pairing purposes: tracked with a process
+    /// (`Starting` or `Running`). Used by the `PairingCoordinator` to skip
     /// notifying endpoints that are already dead.
     pub fn instance_is_live_for_pairing(&self, instance_id: &str) -> bool {
         let guard = self.shared.read();
@@ -1540,7 +1766,7 @@ impl NodeStack {
     }
 
     /// Snapshot for plan-phase pairing validation: every non-root entity
-    /// with at least one live-for-pairing (non-terminal) instance, in one
+    /// with at least one live-for-pairing instance (one with a process), in one
     /// read-locked pass. Nodes without pairing slots are included so a
     /// request targeting them resolves to the accurate "no complementary
     /// slot" rejection instead of "unknown instance" (matching the CLI
@@ -1559,7 +1785,7 @@ impl NodeStack {
                 let instance_ids: Vec<String> = entity
                     .instances()
                     .iter()
-                    .filter(|inst| !inst.state().is_terminal())
+                    .filter(|inst| inst.state().has_process())
                     .map(|inst| inst.instance_id().as_str().to_string())
                     .collect();
                 if instance_ids.is_empty() {
@@ -1593,14 +1819,20 @@ pub struct InstanceClock {
     pub launch: Option<LaunchIdentity>,
 }
 
-/// The clocks of the `instances` this stack still counts on.
-///
-/// A terminal instance publishes no ticks and reads none, so its domain name
-/// is free for the next publisher and it counts towards no domain's readers.
-fn instance_clocks_of(instances: &[TrackedNodeInstance]) -> Vec<InstanceClock> {
+/// Whether an instance in `state` holds its clock domain's name: one with a
+/// process, or one awaiting its restart, which keeps its domain.
+fn holds_domain_name(state: InstanceState) -> bool {
+    state.has_process() || state == InstanceState::Restarting
+}
+
+/// The clocks of the `instances` whose state `counts` keeps.
+fn instance_clocks_of(
+    instances: &[TrackedNodeInstance],
+    counts: impl Fn(InstanceState) -> bool,
+) -> Vec<InstanceClock> {
     instances
         .iter()
-        .filter(|instance| !instance.state().is_terminal())
+        .filter(|instance| counts(instance.state()))
         .map(|instance| InstanceClock {
             instance_id: instance.instance_id().clone(),
             binding: instance.clock().clone(),
@@ -1614,11 +1846,10 @@ fn clock_domain_publisher_of(clocks: &[InstanceClock], name: &Name) -> Option<Na
     clocks
         .iter()
         .find(|clock| {
-            clock.binding.is_publisher()
-                && clock
-                    .binding
-                    .domain()
-                    .is_some_and(|domain| &domain.name == name)
+            clock
+                .binding
+                .published_domain()
+                .is_some_and(|domain| &domain.name == name)
         })
         .map(|clock| clock.instance_id.clone())
 }
@@ -1636,13 +1867,13 @@ fn live_container_instances_of(
     }
     instances
         .iter()
-        .filter(|instance| !instance.state().is_terminal())
+        .filter(|instance| instance.state().has_process())
         .map(|instance| instance.instance_id().as_str().to_string())
         .collect()
 }
 
 /// One node's contribution to the plan-phase pairing snapshot: its live
-/// (non-terminal) instance ids plus its declared pairing slots. Consumed by
+/// instance ids (those with a process) plus its declared pairing slots. Consumed by
 /// the daemon's `node_run` pairing re-check, which feeds it to the
 /// launcher's shared `validate_pairings` core.
 #[derive(Debug, Clone)]
@@ -1860,7 +2091,7 @@ mod clock_tests {
     fn a_terminal_publisher_holds_no_domain_name() {
         for state in [InstanceState::Failed, InstanceState::Finished] {
             let gone = [publisher("sim_inst", state, "robot")];
-            let clocks = instance_clocks_of(&gone);
+            let clocks = instance_clocks_of(&gone, holds_domain_name);
             assert!(clocks.is_empty(), "{state:?} supplies nothing");
             assert_eq!(
                 clock_domain_publisher_of(&clocks, &Name::new("robot").unwrap()),
@@ -1880,7 +2111,7 @@ mod clock_tests {
         ];
         assert_eq!(
             clock_domain_publisher_of(
-                &instance_clocks_of(&instances),
+                &instance_clocks_of(&instances, holds_domain_name),
                 &Name::new("robot").unwrap()
             ),
             Some(Name::new("sim_inst").unwrap()),
@@ -1894,9 +2125,28 @@ mod clock_tests {
     fn a_starting_publisher_already_holds_its_name() {
         let starting = [publisher("sim_inst", InstanceState::Starting, "robot")];
         assert_eq!(
-            clock_domain_publisher_of(&instance_clocks_of(&starting), &Name::new("robot").unwrap()),
+            clock_domain_publisher_of(
+                &instance_clocks_of(&starting, holds_domain_name),
+                &Name::new("robot").unwrap()
+            ),
             Some(Name::new("sim_inst").unwrap())
         );
+    }
+
+    /// A publisher awaiting its restart holds its domain's name under
+    /// `holds_domain_name`, and a listing of the instances with a process
+    /// leaves it out.
+    #[test]
+    fn a_restarting_publisher_keeps_its_name() {
+        let waiting = [publisher("sim_inst", InstanceState::Restarting, "robot")];
+        assert_eq!(
+            clock_domain_publisher_of(
+                &instance_clocks_of(&waiting, holds_domain_name),
+                &Name::new("robot").unwrap()
+            ),
+            Some(Name::new("sim_inst").unwrap())
+        );
+        assert!(instance_clocks_of(&waiting, InstanceState::has_process).is_empty());
     }
 
     /// Reading a domain is not supplying it, and a running instance on wall
@@ -1911,7 +2161,7 @@ mod clock_tests {
             ),
             instance("viewer_inst", InstanceState::Running, ClockBinding::Wall),
         ];
-        let clocks = instance_clocks_of(&instances);
+        let clocks = instance_clocks_of(&instances, InstanceState::has_process);
         assert_eq!(clocks.len(), 2, "both instances are running");
         assert_eq!(
             clock_domain_publisher_of(&clocks, &Name::new("robot").unwrap()),

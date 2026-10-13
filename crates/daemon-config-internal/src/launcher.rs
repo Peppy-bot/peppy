@@ -8,6 +8,7 @@ mod links;
 mod observations;
 mod pairings;
 mod parse;
+mod restart;
 mod types;
 
 // Defines the parsing of launcher documents (`peppy_schema: "launcher/v1"`).
@@ -34,6 +35,7 @@ pub use pairings::{
     PlannedPairing, validate_pairings,
 };
 pub use parse::PeppyLauncherParser;
+pub use restart::{instance_restart, resolve_restart, restart_request_of};
 pub use types::{
     Deployment, DeploymentInstance, DeploymentSource, FrameworkOverrides, LinkTargets, LinkValue,
     PeppyLauncher, Placements, Selection, VacantReason, WALL_CLOCK, participant_vacancies,

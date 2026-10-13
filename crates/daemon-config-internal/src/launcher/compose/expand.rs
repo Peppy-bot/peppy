@@ -83,11 +83,15 @@ pub(super) fn expand_unit(
 /// a robot fragment and the simulation it runs in can both name the same
 /// timeline. Declarations that differ are refused naming both documents,
 /// because nothing about composition order makes one of them right.
-pub(super) fn merge_clocks(
+///
+/// `framework.restart` is the launcher root's alone: a fragment that writes
+/// it is refused naming it, and the merged block carries the base's.
+pub(super) fn merge_framework(
     base_origin: &str,
     base: &LauncherFramework,
     fragments: &[&LoadedFragment],
 ) -> Result<LauncherFramework, CompositionError> {
+    refuse_fragment_restart(fragments)?;
     let mut declared: BTreeMap<Name, (String, ClockDeclaration)> = BTreeMap::new();
     let contributions = std::iter::once((base_origin, base)).chain(
         fragments
@@ -120,7 +124,24 @@ pub(super) fn merge_clocks(
             .into_iter()
             .map(|(domain, (_, declaration))| (domain, declaration))
             .collect(),
+        restart: base.restart,
     })
+}
+
+/// Refuses the first document among `fragments` that writes
+/// `framework.restart` at its root, which only the launcher's own root takes.
+pub(super) fn refuse_fragment_restart(
+    fragments: &[&LoadedFragment],
+) -> Result<(), CompositionError> {
+    match fragments
+        .iter()
+        .find(|fragment| fragment.body.framework.restart.is_some())
+    {
+        Some(fragment) => Err(CompositionError::FragmentDeclaresRestart {
+            origin: fragment.origin.clone(),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// One declaration as a refusal quotes it back.
@@ -316,6 +337,15 @@ fn apply_adjustment(
             new: clock.clone(),
         });
         instance.framework.clock = Some(clock.clone());
+    }
+    if let Some(framework) = &step.adjustment.set_framework
+        && let Some(restart) = framework.restart
+    {
+        record(AppliedChange::Restart {
+            old: instance.framework.restart,
+            new: restart,
+        });
+        instance.framework.restart = Some(restart);
     }
     if let Some(links) = &step.adjustment.set_links {
         for (slot, value) in links {

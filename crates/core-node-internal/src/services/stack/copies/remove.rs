@@ -38,10 +38,10 @@ use peppylib::core_node::transport::poll;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Duration;
 
-/// Removing a copy stops its instances one after another, each within the
-/// teardown budget of the machine that runs it.
+/// Removing a copy stops its instances one after another, each as a stop
+/// does within its host's bound on a stop, the notice of its end included.
 pub fn copy_removal_budget(shutdown_grace_secs: u64, instances: usize) -> Duration {
-    crate::services::node::teardown_timeout(Duration::from_secs(shutdown_grace_secs))
+    crate::services::node::node_stop_bound(Duration::from_secs(shutdown_grace_secs))
         .saturating_mul(instances.try_into().unwrap_or(u32::MAX))
 }
 
@@ -284,7 +284,7 @@ pub(super) enum MachineState {
     /// This daemon's own machine, which holds the launch's slice.
     Coordinator,
     /// Live, holding the slice of this launch: the copy's instances it holds
-    /// stop, each within its teardown budget.
+    /// stop, each within its host's bound on a stop.
     Holding {
         shutdown_grace_secs: u64,
         held: BTreeSet<String>,
@@ -477,11 +477,11 @@ impl<'a> StopWalk<'a> {
 }
 
 /// Stops the copy's instances, the last started first, one at a time across
-/// its machines. On this daemon's machine each stop takes up to its teardown
-/// budget, so the change reports each instance the stack holds before it
+/// its machines. On this daemon's machine each stop takes up to the bound on
+/// a stop, so the change reports each instance the stack holds before it
 /// stops it. On another machine that holds the launch's slice, each instance
-/// it holds stops through one request within that machine's teardown
-/// budget, after a line. An instance on a machine that is not live, or that
+/// it holds stops through one request within that machine's bound on a stop,
+/// after a line. An instance on a machine that is not live, or that
 /// holds no slice of this launch, is not stopped. A stop that fails skips
 /// the later stops on its machine, and the others still run.
 pub(super) async fn stop_copy(
@@ -665,6 +665,15 @@ fn offline_warning(active: &ActiveLaunch, copy: &StackCopy, machine: &str) -> St
 mod tests {
     use super::*;
     use daemon_config::launcher::{CopyInstance, CopyRecord};
+
+    /// A copy's removal waits a stop's bound per instance, which holds the
+    /// notice of the instance's end to the daemons its relations name.
+    #[test]
+    fn a_copy_removal_waits_a_stop_bound_per_instance() {
+        let grace = Duration::from_secs(config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS);
+        let per_instance = crate::services::node::node_stop_bound(grace);
+        assert_eq!(copy_removal_budget(grace.as_secs(), 3), per_instance * 3);
+    }
 
     fn instance(id: &str) -> DeploymentInstance {
         DeploymentInstance::empty(Name::new(id).unwrap())

@@ -48,13 +48,13 @@ fn health_label(healthy: bool) -> &'static str {
     if healthy { "healthy" } else { "unhealthy" }
 }
 
-/// The health cell for an instance, accounting for its lifecycle state. A
-/// terminal instance (`Finished`/`Failed`) has exited, so its last health probe
-/// is meaningless: render a neutral `-` rather than a stale `healthy`/
-/// `unhealthy`. Live instances render their probed health via [`health_label`].
-/// Shared by `stack list` and `node info` so the two never diverge.
+/// The health cell for an instance, accounting for its lifecycle state. An
+/// instance without a process (`restarting`, `finished`, `failed`) has no
+/// live health and renders a neutral `-`. Live instances render their probed
+/// health via [`health_label`]. Shared by `stack list` and `node info` so the
+/// two never diverge.
 pub(crate) fn instance_health_label(state: InstanceState, healthy: bool) -> &'static str {
-    if state.is_terminal() {
+    if !state.has_process() {
         "-"
     } else {
         health_label(healthy)
@@ -245,8 +245,8 @@ pub trait Command {
 
 /// Parses the daemon's serialized stack graph from its JSON payload. Single
 /// owner of the parse and its error message so the commands that read the stack
-/// snapshot (stack list, node run, node remove, and the restart prompt of
-/// platform enroll and unenroll) cannot drift on it.
+/// snapshot (stack list, node run, and the restart prompt of platform enroll
+/// and unenroll) cannot drift on it.
 pub(crate) fn parse_stack_graph(graph_json: &str) -> Result<SerializedNodeGraph> {
     serde_json::from_str(graph_json)
         .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))
@@ -326,6 +326,29 @@ where
 /// Shows a step a repository resolution reports.
 pub(crate) fn report_as_info(report: core_node::Report<'_>) {
     tracing::info!("{}", report.text());
+}
+
+/// A node of a stack graph as the daemon lists it, for a test: `name:tag`
+/// on `core-a` in `stage`, holding `instances` in their states.
+#[cfg(test)]
+pub(crate) fn serialized_node(
+    name: &str,
+    tag: &str,
+    stage: core_node_api::NodeStage,
+    instances: &[(&str, InstanceState)],
+) -> core_node_api::SerializedNode {
+    core_node_api::SerializedNode {
+        name: name.to_owned(),
+        tag: tag.to_owned(),
+        core_node: "core-a".to_owned(),
+        config_path: format!("/tmp/{name}.json5"),
+        artifact_path: None,
+        stage,
+        instances: instances
+            .iter()
+            .map(|(id, state)| core_node_api::SerializedInstance::of((*id).to_owned(), *state))
+            .collect(),
+    }
 }
 
 #[cfg(test)]

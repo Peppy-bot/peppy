@@ -69,6 +69,8 @@ impl CountedNode {
             command: NodeCommands::Add {
                 clock: None,
                 publish_clock: None,
+                restart: None,
+                max_restarts: None,
                 source: Some(self.path.display().to_string()),
                 git_ref: None,
                 sync: false,

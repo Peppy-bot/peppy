@@ -101,10 +101,8 @@ pub enum SendError {
         #[source]
         source: core_node_api::Error,
     },
-    /// The daemon refused the goal; `reason` is the daemon's text, for
-    /// example [`STACK_BUSY_REASON`].
-    ///
-    /// [`STACK_BUSY_REASON`]: core_node_api::encoding::STACK_BUSY_REASON
+    /// The daemon refused the goal; `reason` is the daemon's text, which
+    /// names what holds its stack when another operation does.
     #[error("{operation} goal rejected: {reason}")]
     Rejected {
         operation: &'static str,

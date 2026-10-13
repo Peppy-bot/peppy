@@ -2,9 +2,9 @@ mod common;
 
 use common::{
     AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, answer_health_probes,
-    answer_readiness, answer_ready_probe, create_test_node_with_name, fast_health_monitor,
-    instance_state_in_any_state, path_env_with_dir_first, poll_until, send_node_add_then_build,
-    send_node_run_and_wait, send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
+    answer_readiness, answer_ready_probe, create_test_node_with_name, fast_health_monitor, never,
+    path_env_with_dir_first, poll_until, send_node_add_then_build, send_node_run_and_wait,
+    send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
     start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
     wait_until_action_completes, wait_until_process_exits, write_executable_script,
     write_peppy_json5,
@@ -22,6 +22,20 @@ fn create_node_config_dir(peppy_json5: &str) -> TempDir {
     let temp_dir = TempDir::new().expect("failed to create temp directory");
     write_peppy_json5(temp_dir.path(), peppy_json5);
     temp_dir
+}
+
+/// `path` is `instance_id`'s run log under `run_dir`: the instance's name,
+/// then the start's timestamp.
+fn assert_run_log_of(path: &std::path::Path, run_dir: &std::path::Path, instance_id: &str) {
+    assert_eq!(path.parent(), Some(run_dir), "{}", path.display());
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("a run log file name");
+    assert!(
+        file_name.starts_with(&format!("{instance_id}_")) && file_name.ends_with(".log"),
+        "{file_name}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -424,13 +438,10 @@ async fn listen_for_node_run_writes_log_file() {
         start_response.goal_response.accepted,
         "goal should be accepted"
     );
-    let expected_log_path = started
-        .peppy_dirs
-        .logs_dir_run()
-        .join(format!("{}.log", TARGET_INSTANCE_ID));
-    assert_eq!(
-        start_response.goal_response.log_path, expected_log_path,
-        "goal response log_path should match expected path"
+    assert_run_log_of(
+        &start_response.goal_response.log_path,
+        &started.peppy_dirs.logs_dir_run(),
+        TARGET_INSTANCE_ID,
     );
 
     // Verify the log file exists and contains expected content
@@ -769,15 +780,20 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     responders.extend(answer_readiness(&started, SECOND_NODE_NAME, SECOND_INSTANCE_ID).await);
 
     // Send first goal but DON'T wait for result (simulating abandoned action)
+    let timeouts = common::NodeRunTestTimeouts {
+        goal: Duration::from_secs(5),
+        result: Duration::from_secs(60),
+    };
     let (mut first_action_handle, _) = common::send_node_run_goal(
         &started.caller_handle,
         &started.core_node_name,
-        common::default_instance_plan(FIRST_INSTANCE_ID),
-        FIRST_NODE_NAME,
-        FIRST_NODE_TAG,
-        Duration::from_secs(5),
-        60,
-        Vec::new(),
+        common::node_run_goal(
+            common::default_instance_plan(FIRST_INSTANCE_ID),
+            FIRST_NODE_NAME,
+            FIRST_NODE_TAG,
+            &timeouts,
+        ),
+        timeouts.goal,
     )
     .await
     .expect("first goal should be accepted");
@@ -1115,13 +1131,10 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         start_response.goal_response.accepted,
         "goal should be accepted"
     );
-    let expected_log_path = started
-        .peppy_dirs
-        .logs_dir_run()
-        .join(format!("{}.log", TARGET_INSTANCE_ID));
-    assert_eq!(
-        start_response.goal_response.log_path, expected_log_path,
-        "goal response log_path should match expected path"
+    assert_run_log_of(
+        &start_response.goal_response.log_path,
+        &started.peppy_dirs.logs_dir_run(),
+        TARGET_INSTANCE_ID,
     );
 
     // Verify the log file exists and contains expected content
@@ -1788,17 +1801,23 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
 
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
-    let start_response = send_node_run_and_wait(
-        &started.caller_handle,
-        &started.core_node_name,
-        instance_plan,
+    // Under `never` the exit watcher leaves the crashed instance `failed`.
+    let timeouts = NodeRunTestTimeouts {
+        goal: Duration::from_secs(10),
+        result: Duration::from_secs(30),
+    };
+    let goal = common::node_run_goal(
+        instance_plan.clone(),
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(10),
-            result: Duration::from_secs(30),
-        },
-        None,
+        &timeouts,
+    )
+    .with_restart(never());
+    let start_response = common::send_node_run_goal_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        goal,
+        &timeouts,
     )
     .await
     .expect("node_run action should complete");
@@ -1834,7 +1853,7 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     // milliseconds; give it 5 seconds for CI safety.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if instance_state_in_any_state(&started.node_stack, &instance_id)
+        if started.node_stack.instance_state(instance_id.as_str())
             == Some(core_node_api::InstanceState::Failed)
         {
             break;
@@ -1842,7 +1861,7 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
         if tokio::time::Instant::now() >= deadline {
             panic!(
                 "instance was not marked Failed within timeout (state: {:?})",
-                instance_state_in_any_state(&started.node_stack, &instance_id)
+                started.node_stack.instance_state(instance_id.as_str())
             );
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1859,7 +1878,7 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
         "a terminal instance must not be reported as Running"
     );
     assert_eq!(
-        instance_state_in_any_state(&started.node_stack, &instance_id),
+        started.node_stack.instance_state(instance_id.as_str()),
         Some(core_node_api::InstanceState::Failed),
         "the crashed instance stays tracked so it remains visible in the stack"
     );
@@ -1980,7 +1999,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
         Duration::from_secs(5),
         "instance should be marked Finished after a clean self-exit",
         || {
-            (instance_state_in_any_state(&started.node_stack, &instance_id)
+            (started.node_stack.instance_state(instance_id.as_str())
                 == Some(core_node_api::InstanceState::Finished))
             .then_some(())
         },
@@ -2145,7 +2164,7 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     // removal). Give the watcher a generous window to (wrongly) act.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
     loop {
-        let state = instance_state_in_any_state(&started.node_stack, &instance_id);
+        let state = started.node_stack.instance_state(instance_id.as_str());
         assert!(
             !matches!(
                 state,
@@ -2160,7 +2179,7 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(
-        instance_state_in_any_state(&started.node_stack, &instance_id),
+        started.node_stack.instance_state(instance_id.as_str()),
         Some(core_node_api::InstanceState::Running),
         "the instance stays Running during shutdown; teardown, not the watcher, owns removal"
     );
@@ -2429,17 +2448,24 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
 
     let _responders = answer_readiness(&started, TARGET_NODE_NAME, TARGET_INSTANCE_ID).await;
 
-    let start_response = send_node_run_and_wait(
-        &started.caller_handle,
-        &started.core_node_name,
+    // Under `never` the exit leaves the instance `failed`, with no restart
+    // behind the assertions.
+    let timeouts = NodeRunTestTimeouts {
+        goal: Duration::from_secs(10),
+        result: Duration::from_secs(30),
+    };
+    let goal = common::node_run_goal(
         common::default_instance_plan(TARGET_INSTANCE_ID),
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(10),
-            result: Duration::from_secs(30),
-        },
-        None,
+        &timeouts,
+    )
+    .with_restart(never());
+    let start_response = common::send_node_run_goal_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        goal,
+        &timeouts,
     )
     .await
     .expect("node_run action should complete");
@@ -2467,8 +2493,8 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
 
     assert_eq!(failed.severity, Some(Severity::Error));
     assert!(
-        failed.body.contains("failed") && failed.body.contains("exit status: 3"),
-        "the record should state the exit status: {}",
+        failed.body.ends_with("failed: exit code 3"),
+        "the record should state the exit code: {}",
         failed.body
     );
     let node = failed
@@ -2518,15 +2544,20 @@ async fn a_start_that_fails_before_its_ready_signal_leaves_no_process_of_its_gro
     let _source = common::add_and_build_forking_node(&started, NODE_NAME, NODE_TAG).await;
 
     // Nothing answers the ready signal of the instance.
+    let timeouts = common::NodeRunTestTimeouts {
+        goal: Duration::from_secs(10),
+        result: Duration::from_secs(60),
+    };
     let (mut goal, _accepted) = common::send_node_run_goal(
         &started.caller_handle,
         &started.core_node_name,
-        common::default_instance_plan(INSTANCE_ID),
-        NODE_NAME,
-        NODE_TAG,
-        Duration::from_secs(10),
-        60,
-        Vec::new(),
+        common::node_run_goal(
+            common::default_instance_plan(INSTANCE_ID),
+            NODE_NAME,
+            NODE_TAG,
+            &timeouts,
+        ),
+        timeouts.goal,
     )
     .await
     .expect("the daemon accepts the start");
@@ -2672,15 +2703,20 @@ async fn a_start_whose_leader_exits_before_its_ready_signal_leaves_no_process_of
     )
     .await;
 
+    let timeouts = common::NodeRunTestTimeouts {
+        goal: Duration::from_secs(10),
+        result: Duration::from_secs(60),
+    };
     let (mut goal, _accepted) = common::send_node_run_goal(
         &started.caller_handle,
         &started.core_node_name,
-        common::default_instance_plan(INSTANCE_ID),
-        NODE_NAME,
-        NODE_TAG,
-        Duration::from_secs(10),
-        60,
-        Vec::new(),
+        common::node_run_goal(
+            common::default_instance_plan(INSTANCE_ID),
+            NODE_NAME,
+            NODE_TAG,
+            &timeouts,
+        ),
+        timeouts.goal,
     )
     .await
     .expect("the daemon accepts the start");
@@ -2688,8 +2724,7 @@ async fn a_start_whose_leader_exits_before_its_ready_signal_leaves_no_process_of
 
     let error = result.error_message.unwrap_or_default();
     assert!(
-        !result.success
-            && error.contains("node process exited during startup (status=exit status: 3)"),
+        !result.success && error.contains("node process exited during startup (exit code 3)"),
         "the start fails with the leader's exit: {error}"
     );
     assert_forked_process_ends(&pid_file).await;
@@ -2722,15 +2757,20 @@ async fn a_start_whose_leader_exits_during_its_setup_leaves_no_process_of_its_gr
     // answers its health signal: its setup does not end.
     let _ready_task = answer_ready_probe(&started, NODE_NAME, INSTANCE_ID).await;
 
+    let timeouts = common::NodeRunTestTimeouts {
+        goal: Duration::from_secs(10),
+        result: Duration::from_secs(60),
+    };
     let (mut goal, _accepted) = common::send_node_run_goal(
         &started.caller_handle,
         &started.core_node_name,
-        common::default_instance_plan(INSTANCE_ID),
-        NODE_NAME,
-        NODE_TAG,
-        Duration::from_secs(10),
-        60,
-        Vec::new(),
+        common::node_run_goal(
+            common::default_instance_plan(INSTANCE_ID),
+            NODE_NAME,
+            NODE_TAG,
+            &timeouts,
+        ),
+        timeouts.goal,
     )
     .await
     .expect("the daemon accepts the start");
@@ -2741,7 +2781,7 @@ async fn a_start_whose_leader_exits_during_its_setup_leaves_no_process_of_its_gr
     let error = result.error_message.unwrap_or_default();
     assert!(
         !result.success
-            && error.contains("node process exited before its setup ended (status=exit status: 3)"),
+            && error.contains("node process exited before its setup ended (exit code 3)"),
         "the start fails with the leader's exit: {error}"
     );
     assert_forked_process_ends(&pid_file).await;

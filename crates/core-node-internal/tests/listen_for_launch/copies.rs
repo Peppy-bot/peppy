@@ -1,8 +1,8 @@
 use super::*;
 use config::node::Cardinality;
 use core_node_api::encoding::{
-    CopyAction, CopyChange, NodeStopRequest, NodeStopResponse, StackJoinGoal, StackListRequest,
-    StackRemoveGoal,
+    CopyAction, CopyChange, FederationVerdict, NodeStopRequest, NodeStopResponse, StackJoinGoal,
+    StackListRequest, StackRemoveGoal,
 };
 use peppylib::core_node::transport::{poll, poll_node_stop};
 use peppylib::services::slot_update::SlotChannel;
@@ -145,8 +145,9 @@ async fn appended_remote_watchers_receive_existing_source_stop_notifications() {
     use core_node_api::{
         ServiceId,
         encoding::{
-            ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantSliceBeginRequest,
-            RelationshipEvent, RelationshipNotification, RelationshipNotificationAck,
+            InstanceEnd, ParticipantReleaseRequest, ParticipantReserveRequest,
+            ParticipantSliceBeginRequest, RelationshipEvent, RelationshipNotification,
+            RelationshipNotificationAck,
         },
     };
     use peppylib::ServiceMessenger;
@@ -160,7 +161,7 @@ async fn appended_remote_watchers_receive_existing_source_stop_notifications() {
     let begun = participant_request(&started, &request).await;
     assert!(begun.ok, "{:?}", begun.rejection_reason);
     let released = participant_request(&started, &ParticipantReleaseRequest::new(launch_id)).await;
-    assert!(released.ok);
+    assert_eq!(released, FederationVerdict::Done);
 
     let (_directory, _instance, pid) =
         seed_running_node(&started, "watched_arm", "v1", "arm_inst").await;
@@ -200,7 +201,7 @@ async fn appended_remote_watchers_receive_existing_source_stop_notifications() {
     let begun = participant_request(&started, &append).await;
     assert!(begun.ok, "{:?}", begun.rejection_reason);
     let released = participant_request(&started, &ParticipantReleaseRequest::new(launch_id)).await;
-    assert!(released.ok);
+    assert_eq!(released, FederationVerdict::Done);
     assert!(is_process_running(pid));
     let _shutdown = common::install_kill_on_shutdown_listener(
         &started,
@@ -220,7 +221,7 @@ async fn appended_remote_watchers_receive_existing_source_stop_notifications() {
         RelationshipNotification::new(
             "arm_inst",
             &started.core_node_name,
-            RelationshipEvent::Stopped
+            RelationshipEvent::Ended(InstanceEnd::Stopped)
         )
     );
 }
@@ -402,14 +403,16 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
             })
         );
         assert!(list.copies.is_empty(), "a joining copy is no copy yet");
-        let busy = core_node_api::encoding::STACK_BUSY_REASON;
+        let busy = "a stack launch, build, join, removal or reset, or a coordinator's change to \
+                    this daemon's slice, is in progress on this daemon; run this again once it \
+                    ends";
         assert!(
             refusal(&started, &robot_goal("bravo", "simulated"))
                 .await
-                .contains(busy)
+                .ends_with(busy)
         );
         let remove = remove_goal("alpha");
-        assert!(refusal(&started, &remove).await.contains(busy));
+        assert!(refusal(&started, &remove).await.ends_with(busy));
         assert!(is_process_running(pid), "refusals leave the build running");
         let response =
             participant_request(&started, &core_node_api::encoding::StackResetRequest::new()).await;
@@ -801,10 +804,9 @@ async fn a_participant_refuses_sets_for_another_launch_or_an_instance_it_does_no
     // No reservation, no slice: the sets belong to a launch this daemon is not
     // part of.
     let refused = participant_request(&started, &sets("monitor_inst")).await;
-    assert!(!refused.ok, "{refused:?}");
-    let reason = refused
-        .rejection_reason
-        .expect("a refusal names its reason");
+    let FederationVerdict::Refused(reason) = refused else {
+        panic!("the sets are refused: {refused:?}");
+    };
     assert!(
         reason.contains("must both belong to launch") && reason.contains("peppy stack reset"),
         "{reason}"
@@ -825,10 +827,9 @@ async fn a_participant_refuses_sets_for_another_launch_or_an_instance_it_does_no
     .await;
     assert!(begun.ok, "{:?}", begun.rejection_reason);
     let refused = participant_request(&started, &sets("monitor_inst")).await;
-    assert!(!refused.ok, "{refused:?}");
-    let reason = refused
-        .rejection_reason
-        .expect("a refusal names its reason");
+    let FederationVerdict::Refused(reason) = refused else {
+        panic!("the sets are refused: {refused:?}");
+    };
     assert!(
         reason.contains("`monitor_inst.links.robots`") && reason.contains("no such instance"),
         "{reason}"

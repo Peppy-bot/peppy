@@ -170,6 +170,8 @@ fn remove_running_node(
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -233,9 +235,10 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     let node_name = "test_remove_stop_instances_node";
     let node_tag = "v1";
+    let instance_id = "test_remove_stop_instances_instance";
     let removal = remove_running_node(
         node_name,
-        "test_remove_stop_instances_instance",
+        instance_id,
         NodeCommands::Remove {
             node_ref: (node_name.to_string(), node_tag.to_string()),
             stop_instances: true,
@@ -248,6 +251,15 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         logs.contains(&format!("Removed node '{node_name}:{node_tag}'")),
         "logs should contain success message for removing node. Logs:\n{}",
         logs
+    );
+    // The emulated node answers its shutdown request and keeps running, so
+    // the removal force-kills it and the CLI says so.
+    assert!(
+        logs.contains(&format!(
+            "Node instance '{instance_id}' did not shut down gracefully within the grace period \
+             and was force-killed"
+        )),
+        "logs should name the force-killed instance. Logs:\n{logs}"
     );
 
     let graph = removal.graph;

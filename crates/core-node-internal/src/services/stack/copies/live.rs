@@ -196,9 +196,12 @@ pub(super) fn check_grown_slots_running(
             .map(|live| live.state);
         match state {
             Some(core_node_api::InstanceState::Running) => {}
-            Some(core_node_api::InstanceState::Starting) => {
+            Some(
+                state @ (core_node_api::InstanceState::Starting
+                | core_node_api::InstanceState::Restarting),
+            ) => {
                 return Err(format!(
-                    "joining grows {}, but `{}` is starting on `{host}`; join again once it \
+                    "joining grows {}, but `{}` is {state} on `{host}`; join again once it \
                      is running, or join an option whose fragments do not add to that slot",
                     slot.field(),
                     slot.instance_id

@@ -1,0 +1,14 @@
+// A node that declares its own restart policy: an instance of it is
+// started again after a failed exit, whatever launcher deploys it, unless a
+// launcher entry, an adjustment or `--restart` writes one.
+{
+  peppy_schema: "node/v1",
+  manifest: { name: "wrist_camera", tag: "v1" },
+  interfaces: {},
+  execution: {
+    language: "rust",
+    build_cmd: ["cargo", "build", "--release"],
+    run_cmd: ["./target/release/wrist_camera"],
+  },
+  framework: { restart: "on_failure" },
+}

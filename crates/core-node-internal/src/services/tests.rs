@@ -106,7 +106,9 @@ fn test_node_arguments() -> CoreNodeArguments {
             interval: Duration::from_secs(5),
             timeout: Duration::from_secs(3),
             failure_threshold: NonZeroU32::new(3).expect("non-zero"),
+            kill_after: None,
         },
+        restart_backoff: crate::test_support::parked_restart_backoff(),
         clock_publish_interval: Duration::from_millis(100),
         heartbeat_interval: Duration::from_secs(5),
         // Zero: the in-memory mock broker is authoritative immediately, so

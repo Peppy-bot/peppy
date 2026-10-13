@@ -377,6 +377,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         BTreeMap::new(),
         BTreeMap::new(),
         ClockBinding::Wall,
+        config::node::RestartRequest::Unset,
         &timeouts,
     )
     .await
@@ -407,6 +408,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         BTreeMap::new(),
         BTreeMap::new(),
         ClockBinding::Wall,
+        config::node::RestartRequest::Unset,
         &timeouts,
     )
     .await
@@ -653,6 +655,7 @@ async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
         BTreeMap::new(),
         BTreeMap::new(),
         ClockBinding::Wall,
+        config::node::RestartRequest::Unset,
         &TimeoutConfig {
             idle_secs: 30,
             max_secs: 60,

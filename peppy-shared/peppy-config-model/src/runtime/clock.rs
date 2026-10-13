@@ -182,6 +182,11 @@ impl ClockBinding {
         }
     }
 
+    /// The domain this binding publishes; `None` for a reader or wall time.
+    pub fn published_domain(&self) -> Option<&ClockDomainId> {
+        self.domain().filter(|_| self.is_publisher())
+    }
+
     pub fn is_publisher(&self) -> bool {
         matches!(
             self,

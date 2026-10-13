@@ -197,11 +197,11 @@ $ peppy stack list
 │                                                                                                                                   │
 │ Instance bindings                                                                                                                 │
 │                                                                                                                                   │
-│ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬──────────┐                            │
-│ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS │                            │
-│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┤                            │
-│ │ cn-sweet-buffalo:v0.10.0             │ cn-sweet-buffalo             │ running │ healthy │ (none)   │                            │
-│ └──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴──────────┘                            │
+│ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬──────────┬───────┬──────────┐         │
+│ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ RESTARTS │ CLOCK │ BINDINGS │         │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┼───────┼──────────┤         │
+│ │ cn-sweet-buffalo:v0.10.0             │ cn-sweet-buffalo             │ running │ healthy │ 0        │ wall  │ (none)   │         │
+│ └──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴──────────┴───────┴──────────┘         │
 │                                                                                                                                   │
 │ Dependencies                                                                                                                      │
 │   hello_receiver:v1 ➔ hello_world_param:v1                                                                                        │
@@ -216,7 +216,7 @@ $ peppy node run hello_world_param:v1 name=planet
 Running node hello_world_param:v1...
 Starting node hello_world_param:v1 with instance_id 'gifted-moser-9365' and 1 argument(s)...
 Calling node_run for hello_world_param:v1 (instance_id=gifted-moser-9365)...
-Log file: /home/ubuntu/.peppy/logs/run/gifted-moser-9365.log
+Log file: /home/ubuntu/.peppy/logs/run/gifted-moser-9365_20260124_100215_412.log
 Started node instance 'gifted-moser-9365' (pid: 76981)
 ```
 
@@ -227,13 +227,13 @@ $ peppy node run hello_receiver:v1 --link hello_world_param@gifted-moser-9365
 Running node hello_receiver:v1...
 Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 Calling node_run for hello_receiver:v1 (instance_id=vigorous-buck-8117)...
-Log file: /home/ubuntu/.peppy/logs/run/vigorous-buck-8117.log
+Log file: /home/ubuntu/.peppy/logs/run/vigorous-buck-8117_20260124_100243_907.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
 A producer slot left without a `--link` is an error: every declared producer slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns. A slot whose manifest declares `cardinality: "zero_or_one"` may instead be started unresolved with `--vacant-link 'SLOT=<why>'`, saying why it runs empty. (Pairing and observer slots follow the same shape: a `zero_or_one` participant or observer slot takes the same flag, and a `zero_or_more` slot of either kind needs no link at all.)
 
-When you start the node, you can see a path to the logs. In my case: `/home/ubuntu/.peppy/logs/run/vigorous-buck-8117.log`.
+When you start the node, you can see a path to the logs. In my case: `/home/ubuntu/.peppy/logs/run/vigorous-buck-8117_20260124_100243_907.log`. Each process of an instance writes its own file, named after the instance and the time it started.
 If we open it up:
 ```
 [2026-01-24T10:02:47.630] [stderr]     Finished `release` profile [optimized] target(s) in 0.21s
@@ -253,7 +253,7 @@ $ peppy node run hello_world_param:v1 name=you
 Running node hello_world_param:v1...
 Starting node hello_world_param:v1 with instance_id 'admiring-black-0614' and 1 argument(s)...
 Calling node_run for hello_world_param:v1 (instance_id=admiring-black-0614)...
-Log file: /home/ubuntu/.peppy/logs/run/admiring-black-0614.log
+Log file: /home/ubuntu/.peppy/logs/run/admiring-black-0614_20260124_100412_118.log
 Started node instance 'admiring-black-0614' (pid: 78063)
 ```
 
@@ -265,9 +265,9 @@ $ peppy node run hello_receiver:v1 -i vigorous-buck-8117 \
 Running node hello_receiver:v1...
 Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 ```
-And we check the logs again:
+And we check the new run's log:
 ```
-$ tail /home/ubuntu/.peppy/logs/run/vigorous-buck-8117.log
+$ tail /home/ubuntu/.peppy/logs/run/vigorous-buck-8117_20260124_100441_052.log
 [2026-01-24T10:04:47.085] [stdout] Received from admiring-black-0614: hello you count 1
 [2026-01-24T10:04:50.085] [stdout] Received from admiring-black-0614: hello you count 2
 [2026-01-24T10:04:53.086] [stdout] Received from admiring-black-0614: hello you count 3
@@ -277,37 +277,37 @@ The receiver now follows `admiring-black-0614`, and only it. `gifted-moser-9365`
 
 ```
 $ peppy stack list
-┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Core node: cn-sweet-buffalo (host: robot-host)                                                                                    │
-├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ Node stack                                                                                                                        │
-│                                                                                                                                   │
-│ ┌──────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────────────────┐ │
-│ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                                               │ │
-│ ├──────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────────────────┤ │
-│ │ cn-sweet-buffalo:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                                  │ │
-│ │ hello_receiver:v1                    │ Ready │ 1 running │ ~/.peppy/built_nodes/hello_receiver_v1/a0c3e8f51b72d946.tar.zst    │ │
-│ │ hello_world_param:v1                 │ Ready │ 2 running │ ~/.peppy/built_nodes/hello_world_param_v1/4e7b2d19c6a8f053.tar.zst │ │
-│ └──────────────────────────────────────┴───────┴───────────┴────────────────────────────────────────────────────────────────────┘ │
-│                                                                                                                                   │
-│ Instance bindings                                                                                                                 │
-│                                                                                                                                   │
-│ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬───────────────────────────┐           │
-│ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS                  │           │
-│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤           │
-│ │ cn-sweet-buffalo:v0.10.0             │ cn-sweet-buffalo             │ running │ healthy │ (none)                    │           │
-│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤           │
-│ │ hello_receiver:v1                    │ vigorous-buck-8117           │ running │ healthy │ hello_world_param →       │           │
-│ │                                      │                              │         │         │ admiring-black-0614@cn-sw │           │
-│ │                                      │                              │         │         │ eet-germain               │           │
-│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤           │
-│ │ hello_world_param:v1                 │ gifted-moser-9365            │ running │ healthy │ (none)                    │           │
-│ │                                      │ admiring-black-0614          │ running │ healthy │ (none)                    │           │
-│ └──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴───────────────────────────┘           │
-│                                                                                                                                   │
-│ Dependencies                                                                                                                      │
-│   hello_receiver:v1 ➔ hello_world_param:v1                                                                                        │
-└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-sweet-buffalo (host: robot-host)                                                                                             │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Node stack                                                                                                                                 │
+│                                                                                                                                            │
+│ ┌──────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────────────────┐          │
+│ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                                               │          │
+│ ├──────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────────────────┤          │
+│ │ cn-sweet-buffalo:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                                  │          │
+│ │ hello_receiver:v1                    │ Ready │ 1 running │ ~/.peppy/built_nodes/hello_receiver_v1/a0c3e8f51b72d946.tar.zst    │          │
+│ │ hello_world_param:v1                 │ Ready │ 2 running │ ~/.peppy/built_nodes/hello_world_param_v1/4e7b2d19c6a8f053.tar.zst │          │
+│ └──────────────────────────────────────┴───────┴───────────┴────────────────────────────────────────────────────────────────────┘          │
+│                                                                                                                                            │
+│ Instance bindings                                                                                                                          │
+│                                                                                                                                            │
+│ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬──────────┬───────┬───────────────────────────┐ │
+│ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ RESTARTS │ CLOCK │ BINDINGS                  │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┼───────┼───────────────────────────┤ │
+│ │ cn-sweet-buffalo:v0.10.0             │ cn-sweet-buffalo             │ running │ healthy │ 0        │ wall  │ (none)                    │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┼───────┼───────────────────────────┤ │
+│ │ hello_receiver:v1                    │ vigorous-buck-8117           │ running │ healthy │ 0        │ wall  │ hello_world_param →       │ │
+│ │                                      │                              │         │         │          │       │ admiring-black-0614@cn-sw │ │
+│ │                                      │                              │         │         │          │       │ eet-buffalo               │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┼───────┼───────────────────────────┤ │
+│ │ hello_world_param:v1                 │ gifted-moser-9365            │ running │ healthy │ 0        │ wall  │ (none)                    │ │
+│ │                                      │ admiring-black-0614          │ running │ healthy │ 0        │ wall  │ (none)                    │ │
+│ └──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴──────────┴───────┴───────────────────────────┘ │
+│                                                                                                                                            │
+│ Dependencies                                                                                                                               │
+│   hello_receiver:v1 ➔ hello_world_param:v1                                                                                                 │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 The `Instance bindings` table makes the routing explicit: `hello_receiver`'s instance resolved its `hello_world_param` slot to the one producer we bound, rendered as `instance_id@core_node` (its full wire address). A slot only ever receives from the producer bound to it: that is exactly why `vigorous-buck-8117` prints messages from `admiring-black-0614` and nothing from `gifted-moser-9365` above.

@@ -37,6 +37,16 @@ pub fn fixture_instance_name() -> Name {
 struct NoOpHooks;
 impl OutputReaderHooks for NoOpHooks {}
 
+/// The spawn of a new fixture instance under the default policy, from a
+/// goal of its own.
+pub fn new_spawn(instance_id: &Name) -> node_stack::SpawnTarget {
+    node_stack::SpawnTarget::New(node_stack::FirstStart::fixture(
+        instance_id,
+        "fixture",
+        "v1",
+    ))
+}
+
 /// Tempdir-backed plumbing for real-lifecycle fixture calls. Callers keep
 /// this alive for the duration of the test; dropping it cleans up the
 /// tempdirs and aborts the feedback-drain task.
@@ -73,12 +83,15 @@ impl LifecycleHarness {
     /// or copy, and no extra env vars or mounts.
     pub fn start_context<'a>(&'a self, instance_id: &'a Name) -> StartContext<'a> {
         StartContext {
+            core_node: "cn-a",
+            run_log_path: std::path::Path::new("run.log"),
             instance_id,
             runtime_config_json5: "{}",
             slot_bindings: BTreeMap::new(),
             clock: Default::default(),
             launch: None,
             copy: None,
+            spawn: new_spawn(instance_id),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &self.peppy_dirs,
@@ -116,23 +129,19 @@ pub fn lifecycle_harness() -> LifecycleHarness {
 
 /// Rewrites `config.execution` so that the build path runs the trivial
 /// `archive_dir_to_storage` branch (no apptainer, no user build_cmd) and the
-/// later spawn uses the portable long-running shell loop. Fixture callers
-/// that pass arbitrary configs are opting into this override.
-pub fn override_execution_for_fixture(mut config: NodeConfig) -> NodeConfig {
+/// later spawn runs `run_cmd`. Fixture callers that pass arbitrary configs
+/// are opting into this override.
+pub fn override_execution_for_fixture(mut config: NodeConfig, run_cmd: &[&str]) -> NodeConfig {
     config.execution.container = None;
     config.execution.build_cmd = None;
-    config.execution.run_cmd = Some(
-        LONG_RUNNING_START_CMD
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-    );
+    config.execution.run_cmd = Some(run_cmd.iter().map(|s| s.to_string()).collect());
     config
 }
 
 /// Pushes `config` into `stack`, rewrites its execution fields for fixture
 /// use, then drives the real `NodeEntity::build` to produce a `Ready` entity
-/// with an on-disk archive in `harness.peppy_dirs.built_nodes_dir()`.
+/// with an on-disk archive in `harness.peppy_dirs.built_nodes_dir()`. Its
+/// spawns run the portable long-running shell loop.
 ///
 /// Returns the `Ready` entity handle.
 pub async fn build_ready(
@@ -144,7 +153,7 @@ pub async fn build_ready(
     build_ready_as_is(
         stack,
         harness,
-        override_execution_for_fixture(config),
+        override_execution_for_fixture(config, LONG_RUNNING_START_CMD),
         config_path,
     )
     .await
@@ -153,8 +162,7 @@ pub async fn build_ready(
 /// Pushes `config` into `stack` with its execution fields as they are, then
 /// drives the real `NodeEntity::build` to produce a `Ready` entity. The
 /// config must build without apptainer or a user build_cmd; a test that
-/// needs its own `run_cmd` starts from [`override_execution_for_fixture`]
-/// and replaces it.
+/// needs its own `run_cmd` passes it to [`override_execution_for_fixture`].
 ///
 /// Returns the `Ready` entity handle.
 pub async fn build_ready_as_is(

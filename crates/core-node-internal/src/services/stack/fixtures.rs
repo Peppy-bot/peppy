@@ -3,7 +3,7 @@
 
 use super::launch::PlannedDeployment;
 use config::AnyType;
-use config::runtime::{ClockBinding, CoreNodeName, Name, SlotBindings};
+use config::runtime::{CoreNodeName, Name};
 use core_node_api::{
     InstanceState, NodeStage, SerializedInstance, SerializedNode, SerializedNodeGraph,
 };
@@ -141,14 +141,8 @@ pub(super) fn graph_holding(instances: &[(&str, InstanceState)]) -> SerializedNo
             stage: NodeStage::Ready,
             instances: instances
                 .iter()
-                .map(|(instance_id, state)| SerializedInstance {
-                    instance_id: (*instance_id).to_owned(),
-                    state: *state,
-                    healthy: true,
-                    clock: ClockBinding::default(),
-                    slot_bindings: SlotBindings::default(),
-                    pairing_slots: BTreeMap::new(),
-                    endpoints: Vec::new(),
+                .map(|(instance_id, state)| {
+                    SerializedInstance::of((*instance_id).to_owned(), *state)
                 })
                 .collect(),
         }],

@@ -11,8 +11,8 @@ use httpmock::Method::HEAD;
 use httpmock::MockServer;
 use log_export::{LogExporter, LogKind};
 use node_stack::{
-    ActionLog, Announcer, Artifact, BuildContext, CACHED_BUILD_REUSE_PREFIX, InstanceState,
-    NodeEntity, NodeStack, NodeStackError, NodeStage, WorkingDirGuard,
+    ActionLog, Announcer, Artifact, BuildContext, CACHED_BUILD_REUSE_PREFIX, FORKS_A_TERM_IGNORER,
+    InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage, WorkingDirGuard,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -111,7 +111,7 @@ async fn stop_instance_removes_last_instance_keeps_ready() {
             .await;
 
     // Remove the only instance: entity stays in Ready with an empty list.
-    let removed = handle.write().stop_instance(&instance_id);
+    let removed = handle.write().stop_instance(&instance_id).is_some();
     assert!(removed, "stop_instance should report success");
 
     let guard = handle.read();
@@ -149,7 +149,7 @@ async fn stop_instance_keeps_other_instances_when_one_removed() {
     let _b =
         real_lifecycle::spawn_running_instance(Arc::clone(&handle), &harness, id_b.clone()).await;
 
-    let removed = handle.write().stop_instance(&id_a);
+    let removed = handle.write().stop_instance(&id_a).is_some();
     assert!(removed);
 
     let guard = handle.read();
@@ -163,7 +163,7 @@ async fn stop_instance_keeps_other_instances_when_one_removed() {
 }
 
 #[tokio::test]
-async fn stop_instance_returns_false_when_instance_not_tracked() {
+async fn stop_instance_returns_none_when_instance_not_tracked() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let harness = real_lifecycle::lifecycle_harness();
     let config_path = harness.peppy_root.path().join("sensor.json5");
@@ -177,7 +177,8 @@ async fn stop_instance_returns_false_when_instance_not_tracked() {
 
     let removed = handle
         .write()
-        .stop_instance(&Name::new("nonexistent").unwrap());
+        .stop_instance(&Name::new("nonexistent").unwrap())
+        .is_some();
     assert!(!removed);
 }
 
@@ -199,7 +200,7 @@ async fn stop_instance_skips_starting_instances() {
             .await
             .expect("prepare_and_spawn should succeed");
 
-    let removed = handle.write().stop_instance(&id);
+    let removed = handle.write().stop_instance(&id).is_some();
     assert!(
         !removed,
         "stop_instance must not remove a Starting instance"
@@ -1349,6 +1350,190 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     let _ = returned_child.kill().await;
 }
 
+/// How long a test waits on a process group: for it to empty (an orphan
+/// that was killed answers `kill -0` until it is reaped), to grow, or for
+/// the pid file one of its processes writes.
+const GROUP_EMPTY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Starts an instance of a ready node whose process runs `script` under `sh -c`.
+async fn spawn_for_abort(
+    stack: &NodeStack,
+    h: &real_lifecycle::LifecycleHarness,
+    instance_id: &Name,
+    script: &str,
+) -> (
+    Arc<RwLock<NodeEntity>>,
+    tokio::process::Child,
+    node_stack::StartedInstanceCtx,
+) {
+    let handle = real_lifecycle::build_ready_as_is(
+        stack,
+        h,
+        real_lifecycle::override_execution_for_fixture(
+            long_running_sensor_config(),
+            &["sh", "-c", script],
+        ),
+        h.peppy_root.path().join("long_running_sensor.json5"),
+    )
+    .await;
+    let (child, started_ctx) = NodeEntity::prepare_and_spawn(&handle, h.start_context(instance_id))
+        .await
+        .expect("prepare_and_spawn should succeed");
+    (handle, child, started_ctx)
+}
+
+/// Polls until the group `pgid` leads is empty; false when it still has a
+/// process after [`GROUP_EMPTY_WAIT`].
+async fn group_empties(pgid: u32) -> bool {
+    tokio::time::timeout(GROUP_EMPTY_WAIT, async {
+        while node_stack::process_group_exists(pgid) {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
+/// Polls until the group `pgid` leads holds at least `count` processes.
+async fn wait_for_group_size(pgid: u32, count: usize) {
+    let grown = tokio::time::timeout(GROUP_EMPTY_WAIT, async {
+        while node_stack::process_group_size(pgid) < count {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        grown.is_ok(),
+        "the group led by {pgid} reached {count} processes"
+    );
+}
+
+/// A start that fails kills what the node forked too: a child that ignores
+/// SIGTERM does not survive it.
+#[tokio::test]
+async fn abort_started_kills_the_process_group() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let (instance_id, h) = start_harness("test-inst-group");
+    let (handle, child, started_ctx) =
+        spawn_for_abort(&stack, &h, &instance_id, FORKS_A_TERM_IGNORER).await;
+    let pid = child.id().expect("child has pid");
+    wait_for_group_size(pid, 2).await;
+
+    let started = std::time::Instant::now();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        NodeEntity::abort_started(
+            &handle,
+            child,
+            started_ctx,
+            "synthetic failure".to_string(),
+            &instance_id,
+        ),
+    )
+    .await
+    .expect("the abort returns once the group is killed");
+    assert!(
+        started.elapsed() < node_stack::OUTPUT_READER_JOIN_BUDGET,
+        "the group dies before the readers are joined, so they close at once"
+    );
+    assert!(group_empties(pid).await, "the group led by {pid} is empty");
+}
+
+/// A startup probe that sees the process exit reaps it; the abort that
+/// follows still kills the child the process left behind.
+#[tokio::test]
+async fn abort_started_kills_the_group_of_a_leader_a_probe_reaped() {
+    const FORKS_THEN_EXITS: &str =
+        "sh -c 'trap \"\" TERM; while true; do sleep 0.1; done' & exit 3";
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let (instance_id, h) = start_harness("test-inst-reaped");
+    let (handle, mut child, started_ctx) =
+        spawn_for_abort(&stack, &h, &instance_id, FORKS_THEN_EXITS).await;
+    let pid = child.id().expect("child has pid");
+    let reaped = tokio::time::timeout(GROUP_EMPTY_WAIT, async {
+        while child.try_wait().expect("try_wait").is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(reaped.is_ok(), "the leader exited and was reaped");
+    assert!(child.id().is_none(), "a reaped child has no pid");
+    assert!(
+        node_stack::process_group_exists(pid),
+        "the forked child outlived its leader"
+    );
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        NodeEntity::abort_started(
+            &handle,
+            child,
+            started_ctx,
+            "node process exited during startup".to_string(),
+            &instance_id,
+        ),
+    )
+    .await
+    .expect("the abort returns once the group is killed");
+    assert!(group_empties(pid).await, "the group led by {pid} is empty");
+}
+
+/// A process that left the node's group and holds its output open does not
+/// keep a failed start waiting: the readers are given up after
+/// `OUTPUT_READER_JOIN_BUDGET`.
+#[tokio::test]
+async fn abort_started_gives_up_a_reader_held_outside_the_group() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let (instance_id, h) = start_harness("test-inst-holder");
+    let holder_pidfile = h.peppy_root.path().join("holder.pid");
+    let script = format!(
+        "setsid sh -c 'echo $$ > {}; exec sleep 300' & while true; do sleep 0.1; done",
+        holder_pidfile.display()
+    );
+    let (handle, child, started_ctx) = spawn_for_abort(&stack, &h, &instance_id, &script).await;
+    let holder_started = tokio::time::timeout(GROUP_EMPTY_WAIT, async {
+        while std::fs::read_to_string(&holder_pidfile)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+            .is_none()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(holder_started.is_ok(), "the holder wrote its pid");
+    let holder_pid = std::fs::read_to_string(&holder_pidfile)
+        .expect("read the holder's pid")
+        .trim()
+        .to_owned();
+
+    let started = std::time::Instant::now();
+    let aborted = tokio::time::timeout(
+        node_stack::OUTPUT_READER_JOIN_BUDGET * 5,
+        NodeEntity::abort_started(
+            &handle,
+            child,
+            started_ctx,
+            "synthetic failure".to_string(),
+            &instance_id,
+        ),
+    )
+    .await;
+    let took = started.elapsed();
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", &holder_pid])
+        .status();
+    aborted.expect("the abort gives the held reader up");
+    assert!(
+        took >= node_stack::OUTPUT_READER_JOIN_BUDGET,
+        "the abort waited on the held reader for the bound, took {took:?}"
+    );
+    assert!(
+        took < node_stack::OUTPUT_READER_JOIN_BUDGET + std::time::Duration::from_secs(1),
+        "both readers share the one bound, took {took:?}"
+    );
+}
+
 #[tokio::test]
 async fn abort_started_removes_starting_instance_and_kills_child() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
@@ -1413,11 +1598,9 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
 async fn abort_started_quotes_the_stderr_of_the_child_and_not_its_stdout() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let (instance_id, h) = start_harness("test-inst-stderr");
-    let mut config = real_lifecycle::override_execution_for_fixture(long_running_sensor_config());
-    config.execution.run_cmd = Some(
-        ["sh", "-c", "echo on-stdout; echo on-stderr >&2"]
-            .map(String::from)
-            .to_vec(),
+    let config = real_lifecycle::override_execution_for_fixture(
+        long_running_sensor_config(),
+        &["sh", "-c", "echo on-stdout; echo on-stderr >&2"],
     );
     let config_path = h.peppy_root.path().join("printing_sensor.json5");
     let handle = real_lifecycle::build_ready_as_is(&stack, &h, config, config_path).await;
@@ -1548,9 +1731,12 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
 
     match err {
         NodeStackError::DuplicateInstanceId {
-            instance_id: id, ..
+            instance_id: id,
+            core_node,
+            ..
         } => {
             assert_eq!(id, instance_id.as_str());
+            assert_eq!(core_node, "cn-a", "the refusal names the start's daemon");
         }
         other => panic!("expected DuplicateInstanceId, got {:?}", other),
     }

@@ -4,6 +4,7 @@
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::services::repo::cache::{
     self as repo_cache, ContractCacheEntry, EntryOrigin, McpExposureCacheEntry,
@@ -11,6 +12,96 @@ use crate::services::repo::cache::{
 use daemon_config::consts::PeppyDirs;
 use daemon_config::repository::{ItemName, ItemTag, ManifestFingerprint};
 use tracing_subscriber::fmt::MakeWriter;
+
+use crate::RestartBackoff;
+
+/// A backoff with no wait and no reset, for a test that needs the respawn to
+/// happen.
+pub fn instant_restart_backoff() -> RestartBackoff {
+    RestartBackoff {
+        first_delay: Duration::ZERO,
+        max_delay: Duration::ZERO,
+        reset_after: Duration::MAX,
+    }
+}
+
+/// A backoff whose wait outlasts any test, for a test that acts during the
+/// wait.
+pub fn parked_restart_backoff() -> RestartBackoff {
+    RestartBackoff {
+        first_delay: Duration::from_secs(3600),
+        max_delay: Duration::from_secs(3600),
+        reset_after: Duration::MAX,
+    }
+}
+
+/// A backoff with no wait whose reset window is [`RESET_WINDOW`], for a test
+/// of the reset: a run shorter than the window backs off further, a longer
+/// one starts it over.
+pub fn resetting_restart_backoff() -> RestartBackoff {
+    RestartBackoff {
+        first_delay: Duration::ZERO,
+        max_delay: Duration::ZERO,
+        reset_after: RESET_WINDOW,
+    }
+}
+
+/// The reset window of [`resetting_restart_backoff`]: long enough that a
+/// kill right after a start lands inside it on a loaded machine, and shorter
+/// than the time a test monitor takes to kill a process that never answers,
+/// so a hang loop's runs pass it by the clock while their answers, which
+/// count, stay inside it.
+pub const RESET_WINDOW: Duration = Duration::from_secs(1);
+
+/// The shell body of a test process that runs until SIGTERM and then exits
+/// 0.
+pub const EXIT_CLEANLY_ON_TERM: &str = "trap 'exit 0' TERM; while true; do sleep 0.2; done";
+
+/// The `framework` entry of a test manifest, `framework: <block>,`, or
+/// nothing.
+pub fn framework_entry(framework: Option<&str>) -> String {
+    framework.map_or(String::new(), |block| format!("framework: {block},"))
+}
+
+/// The shell command that copies a process's runtime config to
+/// `<dumps>/<pid>.json5`.
+pub fn dump_runtime_config(dumps: &Path) -> String {
+    format!(
+        r#"cp "$PEPPY_RUNTIME_CONFIG" '{}/'$$.json5"#,
+        dumps.display()
+    )
+}
+
+/// How long [`poll_file`] waits for a test process to write its file.
+const FILE_WRITTEN_WITHIN: Duration = Duration::from_secs(15);
+
+/// What a test process writes to `path`, once `parse` reads it whole: a
+/// read that races the write returns part of the file.
+pub fn poll_file<T>(path: &Path, parse: impl Fn(&str) -> Option<T>) -> T {
+    let deadline = std::time::Instant::now() + FILE_WRITTEN_WITHIN;
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path)
+            && let Some(parsed) = parse(&text)
+        {
+            return parsed;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} is written whole",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Sends `signal` (`-9`, `-TERM`) to the test process `pid`.
+pub fn signal_process(pid: u32, signal: &str) {
+    let status = std::process::Command::new("kill")
+        .args([signal, &pid.to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(status.success(), "kill {signal} {pid}");
+}
 
 /// Cloneable in-memory sink for `tracing_subscriber`: pass a clone to
 /// `with_writer` and read back everything logged via [`LogCapture::logs`].

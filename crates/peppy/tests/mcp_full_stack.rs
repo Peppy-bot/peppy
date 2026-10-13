@@ -3517,8 +3517,13 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         2,
         "the stack log and the node's run log: {message}"
     );
+    let run_log_name = std::path::Path::new(logs[1])
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
     assert!(
-        logs[1].ends_with("delta_recorder.log")
+        run_log_name.starts_with("delta_recorder_")
+            && run_log_name.ends_with(".log")
             && fs::read_to_string(logs[1])
                 .unwrap_or_default()
                 .contains("the recorder finds no camera"),

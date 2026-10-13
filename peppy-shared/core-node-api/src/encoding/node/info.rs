@@ -5,10 +5,12 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use capnp::message::Builder;
-use config::node::NodeConfig;
+use config::node::{NodeConfig, RestartDeclaration, RestartOrigin};
 use config::runtime::{ClockBinding, SlotBindings};
 
-use crate::graph::{InstanceEndpoint, InstanceState, NodeStage, SerializedPairingSlot};
+use crate::graph::{
+    ExitCause, InstanceEndpoint, InstanceState, NodeStage, RestartStatus, SerializedPairingSlot,
+};
 use crate::node_capnp;
 use crate::{Payload, Result};
 
@@ -75,7 +77,7 @@ pub struct NodeInstanceInfo {
     pub slot_bindings: SlotBindings,
     /// Live pairing-slot state per `depends_on.pairings` entry, mirroring
     /// [`crate::graph::SerializedInstance::pairing_slots`]. Empty when the
-    /// node declares no pairings. Lets the CLI's `--pair` preflight see
+    /// node declares no pairings. Lets the CLI's `--link` preflight see
     /// which slots of a running instance are already claimed.
     pub pairing_slots: BTreeMap<String, SerializedPairingSlot>,
     /// The one clock this instance reads. Lets a `node run` preflight hold a
@@ -86,6 +88,8 @@ pub struct NodeInstanceInfo {
     /// [`crate::graph::SerializedInstance::endpoints`]. Empty for a node
     /// whose manifest declares none.
     pub endpoints: Vec<InstanceEndpoint>,
+    /// The instance's restart policy and how its restarts went.
+    pub restart_status: crate::graph::RestartStatus,
 }
 
 /// Body of a successful `node_info` lookup: carries all metadata about a
@@ -104,6 +108,9 @@ pub struct NodeInfo {
     pub add_log_path: Option<PathBuf>,
     /// Per-instance run log paths, aligned with `instances` (same order).
     pub run_log_paths: Vec<PathBuf>,
+    /// The daemon's clock when it answered, in milliseconds since the Unix
+    /// epoch: what each instance's `next_start_ms` counts down against.
+    pub reported_at_ms: u64,
 }
 
 /// Response payload for the `node_info` service.
@@ -168,6 +175,7 @@ fn write_node_info(
     found.set_config_json5(&config_json5);
     found.set_config_sha256(&info.config_integrity);
     found.set_stage(info.stage.as_str());
+    found.set_reported_at_ms(info.reported_at_ms);
     let instance_count = capnp_list_len(info.instances.len(), "NodeInfo.instances")?;
     let mut instances = found.reborrow().init_instances(instance_count);
     for (index, instance) in info.instances.iter().enumerate() {
@@ -222,6 +230,7 @@ fn read_node_info(found: node_capnp::node_info_response::found::Reader<'_>) -> R
         instances,
         add_log_path,
         run_log_paths,
+        reported_at_ms: found.get_reported_at_ms(),
     })
 }
 
@@ -250,7 +259,21 @@ fn write_node_instance(
         instance_id,
     )?);
     let endpoint_count = capnp_list_len(instance.endpoints.len(), "NodeInstanceInfo.endpoints")?;
-    write_node_endpoints(entry.init_endpoints(endpoint_count), &instance.endpoints)
+    write_node_endpoints(
+        entry.reborrow().init_endpoints(endpoint_count),
+        &instance.endpoints,
+    )?;
+    let status = &instance.restart_status;
+    let (policy, max_restarts) = super::run::declaration_on_wire(status.restart);
+    entry.set_restart(policy);
+    entry.set_max_restarts(max_restarts);
+    entry.set_restart_origin(status.restart_origin.as_str());
+    entry.set_restart_count(status.restart_count);
+    entry.set_attempt(status.attempt);
+    write_exit_cause(entry.reborrow().init_last_exit(), status.last_exit.as_ref());
+    entry.set_running_since_ms(status.running_since_ms.unwrap_or(0));
+    entry.set_next_start_ms(status.next_start_ms.unwrap_or(0));
+    Ok(())
 }
 
 /// Inverse of [`write_node_instance`].
@@ -264,6 +287,9 @@ fn read_node_instance(
     let pairing_slots =
         deserialize_instance_field(entry.get_pairing_slots_json()?.to_str()?, "pairing_slots")?;
     let clock = deserialize_instance_field(entry.get_clock_json()?.to_str()?, "clock")?;
+    let restart =
+        read_restart_declaration(entry.get_restart()?.to_str()?, entry.get_max_restarts())?;
+    let restart_origin = read_restart_origin(entry.get_restart_origin()?.to_str()?)?;
     Ok(NodeInstanceInfo {
         instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
         state,
@@ -272,6 +298,15 @@ fn read_node_instance(
         pairing_slots,
         clock,
         endpoints: read_node_endpoints(entry.get_endpoints()?)?,
+        restart_status: RestartStatus {
+            restart,
+            restart_origin,
+            restart_count: entry.get_restart_count(),
+            attempt: entry.get_attempt(),
+            last_exit: read_exit_cause(entry.get_last_exit()?)?,
+            running_since_ms: wire_time(entry.get_running_since_ms()),
+            next_start_ms: wire_time(entry.get_next_start_ms()),
+        },
     })
 }
 
@@ -305,6 +340,68 @@ fn deserialize_instance_field<T: serde::de::DeserializeOwned + Default>(
         .map_err(|e| crate::Error::Decoding(format!("failed to deserialize {field}: {e}")))
 }
 
+/// A time the wire carries as milliseconds since the Unix epoch, `0` for
+/// none.
+fn wire_time(ms: u64) -> Option<u64> {
+    (ms != 0).then_some(ms)
+}
+
+/// Reads a declaration from its two wire fields; an empty policy is a daemon
+/// older than the policy, whose instances are never restarted.
+fn read_restart_declaration(policy: &str, max_restarts: u32) -> Result<RestartDeclaration> {
+    Ok(super::run::read_declaration(policy, max_restarts)?
+        .unwrap_or_else(crate::graph::older_daemon_restart))
+}
+
+/// Reads an origin; an empty one is a daemon older than the policy.
+fn read_restart_origin(origin: &str) -> Result<RestartOrigin> {
+    if origin.is_empty() {
+        return Ok(RestartOrigin::Default);
+    }
+    RestartOrigin::from_str(origin).map_err(|e| crate::Error::Decoding(e.to_string()))
+}
+
+/// Writes an exit cause, or the `none` arm while no process has exited.
+fn write_exit_cause(mut builder: node_capnp::exit_cause::Builder<'_>, cause: Option<&ExitCause>) {
+    match cause {
+        None => builder.set_none(()),
+        Some(ExitCause::Code(code)) => builder.set_code(*code),
+        Some(ExitCause::Signal {
+            number,
+            name,
+            core_dumped,
+        }) => {
+            let mut group = builder.init_signal();
+            group.set_number(*number);
+            group.set_name(name.as_deref().unwrap_or_default());
+            group.set_core_dumped(*core_dumped);
+        }
+        Some(ExitCause::HealthKill { unanswered_secs }) => {
+            builder.set_health_kill_secs(*unanswered_secs)
+        }
+        Some(ExitCause::Message(text)) => builder.set_message(text),
+    }
+}
+
+/// Inverse of [`write_exit_cause`].
+fn read_exit_cause(reader: node_capnp::exit_cause::Reader<'_>) -> Result<Option<ExitCause>> {
+    use node_capnp::exit_cause::Which;
+    Ok(match reader.which()? {
+        Which::None(()) => None,
+        Which::Code(code) => Some(ExitCause::Code(code)),
+        Which::Signal(group) => {
+            let name = group.get_name()?.to_str()?;
+            Some(ExitCause::Signal {
+                number: group.get_number(),
+                name: (!name.is_empty()).then(|| name.to_owned()),
+                core_dumped: group.get_core_dumped(),
+            })
+        }
+        Which::HealthKillSecs(unanswered_secs) => Some(ExitCause::HealthKill { unanswered_secs }),
+        Which::Message(text) => Some(ExitCause::Message(text?.to_str()?.to_owned())),
+    })
+}
+
 impl crate::encoding::Wire for NodeInfoRequest {
     type Root = crate::node_capnp::node_info_request::Owned;
 }
@@ -317,8 +414,9 @@ impl crate::encoding::Wire for NodeInfoResponse {
 mod tests {
     use super::*;
     use crate::encoding::decoding_error;
-    use config::node::NodeConfigParser;
+    use config::node::{NodeConfigParser, RestartPolicy};
     use config::runtime::ProducerRef;
+    use std::num::NonZeroU32;
 
     #[test]
     fn node_info_request_roundtrips_name_tag() {
@@ -352,6 +450,7 @@ mod tests {
             instances: vec![],
             add_log_path: None,
             run_log_paths: vec![],
+            reported_at_ms: 1_700_000_000_000,
         };
         let encoded = NodeInfoResponse::Found(Box::new(info))
             .encode()
@@ -362,6 +461,7 @@ mod tests {
             NodeInfoResponse::Found(info) => {
                 assert_eq!(info.config.manifest.name.as_str(), "sensor_node");
                 assert_eq!(info.stage, NodeStage::Added);
+                assert_eq!(info.reported_at_ms, 1_700_000_000_000);
             }
             NodeInfoResponse::NotInStack => panic!("expected Found"),
         }
@@ -441,6 +541,19 @@ mod tests {
                         config::runtime::ProducerRef::new("cn-sim", "sim_inst"),
                     ),
                     endpoints: crate::encoding::endpoints::sample_endpoints(),
+                    restart_status: RestartStatus {
+                        restart: RestartDeclaration::new(
+                            RestartPolicy::OnFailure,
+                            NonZeroU32::new(5),
+                        )
+                        .unwrap(),
+                        restart_origin: RestartOrigin::Instance,
+                        restart_count: 2,
+                        attempt: 3,
+                        last_exit: Some(ExitCause::signal(9, false)),
+                        running_since_ms: Some(1_700_000_000_000),
+                        next_start_ms: Some(1_700_000_004_000),
+                    },
                 },
                 NodeInstanceInfo {
                     instance_id: "inst-no-bindings".to_string(),
@@ -450,6 +563,7 @@ mod tests {
                     pairing_slots: BTreeMap::new(),
                     clock: ClockBinding::Wall,
                     endpoints: Vec::new(),
+                    restart_status: RestartStatus::default(),
                 },
             ],
             add_log_path: None,
@@ -458,6 +572,7 @@ mod tests {
                 PathBuf::from("/var/log/inst-with-bindings.log"),
                 PathBuf::from("/var/log/inst-no-bindings.log"),
             ],
+            reported_at_ms: 1_700_000_000_000,
         };
         let encoded = NodeInfoResponse::Found(Box::new(info))
             .encode()
@@ -523,6 +638,7 @@ mod tests {
                 pairing_slots: BTreeMap::new(),
                 clock,
                 endpoints: Vec::new(),
+                restart_status: RestartStatus::default(),
             };
         let info = NodeInfo {
             config: sample_config_for_roundtrip(),
@@ -537,6 +653,7 @@ mod tests {
                 PathBuf::from("/var/log/sim_inst.log"),
                 PathBuf::from("/var/log/wall_inst.log"),
             ],
+            reported_at_ms: 1_700_000_000_000,
         };
         let encoded = NodeInfoResponse::Found(Box::new(info))
             .encode()
@@ -626,6 +743,7 @@ mod tests {
             instances: vec![],
             add_log_path: None,
             run_log_paths: vec![PathBuf::from("/var/log/orphan.log")],
+            reported_at_ms: 1_700_000_000_000,
         };
         let error = NodeInfoResponse::Found(Box::new(info))
             .encode()
@@ -658,5 +776,154 @@ mod tests {
     #[test]
     fn node_info_response_decode_rejects_malformed_bytes() {
         assert!(NodeInfoResponse::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+    }
+
+    /// The restart fields survive the wire for every exit cause, and an
+    /// instance that never ran reads back with no cap, no exit and no times.
+    #[test]
+    fn node_instance_info_restart_fields_round_trip() {
+        let instance = |last_exit: Option<ExitCause>| NodeInstanceInfo {
+            instance_id: "inst".to_string(),
+            state: InstanceState::Restarting,
+            healthy: false,
+            slot_bindings: BTreeMap::new(),
+            pairing_slots: BTreeMap::new(),
+            clock: ClockBinding::Wall,
+            endpoints: Vec::new(),
+            restart_status: RestartStatus {
+                restart: RestartDeclaration::new(RestartPolicy::Always, NonZeroU32::new(3))
+                    .unwrap(),
+                restart_origin: RestartOrigin::Node,
+                restart_count: 4,
+                attempt: 2,
+                last_exit,
+                running_since_ms: Some(1_700_000_000_000),
+                next_start_ms: Some(1_700_000_002_000),
+            },
+        };
+        let causes = [
+            None,
+            Some(ExitCause::Code(3)),
+            Some(ExitCause::signal(11, true)),
+            Some(ExitCause::HealthKill {
+                unanswered_secs: 60,
+            }),
+            Some(ExitCause::Message("spawn failed".to_string())),
+        ];
+        let info = NodeInfo {
+            config: sample_config_for_roundtrip(),
+            config_integrity: "0".repeat(64),
+            stage: NodeStage::Ready,
+            instances: causes.iter().cloned().map(instance).collect(),
+            add_log_path: None,
+            run_log_paths: causes
+                .iter()
+                .map(|_| PathBuf::from("/var/log/inst.log"))
+                .collect(),
+            reported_at_ms: 1_700_000_000_000,
+        };
+        let expected = info.instances.clone();
+        let encoded = NodeInfoResponse::Found(Box::new(info))
+            .encode()
+            .expect("encode");
+        let NodeInfoResponse::Found(decoded) = NodeInfoResponse::decode(&encoded).expect("decode")
+        else {
+            panic!("expected Found");
+        };
+        assert_eq!(decoded.instances, expected);
+
+        let never_ran = NodeInstanceInfo {
+            state: InstanceState::Starting,
+            restart_status: RestartStatus::default(),
+            ..instance(None)
+        };
+        let info = NodeInfo {
+            config: sample_config_for_roundtrip(),
+            config_integrity: "0".repeat(64),
+            stage: NodeStage::Ready,
+            instances: vec![never_ran.clone()],
+            add_log_path: None,
+            run_log_paths: vec![PathBuf::from("/var/log/inst.log")],
+            reported_at_ms: 1_700_000_000_000,
+        };
+        let encoded = NodeInfoResponse::Found(Box::new(info))
+            .encode()
+            .expect("encode");
+        let NodeInfoResponse::Found(decoded) = NodeInfoResponse::decode(&encoded).expect("decode")
+        else {
+            panic!("expected Found");
+        };
+        assert_eq!(decoded.instances, [never_ran]);
+    }
+
+    /// A daemon older than the restart fields writes none: its instances
+    /// read as `never`, written by nobody, since that daemon restarts nothing.
+    #[test]
+    fn node_instance_info_without_restart_fields_reads_never() {
+        let instance = NodeInstanceInfo {
+            instance_id: "inst".to_string(),
+            state: InstanceState::Running,
+            healthy: true,
+            slot_bindings: BTreeMap::new(),
+            pairing_slots: BTreeMap::new(),
+            clock: ClockBinding::Wall,
+            endpoints: Vec::new(),
+            restart_status: RestartStatus {
+                restart: RestartDeclaration::policy_only(RestartPolicy::Always),
+                restart_origin: RestartOrigin::Instance,
+                restart_count: 0,
+                attempt: 0,
+                last_exit: None,
+                running_since_ms: None,
+                next_start_ms: None,
+            },
+        };
+        let info = NodeInfo {
+            config: sample_config_for_roundtrip(),
+            config_integrity: "0".repeat(64),
+            stage: NodeStage::Ready,
+            instances: vec![instance],
+            add_log_path: None,
+            run_log_paths: vec![PathBuf::from("/var/log/inst.log")],
+            reported_at_ms: 1_700_000_000_000,
+        };
+        let encoded = NodeInfoResponse::Found(Box::new(info))
+            .encode()
+            .expect("encode");
+        let reader = decode_message(&encoded).expect("a message");
+        let mut builder = Builder::new_default();
+        builder
+            .set_root(
+                reader
+                    .get_root::<node_capnp::node_info_response::Reader>()
+                    .expect("a response"),
+            )
+            .expect("a copy");
+        {
+            let root = builder
+                .get_root::<node_capnp::node_info_response::Builder>()
+                .expect("a response");
+            let node_capnp::node_info_response::Which::Found(found) =
+                root.which().expect("a union")
+            else {
+                panic!("expected Found");
+            };
+            let mut entry = found.get_instances().expect("instances").get(0);
+            entry.set_restart("");
+            entry.set_restart_origin("");
+        }
+        let NodeInfoResponse::Found(decoded) =
+            NodeInfoResponse::decode(&encode_message(&builder).expect("encode")).expect("decode")
+        else {
+            panic!("expected Found");
+        };
+        assert_eq!(
+            decoded.instances[0].restart_status.restart,
+            RestartDeclaration::policy_only(RestartPolicy::Never)
+        );
+        assert_eq!(
+            decoded.instances[0].restart_status.restart_origin,
+            RestartOrigin::Default
+        );
     }
 }

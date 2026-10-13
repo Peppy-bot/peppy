@@ -14,7 +14,7 @@ use std::path::Path;
 ///   identity for all four: consumed topics/services/actions resolve their
 ///   producer by `link_id` alone, produced entries resolve their implements
 ///   slot the same way, and pairing slots are addressed by `link_id` in
-///   `--pair`/`pairings:`, so a collision either silently overwrites a
+///   `--link`/`pairings:`, so a collision either silently overwrites a
 ///   resolution or binds the wrong slot.
 /// - Rejects pairing link_ids that are not wire-safe segments. A participant
 ///   slot link_id is stamped verbatim into the producer-side link_id segment
@@ -1703,12 +1703,14 @@ mod tests {
             manifest,
             interfaces,
             execution,
+            framework,
         } = merged;
 
         assert_eq!(peppy_schema, crate::schema::PeppySchema::NodeV1);
         assert_eq!(manifest.name.as_str(), "my_node");
         assert_eq!(manifest.tag, "v1");
         assert_eq!(interfaces, crate::node::Interfaces::default());
+        assert_eq!(framework, crate::node::NodeFramework::default());
         assert_eq!(
             execution.run_cmd.as_deref(),
             Some(["./target/debug/my_node".to_string()].as_slice())

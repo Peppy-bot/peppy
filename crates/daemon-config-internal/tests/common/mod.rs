@@ -1,6 +1,7 @@
 //! Helpers the launcher test binaries share. Each binary uses a subset.
 #![allow(dead_code)]
 
+use config::runtime::{CopyName, Name};
 use core_node_api::encoding::{LaunchWord, SelectionWord};
 use daemon_config::launcher::{PeppyLauncherParser, PreparedLauncher};
 use std::fs;
@@ -34,4 +35,14 @@ pub fn words(entries: &[&str]) -> Vec<LaunchWord> {
 /// The `--with` words of one join, as the composer takes them.
 pub fn join_words(entries: &[&str]) -> Vec<SelectionWord> {
     entries.iter().map(|entry| entry.parse().unwrap()).collect()
+}
+
+/// `value` as a validated name.
+pub fn name(value: &str) -> Name {
+    Name::new(value).expect("a name")
+}
+
+/// `value` as a validated copy name.
+pub fn copy_name(value: &str) -> CopyName {
+    CopyName::new(value).expect("a copy name")
 }

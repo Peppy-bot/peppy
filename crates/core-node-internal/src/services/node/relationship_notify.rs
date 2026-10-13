@@ -16,8 +16,9 @@
 //!
 //! * **Pairing** is symmetric and explicit. A pair names both endpoints and the
 //!   core node each runs on, so this daemon reads the recipients straight out
-//!   of its own registry. That also covers pairs formed outside a launch, by a
-//!   `peppy node run --pair` naming a peer on another machine.
+//!   of its own registry. A stop of an instance whose exit already emptied the
+//!   registry reads them, and its watchers, off the slot it removes
+//!   (`KeptRelations`).
 //!
 //! * **Observation** is deliberately one-way and invisible to the source: an
 //!   observer claims no slot, holds no peer, and the source is not told it
@@ -40,7 +41,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node_api::encoding::{RelationshipEvent, RelationshipNotification};
+use core_node_api::encoding::{InstanceEnd, RelationshipEvent, RelationshipNotification};
 use parking_lot::Mutex;
 use peppylib::MessengerHandle;
 use peppylib::core_node::transport::poll;
@@ -50,7 +51,7 @@ use super::PairingCoordinator;
 /// Bound on one notification. Short: the receiver only records what already
 /// happened, and this runs on lifecycle paths that must not stall behind a
 /// slow peer.
-const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Which daemons the planner said are observing each local instance.
 ///
@@ -83,8 +84,13 @@ impl WatcherRegistry {
         }
     }
 
-    pub(crate) fn forget(&self, instance_id: &str) {
-        self.by_instance.lock().remove(instance_id);
+    /// Takes the watchers of `instance_id` out of the registry.
+    fn take(&self, instance_id: &str) -> Vec<String> {
+        self.by_instance
+            .lock()
+            .remove(instance_id)
+            .map(|watchers| watchers.into_iter().collect())
+            .unwrap_or_default()
     }
 
     /// The union of the planner-named watchers and the pair peers this daemon
@@ -97,12 +103,22 @@ impl WatcherRegistry {
         pair_peers: BTreeSet<String>,
         self_core_node: &str,
     ) -> BTreeSet<String> {
-        let mut recipients = self
+        let watchers = self
             .by_instance
             .lock()
             .get(instance_id)
             .cloned()
             .unwrap_or_default();
+        Self::recipients_of(watchers, pair_peers, self_core_node)
+    }
+
+    /// The union of `watchers` and `pair_peers`, minus this daemon.
+    fn recipients_of(
+        watchers: impl IntoIterator<Item = String>,
+        pair_peers: BTreeSet<String>,
+        self_core_node: &str,
+    ) -> BTreeSet<String> {
+        let mut recipients: BTreeSet<String> = watchers.into_iter().collect();
         recipients.extend(pair_peers);
         recipients.remove(self_core_node);
         recipients
@@ -151,13 +167,32 @@ impl RelationshipNotifier {
             .await;
     }
 
-    /// Reports that `instance_id` stopped or died, and forgets its watchers.
+    /// Takes the watchers of `instance_id`, for the announcement of its end
+    /// and for its next process.
+    pub(crate) fn take_watchers(&self, instance_id: &str) -> Vec<String> {
+        self.watchers.take(instance_id)
+    }
+
+    /// Reports how the process of `instance_id` ended to the daemons in
+    /// `told`, its watchers and those its slot kept, and to its pair peers.
+    /// The peers are read from the pairs the instance still holds, so this
+    /// runs before they are dissolved.
     ///
     /// Dissolution stays authoritative on this daemon; the notification only
     /// propagates what already happened here.
-    pub(crate) async fn announce_stopped(&self, instance_id: &str) {
-        self.announce(instance_id, RelationshipEvent::Stopped).await;
-        self.watchers.forget(instance_id);
+    pub(crate) async fn announce_end(
+        &self,
+        instance_id: &str,
+        end: InstanceEnd,
+        told: impl IntoIterator<Item = String>,
+    ) {
+        let recipients = WatcherRegistry::recipients_of(
+            told,
+            self.pairing.remote_peer_core_nodes(instance_id),
+            &self.core_node_name,
+        );
+        self.announce_to(instance_id, RelationshipEvent::Ended(end), recipients)
+            .await;
     }
 
     async fn announce(&self, instance_id: &str, event: RelationshipEvent) {
@@ -166,6 +201,15 @@ impl RelationshipNotifier {
             self.pairing.remote_peer_core_nodes(instance_id),
             &self.core_node_name,
         );
+        self.announce_to(instance_id, event, recipients).await;
+    }
+
+    async fn announce_to(
+        &self,
+        instance_id: &str,
+        event: RelationshipEvent,
+        recipients: BTreeSet<String>,
+    ) {
         if recipients.is_empty() {
             return;
         }
@@ -189,7 +233,8 @@ impl RelationshipNotifier {
                          daemon's view of this instance is stale until its next update",
                         match event {
                             RelationshipEvent::ReachedRunning => "reached Running",
-                            RelationshipEvent::Stopped => "stopped",
+                            RelationshipEvent::Ended(InstanceEnd::Exited) => "exited",
+                            RelationshipEvent::Ended(InstanceEnd::Stopped) => "stopped",
                         }
                     );
                 }
@@ -275,10 +320,10 @@ mod tests {
     /// A stopped instance's watchers go with it: the next instance to take that
     /// id gets its own plan, and until then there is nothing to report.
     #[test]
-    fn forgetting_an_instance_drops_its_watchers() {
+    fn taking_an_instances_watchers_drops_them() {
         let registry = WatcherRegistry::default();
         registry.set("reflex_inst", &["cn-atlas".to_owned()], "cn-robot");
-        registry.forget("reflex_inst");
+        assert_eq!(registry.take("reflex_inst"), ["cn-atlas"]);
         assert!(
             registry
                 .recipients("reflex_inst", BTreeSet::new(), "cn-robot")

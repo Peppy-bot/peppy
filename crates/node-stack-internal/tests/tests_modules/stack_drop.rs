@@ -132,7 +132,7 @@ async fn a_surviving_stack_handle_keeps_its_instances_alive() {
 
     // The process is gone, so take it out of the stack before the last
     // handle drops: the drop signals every pid it still tracks.
-    assert!(handle.write().stop_instance(&instance_id));
+    assert!(handle.write().stop_instance(&instance_id).is_some());
     drop(survivor);
 }
 

@@ -58,7 +58,8 @@ fn deadline_is_grace_plus_join_plus_finalize() {
 }
 
 // The top link of the timeout chain (the CLI request timeout strictly outlasts
-// this deadline + reap) is pinned in the `peppy` crate's `commands::node::stop`
-// tests, where the CLI-only `STOP_MESSAGING_MARGIN` is in scope. It cannot live
-// here: `core-node-internal` is below `peppy` in the dependency graph. Together
-// the two give the full CLI > daemon-deadline > node-bounded-exit chain.
+// `node_stop_bound`, which holds this deadline) is pinned in the `peppy` crate's
+// `commands::node::stop` tests, where the CLI-only `DAEMON_MESSAGING_MARGIN` is
+// in scope. It cannot live here: `core-node-internal` is below `peppy` in the
+// dependency graph. Together the two give the full CLI > daemon-deadline >
+// node-bounded-exit chain.

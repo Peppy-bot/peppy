@@ -15,8 +15,7 @@ use config::runtime::CoreNodeName;
 use config::runtime::Name;
 use core_node_api::encoding::{
     CopyAction, CopyChange, CopyInfo, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse,
-    LaunchResult, NodeRunLogEntry, STACK_BUSY_REASON, StackJoinGoal, StackListRequest,
-    StackListResponse,
+    LaunchResult, NodeRunLogEntry, StackJoinGoal, StackListRequest, StackListResponse,
 };
 use core_node_api::names::CORE_NODE_TAG;
 use core_node_api::{ActionGoal, ServiceRequest};
@@ -29,6 +28,9 @@ use peppylib::testing::{
 use stack_goal::{
     DEFAULT_BUDGETS, DaemonRoute, FollowError, RunningStackGoal, SendError, StackGoalEvent,
 };
+
+/// The reason the scripted daemon rejects a goal with.
+const REJECTION_REASON: &str = "a stack change is in progress on this daemon";
 
 /// The coordinator: the daemon's core node, which the bridge is bound to.
 const COORDINATOR: &str = "cn-coordinator";
@@ -242,7 +244,7 @@ async fn a_rejected_goal_gives_the_daemons_reason() {
             .expect("the goal reaches the daemon")
             .reject(
                 None,
-                LaunchGoalResponse::rejected(STACK_BUSY_REASON)
+                LaunchGoalResponse::rejected(REJECTION_REASON)
                     .encode()
                     .unwrap(),
             )
@@ -253,12 +255,12 @@ async fn a_rejected_goal_gives_the_daemons_reason() {
         Err(error @ SendError::Rejected { .. }) => {
             assert_eq!(
                 error.to_string(),
-                format!("Join goal rejected: {STACK_BUSY_REASON}")
+                format!("Join goal rejected: {REJECTION_REASON}")
             );
             let SendError::Rejected { reason, .. } = error else {
                 unreachable!()
             };
-            assert_eq!(reason, STACK_BUSY_REASON);
+            assert_eq!(reason, REJECTION_REASON);
         }
         Err(other) => panic!("expected the daemon's rejection, got {other}"),
         Ok(_) => panic!("the daemon rejected the goal"),

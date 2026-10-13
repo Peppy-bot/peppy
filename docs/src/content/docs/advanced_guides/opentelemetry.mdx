@@ -97,7 +97,7 @@ One entry of a log file is one record. An entry is one line, except for an error
 | Add | `~/.peppy/logs/add/` | Each step `peppy node add` prints, and its error when it fails |
 | Build | `~/.peppy/logs/build/` | The build commands and their output |
 | Run | `~/.peppy/logs/run/` | The run command and the output of the instance |
-| Stack | `~/.peppy/stack_log.log` | Each instance that ends as `finished` or `failed`, each change between `healthy` and `unhealthy`, and each report of records the export discarded |
+| Stack | `~/.peppy/stack_log.log` | Each exit of an instance's process, as a `finished` or `failed` line whether or not a restart follows (an exit that `peppy node stop`, `peppy node add` over its node, a stack launch, removal or reset, or a daemon shutdown caused is not logged, nor one `peppy node remove` caused once it claimed the instance; one on the removal's shutdown request before its claim is); each change between `healthy` and `unhealthy`; each health kill and each kill held for a messaging outage; each restart scheduled, completed, failed to start, refused or capped by `max_restarts`; and each report of records the export discarded |
 
 The log files keep their paths and their line format, and they hold every line whether the export is on or off. A few lines stay in the files only:
 
@@ -145,7 +145,7 @@ A line belongs to a node when its log does: every line of a build log and of a r
 
 ### Severity
 
-A line the daemon writes itself has a fixed severity: an error or a `failed` instance is `ERROR`, a warning or an `unhealthy` instance is `WARN`, and every other such line is `INFO`.
+A line the daemon writes itself has a fixed severity: an error, a `failed` line, and a `start failed`, `restart refused` or `` `max_restarts` reached `` line are `ERROR`; a warning, an `unhealthy` instance, a `restarting` line, a health kill and a kill held for an outage are `WARN`; and every other such line is `INFO`.
 
 For node and build output, the daemon reads the level the line prints. The level is the first word of the line, after an optional timestamp:
 

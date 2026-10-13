@@ -168,8 +168,8 @@ async fn pair_slots_validation_matrix() {
         )
         .unwrap_err();
     assert!(
-        matches!(err, NodeStackError::PairingInstanceNotRunning { ref instance_id } if instance_id == "ghost"),
-        "expected PairingInstanceNotRunning, got {err:?}"
+        matches!(err, NodeStackError::PairingInstanceNotInStack { ref instance_id } if instance_id == "ghost"),
+        "expected PairingInstanceNotInStack, got {err:?}"
     );
 
     // Known instance, undeclared slot.

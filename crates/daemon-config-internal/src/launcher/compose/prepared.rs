@@ -13,7 +13,7 @@ use super::copy::{
     flat_document, validate_flat,
 };
 use super::error::CompositionError;
-use super::expand::{Expanded, OriginatedDeployment, Unit, expand_unit, merge_clocks};
+use super::expand::{Expanded, OriginatedDeployment, Unit, expand_unit, merge_framework};
 use super::load::{LoadedComposition, LoadedOption, launcher_file_label, load_composition};
 use super::report::{CompositionReport, SkipReason, SkippedAdjustment};
 use super::select::{self, CopyOrigin, LaunchWords, PartMachines, UnitSelection, WordOrigin};
@@ -572,14 +572,14 @@ impl PreparedLauncher {
         routed
     }
 
-    /// The clock domains the stack declares: the launcher's own and every
-    /// selected fragment's, merged. A copy declares none, so this is the
-    /// whole launch's set.
+    /// The clock domains the stack declares, the launcher's own and every
+    /// selected fragment's merged, with the launcher root's restart policy.
+    /// A copy declares neither, so this is the whole launch's framework.
     pub(super) fn stack_framework(
         &self,
         selection: &UnitSelection,
     ) -> Result<LauncherFramework, CompositionError> {
-        merge_clocks(
+        merge_framework(
             &self.top_level_origin("framework"),
             &self.launcher.framework,
             &self.loaded.stack_fragments(selection),

@@ -1,3 +1,4 @@
+use peppy::commands::stack::{LauncherArgs, StackTimeouts};
 use peppy::context::AppContext;
 use peppy::test_support::{InstanceLifetime, ServeCommandEmulation};
 use peppylib::MessengerHandle;
@@ -512,6 +513,8 @@ pub fn node_add_command(source: &std::path::Path) -> peppy::commands::node::Node
         command: peppy::commands::node::NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(source.display().to_string()),
             git_ref: None,
             sync: false,
@@ -556,6 +559,8 @@ pub fn node_run_command(
         command: peppy::commands::node::NodeCommands::Run {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             node_ref: None,
             node_name: Some(node.to_string()),
             tag: Some(TEST_NODE_TAG.to_string()),
@@ -676,13 +681,34 @@ pub fn pairing_node_config(
     instances: &InstanceLifetime,
     pidfile: &std::path::Path,
 ) -> String {
+    pairing_node_config_writing_pid_to(
+        name,
+        role,
+        link_id,
+        cardinality,
+        instances,
+        &format!("'{}'", pidfile.display()),
+    )
+}
+
+/// [`pairing_node_config`] with the pidfile as a shell word, so a node whose
+/// instances share one manifest can key the file on the instance: the
+/// working directory's name is the instance id, so
+/// `'<dir>/'$(basename \"$PWD\")'.pid'` names one file per instance.
+pub fn pairing_node_config_writing_pid_to(
+    name: &str,
+    role: &str,
+    link_id: &str,
+    cardinality: config::node::Cardinality,
+    instances: &InstanceLifetime,
+    pidfile_word: &str,
+) -> String {
     let cardinality = cardinality.as_str();
     let (emits, consumes) = arm_link_topics(role);
     // Records the daemon-tracked pid ($$ is the shell it spawned) before
     // waiting, so `emulate_cooperative_shutdown` can end this exact process.
     let run_cmd = format!(
-        r#"["sh", "-c", "echo $$ > '{}'; {}"]"#,
-        pidfile.display(),
+        r#"["sh", "-c", "echo $$ > {pidfile_word}; {}"]"#,
         instances.keep_alive_script()
     );
     format!(
@@ -972,4 +998,34 @@ pub fn setup() -> (
     let work_dir = tempfile::tempdir().expect("failed to create temp work dir");
     let ctx = serve_app_context(&serve, work_dir.path());
     (rt, serve, ctx, work_dir)
+}
+
+/// The budgets these tests launch and build under: idle windows generous
+/// enough that a slow machine never trips one, and a deadline where the test
+/// wants the whole command bounded.
+pub fn timeouts(max_timeout_secs: Option<u64>) -> StackTimeouts {
+    StackTimeouts {
+        node_add_idle_timeout_secs: 60,
+        node_build_idle_timeout_secs: 60,
+        node_run_idle_timeout_secs: 60,
+        max_timeout_secs,
+    }
+}
+
+/// What a `stack launch` or `stack build` of `launcher_config_path` takes
+/// here: one machine, the options the launcher defaults to, and a cached
+/// build wherever one fits.
+pub fn launcher_args(
+    launcher_config_path: std::path::PathBuf,
+    max_timeout_secs: Option<u64>,
+) -> LauncherArgs {
+    LauncherArgs {
+        launcher_config_path,
+        placement: Default::default(),
+        with: Default::default(),
+        joins: Default::default(),
+        timeouts: timeouts(max_timeout_secs),
+        rebuild: false,
+        no_prebuild: false,
+    }
 }

@@ -2,10 +2,10 @@ mod common;
 
 use common::{
     NodeRunTestTimeouts, add_and_build_forking_node, add_and_build_process_node, answer_readiness,
-    build_staged_node, install_kill_on_shutdown_listener, instance_state_in_any_state,
-    is_process_running, poll_core_node, poll_core_node_with_timeout, send_node_add_and_wait,
-    send_node_add_then_build, send_node_run_and_wait, send_node_run_and_wait_with_env,
-    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    build_staged_node, install_kill_on_shutdown_listener, is_process_running, poll_core_node,
+    poll_core_node_with_timeout, send_node_add_and_wait, send_node_add_then_build,
+    send_node_run_and_wait, send_node_run_and_wait_with_env, spawn_real_running_instance,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, wait_for_forked_grandchildren,
     wait_until_grandchildren_exit, wait_until_process_exits, write_peppy_json5,
 };
@@ -388,7 +388,10 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
 
     // The instance is removed from EVERY state, not left as a terminal record.
     assert!(
-        instance_state_in_any_state(&started.node_stack, &instance_id).is_none(),
+        started
+            .node_stack
+            .instance_state(instance_id.as_str())
+            .is_none(),
         "the reset instance must be fully removed, not lingering as a terminal state"
     );
 

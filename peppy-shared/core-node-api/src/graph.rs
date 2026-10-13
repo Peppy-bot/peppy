@@ -1,4 +1,6 @@
-//! Serializable graph types shared across every stack-returning service.
+//! Serializable graph types shared across every stack-returning service, the
+//! refusal text of an instance id the stack already tracks, and the wire's
+//! unix-millisecond time (`unix_ms`).
 //!
 //! These are the JSON payload that every `*_response.graph_json` field
 //! contains. Producer: `node_stack::NodeStack::to_serialized_graph`.
@@ -7,9 +9,11 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 use std::str::FromStr;
 
-use config::node::{Cardinality, EndpointKind};
+use config::node::{Cardinality, EndpointKind, RestartDeclaration, RestartOrigin, RestartPolicy};
 use config::runtime::{ClockBinding, PairedPeer, SlotBindings};
 use serde::{Deserialize, Serialize};
 
@@ -25,21 +29,23 @@ pub struct InstanceEndpoint {
 }
 
 /// Per-instance lifecycle state. Wire representation is the lowercase variant
-/// name (`"starting"`, `"running"`, `"finished"`, `"failed"`).
+/// name (`"starting"`, `"running"`, `"restarting"`, `"finished"`, `"failed"`).
 ///
-/// `Starting` and `Running` are live states; `Finished` and `Failed` are
-/// terminal: the node's OS process has exited on its own (not via an explicit
-/// stop or daemon teardown) and the instance will not run again. `Finished` is
-/// a clean exit (status code 0), the expected end state of a one-shot node that
-/// completes its work and shuts itself down; `Failed` is a non-zero or
-/// signal-driven exit, i.e. the node crashed. Terminal instances stay visible
-/// in the stack until the stack is cleared or the instance is stopped, and the
-/// health monitor never probes them (a finished node has no health to report).
+/// `Starting` and `Running` have a process. `Restarting` is an instance
+/// whose process exited and whose restart policy starts it again: the daemon
+/// waits out the backoff delay, then the instance is `Starting` again.
+/// `Finished` is a clean exit (status code 0) the policy leaves alone, the
+/// expected end state of a one-shot node that completes its work and shuts
+/// itself down; `Failed` is a non-zero or signal-driven exit the policy
+/// leaves alone, a refused restart, or the attempt `max_restarts` refused. Instances
+/// without a process stay visible in the stack until the stack is cleared or
+/// the instance is stopped, and the health monitor never probes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InstanceState {
     Starting,
     Running,
+    Restarting,
     Finished,
     Failed,
 }
@@ -49,17 +55,18 @@ impl InstanceState {
         match self {
             InstanceState::Starting => "starting",
             InstanceState::Running => "running",
+            InstanceState::Restarting => "restarting",
             InstanceState::Finished => "finished",
             InstanceState::Failed => "failed",
         }
     }
 
-    /// `true` for the terminal states (`Finished`, `Failed`): the process has
-    /// exited and the instance will not transition again. Callers use this to
-    /// skip live-only work such as health probing and to render an exited
-    /// instance without a (meaningless) health verdict.
-    pub fn is_terminal(self) -> bool {
-        matches!(self, InstanceState::Finished | InstanceState::Failed)
+    /// Whether a process of this instance exists or is being started.
+    /// Callers use it to skip process-only work such as health probing, pair
+    /// delivery and shutdown requests, and to render an instance without a
+    /// process with no health verdict.
+    pub fn has_process(self) -> bool {
+        matches!(self, InstanceState::Starting | InstanceState::Running)
     }
 }
 
@@ -76,6 +83,7 @@ impl FromStr for InstanceState {
         match s {
             "starting" => Ok(InstanceState::Starting),
             "running" => Ok(InstanceState::Running),
+            "restarting" => Ok(InstanceState::Restarting),
             "finished" => Ok(InstanceState::Finished),
             "failed" => Ok(InstanceState::Failed),
             other => Err(UnknownInstanceState(other.to_owned())),
@@ -93,6 +101,184 @@ impl fmt::Display for UnknownInstanceState {
 }
 
 impl std::error::Error for UnknownInstanceState {}
+
+/// The command that stops `instance_id` on the daemon `core_node`, as every
+/// remedy types it.
+pub fn stop_command(instance_id: &str, core_node: &str) -> String {
+    format!("`peppy node stop {instance_id} --core-node {core_node}`")
+}
+
+/// The refusal of an instance id the stack of the daemon `core_node` already
+/// tracks, in any state, naming the node, the state and what frees the id.
+pub fn duplicate_instance_id_message(
+    instance_id: &str,
+    node_name: &str,
+    node_tag: &str,
+    core_node: &str,
+    state: InstanceState,
+) -> String {
+    let stop = stop_command(instance_id, core_node);
+    let remedy = match state {
+        InstanceState::Starting => format!("run under another id, or {stop} once it is running"),
+        InstanceState::Running => format!("run under another id, or {stop} first"),
+        InstanceState::Restarting | InstanceState::Finished | InstanceState::Failed => {
+            format!("{stop} frees the id")
+        }
+    };
+    format!(
+        "Instance ID `{instance_id}` already exists for node `{node_name}:{node_tag}` and is \
+         {state}; {remedy}"
+    )
+}
+
+/// A time as the wire carries it: milliseconds since the Unix epoch.
+pub fn unix_ms(time: std::time::SystemTime) -> u64 {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// Why the last start of an instance ended: its process's exit, or a start
+/// failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExitCause {
+    /// The process exited with this code.
+    Code(i32),
+    /// The process was ended by a signal: its number, its name on the
+    /// machine the process ran on, and whether the process dumped core.
+    Signal {
+        number: i32,
+        name: Option<String>,
+        core_dumped: bool,
+    },
+    /// The daemon killed the process, which answered no health check for
+    /// this many seconds.
+    HealthKill { unanswered_secs: u64 },
+    /// The daemon's own account: a start failure's message, or an exit
+    /// status it could not read.
+    Message(String),
+}
+
+impl ExitCause {
+    /// The cause of a reaped process's exit.
+    pub fn of(status: &std::io::Result<std::process::ExitStatus>) -> Self {
+        match status {
+            Ok(status) => match (status.code(), signal_of(status)) {
+                (Some(code), _) => ExitCause::Code(code),
+                (None, Some(signal)) => ExitCause::signal(signal, core_dumped(status)),
+                (None, None) => ExitCause::Message(status.to_string()),
+            },
+            Err(e) => ExitCause::Message(format!("could not read exit status: {e}")),
+        }
+    }
+
+    /// The cause of an end by `signal`, named as this machine numbers it.
+    pub fn signal(signal: i32, core_dumped: bool) -> Self {
+        ExitCause::Signal {
+            number: signal,
+            name: signal_name(signal).map(str::to_owned),
+            core_dumped,
+        }
+    }
+
+    /// Whether the process exited with code 0.
+    pub fn is_clean(&self) -> bool {
+        matches!(self, ExitCause::Code(0))
+    }
+}
+
+#[cfg(unix)]
+fn signal_of(status: &std::process::ExitStatus) -> Option<i32> {
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn signal_of(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
+#[cfg(unix)]
+fn core_dumped(status: &std::process::ExitStatus) -> bool {
+    status.core_dumped()
+}
+
+#[cfg(not(unix))]
+fn core_dumped(_status: &std::process::ExitStatus) -> bool {
+    false
+}
+
+/// The name of `signal` as this machine numbers it.
+#[cfg(unix)]
+fn signal_name(signal: i32) -> Option<&'static str> {
+    Some(match signal {
+        libc::SIGHUP => "SIGHUP",
+        libc::SIGINT => "SIGINT",
+        libc::SIGQUIT => "SIGQUIT",
+        libc::SIGILL => "SIGILL",
+        libc::SIGTRAP => "SIGTRAP",
+        libc::SIGABRT => "SIGABRT",
+        libc::SIGBUS => "SIGBUS",
+        libc::SIGFPE => "SIGFPE",
+        libc::SIGKILL => "SIGKILL",
+        libc::SIGUSR1 => "SIGUSR1",
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGUSR2 => "SIGUSR2",
+        libc::SIGPIPE => "SIGPIPE",
+        libc::SIGALRM => "SIGALRM",
+        libc::SIGTERM => "SIGTERM",
+        libc::SIGCHLD => "SIGCHLD",
+        libc::SIGCONT => "SIGCONT",
+        libc::SIGSTOP => "SIGSTOP",
+        libc::SIGTSTP => "SIGTSTP",
+        libc::SIGTTIN => "SIGTTIN",
+        libc::SIGTTOU => "SIGTTOU",
+        libc::SIGURG => "SIGURG",
+        libc::SIGXCPU => "SIGXCPU",
+        libc::SIGXFSZ => "SIGXFSZ",
+        libc::SIGVTALRM => "SIGVTALRM",
+        libc::SIGPROF => "SIGPROF",
+        libc::SIGWINCH => "SIGWINCH",
+        libc::SIGIO => "SIGIO",
+        libc::SIGSYS => "SIGSYS",
+        _ => return None,
+    })
+}
+
+#[cfg(not(unix))]
+fn signal_name(_signal: i32) -> Option<&'static str> {
+    None
+}
+
+impl fmt::Display for ExitCause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExitCause::Code(code) => write!(f, "exit code {code}"),
+            ExitCause::Signal {
+                number,
+                name,
+                core_dumped,
+            } => {
+                write!(f, "signal {number}")?;
+                if let Some(name) = name {
+                    write!(f, " ({name})")?;
+                }
+                if *core_dumped {
+                    f.write_str(", core dumped")?;
+                }
+                Ok(())
+            }
+            ExitCause::HealthKill { unanswered_secs } => {
+                write!(
+                    f,
+                    "killed after {unanswered_secs} s without an answered health check"
+                )
+            }
+            ExitCause::Message(text) => f.write_str(text),
+        }
+    }
+}
 
 /// Label-only view of a `NodeEntity`'s lifecycle stage. The rich internal
 /// variant lives in `node_stack::NodeStage`; this one is the shape written
@@ -186,6 +372,64 @@ pub struct SerializedInstance {
     /// so a reader sees the set the daemon holds.
     #[serde(default)]
     pub endpoints: Vec<InstanceEndpoint>,
+    /// The instance's restart policy and how its restarts went, its fields
+    /// beside the others on the wire.
+    #[serde(flatten)]
+    pub restart_status: RestartStatus,
+}
+
+/// An instance's restart policy as the daemon resolved it and how its
+/// restarts went, as `peppy stack list` and `peppy node info` report them.
+/// Each field is absent from a daemon older than the policy and reads as
+/// `never` with no restarts, since such a daemon restarts nothing, so a newer
+/// `peppy` still lists a stale daemon's stack and names its version.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestartStatus {
+    /// The resolved policy, with its cap.
+    #[serde(default = "older_daemon_restart")]
+    pub restart: RestartDeclaration,
+    /// Where the policy was written.
+    #[serde(default)]
+    pub restart_origin: RestartOrigin,
+    /// Times a restarted process of the instance reached `running`.
+    #[serde(default)]
+    pub restart_count: u32,
+    /// The attempts in a row `max_restarts` caps: 0 until the first exit
+    /// the policy restarts; each such exit or failed start takes the next
+    /// one, and an exit after a run of the reset window takes 1 again. An
+    /// exit a removal asked for sets 0, and any other exit the policy does
+    /// not restart leaves it as it was.
+    #[serde(default)]
+    pub attempt: u32,
+    /// Why the last start ended; `None` while none has.
+    #[serde(default)]
+    pub last_exit: Option<ExitCause>,
+    /// When the instance last reached `running`, in milliseconds since the
+    /// Unix epoch.
+    #[serde(default)]
+    pub running_since_ms: Option<u64>,
+    /// When the next start is due, in milliseconds since the Unix epoch,
+    /// while the instance is `restarting`.
+    #[serde(default)]
+    pub next_start_ms: Option<u64>,
+}
+
+impl SerializedInstance {
+    /// An instance with every field but its id and state at the value a fresh
+    /// start gives it: healthy, wall clock, no bindings, pairs or endpoints,
+    /// the built-in restart policy, no restarts.
+    pub fn of(instance_id: String, state: InstanceState) -> Self {
+        Self {
+            instance_id,
+            state,
+            healthy: true,
+            clock: ClockBinding::Wall,
+            slot_bindings: BTreeMap::new(),
+            pairing_slots: BTreeMap::new(),
+            endpoints: Vec::new(),
+            restart_status: RestartStatus::default(),
+        }
+    }
 }
 
 /// One pairing slot of a [`SerializedInstance`]: the declaring manifest's
@@ -205,6 +449,12 @@ pub struct SerializedPairingSlot {
     /// when `one`, which is also what an absent field decodes to.
     #[serde(default, skip_serializing_if = "Cardinality::is_one")]
     pub cardinality: Cardinality,
+}
+
+/// The policy of a daemon older than the restart fields, whose instances
+/// are never restarted.
+pub(crate) fn older_daemon_restart() -> RestartDeclaration {
+    RestartDeclaration::policy_only(RestartPolicy::Never)
 }
 
 /// Decode default for [`SerializedInstance::healthy`]: assume healthy when the
@@ -310,8 +560,8 @@ impl SerializedNodeGraph {
 
     /// Externally visible instance ids for the node identified by
     /// `(node_name, node_tag)`. Returns `NodeNotFound` when no node
-    /// matches; returns `Ok(vec![])` when the node exists but every
-    /// instance is still `Starting`.
+    /// matches; returns `Ok(vec![])` when the node exists but none of its
+    /// instances is `Running`.
     pub fn running_instance_ids_by_node(
         &self,
         node_name: &str,
@@ -326,21 +576,17 @@ impl SerializedNodeGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::node::RestartPolicy;
+    use std::num::NonZeroU32;
+
     use config::runtime::ProducerRef;
 
-    /// An instance whose every other field holds what an absent field
-    /// decodes to: healthy, on wall time, with no slot binding, pairing slot
-    /// or endpoint.
-    fn make_instance(instance_id: &str, state: InstanceState) -> SerializedInstance {
-        SerializedInstance {
-            instance_id: instance_id.into(),
-            state,
-            healthy: true,
-            clock: ClockBinding::Wall,
-            slot_bindings: BTreeMap::new(),
-            pairing_slots: BTreeMap::new(),
-            endpoints: Vec::new(),
-        }
+    /// The wire form of an instance with one key removed, the payload an
+    /// optional field reads back from when it is absent.
+    fn without_key(json: &str, key: &str) -> String {
+        let mut value: serde_json::Value = serde_json::from_str(json).expect("json");
+        value.as_object_mut().expect("object").remove(key);
+        value.to_string()
     }
 
     fn make_node(name: &str, tag: &str, instances: &[(&str, InstanceState)]) -> SerializedNode {
@@ -353,7 +599,7 @@ mod tests {
             stage: NodeStage::Ready,
             instances: instances
                 .iter()
-                .map(|(id, state)| make_instance(id, *state))
+                .map(|(id, st)| SerializedInstance::of((*id).into(), *st))
                 .collect(),
         }
     }
@@ -393,6 +639,9 @@ mod tests {
                 &[
                     ("r1", InstanceState::Running),
                     ("s1", InstanceState::Starting),
+                    ("w1", InstanceState::Restarting),
+                    ("d1", InstanceState::Finished),
+                    ("f1", InstanceState::Failed),
                     ("r2", InstanceState::Running),
                 ],
             )],
@@ -405,14 +654,16 @@ mod tests {
     }
 
     #[test]
-    fn by_node_ok_empty_when_all_starting() {
+    fn by_node_ok_empty_when_none_is_running() {
         let graph = SerializedNodeGraph {
             nodes: vec![make_node(
                 "foo",
                 "v1",
                 &[
                     ("s1", InstanceState::Starting),
-                    ("s2", InstanceState::Starting),
+                    ("w1", InstanceState::Restarting),
+                    ("d1", InstanceState::Finished),
+                    ("f1", InstanceState::Failed),
                 ],
             )],
             edges: vec![],
@@ -491,7 +742,7 @@ mod tests {
         bindings.insert("spare_cameras".to_string(), BoundProducers::default());
         let instance = SerializedInstance {
             slot_bindings: bindings,
-            ..make_instance("i1", InstanceState::Running)
+            ..SerializedInstance::of("i1".to_string(), InstanceState::Running)
         };
 
         let json = serde_json::to_string(&instance).expect("serialize");
@@ -517,7 +768,7 @@ mod tests {
                     ],
                 },
             ],
-            ..make_instance("mcp", InstanceState::Running)
+            ..SerializedInstance::of("mcp".to_string(), InstanceState::Running)
         };
         let json = serde_json::to_string(&served).expect("serialize");
         assert!(json.contains(r#""kind":"mcp""#), "{json}");
@@ -542,15 +793,15 @@ mod tests {
     fn instance_without_slot_bindings_omits_the_field_and_reads_it_back_empty() {
         // No bindings -> `skip_serializing_if` keeps the field out of the wire
         // form, and an absent field reads back empty.
-        let instance = make_instance("i1", InstanceState::Running);
+        let instance = SerializedInstance::of("i1".to_string(), InstanceState::Running);
         let json = serde_json::to_string(&instance).expect("serialize");
         assert!(
             !json.contains("slot_bindings"),
             "empty bindings must be omitted from the wire form: {json}"
         );
 
-        let absent = r#"{"instance_id":"i1","state":"running"}"#;
-        let decoded: SerializedInstance = serde_json::from_str(absent).expect("decode");
+        let absent = without_key(&json, "slot_bindings");
+        let decoded: SerializedInstance = serde_json::from_str(&absent).expect("decode");
         assert_eq!(decoded, instance);
         assert!(decoded.slot_bindings.is_empty());
     }
@@ -584,7 +835,7 @@ mod tests {
         );
         let instance = SerializedInstance {
             pairing_slots,
-            ..make_instance("ctrl_1", InstanceState::Running)
+            ..SerializedInstance::of("ctrl_1".to_string(), InstanceState::Running)
         };
 
         let json = serde_json::to_string(&instance).expect("serialize");
@@ -602,8 +853,8 @@ mod tests {
             !json.contains("pairing_slots"),
             "empty pairing_slots must be omitted from the wire form: {json}"
         );
-        let absent = r#"{"instance_id":"ctrl_1","state":"running"}"#;
-        let decoded: SerializedInstance = serde_json::from_str(absent).expect("decode");
+        let absent = without_key(&json, "pairing_slots");
+        let decoded: SerializedInstance = serde_json::from_str(&absent).expect("decode");
         assert!(decoded.pairing_slots.is_empty());
     }
 
@@ -624,6 +875,9 @@ mod tests {
             &[
                 ("r1", InstanceState::Running),
                 ("s1", InstanceState::Starting),
+                ("w1", InstanceState::Restarting),
+                ("d1", InstanceState::Finished),
+                ("f1", InstanceState::Failed),
                 ("r2", InstanceState::Running),
             ],
         );
@@ -644,6 +898,7 @@ mod tests {
         for state in [
             InstanceState::Starting,
             InstanceState::Running,
+            InstanceState::Restarting,
             InstanceState::Finished,
             InstanceState::Failed,
         ] {
@@ -652,6 +907,7 @@ mod tests {
         }
         assert_eq!(InstanceState::Starting.as_str(), "starting");
         assert_eq!(InstanceState::Running.as_str(), "running");
+        assert_eq!(InstanceState::Restarting.as_str(), "restarting");
         assert_eq!(InstanceState::Finished.as_str(), "finished");
         assert_eq!(InstanceState::Failed.as_str(), "failed");
 
@@ -663,11 +919,169 @@ mod tests {
     }
 
     #[test]
-    fn instance_state_terminal_classification() {
-        assert!(!InstanceState::Starting.is_terminal());
-        assert!(!InstanceState::Running.is_terminal());
-        assert!(InstanceState::Finished.is_terminal());
-        assert!(InstanceState::Failed.is_terminal());
+    fn has_process_is_starting_or_running() {
+        assert!(InstanceState::Starting.has_process());
+        assert!(InstanceState::Running.has_process());
+        assert!(!InstanceState::Restarting.has_process());
+        assert!(!InstanceState::Finished.has_process());
+        assert!(!InstanceState::Failed.has_process());
+    }
+
+    #[test]
+    fn duplicate_instance_id_names_the_state_and_what_to_do() {
+        let text = duplicate_instance_id_message(
+            "cam_1",
+            "camera",
+            "v1",
+            "cn-a",
+            InstanceState::Restarting,
+        );
+        assert_eq!(
+            text,
+            "Instance ID `cam_1` already exists for node `camera:v1` and is restarting; `peppy node stop cam_1 --core-node cn-a` frees the id"
+        );
+        let text =
+            duplicate_instance_id_message("cam_1", "camera", "v1", "cn-a", InstanceState::Running);
+        assert_eq!(
+            text,
+            "Instance ID `cam_1` already exists for node `camera:v1` and is running; run under another id, or `peppy node stop cam_1 --core-node cn-a` first"
+        );
+        let text =
+            duplicate_instance_id_message("cam_1", "camera", "v1", "cn-a", InstanceState::Starting);
+        assert_eq!(
+            text,
+            "Instance ID `cam_1` already exists for node `camera:v1` and is starting; run under another id, or `peppy node stop cam_1 --core-node cn-a` once it is running"
+        );
+        for (state, word) in [
+            (InstanceState::Finished, "finished"),
+            (InstanceState::Failed, "failed"),
+        ] {
+            assert_eq!(
+                duplicate_instance_id_message("cam_1", "camera", "v1", "cn-a", state),
+                format!(
+                    "Instance ID `cam_1` already exists for node `camera:v1` and is {word}; `peppy node stop cam_1 --core-node cn-a` frees the id"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn exit_cause_of_code_signal_health_kill_and_message() {
+        // A wait status carries the exit code in bits 8..16 and a signal in
+        // the low bits.
+        let code = std::process::ExitStatus::from_raw(3 << 8);
+        assert_eq!(ExitCause::of(&Ok(code)), ExitCause::Code(3));
+        assert_eq!(ExitCause::Code(3).to_string(), "exit code 3");
+        assert!(!ExitCause::Code(3).is_clean());
+        assert!(ExitCause::of(&Ok(std::process::ExitStatus::from_raw(0))).is_clean());
+        let signal = std::process::ExitStatus::from_raw(9);
+        assert_eq!(ExitCause::of(&Ok(signal)), ExitCause::signal(9, false));
+        assert_eq!(
+            ExitCause::signal(9, false).to_string(),
+            "signal 9 (SIGKILL)"
+        );
+        assert!(!ExitCause::signal(9, false).is_clean());
+        // The core-dump flag is bit 7 of the wait status.
+        let segfault = std::process::ExitStatus::from_raw(11 | 0x80);
+        assert_eq!(
+            ExitCause::of(&Ok(segfault)).to_string(),
+            "signal 11 (SIGSEGV), core dumped"
+        );
+        assert_eq!(
+            ExitCause::signal(200, false).to_string(),
+            "signal 200",
+            "a number this machine does not name prints alone"
+        );
+        let unread = ExitCause::of(&Err(std::io::Error::other("no status")));
+        assert_eq!(
+            unread,
+            ExitCause::Message("could not read exit status: no status".to_owned())
+        );
+        assert_eq!(unread.to_string(), "could not read exit status: no status");
+        let health_kill = ExitCause::HealthKill {
+            unanswered_secs: 60,
+        };
+        assert_eq!(
+            health_kill.to_string(),
+            "killed after 60 s without an answered health check"
+        );
+        assert!(!health_kill.is_clean());
+        assert_eq!(
+            serde_json::to_value(&health_kill).expect("serialize"),
+            serde_json::json!({ "health_kill": { "unanswered_secs": 60 } }),
+            "`--json` carries the seconds unanswered as a field"
+        );
+    }
+
+    /// A daemon older than the policy sends none of its fields; the reader
+    /// fills `never`, since that daemon restarts nothing, so the listing
+    /// still names it.
+    #[test]
+    fn serialized_instance_reads_a_payload_without_restart_fields_as_never() {
+        let json = serde_json::to_string(&SerializedInstance::of(
+            "i1".to_string(),
+            InstanceState::Running,
+        ))
+        .expect("serialize");
+        let mut stripped: serde_json::Value = serde_json::from_str(&json).expect("json");
+        let object = stripped.as_object_mut().expect("object");
+        for key in [
+            "restart",
+            "restart_origin",
+            "restart_count",
+            "attempt",
+            "last_exit",
+            "running_since_ms",
+            "next_start_ms",
+        ] {
+            object.remove(key);
+        }
+        let decoded: SerializedInstance =
+            serde_json::from_str(&stripped.to_string()).expect("deserialize");
+        let mut never = SerializedInstance::of("i1".to_string(), InstanceState::Running);
+        never.restart_status.restart = RestartDeclaration::policy_only(RestartPolicy::Never);
+        assert_eq!(decoded, never);
+    }
+
+    #[test]
+    fn serialized_instance_restart_fields_round_trip() {
+        let mut instance = SerializedInstance::of("i1".to_string(), InstanceState::Restarting);
+        instance.restart_status.restart =
+            RestartDeclaration::new(RestartPolicy::OnFailure, NonZeroU32::new(5)).unwrap();
+        instance.restart_status.restart_origin = RestartOrigin::Node;
+        instance.restart_status.restart_count = 2;
+        instance.restart_status.attempt = 3;
+        instance.restart_status.last_exit = Some(ExitCause::signal(9, false));
+        instance.restart_status.running_since_ms = Some(1_700_000_000_000);
+        instance.restart_status.next_start_ms = Some(1_700_000_004_000);
+        let json = serde_json::to_string(&instance).expect("serialize");
+        // The restart fields sit beside the instance's own, at its top level.
+        let value: serde_json::Value = serde_json::from_str(&json).expect("a JSON object");
+        for key in [
+            "restart",
+            "restart_origin",
+            "restart_count",
+            "attempt",
+            "last_exit",
+            "running_since_ms",
+            "next_start_ms",
+        ] {
+            assert!(value.get(key).is_some(), "`{key}` at the top level: {json}");
+        }
+        assert_eq!(value["restart_count"], 2);
+        assert!(
+            json.contains(r#""restart":{"policy":"on_failure","max_restarts":5}"#),
+            "{json}"
+        );
+        assert!(json.contains(r#""restart_origin":"node""#), "{json}");
+        assert!(
+            json.contains(
+                r#""last_exit":{"signal":{"number":9,"name":"SIGKILL","core_dumped":false}}"#
+            ),
+            "{json}"
+        );
+        let decoded: SerializedInstance = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, instance);
     }
 
     #[test]
@@ -680,6 +1094,7 @@ mod tests {
         let cases = [
             (InstanceState::Starting, "\"starting\""),
             (InstanceState::Running, "\"running\""),
+            (InstanceState::Restarting, "\"restarting\""),
             (InstanceState::Finished, "\"finished\""),
             (InstanceState::Failed, "\"failed\""),
         ];

@@ -1,4 +1,3 @@
-use config::runtime::ClockBinding;
 use std::time::Duration;
 
 use core_node_api::ServiceId;
@@ -77,15 +76,10 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
         config_path: "/tmp/brain.json5".to_string(),
         artifact_path: None,
         stage: NodeStage::Ready,
-        instances: vec![SerializedInstance {
-            instance_id: "i1".to_string(),
-            state: InstanceState::Running,
-            healthy: true,
-            clock: ClockBinding::Wall,
-            slot_bindings: std::collections::BTreeMap::new(),
-            pairing_slots: std::collections::BTreeMap::new(),
-            endpoints: Vec::new(),
-        }],
+        instances: vec![SerializedInstance::of(
+            "i1".to_string(),
+            InstanceState::Running,
+        )],
     };
     let sensor = SerializedNode {
         name: "sensor".to_string(),

@@ -4,12 +4,18 @@ use super::poll::AbortOnDrop;
 use super::test_node_target;
 use config::consts::DEFAULT_MESSAGING_HOST;
 use config::node::SetupTimeout;
-use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy};
+use core_node::test_support::parked_restart_backoff;
+use core_node::{
+    CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, RestartBackoff,
+    SliceOwnership,
+};
 use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
-use peppylib::messaging::MessengerHandle;
+use peppylib::Payload;
+use peppylib::messaging::{MessengerHandle, ServiceRequestContext};
 use peppylib::runtime::spawn;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+use std::future::Future;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,21 +51,29 @@ pub struct StartedCoreNode {
     /// and assert the shutdown-time suppression (no spurious "became unhealthy",
     /// no crash relabeling of intentionally-stopped nodes).
     pub shutdown_token: tokio_util::sync::CancellationToken,
+    /// Which launch holds the daemon and the gate its stack is changed under,
+    /// so a test holds the stack or reserves the daemon as a change does.
+    pub slice_ownership: Arc<SliceOwnership>,
     /// `Some` for the default random-root starters (dropped with the test).
     /// `None` when the peppy root is a stable path the caller manages (see
     /// [`start_core_node_with_mock_messenger_outside_home`]).
     _data_dir: Option<TempDir>,
 }
 
+/// How long the test daemon waits for a started node's ready signal.
+pub const NODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn default_node_arguments() -> CoreNodeArguments {
     CoreNodeArguments {
-        node_startup_timeout: Duration::from_secs(10),
+        node_startup_timeout: NODE_STARTUP_TIMEOUT,
         default_setup_timeout: setup_budget(30),
         health_monitor: HealthMonitorPolicy {
             interval: Duration::from_secs(5),
             timeout: Duration::from_secs(3),
             failure_threshold: NonZeroU32::new(3).expect("non-zero"),
+            kill_after: None,
         },
+        restart_backoff: parked_restart_backoff(),
         // Faster than the production default (100 ms) so publish_clock tests
         // observe several ticks within a small fixed budget without flaking.
         clock_publish_interval: Duration::from_millis(50),
@@ -265,15 +279,60 @@ pub fn fast_health_monitor(failure_threshold: u32) -> HealthMonitorPolicy {
         interval: Duration::from_millis(200),
         timeout: Duration::from_millis(100),
         failure_threshold: NonZeroU32::new(failure_threshold).expect("non-zero threshold"),
+        kill_after: None,
+    }
+}
+
+/// [`fast_health_monitor`] that kills an instance whose policy restarts on
+/// failure once it has answered no health check for `kill_after`.
+pub fn fast_health_monitor_with_kill(
+    failure_threshold: u32,
+    kill_after: Duration,
+) -> HealthMonitorPolicy {
+    HealthMonitorPolicy {
+        kill_after: Some(kill_after),
+        ..fast_health_monitor(failure_threshold)
     }
 }
 
 pub async fn start_core_node_with_health_monitor(
     health_monitor: HealthMonitorPolicy,
 ) -> StartedCoreNode {
+    start_core_node_with_supervision(health_monitor, parked_restart_backoff()).await
+}
+
+/// A core node whose health monitor and restart backoff the test chooses.
+pub async fn start_core_node_with_supervision(
+    health_monitor: HealthMonitorPolicy,
+    restart_backoff: RestartBackoff,
+) -> StartedCoreNode {
+    start_core_node_with_supervision_and_grace(
+        health_monitor,
+        restart_backoff,
+        config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
+    )
+    .await
+}
+
+/// [`start_core_node_with_supervision`] with a cooperative-shutdown grace
+/// of `shutdown_grace_secs`, which every kill's force-kill deadline grows
+/// from.
+pub async fn start_core_node_with_supervision_and_grace(
+    health_monitor: HealthMonitorPolicy,
+    restart_backoff: RestartBackoff,
+    shutdown_grace_secs: u64,
+) -> StartedCoreNode {
     let mut args = default_node_arguments();
     args.health_monitor = health_monitor;
-    start_mock_core_node(args, daemon_config::peppy_config::PeppyConfig::default()).await
+    args.restart_backoff = restart_backoff;
+    let peppy_config = daemon_config::peppy_config::PeppyConfig {
+        lifecycle: daemon_config::peppy_config::LifecycleConfig {
+            shutdown_grace_secs,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    start_mock_core_node(args, peppy_config).await
 }
 
 /// Variant of [`start_core_node_with_mock_messenger`] whose log files export
@@ -358,6 +417,7 @@ async fn start_core_node(
     let core_node_name = core_node.node_name().to_string();
     let core_node_tag = core_node.node_config().manifest.tag.clone();
     let node_stack = core_node.node_stack().clone();
+    let slice_ownership = core_node.slice_ownership();
 
     // `start_with_ready` reports once every service is registered, so a test
     // can send requests as soon as this returns.
@@ -374,6 +434,7 @@ async fn start_core_node(
         peppy_dirs,
         task: AbortOnDrop(task),
         shutdown_token,
+        slice_ownership,
         _data_dir: data_dir,
     }
 }
@@ -420,26 +481,38 @@ fn spawn_feedback_drain() -> (
     (feedback_tx, drain)
 }
 
+/// The output sinks of a start of `instance_id` of the node `name:tag`, its
+/// run log opened as the daemon opens one, with the task that drains its
+/// feedback and the run log's path.
 fn make_real_output_sinks(
     peppy_dirs: &PeppyDirs,
+    name: &str,
+    tag: &str,
     instance_id: &config::runtime::Name,
-) -> (node_stack::OutputSinks, tokio::task::JoinHandle<()>) {
+) -> (
+    node_stack::OutputSinks,
+    tokio::task::JoinHandle<()>,
+    std::path::PathBuf,
+) {
     use std::sync::atomic::AtomicBool;
 
-    let log = node_stack::ActionLog::create(
-        &peppy_dirs.logs_dir_run(),
-        &format!("{}.log", instance_id.as_str()),
-        log_export::LogKind::Run,
+    let log = node_stack::ActionLog::for_run(
+        peppy_dirs,
         log_export::LogExporter::disabled(),
+        name,
+        tag,
+        instance_id.as_str(),
+        None,
     )
     .expect("create run log");
+    let run_log_path = log.path();
     let (feedback_tx, drain) = spawn_feedback_drain();
     let output_sinks = node_stack::OutputSinks {
         announcer: node_stack::Announcer::new(log, feedback_tx),
         publish_enabled: Arc::new(AtomicBool::new(true)),
         hooks: Arc::new(NoOpOutputHooks),
     };
-    (output_sinks, drain)
+    (output_sinks, drain, run_log_path)
 }
 
 /// A child that `prepare_and_spawn` started for an instance whose start is
@@ -466,17 +539,21 @@ async fn prepare_and_spawn_on_ready_entity(
         .node_stack
         .find(name, tag)
         .expect("entity to spawn should exist");
-    let (output_sinks, feedback_drain) = make_real_output_sinks(&started.peppy_dirs, instance_id);
+    let (output_sinks, feedback_drain, run_log_path) =
+        make_real_output_sinks(&started.peppy_dirs, name, tag, instance_id);
 
     let (child, started_ctx) = node_stack::NodeEntity::prepare_and_spawn(
         &handle,
         node_stack::StartContext {
+            core_node: &started.core_node_name,
+            run_log_path: &run_log_path,
             instance_id,
             copy: None,
             runtime_config_json5: "{}",
             slot_bindings: std::collections::BTreeMap::new(),
             clock: Default::default(),
             launch: None,
+            spawn: new_spawn(instance_id, name, tag),
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &started.peppy_dirs,
@@ -690,6 +767,72 @@ pub async fn install_shutdown_listener_for_instance(
     (AbortOnDrop(shutdown_task), requested_rx)
 }
 
+/// Gives mocks registered by hand a moment to subscribe before the run
+/// they answer.
+pub async fn settle() {
+    tokio::time::sleep(Duration::from_millis(50)).await;
+}
+
+/// The `service` of the peer daemon `core_node`, served by its root
+/// instance and answering each request with `handler`, settled before it
+/// returns.
+pub async fn peer_daemon_service<F, Fut>(
+    started: &StartedCoreNode,
+    core_node: &str,
+    service: core_node_api::ServiceId,
+    handler: F,
+) -> AbortOnDrop<peppylib::PeppyResult<()>>
+where
+    F: FnMut(ServiceRequestContext) -> Fut + Send + 'static,
+    Fut: Future<Output = peppylib::PeppyResult<Payload>> + Send + 'static,
+{
+    let mut listener = peppylib::ServiceMessenger::listen(
+        &started.caller_handle,
+        core_node,
+        &format!("{core_node}_root"),
+        super::core_node_target(core_node),
+        service.name(),
+    )
+    .await
+    .expect("the peer daemon listens");
+    let mock = AbortOnDrop(spawn(
+        async move { listener.handle_requests(handler).await },
+    ));
+    settle().await;
+    mock
+}
+
+/// The `service` mock of `instance_id` of `name`: a node-side endpoint
+/// answering each request with `handler`, settled before it returns. The
+/// returned guard aborts it on drop.
+pub async fn node_service_mock<F, Fut>(
+    started: &StartedCoreNode,
+    name: &str,
+    instance_id: &str,
+    service: &str,
+    handler: F,
+) -> AbortOnDrop<peppylib::PeppyResult<()>>
+where
+    F: FnMut(ServiceRequestContext) -> Fut + Send + 'static,
+    Fut: Future<Output = peppylib::PeppyResult<Payload>> + Send + 'static,
+{
+    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let mut endpoint = peppylib::ServiceMessenger::listen(
+        &messenger,
+        &started.core_node_name,
+        instance_id,
+        test_node_target(name),
+        service,
+    )
+    .await
+    .expect("the node's service mock starts");
+    let mock = AbortOnDrop(spawn(
+        async move { endpoint.handle_requests(handler).await },
+    ));
+    settle().await;
+    mock
+}
+
 /// RAII guard for a test-spawned instance deliberately left in `Starting`:
 /// `prepare_and_spawn` was driven but `commit_started` was NOT, so the instance
 /// is registered as `Starting` with a live child, exactly the state a node is in
@@ -791,4 +934,14 @@ pub async fn real_build_and_spawn_instance(
     let mut running = spawn_real_running_instance(started, name, tag, instance_id).await;
     running._working_dir = Some(working_dir);
     running
+}
+
+/// The spawn of a new instance under the default policy, with the goal a
+/// fixture's start keeps.
+fn new_spawn(
+    instance_id: &config::runtime::Name,
+    name: &str,
+    tag: &str,
+) -> node_stack::SpawnTarget {
+    node_stack::SpawnTarget::New(node_stack::FirstStart::fixture(instance_id, name, tag))
 }

@@ -1,21 +1,24 @@
 use config::AnyType;
 use config::node::ImplementsEntry;
+use config::node::{RestartDeclaration, RestartPolicy, RestartRequest};
 use config::runtime::{ClockBinding, ClockDomainId, CoreNodeName, Name, ProducerRef};
+use core_node_api::duplicate_instance_id_message;
 use core_node_api::encoding::{
     ClockDomainInfo, ClockListRequest, InstanceEndpoints, NodeInfoRequest, NodeInfoResponse,
     NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, ObservationTarget,
     ObservationTargets, PairTarget, StackListRequest,
 };
-use core_node_api::{ActionId, NodeStage};
+use core_node_api::{ActionId, InstanceState, NodeStage};
 use daemon_config::launcher::{
     BindingValidationItem, CopyMembership, DeploymentInstance, LinkValue, PairingValidationItem,
-    Placements, SETS_READ_WHOLE, WALL_CLOCK, split_link_target, validate_link_plan,
+    Placements, SETS_READ_WHOLE, Selection, WALL_CLOCK, split_link_target, validate_link_plan,
 };
 use names_generator2::get_random;
 use peppylib::core_node::transport::{poll, send_goal};
 use peppylib::{CoreNodePresenceMessenger, MessengerHandle};
 use rand::rng;
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
@@ -278,6 +281,123 @@ pub(super) fn parse_clock_domain_name(value: &str) -> std::result::Result<Name, 
     Name::new(value).map_err(|reason| format!("`{value}` is not a clock domain name: {reason}"))
 }
 
+/// The node and the instance the stack tracks under `instance_id`, in any
+/// state.
+fn tracked_instance<'a>(
+    graph: &'a core_node_api::SerializedNodeGraph,
+    instance_id: &str,
+) -> Option<(
+    &'a core_node_api::SerializedNode,
+    &'a core_node_api::SerializedInstance,
+)> {
+    graph.nodes.iter().find_map(|node| {
+        node.instances
+            .iter()
+            .find(|instance| instance.instance_id == instance_id)
+            .map(|instance| (node, instance))
+    })
+}
+
+/// The refusal of the first `--link` into a tracked instance without a
+/// process, naming the daemon that hosts it.
+fn link_refusal(
+    graph: &core_node_api::SerializedNodeGraph,
+    links: &BTreeMap<String, LinkValue>,
+) -> Option<String> {
+    links
+        .iter()
+        .flat_map(|(link_id, value)| {
+            value
+                .selection()
+                .map_or(&[][..], Selection::targets)
+                .iter()
+                .map(move |target| {
+                    let (instance_id, _) = split_link_target(target);
+                    (link_id, instance_id)
+                })
+        })
+        .find_map(|(link_id, target_id)| {
+            let (node, tracked) = tracked_instance(graph, target_id)?;
+            link_target_refusal(link_id, target_id, &node.core_node, tracked.state)
+        })
+}
+
+/// The refusal of link `link_id` into the tracked instance `target_id` in
+/// `state`: `None` for a target that is starting or running; otherwise the
+/// refusal naming its state, telling a `restarting` target's link to wait for
+/// it to run and naming the stop that clears a terminal one.
+fn link_target_refusal(
+    link_id: &str,
+    target_id: &str,
+    core_node: &str,
+    state: InstanceState,
+) -> Option<String> {
+    let remedy = match state {
+        InstanceState::Starting | InstanceState::Running => return None,
+        InstanceState::Restarting => "link to it once it is running".to_owned(),
+        InstanceState::Finished | InstanceState::Failed => format!(
+            "{} clears it; start it again as it was started, then link to it",
+            core_node_api::stop_command(target_id, core_node)
+        ),
+    };
+    Some(format!(
+        "link `{link_id}` names instance `{target_id}`, which is {state}; {remedy}"
+    ))
+}
+
+/// The refusal of `instance_id` when the stack tracks it, in any state: the
+/// core node's own id is taken for good, and any other names its state and
+/// what frees it.
+fn taken_instance_id_refusal(
+    graph: &core_node_api::SerializedNodeGraph,
+    instance_id: &str,
+) -> Option<String> {
+    let (node, tracked) = tracked_instance(graph, instance_id)?;
+    Some(if node.stage == NodeStage::Root {
+        format!("Instance ID `{instance_id}` is the core node's own; run under another id")
+    } else {
+        duplicate_instance_id_message(
+            instance_id,
+            &node.name,
+            &node.tag,
+            &node.core_node,
+            tracked.state,
+        )
+    })
+}
+
+/// The value of `--restart`: one of the three policies.
+pub(super) fn parse_restart_policy(value: &str) -> std::result::Result<RestartPolicy, String> {
+    value
+        .parse()
+        .map_err(|_| format!("`--restart` is {}; got `{value}`", RestartPolicy::ACCEPTED))
+}
+
+/// The value of `--max-restarts`: a count of attempts in a row, from 1.
+pub(super) fn parse_max_restarts(value: &str) -> std::result::Result<NonZeroU32, String> {
+    config::node::parse_max_restarts("--max-restarts", value).map_err(|e| e.to_string())
+}
+
+/// The restart request the flags make: the policy `--restart` names with the
+/// cap `--max-restarts` puts on it, or nothing, which leaves the policy to
+/// the node's manifest, then `on_failure`. A cap beside `never` is refused
+/// here, where the command reads its flags, before anything acts.
+pub(super) fn restart_request(
+    policy: Option<RestartPolicy>,
+    max_restarts: Option<NonZeroU32>,
+) -> Result<RestartRequest> {
+    let Some(policy) = policy else {
+        return Ok(RestartRequest::Unset);
+    };
+    RestartDeclaration::new(policy, max_restarts)
+        .map(RestartRequest::Flag)
+        .map_err(|config::node::MaxRestartsWithNever| {
+            Error::ExecutionFailed(
+                "`--max-restarts` needs `--restart on_failure` or `--restart always`".to_owned(),
+            )
+        })
+}
+
 /// What the clock flags asked for. Both absent is wall time, which is what an
 /// instance whose deployment names no domain reads.
 #[derive(Clone, Debug, Default)]
@@ -355,7 +475,8 @@ fn consumer_binding(reference: &ClockReference, found: &ClockSearch) -> Result<C
     match found.matches.as_slice() {
         [] if found.unreachable.is_empty() => Err(Error::ExecutionFailed(format!(
             "no clock domain `{name}` is running; `peppy clock list` shows the domains this \
-             federation hosts, or declare one with `--publish-clock {name}`",
+             federation hosts. Declare one with `--publish-clock {name}`, or, when its publisher \
+             shows `restarting` in `peppy stack list`, run this again once it is running",
             name = reference.name
         ))),
         [] => Err(Error::ExecutionFailed(format!(
@@ -498,6 +619,9 @@ struct PreflightPlan {
 ///   target's real `depends_on` + `implements`. This is the only item
 ///   whose bindings are validated and materialized.
 ///
+/// Before the bindings, it refuses an instance id the stack tracks in any
+/// state, and a link into an instance the stack tracks without a process.
+///
 /// A failed `stack_list` request, a failed `node_info` request for a
 /// node of the snapshot, and every rule violation are returned as
 /// errors. The direct `node_info` lookup of a target that is not in the
@@ -524,6 +648,14 @@ async fn validate_links_against_stack(
     .map_err(|e| Error::ExecutionFailed(format!("failed to list stack: {e}")))?;
 
     let graph = crate::commands::parse_stack_graph(&stack_response.graph_json)?;
+
+    if let Some(refusal) = taken_instance_id_refusal(&graph, target_instance_id) {
+        return Err(Error::ExecutionFailed(refusal));
+    }
+
+    if let Some(refusal) = link_refusal(&graph, links) {
+        return Err(Error::ExecutionFailed(refusal));
+    }
 
     /// Inert snapshot entry for an already-running `(name, tag)` group.
     /// Note the missing `depends_on` field: by construction these items
@@ -853,6 +985,7 @@ pub async fn validate_and_run_instance(
     instance_id: Option<String>,
     links: &BTreeMap<String, LinkValue>,
     clock: ClockBinding,
+    restart: RestartRequest,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     let prelaunch_instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
@@ -880,6 +1013,7 @@ pub async fn validate_and_run_instance(
         plan.vacant_pairs,
         plan.requested_observations,
         clock,
+        restart,
         timeouts,
     )
     .await
@@ -907,6 +1041,7 @@ pub async fn run_instance_async(
     vacant_pairs: BTreeMap<String, String>,
     requested_observations: BTreeMap<String, ObservationTargets>,
     clock: ClockBinding,
+    restart: RestartRequest,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     // Generate or use provided instance_id
@@ -951,7 +1086,8 @@ pub async fn run_instance_async(
     .with_env_vars(caller_env_overrides())
     .with_requested_pairs(requested_pairs)
     .with_vacant_pairs(vacant_pairs)
-    .with_planned_observations(requested_observations);
+    .with_planned_observations(requested_observations)
+    .with_restart(restart);
     let mut action_handle = send_goal(
         &start_goal,
         messenger_handle,
@@ -998,6 +1134,7 @@ pub struct RunNodeParams {
     pub args: Vec<(String, String)>,
     pub instance_id: Option<String>,
     pub clock: ClockChoice,
+    pub restart: RestartRequest,
     pub links: BTreeMap<String, LinkValue>,
     pub timeouts: TimeoutConfig,
     pub build: bool,
@@ -1014,6 +1151,7 @@ async fn run_node_async(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<
         args,
         instance_id,
         clock,
+        restart,
         links,
         timeouts,
         build,
@@ -1108,6 +1246,7 @@ async fn run_node_async(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<
         instance_id,
         &links,
         clock,
+        restart,
         &remaining_timeouts(&timeouts, start, "run")?,
     )
     .await?;
@@ -1121,6 +1260,103 @@ mod tests {
     // Only the fixtures below build a lifetime by hand; the command mints
     // through `daemon_config`.
     use config::runtime::ClockIncarnation;
+
+    /// The link refusal names the daemon that hosts the instance, read from
+    /// the stack graph, after `--core-node`; a link into an id the stack
+    /// does not track passes.
+    #[test]
+    fn the_link_refusal_names_the_hosting_daemon() {
+        let graph = core_node_api::SerializedNodeGraph {
+            nodes: vec![crate::commands::serialized_node(
+                "arm",
+                "v1",
+                core_node_api::NodeStage::Ready,
+                &[("arm_1", InstanceState::Failed)],
+            )],
+            edges: Vec::new(),
+        };
+        let links = |target: &str| {
+            BTreeMap::from([(
+                "arm".to_owned(),
+                LinkValue::Bound(Selection::Flags(
+                    daemon_config::launcher::LinkTargets::new(vec![target.to_owned()])
+                        .expect("one target"),
+                )),
+            )])
+        };
+        assert_eq!(
+            link_refusal(&graph, &links("arm_1")),
+            link_target_refusal("arm", "arm_1", "core-a", InstanceState::Failed)
+        );
+        assert_eq!(link_refusal(&graph, &links("free_1")), None);
+    }
+
+    /// A link into an instance with a process passes; one into a
+    /// `restarting` instance waits for it to run, and one into a finished or
+    /// failed instance names the stop that clears it.
+    #[test]
+    fn a_link_into_an_instance_without_a_process_is_refused() {
+        assert_eq!(
+            link_target_refusal("arm", "arm_1", "cn-a", InstanceState::Starting),
+            None
+        );
+        assert_eq!(
+            link_target_refusal("arm", "arm_1", "cn-a", InstanceState::Running),
+            None
+        );
+        assert_eq!(
+            link_target_refusal("arm", "arm_1", "cn-a", InstanceState::Restarting).as_deref(),
+            Some(
+                "link `arm` names instance `arm_1`, which is restarting; link to it once it is running"
+            )
+        );
+        for state in [InstanceState::Finished, InstanceState::Failed] {
+            assert_eq!(
+                link_target_refusal("arm", "arm_1", "cn-a", state),
+                Some(format!(
+                    "link `arm` names instance `arm_1`, which is {state}; `peppy node stop arm_1 \
+                     --core-node cn-a` clears it; start it again as it was started, then link to \
+                     it"
+                ))
+            );
+        }
+    }
+
+    /// The core node's own id is refused with no stop to suggest; another
+    /// tracked id names its state and what frees it, and an untracked id is
+    /// free.
+    #[test]
+    fn a_taken_instance_id_is_refused_naming_its_owner() {
+        let failed = core_node_api::InstanceState::Failed;
+        let graph = core_node_api::SerializedNodeGraph {
+            nodes: vec![
+                crate::commands::serialized_node(
+                    "core",
+                    "v1",
+                    core_node_api::NodeStage::Root,
+                    &[("cn-sweet-buffalo", failed)],
+                ),
+                crate::commands::serialized_node(
+                    "cam",
+                    "v1",
+                    core_node_api::NodeStage::Ready,
+                    &[("cam_inst", failed)],
+                ),
+            ],
+            edges: Vec::new(),
+        };
+        assert_eq!(
+            taken_instance_id_refusal(&graph, "cn-sweet-buffalo").as_deref(),
+            Some("Instance ID `cn-sweet-buffalo` is the core node's own; run under another id")
+        );
+        assert_eq!(
+            taken_instance_id_refusal(&graph, "cam_inst"),
+            Some(core_node_api::duplicate_instance_id_message(
+                "cam_inst", "cam", "v1", "core-a", failed
+            ))
+        );
+        assert_eq!(taken_instance_id_refusal(&graph, "free_inst"), None);
+    }
 
     #[test]
     fn parse_bool_values() {
@@ -1434,12 +1670,16 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_name_is_refused_with_both_ways_forward() {
+    fn an_unknown_name_is_refused_with_every_way_forward() {
         let refusal = consumer_binding(&reference("robot"), &ClockSearch::default())
             .expect_err("an unknown domain is refused");
         let message = refusal.to_string();
         assert!(message.contains("peppy clock list"), "{message}");
         assert!(message.contains("--publish-clock robot"), "{message}");
+        assert!(
+            message.contains("shows `restarting` in `peppy stack list`"),
+            "{message}"
+        );
     }
 
     /// A daemon that did not answer may be the one hosting the name, so the

@@ -101,12 +101,13 @@ The second argument is a timeout. Rust accepts anything that converts to `Option
 - `host_name`: the hostname of the daemon that served this stack snapshot.
 
 Each node entry carries its required `core_node` owner plus its `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), and its `instances`.
-Each instance has an `instance_id`, a `state` (`starting`, `running`, or the terminal `finished` / `failed`), a `healthy` flag, its `slot_bindings`, and its `pairing_slots`. A router or load-balancer keeps only the `running` ones, which excludes both still-warming and already-exited instances.
+Each instance has an `instance_id`, a `state` (`starting`, `running`, `restarting` while the daemon waits to start it again, or the terminal `finished` / `failed`), a `healthy` flag, its `slot_bindings`, and its `pairing_slots`. A router or load-balancer keeps only the `running` ones, which excludes both still-warming and already-exited instances.
+Its [restart policy](/guides/launch_files/#restart-policy) comes with it: `restart`, the policy as a launcher writes it (`"on_failure"`, or `{ policy, max_restarts }` with a cap); `restart_origin`, the level that set it (`instance`, `flag`, `node`, `launcher_root` or `default`); `restart_count`, the times a restarted process reached `running`; `attempt`, the count of restart attempts in a row that `max_restarts` caps (0 before the first exit the policy restarts; each such exit or failed start takes the next, and one after a run of two minutes or more takes attempt 1 again, where a run the health monitor ended counts only up to its last answered health check; at the cap it names the attempt refused; an exit `peppy node remove` asked for sets 0, and any other exit the policy does not restart leaves it as it was); `last_exit`, how the last start ended, a process's exit or a start failure (`{ code }`, `{ signal: { number, name, core_dumped } }`, `{ health_kill: { unanswered_secs } }` or `{ message }`, null before any exit); and `running_since_ms` and `next_start_ms`, milliseconds since the Unix epoch, null when there is none.
 The graph's `edges` list the dependency relationships, with each edge pointing from one node entry to another. The list covers both direct `depends_on.nodes` dependencies and those resolved through [contract implementation](/advanced_guides/contract_implementation/): a contract edge carries a `via_contract` of `name:tag` (the contract it was resolved through), while a direct edge has none.
 
 Rust and Python expose the graph differently:
 
-- In Rust, `result.graph` is a typed `SerializedNodeGraph` with `nodes: Vec<SerializedNode>` and `edges: Vec<SerializedEdge>`. Field access is direct (`node.name`, `node.instances`).
+- In Rust, `result.graph` is a typed `SerializedNodeGraph` with `nodes: Vec<SerializedNode>` and `edges: Vec<SerializedEdge>`. Field access is direct (`node.name`, `node.instances`), and an instance's restart fields sit on its `restart_status` (`instance.restart_status.restart_count`), whose policy reads through `restart.policy()` and `restart.max_restarts()`.
 - In Python, `result.graph` is a plain `dict` of the same shape: `{"nodes": [...], "edges": [...]}`. Access fields by key (`node["name"]`, `node["instances"][0]["state"]`).
 
 The example below uses `stack.list` to count the running instances of each node and print their IDs, a typical pattern for a router or load-balancer node that needs to dispatch work across instances of a dependency.
@@ -176,7 +177,7 @@ The example below uses `stack.list` to count the running instances of each node 
 
 ### Looking up instances by `(name, tag)`
 
-When you know which dependency you want, skip the manual iteration with `running_instance_ids_by_node(name, tag)`, exposed on the `StackList` result in Python and on `result.graph` in Rust. The Rust signature is `Result<Vec<&str>, NodeNotFound>`; Python raises `KeyError` for the same condition. In both languages, an empty list (not an error) means the node is present but every instance is still `starting`, useful for a router that wants to back off during warmup rather than fail loudly.
+When you know which dependency you want, skip the manual iteration with `running_instance_ids_by_node(name, tag)`, exposed on the `StackList` result in Python and on `result.graph` in Rust. The Rust signature is `Result<Vec<&str>, NodeNotFound>`; Python raises `KeyError` for the same condition. In both languages, an empty list (not an error) means the node is present but none of its instances is `running`: each is `starting`, `restarting`, or `finished` or `failed` for good. A router can back off while one starts or restarts, and read the states in the graph to tell a node that is coming back from one that is not.
 
 <Tabs>
   <TabItem label="Python">

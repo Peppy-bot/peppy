@@ -5,7 +5,9 @@ use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use core_node_api::names;
 use node_stack::{
-    EntityHandle, NodeStack, TrackedNodeInstance, kill_process_group, terminate_process_group,
+    EntityHandle, GUEST_FORCE_KILL_BUDGET, InstanceState, KeptRelations, NodeEntity, NodeStack,
+    ProcessClaim, SlotRemoval, StartingClaim, TrackedNodeInstance, kill_guest_groups,
+    kill_process_group, terminate_process_group,
 };
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
@@ -13,6 +15,7 @@ use peppylib::messaging::{
 };
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -20,16 +23,9 @@ use tracing::{debug, warn};
 
 use super::RelationshipCoordinators;
 
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a shutdown request waits for a node's answer.
+pub(super) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
-
-/// Defensive latency cap on the macOS in-VM guest force-kill phase. The work is
-/// already internally bounded (the Lima VM liveness probe and each per-key guest
-/// SIGKILL carry their own `limactl` subprocess deadlines), so this only bounds
-/// the stop's completion latency if a `limactl` call wedges past those internal
-/// deadlines. It does not cancel the blocking closure (a `spawn_blocking` task
-/// runs to completion regardless); it only stops the stop path waiting on it.
-const GUEST_FORCE_KILL_BUDGET: Duration = Duration::from_secs(30);
 
 pub async fn listen_for_node_stop(
     messenger: &MessengerHandle,
@@ -96,14 +92,19 @@ async fn handle_node_stop_request(
     into_service_response(
         &context,
         crate::services::node::gate::finish_on_reset(
-            handle_node_stop_request_inner(
-                &context,
-                &messenger,
-                &core_node_node,
-                &core_instance_id,
-                Arc::clone(&node_stack),
-                &relationships,
-            ),
+            async {
+                handle_node_stop_request_inner(
+                    &context,
+                    &messenger,
+                    &core_node_node,
+                    &core_instance_id,
+                    Arc::clone(&node_stack),
+                    &relationships,
+                )
+                .await?
+                .encode()
+                .map_err(Into::into)
+            },
             &ownership.stack.cancellation(),
             crate::services::node::gate::reset_drain_budget(node_stack.shutdown_grace()),
             || {
@@ -123,7 +124,7 @@ async fn handle_node_stop_request_inner(
     core_instance_id: &str,
     node_stack: Arc<NodeStack>,
     relationships: &RelationshipCoordinators,
-) -> Result<Payload> {
+) -> Result<NodeStopResponse> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload_bytes();
 
@@ -138,80 +139,70 @@ async fn handle_node_stop_request_inner(
     let instance_id = match Name::new(&request.instance_id) {
         Ok(name) => name,
         Err(e) => {
-            return NodeStopResponse::failure(format!("Invalid instance_id: {}", e))
-                .encode()
-                .map_err(Into::into);
+            return Ok(NodeStopResponse::failure(format!(
+                "Invalid instance_id: {}",
+                e
+            )));
         }
     };
 
-    let (instance, entity_handle) =
-        match find_running_instance_and_entity(&node_stack, &instance_id, &request.instance_id) {
-            Ok(found) => found,
-            Err(response) => return response.encode().map_err(Into::into),
-        };
+    let (kept, response) = loop {
+        match act_on_slot(&node_stack, &instance_id).await {
+            SlotStep::Refused(refusal) => return Ok(refusal.response(&instance_id)),
+            SlotStep::Cleared(kept) => break (Some(kept), NodeStopResponse::success()),
+            SlotStep::Stop { pid, entity } => {
+                break stop_process(
+                    messenger,
+                    core_node_node,
+                    core_instance_id,
+                    &node_stack,
+                    &instance_id,
+                    pid,
+                    &entity,
+                )
+                .await;
+            }
+            SlotStep::ReadAgain => continue,
+        }
+    };
 
+    // This stop tears down only what its claim took: a slot it removed, or a
+    // start it claimed, once that start's abort ended it.
+    if let Some(kept) = kept {
+        relationships
+            .tear_down_instance(instance_id.as_str(), kept)
+            .await;
+    }
+    Ok(response)
+}
+
+/// Stops the process `pid` (`None` for a fixture slot) of `instance_id` of
+/// `entity_handle`, whose slot this stop or another stop path claimed, then
+/// removes the slot through [`NodeEntity::claim_and_remove`], returning what
+/// the removed slot kept of its relations and the answer. Nothing is removed
+/// when another stop path removed the slot meanwhile, or a new run under the
+/// id runs its own process.
+async fn stop_process(
+    messenger: &MessengerHandle,
+    core_node_node: &str,
+    core_instance_id: &str,
+    node_stack: &Arc<NodeStack>,
+    instance_id: &Name,
+    pid: Option<u32>,
+    entity_handle: &EntityHandle,
+) -> (Option<KeptRelations>, NodeStopResponse) {
     // Resolve everything we need from the entity up front, under a short-lived
-    // read lock that is NOT held across any await. `is_container` drives the
-    // macOS in-VM guest kill; `pid` is the process to wait on / force-kill.
-    let pid = instance.pid();
-    let (node_name, node_tag, is_container) = {
-        let guard = entity_handle.read();
-        (
-            guard.config().manifest.name.as_str().to_owned(),
-            guard.config().manifest.tag.clone(),
-            guard.config().execution.container.is_some(),
-        )
-    };
-    let (root_node_name, root_node_tag) = {
-        let root = node_stack.root();
-        let guard = root.read();
-        (
-            guard.config().manifest.name.as_str().to_owned(),
-            guard.config().manifest.tag.clone(),
-        )
-    };
-
-    if node_name == root_node_name && node_tag == root_node_tag {
-        return NodeStopResponse::failure("Cannot stop the core node")
-            .encode()
-            .map_err(Into::into);
-    }
-
-    // Claim the instance for termination before signaling it, so its exit
-    // watcher treats the upcoming exit as an intentional stop (owned by this
-    // path's registry removal) rather than a self-exit, and never relabels a
-    // force-kill as a crash. Claim under the entity read lock (not on the
-    // lock-free clone) so the claim is mutually exclusive with the write lock
-    // `mark_instance_exited` holds across its `is_stopping()` check and its
-    // terminal-state flip. A lock-free store on the shared `Arc` could otherwise
-    // land between that check and flip, letting a self-exit racing this stop be
-    // recorded as a terminal exit. The bulk teardown paths (`stop_instances`,
-    // `collect_doomed_instances`) claim the same way.
-    {
-        let guard = entity_handle.read();
-        if let Some(inst) = guard
-            .instances()
-            .iter()
-            .find(|inst| inst.instance_id() == &instance_id)
-        {
-            inst.mark_stopping();
-        }
-    }
+    // read lock that is NOT held across any await. The slot was claimed before
+    // this, so its exit watcher leaves the exit to the stop paths.
+    let target = DoomedInstance::of(&entity_handle.read(), instance_id.clone(), pid);
 
     // Cooperative-then-force, identical to the SIGINT teardown for this one
     // instance: ask the node to shut down, give it a bounded grace window, then
     // SIGKILL its process group if it ignored us, and wait for it to be gone.
-    // A stuck or non-responsive node is force-killed and reported as success,
-    // not left alive behind a timeout error. The live registry entry stays
-    // until after the kill and reap, so a retried or racing caller can still
-    // observe the in-flight shutdown.
-    let target = DoomedInstance {
-        node_name: node_name.clone(),
-        node_tag: node_tag.clone(),
-        instance_id: instance_id.clone(),
-        pid,
-        is_container,
-    };
+    // A stuck/non-responsive node is now force-killed (and reported as success)
+    // rather than left alive behind a timeout error. We deliberately keep the
+    // live registry entry until after the kill+reap so a retried or racing
+    // caller can still observe the in-flight shutdown.
     let outcome = force_stop_instance(
         messenger,
         core_node_node,
@@ -221,14 +212,12 @@ async fn handle_node_stop_request_inner(
     )
     .await;
 
-    // Process is gone (properly or improperly). Finalize the registry removal,
-    // then run the single teardown seam: dissolve its pairs and live-notify
-    // each surviving peer that its slot is Unpaired, and drop its observations
-    // and notify any live observers a source went down (death auto-clears;
-    // re-pairing is explicit). A stopped node is torn down identically whether
-    // it paired, observed, both, or neither.
-    remove_instance_from_registry(&node_stack, &node_name, &node_tag, &instance_id);
-    relationships.tear_down_instance(instance_id.as_str()).await;
+    // Process is gone (properly or improperly): finalize the registry
+    // removal; the handler tears the instance down.
+    let kept = match NodeEntity::claim_and_remove(entity_handle, instance_id, pid) {
+        SlotRemoval::Removed(kept) => Some(kept),
+        SlotRemoval::Left(_) | SlotRemoval::Untracked => None,
+    };
 
     // Tell the caller whether the node exited gracefully or had to be
     // force-killed, so the CLI can warn the user about the latter.
@@ -236,75 +225,161 @@ async fn handle_node_stop_request_inner(
         StopOutcome::ForceKilled => NodeStopResponse::success_force_killed(),
         StopOutcome::Graceful | StopOutcome::NoProcess => NodeStopResponse::success(),
     };
-    response.encode().map_err(Into::into)
+    (kept, response)
 }
 
-/// Finds the instance and its entity by instance_id, or the failure response
-/// the stop handler should return. The lookups intentionally only match
-/// `Running` instances. If the instance is mid-start (`Starting`), the lookup
-/// returns `None` even though the instance does exist, so
-/// [`stop_lookup_failure`] surfaces that as a distinct retryable error and
-/// callers can back off and retry once `commit_started`/`abort_started` has
-/// resolved the in-flight start.
-fn find_running_instance_and_entity(
-    node_stack: &NodeStack,
-    instance_id: &Name,
-    raw_instance_id: &str,
-) -> std::result::Result<(TrackedNodeInstance, EntityHandle), NodeStopResponse> {
-    let Some(instance) = node_stack.find_by_instance_id(instance_id) else {
-        return Err(stop_lookup_failure(
-            node_stack,
-            instance_id,
-            raw_instance_id,
-        ));
-    };
-    let Some(entity_handle) = node_stack.find_entity_by_instance_id(instance_id) else {
-        return Err(stop_lookup_failure(
-            node_stack,
-            instance_id,
-            raw_instance_id,
-        ));
-    };
-    Ok((instance, entity_handle))
+/// What a stop does with the slot it read under the id.
+enum SlotStep {
+    /// The stop is refused.
+    Refused(Refusal),
+    /// The slot is gone, claimed with the relations it kept.
+    Cleared(KeptRelations),
+    /// The running instance this stop or another stop path claimed is
+    /// stopped: its process `pid`, `None` for a fixture slot without one.
+    Stop {
+        pid: Option<u32>,
+        entity: EntityHandle,
+    },
+    /// The slot's state moved on between the read and the act.
+    ReadAgain,
 }
 
-/// Builds the failure response for a stop request whose instance lookup came
-/// back empty: "mid-start, retry later" when the id exists in `Starting`
-/// state, "not found" otherwise.
-fn stop_lookup_failure(
-    node_stack: &NodeStack,
-    instance_id: &Name,
-    raw_instance_id: &str,
-) -> NodeStopResponse {
-    if instance_is_in_starting(node_stack, instance_id) {
-        NodeStopResponse::failure(format!(
-            "Node instance '{}' is in Starting state; retry after the start completes",
-            raw_instance_id
-        ))
-    } else {
-        NodeStopResponse::failure(format!(
-            "Node instance '{}' not found in node stack",
-            raw_instance_id
-        ))
+/// Reads the slot of `instance_id` and acts by its state, claiming it only
+/// while it is still in that state. A running instance is claimed with the
+/// process it runs and stopped. An instance without a process is claimed and
+/// removed in one step, so a restart that fires meanwhile finds no slot. A
+/// restart's start in flight is claimed, which cancels it: its slot leaves
+/// with the start, or reaches `running` when the start committed first, and
+/// that process is stopped. A first start is refused.
+async fn act_on_slot(node_stack: &NodeStack, instance_id: &Name) -> SlotStep {
+    let Some((instance, entity_handle)) =
+        node_stack.find_instance_and_entity_any_state(instance_id)
+    else {
+        return SlotStep::Refused(Refusal::NotFound);
+    };
+    if Arc::ptr_eq(&entity_handle, &node_stack.root()) {
+        return SlotStep::Refused(Refusal::CoreNode);
+    }
+    match instance.state() {
+        InstanceState::Running => match instance.pid() {
+            Some(pid) => claim_running(entity_handle, instance_id, pid),
+            None => clear_without_process(&entity_handle, instance_id),
+        },
+        InstanceState::Restarting | InstanceState::Finished | InstanceState::Failed => {
+            clear_without_process(&entity_handle, instance_id)
+        }
+        InstanceState::Starting => {
+            let claim = entity_handle.read().claim_starting(instance_id);
+            match claim {
+                StartingClaim::Claimed(kept) => {
+                    match wait_for_claimed_start(node_stack, instance_id).await {
+                        ClaimedStart::Ended => SlotStep::Cleared(kept),
+                        ClaimedStart::Committed { pid } => SlotStep::Stop {
+                            pid,
+                            entity: entity_handle,
+                        },
+                    }
+                }
+                StartingClaim::FirstStart => SlotStep::Refused(Refusal::FirstStart),
+                StartingClaim::ClaimedElsewhere => SlotStep::Refused(Refusal::AlreadyBeingStopped),
+                StartingClaim::NotStarting => SlotStep::ReadAgain,
+            }
+        }
     }
 }
 
-/// Returns `true` if any tracked entity contains an instance with the
-/// given id in `InstanceState::Starting`. Used to disambiguate "instance does
-/// not exist" from "instance exists but is mid-start" in the stop handler.
-fn instance_is_in_starting(node_stack: &NodeStack, instance_id: &Name) -> bool {
-    node_stack.snapshot().into_iter().any(|handle| {
-        handle
-            .read()
-            .instances()
-            .iter()
-            .any(|inst| is_starting_instance(inst, instance_id))
-    })
+/// Claims the running instance `instance_id` with its process `pid`, which a
+/// stop then ends; another stop path's claim on that process is joined, as
+/// both stops end the same process. A slot that no longer runs `pid` is read
+/// again.
+fn claim_running(entity_handle: EntityHandle, instance_id: &Name, pid: u32) -> SlotStep {
+    let claim = entity_handle.read().claim_process(instance_id, pid);
+    match claim {
+        ProcessClaim::Claimed | ProcessClaim::ClaimedElsewhere => SlotStep::Stop {
+            pid: Some(pid),
+            entity: entity_handle,
+        },
+        ProcessClaim::Gone => SlotStep::ReadAgain,
+    }
 }
 
-/// Whether `instance` is the instance `instance_id` and is mid-start.
-fn is_starting_instance(instance: &TrackedNodeInstance, instance_id: &Name) -> bool {
-    instance.instance_id() == instance_id && instance.state() == node_stack::InstanceState::Starting
+/// Claims and removes the slot of `instance_id` while it has no process; a
+/// slot that started one meanwhile is read again.
+fn clear_without_process(entity_handle: &EntityHandle, instance_id: &Name) -> SlotStep {
+    match NodeEntity::claim_and_remove(entity_handle, instance_id, None) {
+        SlotRemoval::Removed(kept) => SlotStep::Cleared(kept),
+        SlotRemoval::Left(_) | SlotRemoval::Untracked => SlotStep::ReadAgain,
+    }
+}
+
+/// How a start a stop claimed ended.
+enum ClaimedStart {
+    /// The claimed start's slot is gone; a slot now under the id is another
+    /// instance's.
+    Ended,
+    /// The start committed before it saw the claim; its process `pid` runs.
+    Committed { pid: Option<u32> },
+}
+
+/// How the start a stop claimed ended, from the slot now under its id;
+/// `None` while it starts. A slot under the id that no stop claimed is a new
+/// instance's, so the claimed one left.
+fn claimed_start(slot: Option<TrackedNodeInstance>) -> Option<ClaimedStart> {
+    let Some(slot) = slot.filter(TrackedNodeInstance::is_stopping) else {
+        return Some(ClaimedStart::Ended);
+    };
+    match slot.state() {
+        InstanceState::Starting => None,
+        InstanceState::Running => Some(ClaimedStart::Committed { pid: slot.pid() }),
+        // A failed start removes a claimed respawn's slot and an exit leaves
+        // a claimed slot alone, so a claimed slot in these states is another
+        // instance's, claimed by another stop path.
+        InstanceState::Restarting | InstanceState::Finished | InstanceState::Failed => {
+            Some(ClaimedStart::Ended)
+        }
+    }
+}
+
+/// Polls the slot until the restart's start this stop claimed ends: a claim
+/// before the fork ends it there, one after by its abort (the group kill,
+/// the readers' drain, a container's in-VM kill). The wait has no deadline
+/// of its own.
+async fn wait_for_claimed_start(node_stack: &NodeStack, instance_id: &Name) -> ClaimedStart {
+    loop {
+        match claimed_start(node_stack.find_instance_any_state(instance_id)) {
+            Some(end) => return end,
+            None => tokio::time::sleep(PROCESS_POLL_INTERVAL).await,
+        }
+    }
+}
+
+/// Why a stop is refused.
+enum Refusal {
+    /// No slot has the id.
+    NotFound,
+    /// The id is the core node's own instance.
+    CoreNode,
+    /// A first start in flight, refused until it completes.
+    FirstStart,
+    /// A start another stop path already claimed.
+    AlreadyBeingStopped,
+}
+
+impl Refusal {
+    /// The answer that refuses the stop of `instance_id`.
+    fn response(self, instance_id: &Name) -> NodeStopResponse {
+        NodeStopResponse::failure(match self {
+            Refusal::NotFound => format!("Node instance '{instance_id}' not found in node stack"),
+            Refusal::CoreNode => "Cannot stop the core node".to_owned(),
+            Refusal::FirstStart => format!(
+                "Node instance '{instance_id}' is in Starting state; retry after the start \
+                 completes"
+            ),
+            Refusal::AlreadyBeingStopped => {
+                format!("Node instance '{instance_id}' is already being stopped")
+            }
+        })
+    }
 }
 
 /// Sends a `SHUTDOWN_SERVICE` request and returns once the receiver
@@ -417,8 +492,8 @@ pub(super) async fn force_stop_instance(
 ///
 /// Returns one [`StopOutcome`] per input, in order, so callers can tell the
 /// user whether each node exited gracefully or had to be force-killed. An
-/// instance with `pid == None` has no OS process to terminate (the cooperative
-/// send is still attempted best-effort) and yields [`StopOutcome::NoProcess`].
+/// instance with `pid == None` has no OS process: it gets no shutdown request
+/// and yields [`StopOutcome::NoProcess`].
 async fn force_stop_instances(
     messenger: &MessengerHandle,
     core_node_node: &str,
@@ -434,39 +509,83 @@ async fn force_stop_instances(
     // `force_kill_deadline`.
     let deadline = force_kill_deadline(graceful_budget);
     let _ = tokio::time::timeout(deadline, async {
-        let sends = doomed.iter().map(|d| async move {
-            let result = send_shutdown_signal(
-                messenger,
-                core_node_node,
-                core_instance_id,
-                &d.node_name,
-                &d.node_tag,
-                &d.instance_id,
-            )
-            .await;
-            if let Err(e) = &result {
-                debug!(
-                    "Cooperative shutdown of node instance '{}' failed; \
-                     trying container signal fallback before force-kill: {}",
-                    d.instance_id.as_str(),
-                    e
-                );
-            }
-            (d, result)
-        });
-        let failed_shutdowns: Vec<&DoomedInstance> = futures::future::join_all(sends)
+        let sends = doomed
+            .iter()
+            .filter(|d| d.pid.is_some())
+            .map(|d| async move {
+                let result = send_shutdown_signal(
+                    messenger,
+                    core_node_node,
+                    core_instance_id,
+                    &d.node_name,
+                    &d.node_tag,
+                    &d.instance_id,
+                )
+                .await;
+                if let Err(e) = &result {
+                    debug!(
+                        "Cooperative shutdown of node instance '{}' failed; \
+                         trying container signal fallback before force-kill: {}",
+                        d.instance_id.as_str(),
+                        e
+                    );
+                }
+                (d, result)
+            });
+        let no_shutdown: Vec<&DoomedInstance> = futures::future::join_all(sends)
             .await
             .into_iter()
             .filter_map(|(d, result)| result.err().map(|_| d))
             .collect();
-        terminate_failed_container_instances_best_effort(&failed_shutdowns).await;
+        terminate_failed_container_instances_best_effort(&no_shutdown).await;
         wait_until_all_gone(doomed).await;
     })
     .await;
+    force_kill_leftovers(doomed, deadline, graceful_budget).await
+}
 
-    // One snapshot classifies which nodes are still alive (i.e. ignored the
-    // cooperative shutdown) so the user is warned that they were force-killed
-    // rather than having exited gracefully.
+/// Within the force-kill deadline of `graceful_budget`: SIGTERMs each
+/// container of `no_shutdown`, the instances no shutdown request reached, as
+/// a stop does, then waits for the processes of `doomed` and of
+/// `claimed_elsewhere`, whose kill is another stop path's, to exit. Then
+/// kills what is left of the groups of `doomed`, a container's in-VM group
+/// included, and reaps them: [`force_stop_instances`] after its shutdown
+/// requests, for a caller that sent its own. One [`StopOutcome`] per
+/// `doomed`, in order.
+pub(super) async fn await_exit_then_force_kill(
+    doomed: &[DoomedInstance],
+    no_shutdown: &[&DoomedInstance],
+    claimed_elsewhere: &[DoomedInstance],
+    graceful_budget: Duration,
+) -> Vec<StopOutcome> {
+    let deadline = force_kill_deadline(graceful_budget);
+    let _ = tokio::time::timeout(deadline, async {
+        terminate_failed_container_instances_best_effort(no_shutdown).await;
+        wait_until_all_gone(doomed).await;
+        wait_until_all_gone(claimed_elsewhere).await;
+    })
+    .await;
+    force_kill_leftovers(doomed, deadline, graceful_budget).await
+}
+
+/// Steps 4 and 5 of [`force_stop_instances`]: SIGKILLs each group, a
+/// container's in-VM group included, and reaps them; `deadline` and
+/// `graceful_budget` word the force-kill warning.
+async fn force_kill_leftovers(
+    doomed: &[DoomedInstance],
+    deadline: Duration,
+    graceful_budget: Duration,
+) -> Vec<StopOutcome> {
+    // Phase 2 (force): SIGKILL each recorded process group. We deliberately do
+    // not pre-check whether the leader is still alive before killing: a process
+    // group can outlive its leader (the leader exits but a descendant it spawned
+    // keeps running), and the negative-pid kill reaches the whole group (each
+    // node is spawned as a group leader), so descendants die too. An already-dead
+    // group yields ESRCH, which kill_process_group ignores.
+    //
+    // We do take one snapshot here purely to classify which nodes are still
+    // alive (i.e. ignored the cooperative shutdown) so the user is warned that
+    // they were force-killed rather than having exited gracefully.
     let mut snapshot = sysinfo::System::new();
     refresh_pids(&mut snapshot, &doomed_pids(doomed));
     let outcomes = doomed
@@ -503,10 +622,8 @@ async fn force_stop_instances(
 /// The force phases of a stop, alone: SIGKILLs the process group of every
 /// instance, reaches the in-VM group of a container instance on macOS, and
 /// waits a bounded time for the killed groups to be reaped. The second half of
-/// [`force_stop_instances`], and the whole of how `node_run` ends a start it
-/// gives up before the ready signal, when the node does not listen for the
-/// shutdown request yet, or once the leader process of the node exited.
-pub(super) async fn kill_process_groups(doomed: &[DoomedInstance]) {
+/// [`force_stop_instances`], through [`force_kill_leftovers`].
+async fn kill_process_groups(doomed: &[DoomedInstance]) {
     // Phase 2 (force): SIGKILL each recorded process group. We deliberately do
     // not pre-check whether the leader is still alive before killing: a process
     // group can outlive its leader (the leader exits but a descendant it spawned
@@ -532,19 +649,7 @@ pub(super) async fn kill_process_groups(doomed: &[DoomedInstance]) {
     // shared-namespace container) and never fails: a guest-kill problem must
     // not block a stop or teardown. Runs on a blocking thread because it shells
     // out to `limactl`.
-    if !guest_kill_keys.is_empty() {
-        // Cap how long the stop waits on the in-VM guest kill. The kill is itself
-        // internally bounded (see `GUEST_FORCE_KILL_BUDGET`), so this only fires if
-        // a `limactl` call wedges past its own deadline; it does not cancel the
-        // blocking closure, which still runs to completion on the blocking pool.
-        let _ = tokio::time::timeout(
-            GUEST_FORCE_KILL_BUDGET,
-            tokio::task::spawn_blocking(move || {
-                containers::Apptainer::kill_guest_process_groups_best_effort(&guest_kill_keys);
-            }),
-        )
-        .await;
-    }
+    kill_guest_groups(guest_kill_keys).await;
 
     // Phase 3 (bounded reap): let the killed groups die while the daemon is
     // still alive so they don't briefly linger as zombies parented to it; any
@@ -571,11 +676,7 @@ async fn terminate_failed_container_instances_best_effort(doomed: &[&DoomedInsta
         .iter()
         .map(|d| d.instance_id.as_str().to_owned())
         .collect();
-    let guest_term_attempted = tokio::task::spawn_blocking(move || {
-        containers::Apptainer::terminate_guest_process_groups_best_effort(&guest_term_keys)
-    })
-    .await
-    .unwrap_or(false);
+    let guest_term_attempted = node_stack::terminate_guest_groups(guest_term_keys).await;
 
     if !guest_term_attempted {
         for doomed in failed_containers {
@@ -586,26 +687,27 @@ async fn terminate_failed_container_instances_best_effort(doomed: &[&DoomedInsta
     }
 }
 
-/// Removes a `Running` instance from the entity's registry. Called only
-/// after the OS process has been confirmed terminated.
+/// Removes a stopped instance from the entity's registry, returning what
+/// its slot kept of its relations (nothing for an untracked one). Called
+/// only after the OS process, when there was one, has been confirmed
+/// terminated.
 fn remove_instance_from_registry(
     node_stack: &NodeStack,
     node_name: &str,
     node_tag: &str,
     instance_id: &Name,
-) {
+) -> KeptRelations {
     let Some(handle) = node_stack.find(node_name, node_tag) else {
-        return;
+        return KeptRelations::default();
     };
     let mut guard = handle.write();
-    if guard.stop_instance(instance_id) {
-        return;
+    if let Some(kept) = guard.stop_instance(instance_id) {
+        return kept;
     }
-    if guard
-        .instances()
-        .iter()
-        .any(|inst| is_starting_instance(inst, instance_id))
-    {
+    let starting = guard
+        .instance(instance_id)
+        .is_some_and(|inst| inst.state() == InstanceState::Starting);
+    if starting {
         debug!(
             "Node instance '{}' is in Starting state on {}:{}; cannot stop via stop_instance \
              (will resolve via abort_started)",
@@ -613,14 +715,15 @@ fn remove_instance_from_registry(
             node_name,
             node_tag
         );
-        return;
+    } else {
+        debug!(
+            "Node instance '{}' was not tracked in entity {}:{}",
+            instance_id.as_str(),
+            node_name,
+            node_tag
+        );
     }
-    debug!(
-        "Node instance '{}' was not tracked in entity {}:{}",
-        instance_id.as_str(),
-        node_name,
-        node_tag
-    );
+    KeptRelations::default()
 }
 
 /// Cooperative-then-force stop of the given running instances of one entity,
@@ -635,7 +738,8 @@ fn remove_instance_from_registry(
 /// together: every cooperative shutdown is sent concurrently and the instances
 /// share ONE grace budget, so an overwrite of an entity with several stuck
 /// instances costs one grace window, not one per instance. Returns only once
-/// every process is gone. Infallible.
+/// every process is gone, with what each removed slot kept of its relations.
+/// Infallible.
 pub(crate) async fn stop_instances(
     messenger: &MessengerHandle,
     core_node_node: &str,
@@ -644,42 +748,29 @@ pub(crate) async fn stop_instances(
     node_name: &str,
     node_tag: &str,
     instance_ids: &[Name],
-) {
+) -> BTreeMap<Name, KeptRelations> {
     if instance_ids.is_empty() {
-        return;
+        return BTreeMap::new();
     }
     // Resolve pid + is_container for every instance under ONE short read lock,
-    // not held across the await below. Reading the pids up front (rather than
-    // after shutdown) avoids a race with any concurrent registry mutation. An
-    // instance that is no longer tracked resolves to a pid-less target: the
-    // cooperative send is still attempted, and there is nothing to kill.
-    let doomed: Vec<DoomedInstance> = {
-        let Some(handle) = node_stack.find(node_name, node_tag) else {
-            return; // Entity already gone; nothing to stop.
-        };
-        let guard = handle.read();
-        let is_container = guard.config().execution.container.is_some();
-        instance_ids
-            .iter()
-            .map(|instance_id| {
-                // Claim each instance for termination before it is signaled,
-                // so its exit watcher leaves the state to this path's removal
-                // and does not record an intentional stop as a self-exit.
-                let pid = guard
-                    .instances()
-                    .iter()
-                    .find(|inst| inst.instance_id() == instance_id)
-                    .inspect(|inst| inst.mark_stopping())
-                    .and_then(|inst| inst.pid());
-                DoomedInstance {
-                    node_name: node_name.to_owned(),
-                    node_tag: node_tag.to_owned(),
-                    instance_id: instance_id.clone(),
-                    pid,
-                    is_container,
-                }
-            })
-            .collect()
+    // released before the await below. The pids are read up front, before
+    // the shutdown, from one consistent view of the registry. An instance
+    // that is no longer tracked resolves to a pid-less target, which gets no
+    // shutdown request and no kill.
+    let doomed: Vec<DoomedInstance> = match node_stack.find(node_name, node_tag) {
+        Some(handle) => {
+            let guard = handle.read();
+            instance_ids
+                .iter()
+                .map(|instance_id| {
+                    let pid = guard
+                        .claim_instance(instance_id)
+                        .and_then(|inst| inst.pid());
+                    DoomedInstance::of(&guard, instance_id.clone(), pid)
+                })
+                .collect()
+        }
+        None => return BTreeMap::new(), // Entity already gone; nothing to stop.
     };
 
     // force_stop_instances warns (daemon-side) when it has to force-kill, which
@@ -692,7 +783,7 @@ pub(crate) async fn stop_instances(
         node_stack,
         &doomed,
     )
-    .await;
+    .await
 }
 
 /// Stops in reverse dependency order, including terminal initializer
@@ -759,8 +850,9 @@ pub(crate) fn named_instances<'a>(
 }
 
 /// Stops one instance of [`named_instances`]: the instance the stack holds,
-/// then its entries in the relationship registries, where a start that never
-/// came still registered it.
+/// then its entries in the relationship registries with what its removed
+/// slot kept of its relations, where a start that never came still
+/// registered it.
 pub(crate) async fn stop_named_instance(
     messenger: &MessengerHandle,
     core_node: &str,
@@ -769,8 +861,8 @@ pub(crate) async fn stop_named_instance(
     relationships: &RelationshipCoordinators,
     instance: &NamedInstance<'_>,
 ) {
-    if let Some((name, tag)) = &instance.node {
-        stop_instances(
+    let kept = match &instance.node {
+        Some((name, tag)) => stop_instances(
             messenger,
             core_node,
             root_id,
@@ -779,13 +871,19 @@ pub(crate) async fn stop_named_instance(
             tag,
             std::slice::from_ref(instance.id),
         )
+        .await
+        .remove(instance.id)
+        .unwrap_or_default(),
+        None => KeptRelations::default(),
+    };
+    relationships
+        .tear_down_instance(instance.id.as_str(), kept)
         .await;
-    }
-    relationships.tear_down_instance(instance.id.as_str()).await;
 }
 
 /// Cooperative-then-force stop of `doomed` (see [`force_stop_instances`]),
-/// then removal of each from the stack. Once a process is gone the stack must
+/// then removal of each from the stack, returning what each removed slot
+/// kept of its relations. Once a process is gone the stack must
 /// not keep tracking its pid: the stack's drop signals every pid it still
 /// holds, and a pid whose process exited could be reused.
 async fn force_stop_and_forget(
@@ -794,7 +892,7 @@ async fn force_stop_and_forget(
     core_instance_id: &str,
     node_stack: &NodeStack,
     doomed: &[DoomedInstance],
-) {
+) -> BTreeMap<Name, KeptRelations> {
     force_stop_instances(
         messenger,
         core_node_node,
@@ -806,19 +904,59 @@ async fn force_stop_and_forget(
     )
     .await;
 
-    for d in doomed {
-        remove_instance_from_registry(node_stack, &d.node_name, &d.node_tag, &d.instance_id);
-    }
+    doomed
+        .iter()
+        .map(|d| {
+            let kept = remove_instance_from_registry(
+                node_stack,
+                &d.node_name,
+                &d.node_tag,
+                &d.instance_id,
+            );
+            (d.instance_id.clone(), kept)
+        })
+        .collect()
 }
 
 /// Bounded wait for SIGKILLed groups to be reaped before the daemon exits, so
 /// they don't briefly linger as zombies parented to the still-alive daemon.
-/// (The cooperative-phase grace window is configurable via
-/// `peppy_config.lifecycle.shutdown_grace_secs` and carried on the `NodeStack`;
-/// only this reap budget is a fixed internal constant.) Public so the CLI can
-/// derive its request timeout from the daemon's worst-case stop duration
-/// (configured grace + this reap) instead of guessing at it.
+/// The cooperative-phase grace window is configurable via
+/// `peppy_config.lifecycle.shutdown_grace_secs` and carried on the
+/// `NodeStack`; this reap budget is a fixed term of [`node_stop_bound`].
 pub const TEARDOWN_REAP_BUDGET: Duration = Duration::from_secs(2);
+
+/// How long a stop's force phase takes at most: the force-kill deadline,
+/// the in-VM kill and the reap.
+fn force_stop_bound(shutdown_grace: Duration) -> Duration {
+    force_kill_deadline(shutdown_grace) + GUEST_FORCE_KILL_BUDGET + TEARDOWN_REAP_BUDGET
+}
+
+/// How long a `node_stop` takes at most once its instance's start, if one is
+/// in flight, has forked: a running instance's force phase and the notice of
+/// its end to the daemons its relations name. A restart's start the stop
+/// cancels ends within its readers' bound and its in-VM kill, which the reap
+/// and the in-VM kill cover. Outside the bound: the dissolve of its pairs and
+/// the source-down update of its observers wait for the pairing and
+/// observation coordinators, which a delivery in progress on this daemon
+/// holds across its peers' answers; a local peer that does not answer its
+/// pair's dissolve, or a local observer its source-down update, adds its own
+/// wait; and a stop that meets a start committing polls once more.
+pub fn node_stop_bound(shutdown_grace: Duration) -> Duration {
+    force_stop_bound(shutdown_grace) + super::relationship_notify::NOTIFY_TIMEOUT
+}
+
+const _: () = assert!(
+    node_stack::OUTPUT_READER_JOIN_BUDGET.as_millis() <= TEARDOWN_REAP_BUDGET.as_millis(),
+    "a cancelled start's readers end within the reap a running instance's stop waits"
+);
+
+/// How long a `node_remove` takes at most once its reachability probes
+/// answered: its shutdown requests, then a [`node_stop_bound`] for the
+/// instances it stops, whose ends are noticed at once; what lies outside
+/// [`node_stop_bound`] lies outside it too.
+pub fn node_remove_bound(shutdown_grace: Duration) -> Duration {
+    SHUTDOWN_TIMEOUT + node_stop_bound(shutdown_grace)
+}
 
 /// How long the daemon waits for a cooperatively-stopping node's process to
 /// disappear before force-killing its group. Strictly larger than the node's
@@ -839,23 +977,24 @@ pub fn force_kill_deadline(shutdown_grace: Duration) -> Duration {
 
 /// Upper bound for one batch of cooperative shutdown, force-kill, and reap.
 pub(crate) fn teardown_timeout(shutdown_grace: Duration) -> Duration {
-    force_kill_deadline(shutdown_grace)
-        + SHUTDOWN_TIMEOUT
-        + GUEST_FORCE_KILL_BUDGET
-        + TEARDOWN_REAP_BUDGET
+    SHUTDOWN_TIMEOUT + force_stop_bound(shutdown_grace)
 }
 
 /// A non-root node instance to terminate: the routing identity + process info
 /// needed to stop one instance. Fed to [`force_stop_instances`] in a batch by
 /// [`teardown_all_instances`] and [`stop_instances`] (the `node add` overwrite
-/// path), and one at a time by [`force_stop_instance`] (`peppy node stop`, and
-/// `node_run` giving up a start after the ready signal) and
-/// [`kill_process_groups`] (`node_run` giving up a start before it, or one
-/// whose leader process exited).
+/// path), one at a time by [`force_stop_instance`] (`peppy node stop`, and
+/// `node_run` giving up a start after the ready signal), and to
+/// [`await_exit_then_force_kill`] by `peppy node remove`, which sends its own
+/// shutdown requests.
+#[derive(Clone)]
 pub(super) struct DoomedInstance {
     pub(super) node_name: String,
     pub(super) node_tag: String,
     pub(super) instance_id: Name,
+    /// The process to wait on and force-kill; `None` for a `restarting` or
+    /// terminal instance, a removal's start in flight, or an id the stack does
+    /// not track, which gets no shutdown request and no kill.
     pub(super) pid: Option<u32>,
     /// `true` when this instance is a container node. On macOS the workload runs
     /// inside the Lima VM, so host process-group signals only reach the
@@ -864,6 +1003,19 @@ pub(super) struct DoomedInstance {
     /// force phase). Always `false` for process nodes (the host group kill
     /// covers them) and a no-op for containers on Linux.
     pub(super) is_container: bool,
+}
+
+impl DoomedInstance {
+    /// The target of the instance `instance_id` of `entity`, running `pid`.
+    pub(super) fn of(entity: &NodeEntity, instance_id: Name, pid: Option<u32>) -> Self {
+        Self {
+            node_name: entity.config().manifest.name.as_str().to_owned(),
+            node_tag: entity.config().manifest.tag.clone(),
+            instance_id,
+            pid,
+            is_container: entity.config().execution.container.is_some(),
+        }
+    }
 }
 
 /// Force every non-root node out of the stack on a catchable daemon shutdown
@@ -905,11 +1057,11 @@ pub async fn teardown_all_instances(
     .await;
 }
 
-/// Snapshot every non-root instance (both `Running` and `Starting`; a
-/// `Starting` instance already has a live child) with its routing identity and
-/// pid. Skips the root entity by pointer identity.
+/// Snapshot every non-root instance, in any state (a `Starting` instance
+/// already has a live child), with its routing identity and pid, none for an
+/// instance without a process. Skips the root entity by pointer identity.
 ///
-/// Each collected instance is claimed via `mark_stopping()` so its exit watcher
+/// Each collected instance is claimed (`claim_instance`) so its exit watcher
 /// treats the upcoming kill as intentional and does not relabel it a crash. The
 /// daemon-shutdown caller does not strictly need this (its watchers bail on the
 /// shutdown token), but the reset and launch-clear callers do: they tear the
@@ -923,20 +1075,13 @@ fn collect_doomed_instances(node_stack: &NodeStack) -> Vec<DoomedInstance> {
             continue;
         }
         let guard = handle.read();
-        let node_name = guard.config().manifest.name.as_str().to_owned();
-        let node_tag = guard.config().manifest.tag.clone();
-        let is_container = guard.config().execution.container.is_some();
         for inst in guard.instances() {
-            // Claim before termination so the exit watcher leaves removal to the
-            // teardown and never records an intentional kill as a self-exit.
-            inst.mark_stopping();
-            doomed.push(DoomedInstance {
-                node_name: node_name.clone(),
-                node_tag: node_tag.clone(),
-                instance_id: inst.instance_id().clone(),
-                pid: inst.pid(),
-                is_container,
-            });
+            guard.claim_instance(inst.instance_id());
+            doomed.push(DoomedInstance::of(
+                &guard,
+                inst.instance_id().clone(),
+                inst.pid(),
+            ));
         }
     }
     doomed
@@ -999,5 +1144,88 @@ fn pid_running_in(system: &sysinfo::System, pid: u32) -> bool {
     match system.process(sysinfo::Pid::from_u32(pid)) {
         Some(process) => process.status() != sysinfo::ProcessStatus::Zombie,
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each bound sums its terms: a stop's is its force phase (the force-kill
+    /// deadline, the in-VM kill and the reap) and the notice of its end; a
+    /// removal's adds its shutdown requests to a stop's; a batch teardown's,
+    /// which announces nothing, is the force phase with a shutdown request's
+    /// timeout beside it.
+    #[test]
+    fn each_bound_sums_its_terms() {
+        let grace = Duration::from_secs(config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS);
+        let force_phase =
+            force_kill_deadline(grace) + GUEST_FORCE_KILL_BUDGET + TEARDOWN_REAP_BUDGET;
+        let notice = crate::services::node::relationship_notify::NOTIFY_TIMEOUT;
+        assert_eq!(node_stop_bound(grace), force_phase + notice);
+        assert_eq!(
+            node_remove_bound(grace),
+            SHUTDOWN_TIMEOUT + force_phase + notice
+        );
+        assert_eq!(teardown_timeout(grace), SHUTDOWN_TIMEOUT + force_phase);
+    }
+
+    /// A first start is refused until it completes, a start another stop
+    /// claimed is already being stopped, an untracked id is not found, and
+    /// the core node is not stopped.
+    #[test]
+    fn a_refused_stop_says_why() {
+        let id = Name::new("arm_inst").unwrap();
+        let cases = [
+            (
+                Refusal::FirstStart,
+                "Node instance 'arm_inst' is in Starting state; retry after the start completes",
+            ),
+            (
+                Refusal::AlreadyBeingStopped,
+                "Node instance 'arm_inst' is already being stopped",
+            ),
+            (
+                Refusal::NotFound,
+                "Node instance 'arm_inst' not found in node stack",
+            ),
+            (Refusal::CoreNode, "Cannot stop the core node"),
+        ];
+        for (refusal, text) in cases {
+            let response = refusal.response(&id);
+            assert!(!response.success);
+            assert_eq!(response.error_message.as_deref(), Some(text));
+        }
+    }
+
+    /// A claimed start is waited for while it starts, handed over once it
+    /// commits, and over once its slot left or another instance's slot, a
+    /// claimed one included, holds its id.
+    #[test]
+    fn a_claimed_start_ends_by_its_slot() {
+        let slot = |state: InstanceState, claimed: bool| {
+            let slot = TrackedNodeInstance::new(
+                Name::new("arm_inst").unwrap(),
+                state,
+                std::collections::BTreeMap::new(),
+            );
+            if claimed {
+                slot.mark_stopping();
+            }
+            Some(slot)
+        };
+        assert!(claimed_start(slot(InstanceState::Starting, true)).is_none());
+        assert!(matches!(
+            claimed_start(slot(InstanceState::Running, true)),
+            Some(ClaimedStart::Committed { .. })
+        ));
+        for ended in [
+            None,
+            slot(InstanceState::Starting, false),
+            slot(InstanceState::Running, false),
+            slot(InstanceState::Restarting, true),
+        ] {
+            assert!(matches!(claimed_start(ended), Some(ClaimedStart::Ended)));
+        }
     }
 }

@@ -13,6 +13,7 @@ mod node_init;
 mod node_observe;
 mod node_pair;
 mod node_remove;
+mod node_restart;
 mod node_run;
 mod node_stop;
 mod node_sync;

@@ -3,11 +3,11 @@ mod common;
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node,
     answer_readiness, build_staged_node, create_test_node_with_name,
-    install_kill_on_shutdown_listener, instance_state_in_any_state, is_process_running, poll_until,
-    send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
-    spawn_real_stuck_instance, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger, wait_for_forked_grandchildren,
-    wait_until_grandchildren_exit, wait_until_process_exits, write_peppy_json5,
+    install_kill_on_shutdown_listener, is_process_running, poll_until, send_node_add_and_wait,
+    send_node_add_then_build, send_node_run_and_wait, spawn_real_stuck_instance,
+    start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
+    wait_for_forked_grandchildren, wait_until_grandchildren_exit, wait_until_process_exits,
+    write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node::force_kill_deadline;
@@ -315,6 +315,45 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
     // Only the kill task ends the `sleep 60` before the force-kill deadline,
     // so a graceful stop means it has already killed the process.
     kill_task.await.expect("kill task should not panic");
+}
+
+/// `peppy node stop` of the core node's own instance is refused, and the
+/// instance stays tracked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_stop_of_the_core_nodes_instance_is_refused() {
+    let started = start_core_node_with_mock_messenger().await;
+    let graph = started.node_stack.to_serialized_graph();
+    let root_id = graph
+        .nodes
+        .iter()
+        .find(|node| node.name == started.core_node_name && node.tag == started.core_node_tag)
+        .and_then(|node| node.instances.first())
+        .map(|instance| instance.instance_id.clone())
+        .expect("the stack lists the core node's own instance");
+
+    let response = poll_node_stop(
+        &NodeStopRequest::new(&root_id),
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        common::core_node_target(&started.core_node_name),
+        &started.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_stop request should complete");
+    assert!(!response.success);
+    assert_eq!(
+        response.error_message.as_deref(),
+        Some("Cannot stop the core node")
+    );
+    assert!(
+        started
+            .node_stack
+            .find_instance_any_state(&Name::new(&root_id).unwrap())
+            .is_some(),
+        "the core node's instance stays tracked"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -806,7 +845,9 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
         Duration::from_secs(5),
         "instance should be fully removed from the stack after stop, not lingering as terminal",
         || {
-            instance_state_in_any_state(&started.node_stack, &instance_id)
+            started
+                .node_stack
+                .instance_state(instance_id.as_str())
                 .is_none()
                 .then_some(())
         },

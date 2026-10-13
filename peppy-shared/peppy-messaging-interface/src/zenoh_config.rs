@@ -21,6 +21,11 @@ use config::namespace::Namespace;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
+/// The longest wait between two attempts of a session to reach its router
+/// again: a session reconnects within this long of the router accepting
+/// connections.
+pub const SESSION_RECONNECT_PERIOD_MAX_MS: u64 = 4000;
+
 /// TLS material for a `tls/` (or `quic/`) session, rendered into the zenoh
 /// `transport.link.tls` block. One type serves every role: a router/listener
 /// sets `listen_certificate`/`listen_private_key` (its server identity); a
@@ -365,7 +370,7 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
             connect["exit_on_failure"] = json!(false);
             connect["retry"] = json!({
                 "period_init_ms": 1000,
-                "period_max_ms": 4000,
+                "period_max_ms": SESSION_RECONNECT_PERIOD_MAX_MS,
                 "period_increase_factor": 2.0
             });
         }

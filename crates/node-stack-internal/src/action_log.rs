@@ -176,8 +176,10 @@ impl ActionLog {
         )
     }
 
-    /// The run log of the instance `instance_id` of the node `name:tag`,
-    /// `{instance_id}.log`.
+    /// The run log of a process of the instance `instance_id` of the node
+    /// `name:tag`, `{instance_id}_{timestamp}.log`: one file per process, as
+    /// the add and build logs are named. A restart's opens with
+    /// [`Self::note_restart`].
     pub fn for_run(
         peppy_dirs: &PeppyDirs,
         exporter: LogExporter,
@@ -186,11 +188,12 @@ impl ActionLog {
         instance_id: &str,
         launch_id: Option<&str>,
     ) -> Result<Self, String> {
-        let filename = LogFileName::parse(format!("{instance_id}.log"))?;
+        let timestamp = file_timestamp();
+        let filename = LogFileName::parse(format!("{instance_id}_{timestamp}.log"))?;
         Self::create_as(
             &peppy_dirs.logs_dir_run(),
             filename,
-            None,
+            Some(timestamp),
             exporter,
             |path| {
                 LogIdentity::new(LogKind::Run, path)
@@ -201,10 +204,9 @@ impl ActionLog {
         )
     }
 
-    /// Creates the log file. A file whose name holds a timestamp is created
-    /// beside a file of the same name, under the next free name; a file
-    /// named after its instance alone replaces the one of the instance's
-    /// last run.
+    /// Creates the log file, and `dir` when it is absent. A file whose name
+    /// holds a timestamp is created beside a file of the same name, under the
+    /// next free name; a file under a fixed name replaces the last one.
     fn create_as(
         dir: &Path,
         filename: LogFileName,
@@ -285,6 +287,21 @@ impl ActionLog {
     /// Writes a step the daemon reports.
     pub fn note(&self, line: &str) {
         self.narrate(FeedbackStream::Stdout, Severity::Info, line);
+    }
+
+    /// Writes the line a restart's run log opens with: the attempt and, when
+    /// the slot recorded one, the previous start's log. Called on a log
+    /// [`Self::for_run`] just opened, before any other line.
+    pub fn note_restart(&self, attempt: u32, previous: Option<&Path>) {
+        let line = match previous {
+            Some(previous) => format!(
+                "{}; the previous log is {}",
+                restart_separator(attempt),
+                previous.display()
+            ),
+            None => restart_separator(attempt),
+        };
+        self.note(&line);
     }
 
     /// Writes a warning of the daemon.
@@ -490,10 +507,18 @@ impl Announcer {
     }
 }
 
+/// The line a restart's run log opens with, for `attempt`, before the name
+/// of the previous start's log.
+pub fn restart_separator(attempt: u32) -> String {
+    format!("restart attempt {attempt}: starting the process again")
+}
+
 /// Readers of the log file format, for the tests of this crate and of
 /// downstream crates.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
+    use std::path::{Path, PathBuf};
+
     /// A log that exports nothing, for a test that needs a place to write.
     /// Its file is unlinked at once, so it leaves nothing behind.
     #[cfg(test)]
@@ -517,6 +542,39 @@ pub mod test_support {
             && prefix.ends_with("] ")
             && prefix.as_bytes()[1..5].iter().all(u8::is_ascii_digit);
         shaped.then(|| &line[width..])
+    }
+
+    /// The `n`th newest run log of `instance_id` under `dir`, by the
+    /// timestamp in its name and the `-N` a same-millisecond file carries:
+    /// 0 is the current process's, 1 the one before. A file under the prefix
+    /// whose stem is no file timestamp is another instance's.
+    pub fn nth_newest_run_log(dir: &Path, instance_id: &str, n: usize) -> Option<PathBuf> {
+        let prefix = format!("{instance_id}_");
+        let mut logs: Vec<((String, u32), PathBuf)> = std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let stem = name.to_str()?.strip_prefix(&prefix)?.strip_suffix(".log")?;
+                let (timestamp, same_millisecond) = match stem.split_once('-') {
+                    Some((timestamp, n)) => (timestamp, n.parse().ok()?),
+                    None => (stem, 0),
+                };
+                chrono::NaiveDateTime::parse_from_str(timestamp, super::FILE_TIMESTAMP_FORMAT)
+                    .ok()?;
+                Some(((timestamp.to_owned(), same_millisecond), entry.path()))
+            })
+            .collect();
+        logs.sort_by(|a, b| b.0.cmp(&a.0));
+        logs.into_iter().nth(n).map(|(_, path)| path)
+    }
+
+    /// When `line` was written, from its `[time] ` prefix, to the
+    /// millisecond; `None` for a line that continues an entry.
+    pub fn time_of(line: &str) -> Option<chrono::NaiveDateTime> {
+        after_time_prefix(line)?;
+        let time = line.get(1..line.find(']')?)?;
+        chrono::NaiveDateTime::parse_from_str(time, super::LINE_TIMESTAMP_FORMAT).ok()
     }
 
     /// The lines of a log file's `content` after their `[time] ` prefix, each
@@ -712,13 +770,91 @@ mod tests {
         .unwrap();
         log.note("started");
 
-        let path = dirs.logs_dir_run().join("arm_inst.log");
-        assert_eq!(log.path(), path);
+        let path = log.path();
+        assert_eq!(file_name_pattern(&path), "arm_inst_########_######_###.log");
         let expected = LogIdentity::new(LogKind::Run, path)
             .with_node("openarm_arm", "v1")
             .with_instance("arm_inst")
             .with_launch(Some("launch-7"));
         assert_eq!(*records(&mut receiver)[0].identity, expected);
+    }
+
+    /// Each process of an instance writes its own run log: a restart's opens
+    /// with a line naming the attempt and the previous start's log, a line
+    /// the first process writes late lands in its own file, and a fresh run
+    /// opens a third; the newest is the current process's.
+    #[test]
+    fn each_process_writes_its_own_run_log() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = PeppyDirs::new(root.path());
+        let (exporter, _first_records) = LogExporter::channel(None);
+        let first = ActionLog::for_run(&dirs, exporter, "arm", "v1", "arm_inst", None).unwrap();
+        first.note("first process");
+        let (exporter, _second_records) = LogExporter::channel(None);
+        let second = ActionLog::for_run(&dirs, exporter, "arm", "v1", "arm_inst", None).unwrap();
+        second.note_restart(1, Some(&first.path()));
+        second.note("second process");
+        first.note("late line of the first process");
+        assert_ne!(first.path(), second.path());
+        assert_eq!(
+            lines_without_time(&first),
+            [
+                "[stdout] first process",
+                "[stdout] late line of the first process",
+            ]
+        );
+        assert_eq!(
+            lines_without_time(&second),
+            [
+                format!(
+                    "[stdout] {}; the previous log is {}",
+                    restart_separator(1),
+                    first.path().display()
+                )
+                .as_str(),
+                "[stdout] second process",
+            ]
+        );
+        assert_eq!(
+            test_support::nth_newest_run_log(&dirs.logs_dir_run(), "arm_inst", 1),
+            Some(first.path())
+        );
+
+        let (exporter, _fresh_records) = LogExporter::channel(None);
+        let fresh = ActionLog::for_run(&dirs, exporter, "arm", "v1", "arm_inst", None).unwrap();
+        fresh.note("fresh run");
+        assert_ne!(fresh.path(), second.path());
+        assert_eq!(lines_without_time(&fresh), ["[stdout] fresh run"]);
+    }
+
+    /// The newest-run-log reader orders by the timestamp in the name, then by
+    /// the `-N` of a same-millisecond file, and skips files under the prefix
+    /// whose stem is no file timestamp: another instance's, here `arm_inst_2`.
+    #[test]
+    fn the_newest_run_log_reader_orders_by_name_and_skips_other_instances() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "arm_inst_20260101_000000_000.log",
+            "arm_inst_20260101_000000_000-2.log",
+            "arm_inst_20260101_000000_001.log",
+            "arm_inst_2_20260101_000000_002.log",
+        ] {
+            std::fs::write(dir.path().join(name), "").unwrap();
+        }
+        let nth = |n| test_support::nth_newest_run_log(dir.path(), "arm_inst", n);
+        assert_eq!(
+            nth(0),
+            Some(dir.path().join("arm_inst_20260101_000000_001.log"))
+        );
+        assert_eq!(
+            nth(1),
+            Some(dir.path().join("arm_inst_20260101_000000_000-2.log"))
+        );
+        assert_eq!(
+            nth(2),
+            Some(dir.path().join("arm_inst_20260101_000000_000.log"))
+        );
+        assert_eq!(nth(3), None);
     }
 
     /// The name of the file at `path`, with the digits of its timestamp

@@ -1,7 +1,6 @@
 #![allow(dead_code)] // Each test binary uses only a subset of these shared helpers.
 
 use super::test_node_target;
-use node_stack::NodeStack;
 use peppylib::messaging::{MessengerHandle, ServiceTarget};
 use peppylib::runtime::TaskHandle;
 use std::time::Duration;
@@ -23,6 +22,16 @@ impl<T> Drop for AbortOnDrop<T> {
 pub async fn poll_until<T>(
     timeout: Duration,
     timeout_message: &str,
+    predicate: impl FnMut() -> Option<T>,
+) -> T {
+    poll_until_explained(timeout, || timeout_message.to_owned(), predicate).await
+}
+
+/// [`poll_until`] whose timeout message is built when `timeout` elapses, so
+/// it reports the state at that moment.
+pub async fn poll_until_explained<T>(
+    timeout: Duration,
+    timeout_message: impl FnOnce() -> String,
     mut predicate: impl FnMut() -> Option<T>,
 ) -> T {
     let deadline = std::time::Instant::now() + timeout;
@@ -31,7 +40,7 @@ pub async fn poll_until<T>(
             return value;
         }
         if std::time::Instant::now() > deadline {
-            panic!("{timeout_message}");
+            panic!("{}", timeout_message());
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -102,25 +111,6 @@ pub async fn wait_until_grandchildren_exit(grandchildren: &[u32], killed_by: &st
         )
         .await;
     }
-}
-
-/// The state of an instance regardless of lifecycle stage, including terminal
-/// (`Finished`/`Failed`) instances that the `Running`-only
-/// `NodeStack::find_by_instance_id` does not return. Lets a test observe the
-/// exit watcher's terminal transition, or confirm an instance is gone from every
-/// state (not lingering as terminal after a stop/reset).
-pub fn instance_state_in_any_state(
-    node_stack: &NodeStack,
-    instance_id: &config::runtime::Name,
-) -> Option<core_node_api::InstanceState> {
-    node_stack.snapshot().into_iter().find_map(|handle| {
-        handle
-            .read()
-            .instances()
-            .iter()
-            .find(|inst| inst.instance_id() == instance_id)
-            .map(|inst| inst.state())
-    })
 }
 
 /// Polls `ServiceMessenger::is_reachable` until the named service responds or

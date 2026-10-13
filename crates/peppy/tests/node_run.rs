@@ -204,6 +204,8 @@ async fn node_run_command_with_args_succeeds() {
         command: NodeCommands::Run {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("v1".to_string()),
@@ -340,6 +342,8 @@ async fn node_run_refuses_an_instance_id_that_is_not_a_valid_name() {
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
+            restart: None,
+            max_restarts: None,
         },
     }
     .execute(&node_ctx)
@@ -400,6 +404,8 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -439,6 +445,8 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         command: NodeCommands::Run {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("v1".to_string()),
@@ -532,6 +540,8 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         command: NodeCommands::Run {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("v1".to_string()),

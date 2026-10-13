@@ -513,47 +513,41 @@ fn read_slot_set(wire: federation_capnp::slot_set::Reader<'_>) -> Result<SlotSet
 /// The reply to every federation exchange whose answer is "did you do it, and
 /// if not, why": `pair_commit`, `participant_release`,
 /// `participant_instances_remove` and `participant_sets_update`. One codec for
-/// all of them, because they differ only in which verb the bool reports and
+/// all of them, because they differ only in which verb the verdict reports and
 /// that verb is already the service name.
 ///
-/// [`Self::rejection_reason`] is load-bearing on refusal; see the schema.
+/// The reason of a refusal is load-bearing; see the schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FederationVerdict {
-    pub ok: bool,
-    pub rejection_reason: Option<String>,
+pub enum FederationVerdict {
+    Done,
+    Refused(String),
+    /// A `pair_commit` the receiver could not pin: its slot is starting a
+    /// restart or has no process, or its own node did not take the delivery;
+    /// the pair may be asked for again later.
+    Undelivered(String),
 }
 
 impl FederationVerdict {
-    pub fn ok() -> Self {
-        Self {
-            ok: true,
-            rejection_reason: None,
-        }
-    }
-
-    pub fn refused(reason: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            rejection_reason: Some(reason.into()),
-        }
-    }
-
     /// The verdict as a result: a refusal carries the participant's reason.
     pub fn into_result(self) -> std::result::Result<(), String> {
-        if self.ok {
-            return Ok(());
+        match self {
+            Self::Done => Ok(()),
+            Self::Refused(reason) | Self::Undelivered(reason) => Err(reason),
         }
-        Err(self
-            .rejection_reason
-            .unwrap_or_else(|| "no reason given".to_owned()))
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut verdict = builder.init_root::<federation_capnp::federation_verdict::Builder>();
-            verdict.set_ok(self.ok);
-            verdict.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
+            match self {
+                Self::Done => verdict.set_ok(true),
+                Self::Refused(reason) => verdict.set_rejection_reason(reason),
+                Self::Undelivered(reason) => {
+                    verdict.set_rejection_reason(reason);
+                    verdict.set_undelivered(true);
+                }
+            }
         }
         encode_message(&builder)
     }
@@ -561,9 +555,15 @@ impl FederationVerdict {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let verdict = reader.get_root::<federation_capnp::federation_verdict::Reader>()?;
-        Ok(Self {
-            ok: verdict.get_ok(),
-            rejection_reason: optional_text(verdict.get_rejection_reason()?.to_str()?),
+        if verdict.get_ok() {
+            return Ok(Self::Done);
+        }
+        let reason = optional_text(verdict.get_rejection_reason()?.to_str()?)
+            .unwrap_or_else(|| "no reason given".to_owned());
+        Ok(if verdict.get_undelivered() {
+            Self::Undelivered(reason)
+        } else {
+            Self::Refused(reason)
         })
     }
 }
@@ -692,6 +692,10 @@ pub struct PairCommitRequest {
     pub peer_cardinality: config::node::Cardinality,
     /// The copy the peer's instance belongs to; `None` outside a copy.
     pub peer_copy: Option<config::runtime::Name>,
+    /// Whether the peer held this pair before its restart and asks for it
+    /// again, which the receiver makes only while its own endpoint still
+    /// keeps it; `false` for a pair a start's link names.
+    pub held: bool,
 }
 
 impl PairCommitRequest {
@@ -712,6 +716,7 @@ impl PairCommitRequest {
                     .map(|copy| copy.as_str())
                     .unwrap_or(""),
             );
+            request.set_held(self.held);
             write_instance_address(request.reborrow().init_local(), &self.local);
             write_instance_address(request.init_peer(), &self.peer);
         }
@@ -735,6 +740,7 @@ impl PairCommitRequest {
                 "peer_cardinality",
             )?,
             peer_copy: read_optional_copy(request.get_peer_copy()?.to_str()?, "peer_copy")?,
+            held: request.get_held(),
         })
     }
 }
@@ -781,7 +787,19 @@ pub enum RelationshipEvent {
     /// Reached Running under a fresh incarnation. Observing daemons advance
     /// their incarnation counter for this source and redeliver its pin.
     ReachedRunning,
-    /// Stopped or died. A daemon holding a pair with it dissolves that pair.
+    /// Its process ended. A daemon holding a pair with it dissolves that
+    /// pair.
+    Ended(InstanceEnd),
+}
+
+/// How the process of an instance ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstanceEnd {
+    /// It exited on its own, and its restart policy may start it again: a
+    /// pair with it stays held, and a restart of either endpoint asks for it.
+    Exited,
+    /// It was stopped on purpose and does not run again: a pair with it is
+    /// forgotten.
     Stopped,
 }
 
@@ -815,7 +833,8 @@ impl RelationshipNotification {
             let mut event = notification.reborrow().init_event();
             match self.event {
                 RelationshipEvent::ReachedRunning => event.set_reached_running(()),
-                RelationshipEvent::Stopped => event.set_stopped(()),
+                RelationshipEvent::Ended(InstanceEnd::Exited) => event.set_exited(()),
+                RelationshipEvent::Ended(InstanceEnd::Stopped) => event.set_stopped(()),
             }
             write_instance_address(notification.init_instance(), &self.instance);
         }
@@ -831,7 +850,8 @@ impl RelationshipNotification {
 
         let event = match notification.get_event().which()? {
             Which::ReachedRunning(()) => RelationshipEvent::ReachedRunning,
-            Which::Stopped(()) => RelationshipEvent::Stopped,
+            Which::Exited(()) => RelationshipEvent::Ended(InstanceEnd::Exited),
+            Which::Stopped(()) => RelationshipEvent::Ended(InstanceEnd::Stopped),
         };
 
         Ok(Self {
@@ -1198,10 +1218,11 @@ mod tests {
     }
 
     #[test]
-    fn verdict_round_trips_both_outcomes() {
+    fn verdict_round_trips_every_outcome() {
         for verdict in [
-            FederationVerdict::ok(),
-            FederationVerdict::refused("reserved for launch `launch-other`"),
+            FederationVerdict::Done,
+            FederationVerdict::Refused("reserved for launch `launch-other`".to_owned()),
+            FederationVerdict::Undelivered("`arm_inst` did not answer".to_owned()),
         ] {
             let payload = verdict.encode().expect("encode");
             assert_eq!(
@@ -1328,6 +1349,7 @@ mod tests {
             peer_role: "planner".to_owned(),
             peer_cardinality: config::node::Cardinality::ZeroOrMore,
             peer_copy: Some(config::runtime::Name::new("bravo").unwrap()),
+            held: true,
         }
     }
 
@@ -1341,6 +1363,15 @@ mod tests {
         assert_eq!(decoded, request);
         assert_eq!(decoded.local.core_node, "cn-robot-7");
         assert_eq!(decoded.peer.core_node, "cn-atlas");
+        let linked = PairCommitRequest {
+            held: false,
+            ..pair_commit()
+        };
+        let payload = linked.encode().expect("encode");
+        assert_eq!(
+            PairCommitRequest::decode(payload.as_ref()).expect("decode"),
+            linked
+        );
     }
 
     /// Every field addresses a specific slot on a specific machine. A defaulted
@@ -1433,7 +1464,8 @@ mod tests {
     fn relationship_notification_round_trips_every_event() {
         for event in [
             RelationshipEvent::ReachedRunning,
-            RelationshipEvent::Stopped,
+            RelationshipEvent::Ended(InstanceEnd::Exited),
+            RelationshipEvent::Ended(InstanceEnd::Stopped),
         ] {
             let notification = RelationshipNotification::new("reflex_inst", "cn-robot-7", event);
             let payload = notification.encode().expect("encode");
@@ -1451,8 +1483,11 @@ mod tests {
             ("", "cn-robot-7", "instance_id"),
             ("reflex_inst", "", "core_node"),
         ] {
-            let notification =
-                RelationshipNotification::new(instance_id, core_node, RelationshipEvent::Stopped);
+            let notification = RelationshipNotification::new(
+                instance_id,
+                core_node,
+                RelationshipEvent::Ended(InstanceEnd::Stopped),
+            );
             let payload = notification.encode().expect("encode");
             let error = RelationshipNotification::decode(payload.as_ref())
                 .expect_err("partial address must fail");

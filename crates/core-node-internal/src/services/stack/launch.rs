@@ -570,6 +570,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             &active.watchers,
             &placements,
             &clocks,
+            active.flat.framework.restart,
         )
         .await
     }

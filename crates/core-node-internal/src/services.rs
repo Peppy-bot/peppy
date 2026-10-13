@@ -16,8 +16,8 @@ use clock::{ClockSource, WallClockSource};
 pub use node::cache::git::{checkout_dir_for, materialized_checkout};
 pub use node::endpoints::{HostAddressSource, test_host_addresses};
 pub use node::{
-    ExportDiscardLog, HealthMonitorPolicy, Report, TEARDOWN_REAP_BUDGET, force_kill_deadline,
-    teardown_all_instances,
+    ExportDiscardLog, HealthMonitorPolicy, Report, RestartBackoff, TEARDOWN_REAP_BUDGET,
+    force_kill_deadline, node_remove_bound, node_stop_bound, teardown_all_instances,
 };
 pub use presence::NAME_CLAIM_LINKED_SETTLE;
 pub use stack::{
@@ -89,6 +89,8 @@ pub struct CoreNodeArguments {
     /// instance whose node declares no `execution.setup_timeout_secs`.
     pub default_setup_timeout: config::node::SetupTimeout,
     pub health_monitor: HealthMonitorPolicy,
+    /// The backoff of an instance's restarts.
+    pub restart_backoff: RestartBackoff,
     pub clock_publish_interval: Duration,
     /// Cadence of the daemon-liveness heartbeat (small and fixed; the
     /// configurable grace period is many multiples of it).
@@ -175,6 +177,7 @@ pub struct CoreNode {
     node_startup_timeout: Duration,
     default_setup_timeout: config::node::SetupTimeout,
     health_monitor: HealthMonitorPolicy,
+    restart_backoff: RestartBackoff,
     clock_publish_interval: Duration,
     heartbeat_interval: Duration,
     /// Settle window the boot presence claim holds its candidacy open before
@@ -334,6 +337,7 @@ impl CoreNode {
         let node_startup_timeout = arguments.node_startup_timeout;
         let default_setup_timeout = arguments.default_setup_timeout;
         let health_monitor = arguments.health_monitor;
+        let restart_backoff = arguments.restart_backoff;
         let clock_publish_interval = arguments.clock_publish_interval;
         let heartbeat_interval = arguments.heartbeat_interval;
         let name_claim_settle = arguments.name_claim_settle;
@@ -357,6 +361,7 @@ impl CoreNode {
                 setup_timeout_secs: None,
             },
             interfaces: Default::default(),
+            framework: config::node::NodeFramework::default(),
         };
 
         let messenger = MessengerHandle::from_shared(messenger);
@@ -387,6 +392,7 @@ impl CoreNode {
             node_startup_timeout,
             default_setup_timeout,
             health_monitor,
+            restart_backoff,
             clock_publish_interval,
             heartbeat_interval,
             name_claim_settle,
@@ -446,6 +452,13 @@ impl CoreNode {
 
     pub fn node_config(&self) -> &NodeConfig {
         &self.node_config
+    }
+
+    /// Which launch holds this daemon, and the gate its stack is changed
+    /// under, for a test to hold the gate or a reservation.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn slice_ownership(&self) -> Arc<federation::SliceOwnership> {
+        Arc::clone(&self.slice_ownership)
     }
 
     /// Bundles what the federation endpoints need from the daemon. Built per
@@ -641,7 +654,6 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
-                self.peppy_dirs.clone(),
                 self.node_startup_timeout,
             )
             .boxed(),
@@ -714,6 +726,7 @@ impl CoreNode {
                         node_startup: self.node_startup_timeout,
                         default_setup: self.default_setup_timeout,
                         health_monitor: self.health_monitor,
+                        restart_backoff: self.restart_backoff,
                     },
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(
                         &self.peppy_config,
@@ -768,6 +781,7 @@ impl CoreNode {
                     default_setup_timeout: self.default_setup_timeout,
                     peppy_dirs: self.peppy_dirs.clone(),
                     health_monitor: self.health_monitor,
+                    restart_backoff: self.restart_backoff,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(
                         &self.peppy_config,
                         self.namespace.clone(),

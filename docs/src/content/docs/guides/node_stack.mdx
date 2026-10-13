@@ -40,7 +40,7 @@ Added node hello_world:v1 to the node stack
 The log file holds each step the daemon reported while adding the node, and its error in case the command fails.
 When a node is added to the node stack, a copy of the source is staged in a working directory under `~/.peppy/tmp/` to "snapshot" the node, and the node's bindings are generated into that copy, never into the source directory. The add reports success once generation has finished and the node is in the stack; the artifact that `peppy node build` produces later lands under `~/.peppy/built_nodes/<name>_<tag>/`, named after a fingerprint of the staged sources. The staged copy is removed together with the node, so a failed add or a `peppy node remove` leaves nothing behind under `~/.peppy/tmp/`.
 No two copies of the same node with the same name + tag can exist at the same time in the node stack.
-Re-adding a node with the same name and tag overrides the one that was previously in the node stack. The overwrite is refused when the re-add changes the node's interfaces while other nodes depend on it. If the node has live instances, `peppy node add` asks for confirmation and stops them before overwriting.
+Re-adding a node with the same name and tag overrides the one that was previously in the node stack. The overwrite is refused when the re-add changes the node's interfaces while other nodes depend on it. If an instance of the node has a process or awaits a restart, `peppy node add` of a local directory or a `name:tag` asks for confirmation, naming each such instance with its state; the add stops and clears every tracked instance before overwriting, an exited one without asking; an add from git or a URL stops and clears them without asking. While one of them is starting, the add is refused and stops nothing.
 
 ## Building `hello_world`
 
@@ -108,6 +108,8 @@ peppy node run waldo:v1 -i simulation_inst --publish-clock simulation
 peppy node run openarm_sim_arm:v1 -i arm_inst --clock simulation
 ```
 
+`--restart POLICY` sets the instance's [restart policy](/guides/launch_files/#restart-policy), `never`, `on_failure` or `always`, over the node's `framework.restart`; `--max-restarts N` caps the restart attempts in a row, failed starts included, and the next exit or failed start past them leaves the instance `failed`; it requires `--restart on_failure` or `--restart always`.
+
 A node whose manifest declares [`execution.endpoints`](/guides/first_node/#serving-a-page-or-an-mcp-endpoint) ends `node run` with the URLs its instance serves, one per address of the machine hosting it, loopback first:
 
 ```
@@ -121,7 +123,7 @@ Web pages:
 The `node run` command outputs the path to a log file where you can inspect the node's output.
 For example:
 ```sh
-cat /home/ubuntu/.peppy/logs/run/elegant-solomon-5423.log
+cat /home/ubuntu/.peppy/logs/run/elegant-solomon-5423_20260217_101523_412.log
 [2026-02-17T10:15:23.599] Executing run_cmd: uv run hello_world (working_dir: /home/ubuntu/.peppy/instances/elegant-solomon-5423)
 [2026-02-17T10:15:23.837] [stdout] hello world count 1
 [2026-02-17T10:15:26.848] [stdout] hello world count 2
@@ -177,7 +179,7 @@ peppy node add -sr .    # sync, then add, then build, then run an instance
 :::tip
 `-sb` and `-sr` are the shorthands you'll reach for constantly during development. The typical edit-loop is: change `peppy.json5` or source, hit `peppy node add -sr .`, watch the logs, iterate. Without `-s`, a stale `.peppy/` bindings directory can make the daemon see an out-of-date interface; without `-r`, you have to follow every add and build with a separate `peppy node run`. Bundling them collapses the whole "I edited something, now run it" cycle to a single command.
 
-Run-only options (trailing `key=value` arguments, `--instance-id`, `--link KEY@VALUE`, `--vacant-link SLOT=<why>`, `--clock DOMAIN`, and `--publish-clock DOMAIN`) are only accepted alongside `-r`/`--run`; combining them with a plain `peppy node add` is rejected at parse time so an arg you cared about isn't silently dropped. Keep `key=value` arguments **after** the source path (e.g. `peppy node add -sr . frequency=30`) so the source positional isn't confused with the trailing args. `--link` mirrors the `peppy node run --link` flag and runs the same validator; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).
+Run-only options (trailing `key=value` arguments, `--instance-id`, `--link KEY@VALUE`, `--vacant-link SLOT=<why>`, `--clock DOMAIN`, `--publish-clock DOMAIN`, `--restart POLICY` and `--max-restarts N`) are only accepted alongside `-r`/`--run`; combining them with a plain `peppy node add` is rejected at parse time so an arg you cared about isn't silently dropped. Keep `key=value` arguments **after** the source path (e.g. `peppy node add -sr . frequency=30`) so the source positional isn't confused with the trailing args. `--link` mirrors the `peppy node run --link` flag and runs the same validator; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).
 :::
 
 ## Checking node status
@@ -192,31 +194,31 @@ You should see something like:
 
 ```
 $ peppy stack list
-┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Core node: cn-funny-salamander (host: robot-host)                                                                              │
-├────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ Node stack                                                                                                                     │
-│                                                                                                                                │
-│ ┌─────────────────────────────────────────┬───────┬───────────┬──────────────────────────────────────────────────────────────┐ │
-│ │ NODE                                    │ STAGE │ INSTANCES │ PATH                                                         │ │
-│ ├─────────────────────────────────────────┼───────┼───────────┼──────────────────────────────────────────────────────────────┤ │
-│ │ cn-funny-salamander:v0.10.0             │ Root  │ 1 running │ ~/.peppy/bin                                                 │ │
-│ │ hello_world:v1                          │ Ready │ 1 running │ ~/.peppy/built_nodes/hello_world_v1/3f9a1c2e5d7b8a4f.tar.zst │ │
-│ └─────────────────────────────────────────┴───────┴───────────┴──────────────────────────────────────────────────────────────┘ │
-│                                                                                                                                │
-│ Instance bindings                                                                                                              │
-│                                                                                                                                │
-│ ┌─────────────────────────────────────────┬─────────────────────────────────┬─────────┬─────────┬──────────┐                   │
-│ │ NODE                                    │ INSTANCE                        │ STATUS  │ HEALTH  │ BINDINGS │                   │
-│ ├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┤                   │
-│ │ cn-funny-salamander:v0.10.0             │ cn-funny-salamander             │ running │ healthy │ (none)   │                   │
-│ ├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┤                   │
-│ │ hello_world:v1                          │ suspicious-swanson-5880         │ running │ healthy │ (none)   │                   │
-│ └─────────────────────────────────────────┴─────────────────────────────────┴─────────┴─────────┴──────────┘                   │
-│                                                                                                                                │
-│ Dependencies                                                                                                                   │
-│   (none)                                                                                                                       │
-└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-funny-salamander (host: robot-host)                                                                               │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Node stack                                                                                                                      │
+│                                                                                                                                 │
+│ ┌─────────────────────────────────────────┬───────┬───────────┬──────────────────────────────────────────────────────────────┐  │
+│ │ NODE                                    │ STAGE │ INSTANCES │ PATH                                                         │  │
+│ ├─────────────────────────────────────────┼───────┼───────────┼──────────────────────────────────────────────────────────────┤  │
+│ │ cn-funny-salamander:v0.10.0             │ Root  │ 1 running │ ~/.peppy/bin                                                 │  │
+│ │ hello_world:v1                          │ Ready │ 1 running │ ~/.peppy/built_nodes/hello_world_v1/3f9a1c2e5d7b8a4f.tar.zst │  │
+│ └─────────────────────────────────────────┴───────┴───────────┴──────────────────────────────────────────────────────────────┘  │
+│                                                                                                                                 │
+│ Instance bindings                                                                                                               │
+│                                                                                                                                 │
+│ ┌─────────────────────────────────────────┬─────────────────────────────────┬─────────┬─────────┬──────────┬───────┬──────────┐ │
+│ │ NODE                                    │ INSTANCE                        │ STATUS  │ HEALTH  │ RESTARTS │ CLOCK │ BINDINGS │ │
+│ ├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┼───────┼──────────┤ │
+│ │ cn-funny-salamander:v0.10.0             │ cn-funny-salamander             │ running │ healthy │ 0        │ wall  │ (none)   │ │
+│ ├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┼───────┼──────────┤ │
+│ │ hello_world:v1                          │ suspicious-swanson-5880         │ running │ healthy │ 0        │ wall  │ (none)   │ │
+│ └─────────────────────────────────────────┴─────────────────────────────────┴─────────┴─────────┴──────────┴───────┴──────────┘ │
+│                                                                                                                                 │
+│ Dependencies                                                                                                                    │
+│   (none)                                                                                                                        │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 With no arguments, `stack list` discovers every live core node in the same messaging namespace and prints one outer panel per distinct core-node name: the local name first, then the others by name. The panel header identifies the core node and its hostname, while the enclosing border groups its node stack, instance bindings, and dependencies, plus, when present, an `Instance endpoints` table (one row per HTTP endpoint an instance serves, such as an [MCP exposure](/advanced_guides/mcp/)), an `Instance pairings` table, and launch-ownership lines (`Slice of launch ...`, and `Reserved for launch ...` naming the reset command that clears it). If multiple live daemons collide on one name, discovery deduplicates them into a single warning-bearing panel. Use `peppy stack list --core-node <name>` to filter the output to that one name. If a core node disappears between discovery and the stack query, the other panels still render, the failed panel contains an error line, and the command exits non-zero. The panels and their tables fit the terminal: the widest columns give way first, never below a header's width, and over-long cells or lines wrap inside the borders; piped output is never wrapped. `--json` prints the same discovery as one JSON document instead: one entry per core node with its identity, `launch` and `reservation`, its [`copies` and `copy_change`](/guides/launch_files/#copies), and either the `stack` graph (`nodes` and `edges`) or the query `error`.
@@ -228,32 +230,37 @@ The `STAGE` column reports each node's **stage**, its artifact-level lifecycle:
 - **`Ready`**: the build artifact is on disk. The node can be run; it may currently have zero, one, or several instances.
 - **`Root`**: the synthetic core-node entity. Always present, and always reports exactly one running instance (the daemon itself).
 
-The `INSTANCES` column aggregates per-instance state (`starting`, `running`, and the terminal `finished` / `failed`) for the node, independently of its stage. To see individual instance IDs, use [`peppy node info`](#inspecting-a-node-with-peppy-node-info).
+The `INSTANCES` column aggregates per-instance state (`starting`, `running`, `restarting`, and the terminal `finished` / `failed`) for the node, independently of its stage. To see individual instance IDs, use [`peppy node info`](#inspecting-a-node-with-peppy-node-info).
 
 Below the node table, the **`Instance bindings`** table expands the stack one level further: one row per instance, grouped by node, alongside the slot **bindings** that instance holds: what it resolved when it started, as joins and removals have since grown or shrunk them. A binding ties one of the consumer's `depends_on` slots (identified by its `link_id`) to the producer instance(s) that feed it, rendered as `link_id → producer` (a multi-cardinality slot lists every bound member in plan order; an empty slot, whether a `zero_or_more` slot bound to nothing or a `zero_or_one` slot declared vacant, shows `(empty set)`). Every declared producer slot is either bound or, where its manifest declares `cardinality: "zero_or_one"`, declared vacant; only a `zero_or_more` slot may be left out of the launcher entirely, and launch rejects any other unfulfilled producer slot. `(none)` means the instance has no producer bindings: a node whose only slots are pairings or observations also shows `(none)` here, with its pairing slots rendered in the separate `Instance pairings` table. Only nodes that currently have at least one instance appear in this table. See [Bindings and routing](/advanced_guides/topics/#bindings-and-routing) for how slots are declared and how `--link` pins them. In the listing above neither node declares a dependency, so every binding cell is `(none)`.
 
 ### Instance health and lifecycle
 
-Beyond the bindings, the `Instance bindings` table reports two per-instance columns that follow an instance through its runtime lifecycle:
+Beyond the bindings, the `Instance bindings` table reports four per-instance columns that follow an instance through its runtime lifecycle:
 
-- **`STATUS`** is the instance's lifecycle state. A freshly launched instance is `starting` while its process comes up and clears its startup health gate, then becomes `running` once it has started successfully. If its process later exits on its own, it moves to a **terminal** state: `finished` when it exited cleanly (a one-shot node that completed its work and shut itself down, see the [shutdown lifecycle guide](/advanced_guides/shutdown/)), or `failed` when it exited with an error code or was killed. A terminal instance has stopped for good and will not run again. These are the same states [`peppy node info`](#inspecting-a-node-with-peppy-node-info) prints as `[starting]` / `[running]` / `[finished]` / `[failed]`.
-- **`HEALTH`** is whether a `running` instance answers the core node's liveness probes: `healthy` or `unhealthy`. Every instance starts out `healthy`. A terminal (`finished` / `failed`) instance has exited, so it has no live health to report and shows `-`.
+- **`STATUS`** is the instance's lifecycle state. A freshly launched instance is `starting` while its process comes up and clears its startup health gate, then becomes `running` once it has started successfully. If its process later exits on its own, it moves to `restarting` when its [restart policy](/guides/launch_files/#restart-policy) starts it again, and is `starting` and `running` once more after the wait; a start that fails returns it to `restarting`, and the attempt past `max_restarts`, or a restart the daemon refuses, leaves it `failed`. Otherwise it moves to a **terminal** state: `finished` when it exited cleanly (a one-shot node that completed its work and shut itself down, see the [shutdown lifecycle guide](/advanced_guides/shutdown/)), or `failed` when it exited with an error code or was killed. A terminal instance has stopped for good. These are the same states [`peppy node info`](#inspecting-a-node-with-peppy-node-info) prints as `[starting]` / `[running]` / `[restarting]` / `[finished]` / `[failed]`.
+- **`HEALTH`** is whether a `running` instance answers the core node's health checks: `healthy` or `unhealthy`. Every instance starts out `healthy`. An instance without a process (`restarting`, `finished` or `failed`) has no live health to report and shows `-`.
+- **`RESTARTS`** counts the times a restarted process of the instance reached `running`.
+- **`CLOCK`** is the clock the instance reads: `wall`, or a simulated domain as `name@core_node` (see the [system clock guide](/advanced_guides/system_clock/)).
 
-Once an instance is `running`, the daemon keeps probing its health in the background (every 5 seconds, allowing 3 seconds per probe) and updates the `HEALTH` flag from the run of results:
+Once an instance is `running`, the daemon keeps probing its health in the background (every 5 seconds, allowing 3 seconds per health check) and updates the `HEALTH` flag from the run of results:
 
-- Three consecutive missed probes mark the instance `unhealthy`. This is for a process that is **alive but not answering**: a wedged or deadlocked node, or one that has lost its messaging session. The process is still up; it just is not responding, and has not been for about twenty seconds.
-- A single missed probe leaves the instance `healthy`. A node, its container, or the host stalling for a few seconds (a swapped-out VM, a saturated CPU) misses a probe or two and then answers again; that is a blip, not a health change, and the daemon only records it at debug level.
-- One successful probe marks an `unhealthy` instance `healthy` again.
+- Three consecutive missed health checks mark the instance `unhealthy`. This is for a process that is **alive but not answering**: a wedged or deadlocked node, or one that has lost its messaging session. The process is still up; it just is not responding, and has not been for about twenty seconds.
+- A single missed health check leaves the instance `healthy`. A node, its container, or the host stalling for a few seconds (a swapped-out VM, a saturated CPU) misses a check or two and then answers again; that is a blip, not a health change, and the daemon only records it at debug level.
+- One successful health check marks an `unhealthy` instance `healthy` again.
+- Under `on_failure` or `always`, an instance that has answered no health check for a minute is killed at its next missed check: SIGTERM, then SIGKILL of its process group once the shutdown grace and the runtime's teardown have had their time (12 seconds at the default grace). The exit counts as a failure, so the policy restarts the instance unless `max_restarts` is reached, and the run counts only up to the last health check the process answered. A node that goes silent is killed 60 to 68 seconds after the last check it answered: the minute, then the check in flight, which takes up to 8 seconds (the 5-second wait and its own 3-second timeout); the node went quiet up to 8 seconds after that answer, while the next check was in flight, so the kill comes 52 to 68 seconds after it stopped answering. The minute runs from the last answered check whether later checks time out or fail at once, and it outlasts the 45.5 seconds a peppy-managed router listening on TCP or TLS takes at most to come back after one restart by its watchdog, plus the checks in flight when it dies and when it comes back (up to 11 seconds), so a router the watchdog heals never costs a node its process. While two or more instances other than the core node's own run on this daemon and none of them is healthy, the daemon reads a messaging outage and holds the kill until one of them answers again; a lone silent instance is killed. The stack log records the kill, or the outage. Under `never` an unhealthy instance stays `running`.
 
-A process that has actually **exited** is the separate, terminal case above, not an `unhealthy` one. The daemon watches each running node's process directly, so when a node exits on its own (a one-shot node finishing, or a crash) the instance moves to `finished` or `failed` rather than lingering as a `running` instance that fails its probe.
+A process that has actually **exited** is a case of its own, apart from an `unhealthy` one. The daemon watches each running node's process directly, so when a node exits on its own (a one-shot node finishing, or a crash) the instance moves to `restarting`, `finished` or `failed` by its restart policy as soon as its process group is killed, and gets no health check in between. For a container on macOS that kill reaches into the Lima VM and takes up to 30 seconds.
 
-Neither an `unhealthy` nor a terminal instance is automatically removed from the stack. An `unhealthy` `running` instance stays listed until it recovers on its own, so an outage (a lost messaging session that takes a while to come back) surfaces as an `unhealthy` window rather than silently tearing instances out of your stack. A `finished` or `failed` instance likewise stays listed, so you can see that it completed or died instead of wondering where it went. Either is cleared when you stop it with [`peppy node stop`](#stopping-your-node) (one instance) or [`peppy node remove`](#removing-your-node) (the whole node), or when the stack is relaunched.
+Neither an `unhealthy` nor a terminal instance is automatically removed from the stack. Under `never`, an `unhealthy` `running` instance stays listed until it recovers on its own, so an outage (a lost messaging session that takes a while to come back) surfaces as an `unhealthy` window and the stack keeps every instance; under `on_failure` or `always` it is killed after a minute without an answered health check, outside a messaging outage, and its policy treats that exit as a failure. A `finished` or `failed` instance likewise stays listed, so you can see that it completed or died. Either is cleared when you stop it with [`peppy node stop`](#stopping-your-node) (one instance) or [`peppy node remove`](#removing-your-node) (the whole node), or when the stack is relaunched. `peppy node stop` also clears a `restarting` instance and cancels its restart. [Starting a failed instance again](/guides/launch_files/#starting-a-failed-instance-again) says how to start a `failed` or `finished` instance again.
 
-Each lifecycle transition (a `running` instance going `unhealthy` or recovering, or a process exiting to `finished` / `failed`) is appended to the daemon's stack log at `~/.peppy/stack_log.log`, giving you a timestamped record of when an instance failed, finished, or came back. With the [OpenTelemetry log export](/advanced_guides/opentelemetry/) on, the daemon also sends each line of this log, and of the launch, add, build and run logs, to the endpoint you configured.
+Each lifecycle transition (a `running` instance going `unhealthy` or recovering, a process exiting on its own, as a `finished` or `failed` line whether or not a restart follows, an exit on `peppy node remove`'s shutdown request that lands before the removal claims the instance included, a health kill or the outage that holds it, and a restart scheduled, completed, failed to start, refused or capped by `max_restarts`) is appended to the daemon's stack log at `~/.peppy/stack_log.log`, giving you a timestamped record of when an instance failed, finished, or came back. With the [OpenTelemetry log export](/advanced_guides/opentelemetry/) on, the daemon also sends each line of this log, and of the launch, add, build and run logs, to the endpoint you configured.
 
 ### Daemon shutdown and orphan prevention
 
 Spawned nodes are child processes of the daemon, so Peppy takes care to ensure that no node (or any process a node itself spawned) is ever left running after the daemon goes away.
+
+**A node that exits on its own.** Whatever a node forked into its process group is killed with the group the moment the node's own process exits, whether the exit is a clean one, a crash, or the kill the health monitor sends, and so is the group of a start that fails. A child that moves itself to another process group or session is outside it.
 
 **Clean shutdown (`Ctrl+C`, `systemctl stop`, `SIGTERM`).** Before it exits, the daemon tears down every spawned node: it asks each node to shut down cooperatively (in the node, this fires the cancellation token and runs its shutdown hooks; see the [shutdown lifecycle guide](/advanced_guides/shutdown/)), waits for each to exit cooperatively (the shared **shutdown grace period** for cleanup, `shutdown_grace_secs`, **5 seconds** by default, plus the brief runtime teardown that follows), then force-kills the process group of anything still alive. This is immediate: it does **not** wait the daemon-liveness grace period described below, so stopping the daemon feels instant while still guaranteeing nothing is orphaned. It's the same graceful-then-forced sequence [`peppy node stop`](#stopping-your-node) runs for a single instance, which uses the same `shutdown_grace_secs` window.
 
@@ -307,16 +314,16 @@ Node Stack Status
 --------------------------------------------------
 Stage:     Ready
 Instances: 2 tracked
-           - suspicious-swanson-5880  [running]  healthy
-           - flamboyant-penrose-9622  [running]  healthy
+           - suspicious-swanson-5880  [running]  healthy  restart on_failure (default), 0 restarts
+           - flamboyant-penrose-9622  [running]  healthy  restart on_failure (default), 0 restarts
 
 Logs
 --------------------------------------------------
 hello_world:v1
   Add log: /home/ubuntu/.peppy/logs/add/hello_world_v1_20260416_101124_613.log
   Run logs:
-    - suspicious-swanson-5880: /home/ubuntu/.peppy/logs/run/suspicious-swanson-5880.log
-    - flamboyant-penrose-9622: /home/ubuntu/.peppy/logs/run/flamboyant-penrose-9622.log
+    - suspicious-swanson-5880: /home/ubuntu/.peppy/logs/run/suspicious-swanson-5880_20260416_101131_207.log
+    - flamboyant-penrose-9622: /home/ubuntu/.peppy/logs/run/flamboyant-penrose-9622_20260416_101131_318.log
 
 Exposed Interfaces
 --------------------------------------------------
@@ -328,7 +335,14 @@ Integrity
 Config SHA256: 67505086f8ac099d0861cb5dfa539b1c8c3c9354ad90ed7713a5147c7cb43342
 ```
 
-This is usually the fastest way to answer "is my node built yet?" and "where is the log for this specific instance?". The `Add log` path is what `peppy node add` writes to; per-instance run logs are what `peppy node run` writes to. Build logs live under `~/.peppy/logs/build/` and are surfaced by `peppy node build` directly when it runs.
+This is usually the fastest way to answer "is my node built yet?" and "where is the log for this specific instance?". The `Add log` path is what `peppy node add` writes to; a run log is what one process of an instance writes to, `<instance_id>_<timestamp>.log`, so a restart opens a new file and the listing names the latest one. Build logs live under `~/.peppy/logs/build/` and are surfaced by `peppy node build` directly when it runs.
+
+Each instance line ends with its [restart policy](/guides/launch_files/#restart-policy) and the level that set it, then the restarts so far:
+
+- The level is `instance entry` (the launcher's entry, or an adjustment), `--restart` (the flag of `peppy node run` and `peppy node add --run`), `peppy.json5` (the node's own `framework.restart`), `launcher root`, or `default` (no level set one, so `on_failure`). A cap prints beside the policy as `max_restarts N`.
+- A `restarting` instance adds the attempt it waits for and `next start in N s`, or ``next start due; it waits for the last exit's notices to other daemons, or for a stack launch, build, join or removal or a `peppy node remove` in progress on this daemon`` once the wait has passed and the restart has not begun.
+- A `failed` instance adds ``attempt N refused: max_restarts M reached, failed starts included`` when the cap ended its restarts, or `attempt N refused` when the daemon refused to start it again (the stack log says why).
+- Every instance that has exited adds its last exit, such as `last exit: exit code 1`, `last exit: signal 9 (SIGKILL)` or `last exit: killed after 60 s without an answered health check`, or why a start failed.
 
 `Exposed Interfaces` summarizes the topics, services, and actions the node publishes per its `peppy.json5`; consumed interfaces get their own `Consumed Interfaces` section, and a `Dependencies` section lists the slots (`link_id`) they go through. A node with parameters gets a `Parameters` section too, and labels or a container block add a `Labels:` or `Container:` line under `Node Information`; each is omitted when empty, as in the listing above. Under `Emitted Topics`, a native topic (one whose shape the node declares in its own `peppy.json5`) states its QoS, such as `message_stream` above. A native topic that retains its newest messages for subscribers that join later also states its retention, for example `  - robot_mode (qos: Reliable, retention: latest 3)`. A [contract-backed](/advanced_guides/contract_implementation/) or [pairing-backed](/advanced_guides/pairing/) topic names its slot instead of a QoS, for example `  - video_stream (via implements slot: cam)`. Its QoS comes from the contract or the pairing; a contract-backed topic takes its retention from the contract, and a pairing-backed topic is always live only. `Config SHA256` is the fingerprint of the config that was fed through peppygen; it's what `peppy node add` checks against to refuse a stale snapshot and tell you to run `peppy node sync`.
 
@@ -336,7 +350,7 @@ An instance of a node that declares [`execution.endpoints`](/guides/first_node/#
 
 ```
 Instances: 1 tracked
-           - panel_inst  [running]  healthy
+           - panel_inst  [running]  healthy  restart on_failure (default), 0 restarts
                panel (page)  http://127.0.0.1:8765
                panel (page)  http://100.123.58.116:8765
 ```
@@ -349,7 +363,7 @@ When you're done, you can stop your node:
 peppy node stop <instance-id>
 ```
 
-This stops **one instance** of the `hello_world:v1` node, but the node itself remains in the node stack.
+This stops **one instance** of the `hello_world:v1` node, but the node itself remains in the node stack. `peppy node stop` also clears a `finished`, `failed` or `restarting` instance, and ends the start of an instance its [restart policy](/guides/launch_files/#restart-policy) is starting again; a first start in flight is refused until it completes.
 
 Stopping is a **graceful-then-forced** operation, and the command blocks until the instance's process has actually exited:
 
@@ -373,31 +387,33 @@ To remove the node from the node stack, run:
 peppy node remove hello_world:v1
 ```
 
+A node that tracks instances is removed with `--stop-instances` (without it the command asks first). The removal asks each running instance to shut down and, once every request succeeds, waits for each process to exit until the force-kill deadline, the grace period plus the runtime's teardown (12 seconds at the default grace); it force-kills the whole process group of one that has not exited, and returns once every process is gone, warning for each it force-killed. An instance whose shutdown service is unreachable gets no request (a container gets a SIGTERM) and is force-killed at the same deadline. A shutdown request that fails fails the removal, which then stops nothing: an instance that answered its request ends if it exits within the force-kill deadline, and [`peppy node stop`](#stopping-your-node) ends the one that failed it. An instance starting when the removal reaches it, or running a process that reached `running` after the removal began, keeps the node, and the removal's error names it.
+
 If you run `peppy stack list` again, you'll see that only the core node remains:
 ```
 $ peppy stack list
-┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Core node: cn-funny-salamander (host: robot-host)                                                            │
-├──────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ Node stack                                                                                                   │
-│                                                                                                              │
-│ ┌─────────────────────────────────────────┬───────┬───────────┬──────────────┐                               │
-│ │ NODE                                    │ STAGE │ INSTANCES │ PATH         │                               │
-│ ├─────────────────────────────────────────┼───────┼───────────┼──────────────┤                               │
-│ │ cn-funny-salamander:v0.10.0             │ Root  │ 1 running │ ~/.peppy/bin │                               │
-│ └─────────────────────────────────────────┴───────┴───────────┴──────────────┘                               │
-│                                                                                                              │
-│ Instance bindings                                                                                            │
-│                                                                                                              │
-│ ┌─────────────────────────────────────────┬─────────────────────────────────┬─────────┬─────────┬──────────┐ │
-│ │ NODE                                    │ INSTANCE                        │ STATUS  │ HEALTH  │ BINDINGS │ │
-│ ├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┤ │
-│ │ cn-funny-salamander:v0.10.0             │ cn-funny-salamander             │ running │ healthy │ (none)   │ │
-│ └─────────────────────────────────────────┴─────────────────────────────────┴─────────┴─────────┴──────────┘ │
-│                                                                                                              │
-│ Dependencies                                                                                                 │
-│   (none)                                                                                                     │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-funny-salamander (host: robot-host)                                                                               │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Node stack                                                                                                                      │
+│                                                                                                                                 │
+│ ┌─────────────────────────────────────────┬───────┬───────────┬──────────────┐                                                  │
+│ │ NODE                                    │ STAGE │ INSTANCES │ PATH         │                                                  │
+│ ├─────────────────────────────────────────┼───────┼───────────┼──────────────┤                                                  │
+│ │ cn-funny-salamander:v0.10.0             │ Root  │ 1 running │ ~/.peppy/bin │                                                  │
+│ └─────────────────────────────────────────┴───────┴───────────┴──────────────┘                                                  │
+│                                                                                                                                 │
+│ Instance bindings                                                                                                               │
+│                                                                                                                                 │
+│ ┌─────────────────────────────────────────┬─────────────────────────────────┬─────────┬─────────┬──────────┬───────┬──────────┐ │
+│ │ NODE                                    │ INSTANCE                        │ STATUS  │ HEALTH  │ RESTARTS │ CLOCK │ BINDINGS │ │
+│ ├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┼───────┼──────────┤ │
+│ │ cn-funny-salamander:v0.10.0             │ cn-funny-salamander             │ running │ healthy │ 0        │ wall  │ (none)   │ │
+│ └─────────────────────────────────────────┴─────────────────────────────────┴─────────┴─────────┴──────────┴───────┴──────────┘ │
+│                                                                                                                                 │
+│ Dependencies                                                                                                                    │
+│   (none)                                                                                                                        │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Next steps

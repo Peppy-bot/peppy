@@ -382,6 +382,13 @@ pub enum CompositionError {
     },
 
     #[error(
+        "{origin} writes `framework.restart` at its root, which only the launcher's own root \
+         takes; write `framework: {{ restart: ... }}` on its instance entries, or move it to the \
+         launcher root"
+    )]
+    FragmentDeclaresRestart { origin: String },
+
+    #[error(
         "`--with {word}` names no option of axis `{axis}`, which runs as copies; add one with \
          `peppy stack join OPTION:NAME`, choosing from:{menu}"
     )]
