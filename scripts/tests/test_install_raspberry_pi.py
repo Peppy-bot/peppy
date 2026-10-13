@@ -1,16 +1,19 @@
-"""Tests for scripts/install.sh on Raspberry Pi OS.
+"""Tests for scripts/install.sh on Raspberry Pi boards.
 
-install.sh installs on the 64-bit Raspberry Pi OS based on Debian 13 or
-later, on the boards built on the BCM2712 SoC: the Raspberry Pi 5, the Pi 500
-and the Compute Module 5. It refuses every other board, the 32-bit release,
-and the releases based on an older Debian, before it changes anything.
+Of the Raspberry Pi boards, install.sh installs on those built on the BCM2712
+SoC only: the Raspberry Pi 5, the Pi 500 and the Compute Module 5. The rule
+holds whatever the distribution, Raspberry Pi OS, Ubuntu or Debian.
+Raspberry Pi OS runs on Raspberry Pi boards only, so install.sh also refuses
+it where the device tree names no board. Of Raspberry Pi OS it installs the
+64-bit release based on Debian 13 or later. It refuses the rest before it
+changes anything.
 
-Each test runs install.sh in a container of the official Raspberry Pi OS
-image (see raspberry_pi_os), with the aarch64 release archive and the device
-tree of the board the test stands for. The image is arm64, so the tests run
-on an aarch64 Linux host only, a disposable one like every install test (see
-conftest). The container takes the container path of install.sh; the host
-path is the one test_install.py tests on Ubuntu.
+Each test runs install.sh in a container, with the aarch64 release archive
+and the device tree of the board the test stands for. Raspberry Pi OS is a
+container of its official image (see raspberry_pi_os). The images are arm64,
+so the tests run on an aarch64 Linux host only, a disposable one like every
+install test (see conftest). The containers take the container path of
+install.sh; the host path is the one test_install.py tests on Ubuntu.
 """
 
 from __future__ import annotations
@@ -21,11 +24,13 @@ from pathlib import Path
 import pytest
 
 from .install_helpers import (
-    CONTAINER_PEPPY_HOME,
+    assert_binaries_load,
     assert_installed,
     assert_refused,
+    binaries_load_script,
     container_install_cmd,
     diagnostic,
+    host_file,
     linux_aarch64_only,
     refusal_script,
     run_in_container,
@@ -63,9 +68,13 @@ RASPBERRY_PI_3 = Board(
 )
 
 BOARD_NOT_SUPPORTED = (
-    "peppy supports Raspberry Pi OS on a Raspberry Pi 5, a Pi 500 or a "
-    "Compute Module 5 only."
+    "of the Raspberry Pi boards, peppy supports the Raspberry Pi 5, the Pi 500 "
+    "and the Compute Module 5 only."
 )
+
+# The other distributions install.sh supports on a Raspberry Pi, as images
+# of their own.
+OTHER_DISTRIBUTIONS = ["ubuntu:24.04", "debian:trixie"]
 
 # Raspberry Pi OS based on Debian 12 is Debian 12 with the /etc/rpi-issue of
 # its image, and what install.sh reads of it (os-release, glibc, dpkg) is
@@ -104,13 +113,6 @@ def device_tree(directory: Path, board: Board) -> Path:
     return directory
 
 
-def host_file(path: Path, content: str, *, mode: int = 0o644) -> Path:
-    """Write a file a container gets in place of one of its own."""
-    path.write_text(content)
-    path.chmod(mode)
-    return path
-
-
 @pytest.mark.parametrize(
     "board",
     [RASPBERRY_PI_5, RASPBERRY_PI_500, COMPUTE_MODULE_5],
@@ -135,37 +137,15 @@ def test_every_installed_binary_loads_on_raspberry_pi_os(
     """Every binary of the archive finds its libraries and glibc on Raspberry Pi OS.
 
     The archive is built on Ubuntu 24.04, and Raspberry Pi OS has the glibc
-    and the libraries of Debian. ldd reports each library or glibc version a
-    binary needs and the system does not have, including for the binaries
-    only a running container executes (apptainer's starter), and the three
-    commands a user runs first must start.
+    and the libraries of Debian.
     """
-    bin_dir = f"{CONTAINER_PEPPY_HOME}/bin"
-    script = (
-        f"{container_install_cmd()} >/dev/null && "
-        f"find {bin_dir} -type f \\( -perm -u+x -o -name '*.so*' \\) "
-        "-exec ldd {} + 2>&1; "
-        f"{bin_dir}/peppy --version && "
-        f"{bin_dir}/zenohd --version && "
-        f"{bin_dir}/apptainer/bin/apptainer --version"
-    )
-
     result = run_in_container(
         raspberry_pi_os,
-        script,
+        binaries_load_script(),
         device_tree=device_tree(tmp_path / "device-tree", RASPBERRY_PI_5),
     )
 
-    assert "not found" not in result.stdout, (
-        f"a binary needs a library or glibc version that Raspberry Pi OS does "
-        f"not have{diagnostic(result)}"
-    )
-    assert result.returncode == 0, (
-        f"peppy, zenohd and apptainer should start{diagnostic(result)}"
-    )
-    assert "apptainer version" in result.stdout, (
-        f"apptainer should report its version{diagnostic(result)}"
-    )
+    assert_binaries_load(result)
 
 
 @pytest.mark.parametrize(
@@ -190,7 +170,7 @@ def test_install_refuses_a_board_older_than_the_raspberry_pi_5(
 def test_install_refuses_raspberry_pi_os_without_a_device_tree(
     raspberry_pi_os: str,
 ) -> None:
-    """With no device tree to read, the board is not known to be a Raspberry Pi 5."""
+    """Raspberry Pi OS whose device tree names no board is not on a Raspberry Pi 5."""
     result = run_in_container(raspberry_pi_os, refusal_script())
 
     assert_refused(result, BOARD_NOT_SUPPORTED)
@@ -212,7 +192,11 @@ def test_install_refuses_the_32_bit_raspberry_pi_os(
 
     assert_refused(
         result,
-        "peppy needs the 64-bit Raspberry Pi OS (arm64), and this system runs 'armhf'.",
+        "peppy needs a 64-bit system (arm64 packages), and the packages of this "
+        "system are 'armhf'.",
+    )
+    assert "Raspberry Pi OS (64-bit) based on Debian 13" in result.stderr, (
+        f"error should name the supported release{diagnostic(result)}"
     )
 
 
@@ -230,21 +214,37 @@ def test_install_refuses_raspberry_pi_os_based_on_bookworm(tmp_path: Path) -> No
         "'Debian GNU/Linux 12 (bookworm)' has glibc 2.36, and peppy needs glibc "
         "2.38 or later.",
     )
-    assert "Raspberry Pi OS based on Debian 13 (trixie) or later" in result.stderr, (
-        f"error should name the oldest supported release{diagnostic(result)}"
-    )
+    assert "Raspberry Pi OS (64-bit) based on Debian 13 (trixie) or later" in (
+        result.stderr
+    ), f"error should name the oldest supported release{diagnostic(result)}"
 
 
-def test_install_refuses_debian_on_a_raspberry_pi_5(
-    raspberry_pi_os: str, tmp_path: Path
+@pytest.mark.parametrize("image", OTHER_DISTRIBUTIONS)
+def test_install_with_another_distribution_on_a_raspberry_pi_5(
+    tmp_path: Path, image: str
 ) -> None:
-    """Without /etc/rpi-issue the system is Debian, which install.sh refuses on any board."""
+    """Ubuntu and Debian install on a Raspberry Pi 5 as on any other machine."""
     result = run_in_container(
-        raspberry_pi_os,
-        refusal_script(before="rm -f /etc/rpi-issue; "),
+        image,
+        container_install_cmd(),
         device_tree=device_tree(tmp_path / "device-tree", RASPBERRY_PI_5),
     )
 
-    assert_refused(
-        result, "unsupported Linux distribution 'Debian GNU/Linux 13 (trixie)'."
+    assert_installed(result)
+
+
+@pytest.mark.parametrize("image", OTHER_DISTRIBUTIONS)
+def test_install_refuses_another_distribution_on_a_raspberry_pi_4(
+    tmp_path: Path, image: str
+) -> None:
+    """The board rule holds whatever the distribution."""
+    result = run_in_container(
+        image,
+        refusal_script(),
+        device_tree=device_tree(tmp_path / "device-tree", RASPBERRY_PI_4),
+    )
+
+    assert_refused(result, BOARD_NOT_SUPPORTED)
+    assert f"This board is a '{RASPBERRY_PI_4.model}'." in result.stderr, (
+        f"error should name the board{diagnostic(result)}"
     )

@@ -6,10 +6,10 @@ the machine's state, and a container is a system of its own for each test:
 - The container path. Inside Docker or Podman install.sh skips D-Bus, linger,
   fuse2fs and the Apptainer setup, which the container runtime has no use for.
 - The platform check. install.sh reads os-release before it changes anything
-  and stops on any Linux that is not Ubuntu, built on it, or Raspberry Pi OS,
-  and on a glibc older than the release archives need.
-  The Raspberry Pi OS cases need its arm64 image and a Raspberry Pi board, and
-  are in test_install_raspberry_pi_os.py.
+  and stops on any Linux that is not Ubuntu, built on it, Debian or Raspberry
+  Pi OS, on a 32-bit system, and on a glibc older than the release archives
+  need. The cases of Raspberry Pi boards need arm64 images, and are in
+  test_install_raspberry_pi.py.
 
 Each container gets install.sh and the release archive of this machine's
 platform read-only, and nothing else of the host. The tests need Docker and
@@ -25,10 +25,14 @@ import pytest
 
 from .install_helpers import (
     CONTAINER_PEPPY_HOME,
+    IS_LINUX_AARCH64,
+    assert_binaries_load,
     assert_installed,
     assert_refused,
+    binaries_load_script,
     container_install_cmd,
     diagnostic,
+    host_file,
     linux_only,
     refusal_script,
     run_in_container,
@@ -40,6 +44,13 @@ UBUNTU_IMAGE = "ubuntu:24.04"
 # The newest Ubuntu release whose glibc (2.35) is older than the 2.38 the
 # release archives need.
 UBUNTU_TOO_OLD_IMAGE = "ubuntu:22.04"
+DEBIAN_IMAGE = "debian:trixie"
+# The newest Debian release whose glibc (2.36) is too old.
+DEBIAN_TOO_OLD_IMAGE = "debian:bookworm"
+
+# The architecture of the packages of a 32-bit system that a 64-bit kernel of
+# this machine's architecture runs.
+THIRTY_TWO_BIT_PACKAGES = "armhf" if IS_LINUX_AARCH64 else "i386"
 
 
 def test_install_inside_container() -> None:
@@ -114,11 +125,12 @@ def test_install_reads_usr_lib_os_release_without_etc_os_release() -> None:
     ("image", "name"),
     [
         ("fedora:latest", "Fedora Linux"),
-        ("debian:stable-slim", "Debian GNU/Linux"),
+        ("alpine:latest", "Alpine Linux"),
     ],
 )
 def test_install_refuses_unsupported_distribution(image: str, name: str) -> None:
-    """install.sh stops on a Linux not built on Ubuntu, before it changes anything."""
+    """install.sh stops on a Linux that is neither Ubuntu, built on it, nor
+    Debian, before it changes anything."""
     result = run_in_container(image, refusal_script())
 
     assert_refused(result, "unsupported Linux distribution")
@@ -177,3 +189,67 @@ def test_install_refuses_without_a_glibc_version() -> None:
     )
 
     assert_refused(result, "cannot read the glibc version of this system")
+
+
+def test_every_installed_binary_loads_on_debian_13() -> None:
+    """install.sh installs on Debian 13, whose glibc and libraries every binary finds."""
+    result = run_in_container(DEBIAN_IMAGE, binaries_load_script())
+
+    assert_binaries_load(result)
+
+
+def test_install_refuses_debian_12() -> None:
+    """install.sh stops on Debian 12, whose glibc is 2.36."""
+    result = run_in_container(DEBIAN_TOO_OLD_IMAGE, refusal_script())
+
+    assert_refused(
+        result,
+        "'Debian GNU/Linux 12 (bookworm)' has glibc 2.36, and peppy needs glibc "
+        "2.38 or later.",
+    )
+    assert "peppy supports Debian 13 (trixie) or later." in result.stderr, (
+        f"error should name the oldest supported release{diagnostic(result)}"
+    )
+
+
+def test_install_refuses_a_distribution_only_like_debian(tmp_path: Path) -> None:
+    """A distribution that names debian in ID_LIKE alone is not Debian.
+
+    Some of them run without systemd, which the peppy service needs.
+    """
+    os_release = host_file(
+        tmp_path / "os-release",
+        'PRETTY_NAME="Devuan GNU/Linux 6 (excalibur)"\nNAME="Devuan GNU/Linux"\n'
+        'VERSION_ID="6"\nID=devuan\nID_LIKE=debian\n',
+    )
+
+    result = run_in_container(
+        DEBIAN_IMAGE, refusal_script(), files={"/etc/os-release": os_release}
+    )
+
+    assert_refused(
+        result, "unsupported Linux distribution 'Devuan GNU/Linux 6 (excalibur)'."
+    )
+
+
+def test_install_refuses_a_32_bit_system(tmp_path: Path) -> None:
+    """install.sh stops on 32-bit packages, which a 64-bit kernel can run.
+
+    `uname -m` names the architecture of the kernel, so the container stands
+    for such a system with a dpkg that names 32-bit packages.
+    """
+    dpkg = host_file(
+        tmp_path / "dpkg",
+        f'#!/bin/sh\n[ "$1" = --print-architecture ] && echo '
+        f"{THIRTY_TWO_BIT_PACKAGES}\n",
+        mode=0o755,
+    )
+
+    result = run_in_container(
+        UBUNTU_IMAGE, refusal_script(), files={"/usr/bin/dpkg": dpkg}
+    )
+
+    assert_refused(result, "peppy needs a 64-bit system")
+    assert f"the packages of this system are '{THIRTY_TWO_BIT_PACKAGES}'" in (
+        result.stderr
+    ), f"error should name the architecture of the packages{diagnostic(result)}"

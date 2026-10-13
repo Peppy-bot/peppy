@@ -356,6 +356,48 @@ def run_in_container(
     )
 
 
+def host_file(path: Path, content: str, *, mode: int = 0o644) -> Path:
+    """Write a file a container gets in place of one of its own (see
+    run_in_container)."""
+    path.write_text(content)
+    path.chmod(mode)
+    return path
+
+
+def binaries_load_script() -> str:
+    """install.sh, then ldd on every executable and shared library it
+    installed, then the version of the three commands a user runs first.
+
+    ldd reports each library or glibc version a binary needs and the system
+    does not have, including for the binaries only a running container
+    executes (apptainer's starter).
+    """
+    bin_dir = f"{CONTAINER_PEPPY_HOME}/bin"
+    return (
+        f"{container_install_cmd()} >/dev/null && "
+        f"find {bin_dir} -type f \\( -perm -u+x -o -name '*.so*' \\) "
+        "-exec ldd {} + 2>&1; "
+        f"{bin_dir}/peppy --version && "
+        f"{bin_dir}/zenohd --version && "
+        f"{bin_dir}/apptainer/bin/apptainer --version"
+    )
+
+
+def assert_binaries_load(result: subprocess.CompletedProcess[str]) -> None:
+    """Assert the binaries_load_script run found every library and glibc
+    version, and that peppy, zenohd and apptainer started."""
+    assert "not found" not in result.stdout, (
+        f"a binary needs a library or glibc version that the system does not "
+        f"have{diagnostic(result)}"
+    )
+    assert result.returncode == 0, (
+        f"peppy, zenohd and apptainer should start{diagnostic(result)}"
+    )
+    assert "apptainer version" in result.stdout, (
+        f"apptainer should report its version{diagnostic(result)}"
+    )
+
+
 def refusal_script(before: str = "") -> str:
     """install.sh after *before*, then a line the tests look for when it left a
     PEPPY_HOME behind, with install.sh's own exit status passed through."""

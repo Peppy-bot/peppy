@@ -13,7 +13,9 @@ To install `peppy`, run the following command in your terminal:
 curl -fsSL https://peppy.bot/install.sh | sh
 ```
 
-The installer supports Ubuntu 24.04 or later and the Linux distributions built on it (x86_64 and aarch64, tested on Ubuntu 24.04), Raspberry Pi OS on a Raspberry Pi 5 (see [Raspberry Pi](#raspberry-pi)), and macOS on Apple Silicon. It recognises an Ubuntu-based distribution by `ID` or `ID_LIKE` in `/etc/os-release`. On Linux, Peppy needs glibc 2.38 or later, and the installer reads the glibc version of the system with `getconf GNU_LIBC_VERSION`. It reads the glibc and not the release number, because a distribution built on Ubuntu numbers its releases its own way: Linux Mint 21, for example, is built on Ubuntu 22.04. On an older glibc, such as the glibc 2.35 of Ubuntu 22.04 and of the distributions built on it, and on any other system, Fedora, Arch Linux and Debian among them, the installer stops with an error before it changes anything.
+The installer supports Ubuntu 24.04 or later and the Linux distributions built on it, Debian 13 or later (x86_64 and aarch64, tested on Ubuntu 24.04), Raspberry Pi OS (see [Raspberry Pi](#raspberry-pi)), and macOS on Apple Silicon. It recognises an Ubuntu-based distribution by `ID` or `ID_LIKE` in `/etc/os-release`, and Debian by `ID=debian` alone: a distribution that names Debian in `ID_LIKE` only, such as Devuan, is not supported.
+
+On Linux, Peppy needs a 64-bit system with glibc 2.38 or later. The installer reads the architecture of the packages with `dpkg --print-architecture`, because a 64-bit kernel can run a 32-bit system, and the glibc version with `getconf GNU_LIBC_VERSION`. It reads the glibc and not the release number, because a distribution built on Ubuntu numbers its releases its own way: Linux Mint 21, for example, is built on Ubuntu 22.04. On a 32-bit system, on an older glibc (glibc 2.35 on Ubuntu 22.04 and the distributions built on it, 2.36 on Debian 12), and on any other system, Fedora and Arch Linux among them, the installer stops with an error before it changes anything.
 
 This installer also sets up the `peppy` background service and populates the repository index that name-based launches resolve from. To skip that step, set `PEPPY_NO_SERVICE_INSTALL=1`. The flag skips the repository setup along with the service, so a launch by name then fails with `nodes.json5 not found or empty` until you run `peppy repo init` and `peppy repo update` yourself.
 
@@ -37,10 +39,12 @@ Each Peppy version reads the content of the default repositories that was releas
 
 ### Raspberry Pi
 
-On a Raspberry Pi, the installer supports Raspberry Pi OS (64-bit) based on Debian 13 (trixie) or later, on the boards built on the BCM2712 SoC: the Raspberry Pi 5, the Raspberry Pi 500 and the Compute Module 5. It recognises Raspberry Pi OS by the `/etc/rpi-issue` file of its image, and the board by `brcm,bcm2712` in the `compatible` entry of the device tree (`/sys/firmware/devicetree/base`). It stops with an error before it changes anything on:
+Of the Raspberry Pi boards, the installer supports those built on the BCM2712 SoC: the Raspberry Pi 5, the Raspberry Pi 500 and the Compute Module 5. It recognises a Raspberry Pi board by a `raspberrypi,` entry in the `compatible` list of the device tree (`/sys/firmware/devicetree/base`), and the BCM2712 by `brcm,bcm2712` in the same list. The rule holds whatever the distribution: on an older board, such as the Raspberry Pi 4 or the Raspberry Pi 3, the installer stops with an error that names the board, on Raspberry Pi OS, Ubuntu and Debian alike.
 
-- an older board, such as the Raspberry Pi 4 or the Raspberry Pi 3. The error names the board.
-- the 32-bit Raspberry Pi OS. On a Raspberry Pi 5 it also runs a 64-bit kernel, so the installer reads the architecture of the installed packages (`dpkg --print-architecture`), which must be `arm64`.
+On these boards, the installer supports Raspberry Pi OS (64-bit) based on Debian 13 (trixie) or later, and the other distributions above. It recognises Raspberry Pi OS by the `/etc/rpi-issue` file of its image, and stops with an error before it changes anything on:
+
+- Raspberry Pi OS where the device tree names no board. Raspberry Pi OS runs on Raspberry Pi boards only.
+- the 32-bit Raspberry Pi OS. On a Raspberry Pi 5 it also runs a 64-bit kernel, and its packages are `armhf`, not `arm64`.
 - Raspberry Pi OS based on Debian 12 (bookworm), the release Raspberry Pi Imager lists as Legacy. Its glibc (2.36) is older than the 2.38 that Peppy needs.
 
 To install Raspberry Pi OS (64-bit), use [Raspberry Pi Imager](https://www.raspberrypi.com/software/).

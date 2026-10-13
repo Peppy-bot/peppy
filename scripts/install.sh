@@ -8,11 +8,12 @@ set -eu
 #   ./install.sh ./peppy-x86_64-unknown-linux-gnu.tgz
 #
 # Supported platforms: Ubuntu 24.04 or later and the distributions built on
-# it (x86_64 and aarch64), Raspberry Pi OS (64-bit, based on Debian 13 or
-# later) on the boards built on the BCM2712 SoC (Raspberry Pi 5, Pi 500,
-# Compute Module 5), and macOS on Apple Silicon. On Linux the system must
-# have glibc 2.38 or later. On any other system the script stops before it
-# changes anything.
+# it, Debian 13 or later (x86_64 and aarch64), Raspberry Pi OS (64-bit,
+# based on Debian 13 or later), and macOS on Apple Silicon. On Linux the
+# system must be a 64-bit one with glibc 2.38 or later, and of the Raspberry
+# Pi boards only those built on the BCM2712 SoC (Raspberry Pi 5, Pi 500,
+# Compute Module 5) are supported, whatever the distribution. On any other
+# system the script stops before it changes anything.
 #
 # Environment variables:
 #   PEPPY_VERSION            Version to install (default: latest)
@@ -208,7 +209,14 @@ EOF
         echo "${_NAME:-$(os_release_field ID "$1")}"
     }
 
-    SUPPORTED_LINUX="peppy supports Ubuntu 24.04 or later and the distributions built on it, and Raspberry Pi OS (64-bit) on a Raspberry Pi 5."
+    SUPPORTED_LINUX="peppy supports Ubuntu 24.04 or later and the distributions built on it, Debian 13 or later, and Raspberry Pi OS (64-bit) on a Raspberry Pi 5."
+
+    # is_debian FILE: 0 when the os-release FILE describes Debian itself. A
+    # distribution that only names Debian in ID_LIKE is not Debian: some of
+    # them (Devuan) run without systemd, which the peppy service needs.
+    is_debian() {
+        [ "$(os_release_field ID "$1")" = "debian" ]
+    }
 
     # The device tree of the board the kernel runs on. /proc/device-tree is a
     # link to it. `compatible` names the board, then its SoC, and `model`
@@ -228,6 +236,14 @@ EOF
         return 1
     }
 
+    # is_raspberry_pi_board: 0 when the device tree names a Raspberry Pi
+    # board (raspberrypi,5-model-b, raspberrypi,4-model-b, ...), whatever
+    # the distribution.
+    is_raspberry_pi_board() {
+        [ -r "$DEVICE_TREE/compatible" ] || return 1
+        tr '\0' '\n' <"$DEVICE_TREE/compatible" | grep -q '^raspberrypi,'
+    }
+
     # has_bcm2712_soc: 0 when the device tree names the BCM2712, the SoC of
     # the Raspberry Pi 5, the Pi 500 and the Compute Module 5. Older boards
     # name an older SoC (brcm,bcm2711 on the Raspberry Pi 4).
@@ -244,41 +260,45 @@ EOF
         fi
     }
 
-    # check_raspberry_pi_os: stop unless this Raspberry Pi OS runs on a
-    # BCM2712 board, in its 64-bit release. The checks go from the one only
-    # new hardware fixes to the one a new install fixes; check_glibc then
-    # checks the release, which an upgrade fixes.
-    check_raspberry_pi_os() {
-        if ! has_bcm2712_soc; then
-            _MODEL="$(board_model)"
-            echo "error: peppy supports Raspberry Pi OS on a Raspberry Pi 5, a Pi 500 or a Compute Module 5 only." >&2
-            if [ -n "$_MODEL" ]; then
-                echo "       This board is a '${_MODEL}'." >&2
-            else
-                echo "       The device tree (${DEVICE_TREE}) names no board." >&2
-            fi
-            exit 1
+    # require_bcm2712_board: stop unless the device tree names the BCM2712.
+    require_bcm2712_board() {
+        has_bcm2712_soc && return 0
+        _MODEL="$(board_model)"
+        echo "error: of the Raspberry Pi boards, peppy supports the Raspberry Pi 5, the Pi 500 and the Compute Module 5 only." >&2
+        if [ -n "$_MODEL" ]; then
+            echo "       This board is a '${_MODEL}'." >&2
+        else
+            echo "       The device tree (${DEVICE_TREE}) names no board." >&2
         fi
+        exit 1
+    }
 
-        # On a Raspberry Pi 5 the 32-bit Raspberry Pi OS also runs a 64-bit
-        # kernel, so `uname -m` says aarch64 there too. The architecture of
-        # the installed packages is the one of the userland.
+    # require_64_bit_userland RELEASES: stop unless the packages of this
+    # system are built for ARCH. A 64-bit kernel can run a 32-bit system,
+    # as the 32-bit Raspberry Pi OS does on a Raspberry Pi 5, and `uname -m`
+    # names the architecture of the kernel. Every supported Linux
+    # distribution has dpkg, which names the architecture of the packages.
+    # RELEASES tells which releases of the distribution peppy supports.
+    require_64_bit_userland() {
+        case "$ARCH" in
+        aarch64) _PACKAGES_ARCH="arm64" ;;
+        x86_64) _PACKAGES_ARCH="amd64" ;;
+        esac
         _USERLAND_ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
-        if [ "$_USERLAND_ARCH" != "arm64" ]; then
-            echo "error: peppy needs the 64-bit Raspberry Pi OS (arm64), and this system runs '${_USERLAND_ARCH:-an unknown architecture}'." >&2
-            echo "       Install Raspberry Pi OS (64-bit) with Raspberry Pi Imager." >&2
-            exit 1
-        fi
+        [ "$_USERLAND_ARCH" = "$_PACKAGES_ARCH" ] && return 0
+        echo "error: peppy needs a 64-bit system (${_PACKAGES_ARCH} packages), and the packages of this system are '${_USERLAND_ARCH:-of an unknown architecture}'." >&2
+        echo "       $1" >&2
+        exit 1
     }
 
     # The oldest glibc the release archives run on. They are built on Ubuntu
     # 24.04, and peppy, apptainer and apptainer's starter call functions that
     # glibc 2.38 added (__isoc23_strtol), so on an older glibc they cannot
     # start: Ubuntu 22.04 and the distributions built on it (glibc 2.35), or
-    # Raspberry Pi OS based on Debian 12 (glibc 2.36). The glibc is checked,
-    # and not the release in os-release, because a distribution built on
-    # Ubuntu numbers its releases its own way (Linux Mint 21 is built on
-    # Ubuntu 22.04).
+    # Debian 12 and Raspberry Pi OS based on it (glibc 2.36). The glibc is
+    # checked, and not the release in os-release, because a distribution
+    # built on Ubuntu numbers its releases its own way (Linux Mint 21 is
+    # built on Ubuntu 22.04).
     MIN_GLIBC_VERSION="2.38"
 
     # glibc_version: the MAJOR.MINOR of this system's glibc (2.41 for
@@ -306,10 +326,10 @@ EOF
         [ "${1%.*}" -eq "${2%.*}" ] && [ "${1#*.}" -ge "${2#*.}" ]
     }
 
-    # check_glibc FILE RELEASES: stop unless this system has the glibc the
+    # require_glibc FILE RELEASES: stop unless this system has the glibc the
     # release archives need. FILE is the os-release that names the system,
     # and RELEASES tells which releases of it peppy supports.
-    check_glibc() {
+    require_glibc() {
         _GLIBC_VERSION="$(glibc_version)"
         if [ -z "$_GLIBC_VERSION" ]; then
             echo "error: cannot read the glibc version of this system (getconf GNU_LIBC_VERSION)." >&2
@@ -357,15 +377,25 @@ EOF
             exit 1
         fi
         if is_raspberry_pi_os "$OS_RELEASE"; then
-            check_raspberry_pi_os
-            check_glibc "$OS_RELEASE" "peppy supports Raspberry Pi OS based on Debian 13 (trixie) or later."
+            SUPPORTED_RELEASES="peppy supports Raspberry Pi OS (64-bit) based on Debian 13 (trixie) or later."
         elif is_ubuntu_based "$OS_RELEASE"; then
-            check_glibc "$OS_RELEASE" "peppy supports Ubuntu 24.04 or later and the distributions built on it."
+            SUPPORTED_RELEASES="peppy supports Ubuntu 24.04 or later and the distributions built on it."
+        elif is_debian "$OS_RELEASE"; then
+            SUPPORTED_RELEASES="peppy supports Debian 13 (trixie) or later."
         else
             echo "error: unsupported Linux distribution '$(distribution_name "$OS_RELEASE")'." >&2
             echo "       ${SUPPORTED_LINUX}" >&2
             exit 1
         fi
+        # The checks go from the one only new hardware fixes, to the one a
+        # new install fixes, to the one an upgrade fixes. Raspberry Pi OS
+        # runs on Raspberry Pi boards only, so it also stops on a device tree
+        # that names no board.
+        if is_raspberry_pi_os "$OS_RELEASE" || is_raspberry_pi_board; then
+            require_bcm2712_board
+        fi
+        require_64_bit_userland "$SUPPORTED_RELEASES"
+        require_glibc "$OS_RELEASE" "$SUPPORTED_RELEASES"
         PLATFORM="unknown-linux-gnu"
     else
         echo "error: unsupported platform '$PLATFORM' (only macOS and Linux are supported)" >&2

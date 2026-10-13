@@ -94,7 +94,7 @@ TREE_SUITES = {
         "scripts/tests/raspberry_pi_os.py",
         "scripts/tests/test_install.py",
         "scripts/tests/test_install_in_docker.py",
-        "scripts/tests/test_install_raspberry_pi_os.py",
+        "scripts/tests/test_install_raspberry_pi.py",
         "scripts/pixi.toml",
         "scripts/pixi.lock",
         ".github/actions/cargo-cache/**",

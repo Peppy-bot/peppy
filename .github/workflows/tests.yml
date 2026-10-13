@@ -422,7 +422,7 @@ jobs:
 
   # Installs that archive with this change's install.sh on a fresh Ubuntu
   # aarch64 runner, as install-script does on x86_64, and installs it on
-  # Raspberry Pi OS, whose tests need an arm64 host (see the install-test
+  # Raspberry Pi boards, whose tests need an arm64 host (see the install-test
   # action).
   install-script-aarch64:
     needs: [changes, install-archive-aarch64]
