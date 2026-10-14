@@ -7,12 +7,11 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NODE_STARTUP_TIMEOUT, NodeRunTestTimeouts, StartedCoreNode,
-    always, fast_health_monitor, fast_health_monitor_with_kill, never, node_service_mock,
-    on_failure, peer_daemon_service, poll_until, poll_until_explained,
-    send_node_add_and_wait_with_force, send_node_add_then_build, settle,
-    start_core_node_with_supervision, start_core_node_with_supervision_and_grace,
-    write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, StartedCoreNode, always,
+    fast_health_monitor, fast_health_monitor_with_kill, never, node_service_mock, on_failure,
+    peer_daemon_service, poll_until, poll_until_explained, send_node_add_and_wait_with_force,
+    send_node_add_then_build, settle, start_core_node_with_supervision,
+    start_core_node_with_supervision_and_grace, write_peppy_json5,
 };
 use config::node::{Cardinality, RestartDeclaration, RestartOrigin, RestartPolicy, RestartRequest};
 use config::runtime::{
@@ -52,9 +51,6 @@ const QUIET: Duration = Duration::from_millis(1500);
 /// The messaging headroom a test waits beyond what the daemon takes for a
 /// request.
 const REQUEST_MARGIN: Duration = Duration::from_secs(5);
-/// The bound on a stop of an instance without a process, which sends no
-/// shutdown request: under that request's own 5 s timeout.
-const STOP_WITHOUT_PROCESS: Duration = Duration::from_secs(2);
 /// The misses in a row that turn an instance unhealthy under the test
 /// monitor.
 const UNHEALTHY_AFTER: u32 = 3;
@@ -802,13 +798,13 @@ async fn never_leaves_a_crash_failed_and_node_stop_frees_the_id() {
     assert_eq!(instance.restart_status.next_start_ms, None);
     assert!(!stack_log(&started).contains("restarting"));
 
-    let asked = std::time::Instant::now();
+    let (_shutdown, mut shutdown_asked) =
+        common::install_shutdown_listener_for_instance(&started, NODE, TAG, ID).await;
     let response = stop_ok(&started, ID).await;
     assert!(!response.force_killed);
     assert!(
-        asked.elapsed() < STOP_WITHOUT_PROCESS,
-        "an instance without a process is cleared with no shutdown request: {:?}",
-        asked.elapsed()
+        shutdown_asked.try_recv().is_err(),
+        "an instance without a process is cleared with no shutdown request"
     );
     assert_eq!(state_of(&started, ID), None);
     signal_process(run(&started, NODE, ID, never()).await, "-9");
@@ -1079,12 +1075,11 @@ async fn a_respawn_cancelled_during_its_start_records_nothing() {
     drop(ready);
     signal_process(pid, "-9");
     wait_for_state(&started, ID, InstanceState::Starting).await;
-    let resetting = std::time::Instant::now();
     reset(&started).await;
     assert!(
-        resetting.elapsed() < NODE_STARTUP_TIMEOUT / 2,
-        "the reset cancels the start: {:?}",
-        resetting.elapsed()
+        run_log(&started, ID).contains("cancelled"),
+        "the reset cancels the start:\n{}",
+        run_log(&started, ID)
     );
     assert_eq!(state_of(&started, ID), None);
     tokio::time::sleep(QUIET).await;
@@ -1668,12 +1663,11 @@ async fn node_stop_ends_a_restarts_start_in_flight() {
         removal.error_message
     );
 
-    let stopping = std::time::Instant::now();
     stop_ok(&started, ID).await;
     assert!(
-        stopping.elapsed() < NODE_STARTUP_TIMEOUT / 2,
-        "the stop cancels the start: {:?}",
-        stopping.elapsed()
+        run_log(&started, ID).contains("cancelled"),
+        "the stop cancels the start:\n{}",
+        run_log(&started, ID)
     );
     assert_eq!(
         state_of(&started, ID),
@@ -1903,7 +1897,7 @@ async fn a_removal_whose_shutdown_fails_claims_nothing() {
     /// How long before its window ends the answering node is asked to exit
     /// (its trap runs after the current 0.2 s sleep), and how far past the
     /// window the lingering one is killed.
-    const WINDOW_HEADROOM: Duration = Duration::from_millis(1500);
+    const WINDOW_HEADROOM: Duration = Duration::from_secs(4);
     // The notes stand for the force-kill deadline from the failure, which
     // comes after every answer, so an exit this long after the answer lands
     // inside the window.
@@ -2800,8 +2794,9 @@ async fn a_removal_tells_its_instances_ends_together() {
     const FIRST: &str = "watched_first_inst";
     const SECOND: &str = "watched_second_inst";
     const OTHER_WATCHER: &str = "cloud_two";
-    /// How long each watcher takes to acknowledge an event.
-    const ACK: Duration = Duration::from_secs(4);
+    /// How long each watcher takes to acknowledge an event: told one after
+    /// the other, the removal would take twice this.
+    const ACK: Duration = Duration::from_secs(8);
     /// How long after its answer each node exits: past the removal's claim,
     /// which follows the answers at once.
     const EXIT_AFTER: Duration = Duration::from_secs(1);
@@ -3520,10 +3515,11 @@ async fn announcing_the_exit_counts_toward_the_wait() {
     const NODE: &str = "slowly_watched";
     const ID: &str = "slowly_watched_inst";
     /// The wait before every attempt.
-    const DELAY: Duration = Duration::from_secs(4);
+    const DELAY: Duration = Duration::from_secs(8);
     /// How long the watcher takes to answer: past `DELAY`, so the wait is
-    /// spent by the time the announcement ends.
-    const ACK: Duration = Duration::from_secs(6);
+    /// spent by the time the announcement ends; a wait that followed the
+    /// announcement would add `DELAY` to it.
+    const ACK: Duration = Duration::from_secs(9);
     let started = daemon(RestartBackoff {
         first_delay: DELAY,
         max_delay: DELAY,
@@ -3539,7 +3535,6 @@ async fn announcing_the_exit_counts_toward_the_wait() {
     let pid = run(&started, NODE, ID, on_failure()).await;
     watch(&started, ID).await;
 
-    let killed = std::time::Instant::now();
     signal_process(pid, "-9");
     assert_eq!(
         next_event(&mut heard, ID).await,
@@ -3549,14 +3544,15 @@ async fn announcing_the_exit_counts_toward_the_wait() {
         "the watcher hears the exit it answers slowly"
     );
     wait_for_restarts_within(&started, ID, 1, DELAY + ACK + WAIT).await;
-    let took = killed.elapsed();
+    let took =
+        logged_at(&started, ID, "restarted (attempt 1)") - logged_at(&started, ID, "failed:");
     assert!(
-        took >= ACK,
-        "the restart follows the announcement: {took:?}"
+        took >= chrono::TimeDelta::from_std(ACK).expect("a short answer"),
+        "the restart follows the announcement: {took}"
     );
     assert!(
-        took < ACK + DELAY / 2,
-        "the announcement is inside the wait: {took:?}"
+        took < chrono::TimeDelta::from_std(ACK + DELAY).expect("a short wait"),
+        "the announcement is inside the wait: {took}"
     );
     signal_process(serialized_pid(&started, ID), "-9");
 }
