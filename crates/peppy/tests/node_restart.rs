@@ -298,15 +298,24 @@ fn join(h: &Harness, option: &str, name: &str) -> Result<(), peppy::error::Error
     .execute(&h.ctx)
 }
 
-/// Removes the copy `name` from the stack.
-fn remove_copy(h: &Harness, name: &str) {
-    StackCommand {
-        command: StackCommands::Remove {
-            name: CopyName::new(name).expect("a copy name"),
-        },
-    }
-    .execute(&h.ctx)
-    .unwrap_or_else(|e| panic!("stack remove {name}: {e}"));
+/// Removes the copy `name` from the stack, trying again while a start holds
+/// the daemon: a restart's start holds it until its run returns, a moment
+/// after the listing shows its instance running.
+async fn remove_copy(h: &Harness, name: &str) {
+    wait_until(h, &format!("stack remove {name}"), async || {
+        let removal = StackCommand {
+            command: StackCommands::Remove {
+                name: CopyName::new(name).expect("a copy name"),
+            },
+        }
+        .execute(&h.ctx);
+        match removal {
+            Ok(()) => true,
+            Err(e) if e.to_string().contains("in progress on this daemon") => false,
+            Err(e) => panic!("stack remove {name}: {e}"),
+        }
+    })
+    .await;
 }
 
 fn stop(h: &Harness, instance_id: &str) {
@@ -987,7 +996,7 @@ async fn a_copy_removed_during_the_wait_is_absent_after_the_restart() {
             ),
         "{err}"
     );
-    remove_copy(&h, "alpha");
+    remove_copy(&h, "alpha").await;
     assert_eq!(
         instance(&h, "hub_inst").await.state,
         InstanceState::Restarting,
@@ -1074,7 +1083,7 @@ async fn a_copy_removed_during_the_wait_is_absent_after_the_restart() {
         .await,
     );
     wait_for_state(&h, "charlie_arm_inst", InstanceState::Restarting).await;
-    remove_copy(&h, "charlie");
+    remove_copy(&h, "charlie").await;
     assert!(
         !lists(&h, "charlie_arm_inst").await,
         "the removed copy's restarting instance is gone"
@@ -1863,7 +1872,7 @@ async fn an_observer_set_shrunk_during_the_wait_is_in_the_respawn() {
     let first_rec = read_pid(&rec_pidfile);
     kill(first_rec);
     wait_for_state(&h, "rec_inst", InstanceState::Restarting).await;
-    remove_copy(&h, "alpha");
+    remove_copy(&h, "alpha").await;
     assert_eq!(
         instance(&h, "rec_inst").await.state,
         InstanceState::Restarting,
