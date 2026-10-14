@@ -205,8 +205,9 @@ impl Drop for RestartAdmission {
     }
 }
 
-/// A removal's hold on restarts, released when dropped.
-pub(crate) struct RestartHold {
+/// A hold on restarts, released when dropped: a removal's, or a test's.
+#[must_use = "restarts run again once the hold is dropped"]
+pub struct RestartHold {
     holds: tokio::sync::watch::Sender<usize>,
 }
 
@@ -246,7 +247,7 @@ impl SliceOwnership {
 
     /// Holds restarts off until the hold drops, so an instance a removal
     /// ends is not started again before the removal claims its slot.
-    pub(crate) fn hold_restarts(&self) -> RestartHold {
+    pub fn hold_restarts(&self) -> RestartHold {
         self.restart_holds.send_modify(|holds| *holds += 1);
         RestartHold {
             holds: self.restart_holds.clone(),

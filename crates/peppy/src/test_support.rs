@@ -268,6 +268,7 @@ pub struct ServeCommandEmulation {
     shared_messenger: Arc<TokioMutex<Messenger>>,
     daemon_state_path: PathBuf,
     core_node_name: String,
+    slice_ownership: Arc<core_node::SliceOwnership>,
 }
 
 impl ServeCommandEmulation {
@@ -448,6 +449,7 @@ impl ServeCommandEmulation {
             log_exporter: log_export::LogExporter::disabled(),
         });
         let core_node_name = core_node.node_name().to_string();
+        let slice_ownership = core_node.slice_ownership();
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let core_node_task =
@@ -490,7 +492,15 @@ impl ServeCommandEmulation {
             shared_messenger,
             daemon_state_path,
             core_node_name,
+            slice_ownership,
         })
+    }
+
+    /// Holds the daemon's restarts off until the hold drops, as a removal
+    /// does, so a test acts on a `restarting` instance for as long as it
+    /// needs.
+    pub fn hold_restarts(&self) -> core_node::RestartHold {
+        self.slice_ownership.hold_restarts()
     }
 
     pub fn messenger(&self) -> Arc<TokioMutex<Messenger>> {

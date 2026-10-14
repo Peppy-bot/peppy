@@ -45,9 +45,6 @@ const WAIT: Duration = Duration::from_secs(15);
 const QUIET: Duration = Duration::from_millis(1500);
 /// The bound on a whole stack command here, as the launch tests set it.
 const MAX_STACK_COMMAND_SECS: Option<u64> = Some(120);
-/// How long a test waits for a restart under [`twenty_second_backoff`]: the
-/// wait, a start, and margin.
-const BACKOFF_WAIT: Duration = Duration::from_secs(60);
 
 /// A daemon with an injected restart backoff, with a work directory the
 /// commands run in.
@@ -241,13 +238,8 @@ async fn wait_until_within(
 }
 
 async fn wait_for_restarts(h: &Harness, instance_id: &str, restarts: u32) {
-    wait_for_restarts_within(h, instance_id, restarts, WAIT).await;
-}
-
-async fn wait_for_restarts_within(h: &Harness, instance_id: &str, restarts: u32, limit: Duration) {
-    wait_until_within(
+    wait_until(
         h,
-        limit,
         &format!("`{instance_id}` runs again with {restarts} restarts"),
         async || {
             let instance = instance(h, instance_id).await;
@@ -891,23 +883,13 @@ async fn a_relaunch_during_the_wait_leaves_no_slot() {
     );
 }
 
-/// A wait long enough to change the stack during it on a loaded machine,
-/// short enough to see the restart.
-fn twenty_second_backoff() -> RestartBackoff {
-    RestartBackoff {
-        first_delay: Duration::from_secs(20),
-        max_delay: Duration::from_secs(20),
-        reset_after: Duration::MAX,
-    }
-}
-
 /// A copy removed while the instance it fed waits is absent from the
 /// instance's set after its restart, and the copy that stays is in it; a
 /// join that grows the set during the wait is refused naming the state, and
 /// succeeds once the instance runs again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_copy_removed_during_the_wait_is_absent_after_the_restart() {
-    let h = harness_with(twenty_second_backoff()).await;
+    let h = harness().await;
     let nodes_dir = tempfile::tempdir().expect("nodes dir");
     let git_hash = read_daemon_git_hash(h.serve.daemon_state_path());
     let pid_dir = tempfile::tempdir().expect("pid dir");
@@ -985,6 +967,9 @@ async fn a_copy_removed_during_the_wait_is_absent_after_the_restart() {
     launch(&h, &launcher).expect("stack launch");
     assert_eq!(arms_of(&h).await, ["alpha_arm_inst", "bravo_arm_inst"]);
 
+    // Restarts are held off while the test acts on the waiting instance, as
+    // a removal holds them, so the wait lasts as long as the test needs.
+    let hold = h.serve.hold_restarts();
     kill(read_pid(&hub_pidfile));
     wait_for_state(&h, "hub_inst", InstanceState::Restarting).await;
     let err = join(&h, "real", "charlie").expect_err("joining grows a restarting instance's set");
@@ -1013,7 +998,8 @@ async fn a_copy_removed_during_the_wait_is_absent_after_the_restart() {
     );
 
     let first_hub = read_pid(&hub_pidfile);
-    wait_for_restarts_within(&h, "hub_inst", 1, BACKOFF_WAIT).await;
+    drop(hold);
+    wait_for_restarts(&h, "hub_inst", 1).await;
     assert_eq!(arms_of(&h).await, ["bravo_arm_inst"]);
     let second_hub = wait_for_new_pid(&h, &hub_pidfile, first_hub).await;
     let arms_in_config = |pid: u32| -> Vec<String> {
@@ -1073,17 +1059,18 @@ async fn a_copy_removed_during_the_wait_is_absent_after_the_restart() {
     );
     let first_charlie = arm_pid("charlie_arm_inst");
     kill(first_charlie);
-    wait_for_restarts_within(&h, "charlie_arm_inst", 1, BACKOFF_WAIT).await;
-    kill(
-        wait_for_new_pid(
-            &h,
-            &pid_dir.path().join("charlie_arm_inst.pid"),
-            first_charlie,
-        )
-        .await,
-    );
+    wait_for_restarts(&h, "charlie_arm_inst", 1).await;
+    let second_charlie = wait_for_new_pid(
+        &h,
+        &pid_dir.path().join("charlie_arm_inst.pid"),
+        first_charlie,
+    )
+    .await;
+    let hold = h.serve.hold_restarts();
+    kill(second_charlie);
     wait_for_state(&h, "charlie_arm_inst", InstanceState::Restarting).await;
     remove_copy(&h, "charlie").await;
+    drop(hold);
     assert!(
         !lists(&h, "charlie_arm_inst").await,
         "the removed copy's restarting instance is gone"
@@ -1369,14 +1356,15 @@ async fn lists_pair_with(h: &Harness, ctrl: &str) -> bool {
 /// nothing of it, and the arm keeps the controller it took last.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_held_pair_whose_peer_slot_was_taken_is_forgotten() {
-    let h = harness_with(twenty_second_backoff()).await;
+    let h = harness().await;
     let instances = InstanceLifetime::new();
     let mut rig = paired_rig(&h, &instances).await;
     let pid_dir = rig.pid_dir.path().to_path_buf();
     let PairedRig { arm_rx, .. } = &mut rig;
 
     // The controller dies; its exit frees the arm's scalar slot, which a
-    // second controller takes during the wait.
+    // second controller takes during the wait, held open by the test.
+    let hold = h.serve.hold_restarts();
     kill(pid_in(&pid_dir, "ctrl_1"));
     wait_for_state(&h, "ctrl_1", InstanceState::Restarting).await;
     wait_until(&h, "the arm is unpaired", async || {
@@ -1387,7 +1375,8 @@ async fn a_held_pair_whose_peer_slot_was_taken_is_forgotten() {
     assert_eq!(peer_of(arm_rx), Some("ctrl_2".to_string()));
     assert_eq!(peer_of(&mut ctrl_2_rx), Some("arm_1".to_string()));
 
-    wait_for_restarts_within(&h, "ctrl_1", 1, BACKOFF_WAIT).await;
+    drop(hold);
+    wait_for_restarts(&h, "ctrl_1", 1).await;
     // Past the pair requests the restarted controller would make.
     tokio::time::sleep(QUIET).await;
     let after_restart = restarted_run_log(&h, "ctrl_1");
@@ -1404,7 +1393,7 @@ async fn a_held_pair_whose_peer_slot_was_taken_is_forgotten() {
     // The arm's restart pairs the second controller and asks nothing of the
     // first.
     kill(pid_in(&pid_dir, "arm_1"));
-    wait_for_restarts_within(&h, "arm_1", 1, BACKOFF_WAIT).await;
+    wait_for_restarts(&h, "arm_1", 1).await;
     wait_until(
         &h,
         "the restarted arm pairs the second controller",
@@ -1424,7 +1413,7 @@ async fn a_held_pair_whose_peer_slot_was_taken_is_forgotten() {
 /// pair it held, and the stack holds one pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn re_pair_after_both_restart() {
-    let h = harness_with(twenty_second_backoff()).await;
+    let h = harness().await;
     let instances = InstanceLifetime::new();
     let mut rig = paired_rig(&h, &instances).await;
     let pid_dir = rig.pid_dir.path().to_path_buf();
@@ -1432,13 +1421,16 @@ async fn re_pair_after_both_restart() {
         arm_rx, ctrl_rx, ..
     } = &mut rig;
 
+    // Both exits land before either restart, held off by the test.
+    let hold = h.serve.hold_restarts();
     kill(pid_in(&pid_dir, "arm_1"));
     kill(pid_in(&pid_dir, "ctrl_1"));
     wait_for_state(&h, "arm_1", InstanceState::Restarting).await;
     wait_for_state(&h, "ctrl_1", InstanceState::Restarting).await;
     assert!(!lists_pair_with(&h, "ctrl_1").await, "the pair dissolved");
-    wait_for_restarts_within(&h, "arm_1", 1, BACKOFF_WAIT).await;
-    wait_for_restarts_within(&h, "ctrl_1", 1, BACKOFF_WAIT).await;
+    drop(hold);
+    wait_for_restarts(&h, "arm_1", 1).await;
+    wait_for_restarts(&h, "ctrl_1", 1).await;
     wait_until(&h, "the pair is made again once both run", async || {
         paired_again(&h, arm_rx, ctrl_rx).await
     })
@@ -1781,7 +1773,7 @@ async fn a_restarted_clock_consumer_reads_its_domain_again() {
 /// before its exit stays, one a removal took away while it waited is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_observer_set_shrunk_during_the_wait_is_in_the_respawn() {
-    let h = harness_with(twenty_second_backoff()).await;
+    let h = harness().await;
     let nodes_dir = tempfile::tempdir().expect("nodes dir");
     let git_hash = read_daemon_git_hash(h.serve.daemon_state_path());
     let pid_dir = tempfile::tempdir().expect("pid dir");
@@ -1870,6 +1862,7 @@ async fn an_observer_set_shrunk_during_the_wait_is_in_the_respawn() {
     let delivered_before = obs_rx.borrow().sequence;
 
     let first_rec = read_pid(&rec_pidfile);
+    let hold = h.serve.hold_restarts();
     kill(first_rec);
     wait_for_state(&h, "rec_inst", InstanceState::Restarting).await;
     remove_copy(&h, "alpha").await;
@@ -1879,7 +1872,8 @@ async fn an_observer_set_shrunk_during_the_wait_is_in_the_respawn() {
         "the removal happened during the wait"
     );
 
-    wait_for_restarts_within(&h, "rec_inst", 1, BACKOFF_WAIT).await;
+    drop(hold);
+    wait_for_restarts(&h, "rec_inst", 1).await;
     wait_until(
         &h,
         "the restarted recorder observes bravo alone",

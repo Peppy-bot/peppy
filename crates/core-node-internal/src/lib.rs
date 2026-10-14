@@ -10,7 +10,7 @@ pub mod test_support;
 
 pub use error::{Error, Result};
 #[cfg(any(test, feature = "test-support"))]
-pub use services::federation::{ReserveOutcome, SliceOwnership};
+pub use services::federation::{ReserveOutcome, RestartHold, SliceOwnership};
 pub use services::mcp::{
     ExposureDocumentsError, ExposureFinding, check_repository_exposures, derive_exposure_catalog,
     resolve_exposure_documents, resolve_exposure_plan,
