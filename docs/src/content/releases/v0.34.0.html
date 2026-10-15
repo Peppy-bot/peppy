@@ -1,0 +1,32 @@
+<entry>
+  <title>v0.34.0</title>
+  <id>https://docs.peppy.bot/releases/v0-34-0/</id>
+  <updated>2026-10-15T00:00:00Z</updated>
+
+  <summary>Instances restart under a configurable policy after crashes or health failures, with per-process run logs.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.34.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Instances restart under a configurable policy after crashes or health failures, with per-process run logs.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on October 15, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Failing or unresponsive instances now restart by default (&lt;code&gt;on_failure&lt;/code&gt;); declare &lt;code&gt;framework.restart: "never"&lt;/code&gt; on a node, launcher, or run to keep the previous no-restart behavior.&lt;/li&gt;
+&lt;li&gt;Run logs are now one file per process named &lt;code&gt;&amp;lt;instance_id&amp;gt;_&amp;lt;timestamp&amp;gt;.log&lt;/code&gt;, replacing the single &lt;code&gt;&amp;lt;instance_id&amp;gt;.log&lt;/code&gt;; update anything that reads the fixed path.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Other changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Set an instance's restart policy with &lt;code&gt;framework.restart&lt;/code&gt; in its &lt;code&gt;peppy.json5&lt;/code&gt; or a launcher entry, or with &lt;code&gt;--restart&lt;/code&gt;/&lt;code&gt;--max-restarts&lt;/code&gt; on &lt;code&gt;peppy node run&lt;/code&gt; and &lt;code&gt;peppy node add --run&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;A restarting instance shows &lt;code&gt;restarting&lt;/code&gt; while the daemon backs off and starts a new process under the same id, which keeps its bindings, pairings, and any clock domain it published.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy stack list&lt;/code&gt; adds a &lt;code&gt;RESTARTS&lt;/code&gt; column, &lt;code&gt;peppy node info&lt;/code&gt; reports each instance's policy, restart count, last exit and next start, and &lt;code&gt;peppy stack resolve&lt;/code&gt; prints each instance's policy.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy node stop&lt;/code&gt; now clears a &lt;code&gt;restarting&lt;/code&gt;, &lt;code&gt;finished&lt;/code&gt;, or &lt;code&gt;failed&lt;/code&gt; instance and cancels any pending restart.&lt;/li&gt;
+&lt;li&gt;The &lt;code&gt;stack.list&lt;/code&gt; core node function returns each instance's restart status: policy, origin, restart count, attempt, last exit, and timestamps.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy node remove --stop-instances&lt;/code&gt; waits for each instance to exit and force-kills any that do not, warning for each; run without the flag it asks for confirmation first.&lt;/li&gt;
+&lt;li&gt;Re-adding a node with &lt;code&gt;peppy node add&lt;/code&gt; names each live or restarting instance and its state before overwriting, and is refused while one is starting.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
