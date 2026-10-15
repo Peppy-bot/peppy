@@ -11,7 +11,10 @@
 //! (`Config::clock`) and plays the simulator: every `harness.clock.tick(..)`
 //! instant is what the node's `peppygen::clock::now_ns` observes. A third
 //! boots it as that domain's publisher: the node supplies the instants, the
-//! test reads them back off the domain's stream and never ticks.
+//! test reads them back off the domain's stream and never ticks. A fourth
+//! leaves an emitted topic unread while the node publishes more than its
+//! queue holds: the harness's session still receives the node's next
+//! message, and the unread queue keeps the newest messages.
 
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
@@ -56,6 +59,12 @@ const EMITTED_STATUS: &str = r#"{
   name: "status",
   qos_profile: "reliable",
   message_format: { outcome: "string" }
+}"#;
+
+const EMITTED_MARKER: &str = r#"{
+  name: "marker",
+  qos_profile: "reliable",
+  message_format: { statuses: "u32" }
 }"#;
 
 const EXPOSED_PING: &str = r#"{
@@ -214,6 +223,34 @@ pub async fn setup_clock_consumer(
     }
 }
 
+/// Status-burst entry point: per frame, publishes as many statuses as the
+/// frame's width (`status-1` first), then one marker that counts them. Both
+/// topics are `reliable`, so the link delivers them in publish order.
+pub async fn setup_status_burst(
+    _parameters: peppygen::Parameters,
+    node_runner: Arc<peppygen::NodeRunner>,
+) -> peppygen::Result<()> {
+    let status =
+        peppygen::emitted_topics::status::declare_publisher(&node_runner).await?;
+    let marker =
+        peppygen::emitted_topics::marker::declare_publisher(&node_runner).await?;
+    let mut frames =
+        peppygen::consumed_topics::camera::video_stream::subscribe(&node_runner).await?;
+    while let Some((_producer, frame)) = frames.next().await? {
+        for index in 1..=frame.width {
+            status
+                .publish(peppygen::emitted_topics::status::build_message(format!(
+                    "status-{index}"
+                ))?)
+                .await?;
+        }
+        marker
+            .publish(peppygen::emitted_topics::marker::build_message(frame.width)?)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Clock-publisher entry point: the deployment (here the harness config)
 /// names this node the publisher of a clock domain, so it supplies that
 /// domain's instants, reporting which domain on the status topic and then
@@ -253,6 +290,8 @@ fn generated_mocks_and_fixtures_drive_a_node_end_to_end() {
 
             let status: NativeEmittedTopic = serde_json5::from_str(EMITTED_STATUS).unwrap();
             generator.add_emitted_topic(&status, None).unwrap();
+            let marker: NativeEmittedTopic = serde_json5::from_str(EMITTED_MARKER).unwrap();
+            generator.add_emitted_topic(&marker, None).unwrap();
             let ping: NativeExposedService = serde_json5::from_str(EXPOSED_PING).unwrap();
             generator.add_exposed_service(&ping, None).unwrap();
 
@@ -337,6 +376,9 @@ peppylib = {{ path = "{PEPPYLIB_OUTPUT_PATH}" }}
     fs::create_dir_all(user_node.join("src")).unwrap();
     fs::write(user_node.join("src/lib.rs"), NODE_LIB).unwrap();
 
+    // The harness's queue for a `reliable` topic: the standard tier's size,
+    // which a harness session takes from `SubscriberBufferSizes::default()`.
+    let status_queue = pmi::SubscriberBufferSizes::default().standard;
     let node_test = format!(
         r#"
 use std::time::Duration;
@@ -587,6 +629,47 @@ async fn a_clock_publisher_supplies_the_instants_the_test_reads() {{
     assert!(first >= 1_000, "ticks are the node's own instants: {{first}}");
     assert_eq!(next_tick().await, first + 1_000);
     assert_eq!(next_tick().await, first + 2_000);
+
+    harness.shutdown().await.expect("clean shutdown");
+}}
+
+// A test can leave an emitted topic unread. The node publishes one status
+// more than the harness's status queue holds, then a marker: the marker
+// still reaches the harness's session, and the unread queue then holds every
+// status but the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unread_emitted_topic_never_holds_up_the_harness() {{
+    let (mut harness, mocks) =
+        Harness::start_with(Config::default(), {crate_name}::setup_status_burst)
+            .await
+            .expect("harness should start");
+
+    let statuses: u32 = {status_queue} + 1;
+    mocks
+        .deps
+        .camera
+        .video_stream
+        .publish(&mock_frames::Message {{ width: statuses }})
+        .await
+        .expect("the frame should deliver");
+
+    let marker = tokio::time::timeout(Duration::from_secs(10), harness.emitted.marker.next())
+        .await
+        .expect("the unread statuses must not hold up the marker")
+        .expect("marker should decode")
+        .expect("marker subscription should be open");
+    assert_eq!(marker.statuses, statuses);
+
+    // Every status came before the marker, so the queue holds its newest
+    // statuses now.
+    for index in 2..=statuses {{
+        let status = tokio::time::timeout(Duration::from_secs(10), harness.emitted.status.next())
+            .await
+            .expect("the queue holds the newest statuses")
+            .expect("status should decode")
+            .expect("status subscription should be open");
+        assert_eq!(status.outcome, format!("status-{{index}}"));
+    }}
 
     harness.shutdown().await.expect("clean shutdown");
 }}

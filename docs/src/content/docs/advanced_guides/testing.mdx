@@ -378,7 +378,7 @@ assert!((command.max_velocity - 0.5).abs() < f64::EPSILON);
   </TabItem>
 </Tabs>
 
-Both directions carry the pairing's deterministic delivery guarantees: the consuming direction's first publish waits for the node's pinned subscription, and the emitting direction's subscription was opened before the node booted.
+Both directions carry the pairing's deterministic delivery guarantees: the consuming direction's first publish waits for the node's pinned subscription, and the emitting direction's subscription was opened before the node booted. The mock's subscriptions keep the newest messages your test has not read, as the [emitted topic subscriptions](#emitted-topics) do, so a test can leave them unread without holding up the mock's session.
 
 A [multi slot](/advanced_guides/pairing/#pairing-with-several-peers-through-one-slot) gets one mock per member, delivered as a list in the order the configuration names them, each under its own instance id and the copy the configuration put it in; `peer_info_for(instance_id)` is the `info` the node's `peers()` lists for that member. The node's `publish_to` reaches the one mock it names:
 
@@ -475,6 +475,8 @@ assert_eq!(status.outcome, "done");
 </Tabs>
 
 `next` awaits the node's next message on the topic, in order, and returns `None` once the harness's session closes.
+
+Each subscription keeps the newest messages your test has not read: up to 128 messages, or 1024 for a `sensor_data` topic, or the topic's retention depth when that is larger. When a message arrives while the subscription is full, the oldest unread message is dropped. A test can therefore read an emitted topic late, or not at all: its unread messages never hold up the other messages to the harness's session, such as the next message of another emitted topic or the reply of a service or action the test calls. A test that must see every message of a topic never leaves more messages unread than the subscription holds.
 
 ### Exposed services
 

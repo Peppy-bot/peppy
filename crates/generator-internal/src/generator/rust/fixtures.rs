@@ -141,7 +141,12 @@ fn render_emitted_topic(
     let module = quote! {
         #![doc = #doc]
 
-        /// A held subscription to the node's emissions on this topic.
+        /// A held subscription to the node's emissions on this topic. It
+        /// keeps the newest messages the test has not read, up to the queue
+        /// size of the topic's QoS tier, or its retention depth when that is
+        /// larger: when the queue is full, a new message drops the oldest
+        /// unread one. A test can leave it unread, and its unread messages
+        /// never hold up the other messages to the harness's session.
         pub struct Subscription {
             inner: peppylib::messaging::Subscription,
         }
@@ -163,7 +168,7 @@ fn render_emitted_topic(
                 &producer,
                 #qos,
                 #retention,
-                peppylib::messaging::TopicBuffer::Backpressure,
+                peppylib::messaging::TopicBuffer::KeepLatest,
             )
             .await?;
             Ok(Subscription { inner })
@@ -880,7 +885,9 @@ fn render_harness(
         }
 
         /// Typed subscriptions to the node's emitted topics, opened before
-        /// the node booted (so its very first publish is captured).
+        /// the node booted (so its very first publish is captured). Each
+        /// keeps the newest messages the test has not read and never holds
+        /// up the harness's session.
         pub struct Emitted {
             #( #emitted_fields ),*
         }

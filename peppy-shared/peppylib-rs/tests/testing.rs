@@ -669,6 +669,98 @@ async fn subscribe_peer_pinned_receives_slot_scoped_publishes() {
     router.shutdown().await.expect("router shutdown");
 }
 
+/// A test can leave a pairing mock's subscription unread. The subscription
+/// keeps its newest messages and never holds up the mock's session: the node
+/// emits one message more than the unread queue holds, then one message on a
+/// second topic of the slot. The second message reaches the mock, and the
+/// unread topic holds every message but the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subscribe_peer_pinned_keeps_the_newest_messages_and_never_holds_up_its_session() {
+    let router = EphemeralRouter::start().await.expect("start router");
+    let node_handle = router.connect().await.expect("node session");
+    let mock_handle = router.connect().await.expect("mock session");
+
+    let pairing = SenderTarget::pairing("arm_link", "v1").expect("pairing target");
+    let node = ProducerRef::new("standalone-core", "node_1");
+    let mock_peer = PeerInfo {
+        producer: ProducerRef::new("mock-core", "mock-arm"),
+        peer_link_id: "controller".to_string(),
+    };
+    let subscribe = |topic| {
+        subscribe_peer_pinned(
+            &mock_handle,
+            "mock-core",
+            "mock-arm",
+            "controller",
+            pairing.clone(),
+            &node,
+            "arm",
+            topic,
+            QoSProfile::Reliable,
+        )
+    };
+    let mut commands = subscribe("joint_commands")
+        .await
+        .expect("pinned subscription");
+    let mut markers = subscribe("marker").await.expect("pinned subscription");
+
+    // Both topics share one QoS, so the link delivers them in publish order.
+    let declare = |topic| {
+        TestTopicPublisher::declare_to_peer(
+            &node_handle,
+            "standalone-core",
+            "node_1",
+            pairing.clone(),
+            "arm",
+            topic,
+            QoSProfile::Reliable,
+            mock_peer.clone(),
+        )
+    };
+    let command_publisher = declare("joint_commands").await.expect("declare publisher");
+    let marker_publisher = declare("marker").await.expect("declare publisher");
+
+    // A reliable topic's subscription queue has the standard tier's size,
+    // and a session opened with `EphemeralRouter::connect` takes the default
+    // sizes, `SubscriberBufferSizes::default()`.
+    let capacity = pmi::SubscriberBufferSizes::default().standard;
+    let published = 1..=capacity + 1;
+    for index in published.clone() {
+        command_publisher
+            .publish(Payload::from(format!("cmd-{index}").into_bytes()))
+            .await
+            .expect("publish command");
+    }
+    marker_publisher
+        .publish(Payload::from_static(b"marker"))
+        .await
+        .expect("publish marker");
+
+    let marker = tokio::time::timeout(Duration::from_secs(5), markers.on_next_message())
+        .await
+        .expect("the unread commands must not hold up the marker")
+        .expect("subscription should be open");
+    assert_eq!(marker.payload().as_ref(), b"marker");
+
+    // Every command came before the marker, so the queue holds its newest
+    // commands now.
+    let mut kept = Vec::new();
+    for _ in 0..capacity {
+        let command = tokio::time::timeout(Duration::from_secs(5), commands.on_next_message())
+            .await
+            .expect("the queue holds its newest commands")
+            .expect("subscription should be open");
+        kept.push(String::from_utf8_lossy(command.payload().as_ref()).into_owned());
+    }
+    let newest: Vec<String> = published
+        .skip(1)
+        .map(|index| format!("cmd-{index}"))
+        .collect();
+    assert_eq!(kept, newest, "the queue drops the oldest command only");
+
+    router.shutdown().await.expect("router shutdown");
+}
+
 /// A standalone `NodeRunner` against `router`, exactly what a harness-booted
 /// node's runtime looks like to `peppylib::clock`.
 async fn standalone_node_runner(

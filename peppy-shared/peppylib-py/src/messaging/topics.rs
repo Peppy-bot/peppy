@@ -284,6 +284,8 @@ impl PyTopicMessenger {
     /// without the pin-following machinery (a test mock's pin never
     /// changes). Test-support seam (`peppylib::testing`); generated pairing
     /// mocks use it to receive the topics the node under test emits to them.
+    /// The subscription keeps the newest messages, so a test can leave it
+    /// unread without holding up the mock's session.
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     fn subscribe_peer_pinned<'py>(

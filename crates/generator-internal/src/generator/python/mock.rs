@@ -1213,11 +1213,19 @@ fn render_pair_subscription(
     builder.add_import("from typing import Optional");
 
     builder.block(&format!("class {camel}Subscription:"), |builder| {
-        builder.docstring(&format!(
-            "Typed subscription to `{topic_name}` (the node emits this direction): \
-             pinned to the node's identity and slot id exactly as a real paired peer \
-             would be."
-        ));
+        builder.multiline_docstring(
+            &format!(
+                "Typed subscription to `{topic_name}` (the node emits this direction): \
+                 pinned to the node's identity and slot id exactly as a real paired peer \
+                 would be."
+            ),
+            [
+                "It keeps the newest messages the test has not read, up to the queue size of",
+                "the topic's QoS tier: when the queue is full, a new message drops the oldest",
+                "unread one. A test can leave it unread, and its unread messages never hold up",
+                "the other messages to the mock's session.",
+            ],
+        );
         builder.blank_line();
         builder.py(r#"
 def __init__(self, inner) -> None:
