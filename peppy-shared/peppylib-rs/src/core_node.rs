@@ -36,10 +36,12 @@ pub(crate) async fn poll_bound_core_node<R: core_node_api::ServiceRequest>(
 /// domain hosted on the same machine rides this same topic and target under
 /// the domain's `link_id`, which the pinned segment leaves out. `SensorData`
 /// QoS: for these streams a slow subscriber should get newer messages dropped
-/// rather than back-pressure the publisher.
+/// rather than back-pressure the publisher. `buffer` holds the messages the
+/// subscriber has not read yet.
 pub(crate) async fn subscribe_core_topic(
     node_runner: &crate::runtime::NodeRunner,
     topic: &str,
+    buffer: crate::messaging::TopicBuffer,
 ) -> crate::error::Result<crate::messaging::Subscription> {
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
@@ -51,6 +53,7 @@ pub(crate) async fn subscribe_core_topic(
         Some(pmi::DEFAULT_LINK_ID),
         topic,
         config::node::QoSProfile::SensorData,
+        buffer,
     )
     .await
 }

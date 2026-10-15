@@ -23,7 +23,7 @@ use core_node_api::{TopicId, names};
 use crate::core_node::poll_bound_core_node;
 use crate::error::{Error, Result};
 use crate::messaging::{
-    SenderTarget, ServiceRequestContext, Subscription, TopicMessenger, TopicPublisher,
+    SenderTarget, ServiceRequestContext, Subscription, TopicBuffer, TopicMessenger, TopicPublisher,
 };
 use crate::runtime::{NodeRunner, TaskHandle, spawn};
 use crate::types::Payload;
@@ -268,7 +268,10 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
             domain,
             role: ClockRole::Consumer { publisher },
         } => {
-            let mut subscription = subscribe_domain(node_runner, &domain, &publisher).await?;
+            // The feeder reads every tick as it lands.
+            let mut subscription =
+                subscribe_domain(node_runner, &domain, &publisher, TopicBuffer::Backpressure)
+                    .await?;
             let feeder_cache = Arc::clone(&cache);
             // The subscriber is detached: subscription drop happens via the
             // TaskHandle field on PeppyClock, which aborts the task and walks
@@ -305,19 +308,22 @@ fn domain_target(domain: &ClockDomainId) -> Result<crate::messaging::SenderTarge
     )?)
 }
 
-/// Subscribe to `domain`'s stream, pinned to the instance that publishes it.
+/// Subscribe to `domain`'s stream, pinned to the instance that publishes it,
+/// on the node's own session.
 async fn subscribe_domain(
     node_runner: &NodeRunner,
     domain: &ClockDomainId,
     publisher: &ProducerRef,
+    buffer: TopicBuffer,
 ) -> Result<Subscription> {
     let processor = node_runner.processor();
-    subscribe_domain_stream(
+    subscribe_pinned_domain(
         node_runner.messenger(),
         processor.bound_core_node(),
         processor.bound_instance_id(),
         domain,
         publisher,
+        buffer,
     )
     .await
 }
@@ -328,13 +334,35 @@ async fn subscribe_domain(
 /// because its binding says which domain and whose ticks. This is the same
 /// subscription for a caller that holds only a messenger: the daemon hosting a
 /// domain watches it this way, so `peppy clock list` can say whether the
-/// domain has published an instant and what it was.
+/// domain has published an instant and what it was. The subscription keeps
+/// backpressure: its caller reads every tick as it lands.
 pub async fn subscribe_domain_stream(
     messenger: &crate::MessengerHandle,
     as_core_node: &str,
     as_instance_id: &str,
     domain: &ClockDomainId,
     publisher: &ProducerRef,
+) -> Result<Subscription> {
+    subscribe_pinned_domain(
+        messenger,
+        as_core_node,
+        as_instance_id,
+        domain,
+        publisher,
+        TopicBuffer::Backpressure,
+    )
+    .await
+}
+
+/// The subscription to `domain`'s stream that [`subscribe_domain`] and
+/// [`subscribe_domain_stream`] open, held in `buffer`.
+async fn subscribe_pinned_domain(
+    messenger: &crate::MessengerHandle,
+    as_core_node: &str,
+    as_instance_id: &str,
+    domain: &ClockDomainId,
+    publisher: &ProducerRef,
+    buffer: TopicBuffer,
 ) -> Result<Subscription> {
     TopicMessenger::subscribe_publisher_pinned(
         messenger,
@@ -345,6 +373,7 @@ pub async fn subscribe_domain_stream(
         &domain.link_id(),
         TopicId::Clock.name(),
         QoSProfile::SensorData,
+        buffer,
     )
     .await
 }
@@ -356,11 +385,23 @@ pub async fn subscribe_domain_stream(
 /// hosted on that machine stays out of this stream. Under a simulated domain
 /// it is that domain's stream, whichever machine its publisher runs on, so a
 /// source reading this sees exactly what it sent.
-pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
+///
+/// The subscription lives on the node's own session, and `buffer` holds the
+/// ticks the caller has not read yet. With [`TopicBuffer::KeepLatest`] it
+/// keeps the newest ticks and drops the oldest unread one when full, so a
+/// caller that reads late, or stops reading, holds up nothing. With
+/// [`TopicBuffer::Backpressure`] a full subscription waits for the caller,
+/// and what waits with it depends on where the ticks come from. Ticks that
+/// arrive over a connection (wall time, or a domain this node consumes) hold
+/// up every message that arrives over that connection. When the node
+/// publishes its domain itself, its own publish call waits, because the
+/// session hands a publish to its own subscriptions inside the publish.
+pub async fn subscribe(node_runner: &NodeRunner, buffer: TopicBuffer) -> Result<ClockSubscription> {
     let processor = node_runner.processor();
     let inner = match processor.clock().clone() {
         ClockBinding::Wall => {
-            crate::core_node::subscribe_core_topic(node_runner, TopicId::Clock.name()).await?
+            crate::core_node::subscribe_core_topic(node_runner, TopicId::Clock.name(), buffer)
+                .await?
         }
         ClockBinding::Sim { domain, role } => {
             let publisher = match role {
@@ -369,7 +410,7 @@ pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
                 }
                 ClockRole::Consumer { publisher } => publisher,
             };
-            subscribe_domain(node_runner, &domain, &publisher).await?
+            subscribe_domain(node_runner, &domain, &publisher, buffer).await?
         }
     };
     Ok(ClockSubscription { inner })

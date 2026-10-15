@@ -844,7 +844,10 @@ fn render_harness(
             /// [`Harness::clock`]'s `tick`. `Publisher` makes the node the
             /// instance supplying that domain: it publishes its own instants
             /// and the test reads them back with
-            /// `peppylib::clock::subscribe(harness.node_runner())`.
+            /// `peppylib::clock::subscribe(harness.node_runner(),
+            /// peppylib::messaging::TopicBuffer::KeepLatest)`, which keeps
+            /// the newest ticks and never holds up the node's session when
+            /// the test reads late.
             pub clock: peppylib::testing::HarnessClock,
             #( #config_fields ),*
         }

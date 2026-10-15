@@ -122,6 +122,7 @@ impl TopicMessenger {
             None,
             to_topic,
             qos,
+            TopicBuffer::Backpressure,
         )
         .await
     }
@@ -135,7 +136,8 @@ impl TopicMessenger {
     /// the same machine publishes on the same topic and target under the
     /// domain's own `link_id`. Naming the segment is what keeps the two streams
     /// apart for a subscriber that cannot know the daemon's per-boot
-    /// `instance_id`.
+    /// `instance_id`. `buffer` is as in [`Self::subscribe`].
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn subscribe_target_scoped_with_link_id(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -144,6 +146,7 @@ impl TopicMessenger {
         from_link_id: Option<&str>,
         to_topic: &str,
         qos: QoSProfile,
+        buffer: TopicBuffer,
     ) -> Result<Subscription> {
         let recv = TopicWireReceiver::new(
             as_core_node,
@@ -155,12 +158,7 @@ impl TopicMessenger {
             to_topic,
         )?;
         let subscription = messenger
-            .subscribe_to_topic(
-                &recv,
-                qos,
-                TopicRetention::LiveOnly,
-                TopicBuffer::Backpressure,
-            )
+            .subscribe_to_topic(&recv, qos, TopicRetention::LiveOnly, buffer)
             .await?;
         Ok(Subscription::new(subscription))
     }
@@ -241,7 +239,7 @@ impl TopicMessenger {
     /// Distinct from [`Self::subscribe_peer_pinned`], which asserts a
     /// pairing-shaped target and names the recipient it stands for, and from
     /// [`Self::subscribe_target_scoped`], which leaves the publisher's identity
-    /// and `link_id` wildcarded.
+    /// and `link_id` wildcarded. `buffer` is as in [`Self::subscribe`].
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn subscribe_publisher_pinned(
         messenger: &MessengerHandle,
@@ -252,6 +250,7 @@ impl TopicMessenger {
         from_link_id: &str,
         to_topic: &str,
         qos: QoSProfile,
+        buffer: TopicBuffer,
     ) -> Result<Subscription> {
         let recv = TopicWireReceiver::new(
             as_core_node,
@@ -263,12 +262,7 @@ impl TopicMessenger {
             to_topic,
         )?;
         let subscription = messenger
-            .subscribe_to_topic(
-                &recv,
-                qos,
-                TopicRetention::LiveOnly,
-                TopicBuffer::Backpressure,
-            )
+            .subscribe_to_topic(&recv, qos, TopicRetention::LiveOnly, buffer)
             .await?;
         Ok(Subscription::new(subscription))
     }

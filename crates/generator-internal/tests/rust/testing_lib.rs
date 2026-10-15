@@ -614,9 +614,12 @@ async fn a_clock_publisher_supplies_the_instants_the_test_reads() {{
         .await
         .expect_err("the node publishes this domain");
 
-    let mut ticks = peppylib::clock::subscribe(harness.node_runner())
-        .await
-        .expect("subscription to the node's domain");
+    let mut ticks = peppylib::clock::subscribe(
+        harness.node_runner(),
+        peppylib::messaging::TopicBuffer::KeepLatest,
+    )
+    .await
+    .expect("subscription to the node's domain");
     let mut next_tick = async || {{
         tokio::time::timeout(Duration::from_secs(10), ticks.on_next_tick())
             .await

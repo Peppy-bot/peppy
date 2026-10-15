@@ -15,8 +15,8 @@ use pyo3::types::PyBytes;
 use tokio::sync::Mutex;
 
 use crate::messaging::{
-    decode_err, encoded_to_py_bytes, future_into_py_unit, optional_duration_from_secs_f64,
-    to_py_err,
+    PyTopicBuffer, decode_err, encoded_to_py_bytes, future_into_py_unit,
+    optional_duration_from_secs_f64, to_py_err,
 };
 use crate::runtime::PyNodeRunner;
 
@@ -245,8 +245,13 @@ impl PyClockSubscription {
     }
 }
 
-/// Subscribe to the periodic `/clock` topic on `node_runner`'s bound core
-/// node.
+/// Subscribe to the ticks of `node_runner`'s own clock, held in `buffer`
+/// until read. `TopicBuffer.KeepLatest` keeps the newest ticks and drops the
+/// oldest unread one when full, so it holds up nothing.
+/// `TopicBuffer.Backpressure` waits for the reader: ticks that arrive over a
+/// connection (wall time, or a domain the node consumes) hold up every
+/// message that arrives over that connection, and when the node publishes
+/// its domain itself, its own publish call waits.
 ///
 /// Python equivalent of `peppylib::clock::subscribe`.
 #[pyfunction]
@@ -254,10 +259,14 @@ impl PyClockSubscription {
 fn subscribe_clock_py<'py>(
     py: Python<'py>,
     node_runner: &PyNodeRunner,
+    buffer: PyTopicBuffer,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
     crate::py_future::future_into_py(py, async move {
-        let sub = subscribe(&runner).await.map_err(to_py_err)?.into_inner();
+        let sub = subscribe(&runner, buffer.into())
+            .await
+            .map_err(to_py_err)?
+            .into_inner();
         Ok(PyClockSubscription {
             inner: Arc::new(Mutex::new(sub)),
         })

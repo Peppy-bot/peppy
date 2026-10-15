@@ -5430,7 +5430,9 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wal
     `await harness.clock.tick(...)`. `"publisher"` makes the node the
     instance supplying that domain: it publishes its own instants and the
     test reads them back with
-    `peppylib.clock.subscribe(harness.node_runner())`.
+    `peppylib.clock.subscribe(harness.node_runner, peppylib.TopicBuffer.KeepLatest)`,
+    which keeps the newest ticks and never holds up the node's session when the
+    test reads late.
 
     spare_camera_vacant: leave the `spare_camera` dependency slot vacant (its cardinality admits an empty binding).
     camera_bank_instances: how many mock producer instances to start and bind for the `camera_bank` dependency slot.
@@ -6041,7 +6043,9 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wal
     `await harness.clock.tick(...)`. `"publisher"` makes the node the
     instance supplying that domain: it publishes its own instants and the
     test reads them back with
-    `peppylib.clock.subscribe(harness.node_runner())`.
+    `peppylib.clock.subscribe(harness.node_runner, peppylib.TopicBuffer.KeepLatest)`,
+    which keeps the newest ticks and never holds up the node's session when the
+    test reads late.
     """
     return _HarnessStart(_start(setup, parameters, instance_id, node_dir, clock))
 
@@ -6249,7 +6253,9 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wal
     `await harness.clock.tick(...)`. `"publisher"` makes the node the
     instance supplying that domain: it publishes its own instants and the
     test reads them back with
-    `peppylib.clock.subscribe(harness.node_runner())`.
+    `peppylib.clock.subscribe(harness.node_runner, peppylib.TopicBuffer.KeepLatest)`,
+    which keeps the newest ticks and never holds up the node's session when the
+    test reads late.
     """
     return _HarnessStart(_start(setup, parameters, instance_id, node_dir, clock))
 
@@ -6450,7 +6456,9 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wal
     `await harness.clock.tick(...)`. `"publisher"` makes the node the
     instance supplying that domain: it publishes its own instants and the
     test reads them back with
-    `peppylib.clock.subscribe(harness.node_runner())`.
+    `peppylib.clock.subscribe(harness.node_runner, peppylib.TopicBuffer.KeepLatest)`,
+    which keeps the newest ticks and never holds up the node's session when the
+    test reads late.
     """
     return _HarnessStart(_start(setup, parameters, instance_id, node_dir, clock))
 

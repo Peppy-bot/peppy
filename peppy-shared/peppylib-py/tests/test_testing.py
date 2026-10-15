@@ -576,7 +576,9 @@ async def test_mock_clock_wall_serves_synchronize_ticks_and_scripted_skew(tmp_pa
             )
 
             # The periodic tick publisher carries the same skewed source.
-            subscription = await peppy_clock.subscribe(node_runner)
+            subscription = await peppy_clock.subscribe(
+                node_runner, TopicBuffer.KeepLatest
+            )
             tick = await asyncio.wait_for(subscription.on_next_tick(), timeout=10.0)
             assert tick is not None, "subscription should be open"
             assert tick.time > time.time_ns() + hour_ns / 2, (

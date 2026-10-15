@@ -1112,7 +1112,9 @@ reads OS wall time, which the harness clock ticks like a daemon.
 `await harness.clock.tick(...)`. `"publisher"` makes the node the
 instance supplying that domain: it publishes its own instants and the
 test reads them back with
-`peppylib.clock.subscribe(harness.node_runner())`.
+`peppylib.clock.subscribe(harness.node_runner, peppylib.TopicBuffer.KeepLatest)`,
+which keeps the newest ticks and never holds up the node's session when the
+test reads late.
 "#);
             // One paragraph per slot the deployment lets a test vary.
             if !parts.slot_kwargs.is_empty() {
