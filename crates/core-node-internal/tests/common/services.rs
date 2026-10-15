@@ -5,8 +5,9 @@ use super::{CALLER_INSTANCE_ID, core_node_target};
 use config::node::QoSProfile;
 use core_node_api::encoding::{
     ClockRequest, ClockTick, DatastoreGetRequest, DatastoreGetResponse, DatastoreListRequest,
-    DatastoreListResponse, DatastoreRemoveRequest, DatastoreStoreRequest, NodeInfo,
-    NodeInfoRequest, NodeInfoResponse,
+    DatastoreListResponse, DatastoreRemoveRequest, DatastoreStoreExclusiveRequest,
+    DatastoreStoreExclusiveResponse, DatastoreStoreRequest, NodeInfo, NodeInfoRequest,
+    NodeInfoResponse,
 };
 use core_node_api::{ServiceRequest, TopicId};
 use peppylib::clock::wall_now_ns;
@@ -40,29 +41,53 @@ pub async fn poll_core_node<R: ServiceRequest>(
 
 /// Polls the core-node service that `request` belongs to on the started core
 /// node, with the shared test caller identity, and returns the decoded
-/// response. Panics on any transport or decode failure, or when no response
-/// arrives within `timeout`; the daemon's services should always answer a
-/// well-formed request.
+/// response. Panics on any failure, the daemon's refusal of the request
+/// included, and when no response arrives within `timeout`.
 pub async fn poll_core_node_with_timeout<R: ServiceRequest>(
     started: &StartedCoreNode,
     request: &R,
     timeout: Duration,
 ) -> R::Response {
+    poll_core_node_as(started, CALLER_INSTANCE_ID, request, timeout)
+        .await
+        .unwrap_or_else(|e| panic!("{} poll should succeed: {e}", R::ID.name()))
+}
+
+/// Polls the core-node service that `request` belongs to on the started core
+/// node as the instance `caller_instance_id`, returning the daemon's answer
+/// or its refusal of the request.
+pub async fn poll_core_node_as<R: ServiceRequest>(
+    started: &StartedCoreNode,
+    caller_instance_id: &str,
+    request: &R,
+    timeout: Duration,
+) -> peppylib::PeppyResult<R::Response> {
     peppylib::core_node::transport::poll(
         request,
         &started.caller_handle,
         &started.core_node_name,
-        CALLER_INSTANCE_ID,
+        caller_instance_id,
         &started.core_node_name,
         timeout,
     )
     .await
-    .unwrap_or_else(|e| panic!("{} poll should succeed: {e}", R::ID.name()))
+}
+
+/// Sends a `datastore_store_exclusive` request for `key` as the instance
+/// `writer`, returning the daemon's answer or its refusal of the request.
+pub async fn datastore_store_exclusive_as(
+    started: &StartedCoreNode,
+    writer: &str,
+    key: &str,
+    value: &[u8],
+) -> peppylib::PeppyResult<DatastoreStoreExclusiveResponse> {
+    let request = DatastoreStoreExclusiveRequest::new(key, value.to_vec(), "text/plain")
+        .expect("test key should be a valid datastore key");
+    poll_core_node_as(started, writer, &request, Duration::from_secs(5)).await
 }
 
 /// Sends a `datastore_store` request to the started core node. Panics on any
-/// transport or decode failure; the store endpoint should always succeed for
-/// a well-formed request.
+/// failure, the refusal of a key another instance owns included.
 pub async fn datastore_store(started: &StartedCoreNode, key: &str, value: &[u8], encoding: &str) {
     let request = DatastoreStoreRequest::new(key, value.to_vec(), encoding)
         .expect("test key should be a valid datastore key");
@@ -83,7 +108,8 @@ pub async fn datastore_list(started: &StartedCoreNode) -> DatastoreListResponse 
 }
 
 /// Sends a `datastore_remove` request to the started core node and returns
-/// whether the key existed. Panics on any transport or decode failure.
+/// whether the key existed. Panics on any failure, the refusal of a key
+/// another instance owns included.
 pub async fn datastore_remove(started: &StartedCoreNode, key: &str) -> bool {
     let request =
         DatastoreRemoveRequest::new(key).expect("test key should be a valid datastore key");

@@ -858,8 +858,7 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
     // for this instance. On correct code this holds regardless of watcher/stop
     // ordering; a regression that dropped the claim would let the watcher relabel
     // the force-kill as `failed` in the stack log.
-    let log_content =
-        std::fs::read_to_string(started.peppy_dirs.stack_log_path()).unwrap_or_default();
+    let log_content = common::stack_log(&started);
     assert!(
         !log_content
             .lines()

@@ -3,6 +3,7 @@
 mod actions;
 mod daemon;
 mod fixtures;
+mod lifecycle;
 mod poll;
 mod services;
 
@@ -14,6 +15,8 @@ pub use actions::*;
 pub use daemon::*;
 #[allow(unused_imports)]
 pub use fixtures::*;
+#[allow(unused_imports)]
+pub use lifecycle::*;
 #[allow(unused_imports)]
 pub use poll::*;
 #[allow(unused_imports)]

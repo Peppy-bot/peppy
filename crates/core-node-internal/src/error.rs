@@ -72,4 +72,31 @@ pub enum Error {
         name: String,
         blind_for: std::time::Duration,
     },
+
+    // -- datastore
+    #[error(
+        "instance '{instance_id}' cannot store a datastore key exclusively: the core node runs \
+         no process under that id, and an owned key lasts as long as its owner's process. Run \
+         the node in the stack with `peppy node run <name>:<tag>` or `peppy stack launch \
+         <launcher>`, or store the key with `store`"
+    )]
+    DatastoreOwnerNotRunning { instance_id: String },
+
+    #[error(
+        "datastore key '{key}' is owned by instance '{owner}', which stored it with \
+         `store_exclusive`: only that instance stores or removes it until its process ends. Use \
+         another key, or stop that instance with {stop}"
+    )]
+    DatastoreKeyOwned {
+        key: String,
+        owner: String,
+        stop: String,
+    },
+
+    #[error(
+        "datastore key '{key}' exists with no owner, as `store` writes it: `store_exclusive` \
+         takes a key that is absent or that the calling instance already owns. Remove the key with \
+         `remove`, or use another key"
+    )]
+    DatastoreKeyUnowned { key: String },
 }
