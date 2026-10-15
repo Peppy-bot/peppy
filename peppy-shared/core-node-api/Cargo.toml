@@ -18,6 +18,10 @@ thiserror = "2.0"
 url = "2"
 gix-url = "0.39"
 
+[target.'cfg(unix)'.dependencies]
+# The names of the signals a process can end by, as this machine numbers them.
+libc = "0.2"
+
 [build-dependencies]
 build-helpers = { path = "../build-helpers" }
 capnpc = "0.27"

@@ -7,6 +7,7 @@ use super::super::types::LinkValue;
 use super::copy::CopyRecord;
 use super::select::{PartMachines, UnitSelection};
 use config::AnyType;
+use config::node::RestartDeclaration;
 use config::runtime::{CopyName, Name};
 use std::collections::BTreeMap;
 
@@ -41,11 +42,16 @@ pub enum AppliedChange {
         old: Option<serde_json::Value>,
         new: serde_json::Value,
     },
+    /// The restart policy of the instance.
+    Restart {
+        old: Option<RestartDeclaration>,
+        new: RestartDeclaration,
+    },
 }
 
 impl AppliedChange {
     /// The written field, `arguments.<key>`, `links.<slot>`,
-    /// `framework.clock` or `daemon_scopes.<target>`.
+    /// `framework.clock`, `framework.restart` or `daemon_scopes.<target>`.
     pub fn field(&self) -> String {
         match self {
             AppliedChange::Argument { key, .. } => format!("arguments.{key}"),
@@ -56,6 +62,7 @@ impl AppliedChange {
             AppliedChange::DaemonScope { daemon_target, .. } => {
                 format!("daemon_scopes.{daemon_target}")
             }
+            AppliedChange::Restart { .. } => String::from("framework.restart"),
         }
     }
 
@@ -68,6 +75,7 @@ impl AppliedChange {
             AppliedChange::LinkRemoved { .. } => String::from("(absent)"),
             AppliedChange::Clock { new, .. } => new.to_string(),
             AppliedChange::DaemonScope { new, .. } => render(new),
+            AppliedChange::Restart { new, .. } => new.launcher_spelling(),
         }
     }
 
@@ -81,16 +89,27 @@ impl AppliedChange {
             }
             AppliedChange::LinkAdded { target, .. } => format!("+ {target}"),
             AppliedChange::LinkRemoved { old, .. } => format!("removed (was {})", render(old)),
-            AppliedChange::Clock { old, new } => format!(
-                "{} -> {new}",
-                old.as_ref()
-                    .map_or_else(|| String::from("(absent)"), Name::to_string)
+            AppliedChange::Clock { old, new } => {
+                transition(old.as_ref().map(Name::to_string), new.to_string())
+            }
+            AppliedChange::Restart { old, new } => transition(
+                old.as_ref().map(RestartDeclaration::launcher_spelling),
+                new.launcher_spelling(),
             ),
             AppliedChange::DaemonScope { old, new, .. } => {
                 format!("{} -> {}", render_option(old.as_ref()), render(new))
             }
         }
     }
+}
+
+/// `old -> new` for a framework knob, `(absent)` standing for a knob the
+/// entry did not write.
+pub(super) fn transition(old: Option<String>, new: String) -> String {
+    format!(
+        "{} -> {new}",
+        old.unwrap_or_else(|| String::from("(absent)"))
+    )
 }
 
 /// What one applied adjustment did: the target and field it touched, the

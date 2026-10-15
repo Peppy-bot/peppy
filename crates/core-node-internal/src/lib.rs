@@ -9,6 +9,8 @@ mod ssh_config;
 pub mod test_support;
 
 pub use error::{Error, Result};
+#[cfg(any(test, feature = "test-support"))]
+pub use services::federation::{ReserveOutcome, RestartHold, SliceOwnership};
 pub use services::mcp::{
     ExposureDocumentsError, ExposureFinding, check_repository_exposures, derive_exposure_catalog,
     resolve_exposure_documents, resolve_exposure_plan,
@@ -29,9 +31,10 @@ pub use services::repo::{
 };
 pub use services::{
     CoreNode, CoreNodeArguments, CoreNodeConfig, ExportDiscardLog, HealthMonitorPolicy,
-    HostAddressSource, NAME_CLAIM_LINKED_SETTLE, Report, TEARDOWN_REAP_BUDGET,
+    HostAddressSource, NAME_CLAIM_LINKED_SETTLE, Report, RestartBackoff, TEARDOWN_REAP_BUDGET,
     check_runtime_prerequisites, checkout_dir_for, copy_removal_budget, current_host_name,
-    force_kill_deadline, idle_timeout_flag, materialized_checkout, slow_connection_hint,
-    stack_reset_timeout, teardown_all_instances, test_host_addresses,
+    force_kill_deadline, idle_timeout_flag, materialized_checkout, node_remove_bound,
+    node_stop_bound, slow_connection_hint, stack_reset_timeout, teardown_all_instances,
+    test_host_addresses,
 };
 pub use ssh_config::{IdentityAgent, SshHostConfig, SshTarget, resolve_host_config};

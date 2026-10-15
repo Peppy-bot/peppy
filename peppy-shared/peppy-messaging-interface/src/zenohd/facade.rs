@@ -13,7 +13,6 @@ use zenoh::config::Config;
 /// microseconds, and the bound keeps a filtered or non-local host from pinning
 /// startup on a single dial.
 const ROUTER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// Bound on the wait for a spawned zenohd to accept TCP connections.
 const ROUTER_READINESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -22,6 +21,14 @@ const ROUTER_READINESS_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// quickly is seen quickly and a slow one is not polled in a tight loop.
 const READINESS_FIRST_BACKOFF: std::time::Duration = std::time::Duration::from_millis(10);
 const READINESS_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The longest a managed router's start takes to end with the router
+/// accepting connections: the port-in-use pre-flight, the readiness
+/// timeout, and the pause and poll that can follow its last check.
+pub const ROUTER_START_BOUND: std::time::Duration = ROUTER_PROBE_TIMEOUT
+    .saturating_add(ROUTER_READINESS_TIMEOUT)
+    .saturating_add(READINESS_MAX_BACKOFF)
+    .saturating_add(ROUTER_PROBE_TIMEOUT);
 
 enum RouterOwnership {
     /// A router spawned and supervised by peppy from a rendered (or

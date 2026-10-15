@@ -110,6 +110,32 @@ impl ObserverRecord {
         self.pin.producer.core_node == source.core_node
             && self.pin.producer.instance_id == source.instance_id
     }
+    /// The member as a plan names it, the inverse of [`Self::observing`].
+    fn target(&self) -> ObservationTarget {
+        ObservationTarget {
+            source: self.pin.producer.clone(),
+            source_link_id: self.pin.source_link_id.clone(),
+            peer: self
+                .pin
+                .peer
+                .as_ref()
+                .map(config::runtime::ObservedPeer::from),
+        }
+    }
+}
+
+/// The records of one observer as its plan names them: one entry per slot,
+/// in record order, each member once.
+fn slots_of_records(records: &[ObserverRecord]) -> BTreeMap<String, ObservationTargets> {
+    let mut members: BTreeMap<String, Vec<ObservationTarget>> = BTreeMap::new();
+    for record in records {
+        let targets = members.entry(record.observer_link_id.clone()).or_default();
+        let target = record.target();
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    ObservationTargets::slots_from_plan(members)
 }
 
 /// One observer slot: the instance that declares it and its own link_id. The
@@ -282,7 +308,7 @@ impl ObservationCoordinator {
     /// does not name keep their records, and a slot mapped to an empty set
     /// observes nothing from here on. Source generations are kept, so a member
     /// whose source already ran is stamped with its current incarnation; a
-    /// source no slot observes any more is forgotten.
+    /// source that is down and no slot observes any more is forgotten.
     ///
     /// Returns one line per slot the observer refused or missed, naming it and
     /// why.
@@ -312,7 +338,11 @@ impl ObservationCoordinator {
                 );
             }
             for record in &dropped {
-                Self::forget_unobserved_source_locked(&mut registry, &record.source());
+                self.forget_unneeded_generation_locked(
+                    &mut registry,
+                    &record.source(),
+                    &live_instances,
+                );
             }
             // The records are the observer's next convergence, so they stand
             // whether or not it is running to take this delivery.
@@ -555,23 +585,29 @@ impl ObservationCoordinator {
         registry.remote_live.contains(source)
     }
 
-    /// An instance stopped or was removed. If it is a source, every slot
-    /// observing it is re-delivered with that member's `source_live` cleared
-    /// (its pin stays in the set, at its position). If it is an observer, its
-    /// records are dropped. The source's generation is retained so a later
-    /// restart is a strictly newer incarnation.
-    pub async fn on_instance_down(&self, instance_id: &str) {
-        let _guard = self.op_lock.lock().await;
-
-        let source = SourceKey::new(self.updates.core_node_name(), instance_id);
-        // Drop this instance's own observer registrations. Only a local
-        // instance can be an observer here, which is why this half has no
-        // remote counterpart.
-        self.registry
+    /// Takes the observations of `instance_id`, slot by slot, out of the
+    /// registry as the instance ends, returning them for its next process.
+    /// Only a local instance can be an observer here. Synchronous, so a
+    /// slot's state flip can take them under its own lock.
+    pub fn take_observations(&self, instance_id: &str) -> BTreeMap<String, ObservationTargets> {
+        let removed = self
+            .registry
             .lock()
             .unwrap()
             .by_observer
-            .remove(instance_id);
+            .remove(instance_id)
+            .unwrap_or_default();
+        slots_of_records(&removed)
+    }
+
+    /// An instance exited, stopped or was removed: every slot observing it is
+    /// re-delivered with that member's `source_live` cleared (its pin stays
+    /// in the set, at its position). The generation of a source a slot still
+    /// observes is retained, so a later restart is a strictly newer
+    /// incarnation; one no slot observes is forgotten.
+    pub async fn announce_source_down(&self, instance_id: &str) {
+        let _guard = self.op_lock.lock().await;
+        let source = SourceKey::new(self.updates.core_node_name(), instance_id);
         self.mark_source_down(&source).await;
     }
 
@@ -597,7 +633,7 @@ impl ObservationCoordinator {
             // observes this source has no bearing on whether it is up. A
             // no-op for a local source, which never gets a marker.
             registry.remote_live.remove(source);
-            Self::forget_unobserved_source_locked(&mut registry, source);
+            self.forget_unneeded_generation_locked(&mut registry, source, &live_instances);
             deliveries
         };
         self.deliver_many(
@@ -688,15 +724,23 @@ impl ObservationCoordinator {
             .collect()
     }
 
-    /// Keeps a source generation only while at least one observer may
-    /// reconnect to it. This bounds the registry on churny daemons.
-    fn forget_unobserved_source_locked(registry: &mut Registry, source: &SourceKey) {
+    /// Forgets the generation of `source` once no observer records it and
+    /// the source is down. A generation is kept while the source is up, so
+    /// an observer whose records wait on its slot for its restart is stamped
+    /// with the incarnation of a source that stayed up; forgetting the rest
+    /// bounds the registry on churny daemons.
+    fn forget_unneeded_generation_locked(
+        &self,
+        registry: &mut Registry,
+        source: &SourceKey,
+        live_local_instances: &HashSet<String>,
+    ) {
         let still_observed = registry
             .by_observer
             .values()
             .flatten()
             .any(|record| record.observes(source));
-        if !still_observed {
+        if !still_observed && !self.source_is_live(registry, source, live_local_instances, None) {
             registry.source_generation.remove(source);
         }
     }
@@ -874,7 +918,8 @@ mod tests {
         let seeds = coordinator.seed_for_spawn(&planned_observations());
         assert_eq!(seeds["sole_arm"][0].source_generation, 1);
 
-        coordinator.on_instance_down("bravo_panel_inst").await;
+        coordinator.take_observations("bravo_panel_inst");
+        coordinator.announce_source_down("bravo_panel_inst").await;
         let registry = coordinator.registry.lock().unwrap();
         assert!(registry.by_observer.contains_key(OBSERVER_INSTANCE));
         assert!(!registry.by_observer.contains_key("bravo_panel_inst"));
@@ -1006,9 +1051,10 @@ mod tests {
         assert_eq!(stamped(), [("alpha_arm".to_string(), 2, true)]);
     }
 
-    /// A source a removal took out of every slot, then brought back by a join
-    /// under the same instance id, carries a generation strictly newer than
-    /// the one it held before, so the observer tells the two incarnations apart.
+    /// A source a removal took out of every slot keeps its generation while it
+    /// is up and is forgotten once it is down; brought back by a join under
+    /// the same instance id, it carries a generation strictly newer than the
+    /// one it held before, so the observer tells the two incarnations apart.
     #[tokio::test]
     async fn a_source_rejoining_under_its_old_id_is_a_newer_incarnation() {
         let directory = tempfile::tempdir().unwrap();
@@ -1046,7 +1092,19 @@ mod tests {
         coordinator
             .replace_slots(&observer, &fleet(Vec::new()))
             .await;
-        assert_eq!(generation(), None, "a source no slot observes is forgotten");
+        assert_eq!(
+            generation(),
+            Some(before),
+            "a source that is up keeps its generation"
+        );
+        coordinator
+            .remote_source_stopped(&joined.core_node, &joined.instance_id)
+            .await;
+        assert_eq!(
+            generation(),
+            None,
+            "a source no slot observes is forgotten once it is down"
+        );
 
         coordinator
             .remote_source_reached_running(&joined.core_node, &joined.instance_id)
@@ -1056,6 +1114,62 @@ mod tests {
             .await;
         let after = generation().expect("the rejoined source is observed again");
         assert!(after > before, "{after} must exceed {before}");
+    }
+
+    /// An observer's records as its plan names them: one slot per link, its
+    /// members in record order, a member recorded twice kept once.
+    #[test]
+    fn slots_of_records_keep_record_order_and_each_member_once() {
+        let target = |instance: &str| ObservationTarget {
+            source: ProducerRef::new("core_a", instance),
+            source_link_id: "controller".into(),
+            peer: None,
+        };
+        let records = [
+            ObserverRecord::observing("fleet", &target("bravo_arm")),
+            ObserverRecord::observing("fleet", &target("alpha_arm")),
+            ObserverRecord::observing("fleet", &target("bravo_arm")),
+        ];
+        assert_eq!(
+            slots_of_records(&records),
+            BTreeMap::from([(
+                "fleet".to_string(),
+                ObservationTargets::new("fleet", vec![target("bravo_arm"), target("alpha_arm")])
+                    .expect("distinct members"),
+            )])
+        );
+    }
+
+    /// An observer whose records wait on its slot for its restart is seeded
+    /// with the incarnation of a source that stayed up, after a removal took
+    /// that source out of every slot the registry still holds.
+    #[tokio::test]
+    async fn a_restarting_observer_keeps_the_incarnation_of_a_source_that_stayed_up() {
+        let directory = tempfile::tempdir().unwrap();
+        let coordinator = coordinator_observing_the_root(&directory);
+        let other = Name::new("obs_2").unwrap();
+        coordinator.register_instance(other.as_str(), &planned_observations());
+        coordinator.on_instance_running(SOURCE_INSTANCE).await;
+
+        let kept = coordinator.take_observations(OBSERVER_INSTANCE);
+        assert_eq!(kept, planned_observations());
+        coordinator
+            .replace_slots(
+                &other,
+                &BTreeMap::from([(
+                    "sole_arm".to_string(),
+                    ObservationTargets::new("sole_arm", Vec::new()).expect("an empty set"),
+                )]),
+            )
+            .await;
+
+        let seeds = coordinator.seed_for_spawn(&kept);
+        let member = &seeds["sole_arm"][0];
+        assert_eq!(
+            (member.source_generation, member.source_live),
+            (1, true),
+            "the source never went down"
+        );
     }
 
     /// The seed-stamping invariants under a concurrent source lifecycle: an
@@ -1080,7 +1194,8 @@ mod tests {
             tokio::spawn(async move {
                 for _ in 0..RESTARTS {
                     coordinator.on_instance_running(SOURCE_INSTANCE).await;
-                    coordinator.on_instance_down(SOURCE_INSTANCE).await;
+                    coordinator.take_observations(SOURCE_INSTANCE);
+                    coordinator.announce_source_down(SOURCE_INSTANCE).await;
                     tokio::task::yield_now().await;
                 }
             })

@@ -1,8 +1,9 @@
 //! Router liveness probe for the daemon's router watchdog.
 
 /// How long a probe waits for its throwaway session to close. The probe has
-/// its answer by then, so a slow close must not stall the caller.
-const PROBE_SESSION_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+/// its answer by then, so a slow close must not stall the caller. The router
+/// watchdog's recovery bound counts it (`WATCHDOG_RECOVERY`).
+pub const PROBE_SESSION_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Closes the throwaway session of a router probe, bounded by
 /// [`PROBE_SESSION_CLOSE_TIMEOUT`].

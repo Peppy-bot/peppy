@@ -238,8 +238,7 @@ mod tests {
         const LINE_BYTES: usize = 8 * 1024;
         const PRINTED: usize = 2100;
         const QUEUED: usize = 2016;
-        const FAILED: &str = "Instance 'arm_inst' of node 'openarm_arm:v1' failed: process exit \
-                              status: 3";
+        const FAILED: &str = "Instance 'arm_inst' of node 'openarm_arm:v1' failed: exit code 3";
         let discard_report = format!(
             "Log export discarded {} records while the queue was full or the endpoint refused \
              requests",

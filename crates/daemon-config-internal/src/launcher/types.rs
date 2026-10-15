@@ -7,6 +7,7 @@ use crate::internal::contract::validate_named_items;
 use config::{
     AnyType,
     consts::DEFAULT_LINK_ID_SENTINEL,
+    node::RestartDeclaration,
     runtime::{CoreNodeName, Name, SELF_CORE_NODE},
     schema::PeppySchema,
 };
@@ -67,8 +68,8 @@ pub struct PeppyLauncher {
     /// nothing to select there is no selection to refuse.
     pub constraints: Vec<SelectionConstraint>,
     /// Framework configuration for the launch as a whole, separate from the
-    /// deployment structure around it. It holds the clock domains this
-    /// launcher declares.
+    /// deployment structure around it: the clock domains this launcher
+    /// declares and the launcher root's restart policy.
     pub framework: LauncherFramework,
 }
 
@@ -82,11 +83,16 @@ pub struct LauncherFramework {
     /// declaring one name must agree.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub clocks: BTreeMap<Name, ClockDeclaration>,
+    /// The restart policy of every instance whose entry and node declare
+    /// none. The launcher root alone writes it: a fragment or option body
+    /// that does is refused when a selection composes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<RestartDeclaration>,
 }
 
 impl LauncherFramework {
     pub fn is_empty(&self) -> bool {
-        self.clocks.is_empty()
+        self.clocks.is_empty() && self.restart.is_none()
     }
 }
 
@@ -1165,8 +1171,8 @@ impl<'de> Visitor<'de> for LinkEntriesVisitor {
 
 /// Per-instance framework knobs. Distinct from `arguments`: those are
 /// declared by the node author and validated against a per-node parameter
-/// schema; framework knobs are owned by peppylib, fixed-shape, and applied
-/// uniformly to every node.
+/// schema; framework knobs are fixed-shape, and peppy reads them the same
+/// way for every node.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameworkOverrides {
@@ -1178,6 +1184,11 @@ pub struct FrameworkOverrides {
     /// it would be a second place to say the same thing, or a different one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clock: Option<Name>,
+    /// What the daemon does when this instance's process exits on its own.
+    /// It wins over the node's own `framework.restart` and the launcher
+    /// root's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<RestartDeclaration>,
 }
 
 fn deserialize_instances<'de, D>(deserializer: D) -> Result<Vec<DeploymentInstance>, D::Error>

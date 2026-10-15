@@ -222,6 +222,83 @@ mod tests {
             .expect("`--clock` is live on the command that starts an instance");
     }
 
+    /// `--restart` names one of the three policies and `--max-restarts`
+    /// takes a positive count beside it; `peppy node add` takes both only
+    /// with `--run`.
+    #[test]
+    fn the_restart_flags_take_a_policy_and_a_positive_cap() {
+        let run =
+            |flags: &[&'static str]| [&["peppy", "node", "run", "probe:v1"][..], flags].concat();
+        let add = |flags: &[&'static str]| [&["peppy", "node", "add", "."][..], flags].concat();
+        let count = |got: &str| {
+            format!(
+                "`--max-restarts` is a count of attempts in a row, from 1 to 4294967295; got \
+                 `{got}`"
+            )
+        };
+        let (zero, negative) = (count("0"), count("-1"));
+        // Each argv with what parsing it must do: `Ok` names why it parses,
+        // `Err` holds a substring of its refusal.
+        for (args, expected) in [
+            (
+                run(&["--restart", "on_failure"]),
+                Ok("`--restart` takes a policy"),
+            ),
+            (
+                run(&["--restart", "always", "--max-restarts", "3"]),
+                Ok("`--max-restarts` rides beside `--restart`"),
+            ),
+            (
+                add(&["--run", "--restart", "never"]),
+                Ok("`node add --run` takes the flags"),
+            ),
+            (
+                run(&["--restart", "sometimes"]),
+                Err("`--restart` is `never`, `on_failure` or `always`; got `sometimes`"),
+            ),
+            (run(&["--max-restarts", "2"]), Err("--restart <POLICY>")),
+            (
+                run(&["--restart", "on_failure", "--max-restarts", "0"]),
+                Err(zero.as_str()),
+            ),
+            (
+                run(&["--restart", "on_failure", "--max-restarts", "-1"]),
+                Err(negative.as_str()),
+            ),
+            (
+                run(&["--restart", "on_failure", "--max-restarts", "4294967295"]),
+                Ok("the top of the range is a cap"),
+            ),
+            (
+                run(&["--restart", "on_failure", "--max-restarts", "4294967296"]),
+                Err("from 1 to 4294967295; got `4294967296`"),
+            ),
+            (add(&["--restart", "never"]), Err("--run")),
+            (
+                add(&["--run", "--restart", "on_failure", "--max-restarts", "-1"]),
+                Err(negative.as_str()),
+            ),
+            (
+                add(&["--run", "--max-restarts", "2"]),
+                Err("--restart <POLICY>"),
+            ),
+        ] {
+            let parsed = Cli::try_parse_from(&args);
+            match expected {
+                Ok(parses) => {
+                    parsed.unwrap_or_else(|refusal| panic!("{args:?}: {parses}: {refusal}"));
+                }
+                Err(text) => {
+                    let refusal = parsed
+                        .err()
+                        .unwrap_or_else(|| panic!("{args:?} is refused"))
+                        .to_string();
+                    assert!(refusal.contains(text), "{args:?}: {refusal}");
+                }
+            }
+        }
+    }
+
     /// An instance reads one clock, and a domain declaration assigns its
     /// publisher that domain, so naming both in one command is refused where
     /// the operator typed it.

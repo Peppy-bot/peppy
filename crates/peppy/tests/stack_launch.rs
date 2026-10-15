@@ -22,37 +22,10 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use super::common::{
     build_count, build_logs_for, built_artifacts_for, counting_build_cmd,
     emulate_cooperative_shutdown, emulate_node_services, emulate_pairing_node_services,
-    emulate_startup_services, install_node_manifest, node_add_command, read_daemon_git_hash,
-    register_repo_caches, serve_app_context, stack_graph, test_node_target,
-    write_minimal_node_config, write_node_config_for_helper,
+    emulate_startup_services, install_node_manifest, launcher_args, node_add_command,
+    read_daemon_git_hash, register_repo_caches, serve_app_context, stack_graph, test_node_target,
+    timeouts, write_minimal_node_config, write_node_config_for_helper,
 };
-
-/// The budgets these tests launch and build under: idle windows generous
-/// enough that a slow machine never trips one, and a deadline where the test
-/// wants the whole command bounded.
-fn timeouts(max_timeout_secs: Option<u64>) -> StackTimeouts {
-    StackTimeouts {
-        node_add_idle_timeout_secs: 60,
-        node_build_idle_timeout_secs: 60,
-        node_run_idle_timeout_secs: 60,
-        max_timeout_secs,
-    }
-}
-
-/// What a `stack launch` or `stack build` of `launcher_config_path` takes
-/// here: one machine, the options the launcher defaults to, and a cached
-/// build wherever one fits.
-fn launcher_args(launcher_config_path: PathBuf, max_timeout_secs: Option<u64>) -> LauncherArgs {
-    LauncherArgs {
-        launcher_config_path,
-        placement: Default::default(),
-        with: Default::default(),
-        joins: Default::default(),
-        timeouts: timeouts(max_timeout_secs),
-        rebuild: false,
-        no_prebuild: false,
-    }
-}
 
 /// The `run_cmd` of an emulated node that snapshots the boot config the
 /// daemon handed it (the file `PEPPY_RUNTIME_CONFIG` names) to `dump`, then

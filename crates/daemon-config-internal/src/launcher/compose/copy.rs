@@ -12,11 +12,13 @@ use super::constraints::{self, ConstraintInPlay, ConstraintScope};
 use super::error::CompositionError;
 use super::expand::{
     Expanded, OriginatedDeployment, Unit, add_core_node_link, append_links, expand_unit,
-    instance_named_mut, merge_deployment,
+    instance_named_mut, merge_deployment, refuse_fragment_restart,
 };
 use super::load::{LoadedFragment, LoadedOption, node_ids};
 use super::prepared::PreparedLauncher;
-use super::report::{AppliedAdjustment, AppliedChange, SkippedAdjustment, render, render_option};
+use super::report::{
+    AppliedAdjustment, AppliedChange, SkippedAdjustment, render, render_option, transition,
+};
 use super::select::{CopyOrigin, PartMachines, UnitSelection, resolve_copy};
 use config::runtime::{CopyName, CopyTag, CoreNodeName, Name, instance_id_in_copy};
 use core_node_api::encoding::{ArgumentOverride, AxisSelection, SetMember};
@@ -330,6 +332,7 @@ pub(super) fn compose_copy(
             domain: domain.to_string(),
         });
     }
+    refuse_fragment_restart(&fragments)?;
     let owned: BTreeSet<&str> = node_ids(fragments.iter().copied()).collect();
     if owned.is_empty() {
         return Err(CompositionError::CopyStartsNothing {
@@ -618,7 +621,8 @@ fn rewrite_report(
             match &mut entry.change {
                 AppliedChange::Argument { .. }
                 | AppliedChange::Clock { .. }
-                | AppliedChange::DaemonScope { .. } => {}
+                | AppliedChange::DaemonScope { .. }
+                | AppliedChange::Restart { .. } => {}
                 AppliedChange::LinkSet { old, new, .. } => {
                     if let Some(old) = old {
                         rewrite_link(old, rewrite).map_err(collide)?;
@@ -749,6 +753,9 @@ fn apply_write(
                 .daemon_scopes
                 .insert(daemon_target.clone(), new.clone());
         }
+        AppliedChange::Restart { new, .. } => {
+            instance.framework.restart = Some(*new);
+        }
     }
     Ok(())
 }
@@ -830,8 +837,21 @@ pub(super) fn attach(
                 let old = running.framework.clock.as_ref();
                 if old != Some(new) {
                     return Err(refusal(format!(
-                        "{field}: {} -> {new}",
-                        old.map_or_else(|| String::from("(absent)"), Name::to_string)
+                        "{field}: {}",
+                        transition(old.map(Name::to_string), new.to_string())
+                    )));
+                }
+            }
+            AppliedChange::Restart { new, .. } => {
+                let old = running.framework.restart;
+                if old != Some(*new) {
+                    return Err(refusal(format!(
+                        "{field}: {}",
+                        transition(
+                            old.as_ref()
+                                .map(config::node::RestartDeclaration::launcher_spelling),
+                            new.launcher_spelling()
+                        )
                     )));
                 }
             }
@@ -894,6 +914,9 @@ pub(super) fn against_running(
                     daemon_target, old, ..
                 } => {
                     *old = running.daemon_scopes.get(daemon_target).cloned();
+                }
+                AppliedChange::Restart { old, .. } => {
+                    *old = running.framework.restart;
                 }
                 AppliedChange::LinkAdded { .. } => {}
             }

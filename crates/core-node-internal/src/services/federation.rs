@@ -1,5 +1,6 @@
 //! Participant side of a federated launch: which launch this daemon is
-//! committed to, and who is driving it.
+//! committed to, and who is driving it; and the admission of a restart,
+//! which a removal holds off and a busy refusal names.
 //!
 //! # Why a daemon records this at all
 //!
@@ -55,9 +56,11 @@ pub(crate) use service::{
     listen_for_relationship_notify,
 };
 
+use config::runtime::Name;
 use core_node_api::LaunchScoped;
 use core_node_api::encoding::LaunchIdentity;
 use parking_lot::Mutex;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -174,6 +177,44 @@ pub struct SliceOwnership {
     /// and the slice because all three answer "which launch is this machine
     /// part of, and in what role".
     pub(crate) active: Mutex<Option<crate::services::stack::ActiveLaunch>>,
+    /// How many removals hold restarts off; a restart is admitted at zero.
+    restart_holds: tokio::sync::watch::Sender<usize>,
+    /// The instances whose restart holds an admission, each with its count
+    /// of admissions (the next restart of an instance can be admitted before
+    /// the last one's pair requests end), which a busy refusal names.
+    admitted_restarts: Arc<Mutex<BTreeMap<Name, usize>>>,
+}
+
+/// A restart's admission: the stack's read guard, and its instance among
+/// the admitted restarts until it drops.
+pub(crate) struct RestartAdmission {
+    _guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    admitted_restarts: Arc<Mutex<BTreeMap<Name, usize>>>,
+    instance_id: Name,
+}
+
+impl Drop for RestartAdmission {
+    fn drop(&mut self) {
+        let mut admitted = self.admitted_restarts.lock();
+        if let Some(count) = admitted.get_mut(&self.instance_id) {
+            *count -= 1;
+            if *count == 0 {
+                admitted.remove(&self.instance_id);
+            }
+        }
+    }
+}
+
+/// A hold on restarts, released when dropped: a removal's, or a test's.
+#[must_use = "restarts run again once the hold is dropped"]
+pub struct RestartHold {
+    holds: tokio::sync::watch::Sender<usize>,
+}
+
+impl Drop for RestartHold {
+    fn drop(&mut self) {
+        self.holds.send_modify(|holds| *holds -= 1);
+    }
 }
 
 impl SliceOwnership {
@@ -183,7 +224,34 @@ impl SliceOwnership {
             state: Mutex::default(),
             stack: Default::default(),
             active: Mutex::default(),
+            restart_holds: tokio::sync::watch::Sender::new(0),
+            admitted_restarts: Arc::default(),
         })
+    }
+
+    /// The instances whose restart holds an admission on this daemon.
+    fn admitted_restarts(&self) -> Vec<Name> {
+        self.admitted_restarts.lock().keys().cloned().collect()
+    }
+
+    /// Takes the stack for one change, refusing while a change or a node
+    /// goal holds it with the text this daemon answers, which names each
+    /// restart holding it and the stop that ends that restart.
+    pub(crate) fn try_begin_change(
+        &self,
+    ) -> std::result::Result<crate::services::node::gate::StackHold, String> {
+        self.stack
+            .try_begin_change()
+            .map_err(|busy| busy.refusal(&self.admitted_restarts(), &self.core_node_name))
+    }
+
+    /// Holds restarts off until the hold drops, so an instance a removal
+    /// ends is not started again before the removal claims its slot.
+    pub fn hold_restarts(&self) -> RestartHold {
+        self.restart_holds.send_modify(|holds| *holds += 1);
+        RestartHold {
+            holds: self.restart_holds.clone(),
+        }
     }
 
     /// Reserves this daemon for `launch_id`, driven by `coordinator`.
@@ -318,6 +386,68 @@ impl SliceOwnership {
              reservation with `peppy stack reset --core-node {}`.",
             held.launch_id, held.coordinator_core_node, self.core_node_name
         ))
+    }
+
+    /// Admits the restart of `instance_id`. Waits for the stack's mutation
+    /// guard, gives up when a reset ran meanwhile, waits again while a
+    /// reservation holds this daemon or a removal holds restarts off;
+    /// `cancel` ends the wait. `None` when `cancel` fires or a reset ran.
+    pub(crate) async fn admit_restart(
+        &self,
+        cancel: &CancellationToken,
+        instance_id: &Name,
+    ) -> Option<RestartAdmission> {
+        loop {
+            let reset = self.stack.cancellation();
+            let guard = tokio::select! {
+                _ = cancel.cancelled() => return None,
+                guard = self.stack.admit_node_goal_waiting() => guard,
+            };
+            if reset.is_cancelled() {
+                return None;
+            }
+            if let Some(lease) = self.held_lease() {
+                drop(guard);
+                tokio::select! {
+                    _ = cancel.cancelled() => return None,
+                    _ = lease.ended() => continue,
+                }
+            }
+            let mut holds = self.restart_holds.subscribe();
+            if *holds.borrow_and_update() == 0 {
+                *self
+                    .admitted_restarts
+                    .lock()
+                    .entry(instance_id.clone())
+                    .or_default() += 1;
+                return Some(RestartAdmission {
+                    _guard: guard,
+                    admitted_restarts: Arc::clone(&self.admitted_restarts),
+                    instance_id: instance_id.clone(),
+                });
+            }
+            drop(guard);
+            tokio::select! {
+                _ = cancel.cancelled() => return None,
+                _ = holds.wait_for(|holds| *holds == 0) => {}
+            }
+        }
+    }
+
+    /// The lease of the reservation this daemon holds, whatever its launch.
+    fn held_lease(&self) -> Option<Lease> {
+        self.state
+            .lock()
+            .reservation
+            .as_ref()
+            .map(|held| held.lease.clone())
+    }
+
+    /// The gate this daemon's stack is changed under, for tests outside this
+    /// crate; the crate reads the field.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn stack(&self) -> &crate::services::node::gate::StackState {
+        &self.stack
     }
 
     /// Records that this daemon's stack slice came from `launch`. Called when a
@@ -789,5 +919,51 @@ mod tests {
         ownership.clear();
         assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_err());
         assert!(ownership.admit_node_goal(&LOCAL).is_ok());
+    }
+
+    /// A busy refusal names each restart holding an admission, with the stop
+    /// that ends it, until its last admission drops: a restart admitted twice
+    /// at once stays named until both end.
+    #[tokio::test]
+    async fn a_busy_refusal_names_each_admitted_restart_until_it_ends() {
+        let ownership = SliceOwnership::new("cn-a");
+        let never = CancellationToken::new();
+        let arm = Name::new("arm_inst").unwrap();
+        let grip = Name::new("grip_inst").unwrap();
+        let admit = |instance_id| ownership.admit_restart(&never, instance_id);
+        let arm_first = admit(&arm).await.expect("nothing holds restarts off");
+        let arm_second = admit(&arm).await.expect("nothing holds restarts off");
+        let grip_admission = admit(&grip).await.expect("nothing holds restarts off");
+        let named = |instance_id: &str| {
+            format!(
+                "; the restart of `{instance_id}` holds this daemon, and `peppy node stop \
+                 {instance_id} --core-node cn-a` ends it and clears the instance"
+            )
+        };
+        let busy = "a node add, build, run, stop or removal, or a restart, is in progress on \
+                    this daemon; run this again once it ends";
+        let refusal = || {
+            ownership
+                .try_begin_change()
+                .err()
+                .expect("admitted restarts hold the stack")
+        };
+        assert_eq!(
+            refusal(),
+            format!("{busy}{}{}", named("arm_inst"), named("grip_inst"))
+        );
+        drop(arm_first);
+        assert_eq!(
+            refusal(),
+            format!("{busy}{}{}", named("arm_inst"), named("grip_inst")),
+            "the second admission of `arm_inst` still holds the stack"
+        );
+        drop(arm_second);
+        assert_eq!(refusal(), format!("{busy}{}", named("grip_inst")));
+        drop(grip_admission);
+        assert!(
+            ownership.try_begin_change().is_ok(),
+            "no admission holds the stack"
+        );
     }
 }

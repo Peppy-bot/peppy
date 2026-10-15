@@ -245,7 +245,7 @@ async fn repin_swaps_to_the_new_peer_without_stale_or_duplicate_delivery() {
         .expect("publish");
     expect_message(&mut subscription, "arm_1", b"from arm_1").await;
 
-    // Re-pin to arm_2 (failover: replacement booted with --pair).
+    // Re-pin to arm_2 (failover: replacement booted with --link).
     tx.send(paired_with(2, &["arm_2"])).expect("watch send");
     wait_for_peer_wire_sub(&peer_handle, "arm_2").await;
 

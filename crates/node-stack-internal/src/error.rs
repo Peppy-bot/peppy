@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use config::{ConfigError, ParsingError};
+use core_node_api::{InstanceState, duplicate_instance_id_message};
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -17,8 +18,13 @@ pub enum Error {
         instance_id: String,
         link_id: String,
     },
-    #[error("pairing endpoint instance `{instance_id}` is not running in this stack")]
-    PairingInstanceNotRunning { instance_id: String },
+    #[error("pairing endpoint instance `{instance_id}` is not in this stack")]
+    PairingInstanceNotInStack { instance_id: String },
+    #[error("pairing endpoint instance `{instance_id}` is {state}, with no process to pair")]
+    PairingInstanceWithoutProcess {
+        instance_id: String,
+        state: InstanceState,
+    },
     #[error(
         "pairing slot `{slot}` is already paired with `{peer}`; a `one` or `zero_or_one` slot holds one pair until it is cleared"
     )]
@@ -67,27 +73,18 @@ pub enum Error {
     CannotOverwriteNodeWithDependents { node_name: String, node_tag: String },
     #[error("Cannot overwrite node `{node_name}`:{node_tag} because it still has live instances")]
     CannotOverwriteNodeWithLiveInstances { node_name: String, node_tag: String },
-    #[error("Instance ID `{instance_id}` already exists for node `{node_name}`:{node_tag}")]
+    #[error("{}", duplicate_instance_id_message(instance_id, node_name, node_tag, core_node, *state))]
     DuplicateInstanceId {
         instance_id: String,
         node_name: String,
         node_tag: String,
+        core_node: String,
+        state: InstanceState,
     },
-    /// Stack-wide `instance_id` collision: the candidate `instance_id`
-    /// is already tracked by a *different* `(node_name, node_tag)` than
-    /// the one being spawned. Bindings address producers by raw
-    /// `instance_id` so duplicates across the stack would make
-    /// `--link KEY@id` ambiguous. The validator catches this at plan
-    /// time; this is the daemon's defensive backstop at the trust
-    /// boundary.
-    #[error(
-        "Instance ID `{instance_id}` is already tracked by `{existing_node_name}`:{existing_node_tag}; instance_ids must be unique across the entire stack"
-    )]
-    DuplicateInstanceIdAcrossStack {
-        instance_id: String,
-        existing_node_name: String,
-        existing_node_tag: String,
-    },
+    #[error("instance `{instance_id}` is no longer waiting for a restart")]
+    RespawnTargetMissing { instance_id: String },
+    #[error("the start of instance `{instance_id}` was ended by a stop before it spawned")]
+    StartClaimed { instance_id: String },
     #[error("Cannot remove node `{node_name}`:{node_tag} because it still has instances")]
     CannotRemoveNodeWithInstances { node_name: String, node_tag: String },
 

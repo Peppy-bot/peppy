@@ -254,7 +254,7 @@ methods! {
             name: "node_stop",
             host: CoreNodeDaemon,
             routing: bespoke,
-            summary: "Stop a running node instance.",
+            summary: "Stop a node instance, or clear one that is restarting, finished or failed.",
             request: NodeStopRequest,
             response: NodeStopResponse,
             schema: "node.capnp",

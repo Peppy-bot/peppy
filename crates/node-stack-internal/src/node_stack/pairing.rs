@@ -53,6 +53,45 @@ impl std::fmt::Display for SlotAddr {
     }
 }
 
+/// One pair as a start requests it: this instance's slot and the concrete
+/// peer slot it is paired with, ready for the pairing coordinator's reserve.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedPair {
+    pub own: SlotAddr,
+    pub peer: SlotAddr,
+    /// Set only when `peer` lives on another daemon. This daemon cannot read a
+    /// remote manifest, so the coordinator that validated the whole plan
+    /// supplies the peer's pairing identity and role here.
+    pub peer_remote_meta: Option<RemoteSlotMeta>,
+}
+
+/// `own ⇌ peer`, as the run log names a pair.
+impl std::fmt::Display for PlannedPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ⇌ {}", self.own, self.peer)
+    }
+}
+
+impl PlannedPair {
+    /// The pair as each endpoint on this daemon holds it: this one, and its
+    /// mirror when the peer is local too.
+    pub fn local_ends(&self) -> Vec<PlannedPair> {
+        match self.peer_remote_meta {
+            Some(_) => vec![self.clone()],
+            None => vec![self.clone(), self.mirrored()],
+        }
+    }
+
+    /// The same pair as the local peer holds it.
+    pub(super) fn mirrored(&self) -> Self {
+        Self {
+            own: self.peer.clone(),
+            peer: self.own.clone(),
+            peer_remote_meta: None,
+        }
+    }
+}
+
 /// The already-validated metadata of a pairing slot that lives on ANOTHER
 /// daemon.
 ///

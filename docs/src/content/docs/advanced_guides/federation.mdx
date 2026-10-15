@@ -202,31 +202,31 @@ instance is placed.
 daemon serving it:
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ Core node: cn-robot-7 (host: robot-7)                                        │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ Instance bindings                                                            │
-│                                                                              │
-│ ┌────────────────────────────┬──────────────────┬─────────┬─────────┐        │
-│ │ NODE                       │ INSTANCE         │ STATUS  │ HEALTH  │        │
-│ ├────────────────────────────┼──────────────────┼─────────┼─────────┤        │
-│ │ uvc_camera_python_mock:v1  │ wrist_cam_inst   │ running │ healthy │        │
-│ │ my_python_robot_arm:v1     │ arm_inst         │ running │ healthy │        │
-│ │ reactive_policy:v1         │ reflex_inst      │ running │ healthy │        │
-│ └────────────────────────────┴──────────────────┴─────────┴─────────┘        │
-└──────────────────────────────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ Core node: cn-atlas-h100 (host: atlas)                                       │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ Instance bindings                                                            │
-│                                                                              │
-│ ┌────────────────────────────┬──────────────────┬─────────┬─────────┐        │
-│ │ NODE                       │ INSTANCE         │ STATUS  │ HEALTH  │        │
-│ ├────────────────────────────┼──────────────────┼─────────┼─────────┤        │
-│ │ deliberative_planner:v1    │ planner_inst     │ running │ healthy │        │
-│ │ episode_recorder:v1        │ recorder_inst    │ running │ healthy │        │
-│ └────────────────────────────┴──────────────────┴─────────┴─────────┘        │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-robot-7 (host: robot-7)                                                    │
+├──────────────────────────────────────────────────────────────────────────────────────────┤
+│ Instance bindings                                                                        │
+│                                                                                          │
+│ ┌────────────────────────────┬──────────────────┬─────────┬─────────┬──────────┬───────┐ │
+│ │ NODE                       │ INSTANCE         │ STATUS  │ HEALTH  │ RESTARTS │ CLOCK │ │
+│ ├────────────────────────────┼──────────────────┼─────────┼─────────┼──────────┼───────┤ │
+│ │ uvc_camera_python_mock:v1  │ wrist_cam_inst   │ running │ healthy │ 0        │ wall  │ │
+│ │ my_python_robot_arm:v1     │ arm_inst         │ running │ healthy │ 0        │ wall  │ │
+│ │ reactive_policy:v1         │ reflex_inst      │ running │ healthy │ 0        │ wall  │ │
+│ └────────────────────────────┴──────────────────┴─────────┴─────────┴──────────┴───────┘ │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-atlas-h100 (host: atlas)                                                   │
+├──────────────────────────────────────────────────────────────────────────────────────────┤
+│ Instance bindings                                                                        │
+│                                                                                          │
+│ ┌────────────────────────────┬──────────────────┬─────────┬─────────┬──────────┬───────┐ │
+│ │ NODE                       │ INSTANCE         │ STATUS  │ HEALTH  │ RESTARTS │ CLOCK │ │
+│ ├────────────────────────────┼──────────────────┼─────────┼─────────┼──────────┼───────┤ │
+│ │ deliberative_planner:v1    │ planner_inst     │ running │ healthy │ 0        │ wall  │ │
+│ │ episode_recorder:v1        │ recorder_inst    │ running │ healthy │ 0        │ wall  │ │
+│ └────────────────────────────┴──────────────────┴─────────┴─────────┴──────────┴───────┘ │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 (Abridged: the real output opens each section with a `Slice of launch ...`
@@ -364,6 +364,12 @@ A reservation is a lease on the coordinator's presence in the federation: a
 coordinator that disappears frees the machines it held rather than leaving them
 wedged. A coordinator's own next launch also takes over its own stale
 reservation, so a lost release never blocks the machine that made it.
+
+A participant restarts its own instances under their [restart
+policy](/guides/launch_files/#restart-policy) while the coordinator is
+unreachable; a restart waits for its last exit's notices to other daemons,
+and for a stack launch, build, join or removal or a `peppy node remove` in
+progress on that daemon to end.
 
 **A pin that cannot be honored is a refusal, never a fallback.** A peer that
 does not hold a pinned content and cannot reach the pinned repository refuses

@@ -390,6 +390,8 @@ struct NodeRunGoal {
     # Only the planner sees the whole graph, so only the planner can fill this
     # in. Empty for a single-machine launch and for anything a user typed.
     lifecycleWatchers @11 :List(Text);
+    # The restart policy the launcher or the flag wrote for this instance.
+    restart @12 :RestartRequest;
 }
 
 # One instance, addressed the way the whole mesh addresses instances: by the
@@ -413,6 +415,17 @@ struct VacantPair {
     # so the operator reading a running stack sees the same sentence the
     # launch file carries.
     reason @1 :Text;
+}
+
+# The launcher's or the flag's say on an instance's restart policy, which the
+# daemon resolves against the node's own manifest.
+struct RestartRequest {
+    # "never", "on_failure" or "always"; empty when nothing was written.
+    policy @0 :Text;
+    # Where the policy was written: "instance", "flag" or "launcher_root".
+    origin @1 :Text;
+    # Attempts in a row before the instance stays failed; 0 for no cap.
+    maxRestarts @2 :UInt32;
 }
 
 struct PairRequest {
@@ -570,6 +583,10 @@ struct NodeRemoveResponse {
     success @0 :Bool;
     # Error message if failed (optional)
     errorMessage @1 :Text;
+    # The instances the removal stopped that did not exit within the
+    # cooperative shutdown window and were force-killed; empty when each
+    # exited gracefully.
+    forceKilled @2 :List(Text);
 }
 
 # Stack Reset service
@@ -594,7 +611,8 @@ struct NodeInfoRequest {
 struct NodeInstanceInfo {
     # Instance identifier
     instanceId @0 :Text;
-    # Per-instance state: "starting" or "running"
+    # Per-instance state: "starting", "running", "restarting", "finished" or
+    # "failed".
     state @1 :Text;
     # JSON-encoded `BTreeMap<String, Vec<ProducerRef>>` (link_id → bound
     # producer list) mirroring
@@ -620,6 +638,55 @@ struct NodeInstanceInfo {
     # The endpoints the instance serves, in label order; empty for a node
     # that declares none.
     endpoints @6 :List(InstanceEndpoint);
+    # The resolved restart policy: "never", "on_failure" or "always".
+    restart @7 :Text;
+    # Restart attempts in a row the policy allows before the next exit or
+    # failed start leaves the instance failed; 0 for no cap.
+    maxRestarts @8 :UInt32;
+    # Where the policy was written: "instance", "flag", "node",
+    # "launcher_root" or "default". Empty, like `restart`, from a daemon
+    # older than the policy.
+    restartOrigin @9 :Text;
+    # Times a restarted process of this instance reached running.
+    restartCount @10 :UInt32;
+    # Restart attempts in a row, which `maxRestarts` caps, as
+    # `RestartStatus.attempt` in core-node-api documents them.
+    attempt @11 :UInt32;
+    # Why the last start ended: its process's exit, or a start failure.
+    lastExit @12 :ExitCause;
+    # When the instance last reached running, in milliseconds since the Unix
+    # epoch; 0 when it never did.
+    runningSinceMs @13 :UInt64;
+    # When the next start is due, in milliseconds since the Unix epoch; 0 when
+    # none is scheduled.
+    nextStartMs @14 :UInt64;
+}
+
+# Why the last start of an instance ended: its process's exit, or a start
+# failure.
+struct ExitCause {
+    union {
+        # No process of the instance has exited.
+        none @0 :Void;
+        # The process exited with this code.
+        code @1 :Int32;
+        # The process was ended by a signal.
+        signal :group {
+            # Its number.
+            number @2 :Int32;
+            # Its name on the machine the process ran on; empty when that
+            # machine has none for the number.
+            name @3 :Text;
+            # Whether the process dumped core.
+            coreDumped @4 :Bool;
+        }
+        # The daemon's own account: a start failure's message, or an exit
+        # status it could not read.
+        message @5 :Text;
+        # The daemon killed the process, which answered no health check for
+        # this many seconds.
+        healthKillSecs @6 :UInt64;
+    }
 }
 
 # Node info lookup result.
@@ -650,6 +717,9 @@ struct NodeInfoResponse {
             addLogPath @5 :Text;
             # Per-instance run log paths, aligned with `instances` (same order).
             runLogPaths @6 :List(Text);
+            # The daemon's clock when it answered, in milliseconds since the
+            # Unix epoch: what each instance's `nextStartMs` counts down against.
+            reportedAtMs @7 :UInt64;
         }
     }
 }

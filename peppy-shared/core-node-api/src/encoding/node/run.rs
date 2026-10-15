@@ -1,9 +1,12 @@
 //! Encoding types for the NodeRun action (streaming version with feedback).
 
 use std::collections::{BTreeMap, HashSet};
+use std::num::NonZeroU32;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use capnp::message::Builder;
+use config::node::{RestartDeclaration, RestartOrigin, RestartPolicy, RestartRequest};
 use config::runtime::{NodeInstancePlan, ObservedPeer, ProducerRef};
 
 use crate::node_capnp;
@@ -29,8 +32,8 @@ pub struct PairTarget {
     /// instances. Its `core_node` is always populated, including for a
     /// same-daemon pair, so a daemon never has to infer "this must be local"
     /// from an absent field. Set by whoever plans the pair: the coordinator of
-    /// a federated launch, or the receiving daemon's own name for a
-    /// `node run --pair`.
+    /// a federated launch, or the receiving daemon's own name for a pair a
+    /// `node run --link` names.
     pub peer: ProducerRef,
     /// The complementary slot on the peer, when the request pins one.
     /// `None` is unpinned: exactly one available complementary slot must
@@ -326,6 +329,9 @@ pub struct NodeRunGoal {
     /// planner can name them. Pairing recipients are NOT listed here; a pair
     /// names both endpoints, so the daemon derives those from its own registry.
     pub lifecycle_watchers: Vec<String>,
+    /// The launcher's or the flag's say on the instance's restart policy;
+    /// the daemon resolves it against the node's own manifest.
+    pub restart: RestartRequest,
 }
 
 impl NodeRunGoal {
@@ -348,6 +354,7 @@ impl NodeRunGoal {
             planned_observations: BTreeMap::new(),
             launch_id: None,
             lifecycle_watchers: Vec::new(),
+            restart: RestartRequest::Unset,
         }
     }
 
@@ -401,6 +408,32 @@ impl NodeRunGoal {
     pub fn with_lifecycle_watchers(mut self, lifecycle_watchers: Vec<String>) -> Self {
         self.lifecycle_watchers = lifecycle_watchers;
         self
+    }
+
+    pub fn with_restart(mut self, restart: RestartRequest) -> Self {
+        self.restart = restart;
+        self
+    }
+
+    /// The goal of the next process of a `restarting` instance: this goal's
+    /// arguments, environment, clock and restart request, with what the slot
+    /// holds now (its bindings, the observer sets and the watchers its last
+    /// exit took, as joins and removals edited them) and no pairs to plan,
+    /// which the respawn requests from the pairs its slot held.
+    pub fn for_respawn(
+        &self,
+        slot_bindings: config::runtime::SlotBindings,
+        observations: BTreeMap<String, ObservationTargets>,
+        watchers: Vec<String>,
+    ) -> Self {
+        let mut goal = self.clone();
+        goal.instance_plan.slot_bindings = slot_bindings;
+        goal.planned_observations = observations;
+        goal.lifecycle_watchers = watchers;
+        goal.requested_pairs.clear();
+        goal.covered_pairs.clear();
+        goal.vacant_pairs.clear();
+        goal
     }
 
     /// Builds a goal for in-process execution that bypasses the action-loop
@@ -473,6 +506,7 @@ impl NodeRunGoal {
                 goal.reborrow().init_planned_observations(observation_count),
                 &self.planned_observations,
             );
+            write_restart_request(goal.reborrow().init_restart(), self.restart);
         }
         encode_message(&builder)
     }
@@ -512,7 +546,76 @@ impl NodeRunGoal {
             vacant_pairs: read_vacant_pairs(goal.get_vacant_pairs()?)?,
             covered_pairs: read_pair_requests(goal.get_covered_pairs()?)?,
             planned_observations: read_observation_requests(goal.get_planned_observations()?)?,
+            restart: read_restart_request(goal.get_restart()?)?,
         })
+    }
+}
+
+/// Writes a restart request: an empty policy for `Unset`, else the policy,
+/// the level that wrote it and its cap (0 for none).
+fn write_restart_request(
+    mut builder: node_capnp::restart_request::Builder<'_>,
+    request: RestartRequest,
+) {
+    let Some(written) = request.written() else {
+        return;
+    };
+    let (policy, max_restarts) = declaration_on_wire(written.declaration);
+    builder.set_policy(policy);
+    builder.set_origin(written.origin.as_str());
+    builder.set_max_restarts(max_restarts);
+}
+
+/// A policy and its cap as the wire carries them: the policy's text and the
+/// cap, 0 for none. [`read_declaration`] is its inverse.
+pub(super) fn declaration_on_wire(declaration: RestartDeclaration) -> (&'static str, u32) {
+    (
+        declaration.policy().as_str(),
+        declaration.max_restarts().map_or(0, NonZeroU32::get),
+    )
+}
+
+/// Reads a policy and its cap as the wire carries them: an empty policy is
+/// none, and carries no cap. A policy the daemon does not know, a cap on
+/// `never` and a cap with no policy are decode errors.
+pub(super) fn read_declaration(
+    policy: &str,
+    max_restarts: u32,
+) -> Result<Option<RestartDeclaration>> {
+    let decoding = |e: config::ParsingError| crate::Error::Decoding(e.to_string());
+    if policy.is_empty() {
+        return match max_restarts {
+            0 => Ok(None),
+            cap => Err(crate::Error::Decoding(format!(
+                "a `max_restarts` of {cap} arrived with no policy"
+            ))),
+        };
+    }
+    let policy = RestartPolicy::from_str(policy).map_err(decoding)?;
+    RestartDeclaration::new(policy, NonZeroU32::new(max_restarts))
+        .map(Some)
+        .map_err(|refusal| crate::Error::Decoding(refusal.to_string()))
+}
+
+/// Inverse of [`write_restart_request`]. A policy the daemon does not know,
+/// an origin other than the three a request carries, or a cap on `never`
+/// is a decode error.
+fn read_restart_request(reader: node_capnp::restart_request::Reader<'_>) -> Result<RestartRequest> {
+    let Some(declaration) =
+        read_declaration(reader.get_policy()?.to_str()?, reader.get_max_restarts())?
+    else {
+        return Ok(RestartRequest::Unset);
+    };
+    let origin = RestartOrigin::from_str(reader.get_origin()?.to_str()?)
+        .map_err(|e| crate::Error::Decoding(e.to_string()))?;
+    match origin {
+        RestartOrigin::Instance => Ok(RestartRequest::Instance(declaration)),
+        RestartOrigin::Flag => Ok(RestartRequest::Flag(declaration)),
+        RestartOrigin::LauncherRoot => Ok(RestartRequest::LauncherRoot(declaration)),
+        RestartOrigin::Node | RestartOrigin::Default => Err(crate::Error::Decoding(format!(
+            "`{origin}` is not an origin a restart request carries: `instance`, `flag` or \
+                 `launcher_root`"
+        ))),
     }
 }
 
@@ -1654,6 +1757,137 @@ mod tests {
     #[test]
     fn node_run_goal_decode_rejects_malformed_bytes() {
         assert!(NodeRunGoal::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+    }
+
+    /// Each level's request survives the wire with its cap; a goal that
+    /// writes none decodes as unset.
+    #[test]
+    fn node_run_goal_restart_request_round_trips() {
+        let capped = RestartDeclaration::new(RestartPolicy::OnFailure, NonZeroU32::new(5))
+            .expect("a cap on a restarting policy");
+        let plain = RestartDeclaration::policy_only(RestartPolicy::Always);
+        for request in [
+            RestartRequest::Unset,
+            RestartRequest::Instance(capped),
+            RestartRequest::Flag(plain),
+            RestartRequest::LauncherRoot(capped),
+        ] {
+            let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 30).with_restart(request);
+            let decoded = NodeRunGoal::decode(&goal.encode().expect("encode")).expect("decode");
+            assert_eq!(decoded.restart, request);
+            assert_eq!(decoded, goal);
+        }
+    }
+
+    /// The goal of a respawn keeps everything of the first goal but its
+    /// bindings, which it takes from the slot, and the pairs, observations
+    /// and watchers, which the respawn registers from what its slot kept.
+    #[test]
+    fn for_respawn_takes_what_the_slot_holds_and_plans_no_pairs() {
+        let bound = |instance_id: &str| {
+            BTreeMap::from([(
+                "arms".to_owned(),
+                config::runtime::BoundProducers::try_from(vec![ProducerRef::new(
+                    "core",
+                    instance_id,
+                )])
+                .unwrap(),
+            )])
+        };
+        let observed = |instance_id: &str| {
+            BTreeMap::from([(
+                "watch".to_owned(),
+                ObservationTarget::new(instance_id, "arm", "core").into(),
+            )])
+        };
+        let mut goal = NodeRunGoal::new(
+            NodeInstancePlan {
+                slot_bindings: bound("alpha"),
+                ..plan("inst_1")
+            },
+            "node",
+            "tag",
+            30,
+        )
+        .with_restart(RestartRequest::Flag(RestartDeclaration::policy_only(
+            RestartPolicy::OnFailure,
+        )))
+        .with_planned_observations(observed("alpha"));
+        goal.env_vars = vec![("SPEED".to_owned(), "3".to_owned())];
+        goal.lifecycle_watchers = vec!["cn-b".to_owned()];
+        goal.requested_pairs = BTreeMap::from([(
+            "controller".to_owned(),
+            vec![PairTarget::new("ctrl_1", "core")],
+        )]);
+        goal.covered_pairs = goal.requested_pairs.clone();
+        goal.vacant_pairs = BTreeMap::from([("spare".to_owned(), "a test".to_owned())]);
+
+        let respawn = goal.for_respawn(bound("bravo"), observed("bravo"), vec!["cn-c".to_owned()]);
+        assert_eq!(respawn.instance_plan.slot_bindings, bound("bravo"));
+        assert_eq!(respawn.planned_observations, observed("bravo"));
+        assert_eq!(respawn.lifecycle_watchers, ["cn-c"]);
+        assert!(respawn.requested_pairs.is_empty());
+        assert!(respawn.covered_pairs.is_empty());
+        assert!(respawn.vacant_pairs.is_empty());
+        assert_eq!(
+            NodeRunGoal {
+                instance_plan: NodeInstancePlan {
+                    slot_bindings: goal.instance_plan.slot_bindings.clone(),
+                    ..respawn.instance_plan.clone()
+                },
+                planned_observations: goal.planned_observations.clone(),
+                lifecycle_watchers: goal.lifecycle_watchers.clone(),
+                requested_pairs: goal.requested_pairs.clone(),
+                covered_pairs: goal.covered_pairs.clone(),
+                vacant_pairs: goal.vacant_pairs.clone(),
+                ..respawn
+            },
+            goal,
+            "everything else is the first goal's"
+        );
+    }
+
+    /// A request names a policy the daemon knows and one of the three levels a
+    /// launcher or a flag writes; another origin, a cap on `never`, a cap with
+    /// no policy and an unknown policy are refused at decode.
+    #[test]
+    fn node_run_goal_refuses_a_restart_request_it_cannot_resolve() {
+        let cases = [
+            (
+                "on_failure",
+                "node",
+                0,
+                "`node` is not an origin a restart request carries: `instance`, `flag` or \
+                 `launcher_root`",
+            ),
+            (
+                "never",
+                "flag",
+                2,
+                "`max_restarts` takes a policy that restarts",
+            ),
+            ("", "", 3, "a `max_restarts` of 3 arrived with no policy"),
+            ("sometimes", "instance", 0, "got `sometimes`"),
+        ];
+        for (policy, origin, max_restarts, refusal) in cases {
+            let mut builder = Builder::new_default();
+            {
+                let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
+                goal.set_instance_plan_json5(
+                    serde_json5::to_string(&plan("inst_1")).expect("a plan serializes"),
+                );
+                let mut restart = goal.init_restart();
+                restart.set_policy(policy);
+                restart.set_origin(origin);
+                restart.set_max_restarts(max_restarts);
+            }
+            let bytes = encode_message(&builder).expect("encode");
+            let error = NodeRunGoal::decode(&bytes).expect_err(refusal);
+            assert!(
+                error.to_string().contains(refusal),
+                "{policy} / {origin} / {max_restarts}: {error}"
+            );
+        }
     }
 
     // --- NodeRunGoalResponse ---

@@ -22,7 +22,7 @@ pub use datastore::{
     DatastoreStoreRequest, DatastoreStoreResponse,
 };
 pub use federation::{
-    FederationVerdict, PairCommitRequest, ParticipantInstancesRemoveRequest,
+    FederationVerdict, InstanceEnd, PairCommitRequest, ParticipantInstancesRemoveRequest,
     ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantReserveResponse,
     ParticipantSetsUpdateRequest, ParticipantSliceBeginRequest, ParticipantSliceBeginResponse,
     RelationshipEvent, RelationshipNotification, RelationshipNotificationAck, RemovedInstances,
@@ -50,7 +50,6 @@ pub use repo::{
     RepoRefreshGoalResponse, RepoRefreshResult, RepoRemoveRequest, RepoRemoveResponse, RepoSource,
     RepoSourceKind,
 };
-pub use stack::STACK_BUSY_REASON;
 pub use stack::benchmark::{
     BenchmarkFeedbackStep, ClockConfidence, DEFAULT_SAMPLES, InterfaceKind, InterfaceLatency,
     MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse,

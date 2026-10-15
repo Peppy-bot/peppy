@@ -12,6 +12,8 @@ use daemon_config::peppy_config::{
 };
 use futures::{Stream, StreamExt};
 use log_export::test_support::{OtlpReceiver, ReceivedRecord};
+use node_stack::action_log::restart_separator;
+use node_stack::action_log::test_support::time_of;
 use peppy::test_support::CACHED_BUILD_REUSE_PREFIX;
 use pmi::{RouterId, ZenohAdapter, ZenohNetProtocol, render_router_config};
 use testcontainers::GenericBuildableImage;
@@ -30,6 +32,11 @@ use testcontainers::runners::AsyncBuilder;
 use tokio::sync::OnceCell;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a check that a restart asks for no pair waits once the restart
+/// is listed running. A restart asks for its held pairs after it tells its
+/// observers and watchers it runs; every daemon of the fixture answers both
+/// at once, so a request's run-log line lands well inside this wait.
+const PAIR_REQUEST_QUIET: Duration = Duration::from_secs(5);
 
 const IMAGE_OVERRIDE_ENV: &str = "PEPPY_MULTI_DAEMON_E2E_IMAGE";
 const MANAGED_ROUTER_PORT: u16 = 7447;
@@ -37,8 +44,8 @@ const CONTAINER_ROUTER_CONFIG: &str = "/etc/peppy/router.json5";
 const CONTAINER_PEPPY_BINARY: &str = "/usr/local/bin/peppy";
 
 /// `PEPPY_HOME` inside every daemon container. Used verbatim as the data root,
-/// so a run log is `$CONTAINER_PEPPY_HOME/logs/run/<instance>.log` with no
-/// `.peppy` segment in between.
+/// so a run log is `$CONTAINER_PEPPY_HOME/logs/run/<instance>_<timestamp>.log`
+/// with no `.peppy` segment in between.
 const CONTAINER_PEPPY_HOME: &str = "/data";
 
 /// The user every daemon container runs as, and so the user each daemon runs
@@ -952,8 +959,7 @@ impl Daemon {
     /// container cannot reach a new one.
     async fn restart(&self) {
         self.stop().await;
-        self.remove_container().await;
-        self.create_and_start().await;
+        self.start().await;
     }
 
     /// Creates this daemon's container from [`Daemon::container`] and starts
@@ -982,6 +988,22 @@ impl Daemon {
             .remove_container(&self.name, Some(container_removal()))
             .await
             .unwrap_or_else(|error| panic!("removing container {}: {error}", self.name));
+    }
+
+    /// Starts the daemon again after [`Daemon::stop`], in a new container
+    /// over its data root (see [`Daemon::restart`]).
+    async fn start(&self) {
+        self.remove_container().await;
+        self.create_and_start().await;
+    }
+
+    /// SIGKILLs the process of the python node `module` on this daemon.
+    async fn kill_node_process(&self, module: &str) {
+        require_success(
+            self.exec(vec!["pkill", "-9", "-f", &format!("python -m {module}")])
+                .await,
+            &format!("killing `{module}` in {}", self.name),
+        );
     }
 }
 
@@ -1358,6 +1380,7 @@ const NODE_PROBE_LAUNCHER_FILE: &str = "node_probe.json5";
 const CALLER_ENV_PROBE_LAUNCHER_FILE: &str = "caller_env_probe.json5";
 const PEER_RUN_FAILURE_LAUNCHER_FILE: &str = "peer_run_failure.json5";
 const FLEET_CLOCK_LAUNCHER_FILE: &str = "fleet_clock.json5";
+const RESTARTING_CLOCK_LAUNCHER_FILE: &str = "restarting_clock.json5";
 const FULLY_PLACED_CLOCK_LAUNCHER_FILE: &str = "fully_placed_clock.json5";
 const UNKNOWN_CLOCK_LAUNCHER_FILE: &str = "unknown_clock_fleet.json5";
 
@@ -1446,6 +1469,39 @@ const PARTS_FLEET_LAUNCHER: &str = r#"{
 }"#;
 
 const PAIRING_FLEET_LAUNCHER_FILE: &str = "pairing_fleet.json5";
+const RESTART_FLEET_LAUNCHER_FILE: &str = "restart_fleet.json5";
+/// The pairing fleet under a stack-wide `on_failure` policy: the hub and
+/// every leader that joins come back after a crash, under the same ids.
+const RESTART_FLEET_LAUNCHER: &str = r#"{
+  peppy_schema: "launcher/v1",
+  framework: { restart: "on_failure" },
+  deployments: [{ source: { name: "pairing_hub", tag: "v1" },
+    instances: [{ instance_id: "hub_inst" }] }],
+  components: [{ name: "leader", cardinality: "zero_or_more", options: {
+    limb: { deployments: [{ source: { name: "pairing_leader", tag: "v1" },
+      instances: [{ instance_id: "leader_inst", links: { hub: "hub_inst" } }] }] }
+  } }]
+}"#;
+const RESTART_BOUND_LAUNCHER_FILE: &str = "restart_bound.json5";
+/// The camera of [`RESTART_BOUND_LAUNCHER`].
+const BOUND_CAMERA: &str = "bound_cam_inst";
+/// The frame counter of [`RESTART_BOUND_LAUNCHER`].
+const BOUND_COUNTER: &str = "bound_counter_inst";
+/// A camera under `on_failure` and a frame counter bound to it, on one
+/// machine. The counter reports once a frame arrives 20 s after its first:
+/// past a kill made right after that first frame, so the report is a frame
+/// of the restarted camera.
+const RESTART_BOUND_LAUNCHER: &str = r#"{
+  peppy_schema: "launcher/v1",
+  deployments: [
+    { source: { name: "uvc_camera_python_mock", tag: "v1" },
+      instances: [{ instance_id: "bound_cam_inst", framework: { restart: "on_failure" } }] },
+    { source: { name: "uvc_camera_video_reconstruction_python", tag: "v1" },
+      instances: [{ instance_id: "bound_counter_inst",
+                    arguments: { video_duration_seconds: 20 },
+                    links: { camera: "bound_cam_inst" } }] },
+  ],
+}"#;
 /// One hub holding a pair per leader through a `zero_or_more` slot, and a
 /// leader axis whose copies pair into it from whichever machine they are
 /// placed on. Every leader needs a value of its own, which the join sets.
@@ -1613,6 +1669,14 @@ fn fleet_clock_launcher() -> String {
     )
 }
 
+/// The fleet clock launcher with its source under `on_failure`.
+fn restarting_clock_launcher() -> String {
+    let mut launcher: serde_json::Value = serde_json5::from_str(&fleet_clock_launcher()).unwrap();
+    launcher["deployments"][0]["instances"][0]["framework"] =
+        serde_json::json!({ "restart": "on_failure" });
+    serde_json::to_string(&launcher).unwrap()
+}
+
 /// The fleet's domain and its publisher alone, with the probes taken as
 /// copies: what a stack that is joined rather than launched into looks like.
 fn named_clock_launcher() -> String {
@@ -1745,16 +1809,18 @@ const ROBOT_INSTANCES: [&str; 3] = ["wrist_cam_inst", "arm_inst", "reflex_inst"]
 const CLOUD_INSTANCES: [&str; 2] = ["planner_inst", "recorder_inst"];
 
 impl Daemon {
-    /// The current contents of `instance_id`'s run log on this daemon.
-    ///
-    /// Reads `$PEPPY_HOME/logs/run/<instance>.log`, the node's own output,
-    /// which is the evidence that a node is carrying messages over its slots
-    /// and not merely Running.
+    /// The run log of `instance_id`'s current process on this daemon, the
+    /// newest `$PEPPY_HOME/logs/run/<instance>_<timestamp>.log`: the node's
+    /// own output, which is the evidence that a node is carrying messages
+    /// over its slots and not merely Running.
     async fn node_log(&self, instance_id: &str) -> String {
-        let path = format!("{CONTAINER_PEPPY_HOME}/logs/run/{instance_id}.log");
-        // `cat`'s own complaint rides along, so a log this daemon does not
-        // hold reads as the missing file it is.
-        self.exec(vec!["cat", path.as_str()]).await.text
+        // The newest by the timestamp in its name; `ls` and `cat` complain in
+        // the text, so a log this daemon does not hold reads as the missing
+        // file it is.
+        let newest = format!(
+            "cat \"$(ls {CONTAINER_PEPPY_HOME}/logs/run/{instance_id}_*.log 2>&1 | sort -r | head -1)\""
+        );
+        self.exec(vec!["sh", "-c", newest.as_str()]).await.text
     }
 
     /// Polls `instance_id`'s log until it holds `marker`, returning the log.
@@ -1864,6 +1930,101 @@ fn slice_nodes(listed: &str, core_node: &str) -> BTreeMap<String, (String, usize
         .collect()
 }
 
+/// The state and restart count of `instance_id` in one daemon's section of a
+/// `stack list --json` report.
+fn instance_restarts(listed: &str, core_node: &str, instance_id: &str) -> Option<(String, u64)> {
+    coordinator_section(listed, core_node)["stack"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|node| node["instances"].as_array().unwrap().iter())
+        .find(|instance| instance["instance_id"] == instance_id)
+        .map(|instance| {
+            (
+                instance["state"].as_str().unwrap().to_owned(),
+                instance["restart_count"].as_u64().unwrap(),
+            )
+        })
+}
+
+/// Polls `daemon`'s own section until `instance_id` is `running` with
+/// `restarts` restarts.
+async fn wait_for_restarts(daemon: &Daemon, core_node: &str, instance_id: &str, restarts: u64) {
+    wait_for_listed_restarts(
+        daemon,
+        Some(core_node),
+        core_node,
+        instance_id,
+        restarts,
+        TIMEOUT,
+    )
+    .await;
+}
+
+/// Waits up to `bound` until `stack list --json` on `daemon`, aimed at
+/// `target` or at the whole federation, shows `instance_id` of `core_node`
+/// running with `restarts` restarts.
+async fn wait_for_listed_restarts(
+    daemon: &Daemon,
+    target: Option<&str>,
+    core_node: &str,
+    instance_id: &str,
+    restarts: u64,
+    bound: Duration,
+) {
+    let args: Vec<&str> = match target {
+        Some(target) => vec!["stack", "list", "--json", "--core-node", target],
+        None => vec!["stack", "list", "--json"],
+    };
+    wait_for_listing_within(
+        daemon,
+        &args,
+        &format!("`{instance_id}` to run with {restarts} restarts"),
+        bound,
+        |listed| {
+            instance_restarts(listed, core_node, instance_id)
+                == Some(("running".to_owned(), restarts))
+        },
+    )
+    .await;
+}
+
+/// Runs `peppy` with `args` on `daemon` until it succeeds with an output
+/// `ready` accepts, or panics after `TIMEOUT` naming `what` it waited for.
+async fn wait_for_listing(
+    daemon: &Daemon,
+    args: &[&str],
+    what: &str,
+    ready: impl Fn(&str) -> bool,
+) {
+    wait_for_listing_within(daemon, args, what, TIMEOUT, ready).await;
+}
+
+/// [`wait_for_listing`] for as long as `bound`.
+async fn wait_for_listing_within(
+    daemon: &Daemon,
+    args: &[&str],
+    what: &str,
+    bound: Duration,
+    ready: impl Fn(&str) -> bool,
+) {
+    let started = Instant::now();
+    let mut last = String::new();
+    while started.elapsed() < bound {
+        let listed = daemon.peppy(args).await;
+        let succeeded = listed.success();
+        last = listed.text;
+        if succeeded && ready(&last) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!(
+        "timed out waiting for {what} on {}; last listing:\n{last}",
+        daemon.name
+    );
+}
+
 /// The names of the copies a `stack list --json` section lists.
 fn copy_names(section: &serde_json::Value) -> Vec<String> {
     section["copies"]
@@ -1965,6 +2126,14 @@ impl Substrate {
                 PAIRING_FLEET_LAUNCHER_FILE,
                 PAIRING_FLEET_LAUNCHER.to_owned(),
             ),
+            (
+                RESTART_FLEET_LAUNCHER_FILE,
+                RESTART_FLEET_LAUNCHER.to_owned(),
+            ),
+            (
+                RESTART_BOUND_LAUNCHER_FILE,
+                RESTART_BOUND_LAUNCHER.to_owned(),
+            ),
             (ISOLATION_FLEET_LAUNCHER_FILE, isolation_fleet_launcher()),
             (PARTS_FLEET_LAUNCHER_FILE, PARTS_FLEET_LAUNCHER.to_owned()),
             (
@@ -1986,6 +2155,7 @@ impl Substrate {
                 PEER_RUN_FAILURE_LAUNCHER.to_owned(),
             ),
             (FLEET_CLOCK_LAUNCHER_FILE, fleet_clock_launcher()),
+            (RESTARTING_CLOCK_LAUNCHER_FILE, restarting_clock_launcher()),
             (
                 FULLY_PLACED_CLOCK_LAUNCHER_FILE,
                 fully_placed_clock_launcher(),
@@ -3101,6 +3271,11 @@ async fn wait_for_ticking_domain(fleet: &Fleet, core_node: &str) -> serde_json::
 /// Launches the fleet clock launcher, placing each station on its machine, and
 /// returns the launch's feedback.
 async fn launch_fleet_clock(fleet: &Fleet) -> String {
+    launch_fleet_clock_from(fleet, FLEET_CLOCK_LAUNCHER_FILE).await
+}
+
+/// [`launch_fleet_clock`] of the launcher in `launcher_file`.
+async fn launch_fleet_clock_from(fleet: &Fleet, launcher_file: &str) -> String {
     let launch = fleet
         .coordinator
         .peppy(&[
@@ -3110,7 +3285,7 @@ async fn launch_fleet_clock(fleet: &Fleet) -> String {
             &format!("station_a@{FLEET_STATION_A_CORE_NODE}"),
             "--place",
             &format!("station_b@{FLEET_STATION_B_CORE_NODE}"),
-            &container_launcher(FLEET_CLOCK_LAUNCHER_FILE),
+            &container_launcher(launcher_file),
         ])
         .await;
     assert!(
@@ -3119,6 +3294,83 @@ async fn launch_fleet_clock(fleet: &Fleet) -> String {
         launch.text
     );
     launch.text
+}
+
+/// FRAMEWORK-137, a clock publisher: under `on_failure` the scripted source
+/// killed on the coordinator comes back under the same id on the same
+/// lifetime of its domain, and the probe on each machine, its own included,
+/// runs on, bound to it, and reads the new process's ramp again, up to its
+/// top: time on the domain is whatever its publisher publishes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restarted_clock_publisher_keeps_its_domain_on_every_machine() {
+    let fleet = start_fleet("peppy-clock-restart").await;
+    launch_fleet_clock_from(&fleet, RESTARTING_CLOCK_LAUNCHER_FILE).await;
+    let lifetime = domain_incarnation(
+        &wait_for_ticking_domain(&fleet, FLEET_COORDINATOR_CORE_NODE).await,
+        FLEET_COORDINATOR_CORE_NODE,
+    );
+    let probes = [
+        (
+            &fleet.coordinator,
+            FLEET_COORDINATOR_CORE_NODE,
+            FLEET_PROBE_COORD_INSTANCE,
+        ),
+        (
+            &fleet.station_a,
+            FLEET_STATION_A_CORE_NODE,
+            FLEET_PROBE_STATION_A_INSTANCE,
+        ),
+        (
+            &fleet.station_b,
+            FLEET_STATION_B_CORE_NODE,
+            FLEET_PROBE_STATION_B_INSTANCE,
+        ),
+    ];
+    let mut capped = Vec::with_capacity(probes.len());
+    for &(daemon, _, probe) in &probes {
+        capped.push(assert_probe_capped_at_final(daemon, probe).await);
+    }
+
+    fleet
+        .coordinator
+        .kill_node_process("sim_clock_source")
+        .await;
+    wait_for_restarts(
+        &fleet.coordinator,
+        FLEET_COORDINATOR_CORE_NODE,
+        FLEET_CLOCK_SOURCE_INSTANCE,
+        1,
+    )
+    .await;
+    for (&(daemon, core_node, probe), capped) in probes.iter().zip(capped) {
+        wait_for_parsed_samples(daemon, probe, "now_ns=", |samples| {
+            let ramp_again = samples.iter().position(|(sample, value)| {
+                *sample > capped && value.is_some_and(|value| value < SCRIPTED_FINAL_NS)
+            });
+            ramp_again.is_some_and(|at| {
+                samples[at..]
+                    .iter()
+                    .any(|(_, value)| *value == Some(SCRIPTED_FINAL_NS))
+            })
+        })
+        .await;
+        wait_for_restarts(daemon, core_node, probe, 0).await;
+    }
+    assert_eq!(
+        domain_incarnation(
+            &wait_for_ticking_domain(&fleet, FLEET_COORDINATOR_CORE_NODE).await,
+            FLEET_COORDINATOR_CORE_NODE,
+        ),
+        lifetime,
+        "the restart keeps the domain's lifetime"
+    );
+    require_success(
+        fleet
+            .coordinator
+            .peppy(&["stack", "reset", "--federated"])
+            .await,
+        "reset the clock fleet",
+    );
 }
 
 /// The positive path: a launch spanning the simulator machine and two more. One
@@ -5614,6 +5866,486 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
     assert!(
         copy_names(&coordinator_section(&listed, robot)).is_empty(),
         "{listed}"
+    );
+}
+
+/// FRAMEWORK-137 across machines: under a stack-wide `on_failure` policy, a
+/// cross-daemon pair comes back after the leader restarts, after the hub
+/// restarts, and after both are killed at once. Each restart is a new
+/// process under the same id, counted in the listing, and the hub's log
+/// names the pair again each time. Once the leader is stopped on purpose,
+/// the hub's daemon forgets the pair, and the hub's next restart asks for
+/// none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cross_daemon_pair_comes_back_after_either_or_both_respawn() {
+    let federation = start_federation("peppy-restart-pair").await;
+    let robot = federation.robot_core_node.as_str();
+    let cloud = federation.cloud_core_node.as_str();
+    launch_the_hub_and_join_a_leader(&federation).await;
+    let paired = HUB_PAIRED_WITH_THE_LEADER;
+
+    // The leader crashes: the hub sees the pair go, and the restarted leader
+    // requests it again.
+    federation.cloud.kill_node_process("pairing_leader").await;
+    wait_for_restarts(&federation.cloud, cloud, "bravo_leader_inst", 1).await;
+    wait_for_log_count(&federation.robot, "hub_inst", paired, 2).await;
+    let before = hearings(&federation.cloud, "bravo_leader_inst", 2.0).await;
+    wait_for_more_hearings(&federation.cloud, "bravo_leader_inst", 2.0, before).await;
+
+    // The hub crashes: the restarted hub requests the pair it held with the
+    // leader on the other machine.
+    federation.robot.kill_node_process("pairing_hub").await;
+    wait_for_restarts(&federation.robot, robot, "hub_inst", 1).await;
+    federation.robot.wait_for_node_log("hub_inst", paired).await;
+    let before = hearings(&federation.cloud, "bravo_leader_inst", 2.0).await;
+    wait_for_more_hearings(&federation.cloud, "bravo_leader_inst", 2.0, before).await;
+
+    // Both crash at once: whichever runs first finds the other, and the pair
+    // is back.
+    federation.cloud.kill_node_process("pairing_leader").await;
+    federation.robot.kill_node_process("pairing_hub").await;
+    wait_for_restarts(&federation.cloud, cloud, "bravo_leader_inst", 2).await;
+    wait_for_restarts(&federation.robot, robot, "hub_inst", 2).await;
+    federation.robot.wait_for_node_log("hub_inst", paired).await;
+    let before = hearings(&federation.cloud, "bravo_leader_inst", 2.0).await;
+    wait_for_more_hearings(&federation.cloud, "bravo_leader_inst", 2.0, before).await;
+
+    let listed = require_success(
+        federation.robot.stack_list(Some(robot)).await,
+        "list the hub's pair after the restarts",
+    );
+    assert_eq!(
+        listed.matches("limbs ⇌ bravo_leader_inst:hub@").count(),
+        1,
+        "the restarted endpoints hold one pair:\n{listed}"
+    );
+
+    // The leader is stopped on purpose on its own machine: the hub's daemon
+    // hears the stop and forgets the pair, so the hub's next restart asks
+    // the leader's daemon for nothing.
+    require_success(
+        federation
+            .cloud
+            .peppy(&["node", "stop", "bravo_leader_inst"])
+            .await,
+        "stop the leader",
+    );
+    federation.robot.kill_node_process("pairing_hub").await;
+    wait_for_restarts(&federation.robot, robot, "hub_inst", 3).await;
+    tokio::time::sleep(PAIR_REQUEST_QUIET).await;
+    let after_restart = federation.robot.node_log("hub_inst").await;
+    assert!(
+        !after_restart.contains("bravo_leader_inst"),
+        "the restarted hub asks for no pair with the stopped leader:\n{after_restart}"
+    );
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "reset", "--federated"])
+            .await,
+        "reset the restart fleet",
+    );
+}
+
+/// FRAMEWORK-137, a bound consumer: a camera killed while a frame counter is
+/// bound to it comes back under the same id, and the counter receives its
+/// frames again with nothing done on its side, because its subscription
+/// addresses the camera's instance id, which the restart keeps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bound_consumer_receives_again_after_its_producer_respawns() {
+    let federation = start_federation("peppy-restart-bound").await;
+    let robot = federation.robot_core_node.as_str();
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "launch",
+                &container_launcher(RESTART_BOUND_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch the camera and its counter",
+    );
+    federation
+        .robot
+        .wait_for_node_log(BOUND_COUNTER, "first frame from")
+        .await;
+    federation
+        .robot
+        .kill_node_process("uvc_camera_python_mock")
+        .await;
+    wait_for_restarts(&federation.robot, robot, BOUND_CAMERA, 1).await;
+
+    let counter_log = federation
+        .robot
+        .wait_for_node_log(BOUND_COUNTER, " frames over ")
+        .await;
+    let camera_log = federation.robot.node_log(BOUND_CAMERA).await;
+    let restarted_at = line_time(&camera_log, &restart_separator(1));
+    let reported_at = line_time(&counter_log, " frames over ");
+    assert!(
+        reported_at > restarted_at,
+        "the counter's report is a frame of the restarted camera: reported at {reported_at}, \
+         restarted at {restarted_at}"
+    );
+    assert_eq!(
+        counter_log.matches("first frame from").count(),
+        1,
+        "the counter ran on with nothing done on its side:\n{counter_log}"
+    );
+    wait_for_restarts(&federation.robot, robot, BOUND_COUNTER, 0).await;
+    require_success(
+        federation.robot.peppy(&["stack", "reset"]).await,
+        "reset the camera and its counter",
+    );
+}
+
+/// When the first line of `log` that holds `marker` was written. The image
+/// sets its clock to UTC, so the times of one machine's logs order as they
+/// were written.
+fn line_time(log: &str, marker: &str) -> chrono::NaiveDateTime {
+    let line = log
+        .lines()
+        .find(|line| line.contains(marker))
+        .unwrap_or_else(|| panic!("`{marker}` in:\n{log}"));
+    time_of(line).unwrap_or_else(|| panic!("a timed line: {line}"))
+}
+
+/// FRAMEWORK-137 with the coordinator down: a participant restarts its own
+/// instance while the coordinator's daemon is stopped, keeping the pair the
+/// unreachable hub did not take, and the coordinator, once started again,
+/// lists the participant's instance with the count in its `stack list
+/// --json`. The coordinator's daemon comes back without the hub, so the next
+/// restart asks for the pair again and the hub's daemon refuses it, which
+/// forgets it: a restart after that asks for nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_participant_respawns_while_the_coordinator_is_down() {
+    let federation = start_federation("peppy-restart-down").await;
+    let cloud = federation.cloud_core_node.as_str();
+    launch_the_hub_and_join_a_leader(&federation).await;
+
+    federation.robot.stop().await;
+    federation.cloud.kill_node_process("pairing_leader").await;
+    wait_for_restarts(&federation.cloud, cloud, "bravo_leader_inst", 1).await;
+    // The hub's daemon is down, so the pair the leader held is not made
+    // again; it stays held for the next restart.
+    let leader_log = federation
+        .cloud
+        .wait_for_node_log(
+            "bravo_leader_inst",
+            "; requested again when either end restarts",
+        )
+        .await;
+    assert!(
+        leader_log.contains("did not answer"),
+        "the pair waits on the hub's daemon:\n{leader_log}"
+    );
+
+    federation.robot.start().await;
+    federation.robot.wait_until_serving().await;
+    wait_for_listed_restarts(
+        &federation.robot,
+        None,
+        cloud,
+        "bravo_leader_inst",
+        1,
+        TIMEOUT,
+    )
+    .await;
+
+    federation.cloud.kill_node_process("pairing_leader").await;
+    wait_for_restarts(&federation.cloud, cloud, "bravo_leader_inst", 2).await;
+    federation
+        .cloud
+        .wait_for_node_log("bravo_leader_inst", "; the pair is forgotten")
+        .await;
+    // The latest restart's own log, whatever attempt the backoff gives it.
+    let second_restart = federation.cloud.node_log("bravo_leader_inst").await;
+    assert!(
+        second_restart.contains("refused the pair"),
+        "the hub's daemon refuses the held pair:\n{second_restart}"
+    );
+
+    federation.cloud.kill_node_process("pairing_leader").await;
+    wait_for_restarts(&federation.cloud, cloud, "bravo_leader_inst", 3).await;
+    tokio::time::sleep(PAIR_REQUEST_QUIET).await;
+    let third_restart = federation.cloud.node_log("bravo_leader_inst").await;
+    assert!(
+        !third_restart.contains("not made again"),
+        "a forgotten pair is not asked for again:\n{third_restart}"
+    );
+    require_success(
+        federation
+            .cloud
+            .peppy(&["stack", "reset", "--federated"])
+            .await,
+        "reset the participant",
+    );
+}
+
+/// The hub's log line once it holds its pair with the leader
+/// [`launch_the_hub_and_join_a_leader`] joins.
+const HUB_PAIRED_WITH_THE_LEADER: &str = "peers=bravo_leader_inst/bravo\n";
+
+/// The file whose presence fails every start of the fixture `pairing_hub`
+/// on its machine (`START_GATE` in its `__main__.py`).
+const HUB_START_GATE: &str = "/tmp/pairing_hub_start_gate";
+
+/// How long the hub can take to run again once its start gate opens: the
+/// backoff's attempts its gate failed leave a wait of up to its 60 s
+/// ceiling, then its start.
+const GATED_RESTART_WAIT: Duration = Duration::from_secs(120);
+
+/// Waits until the hub on the coordinator runs with `restarts` restarts, up
+/// to [`GATED_RESTART_WAIT`], which a restart whose start gate held its
+/// attempts off needs.
+async fn wait_for_the_gated_hub(federation: &Federation, restarts: u64) {
+    let robot = federation.robot_core_node.as_str();
+    wait_for_listed_restarts(
+        &federation.robot,
+        Some(robot),
+        robot,
+        "hub_inst",
+        restarts,
+        GATED_RESTART_WAIT,
+    )
+    .await;
+}
+
+/// Launches the restart fleet's hub on the coordinator and joins a leader on
+/// the peer, and waits until the two are paired and carrying the leader's
+/// values.
+async fn launch_the_hub_and_join_a_leader(federation: &Federation) {
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "launch",
+                &container_launcher(RESTART_FLEET_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch the hub",
+    );
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "join",
+                &format!("limb:bravo@{}", federation.cloud_core_node),
+                "--set-arguments",
+                "leader_inst.value=2",
+            ])
+            .await,
+        "join a leader on the peer",
+    );
+    federation
+        .robot
+        .wait_for_node_log("hub_inst", HUB_PAIRED_WITH_THE_LEADER)
+        .await;
+    federation
+        .cloud
+        .wait_for_node_log("bravo_leader_inst", "heard positions=[2.0, ")
+        .await;
+}
+
+/// Closes the hub's start gate on `daemon`, so each start of its hub fails,
+/// or opens it again.
+async fn set_hub_start_gate(daemon: &Daemon, closed: bool) {
+    let command = if closed {
+        vec!["touch", HUB_START_GATE]
+    } else {
+        vec!["rm", "-f", HUB_START_GATE]
+    };
+    require_success(daemon.exec(command).await, "set the hub's start gate");
+}
+
+/// Polls `daemon`'s own section until `instance_id` shows a state other than
+/// `running`: its exit was recorded.
+async fn wait_until_not_running(daemon: &Daemon, core_node: &str, instance_id: &str) {
+    wait_for_listing(
+        daemon,
+        &["stack", "list", "--json", "--core-node", core_node],
+        &format!("`{instance_id}` to leave `running`"),
+        |listed| {
+            instance_restarts(listed, core_node, instance_id)
+                .is_some_and(|(state, _)| state != "running")
+        },
+    )
+    .await;
+}
+
+/// FRAMEWORK-137 across machines: a held pair whose peer is itself
+/// restarting stays held. The hub's starts fail while its gate is closed,
+/// so the leader's restart asks the hub's daemon for the pair while the hub
+/// waits for its next attempt or is in one the gate fails, and keeps the
+/// pair; the hub's own restart, once the gate opens, makes it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_held_pair_whose_peer_is_restarting_stays_held_across_machines() {
+    let federation = start_federation("peppy-restart-held").await;
+    let robot = federation.robot_core_node.as_str();
+    let cloud = federation.cloud_core_node.as_str();
+    launch_the_hub_and_join_a_leader(&federation).await;
+
+    set_hub_start_gate(&federation.robot, true).await;
+    federation.robot.kill_node_process("pairing_hub").await;
+    wait_until_not_running(&federation.robot, robot, "hub_inst").await;
+    federation.cloud.kill_node_process("pairing_leader").await;
+    wait_for_restarts(&federation.cloud, cloud, "bravo_leader_inst", 1).await;
+    federation
+        .cloud
+        .wait_for_node_log(
+            "bravo_leader_inst",
+            "; requested again when either end restarts",
+        )
+        .await;
+    let asked = federation.cloud.node_log("bravo_leader_inst").await;
+    let restarting = [
+        "pairing endpoint instance `hub_inst` is restarting, with no process to pair",
+        "`hub_inst` is starting again under its restart policy and asks for its pairs once it \
+         is running",
+    ];
+    assert!(
+        restarting.iter().any(|reason| asked.contains(reason))
+            && asked.contains("requested again when either end restarts"),
+        "the hub's daemon answers that the hub is restarting, and the leader keeps the pair:\n\
+         {asked}"
+    );
+
+    set_hub_start_gate(&federation.robot, false).await;
+    wait_for_the_gated_hub(&federation, 1).await;
+    federation
+        .robot
+        .wait_for_node_log("hub_inst", HUB_PAIRED_WITH_THE_LEADER)
+        .await;
+    let before = hearings(&federation.cloud, "bravo_leader_inst", 2.0).await;
+    wait_for_more_hearings(&federation.cloud, "bravo_leader_inst", 2.0, before).await;
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "reset", "--federated"])
+            .await,
+        "reset the restart fleet",
+    );
+}
+
+/// FRAMEWORK-137 across machines: a held pair another link displaced is not
+/// taken back. While the hub's gate holds its restarts off, a second hub on
+/// the leader's machine links to the leader's one-peer slot; the hub's
+/// restart then asks the leader's daemon for its pair, which refuses it
+/// since the leader keeps it no longer, and the hub forgets it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_held_pair_another_link_displaced_is_refused_across_machines() {
+    const SPARE_HUB: &str = "spare_hub_inst";
+    let federation = start_federation("peppy-restart-displaced").await;
+    let robot = federation.robot_core_node.as_str();
+    let cloud = federation.cloud_core_node.as_str();
+    launch_the_hub_and_join_a_leader(&federation).await;
+    // The fixture tree is mounted read-only, and an add syncs its source, so
+    // the second hub is added from a copy.
+    let hub_source = "/tmp/spare_pairing_hub";
+    require_success(
+        federation
+            .cloud
+            .exec(vec![
+                "cp",
+                "-r",
+                &format!("{CONTAINER_FIXTURE_REPO}/nodes/pairing_hub"),
+                hub_source,
+            ])
+            .await,
+        "copy the fixture hub on the leader's machine",
+    );
+    // Its sync reads the pairing contract from this machine's cache.
+    require_success(
+        federation.cloud.peppy(&["repo", "refresh"]).await,
+        "refresh the leader's machine's repositories",
+    );
+    require_success(
+        federation
+            .cloud
+            .peppy(&["node", "add", hub_source, "--build"])
+            .await,
+        "add a second hub on the leader's machine",
+    );
+    let held_by_the_hub = "hub ⇌ hub_inst:limbs@";
+    let listed = require_success(
+        federation.cloud.stack_list(Some(cloud)).await,
+        "list the leader's pair",
+    );
+    assert!(
+        listed.contains(held_by_the_hub),
+        "the leader is paired with the hub:\n{listed}"
+    );
+
+    set_hub_start_gate(&federation.robot, true).await;
+    federation.robot.kill_node_process("pairing_hub").await;
+    wait_until_not_running(&federation.robot, robot, "hub_inst").await;
+    // The hub's exit dissolves the pair on the leader's daemon, which frees
+    // the leader's slot for another link.
+    wait_for_listing(
+        &federation.cloud,
+        &["stack", "list", "--core-node", cloud],
+        "the leader's daemon to dissolve the pair of the exited hub",
+        |listed| !listed.contains(held_by_the_hub),
+    )
+    .await;
+    require_success(
+        federation
+            .cloud
+            .peppy(&[
+                "node",
+                "run",
+                "pairing_hub:v1",
+                "-i",
+                SPARE_HUB,
+                "--link",
+                "limbs@bravo_leader_inst/hub",
+            ])
+            .await,
+        "link a second hub to the leader",
+    );
+    federation
+        .cloud
+        .wait_for_node_log(SPARE_HUB, "peers=bravo_leader_inst/")
+        .await;
+
+    set_hub_start_gate(&federation.robot, false).await;
+    wait_for_the_gated_hub(&federation, 1).await;
+    federation
+        .robot
+        .wait_for_node_log("hub_inst", "; the pair is forgotten")
+        .await;
+    let asked = federation.robot.node_log("hub_inst").await;
+    assert!(
+        asked.contains("`bravo_leader_inst` keeps no pair with `hub_inst` to make again"),
+        "the leader's daemon refuses the pair the second hub displaced:\n{asked}"
+    );
+    let listed = require_success(
+        federation.cloud.stack_list(Some(cloud)).await,
+        "list the leader's pair after the refusal",
+    );
+    assert!(
+        listed.contains(&format!("hub ⇌ {SPARE_HUB}:limbs@")) && !listed.contains(held_by_the_hub),
+        "the second hub keeps the leader's slot:\n{listed}"
+    );
+    // The hub forgot the pair: its next restart asks the leader's daemon for
+    // nothing.
+    federation.robot.kill_node_process("pairing_hub").await;
+    wait_for_the_gated_hub(&federation, 2).await;
+    tokio::time::sleep(PAIR_REQUEST_QUIET).await;
+    let asked_again = federation.robot.node_log("hub_inst").await;
+    assert!(
+        !asked_again.contains("bravo_leader_inst"),
+        "the hub's next restart asks for no pair with the leader:\n{asked_again}"
+    );
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "reset", "--federated"])
+            .await,
+        "reset the restart fleet",
     );
 }
 

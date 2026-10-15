@@ -19,6 +19,7 @@ use tracing::{debug, warn};
 use crate::action_log::{ActionLog, Announcer, STDERR_TAIL_HEADER};
 use crate::archive::extract_tar_zst;
 use crate::build_io::StderrTail;
+use crate::process_group::ProcessGroup;
 
 /// Per-process counter used to name temporary runtime config files uniquely.
 ///
@@ -622,23 +623,21 @@ pub const OUTPUT_READER_JOIN_BUDGET: Duration = Duration::from_secs(2);
 /// group wrote before it was killed.
 pub(super) async fn kill_and_collect_error(
     mut child: Child,
+    group: ProcessGroup,
     instance_id_str: &str,
     error: &str,
     stderr_buffer: StderrTail,
     mut output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
 ) -> String {
-    // A start reaps its leader only once the leader's group is killed, so
-    // `id()` is `None` only when the caller killed the group and reaped the
-    // leader already. The pid then no longer names the group, and no kill is
-    // sent to it.
-    if let Some(pid) = child.id() {
-        crate::process_group::kill_process_group(pid);
-        if let Err(kill_err) = child.kill().await {
-            debug!(
-                "Failed to kill process for node instance '{}': {}",
-                instance_id_str, kill_err
-            );
-        }
+    // By the pid recorded at spawn: a probe that saw the process exit has
+    // reaped the leader, and the group lives on while it forked anything. A
+    // container's group inside the macOS VM goes with it.
+    group.force_kill(instance_id_str).await;
+    if let Err(kill_err) = child.kill().await {
+        debug!(
+            "Failed to kill process for node instance '{}': {}",
+            instance_id_str, kill_err
+        );
     }
 
     let _ = child.wait().await;
@@ -836,6 +835,10 @@ mod tests {
         command.arg("5");
         spawn_as_process_group_leader(&mut command);
         let child = command.spawn().expect("spawn sleep");
+        let group = ProcessGroup {
+            pid: child.id().expect("the child has a pid"),
+            is_container: false,
+        };
         let stderr_buffer = StderrTail::new();
         let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
         let reader = spawn_output_reader_async(
@@ -847,7 +850,15 @@ mod tests {
             Some(stderr_buffer.clone()),
             scratch_log(),
         );
-        kill_and_collect_error(child, "sensor_inst", "failed", stderr_buffer, vec![reader]).await
+        kill_and_collect_error(
+            child,
+            group,
+            "sensor_inst",
+            "failed",
+            stderr_buffer,
+            vec![reader],
+        )
+        .await
     }
 
     /// The error quotes the stderr tail after its header, and is the error
@@ -929,6 +940,10 @@ mod tests {
         let mut command = Command::new("true");
         spawn_as_process_group_leader(&mut command);
         let child = command.spawn().expect("spawn `true`");
+        let group = ProcessGroup {
+            pid: child.id().expect("the child has a pid"),
+            is_container: false,
+        };
 
         let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
         let held_open = tokio::spawn(async move {
@@ -938,9 +953,15 @@ mod tests {
         let stderr = StderrTail::new();
         stderr.push("last words");
 
-        let message =
-            kill_and_collect_error(child, "inst", "the start gave up", stderr, vec![held_open])
-                .await;
+        let message = kill_and_collect_error(
+            child,
+            group,
+            "inst",
+            "the start gave up",
+            stderr,
+            vec![held_open],
+        )
+        .await;
 
         assert_eq!(
             message,

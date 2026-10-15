@@ -4,6 +4,7 @@ use super::daemon::StartedCoreNode;
 use super::fixtures::write_peppy_json5;
 use super::poll::AbortOnDrop;
 use super::{CALLER_INSTANCE_ID, TEST_GIT_HASH, test_node_target};
+use config::node::{RestartDeclaration, RestartPolicy, RestartRequest};
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
     NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback, NodeRunGoal,
@@ -175,23 +176,54 @@ pub async fn send_daemon_goal(
     .await
 }
 
+/// The `--restart never` request: a crash leaves the instance `failed` and
+/// schedules nothing, so a test whose subject is the crash itself passes it.
+pub fn never() -> RestartRequest {
+    RestartRequest::Flag(RestartDeclaration::policy_only(RestartPolicy::Never))
+}
+
+/// The `--restart on_failure` request.
+pub fn on_failure() -> RestartRequest {
+    RestartRequest::Flag(RestartDeclaration::policy_only(RestartPolicy::OnFailure))
+}
+
+/// The `--restart always` request.
+pub fn always() -> RestartRequest {
+    RestartRequest::Flag(RestartDeclaration::policy_only(RestartPolicy::Always))
+}
+
+/// The `node_run` goal of `instance_plan`, whose result the daemon keeps for
+/// the test's result budget.
+pub fn node_run_goal(
+    instance_plan: config::runtime::NodeInstancePlan,
+    node_name: &str,
+    tag: &str,
+    timeouts: &NodeRunTestTimeouts,
+) -> NodeRunGoal {
+    NodeRunGoal::new(instance_plan, node_name, tag, timeouts.result.as_secs())
+}
+
+/// Sends `goal` and waits for its result.
+pub async fn send_node_run_goal_and_wait(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    goal: NodeRunGoal,
+    timeouts: &NodeRunTestTimeouts,
+) -> Result<NodeRunTestResponse, String> {
+    send_node_run_and_wait_internal(messenger, core_node_name, goal, timeouts, None).await
+}
+
 /// Sends a `node_run` goal and returns the live action handle plus its decoded
 /// goal response, or an error when the goal is not accepted. The wait helpers
 /// build on it, and a test calls it directly when it does work between the
 /// goal and the result (e.g. bringing up a delayed health responder once
 /// startup output has streamed) or never fetches the result at all.
-#[allow(clippy::too_many_arguments)]
 pub async fn send_node_run_goal(
     messenger: &MessengerHandle,
     core_node_name: &str,
-    instance_plan: config::runtime::NodeInstancePlan,
-    node_name: &str,
-    tag: &str,
+    goal: NodeRunGoal,
     goal_timeout: Duration,
-    result_secs: u64,
-    env_vars: Vec<(String, String)>,
 ) -> Result<(ActionGoalHandle, NodeRunGoalResponse), String> {
-    let goal = NodeRunGoal::new(instance_plan, node_name, tag, result_secs).with_env_vars(env_vars);
     let action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
         .await
         .map_err(|e| format!("Failed to send goal: {}", e))?;
@@ -269,28 +301,15 @@ pub async fn wait_until_action_completes(action_handle: &mut ActionGoalHandle, t
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn send_node_run_and_wait_internal(
     messenger: &MessengerHandle,
     core_node_name: &str,
-    instance_plan: config::runtime::NodeInstancePlan,
-    node_name: &str,
-    tag: &str,
+    goal: NodeRunGoal,
     timeouts: &NodeRunTestTimeouts,
     feedback_tx: Option<UnboundedSender<NodeRunFeedback>>,
-    env_vars: Vec<(String, String)>,
 ) -> Result<NodeRunTestResponse, String> {
-    let (mut action_handle, goal_response) = send_node_run_goal(
-        messenger,
-        core_node_name,
-        instance_plan,
-        node_name,
-        tag,
-        timeouts.goal,
-        timeouts.result.as_secs(),
-        env_vars,
-    )
-    .await?;
+    let (mut action_handle, goal_response) =
+        send_node_run_goal(messenger, core_node_name, goal, timeouts.goal).await?;
 
     let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
     let mut collected = Vec::new();
@@ -323,6 +342,52 @@ async fn send_node_run_and_wait_internal(
     })
 }
 
+/// Sends a `node_run` goal, runs `before_cancel`, cancels the goal as its
+/// client would, and returns the run's result.
+pub async fn send_node_run_then_cancel(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    instance_plan: config::runtime::NodeInstancePlan,
+    node_name: &str,
+    tag: &str,
+    timeouts: &NodeRunTestTimeouts,
+    before_cancel: impl std::future::Future<Output = ()>,
+) -> Result<NodeRunResult, String> {
+    let (mut action_handle, _) = send_node_run_goal(
+        messenger,
+        core_node_name,
+        node_run_goal(instance_plan, node_name, tag, timeouts),
+        timeouts.goal,
+    )
+    .await?;
+    before_cancel.await;
+    ActionMessenger::cancel_goal(messenger, &action_handle, timeouts.goal)
+        .await
+        .map_err(|err| format!("Failed to cancel the goal: {err}"))?;
+    let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
+    let mut collected = Vec::new();
+    if let FeedbackDrainOutcome::TimedOut = drain_node_run_feedback(
+        &mut action_handle,
+        None,
+        &mut collected,
+        absolute_deadline,
+        |_| false,
+    )
+    .await
+    {
+        return Err("Timeout waiting for node_run result".to_string());
+    }
+    let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
+    fetch_result(
+        messenger,
+        &action_handle,
+        fetch_timeout,
+        NodeRunResult::decode,
+        "result",
+    )
+    .await
+}
+
 /// Drives a `node_run` goal with a deliberately delayed health responder so a
 /// feedback-streaming assertion is deterministic instead of racing the daemon's
 /// start-success stream close.
@@ -351,12 +416,8 @@ pub async fn send_node_run_with_delayed_health(
     let (mut action_handle, goal_response) = send_node_run_goal(
         caller_messenger,
         core_node_name,
-        instance_plan,
-        node_name,
-        tag,
+        node_run_goal(instance_plan, node_name, tag, timeouts),
         timeouts.goal,
-        timeouts.result.as_secs(),
-        Vec::new(),
     )
     .await?;
 
@@ -827,12 +888,9 @@ pub async fn send_node_run_and_wait(
     send_node_run_and_wait_internal(
         messenger,
         core_node_name,
-        instance_plan,
-        node_name,
-        tag,
+        node_run_goal(instance_plan, node_name, tag, timeouts),
         timeouts,
         feedback_tx,
-        Vec::new(),
     )
     .await
 }
@@ -851,12 +909,9 @@ pub async fn send_node_run_and_wait_with_env(
     send_node_run_and_wait_internal(
         messenger,
         core_node_name,
-        instance_plan,
-        node_name,
-        tag,
+        node_run_goal(instance_plan, node_name, tag, timeouts).with_env_vars(env_vars),
         timeouts,
         feedback_tx,
-        env_vars,
     )
     .await
 }

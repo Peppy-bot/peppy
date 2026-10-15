@@ -28,6 +28,17 @@ const WATCHDOG_RESTART_GRACE: Duration = Duration::from_secs(3);
 /// Extra backoff after a restart attempt so a persistently-failing router does
 /// not spin in a tight restart loop.
 const WATCHDOG_POST_RESTART_BACKOFF: Duration = Duration::from_secs(10);
+/// The longest a wedged managed router listening on TCP or TLS leaves nodes
+/// unreachable when one restart of the watchdog heals it: a probe that
+/// answered as the wedge began closing its session, the failed probes that
+/// detect the wedge, the start of the new router, and the nodes' sessions
+/// reconnecting to it.
+pub(crate) const WATCHDOG_RECOVERY: Duration = WATCHDOG_PROBE_INTERVAL
+    .saturating_add(WATCHDOG_PROBE_TIMEOUT)
+    .saturating_mul(WATCHDOG_MAX_FAILURES)
+    .saturating_add(pmi::PROBE_SESSION_CLOSE_TIMEOUT)
+    .saturating_add(pmi::ROUTER_START_BOUND)
+    .saturating_add(Duration::from_millis(pmi::SESSION_RECONNECT_PERIOD_MAX_MS));
 
 /// How long the messaging router keeps the session open waiting for the core
 /// node to finish tearing down its nodes (cooperative shutdown rides over that

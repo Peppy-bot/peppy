@@ -783,7 +783,6 @@ mod tests {
     use daemon_config::peppy_config::{
         ExternalZenohConfig, ManagedZenohConfig, PeppyConfig, ZenohConfig,
     };
-    use std::collections::BTreeMap;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::time::Duration;
@@ -967,15 +966,10 @@ mod tests {
         // instances: a node whose only instance has finished is still in the
         // stack and would be wiped by a restart, so it must keep the warning.
         let mut recorder = node_with_stage("recorder", NodeStage::Ready);
-        recorder.instances = vec![SerializedInstance {
-            clock: Default::default(),
-            instance_id: "rec-1".to_string(),
-            state: InstanceState::Finished,
-            healthy: true,
-            slot_bindings: BTreeMap::new(),
-            pairing_slots: BTreeMap::new(),
-            endpoints: Vec::new(),
-        }];
+        recorder.instances = vec![SerializedInstance::of(
+            "rec-1".to_string(),
+            InstanceState::Finished,
+        )];
         let graph = graph_of(vec![node_with_stage("core", NodeStage::Root), recorder]);
         assert!(stack_has_user_nodes(&graph));
     }

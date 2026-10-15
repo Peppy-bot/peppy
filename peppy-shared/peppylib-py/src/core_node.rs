@@ -266,8 +266,8 @@ impl PyStackList {
 
     /// Externally visible instance ids for the node identified by
     /// `(node_name, node_tag)`. Raises `KeyError` when no node matches;
-    /// returns an empty list when the node exists but every instance is
-    /// still `starting`. Mirrors
+    /// returns an empty list when the node exists but none of its instances
+    /// is `running`. Mirrors
     /// `SerializedNodeGraph::running_instance_ids_by_node` on the Rust side.
     fn running_instance_ids_by_node(
         &self,

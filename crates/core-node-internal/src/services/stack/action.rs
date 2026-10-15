@@ -200,6 +200,7 @@ pub(crate) struct StackChangeTimeouts {
     /// The setup budget of an instance whose node declares none.
     pub default_setup: config::node::SetupTimeout,
     pub health_monitor: HealthMonitorPolicy,
+    pub restart_backoff: crate::RestartBackoff,
 }
 
 /// Daemon-wide defaults the stack launcher applies to every spawned
@@ -392,10 +393,10 @@ async fn handle_stack_request(
         }
     };
 
-    let mutation = match action_context.slice_ownership.stack.try_begin_change() {
+    let mutation = match action_context.slice_ownership.try_begin_change() {
         Ok(mutation) => mutation,
-        Err(busy) => {
-            reject_goal(pending, encode_rejected(action, busy.to_string())).await;
+        Err(refusal) => {
+            reject_goal(pending, encode_rejected(action, refusal)).await;
             return;
         }
     };

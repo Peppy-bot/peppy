@@ -22,10 +22,11 @@ use crate::services::response::into_service_response;
 use crate::services::stack::LocalMounts;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
-    FederationVerdict, LaunchIdentity, PairCommitRequest, ParticipantInstancesRemoveRequest,
-    ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantReserveResponse,
-    ParticipantSetsUpdateRequest, ParticipantSliceBeginRequest, ParticipantSliceBeginResponse,
-    RelationshipEvent, RelationshipNotification, RelationshipNotificationAck,
+    FederationVerdict, InstanceEnd, LaunchIdentity, PairCommitRequest,
+    ParticipantInstancesRemoveRequest, ParticipantReleaseRequest, ParticipantReserveRequest,
+    ParticipantReserveResponse, ParticipantSetsUpdateRequest, ParticipantSliceBeginRequest,
+    ParticipantSliceBeginResponse, RelationshipEvent, RelationshipNotification,
+    RelationshipNotificationAck,
 };
 use core_node_api::names;
 use daemon_config::repository::DeploymentPins;
@@ -157,11 +158,10 @@ fn admit_slice_change(
 ) -> std::result::Result<StackHold, FederationVerdict> {
     let mutation = context
         .ownership
-        .stack
         .try_begin_change()
-        .map_err(|busy| FederationVerdict::refused(busy.to_string()))?;
+        .map_err(FederationVerdict::Refused)?;
     if !context.ownership.holds_slice_of(launch_id) {
-        return Err(FederationVerdict::refused(refuse_outside_slice(
+        return Err(FederationVerdict::Refused(refuse_outside_slice(
             context, launch_id, undone,
         )));
     }
@@ -181,10 +181,10 @@ async fn sets_update_inner(
     };
     let failures = context.relationships.replace_sets(decoded.sets).await;
     if failures.is_empty() {
-        return FederationVerdict::ok().encode().map_err(Into::into);
+        return FederationVerdict::Done.encode().map_err(Into::into);
     }
     // One failed set per line, which the coordinator reports line by line.
-    FederationVerdict::refused(failures.join("\n"))
+    FederationVerdict::Refused(failures.join("\n"))
         .encode()
         .map_err(Into::into)
 }
@@ -206,7 +206,7 @@ async fn instances_remove_inner(
         .iter()
         .any(|id| id.as_str() == context.root_instance_id)
     {
-        return FederationVerdict::refused("cannot remove the core node")
+        return FederationVerdict::Refused("cannot remove the core node".to_owned())
             .encode()
             .map_err(Into::into);
     }
@@ -219,7 +219,7 @@ async fn instances_remove_inner(
         decoded.instance_ids.as_slice(),
     )
     .await;
-    FederationVerdict::ok().encode().map_err(Into::into)
+    FederationVerdict::Done.encode().map_err(Into::into)
 }
 
 async fn reserve_inner(
@@ -227,10 +227,10 @@ async fn reserve_inner(
     context: &FederationServiceContext,
 ) -> Result<Payload> {
     let decoded = ParticipantReserveRequest::decode(request.message().payload_bytes().as_ref())?;
-    let _mutation = match context.ownership.stack.try_begin_change() {
+    let _mutation = match context.ownership.try_begin_change() {
         Ok(mutation) => mutation,
-        Err(busy) => {
-            return ParticipantReserveResponse::rejected(busy.to_string(), &context.peppy_version)
+        Err(refusal) => {
+            return ParticipantReserveResponse::rejected(refusal, &context.peppy_version)
                 .encode()
                 .map_err(Into::into);
         }
@@ -461,10 +461,10 @@ async fn slice_begin_inner(
         .map_err(Into::into);
     }
 
-    let _mutation = match context.ownership.stack.try_begin_change() {
+    let _mutation = match context.ownership.try_begin_change() {
         Ok(mutation) => mutation,
-        Err(busy) => {
-            return ParticipantSliceBeginResponse::refused(busy.to_string())
+        Err(refusal) => {
+            return ParticipantSliceBeginResponse::refused(refusal)
                 .encode()
                 .map_err(Into::into);
         }
@@ -513,7 +513,7 @@ async fn slice_begin_inner(
     match crate::services::stack::prepare_container_mounts(&decoded.mount_sources, mounts).await {
         Ok(auto_created) => {
             for (instance, hosts) in decoded.lifecycle_watchers {
-                context.relationships.notifier().set_watchers(
+                context.relationships.record_watchers(
                     instance.as_str(),
                     &hosts.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 );
@@ -532,8 +532,8 @@ async fn slice_begin_inner(
 /// Records this daemon's half of a cross-daemon pair, on behalf of the daemon
 /// that started the other endpoint.
 ///
-/// A refusal here makes the requester revert its own half, so a pair is never
-/// left established on one machine and absent on the other.
+/// A refusal here makes the requester revert its own half, so a refused pair
+/// is left on neither machine.
 async fn pair_commit_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
@@ -548,16 +548,13 @@ async fn pair_commit_inner(
         decoded.peer.core_node
     );
 
-    let response = match context
+    context
         .relationships
         .pairing()
         .commit_pair_from_peer(&decoded)
         .await
-    {
-        Ok(()) => FederationVerdict::ok(),
-        Err(reason) => FederationVerdict::refused(reason),
-    };
-    response.encode().map_err(Into::into)
+        .encode()
+        .map_err(Into::into)
 }
 
 async fn release_inner(
@@ -568,14 +565,14 @@ async fn release_inner(
 
     let response = if context.ownership.release(&decoded.launch_id) {
         debug!("Released reservation for launch `{}`", decoded.launch_id);
-        FederationVerdict::ok()
+        FederationVerdict::Done
     } else {
         let held = context
             .ownership
             .held_reservation()
             .map(|(launch_id, _)| launch_id)
             .unwrap_or_default();
-        FederationVerdict::refused(format!(
+        FederationVerdict::Refused(format!(
             "this daemon is reserved for launch `{held}`, not `{}`",
             decoded.launch_id
         ))
@@ -618,21 +615,26 @@ async fn notify_inner(
         }
         // Death-driven dissolution, the one relationship event that genuinely
         // crosses daemons at runtime. Authoritative on the daemon that owns the
-        // dead instance; this side only converges.
-        RelationshipEvent::Stopped => {
+        // dead instance; this side only converges. An instance stopped on
+        // purpose does not run again, so the pairs held with it are forgotten;
+        // one that exited keeps them for either endpoint's restart.
+        RelationshipEvent::Ended(end) => {
+            let instance = &decoded.instance;
             context
                 .relationships
                 .observation()
-                .remote_source_stopped(&decoded.instance.core_node, &decoded.instance.instance_id)
+                .remote_source_stopped(&instance.core_node, &instance.instance_id)
                 .await;
             context
                 .relationships
                 .pairing()
-                .dissolve_pairs_with_remote_instance(
-                    &decoded.instance.core_node,
-                    &decoded.instance.instance_id,
-                )
+                .dissolve_pairs_with_remote_instance(&instance.core_node, &instance.instance_id)
                 .await;
+            if end == InstanceEnd::Stopped {
+                context
+                    .relationships
+                    .forget_pairs_held_with(&instance.core_node, &instance.instance_id);
+            }
         }
     }
 

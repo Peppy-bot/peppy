@@ -3,7 +3,6 @@
 //! through a copy, and the launch checks every scope meets once the
 //! exposure deployments are resolved.
 
-use config::runtime::{CopyName, Name};
 use core_node_api::encoding::CopyReference;
 use daemon_config::daemon_interface::DaemonInterface;
 use daemon_config::launcher::{
@@ -18,7 +17,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 mod common;
-use common::words;
+use common::{copy_name, name, words};
 
 /// The scope `simulation_mcp` gives its framework endpoint.
 const SCOPE: &str = r#"{
@@ -84,14 +83,6 @@ fn simulation_mcp(extra_adjustments: &str, extra_robot_options: &str) -> String 
 fn load(document: &str) -> PreparedLauncher {
     let parsed = PeppyLauncherParser::from_content(document).expect("the launcher parses");
     PreparedLauncher::load(&parsed, Path::new("simulation_mcp.json5")).expect("it loads")
-}
-
-fn name(value: &str) -> Name {
-    Name::new(value).expect("a name")
-}
-
-fn copy_name(value: &str) -> CopyName {
-    CopyName::new(value).expect("a copy name")
 }
 
 fn launch_join(option: &str, copy: &str) -> CopyReference {

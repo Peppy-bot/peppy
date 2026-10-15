@@ -140,6 +140,8 @@ fn node_add_command_with_run_arg_succeeds() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -348,6 +350,8 @@ fn node_add_same_node_shutdown_existing_instances() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -394,6 +398,8 @@ fn node_add_same_node_shutdown_existing_instances() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -500,6 +506,8 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -534,6 +542,39 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         node_before.instance_count(),
         1,
         "should have 1 instance running after first add from local filesystem"
+    );
+
+    // Step 2b: An add from the same local source reads the node's tracked
+    // instance from the daemon and asks first; answering no keeps it.
+    let declined = add_node(
+        &node_ctx,
+        AddNodeParams {
+            source: node_path.display().to_string(),
+            git_ref: None,
+            run_options: None,
+            timeouts: TimeoutConfig {
+                idle_secs: 60,
+                max_secs: 3600,
+            },
+            force: false,
+            confirm_reader: Some(Box::new(std::io::Cursor::new(b"n\n" as &[u8]))),
+            sync: false,
+            chain_build: true,
+        },
+    )
+    .expect_err("a declined overwrite fails the add");
+    assert!(
+        declined.to_string().contains("Node add aborted by user"),
+        "{declined}"
+    );
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
+    assert_eq!(
+        graph
+            .find_node(node_name, "v1")
+            .expect("the node stays")
+            .instance_count(),
+        1,
+        "a declined overwrite keeps the running instance"
     );
 
     // Step 3: Create a git repo containing the same node (same name:tag)
@@ -572,9 +613,9 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     ]);
 
     // Step 4: Re-add the same node from the git source with force=false.
-    // The preflight fetch_node_info clones the git repo, reads peppy.json5,
-    // discovers the same node name:tag, and finds the running instance.
-    // confirm_overwrite then reads "y\n" from the cursor to approve.
+    // A git source has no `(name, tag)` before it is fetched, so the add asks
+    // nothing first and leaves the "n" the test offers unread, and the daemon
+    // stops the running instance as it overwrites the node.
     let git_source = format!("file://{}/.git/{}", repo_dir.display(), node_name);
 
     add_node(
@@ -588,12 +629,12 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
                 max_secs: 3600,
             },
             force: false,
-            confirm_reader: Some(Box::new(std::io::Cursor::new(b"y\n" as &[u8]))),
+            confirm_reader: Some(Box::new(std::io::Cursor::new(b"n\n" as &[u8]))),
             sync: false,
             chain_build: true,
         },
     )
-    .expect("second node add from git should succeed through confirmation path");
+    .expect("a node add from git asks nothing and succeeds");
 
     // Step 5: Verify the existing instance was stopped and node was re-added
     let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
@@ -659,6 +700,8 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: true,
@@ -733,6 +776,8 @@ fn node_add_with_sync_flag_rejects_remote_source() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some("https://github.com/fake-org/fake-repo.git/node".to_string()),
             git_ref: None,
             sync: true,
@@ -863,6 +908,8 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             vacant_links: Vec::new(),
             source: Some(consumer_dir.display().to_string()),
             git_ref: None,
@@ -982,6 +1029,8 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(consumer_dir.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1079,6 +1128,8 @@ fn node_add_with_run_rejects_dead_binding_key() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(consumer_dir.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1199,6 +1250,8 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             vacant_links: Vec::new(),
             source: Some(bystander_dir.display().to_string()),
             git_ref: None,
@@ -1240,6 +1293,8 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(new_consumer_dir.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1332,6 +1387,8 @@ fn node_add_build_force_supersedes_inflight_build() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1398,6 +1455,8 @@ fn node_add_build_force_supersedes_inflight_build() {
         command: NodeCommands::Add {
             clock: None,
             publish_clock: None,
+            restart: None,
+            max_restarts: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,

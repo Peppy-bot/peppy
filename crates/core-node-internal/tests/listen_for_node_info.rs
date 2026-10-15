@@ -2,32 +2,15 @@ mod common;
 
 use common::{
     AbortOnDrop, NodeRunTestTimeouts, answer_readiness, poll_core_node_with_timeout,
-    real_build_and_spawn_instance, send_node_add_then_build, send_node_run_and_wait,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    poll_node_info, real_build_and_spawn_instance, send_node_add_then_build,
+    send_node_run_and_wait, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
-use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
+use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
 use peppylib::messaging::MessengerHandle;
 use std::sync::Arc;
 use std::time::Duration;
-
-/// Sends a `NODE_INFO` poll request and unwraps the `Found` body. Panics
-/// if the daemon answers `NotInStack`; happy-path tests expect the node
-/// they set up to be present.
-async fn poll_node_info(
-    started_core_node: &common::StartedCoreNode,
-    request: &NodeInfoRequest,
-    timeout: Duration,
-) -> NodeInfo {
-    match poll_core_node_with_timeout(started_core_node, request, timeout).await {
-        NodeInfoResponse::Found(info) => *info,
-        NodeInfoResponse::NotInStack => panic!(
-            "node_info unexpectedly reported `{}:{}` as not in the stack",
-            request.node_name, request.node_tag
-        ),
-    }
-}
 
 /// Happy path: add a node + start an instance, then `node info` reports the
 /// stage, instance list, run logs, and (after it's set) the add log path.
@@ -98,11 +81,24 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
         "a freshly-running instance should report healthy"
     );
     assert_eq!(info_response.run_log_paths.len(), 1);
-    let expected_run_log = started_core_node
-        .peppy_dirs
-        .logs_dir_run()
-        .join(format!("{}.log", TARGET_INSTANCE_ID));
-    assert_eq!(info_response.run_log_paths[0], expected_run_log);
+    let run_log = &info_response.run_log_paths[0];
+    assert_eq!(
+        run_log.parent(),
+        Some(started_core_node.peppy_dirs.logs_dir_run().as_path())
+    );
+    let file_name = run_log
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("a run log file name");
+    assert!(
+        file_name.starts_with(&format!("{TARGET_INSTANCE_ID}_")) && file_name.ends_with(".log"),
+        "the run log is the instance's timestamped file: {file_name}"
+    );
+    assert!(
+        run_log.is_file(),
+        "the run log exists: {}",
+        run_log.display()
+    );
     assert!(
         info_response.add_log_path.is_none(),
         "a node pushed straight onto the stack records no add log"

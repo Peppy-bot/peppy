@@ -3,6 +3,7 @@ mod message_size;
 mod mount_policy;
 mod parse;
 mod refine;
+mod restart;
 mod retention;
 mod setup_timeout;
 mod types;
@@ -17,6 +18,10 @@ pub use refine::{
     ActionRefinement, FieldRefinement, FormatRefinement, RefinementProblem, RefinementProblemKind,
     Refines, ResultServiceRefinement, ServiceRefinement, TopicRefinement, refined, refined_ref,
 };
+pub use restart::{
+    MaxRestartsWithNever, ResolvedRestart, RestartDeclaration, RestartOrigin, RestartPolicy,
+    RestartRequest, parse_max_restarts,
+};
 pub use retention::{
     MAX_RETENTION_DEPTH, RetentionDepth, RetentionDepthOutOfRange, TopicRetention,
 };
@@ -27,10 +32,11 @@ pub use types::{
     EndpointDeclarations, EndpointKind, EndpointLabel, Execution, ExposedAction, ExposedService,
     GoalServiceEndpoint, ImplementsEntry, InterfaceKind, Interfaces, LinkedAction, LinkedEntry,
     LinkedMember, LinkedService, LinkedTopic, Manifest, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService, NodeConfig, NodeDependency, ObjectKind,
-    ObjectSchema, PairingObserverDependency, PairingParticipantDependency, PeppygenLanguage,
-    PrimitiveSchema, QoSProfile, ResultServiceEndpoint, SchemaType, ServiceInterfaces, Toolchain,
-    TopicInterfaces, TypeToken, deserialize_present, is_blocked_mount_source,
+    NativeExposedAction, NativeExposedService, NodeConfig, NodeDependency, NodeFramework,
+    ObjectKind, ObjectSchema, PairingObserverDependency, PairingParticipantDependency,
+    PeppygenLanguage, PrimitiveSchema, QoSProfile, ResultServiceEndpoint, SchemaType,
+    ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, deserialize_present,
+    is_blocked_mount_source,
 };
 pub use validation::{
     ContractImplementationEdge, DependencySpec, MissingDependencyPolicy,

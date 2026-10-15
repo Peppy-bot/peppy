@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use config::node::{NodeConfig, NodeConfigParser};
@@ -7,8 +8,9 @@ use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
     AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, Deployment,
     DeploymentSource, ExternallyCoveredSlots, MemberAddressing, PairingValidationItem,
-    PeppyLauncher, Placements, PreparedLauncher, ScopeCheck, UnitSelection, check_daemon_scopes,
-    resolve_clocks, validate_link_plan,
+    PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks, ScopeCheck, UnitSelection,
+    check_daemon_scopes, instance_restart, resolve_clocks, resolve_restart, restart_request_of,
+    validate_link_plan,
 };
 use daemon_config::mcp_deployment::DeploymentTargets;
 use daemon_config::repository::EntryOrigin;
@@ -205,11 +207,12 @@ struct CheckedManifest {
 }
 
 /// Hold the flat plan to the launch-time link rules a client can check: the
-/// cross-family slot-key and vacancy rules, then the pairing rules. Both
-/// validators read only the flat launcher and the deployed nodes' manifests,
-/// so they run here without a daemon; the contract-binding rules stay
-/// launch-only because satisfying them can involve the root node, which only
-/// the daemon knows.
+/// cross-family slot-key and vacancy rules, then the pairing rules, after
+/// [`report_clocks_and_restarts`] has reported every instance's clock and
+/// policy. Both validators read only the flat launcher and the deployed nodes'
+/// manifests, so they run here without a daemon; the contract-binding rules
+/// stay launch-only because satisfying them can involve the root node, which
+/// only the daemon knows.
 ///
 /// Manifests come from the nodes cache, a git-backed entry's from the
 /// checkout the caches materialized for it. The check runs only when every
@@ -265,21 +268,7 @@ fn check_link_plan(
             )));
         }
     };
-    for instance in flat
-        .deployments
-        .iter()
-        .flat_map(|deployment| &deployment.instances)
-    {
-        let id = instance.instance_id.as_str();
-        let binding = clocks.of(id);
-        report.push(match binding.domain() {
-            None => format!("{id}: clock `wall`"),
-            Some(domain) if binding.is_publisher() => {
-                format!("{id}: publishes clock `{}`", domain.name)
-            }
-            Some(domain) => format!("{id}: clock `{}`", domain.name),
-        });
-    }
+    report_clocks_and_restarts(flat, &clocks, &manifests, report);
 
     if !unavailable.is_empty() {
         report.push(format!(
@@ -425,4 +414,45 @@ fn checked_manifest(
         config,
         addressing: MemberAddressing::WholeSet,
     })
+}
+
+/// Reports the clock, from `clocks`, and the restart policy of every
+/// instance of the flat plan, one line each, with the manifests this
+/// machine's cache holds, `manifests`. A policy written on the instance needs
+/// no manifest; any other needs the node's, and without it the line says the
+/// policy is not resolved.
+fn report_clocks_and_restarts(
+    flat: &PeppyLauncher,
+    clocks: &ResolvedClocks,
+    manifests: &[CheckedManifest],
+    report: &mut Vec<String>,
+) {
+    let manifest_by_index: HashMap<usize, &CheckedManifest> = manifests
+        .iter()
+        .map(|checked| (checked.index, checked))
+        .collect();
+    let root_restart = flat.framework.restart;
+    for (index, deployment) in flat.deployments.iter().enumerate() {
+        for instance in &deployment.instances {
+            let id = instance.instance_id.as_str();
+            let binding = clocks.of(id);
+            let clock = match binding.domain() {
+                None => "clock `wall`".to_owned(),
+                Some(domain) if binding.is_publisher() => {
+                    format!("publishes clock `{}`", domain.name)
+                }
+                Some(domain) => format!("clock `{}`", domain.name),
+            };
+            let request = restart_request_of(root_restart, instance);
+            let resolved = instance_restart(request).or_else(|| {
+                manifest_by_index
+                    .get(&index)
+                    .map(|checked| resolve_restart(request, checked.config.framework.restart))
+            });
+            report.push(match resolved {
+                Some(resolved) => format!("{id}: {clock}, restart {resolved}"),
+                None => format!("{id}: {clock}, restart not resolved (manifest unavailable)"),
+            });
+        }
+    }
 }

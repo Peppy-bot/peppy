@@ -5,12 +5,29 @@ use super::{CALLER_INSTANCE_ID, core_node_target};
 use config::node::QoSProfile;
 use core_node_api::encoding::{
     ClockRequest, ClockTick, DatastoreGetRequest, DatastoreGetResponse, DatastoreListRequest,
-    DatastoreListResponse, DatastoreRemoveRequest, DatastoreStoreRequest,
+    DatastoreListResponse, DatastoreRemoveRequest, DatastoreStoreRequest, NodeInfo,
+    NodeInfoRequest, NodeInfoResponse,
 };
 use core_node_api::{ServiceRequest, TopicId};
 use peppylib::clock::wall_now_ns;
 use peppylib::messaging::TopicMessenger;
 use std::time::Duration;
+
+/// Sends a `NODE_INFO` poll request and unwraps the `Found` body; a node the
+/// daemon answers `NotInStack` for is a test's setup gone wrong.
+pub async fn poll_node_info(
+    started: &StartedCoreNode,
+    request: &NodeInfoRequest,
+    timeout: Duration,
+) -> NodeInfo {
+    match poll_core_node_with_timeout(started, request, timeout).await {
+        NodeInfoResponse::Found(info) => *info,
+        NodeInfoResponse::NotInStack => panic!(
+            "node_info unexpectedly reported `{}:{}` as not in the stack",
+            request.node_name, request.node_tag
+        ),
+    }
+}
 
 /// [`poll_core_node_with_timeout`] with the 5-second timeout that a request
 /// the daemon answers without long work needs.

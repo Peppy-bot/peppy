@@ -1,7 +1,4 @@
-use config::{
-    AnyType,
-    runtime::{CopyName, Name},
-};
+use config::{AnyType, runtime::Name};
 use core_node_api::encoding::{ArgumentOverride, CopyReference, SetMember};
 use daemon_config::launcher::{
     AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CopyRecord, JoinRequest,
@@ -11,7 +8,7 @@ use daemon_config::launcher::{
 use std::path::Path;
 
 mod common;
-use common::{fragment_file, join_words, load, words, write};
+use common::{copy_name, fragment_file, join_words, load, name, words, write};
 
 /// A fleet: one stack axis holding the engine, one axis running as copies
 /// holding the robot, whose fragments carry the commander axis of their own.
@@ -79,14 +76,6 @@ fn fleet_document(deployments: &str) -> String {
             ] }
         } }"#
     )
-}
-
-fn name(value: &str) -> Name {
-    Name::try_from(value.to_owned()).unwrap()
-}
-
-fn copy_name(value: &str) -> CopyName {
-    CopyName::new(value).unwrap()
 }
 
 /// The ids the stack runs a copy's instances under.

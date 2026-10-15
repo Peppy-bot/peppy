@@ -6,9 +6,14 @@ pair alone with the positions it was sent, so a leader hears its own
 values back and never another leader's. The pairs the slot holds are
 logged whenever the set changes, in the order they were established,
 which is what the cross-daemon pairing test reads.
+
+A start fails at once while the file `START_GATE` exists, so a test can
+hold the hub's restarts off and let them through by removing it.
 """
 
 import asyncio
+import os
+import sys
 import time
 import traceback
 
@@ -17,6 +22,7 @@ from peppygen.paired_topics.limbs import joint_setpoints, joint_states
 from peppygen.parameters import Parameters
 
 LOG = "[pairing-hub]"
+START_GATE = "/tmp/pairing_hub_start_gate"
 
 
 def held_pairs(node_runner: NodeRunner) -> str:
@@ -70,6 +76,8 @@ async def setup(params: Parameters, node_runner: NodeRunner) -> list:
 
 
 def main() -> None:
+    if os.path.exists(START_GATE):
+        sys.exit(f"{LOG} {START_GATE} exists; this start fails")
     try:
         NodeBuilder().run(setup)
     except Exception:
