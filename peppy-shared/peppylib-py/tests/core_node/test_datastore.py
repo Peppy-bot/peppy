@@ -1,5 +1,6 @@
 """Integration tests for the `peppylib` datastore helpers
-(`datastore.store` / `datastore.get` / `datastore.list` / `datastore.remove`).
+(`datastore.store` / `datastore.store_exclusive` / `datastore.get` /
+`datastore.list` / `datastore.remove`).
 
 Python equivalent of `peppy-shared/peppylib-rs/tests/core_node/datastore.rs`.
 The stub listeners reply with canned capnp bytes, so these assert the bindings
@@ -97,6 +98,49 @@ async def test_datastore_list_returns_entries(tmp_path):
     assert entries[0].last_modified_by == "arm_node"
     assert entries[1].key == "mode"
     assert entries[1].last_modified_by == "planner"
+
+
+@pytest.mark.asyncio
+async def test_datastore_store_exclusive_resolves_to_stored(tmp_path):
+    """`datastore.store_exclusive()` resolves to `ExclusiveStore.Stored()` when
+    the core node makes the calling instance the key's owner."""
+    answer = await call_against_stub_service(
+        tmp_path,
+        "datastore_store_exclusive",
+        datastore.DatastoreStoreExclusiveResponse.stored().encode(),
+        lambda runner: datastore.store_exclusive(
+            runner, "arm/left/driver", b"mine", datastore.Encoding.TEXT_PLAIN, 3.0
+        ),
+    )
+
+    assert isinstance(answer, datastore.ExclusiveStore.Stored)
+    assert answer == datastore.ExclusiveStore.Stored(), "answers compare by value"
+
+
+@pytest.mark.asyncio
+async def test_datastore_store_exclusive_refused_names_the_owner(tmp_path):
+    """A refusal carries the key as its owner stored it, the owner in
+    `last_modified_by`, and matches as `ExclusiveStore.Refused`."""
+    response = datastore.DatastoreStoreExclusiveResponse.refused(
+        b"held", "text/plain", "owner_inst"
+    )
+
+    answer = await call_against_stub_service(
+        tmp_path,
+        "datastore_store_exclusive",
+        response.encode(),
+        lambda runner: datastore.store_exclusive(
+            runner, "arm/left/driver", b"mine", datastore.Encoding.TEXT_PLAIN, 3.0
+        ),
+    )
+
+    match answer:
+        case datastore.ExclusiveStore.Refused(current=current):
+            assert current.value == b"held"
+            assert current.encoding == datastore.Encoding.TEXT_PLAIN
+            assert current.last_modified_by == "owner_inst"
+        case _:
+            pytest.fail(f"expected a refusal, got {answer!r}")
 
 
 @pytest.mark.asyncio

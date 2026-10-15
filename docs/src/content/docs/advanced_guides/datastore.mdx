@@ -9,34 +9,36 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 Topics and services move data between nodes that are up at the same time. Sometimes you instead want a place to *leave* a value so another node can pick it up later, or so a node can read back what it wrote before it restarted. The **datastore** is that place: a small in-memory key/value store that lives in the core node and is shared by every node in the stack.
 
-`peppylib::datastore` exposes four helpers:
+`peppylib::datastore` exposes five helpers:
 
 - `store`: upsert a value under a key.
-- `get`: read the value back, or `None` if the key was never set.
+- `store_exclusive`: store a value under a key and make the calling instance its only writer while its process runs.
+- `get`: read the value back, or `None` when the key holds no value.
 - `list`: list every key's metadata (encoding and last writer), without the value bytes.
 - `remove`: delete a key, reporting whether it existed.
 
 Each value is a pair of *raw bytes* and an *encoding tag* (a short string such as `"text/plain"`, `"application/json"`, or `"application/octet-stream"`). This mirrors Zenoh's `(payload, encoding)` value model: the store keeps your bytes verbatim and hands back the tag you chose, so any value type round-trips faithfully. The store never inspects either field.
 
-The store also records, for each key, the `instance_id` of the node that last wrote it. Both `get` (on the returned `StoredValue`) and `list` surface this as `last_modified_by`, so you can tell which node owns a value.
+The store also records, for each key, the `instance_id` of the node that last wrote it. Both `get` (on the returned `StoredValue`) and `list` surface this as `last_modified_by`. For a key written with `store_exclusive` it is the owner's `instance_id`. `get` and `list` do not mark a key as owned; an instance learns that a key is owned from the refusal of its `store_exclusive`, `store` or `remove`.
 
 `peppylib::datastore` ships an `Encoding` helper with constants for the common tags: `Encoding::TEXT_PLAIN`, `Encoding::APPLICATION_JSON`, `Encoding::APPLICATION_OCTET_STREAM` in Rust, and the same members on Python's `Encoding` (a `StrEnum`). Like Zenoh's own encoding, the set is **open**: the constants are a convenience, but any string is a valid tag, so you are never boxed in to the listed ones.
 
-They are available from Rust as `peppylib::datastore::{store, get, list, remove, StoredValue, DatastoreEntry, Encoding}`, and from Python as `from peppylib.datastore import store, get, list, remove, StoredValue, DatastoreEntry, Encoding`. Like the other core node helpers, they are not re-exported by `peppygen`; import them from `peppylib::datastore` directly.
+They are available from Rust as `peppylib::datastore::{store, store_exclusive, get, list, remove, StoredValue, DatastoreEntry, ExclusiveStore, Encoding}`, and from Python as `from peppylib.datastore import store, store_exclusive, get, list, remove, StoredValue, DatastoreEntry, ExclusiveStore, Encoding`. Like the other core node helpers, they are not re-exported by `peppygen`; import them from `peppylib::datastore` directly.
 
 Each takes a `NodeRunner`, the same handle your node receives from `NodeBuilder().run(...)` in Python / `NodeBuilder::new().run(...)` in Rust (see the [services guide](/advanced_guides/services/) for a typical setup), and talks to the node's bound core node.
 
 ## When to use this
 
 - **A shared blackboard.** One node computes a value (a calibration result, a chosen target, a mode flag) and another reads it later. The reader asks for the key whenever it needs it, also after the writer stopped. A [topic that retains](/advanced_guides/topics/#retaining-the-latest-value) hands its latest value to late subscribers too, for as long as its producer runs.
-- **Last-known-value handoff.** A node that restarts can read back the value it stored before, as long as the core node stayed up, instead of recomputing from scratch.
+- **Last-known-value handoff.** A node that restarts can read back a value it stored under a key no instance owns, as long as the core node stayed up.
 - **Small cross-node state that does not warrant a service contract.** When defining a request/response service is more ceremony than the data is worth, a well-known key is often enough.
+- **One writer at a time.** When two instances must never both drive one thing, such as the left arm, the instance that drives it owns a key through `store_exclusive` for as long as its process runs. Another instance that tries is refused and learns which instance owns the key. A value that must outlive its writer, such as a calibration result, belongs in a key written with `store`.
 
 It is **not** a database. The store is in-memory and process-local to the core node (see the notes below), so reach for topics when you need streaming data, for services when you need a node to *act* on a request, and for a real persistence layer when you need durability. The full map of mechanisms is in [Choosing a communication pattern](/advanced_guides/communication_patterns/).
 
 ## `store`
 
-`store` writes `value` (arbitrary bytes) under `key`, tagged with `encoding`, on the node's bound core node. It returns once the core node acknowledges the write. Storing a key that already exists overwrites the previous value and encoding.
+`store` writes `value` (arbitrary bytes) under `key`, tagged with `encoding`, on the node's bound core node. It returns once the core node acknowledges the write. Storing a key that already exists overwrites the previous value and encoding. Storing a key that another instance owns through [`store_exclusive`](#store_exclusive) fails with an error that names the owner: `PeppyError::ServiceError` in Rust, `RuntimeError` in Python.
 
 The final argument is a response timeout. Rust accepts anything that converts to `Option<Duration>`; Python accepts a `float` in seconds. Pass `None` (or omit it in Python) to use the default of 10 seconds.
 
@@ -92,9 +94,82 @@ The final argument is a response timeout. Rust accepts anything that converts to
   </TabItem>
 </Tabs>
 
+## `store_exclusive`
+
+`store_exclusive` takes the same arguments as `store`. It stores the value and makes the calling instance the key's owner: every other instance's `store` and `remove` of the key fail with an error that names the owner, another copy of the same node included. The owner's own `store` and `store_exclusive` update the value and keep the key owned, and its `remove` deletes the key.
+
+The key lasts as long as the process that stored it. When that process ends, however it ends (a clean exit, a stop, a crash, a kill or a restart), the core node removes the key, and the next `store_exclusive` of any instance takes it. The core node sends no notice when a key goes: an instance that was refused calls `store_exclusive` again to take the key once its owner is gone. A restarted process does not own the key its previous process stored. It calls `store_exclusive` again, and is refused when another instance took the key in between.
+
+A request carries only its sender's `instance_id`, so a request still on its way when its process ends acts for the next process under that id: a `store_exclusive` sent just before a crash can make the restarted process the owner, and a `remove` sent just before a crash can delete the key the restarted process stored.
+
+When another instance owns the key, nothing is written and the answer is `ExclusiveStore::Refused { current }` (Rust) / `ExclusiveStore.Refused(current)` (Python). `current` is the `StoredValue` the owner stored, and `current.last_modified_by` is the owner's `instance_id`. Otherwise the answer is `ExclusiveStore::Stored` (Rust) / `ExclusiveStore.Stored()` (Python). `store_exclusive` takes a key that is absent, one whose owner's process ended, or one your instance already owns. A key's kind is fixed when it is created: an exclusive store of a key that exists with no owner, as `store` writes it, fails with an error (`PeppyError::ServiceError` in Rust, `RuntimeError` in Python) that names the remedy, to remove the key or use another one.
+
+The owner is an instance the core node runs. `store_exclusive` from an `instance_id` the core node runs no process under fails with an error: `PeppyError::ServiceError` in Rust, `RuntimeError` in Python.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python title="src/my_node/__main__.py"
+    from peppygen import NodeBuilder, NodeRunner
+    from peppygen.parameters import Parameters
+    from peppylib.datastore import Encoding, ExclusiveStore, store_exclusive
+
+
+    async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
+        answer = await store_exclusive(
+            node_runner,
+            "arm/left/driver",
+            b'{"mode": "teleop"}',
+            Encoding.APPLICATION_JSON,
+            3.0,
+        )
+        match answer:
+            case ExclusiveStore.Stored():
+                print("this instance drives the left arm")
+            case ExclusiveStore.Refused(current=current):
+                print(f"{current.last_modified_by} drives the left arm")
+
+
+    def main():
+        NodeBuilder().run(setup)
+
+
+    if __name__ == "__main__":
+        main()
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust title="src/main.rs"
+    use std::time::Duration;
+
+    use peppygen::{NodeBuilder, Parameters, Result};
+    use peppylib::datastore::{store_exclusive, Encoding, ExclusiveStore};
+
+    fn main() -> Result<()> {
+        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+            let answer = store_exclusive(
+                &node_runner,
+                "arm/left/driver",
+                br#"{"mode": "teleop"}"#.to_vec(),
+                Encoding::APPLICATION_JSON,
+                Duration::from_secs(3),
+            )
+            .await?;
+            match answer {
+                ExclusiveStore::Stored => println!("this instance drives the left arm"),
+                ExclusiveStore::Refused { current } => {
+                    println!("{} drives the left arm", current.last_modified_by)
+                }
+            }
+            Ok(())
+        })
+    }
+    ```
+  </TabItem>
+</Tabs>
+
 ## `get`
 
-`get` reads the value stored under `key` from the node's bound core node. A key that was never stored (or that no node has stored yet) reads as `None` rather than an error: the helper folds the wire response's `found` flag into `Option::None` (Rust) / `None` (Python), so you never get back an empty `StoredValue` you have to second-guess.
+`get` reads the value stored under `key` from the node's bound core node. A key that holds no value (never stored, removed, or owned by a process that ended) reads as `None`: the helper folds the wire response's `found` flag into `Option::None` (Rust) / `None` (Python).
 
 When the key is present you get a `StoredValue` with three fields:
 
@@ -151,7 +226,7 @@ The second argument is the same response timeout as above.
 
 ## `list`
 
-`list` returns the metadata of **every** key currently in the store: one entry per key carrying the `key`, its `encoding` tag, and `last_modified_by` (the `instance_id` of the node that last wrote it). The value bytes are deliberately **not** included. A list stays cheap no matter how large your values are; fetch the bytes for a specific key with `get`. The order is unspecified, and the result is a point-in-time snapshot (another node may store or remove keys immediately after).
+`list` returns the metadata of **every** key currently in the store: one entry per key carrying the `key`, its `encoding` tag, and `last_modified_by` (the `instance_id` of the node that last wrote it). The value bytes are deliberately **not** included. A list stays cheap no matter how large your values are; fetch the bytes for a specific key with `get`. The entries come in key order, and the result is a point-in-time snapshot (another node may store or remove keys immediately after).
 
 The only argument is the same response timeout as above.
 
@@ -201,7 +276,7 @@ The only argument is the same response timeout as above.
 
 ## `remove`
 
-`remove` deletes (unsets) `key` from the store. It returns a boolean: `true` if the key existed and was removed, `false` if it was already absent, so removing a missing key is a no-op, not an error.
+`remove` deletes (unsets) `key` from the store. It returns a boolean: `true` if the key existed and was removed, `false` if it was already absent, so removing a missing key is a no-op, not an error. Removing a key that another instance owns through [`store_exclusive`](#store_exclusive) fails with an error that names the owner: `PeppyError::ServiceError` in Rust, `RuntimeError` in Python.
 
 The second argument is the same response timeout as above.
 
@@ -250,10 +325,11 @@ The second argument is the same response timeout as above.
 
 ## Behavior notes
 
-- **In-memory, never written to disk.** The store lives inside the core node process. Values last exactly as long as the core node does; restarting the core node starts from an empty store. Treat it as fast shared scratch space, not durable storage.
+- **In-memory, never written to disk.** The store lives inside the core node process. A key no instance owns lasts as long as the core node does; restarting the core node starts from an empty store. Treat it as fast shared scratch space, not durable storage.
 - **Shared across the whole stack, with no namespacing.** Every node bound to the same core node reads and writes one flat keyspace. Coordinate on key names (a prefix convention like `calibration/...` works well) so two nodes do not clobber each other by accident.
 - **Keys are arbitrary non-empty strings.** A key rides inside the request payload, not as a Zenoh keyexpr, so any character is allowed: slashes, spaces, `*`, `{}`, anything. `"robot/state**{1}"` is a perfectly valid key; only the empty string is rejected, before any request is sent.
-- **Store is an upsert; last writer wins.** A later store under an existing key overwrites the value, the encoding, and the recorded writer. The store records the storing node's `instance_id` on every write and surfaces it as `last_modified_by` on `get` and `list`. There is no atomic read-modify-write, so two nodes that both do get-then-store on the same key can race; design keys so a single writer owns each one when that matters.
-- **`list` is a metadata snapshot.** It returns every key's `encoding` and `last_modified_by` but never the value bytes (fetch those with `get`), in unspecified order, reflecting the store at the moment it was answered.
+- **Store is an upsert; last writer wins.** A later store under an existing key overwrites the value, the encoding, and the recorded writer. The store records the storing node's `instance_id` on every write and surfaces it as `last_modified_by` on `get` and `list`. There is no atomic read-modify-write, so two nodes that both do get-then-store on the same key can race. When a key must have one writer, store it with `store_exclusive`.
+- **An owned key has one writer for the life of one process.** The core node refuses every other instance's `store` and `remove` of it, and removes the key when the process that stored it ends, however it ends. Two instances that call `store_exclusive` on the same key at the same moment get one owner; the other is refused and told who owns it.
+- **`list` is a metadata snapshot.** It returns every key's `encoding` and `last_modified_by` but never the value bytes (fetch those with `get`), in key order, reflecting the store at the moment it was answered.
 - **The encoding tag is yours to interpret.** The store treats it as an opaque label and returns it unchanged. Reach for the `Encoding` constants for the common tags and pass any string for the rest (the Zenoh-style MIME-like tags are a good default), then have readers branch on it when you store more than one value type. A tag read back from `StoredValue.encoding` compares equal to its `Encoding` member, so `stored.encoding == Encoding.APPLICATION_JSON` (Python) / `stored.encoding == Encoding::APPLICATION_JSON` (Rust) works.
 - **Default timeout is 10 seconds.** Pass an explicit timeout from a latency-sensitive path so a slow or unreachable core node does not stall your node.

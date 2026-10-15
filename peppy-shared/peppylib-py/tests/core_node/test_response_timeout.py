@@ -16,6 +16,9 @@ _HELPERS_WITH_TIMEOUT = {
     "datastore.store": lambda runner, timeout: datastore.store(
         runner, "key", b"value", datastore.Encoding.TEXT_PLAIN, timeout
     ),
+    "datastore.store_exclusive": lambda runner, timeout: datastore.store_exclusive(
+        runner, "key", b"value", datastore.Encoding.TEXT_PLAIN, timeout
+    ),
     "datastore.get": lambda runner, timeout: datastore.get(runner, "key", timeout),
     "datastore.list": lambda runner, timeout: datastore.list(runner, timeout),
     "datastore.remove": lambda runner, timeout: datastore.remove(

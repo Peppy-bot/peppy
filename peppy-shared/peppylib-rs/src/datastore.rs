@@ -1,4 +1,5 @@
-//! High-level wrappers around the `DATASTORE_STORE` / `DATASTORE_GET` services.
+//! High-level wrappers around the core node's datastore services: `store`,
+//! `store_exclusive`, `get`, `list` and `remove`.
 //!
 //! Unlike a raw [`crate::core_node::transport::poll`], which returns the wire
 //! response and requires the caller to thread routing parameters through by
@@ -11,7 +12,8 @@ use std::fmt;
 use std::time::Duration;
 
 use core_node_api::encoding::{
-    DatastoreGetRequest, DatastoreListRequest, DatastoreRemoveRequest, DatastoreStoreRequest,
+    DatastoreGetRequest, DatastoreListRequest, DatastoreRemoveRequest,
+    DatastoreStoreExclusiveRequest, DatastoreStoreExclusiveResponse, DatastoreStoreRequest,
 };
 
 use crate::core_node::poll_bound_core_node;
@@ -96,6 +98,16 @@ pub struct StoredValue {
     pub last_modified_by: String,
 }
 
+impl StoredValue {
+    fn new(value: Vec<u8>, encoding: String, last_modified_by: String) -> Self {
+        Self {
+            value,
+            encoding: encoding.into(),
+            last_modified_by,
+        }
+    }
+}
+
 /// One key's metadata as returned by [`list`]: its key, the [`Encoding`] tag
 /// of its value, and the `instance_id` of the node that last wrote it. The
 /// value bytes are not included; fetch them with [`get`] when you need them.
@@ -107,8 +119,21 @@ pub struct DatastoreEntry {
     pub last_modified_by: String,
 }
 
+/// The answer to [`store_exclusive`].
+#[must_use = "a refused exclusive store leaves another instance the key's owner"]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExclusiveStore {
+    /// The calling instance owns the key, which holds the value it stored.
+    Stored,
+    /// Another instance owns the key: the key as its owner stored it, the
+    /// owner's `instance_id` in `last_modified_by`.
+    Refused { current: StoredValue },
+}
+
 /// Store `value` (arbitrary bytes) under `key`, tagged with `encoding`, on the
-/// node's bound core node. Overwrites any existing value for `key`.
+/// node's bound core node. Overwrites any existing value for `key`. Fails when
+/// another instance owns `key` (see [`store_exclusive`]); the owner's store
+/// keeps the key its own.
 ///
 /// `key` is any non-empty string; an empty key returns an error before any
 /// request is sent.
@@ -128,6 +153,38 @@ pub async fn store(
     Ok(())
 }
 
+/// Store `value` under `key`, tagged with `encoding`, and make the calling
+/// instance the key's owner: every other instance's [`store`] and [`remove`] of
+/// it fail, another instance of the same node included, until the owner
+/// removes it or its process ends, which removes the key.
+/// When another instance owns `key`, nothing is written and the answer is
+/// [`ExclusiveStore::Refused`] with the key as its owner stored it.
+///
+/// Fails when `key` exists with no owner, as [`store`] writes it, and when the
+/// core node runs no process under the calling instance's id.
+pub async fn store_exclusive(
+    node_runner: &NodeRunner,
+    key: impl Into<String>,
+    value: impl Into<Vec<u8>>,
+    encoding: impl Into<Encoding>,
+    response_timeout: impl Into<Option<Duration>> + Send,
+) -> Result<ExclusiveStore> {
+    let encoding: Encoding = encoding.into();
+    let request = DatastoreStoreExclusiveRequest::new(key, value, encoding)?;
+    let response = poll_bound_core_node(node_runner, &request, response_timeout.into()).await?;
+
+    Ok(match response {
+        DatastoreStoreExclusiveResponse::Stored => ExclusiveStore::Stored,
+        DatastoreStoreExclusiveResponse::Refused {
+            value,
+            encoding,
+            last_modified_by,
+        } => ExclusiveStore::Refused {
+            current: StoredValue::new(value, encoding, last_modified_by),
+        },
+    })
+}
+
 /// Retrieve the value stored under `key` from the node's bound core node.
 /// Returns `Ok(None)` when no value is stored for `key`.
 ///
@@ -141,17 +198,15 @@ pub async fn get(
     let request = DatastoreGetRequest::new(key)?;
     let response = poll_bound_core_node(node_runner, &request, response_timeout.into()).await?;
 
-    Ok(response.found.then_some(StoredValue {
-        value: response.value,
-        encoding: response.encoding.into(),
-        last_modified_by: response.last_modified_by,
-    }))
+    Ok(response
+        .found
+        .then(|| StoredValue::new(response.value, response.encoding, response.last_modified_by)))
 }
 
 /// List the metadata of every key currently in the datastore on the node's
 /// bound core node. Each [`DatastoreEntry`] carries the key, its encoding tag,
 /// and the `instance_id` of the node that last wrote it, but **not** the value
-/// bytes; fetch those with [`get`]. Order is unspecified.
+/// bytes; fetch those with [`get`]. Entries come in key order.
 pub async fn list(
     node_runner: &NodeRunner,
     response_timeout: impl Into<Option<Duration>> + Send,
@@ -176,6 +231,7 @@ pub async fn list(
 
 /// Remove (unset) `key` from the node's bound core node. Returns `Ok(true)` if
 /// the key existed and was removed, `Ok(false)` if it was already absent.
+/// Fails when another instance owns `key` (see [`store_exclusive`]).
 ///
 /// `key` is any non-empty string; an empty key returns an error before any
 /// request is sent.
