@@ -1263,6 +1263,16 @@ impl NodeStack {
         self.shared.read().instance_state(instance_id)
     }
 
+    /// The incarnation of the process the instance `instance_id` runs, or
+    /// starts once the spawn has forked it; `None` when no instance has the
+    /// id, before the fork, and once its process is gone.
+    pub fn live_incarnation(&self, instance_id: &str) -> Option<u64> {
+        self.shared
+            .read()
+            .tracked(instance_id, |tracked| tracked.instance.live_incarnation())
+            .flatten()
+    }
+
     /// Whether the instance `instance_id` runs the process `pid`.
     pub fn runs_process(&self, instance_id: &str, pid: u32) -> bool {
         self.shared
