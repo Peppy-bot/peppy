@@ -199,6 +199,10 @@ struct FederationVerdict {
     ok @0 :Bool;
     # Populated when `ok` is false, empty otherwise.
     rejectionReason @1 :Text;
+    # Set only beside a `pair_commit` refusal: the receiver's slot is starting
+    # a restart or has no process to pair, or its own node did not take the
+    # delivery, so the pair may be asked for again later.
+    undelivered @2 :Bool;
 }
 
 # One instance, addressed by the `(coreNode, instanceId)` pair. Identical to
@@ -247,6 +251,10 @@ struct PairCommitRequest {
     # The copy the peer's instance belongs to; empty for an instance run
     # outside a copy.
     peerCopy @9 :Text;
+    # The pair a restarted peer held before its restart and asks for again,
+    # which the receiver makes only while its own endpoint still keeps it;
+    # false for a pair a start's link names.
+    held @10 :Bool;
 }
 
 # Best-effort notification from the daemon that owns an instance to a daemon
@@ -263,14 +271,20 @@ struct RelationshipNotification {
         # redeliver its pin, which is what makes an observer drop and redeclare
         # its subscription across a source restart.
         reachedRunning @1 :Void;
-        # The instance stopped or died. A daemon holding a pair with it
-        # dissolves that pair locally. Dissolution stays authoritative on the
-        # daemon that owns the dead instance; this only propagates it.
+        # The instance's process exited on its own; its restart policy may
+        # start it again. A daemon holding a pair with it dissolves that pair
+        # locally and keeps it held, so a restart of either endpoint asks for
+        # it again. Dissolution stays authoritative on the daemon that owns
+        # the dead instance; this only propagates it.
         #
         # An unreachable daemon cannot send this, which is exactly why a node
         # whose correctness depends on freshness owns a staleness watchdog
         # rather than trusting the framework to notice a partition.
-        stopped @2 :Void;
+        exited @2 :Void;
+        # The instance was stopped on purpose (`peppy node stop`, a removal or
+        # a teardown) and does not run again. A daemon holding a pair with it
+        # dissolves that pair and forgets it.
+        stopped @3 :Void;
     }
 }
 

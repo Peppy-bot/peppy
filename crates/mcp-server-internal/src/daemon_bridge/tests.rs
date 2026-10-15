@@ -7,6 +7,7 @@
 //! [`PausedRuntime`]), and the bridge behind a real endpoint over HTTP at the
 //! end of this file.
 
+use super::stack_copies::STACK_BUSY_REASON;
 use super::stack_copies::ScopedStackCopies;
 use super::stack_copies::StackCopies;
 use super::{DaemonBridges, DaemonScopes, OwnDaemon};
@@ -16,8 +17,8 @@ use crate::test_support::{Events, PausedRuntime, ScriptedSurface};
 use config::runtime::{CopyName, CoreNodeName, Name};
 use core_node_api::encoding::{
     CopyAction, CopyChange, CopyInfo, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse,
-    LaunchResult, NodeRunLogEntry, STACK_BUSY_REASON, StackJoinGoal, StackListRequest,
-    StackListResponse, StackRemoveGoal,
+    LaunchResult, NodeRunLogEntry, StackJoinGoal, StackListRequest, StackListResponse,
+    StackRemoveGoal,
 };
 use core_node_api::names::CORE_NODE_TAG;
 use core_node_api::{ActionGoal, ServiceRequest};
@@ -222,6 +223,10 @@ fn admitted() -> peppylib::types::Payload {
         .encode()
         .expect("the admission encodes")
 }
+
+/// The reason the scripted daemon refuses a goal with.
+const DAEMON_REFUSAL: &str =
+    "a stack change is in progress on this daemon; run this again once it ends";
 
 fn rejected(reason: &str) -> peppylib::types::Payload {
     LaunchGoalResponse::rejected(reason)
@@ -776,8 +781,8 @@ async fn a_join_the_daemon_rejects_is_refused_with_its_reason() {
     daemon.lists(&[]);
 
     let call = spawn_join(&bridge, &surface, "bravo", "so101_sim");
-    daemon.rejects_join(STACK_BUSY_REASON).await;
-    assert_eq!(ended(call).await, refused(STACK_BUSY_REASON));
+    daemon.rejects_join(DAEMON_REFUSAL).await;
+    assert_eq!(ended(call).await, refused(DAEMON_REFUSAL));
     assert!(surface.feedback().is_empty());
     assert!(
         idle_now(&bridge),
@@ -887,8 +892,8 @@ async fn a_cancel_before_the_daemon_answers_waits_for_the_answer() {
 
     daemon.lists(&[]);
     let call = spawn_join(&bridge, &surface, "bravo", "so101_sim");
-    daemon.rejects_join(STACK_BUSY_REASON).await;
-    assert_eq!(ended(call).await, refused(STACK_BUSY_REASON));
+    daemon.rejects_join(DAEMON_REFUSAL).await;
+    assert_eq!(ended(call).await, refused(DAEMON_REFUSAL));
 
     daemon.lists(&[]);
     let call = spawn_join(&bridge, &surface, "bravo", "so101_sim");
@@ -1100,10 +1105,10 @@ async fn a_removal_takes_no_lock_and_a_cancel_stops_its_wait_only() {
         .next_goal(READINESS_TIMEOUT)
         .await
         .expect("the removal reaches the daemon")
-        .reject(None, rejected(STACK_BUSY_REASON))
+        .reject(None, rejected(DAEMON_REFUSAL))
         .await
         .expect("the daemon rejects the removal");
-    assert_eq!(ended(removing).await, refused(STACK_BUSY_REASON));
+    assert_eq!(ended(removing).await, refused(DAEMON_REFUSAL));
     complete(&join_context, &LaunchResult::success(STACK_LOG)).await;
     assert!(ended(joining).await.is_ok());
 

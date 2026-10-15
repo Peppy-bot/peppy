@@ -1,9 +1,9 @@
 mod common;
 
 use common::{
-    AbortOnDrop, build_staged_node, send_node_add_and_wait, spawn_real_running_instance,
-    spawn_real_stuck_instance, start_core_node_with_mock_messenger, wait_until_service_reachable,
-    write_peppy_json5,
+    AbortOnDrop, build_staged_node, install_shutdown_listener_for_instance, send_node_add_and_wait,
+    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    wait_until_service_reachable, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::NodeRemoveRequest;
@@ -209,22 +209,22 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     )
     .await;
 
-    // Simulate the node exposing the shutdown service: node_remove probes it to
-    // tell a running instance from an unreachable one. The stuck variant above
-    // installs no shutdown listener, so this one is the only SHUTDOWN_SERVICE
-    // responder of the instance and sees every shutdown request node_remove
-    // sends.
+    // Serve the node's shutdown service: node_remove probes it to tell a
+    // running instance from an unreachable one, and the removal waits for the
+    // process once the request is answered. The stuck variant above installs
+    // no shutdown listener, so this one is the only SHUTDOWN_SERVICE responder
+    // of the instance and sees every shutdown request node_remove sends; it
+    // ends the process as a node does, so the removal returns at once with
+    // nothing force-killed.
+    let (_shutdown_task, shutdown_rx) = install_shutdown_listener_for_instance(
+        &started_core_node,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        TARGET_INSTANCE_ID,
+    )
+    .await;
     let shutdown_handle =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
-    let (shutdown_task, mut shutdown_rx) = listen_for_shutdown(
-        &shutdown_handle,
-        &started_core_node.core_node_name,
-        TARGET_INSTANCE_ID,
-        common::test_node_target(TARGET_NODE_NAME),
-    )
-    .await
-    .expect("failed to start shutdown service");
-    let _shutdown_task = AbortOnDrop(shutdown_task);
     wait_until_service_reachable(
         &shutdown_handle,
         &started_core_node.core_node_name,
@@ -239,7 +239,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     let response = common::poll_core_node_with_timeout(
         &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
-        Duration::from_secs(10),
+        core_node::node_remove_bound(node_stack.shutdown_grace()) + Duration::from_secs(5),
     )
     .await;
 
@@ -248,12 +248,18 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         "node_remove should succeed, got error: {:?}",
         response.error_message
     );
+    assert!(
+        response.force_killed.is_empty(),
+        "the instance exited on its shutdown request, got force-killed: {:?}",
+        response.force_killed
+    );
 
-    // The listener's handler fires the signal before it answers, and
-    // node_remove answers only after the shutdown request got its answer.
-    shutdown_rx
-        .try_recv()
-        .expect("shutdown signal should be received before node_remove answers");
+    // node_remove answers only after the shutdown request got its answer,
+    // which the listener reports once it ended the process.
+    tokio::time::timeout(Duration::from_secs(1), shutdown_rx)
+        .await
+        .expect("the shutdown listener reports the request the removal sent")
+        .expect("the shutdown listener is still running");
 
     assert!(
         !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
@@ -328,9 +334,21 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
     let entity = node_stack
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node should exist in stack");
-    let new_state = node_stack::NodeEntity::mark_instance_exited(&entity, &instance_id, true);
+    let pid = node_stack
+        .find_instance_and_entity_any_state(&instance_id)
+        .and_then(|(instance, _)| instance.pid())
+        .expect("a running instance has a pid");
+    let exited = node_stack::NodeEntity::mark_instance_exited(
+        &entity,
+        &instance_id,
+        pid,
+        core_node_api::ExitCause::Code(0),
+        &core_node::test_support::instant_restart_backoff(),
+        node_stack::Registrations::default,
+    );
+    assert!(exited.is_some(), "a running instance exits");
     assert_eq!(
-        new_state,
+        node_stack.instance_state(instance_id.as_str()),
         Some(core_node_api::InstanceState::Finished),
         "a clean self-exit should leave the instance Finished"
     );

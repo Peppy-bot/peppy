@@ -8,18 +8,31 @@
 //! turns `healthy` again on the first passing one. A lone missed probe (the
 //! node, its container, or the messaging path stalling for a moment) leaves the
 //! flag untouched and is visible only at debug level.
+//!
+//! An instance whose restart policy restarts it after a failure is killed
+//! once it has answered no health check for
+//! [`HealthMonitorPolicy::kill_after`], and its exit watcher restarts it,
+//! unless two or more instances other than the core node's own run on the
+//! daemon and none of them is healthy, which is a messaging outage.
 
 use super::stack_log::{StackLog, StackLogEvent};
+use super::stop::force_kill_deadline;
+use config::node::RestartPolicy;
 use config::runtime::Name;
-use node_stack::NodeStack;
+use node_stack::{HealthKill, NodeStack, RunningHealth};
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::messaging::{NODE_HEALTH_SERVICE, ProducerRef, SenderTarget, ServiceTarget};
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
+
+/// The fewest `running` instances on a daemon, the core node's own aside,
+/// for an all-unhealthy set to be read as a messaging outage: the silent
+/// instance and one witness.
+const OUTAGE_MIN_RUNNING: usize = 2;
 
 /// Cadence and tolerance of the per-instance health monitor.
 #[derive(Clone, Copy, Debug)]
@@ -31,6 +44,12 @@ pub struct HealthMonitorPolicy {
     /// Consecutive misses that turn a healthy instance `unhealthy`. One passing
     /// probe turns it back.
     pub failure_threshold: NonZeroU32,
+    /// How long a `running` instance whose policy restarts on failure may
+    /// answer no health check before it is killed, so its policy restarts
+    /// it; `None` never kills. Counted from the last answered health check,
+    /// or from the monitor's start when none was answered, and decided at
+    /// the next miss once the instance is `unhealthy`.
+    pub kill_after: Option<Duration>,
 }
 
 /// A change of an instance's health caused by a probe outcome.
@@ -103,27 +122,47 @@ pub(crate) struct HealthMonitorParams {
     pub(crate) policy: HealthMonitorPolicy,
     pub(crate) shutdown_token: CancellationToken,
     /// Cancelled by the instance's exit watcher once its process exits on its
-    /// own, so the monitor stops the moment the instance goes terminal rather
-    /// than running one more probe (which would fail against the dead process
-    /// and count a miss for a node that simply finished).
+    /// own, so the monitor stops the moment the process is gone and probes no
+    /// dead process.
     pub(crate) instance_done: CancellationToken,
+    /// The instance's restart policy: the kill after
+    /// [`HealthMonitorPolicy::kill_after`] applies under a policy that
+    /// restarts after a failure.
+    pub(crate) restart_policy: RestartPolicy,
 }
 
 /// Spawns a background task that periodically polls the node's health service
 /// and records the resulting health on the instance's flag, which `stack list`
 /// and `node info` surface. The flag follows a [`HealthTracker`]: it turns
 /// `unhealthy` after [`HealthMonitorPolicy::failure_threshold`] consecutive
-/// missed probes and `healthy` again on the next passing probe. This task never
-/// removes the instance from the stack, so an unhealthy node stays visible until
-/// it recovers or is stopped explicitly (e.g. `node stop`).
+/// missed probes and `healthy` again on the next passing probe. Under a policy
+/// that restarts on failure, the task kills the process once it has answered
+/// no health check for [`HealthMonitorPolicy::kill_after`], and the exit
+/// watcher restarts the instance; under any other policy an
+/// unhealthy node stays visible until it recovers or is stopped explicitly
+/// (e.g. `node stop`).
 ///
 /// The task exits when the instance is no longer found in the stack (stopped
 /// externally), when `instance_done` is cancelled (the instance's process
-/// exited on its own and the exit watcher has moved it to a terminal state), or
-/// when `shutdown_token` is cancelled (the daemon is shutting down, so the
-/// monitored nodes are being torn down on purpose and must not be reported
-/// unhealthy for it).
+/// exited on its own and the exit watcher has moved it on), when it killed the
+/// process, or when `shutdown_token` is cancelled (the daemon is shutting down,
+/// so the monitored nodes are being torn down on purpose and must not be
+/// reported unhealthy for it).
 pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
+    if let Some(kill_after) = p.policy.kill_after {
+        let unhealthy_edge =
+            (p.policy.interval + p.policy.timeout) * p.policy.failure_threshold.get();
+        assert!(
+            kill_after > unhealthy_edge,
+            "the kill after {kill_after:?} without an answered health check follows the \
+             unhealthy edge at {unhealthy_edge:?}"
+        );
+        assert!(
+            kill_after.subsec_nanos() == 0,
+            "the kill after {kill_after:?} is counted in whole seconds, as the exit cause \
+             prints it"
+        );
+    }
     tokio::spawn(async move {
         let instance_id_str = p.target_instance_id.as_str().to_owned();
         let request_payload = match NodeHealthRequest::new().encode() {
@@ -139,6 +178,17 @@ pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
         };
 
         let mut tracker = HealthTracker::new(p.policy.failure_threshold);
+        let kill_after = p
+            .policy
+            .kill_after
+            .filter(|_| p.restart_policy.restarts_after_failure());
+        // The outage line is recorded once per unhealthy run.
+        let mut outage_recorded = false;
+        // When the process last answered, which ends the run a kill counts;
+        // a process that never answered has been silent since the monitor
+        // began.
+        let monitor_started = Instant::now();
+        let mut last_answer: Option<Instant> = None;
 
         loop {
             // Wait out the probe interval, but bail the instant the daemon starts
@@ -191,8 +241,8 @@ pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
 
             // If either cancellation fired while this probe was in flight, stop
             // here without recording or logging. `instance_done` means the
-            // instance's process exited on its own and the exit watcher is moving
-            // it to a terminal state, so a node that simply finished never
+            // instance's process exited on its own and the exit watcher is
+            // recording its exit, so a node that simply finished never
             // produces a trailing "became unhealthy". `shutdown_token` means the
             // daemon is tearing down on purpose, so a probe that raced the session
             // close must not emit a teardown-time warning.
@@ -203,6 +253,9 @@ pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
             let probe_error = poll_result.err();
             let misses_before_probe = tracker.consecutive_misses();
             let edge = tracker.record(probe_error.is_none());
+            if probe_error.is_none() {
+                last_answer = Some(Instant::now());
+            }
 
             // Record the tracked health so `stack list` and `node info` can
             // report it without re-probing. The instance is never removed here,
@@ -244,6 +297,7 @@ pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
                     p.stack_log.record(&StackLogEvent::Recovered {
                         misses: misses_before_probe,
                     });
+                    outage_recorded = false;
                 }
                 // No edge. A miss below the threshold, or one more miss of an
                 // instance already `unhealthy`, is a low-noise debug heartbeat;
@@ -261,8 +315,83 @@ pub(crate) fn spawn_health_monitor(p: HealthMonitorParams) {
                     }
                 }
             }
+
+            let unanswered_since = last_answer.unwrap_or(monitor_started);
+            let Some(unanswered_for) = kill_due(&tracker, unanswered_since, kill_after) else {
+                continue;
+            };
+            let health = p.node_stack.running_health();
+            if outage_in_progress(health) {
+                if !outage_recorded {
+                    p.stack_log.record(&StackLogEvent::HealthKillSkipped {
+                        unanswered_for,
+                        running: health.running,
+                    });
+                    outage_recorded = true;
+                }
+                continue;
+            }
+            kill_silent_instance(
+                &p,
+                HealthKill {
+                    unanswered_for,
+                    last_answer,
+                },
+            )
+            .await;
+            return;
         }
     });
+}
+
+/// `kill_after` once the instance is `unhealthy` and has answered no health
+/// check since `unanswered_since` for that long; `None` before, and under a
+/// policy that never kills.
+fn kill_due(
+    tracker: &HealthTracker,
+    unanswered_since: Instant,
+    kill_after: Option<Duration>,
+) -> Option<Duration> {
+    let kill_after = kill_after?;
+    (!tracker.healthy() && unanswered_since.elapsed() >= kill_after).then_some(kill_after)
+}
+
+/// Whether at least [`OUTAGE_MIN_RUNNING`] instances other than the core
+/// node's own run on the daemon and none of them is healthy, which the daemon
+/// reads as a messaging outage.
+fn outage_in_progress(health: RunningHealth) -> bool {
+    health.running >= OUTAGE_MIN_RUNNING && health.healthy == 0
+}
+
+/// Kills the process of the monitored instance, which answered no health
+/// check for `kill.unanswered_for`, so its exit counts as a failure under
+/// its policy:
+/// SIGTERM, the stop's force-kill deadline, then SIGKILL of the group.
+/// Nothing is sent when the instance is gone or a stop path claimed it. The
+/// monitor ends either way.
+async fn kill_silent_instance(p: &HealthMonitorParams, kill: HealthKill) {
+    let instance_id = p.target_instance_id.as_str();
+    let Some(group) = p.node_stack.arm_health_kill(instance_id, kill) else {
+        return;
+    };
+    let event = StackLogEvent::HealthKill {
+        unanswered_for: kill.unanswered_for,
+    };
+    tracing::warn!(
+        "Health monitor: instance '{}' of node '{}:{}' {}",
+        instance_id,
+        p.to_node_name,
+        p.node_tag,
+        p.stack_log.outcome(&event)
+    );
+    p.stack_log.record(&event);
+    group.terminate(instance_id).await;
+    tokio::select! {
+        _ = p.shutdown_token.cancelled() => return,
+        _ = p.instance_done.cancelled() => return,
+        _ = tokio::time::sleep(force_kill_deadline(p.node_stack.shutdown_grace())) => {}
+    }
+    group.force_kill(instance_id).await;
 }
 
 #[cfg(test)]
@@ -373,6 +502,37 @@ mod tests {
         assert_eq!(tracker.record(false), Some(HealthEdge::Down));
         assert_eq!(tracker.record(true), Some(HealthEdge::Up));
         assert_eq!(tracker.record(false), Some(HealthEdge::Down));
+    }
+
+    #[test]
+    fn kill_due_needs_an_unhealthy_instance_silent_past_the_bound() {
+        use super::kill_due;
+        use std::time::{Duration, Instant};
+        let kill_after = Duration::from_secs(60);
+        let long_ago = Instant::now()
+            .checked_sub(kill_after * 2)
+            .expect("the clock is past two minutes");
+        let mut tracker = HealthTracker::new(threshold(1));
+        assert_eq!(
+            kill_due(&tracker, long_ago, Some(kill_after)),
+            None,
+            "a healthy instance is never killed"
+        );
+        tracker.record(false);
+        assert_eq!(
+            kill_due(&tracker, long_ago, Some(kill_after)),
+            Some(kill_after)
+        );
+        assert_eq!(
+            kill_due(&tracker, Instant::now(), Some(kill_after)),
+            None,
+            "silent for less than the bound"
+        );
+        assert_eq!(
+            kill_due(&tracker, long_ago, None),
+            None,
+            "a policy that never kills"
+        );
     }
 
     #[test]

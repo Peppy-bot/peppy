@@ -35,7 +35,7 @@ pub(in crate::services::stack) fn set_local_watchers(
 ) {
     for (instance, hosts) in watchers {
         if placements.of(instance.as_str()) == ctx.bound_core_node {
-            ctx.relationships.notifier().set_watchers(
+            ctx.relationships.record_watchers(
                 instance.as_str(),
                 &hosts.iter().map(ToString::to_string).collect::<Vec<_>>(),
             );

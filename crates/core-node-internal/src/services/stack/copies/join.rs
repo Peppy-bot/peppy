@@ -290,6 +290,7 @@ async fn join_inner(
             &active.watchers,
             &placements,
             &clocks,
+            active.flat.framework.restart,
         )
         .await?;
         // A set that did not reach its instance fails the join, and the sets

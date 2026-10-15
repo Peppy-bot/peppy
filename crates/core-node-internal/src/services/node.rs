@@ -22,12 +22,14 @@ mod run;
 mod sets;
 mod stack_log;
 mod stop;
+mod supervisor;
 mod sync;
 #[cfg(test)]
 pub(crate) mod test_git_daemon;
 
 use config::node::NodeConfig;
-use node_stack::NodeStack;
+use core_node_api::encoding::InstanceEnd;
+use node_stack::{KeptRelations, NodeStack, Registrations};
 use std::sync::Arc;
 
 // Crate-external re-exports (paths that other crates / other `services::`
@@ -38,6 +40,7 @@ pub use builder::listen_for_node_build;
 pub use health_monitor::HealthMonitorPolicy;
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
+pub use node_stack::RestartBackoff;
 pub use observation::ObservationCoordinator;
 pub use pairing::PairingCoordinator;
 pub(crate) use relationship_notify::RelationshipNotifier;
@@ -45,7 +48,8 @@ pub use remove::listen_for_node_remove;
 pub use run::{DaemonDefaults, NodeRunServiceConfig, listen_for_node_run};
 pub use stack_log::ExportDiscardLog;
 pub use stop::{
-    TEARDOWN_REAP_BUDGET, force_kill_deadline, listen_for_node_stop, teardown_all_instances,
+    TEARDOWN_REAP_BUDGET, force_kill_deadline, listen_for_node_stop, node_remove_bound,
+    node_stop_bound, teardown_all_instances,
 };
 pub(crate) use stop::{
     named_instances, stop_named_instance, stop_named_instances, teardown_timeout,
@@ -158,18 +162,71 @@ impl RelationshipCoordinators {
         &self.notifier
     }
 
-    /// Tears down every cross-instance relationship held by `instance_id`.
-    ///
-    /// Order matters twice over. The remote announcement goes FIRST, while the
-    /// pairing registry still records who the peers were: dissolving locally
-    /// first would erase the very entries that say which daemons to tell.
-    /// Locally, pairing is dissolved before observation because it may notify a
-    /// live peer, and then observation notifies live observers and drops the
-    /// instance's records.
-    pub(crate) async fn tear_down_instance(&self, instance_id: &str) {
-        self.notifier.announce_stopped(instance_id).await;
+    /// Ends every cross-instance relationship of an instance a stop path
+    /// ends on purpose, keyed on its id whether or not the stack still
+    /// tracks it: takes its registrations, forgets the pairs its local peers
+    /// held with it, and announces its end as stopped
+    /// ([`Self::announce_down`]), on which a remote peer forgets the pair
+    /// too. `kept` is what the removed slot kept: after a self-exit emptied
+    /// the registries, its held pairs name the remote peers and its kept
+    /// watchers the daemons to tell. A self-exit keeps the held pairs for
+    /// the restart it may wait for, so the exit watcher calls
+    /// `take_registrations` and `announce_down` itself.
+    pub(crate) async fn tear_down_instance(&self, instance_id: &str, kept: KeptRelations) {
+        let registrations = self.take_registrations(instance_id);
+        self.forget_pairs_held_with(&self.node_stack.core_node_name(), instance_id);
+        let told = registrations
+            .watchers
+            .into_iter()
+            .chain(kept.watchers)
+            .chain(kept.pair_daemons);
+        self.announce_down(instance_id, InstanceEnd::Stopped, told)
+            .await;
+    }
+
+    /// Takes what `instance_id` registered as an observer and the watchers
+    /// of its lifecycle, synchronously, so an exit can take them under the
+    /// slot's own lock before anything observes the new state.
+    pub(crate) fn take_registrations(&self, instance_id: &str) -> Registrations {
+        Registrations {
+            observations: self.observation.take_observations(instance_id),
+            watchers: self.notifier.take_watchers(instance_id),
+        }
+    }
+
+    /// The announcements of an instance's end, after
+    /// [`Self::take_registrations`]: the end to the daemons in `told` and to
+    /// its pair peers, then its pairs dissolved with each survivor told, then
+    /// its observers told the source went down. The end is announced first
+    /// because its recipients include the peers of the pairs the dissolution
+    /// removes; pairs are dissolved before the source announcement, so a peer
+    /// hears of its slot first.
+    pub(crate) async fn announce_down(
+        &self,
+        instance_id: &str,
+        end: InstanceEnd,
+        told: impl IntoIterator<Item = String>,
+    ) {
+        self.notifier.announce_end(instance_id, end, told).await;
         self.pairing.dissolve_for_instance(instance_id).await;
-        self.observation.on_instance_down(instance_id).await;
+        self.observation.announce_source_down(instance_id).await;
+    }
+
+    /// Forgets, on every local instance, the pairs held with the instance
+    /// `instance_id` of the daemon `core_node`, which a stop ended on purpose.
+    pub(crate) fn forget_pairs_held_with(&self, core_node: &str, instance_id: &str) {
+        self.node_stack
+            .forget_pairs_held_with(core_node, instance_id);
+    }
+
+    /// Records the daemons whose observers tap `instance_id`, as a launch,
+    /// join or removal names them: in the registry a running instance
+    /// announces to, and on the slot of a `restarting` instance for its next
+    /// process.
+    pub(crate) fn record_watchers(&self, instance_id: &str, core_nodes: &[String]) {
+        self.notifier.set_watchers(instance_id, core_nodes);
+        self.node_stack
+            .record_watchers_for_restart(instance_id, core_nodes);
     }
 }
 

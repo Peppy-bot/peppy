@@ -182,6 +182,7 @@ pub(in crate::services::stack) async fn start_node_directly(
         default_setup_timeout: ctx.timeouts.default_setup,
         peppy_dirs: ctx.peppy_dirs.clone(),
         health_monitor: ctx.timeouts.health_monitor,
+        restart_backoff: ctx.timeouts.restart_backoff,
         daemon_defaults: ctx.daemon_defaults.clone(),
         shutdown_token: ctx.shutdown_token.clone(),
         relationships: ctx.relationships.clone(),

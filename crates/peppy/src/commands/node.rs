@@ -10,8 +10,10 @@ mod stop;
 mod sync;
 mod types;
 
+use config::node::RestartPolicy;
 use config::runtime::Name;
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -25,6 +27,8 @@ use crate::{context::AppContext, error::Error as CommandError};
 
 pub use add::{AddNodeParams, add_node};
 pub use builder::{BuildOptions, build_node_async};
+#[cfg(feature = "test-support")]
+pub use info::node_info_rendered;
 pub use init::NodeInitBuilder;
 #[cfg(feature = "test-support")]
 pub use run::run_instance_async;
@@ -37,6 +41,58 @@ use core_node_api::encoding::DEFAULT_IDLE_TIMEOUT_SECS;
 use stack_goal::DEFAULT_BUILD_IDLE_TIMEOUT_SECS;
 /// Default absolute max timeout in seconds (safety net).
 pub(crate) const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
+/// Messaging headroom the CLI waits beyond a daemon's own bound on a stop or
+/// a removal, so it does not report a timeout for one that succeeded.
+const DAEMON_MESSAGING_MARGIN: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long the CLI waits for a daemon request whose own bound is `bound`.
+fn daemon_wait(bound: std::time::Duration) -> std::time::Duration {
+    bound + DAEMON_MESSAGING_MARGIN
+}
+
+/// Warns that `instance_id` ignored its cooperative shutdown within the grace
+/// period and was force-killed, so it is not mistaken for a graceful exit.
+fn warn_force_killed(instance_id: &str) {
+    tracing::warn!(
+        "Node instance '{instance_id}' did not shut down gracefully within the grace period and \
+         was force-killed"
+    );
+}
+
+/// The instances `node_name:node_tag` tracks on the daemon, each with its
+/// state; none when the daemon has no such node.
+async fn fetch_tracked_instances(
+    conn: &crate::context::DaemonConnection<'_>,
+    node_name: &str,
+    node_tag: &str,
+    timeout: std::time::Duration,
+) -> peppylib::PeppyResult<Vec<(String, core_node_api::InstanceState)>> {
+    let response = peppylib::core_node::transport::poll(
+        &core_node_api::encoding::NodeInfoRequest::new(node_name, node_tag),
+        conn.messenger,
+        &conn.core_node_name,
+        super::CALLER_INSTANCE_ID,
+        &conn.target_core_node,
+        timeout,
+    )
+    .await?;
+    Ok(match response {
+        core_node_api::encoding::NodeInfoResponse::NotInStack => Vec::new(),
+        core_node_api::encoding::NodeInfoResponse::Found(info) => {
+            tracked_instances(&info.instances)
+        }
+    })
+}
+
+/// Each of `instances` with its state, whatever the state.
+fn tracked_instances(
+    instances: &[core_node_api::encoding::NodeInstanceInfo],
+) -> Vec<(String, core_node_api::InstanceState)> {
+    instances
+        .iter()
+        .map(|inst| (inst.instance_id.clone(), inst.state))
+        .collect()
+}
 
 /// Idle + absolute-max timeout pair used by `node add` and `node run` polling loops.
 pub struct TimeoutConfig {
@@ -289,6 +345,24 @@ pub enum NodeCommands {
         /// takes no `--clock` of its own.
         #[arg(long, value_name = "DOMAIN", value_parser = run::parse_clock_domain_name, requires = "run")]
         publish_clock: Option<Name>,
+        /// What the daemon does when the process exits on its own or stops
+        /// answering health checks: `never` leaves an exited instance
+        /// `finished` or `failed` and a silent one `running`; `on_failure`
+        /// starts it again after a failed exit, and kills and restarts it
+        /// once it has answered no health check for a minute, except while
+        /// two or more instances other than the core node's own run on the
+        /// daemon and none is healthy; `always` also starts it again after a
+        /// clean exit. Omitted, the node's `framework.restart` decides, then
+        /// `on_failure`.
+        #[arg(long, value_name = "POLICY", value_parser = run::parse_restart_policy, requires = "run")]
+        restart: Option<RestartPolicy>,
+        /// Restart attempts in a row, failed starts included, before the next
+        /// exit or failed start leaves the instance failed. An exit after a run
+        /// of two minutes or more starts the count over; a run the health
+        /// monitor ended counts only up to its last answered health check.
+        /// Omitted, no limit.
+        #[arg(long, value_name = "N", requires = "restart", allow_negative_numbers = true, value_parser = run::parse_max_restarts)]
+        max_restarts: Option<NonZeroU32>,
         /// Link a `link_id` from this node's `depends_on` to a target:
         /// `KEY@TARGET`. One flag for every link kind: a producer binding
         /// (TARGET is a producer `instance_id`), a pairing (TARGET is a peer
@@ -329,7 +403,7 @@ pub enum NodeCommands {
         /// Absolute max timeout in seconds (safety net)
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
         max_timeout: u64,
-        /// When set, bypass the confirmation prompt and stop running instances before overwriting.
+        /// When set, skip the confirmation prompt, and stop and clear the node's tracked instances before overwriting it. While one of them is starting, the add is refused and stops nothing.
         ///
         /// When chaining a build (`--build` / `--run`), the flag is also forwarded
         /// to the build step: any in-progress build of this node is cancelled and
@@ -403,6 +477,24 @@ pub enum NodeCommands {
         /// takes no `--clock` of its own.
         #[arg(long, value_name = "DOMAIN", value_parser = run::parse_clock_domain_name)]
         publish_clock: Option<Name>,
+        /// What the daemon does when the process exits on its own or stops
+        /// answering health checks: `never` leaves an exited instance
+        /// `finished` or `failed` and a silent one `running`; `on_failure`
+        /// starts it again after a failed exit, and kills and restarts it
+        /// once it has answered no health check for a minute, except while
+        /// two or more instances other than the core node's own run on the
+        /// daemon and none is healthy; `always` also starts it again after a
+        /// clean exit. Omitted, the node's `framework.restart` decides, then
+        /// `on_failure`.
+        #[arg(long, value_name = "POLICY", value_parser = run::parse_restart_policy)]
+        restart: Option<RestartPolicy>,
+        /// Restart attempts in a row, failed starts included, before the next
+        /// exit or failed start leaves the instance failed. An exit after a run
+        /// of two minutes or more starts the count over; a run the health
+        /// monitor ended counts only up to its last answered health check.
+        /// Omitted, no limit.
+        #[arg(long, value_name = "N", requires = "restart", allow_negative_numbers = true, value_parser = run::parse_max_restarts)]
+        max_restarts: Option<NonZeroU32>,
         /// Link a `link_id` from this node's `depends_on` to a target:
         /// `KEY@TARGET`. One flag for every link kind. For a producer binding,
         /// TARGET is the producer's `instance_id` (see `peppy stack list --json`),
@@ -447,7 +539,8 @@ pub enum NodeCommands {
         #[arg(short = 'b', long)]
         build: bool,
     },
-    /// Stop a running node instance
+    /// Stop a node instance, or clear one that is restarting, finished or
+    /// failed, freeing its id
     Stop {
         /// Instance ID of the node to stop
         instance_id: String,
@@ -457,10 +550,10 @@ pub enum NodeCommands {
         /// Node reference in the format node_name:tag (e.g., my_node:v1)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
-        /// When set, stop all instances running on this node before removing the node itself. Without this flag, the command prompts if instances are still running
+        /// Stop the node's running instances and clear its restarting, finished and failed ones before removing it. Without this flag the command asks first when the node tracks instances. An instance starting when the removal reaches it, or running a process that reached `running` after the removal began, keeps the node; once none is starting, run the removal again. `peppy node stop <instance-id> --core-node <daemon>` ends a restart's start, and a first start ends on its own
         #[arg(long)]
         stop_instances: bool,
-        /// When set, bypass the confirmation prompt and stop running instances before removal
+        /// Skip the question and remove as `--stop-instances` does
         #[arg(short = 'f', long)]
         force: bool,
     },
@@ -509,6 +602,8 @@ impl Command for NodeCommand {
                 instance_id,
                 clock,
                 publish_clock,
+                restart,
+                max_restarts,
                 links,
                 vacant_links,
                 idle_timeout,
@@ -528,6 +623,7 @@ impl Command for NodeCommand {
                             clock,
                             publish_clock,
                         },
+                        restart: run::restart_request(restart, max_restarts)?,
                         links: merge_link_flags(&links, &vacant_links)
                             .map_err(CommandError::ExecutionFailed)?,
                     })
@@ -593,6 +689,8 @@ impl Command for NodeCommand {
                 instance_id,
                 clock,
                 publish_clock,
+                restart,
+                max_restarts,
                 links,
                 vacant_links,
                 idle_timeout,
@@ -618,6 +716,7 @@ impl Command for NodeCommand {
                             clock,
                             publish_clock,
                         },
+                        restart: run::restart_request(restart, max_restarts)?,
                         links: merge_link_flags(&links, &vacant_links)
                             .map_err(CommandError::ExecutionFailed)?,
                         timeouts,
@@ -654,6 +753,40 @@ mod tests {
 
     fn vacant_reason(reason: &str) -> VacantReason {
         VacantReason::new(reason).expect("test reasons say something")
+    }
+
+    /// Every tracked instance keeps its state, a starting one included,
+    /// which the overwrite and removal questions name.
+    #[test]
+    fn tracked_instances_keep_every_state() {
+        let instance = |instance_id: &str, state| core_node_api::encoding::NodeInstanceInfo {
+            clock: Default::default(),
+            instance_id: instance_id.to_owned(),
+            state,
+            healthy: true,
+            slot_bindings: std::collections::BTreeMap::new(),
+            pairing_slots: std::collections::BTreeMap::new(),
+            endpoints: Vec::new(),
+            restart_status: core_node_api::RestartStatus::default(),
+        };
+        let states = [
+            core_node_api::InstanceState::Starting,
+            core_node_api::InstanceState::Running,
+            core_node_api::InstanceState::Restarting,
+            core_node_api::InstanceState::Finished,
+            core_node_api::InstanceState::Failed,
+        ];
+        let instances: Vec<_> = states
+            .iter()
+            .map(|state| instance(state.as_str(), *state))
+            .collect();
+        assert_eq!(
+            tracked_instances(&instances),
+            states
+                .iter()
+                .map(|state| (state.as_str().to_owned(), *state))
+                .collect::<Vec<_>>()
+        );
     }
 
     /// Tiny clap harness that wraps `NodeCommands` so we can exercise argument

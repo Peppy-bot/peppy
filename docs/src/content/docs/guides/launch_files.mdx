@@ -9,6 +9,8 @@ import { Code } from '@astrojs/starlight/components';
 import viewerLauncher from './snippets/launchers/viewer.json5?raw';
 import zedCameraFragment from './snippets/launchers/viewer_zed_camera.json5?raw';
 import frameworkControlsLauncher from './snippets/launchers/mcp_framework_controls.json5?raw';
+import wristCameraNode from './snippets/nodes/wrist_camera/peppy.json5?raw';
+import camerasLauncher from './snippets/launchers/cameras.json5?raw';
 
 Launch files let you start multiple nodes simultaneously, including those with dependencies on each other. 
 With a single launch file, you or your team can recreate an entire node environment using just one command.
@@ -158,46 +160,46 @@ Launch completed successfully
 Verify that the node stack was configured correctly:
 ```
 $ peppy stack list
-┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Core node: cn-adoring-zebra (host: robot-host)                                                                                                                             │
-├────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ Slice of launch launch-brave-otter (coordinator: cn-adoring-zebra)                                                                                                         │
-│                                                                                                                                                                            │
-│ Node stack                                                                                                                                                                 │
-│                                                                                                                                                                            │
-│ ┌──────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────────────────────────┐                                  │
-│ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                                                       │                                  │
-│ ├──────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────────────────────────┤                                  │
-│ │ cn-adoring-zebra:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                                          │                                  │
-│ │ fake_openarm01_controller:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_openarm01_controller_v1/b81d0e4c72a5f936.tar.zst │                                  │
-│ │ fake_robot_brain:v1                  │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_robot_brain_v1/6c2e9f0a1d47b385.tar.zst          │                                  │
-│ │ fake_uvc_camera:v1                   │ Ready │ 2 running │ ~/.peppy/built_nodes/fake_uvc_camera_v1/e57a3b91c0d64f28.tar.zst           │                                  │
-│ │ fake_video_reconstruction:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_video_reconstruction_v1/19d4c7e2a8b03f65.tar.zst │                                  │
-│ └──────────────────────────────────────┴───────┴───────────┴────────────────────────────────────────────────────────────────────────────┘                                  │
-│                                                                                                                                                                            │
-│ Instance bindings                                                                                                                                                          │
-│                                                                                                                                                                            │
-│ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬──────────────────────────────────────────────────────────────────────────────┐ │
-│ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS                                                                     │ │
-│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
-│ │ cn-adoring-zebra:v0.10.0             │ cn-adoring-zebra             │ running │ healthy │ (none)                                                                       │ │
-│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
-│ │ fake_openarm01_controller:v1         │ vibrant-keller-2310          │ running │ healthy │ (none)                                                                       │ │
-│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
-│ │ fake_robot_brain:v1                  │ zealous-bohr-5512            │ running │ healthy │ fake_openarm01_controller → vibrant-keller-2310@cn-adoring-zebra             │ │
-│ │                                      │                              │         │         │ fake_uvc_camera → mystic-galois-7701@cn-adoring-zebra                        │ │
-│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
-│ │ fake_uvc_camera:v1                   │ mystic-galois-7701           │ running │ healthy │ (none)                                                                       │ │
-│ │                                      │ brave-noether-3098           │ running │ healthy │ (none)                                                                       │ │
-│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
-│ │ fake_video_reconstruction:v1         │ gallant-curie-4417           │ running │ healthy │ fake_uvc_camera → brave-noether-3098@cn-adoring-zebra                        │ │
-│ └──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴──────────────────────────────────────────────────────────────────────────────┘ │
-│                                                                                                                                                                            │
-│ Dependencies                                                                                                                                                               │
-│   fake_robot_brain:v1 ➔ fake_openarm01_controller:v1                                                                                                                       │
-│   fake_robot_brain:v1 ➔ fake_uvc_camera:v1                                                                                                                                 │
-│   fake_video_reconstruction:v1 ➔ fake_uvc_camera:v1                                                                                                                        │
-└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-adoring-zebra (host: robot-host)                                                                                                                                                │
+├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Slice of launch launch-brave-otter (coordinator: cn-adoring-zebra)                                                                                                                            │
+│                                                                                                                                                                                               │
+│ Node stack                                                                                                                                                                                    │
+│                                                                                                                                                                                               │
+│ ┌──────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────────────────────────┐                                                     │
+│ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                                                       │                                                     │
+│ ├──────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────────────────────────┤                                                     │
+│ │ cn-adoring-zebra:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                                          │                                                     │
+│ │ fake_openarm01_controller:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_openarm01_controller_v1/b81d0e4c72a5f936.tar.zst │                                                     │
+│ │ fake_robot_brain:v1                  │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_robot_brain_v1/6c2e9f0a1d47b385.tar.zst          │                                                     │
+│ │ fake_uvc_camera:v1                   │ Ready │ 2 running │ ~/.peppy/built_nodes/fake_uvc_camera_v1/e57a3b91c0d64f28.tar.zst           │                                                     │
+│ │ fake_video_reconstruction:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_video_reconstruction_v1/19d4c7e2a8b03f65.tar.zst │                                                     │
+│ └──────────────────────────────────────┴───────┴───────────┴────────────────────────────────────────────────────────────────────────────┘                                                     │
+│                                                                                                                                                                                               │
+│ Instance bindings                                                                                                                                                                             │
+│                                                                                                                                                                                               │
+│ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬──────────┬───────┬──────────────────────────────────────────────────────────────────────────────┐ │
+│ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ RESTARTS │ CLOCK │ BINDINGS                                                                     │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┼───────┼──────────────────────────────────────────────────────────────────────────────┤ │
+│ │ cn-adoring-zebra:v0.10.0             │ cn-adoring-zebra             │ running │ healthy │ 0        │ wall  │ (none)                                                                       │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┼───────┼──────────────────────────────────────────────────────────────────────────────┤ │
+│ │ fake_openarm01_controller:v1         │ vibrant-keller-2310          │ running │ healthy │ 0        │ wall  │ (none)                                                                       │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┼───────┼──────────────────────────────────────────────────────────────────────────────┤ │
+│ │ fake_robot_brain:v1                  │ zealous-bohr-5512            │ running │ healthy │ 0        │ wall  │ fake_openarm01_controller → vibrant-keller-2310@cn-adoring-zebra             │ │
+│ │                                      │                              │         │         │          │       │ fake_uvc_camera → mystic-galois-7701@cn-adoring-zebra                        │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┼───────┼──────────────────────────────────────────────────────────────────────────────┤ │
+│ │ fake_uvc_camera:v1                   │ mystic-galois-7701           │ running │ healthy │ 0        │ wall  │ (none)                                                                       │ │
+│ │                                      │ brave-noether-3098           │ running │ healthy │ 0        │ wall  │ (none)                                                                       │ │
+│ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┼───────┼──────────────────────────────────────────────────────────────────────────────┤ │
+│ │ fake_video_reconstruction:v1         │ gallant-curie-4417           │ running │ healthy │ 0        │ wall  │ fake_uvc_camera → brave-noether-3098@cn-adoring-zebra                        │ │
+│ └──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴──────────┴───────┴──────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                                                                                                                               │
+│ Dependencies                                                                                                                                                                                  │
+│   fake_robot_brain:v1 ➔ fake_openarm01_controller:v1                                                                                                                                          │
+│   fake_robot_brain:v1 ➔ fake_uvc_camera:v1                                                                                                                                                    │
+│   fake_video_reconstruction:v1 ➔ fake_uvc_camera:v1                                                                                                                                           │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 The output confirms that all nodes have been added to the stack along with their dependency relationships. When an instance serves an endpoint, an `Instance endpoints` table follows the bindings, one row per URL with the endpoint's `KIND` and `LABEL`. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in plan order, and an empty slot, whether a `zero_or_more` slot bound to nothing or a `zero_or_one` slot declared vacant, shows `(empty set)`. Every declared producer slot (`depends_on.nodes` / `depends_on.contracts`) is either bound or, where its manifest declares `cardinality: "zero_or_one"`, declared [`vacant`](#links-optional); only a `zero_or_more` slot may be left out entirely, and a launcher that leaves any other one out is rejected at validation (see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality)). Pairing and observer slots follow the same shape: a participant slot is paired and an observer slot is linked, or, where its manifest declares it `cardinality: "zero_or_one"`, declared vacant, unless its cardinality is `zero_or_more`, where omitting it IS its empty set. The launch also prints a `Slice of launch ...` line above the tables naming the launch that produced this stack and its coordinator.
@@ -268,9 +270,10 @@ The name and value rules exist because a container node receives its environment
 
 ### `framework` (optional)
 
-Framework knobs owned by peppylib rather than by the node author, so they mean the same thing for every node. The block holds one knob:
+Framework knobs peppy reads the same way for every node. The block holds two knobs:
 
 - `clock`: the timeline this instance reads, naming `wall` or a domain the launcher declares under [`framework.clocks`](#clock-domains). An instance that omits it reads wall time. An instance a declaration names as a domain's publisher carries no `clock` of its own, since that declaration already assigns it one. See [System clock](/advanced_guides/system_clock/#clock-domains).
+- `restart`: what the daemon does when this instance's process exits on its own or stops answering health checks, `never`, `on_failure` or `always`, or `{ policy, max_restarts }`. It wins over the node's own `framework.restart` and the launcher root's. See [Restart policy](#restart-policy).
 
 An unknown key inside `framework` fails the launch, so a typo surfaces where it is written.
 
@@ -396,6 +399,82 @@ A declaration is `{ publisher: "<instance_id>" }` for a timeline one instance su
 The launcher's declarations and those of every [fragment](#fragments-splitting-a-launcher-across-files) the selection pulls in are merged: identical declarations agree, two different declarations of one name are refused naming both documents, and an unselected fragment contributes nothing. A [copy](#copies) binds the domains the stack declares, naming them as the stack does.
 
 Every producer binding, pairing and observation joins two instances that read one clock, so a launcher wiring an instance on one domain to an instance on another is refused before anything starts. See [System clock](/advanced_guides/system_clock/#clock-domains).
+
+The launcher's `framework` also takes `restart`, the policy of every instance whose entry and node declare none; a fragment writes a policy on its instance entries or through an adjustment's `set_framework`, never at its root.
+
+## Restart policy
+
+When a node process exits on its own, the daemon records the exit in the stack log and moves the instance by its restart policy: under `never` to `finished` (exit code 0) or `failed` (any other code, or a signal), where it stays; under `on_failure` to `restarting` after a failed exit (any code but 0, a signal, or the health kill below); under `always` to `restarting` after any exit, a clean one included. Under `on_failure` or `always` the daemon also kills an instance that stops answering health checks, and its policy treats that exit as a failure; the rule and its outage guard are in [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle). The most specific level wins:
+
+1. the instance: `framework.restart` on its launcher entry, `set_framework.restart` in an adjustment, or `--restart` on `peppy node run` or `peppy node add --run` (with `--max-restarts` for a cap);
+2. the node: `framework.restart` in its `peppy.json5`;
+3. the launcher root: `framework.restart` at the root of the launcher;
+4. the default: `on_failure`.
+
+A node declares its own policy in `peppy.json5`, under the same `framework` key the launcher uses:
+
+<Code code={wristCameraNode} lang="json5" title="peppy.json5" />
+
+A launcher declares a policy at its root and an instance entry its own. An adjustment under an option writes the same key on its target with `set_framework: { restart: "never" }`, as the [adjustments](#adjustments) table shows. In the launcher below, the root's `always` covers the rear camera, the front camera's entry writes its own, and the wrist camera takes the `on_failure` of the node above:
+
+<Code code={camerasLauncher} lang="json5" title="cameras.json5" />
+
+The value is a string, `restart: "on_failure"`, or an object, `restart: { policy: "on_failure", max_restarts: 5 }`, where `max_restarts` caps the restart attempts in a row, failed starts included, and the next exit or failed start past them leaves the instance `failed`; a level writes the value whole, so a cap written at one level never combines with a policy from another. `max_restarts` needs a policy that restarts, `on_failure` or `always`; with `never` it is refused.
+
+The policy applies once an instance has been `running`: a first start that fails still fails the launch or the `peppy node run`. A restart is a new process under the same id, with the arguments, environment, clock, core node and slots the instance had. It pairs and observes again, and the consumers bound to it receive from it again with no further action. When the previous process crashed, its shutdown hooks did not run, so write the node's setup to bring its hardware to a known state before it enables anything.
+
+The daemon waits between the exit and the next start. The first wait is one second; each further exit or failed start doubles it, up to one minute, and from then on every attempt waits a minute. The new process clears the same startup health gate as a first start. An exit after a run of two minutes or more starts the backoff over: its wait is one second and its attempt is 1 again. A run the health monitor ended counts only up to the last health check the process answered, so a node that hangs again after each start keeps backing off and reaches its `max_restarts`. The exit or failed start past `max_restarts` attempts in a row leaves the instance `failed`, and the stack log says `` `max_restarts` reached ``.
+
+An instance that publishes a clock domain takes its policy like any other and keeps its domain when it restarts; [System clock](/advanced_guides/system_clock/#lifetime-replacement-and-removal) says what the instances reading it see. A fragment or option body that writes `framework.restart` at its root is refused when a selection composes it, naming the launcher root.
+
+While the daemon waits, the instance shows `restarting` in `peppy stack list`, whose `RESTARTS` column counts the times a restarted process reached `running`; `peppy node info` adds the attempt, the last exit and the next start. The stack log records a `restarting` line with the attempt and the wait, a `restarted` line once the new process is `running`, a `start failed` line when the new process did not reach `running` (the run log holds the whole failure), a `restart refused` line when the daemon refused to start the process again (for example a clock domain whose publisher, on the same machine, has ended), and the `` `max_restarts` reached `` line. Once this machine's nodes cache is filled (`peppy repo refresh`), `peppy stack resolve` prints each instance's policy with its origin on its clock line. Each process writes its own run log, `<instance_id>_<timestamp>.log`, as add and build logs are named: a crash's output stays in its file, a restart's file opens with a line naming the attempt and the previous file, and `peppy node info` lists the latest one.
+
+For a single instance, `--restart` and `--max-restarts` on `peppy node run` set the policy:
+
+```bash
+peppy node run wrist_camera:v1 -i wrist_cam_inst --restart on_failure --max-restarts 5
+```
+
+A crash of that instance and its restart read in the stack log as:
+
+```text
+[2026-10-07T14:02:11.204] Instance 'wrist_cam_inst' of node 'wrist_camera:v1' failed: signal 11 (SIGSEGV), core dumped
+[2026-10-07T14:02:11.209] Instance 'wrist_cam_inst' of node 'wrist_camera:v1' restarting in 1 s (attempt 1)
+[2026-10-07T14:02:13.487] Instance 'wrist_cam_inst' of node 'wrist_camera:v1' restarted (attempt 1)
+```
+
+`peppy node stop`, `peppy node remove`, `peppy node add` over its node, `peppy stack reset`, `peppy stack remove`, `peppy stack launch` of the stack again and a daemon shutdown end an instance for good and cancel a waiting restart; `peppy node stop` also clears a `finished`, `failed` or `restarting` instance, which frees its id, and ends the start of an instance its restart is starting again. While a restart holds its daemon, from its start through the pairs its new process asks for again, a `peppy stack launch`, build, join or removal on that daemon answers busy, naming the instance and the stop that ends its restart. A start waits ten minutes for a node that never signals ready before it fails, and each attempt holds the daemon for its own start, so an instance whose every start hangs keeps its daemon busy, between its waits, until that stop or its `max_restarts` ends the restarts. `peppy node remove` holds restarts off while it runs: an instance that exits on the removal's shutdown request ends there whatever its policy, and one whose restart falls due waits, so a removal that succeeds removes both. An instance starting when the removal reaches it, or running a process that reached `running` after the removal began, keeps its node; the removal's error names it, and `peppy node remove <name>:<tag> --stop-instances` run again once none is starting removes it. `peppy stack join` refuses a copy whose adjustment changes the policy of an instance the stack runs, and a join that grows a `restarting` instance's slot.
+
+### Starting a failed instance again
+
+An instance whose restarts ended, with a `restart refused` or `` `max_restarts` reached `` line in the stack log, stays `failed`, as does one that failed under `never`, and one that finished stays `finished`. Either starts again by how it was started: an instance `peppy stack resolve` of the launcher lists, with the launch's `--with` and `--join` words, was started by the launch; a member on the `Instances:` line under a `Copy` line of `peppy stack list` that the resolve does not list belongs to a copy `peppy stack join` added; any other instance was started by `peppy node run` or `peppy node add --run`.
+
+- `peppy node run` or `peppy node add --run`: `peppy node stop <instance-id>` clears it and frees its id; then start it with `peppy node run <name>:<tag>` and the same arguments, links and flags (a `peppy node add` of its node again stops and clears every other instance of the node, and one from git or a URL does so without asking). The stop makes the instances paired with it forget those pairs. A pair the instance made itself, by its own `--link`, is already among those flags. A peer that made a pair with it by `--link`, or asked for one again at its own restart, names the pair in its run log under `~/.peppy/logs/run/` as `paired: CORE/PEER_INSTANCE:PEER_LINK ⇌ CORE/INSTANCE:LINK_ID`, and `grep -l '⇌ [^ ]*/<instance-id>:' ~/.peppy/logs/run/*.log` lists those logs; for each pair they name that the new run's `--link` flags do not already cover, add `--link LINK_ID@PEER_INSTANCE[/PEER_LINK]` (see [Pairing](/advanced_guides/pairing/)), in place of a `--vacant-link` on the same slot.
+- A launch: `peppy stack launch` on the coordinator, with the launcher, placement, `--with` words and `--join` copies it was launched with. A launch replaces the whole stack, which ends the copies `peppy stack join` added and the instances `peppy node run` started: note the `Copy` lines of `peppy stack list` first, and join again each copy the launch does not bring back.
+- A member of a copy `peppy stack join` added: read the copy's `Copy` line in `peppy stack list` first, since the removal drops it. Then, on the coordinator or with `--core-node <coordinator>`, run `peppy stack remove NAME`, which clears the copy's instances, and `peppy stack join OPTION:NAME@CORE_NODE` with the line's option and machine, its `axis=option` words as `--with`, and the `--set-arguments` it was joined with. Where the removal is refused, as for the last copy of a `one_or_more` axis, launch the stack again.
+
+For `arm_1` of the [Pairing](/advanced_guides/pairing/) example, which `ctrl_1` paired with `--link arm@arm_1`, `ctrl_1`'s run log holds `paired: cn-adoring-zebra/ctrl_1:arm ⇌ cn-adoring-zebra/arm_1:controller`, and these commands start `arm_1` again with that pair:
+
+```sh
+peppy node stop arm_1
+peppy node run --instance-id arm_1 robot_arm:v1 --link controller@ctrl_1
+```
+
+For the copy `bravo`, whose backbone reached its `max_restarts`, `peppy stack list` on the coordinator shows:
+
+```
+Copy bravo of openarm on jetson-2: hardware_version=v1,robot_commander=xr_commander
+  Instances: bravo_backbone_inst, bravo_camera_inst
+```
+
+and these commands start it again as it was joined:
+
+```sh
+peppy stack remove bravo
+peppy stack join openarm:bravo@jetson-2 --with hardware_version=v1,robot_commander=xr_commander
+```
+
+A `restart refused` line names its cause. When the cause is a clock domain whose publisher ended, the line also says what publishes the name now. For a reader a launch or `peppy stack join` started, a launch of the stack starts the reader and its publisher again; join again, after the launch, each copy `peppy stack join` added. For one `peppy node run` started, stop it and run it again with its `--clock`, after starting a publisher with `--publish-clock` when nothing publishes the name.
 
 ## Reusing built nodes across launches
 
@@ -570,7 +649,7 @@ The launcher's own top-level `adjustments` list takes the same entries, guarded 
 | Operation | Effect |
 |---|---|
 | `set_arguments` | Replaces the target's value for each named argument key, creating it when absent. Nested objects replace wholesale. |
-| `set_framework` | Replaces the target's [framework knobs](#framework-optional), today its `clock`. How the launcher, under the option that selects a simulated robot, binds the commander and recorder that robot shares with its physical twin to the [clock domain](#clock-domains) this selection runs on. |
+| `set_framework` | Replaces the target's value for each named [framework knob](#framework-optional), `clock` or `restart`; a knob the adjustment omits keeps its value. How the launcher, under the option that selects a simulated robot, binds the commander and recorder that robot shares with its physical twin to the [clock domain](#clock-domains) this selection runs on. |
 | `set_links` | Replaces the target's whole entry for each named slot, creating it when absent. The value uses the ordinary [links](#links-optional) grammar, including vacancies. |
 | `add_links` | Appends targets to each named slot's array binding, creating the binding when the slot has no entry. Refused when the slot holds a scalar or a vacancy: replacing is `set_links`'s job. Appending is what lets independent options each contribute bindings to one multi-cardinality slot, and what lets a [copy](#copies) that joins add its own instances to a running instance's set. |
 | `unset_links` | Drops each named slot's entry entirely, returning the slot to absent. |
@@ -665,7 +744,7 @@ options: {
 }
 ```
 
-An option declared inside a fragment, or inside an option body, carries no `adjustments` of its own: the writes a fragment makes are its top-level `adjustments`, which name the instances it deploys, those of an option whose body is written inside it included, and everything else is the launcher's, under the option that selects the fragment.
+An option declared inside a fragment, or inside an option body, carries no `adjustments` of its own: the writes a fragment makes are its top-level `adjustments`, which name the instances it deploys, those of an option whose body is written inside it included, and everything else is the launcher's, under the option that selects the fragment. A fragment's `framework` declares clocks only.
 
 The parts of one option declare its axes between them, each axis once, and deploy each of those axes once. Besides `deployments`, `components`, `constraints`, `adjustments` and `framework`, a fragment may declare `core_nodes`: additional placement placeholders its instances need, unioned with the launcher's own, so selecting the option makes the matching `--place` bindings required exactly as if the launcher declared them. An entry in a fragment's `adjustments` naming an instance the fragment does not deploy is refused when the fragment is read, naming what it does deploy. The connections between fragments are the launcher's, written under the option, as above.
 
@@ -921,9 +1000,9 @@ adjustments applied:
   alpha_recorder_inst.arguments.robot_type: (absent) -> "so101"  (physical.json5, option `robot.so101`)
 adjustments skipped:
   alpha_commander_inst: guard camera_rig=cameras robot_commander=xr_commander is not met  (physical.json5, option `robot.so101`)
-alpha_backbone_inst: clock `wall`
-alpha_commander_inst: clock `wall`
-alpha_recorder_inst: clock `wall`
+alpha_backbone_inst: clock `wall`, restart on_failure (default)
+alpha_commander_inst: clock `wall`, restart on_failure (default)
+alpha_recorder_inst: clock `wall`, restart on_failure (default)
 link rules hold: slot keys, vacancies, pairing coverage, observation sources and clock agreement checked over 5 node manifest(s)
 ```
 

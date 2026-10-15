@@ -2,6 +2,7 @@ use super::refine::{
     ActionRefinement, FieldRefinement, FormatRefinement, ResultServiceRefinement,
     ServiceRefinement, TopicRefinement,
 };
+use super::restart::RestartDeclaration;
 use super::retention::TopicRetention;
 use super::setup_timeout::SetupTimeout;
 use crate::{
@@ -80,7 +81,8 @@ where
 
 /// Fully resolved node configuration. A peppy node always has a `manifest`
 /// and an `execution` block; `interfaces` is optional and defaults to empty
-/// for nodes with no topics/services/actions.
+/// for nodes with no topics/services/actions, and `framework` to a block
+/// that sets nothing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
@@ -90,6 +92,9 @@ pub struct NodeConfig {
     #[serde(default)]
     pub interfaces: Interfaces,
     pub execution: Execution,
+    /// Framework knobs peppy reads the same way for every node.
+    #[serde(default, skip_serializing_if = "NodeFramework::is_empty")]
+    pub framework: NodeFramework,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1644,6 +1649,24 @@ impl<'de> Deserialize<'de> for Execution {
             endpoints: raw.endpoints,
             setup_timeout_secs: raw.setup_timeout_secs,
         })
+    }
+}
+
+/// The `framework` block of `peppy.json5`: knobs the framework applies the
+/// same way to every node, written by the node author as the default for
+/// every instance of the node.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeFramework {
+    /// What the daemon does when the instance's process exits on its own,
+    /// when the launcher writes nothing on the instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<RestartDeclaration>,
+}
+
+impl NodeFramework {
+    fn is_empty(&self) -> bool {
+        self.restart.is_none()
     }
 }
 
@@ -3818,5 +3841,40 @@ mod tests {
         let consumes = actions_a.consumes.unwrap();
         assert_eq!(consumes[0].link_id, "node_a");
         assert_eq!(consumes[1].link_id, "node_b");
+    }
+
+    #[test]
+    fn manifest_framework_restart_round_trips() {
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "cam", tag: "v1" },
+            execution: { language: "rust", run_cmd: ["./cam"] },
+            framework: { restart: { policy: "on_failure", max_restarts: 4 } },
+        }"#;
+        let config: NodeConfig = serde_json5::from_str(json5).unwrap();
+        let restart = config.framework.restart.expect("declared");
+        assert_eq!(restart.policy(), super::super::RestartPolicy::OnFailure);
+        assert_eq!(restart.max_restarts(), std::num::NonZeroU32::new(4));
+
+        let without = r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "cam", tag: "v1" },
+            execution: { language: "rust", run_cmd: ["./cam"] },
+        }"#;
+        let config: NodeConfig = serde_json5::from_str(without).unwrap();
+        assert!(config.framework.is_empty());
+        let rendered = serde_json::to_string(&config).unwrap();
+        assert!(!rendered.contains("framework"), "{rendered}");
+
+        let unknown = r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "cam", tag: "v1" },
+            execution: { language: "rust", run_cmd: ["./cam"] },
+            framework: { clock: "wall" },
+        }"#;
+        let err = serde_json5::from_str::<NodeConfig>(unknown)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field `clock`"), "{err}");
     }
 }

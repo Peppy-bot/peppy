@@ -239,14 +239,14 @@ mod endpoint_tests {
 #[cfg(feature = "router")]
 mod facade;
 #[cfg(feature = "router")]
-pub use facade::{ZENOHD_PATH_VAR, ZenohdFacade};
+pub use facade::{ROUTER_START_BOUND, ZENOHD_PATH_VAR, ZenohdFacade};
 #[cfg(feature = "router")]
 mod spawner;
 
 #[cfg(feature = "router")]
 mod health;
 #[cfg(feature = "router")]
-pub use health::RouterHealthChecker;
+pub use health::{PROBE_SESSION_CLOSE_TIMEOUT, RouterHealthChecker};
 
 #[cfg(feature = "router")]
 mod links;

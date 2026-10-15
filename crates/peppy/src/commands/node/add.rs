@@ -1,9 +1,9 @@
+use crate::commands::confirm::has_or_awaits_process;
 use config::node::NodeConfigParser;
-use core_node_api::ActionId;
 use core_node_api::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
-    NodeInfoResponse, NodeInstanceInfo, NodeSource,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
+use core_node_api::{ActionId, InstanceState};
 use daemon_config::launcher::LinkValue;
 use std::collections::BTreeMap;
 use std::io::BufRead;
@@ -20,7 +20,7 @@ use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::{AppContext, DaemonConnection};
 use crate::error::{Error, Result};
 
-use peppylib::core_node::transport::{poll, send_goal};
+use peppylib::core_node::transport::send_goal;
 /// Options that only apply when `peppy node add` chains a run after the add
 /// (`--run` / `-r`). Grouping them into an `Option<RunAfterAddOptions>` on
 /// [`AddNodeParams`] makes the invariant explicit in the type: positional
@@ -35,6 +35,9 @@ pub struct RunAfterAddOptions {
     /// The clock the chained instance reads, exactly as `peppy node run`
     /// takes it.
     pub clock: super::run::ClockChoice,
+    /// The restart policy of the chained instance, parsed from the flags
+    /// `peppy node run` takes.
+    pub restart: config::node::RestartRequest,
     /// The `--link KEY@TARGET` and `--vacant-link SLOT=<why>` flags merged
     /// into one slot map, unifying producer bindings, pairings, observer
     /// sources and deliberate vacancies under one container. Classified by
@@ -141,7 +144,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 
     // Preflight conflict check: if we can cheaply determine the root
     // `(name, tag)` without network I/O, ask the daemon whether that node
-    // is already in the stack with active instances.
+    // is already in the stack with instances.
     //
     // - `NodeSource::Fs`: read `(name, tag)` from the local `peppy.json5`.
     // - `NodeSource::ResolveRef`: use the user-supplied `(name, tag)`
@@ -149,14 +152,15 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     //   `NodeSource::resolve_ref`.)
     //
     // `Git`/`Http` root sources skip the preflight since we'd need to
-    // fetch them to read the manifest; the daemon's add action stops
-    // existing instances transparently in that path. `Pinned` and
+    // fetch them to read the manifest; in that path the daemon's add action
+    // stops the existing instances and clears the exited ones without
+    // asking, and refuses while one is starting. `Pinned` and
     // `Exposures` skip it for a different reason: `parse_node_source` never
     // produces them, so the arms exist only for exhaustiveness.
     if !force {
-        let active_instances = match &node_source {
+        let tracked_instances = match &node_source {
             NodeSource::Fs(path) => {
-                fetch_active_instances_for_local_source(
+                fetch_tracked_instances_for_local_source(
                     &conn,
                     path,
                     Duration::from_secs(timeouts.max_secs),
@@ -164,7 +168,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
                 .await?
             }
             NodeSource::ResolveRef { name, tag } => {
-                fetch_active_instances_for_name_tag(
+                fetch_tracked_instances_for_name_tag(
                     &conn,
                     name.clone(),
                     tag.clone(),
@@ -178,9 +182,9 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
             | NodeSource::Exposures { .. } => None,
         };
 
-        if let Some((node_name, node_tag, instance_ids)) = active_instances {
+        if let Some((node_name, node_tag, instances)) = tracked_instances {
             let confirm =
-                confirm_overwrite(&node_name, &node_tag, &instance_ids, confirm_reader.take())?;
+                confirm_overwrite(&node_name, &node_tag, &instances, confirm_reader.take())?;
             if !confirm {
                 return Err(Error::ExecutionFailed(
                     "Node add aborted by user".to_string(),
@@ -272,6 +276,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         run_options.instance_id,
         &run_options.links,
         clock,
+        run_options.restart,
         &timeouts,
     )
     .await?;
@@ -283,109 +288,136 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 ///
 /// Parses the node's `peppy.json5` locally to extract `(name, tag)`, then asks
 /// the daemon whether that entity is currently in the stack. Returns
-/// `Some((name, tag, active_instance_ids))` only when the node exists in the
-/// stack AND has at least one active instance (`Starting` or `Running`);
-/// exactly the case that needs a user confirmation before overwrite. An
-/// exited (`Finished`/`Failed`) instance does not count: the daemon clears it
-/// on overwrite and has nothing to stop.
+/// `Some((name, tag, instances))` only when the node exists in the stack AND
+/// tracks an instance, each with its state: exactly the case that needs a
+/// user confirmation before overwrite.
 ///
 /// Returns `None` when:
 /// - The local config can't be parsed (the add action itself will surface a
 ///   clearer error once it tries to use the source).
 /// - The node isn't in the stack yet (the daemon answers with
 ///   `NodeInfoResponse::NotInStack`, a successful negative lookup).
-/// - The node is in the stack but has no active instances (the add action
-///   can safely overwrite it without prompting).
-async fn fetch_active_instances_for_local_source(
+/// - The node is in the stack but none of its instances has a process or
+///   awaits a restart (the add action overwrites it without prompting and
+///   clears the exited instances).
+async fn fetch_tracked_instances_for_local_source(
     conn: &DaemonConnection<'_>,
     source_path: &Path,
     timeout: Duration,
-) -> Result<Option<(String, String, Vec<String>)>> {
+) -> Result<Option<(String, String, Vec<(String, InstanceState)>)>> {
     let config_path = source_path.join(config::consts::NODE_CONFIG_FILE);
     let Ok(parsed) = NodeConfigParser::from_path(&config_path) else {
         return Ok(None);
     };
     let node_name = parsed.manifest.name.as_str().to_owned();
     let node_tag = parsed.manifest.tag.clone();
-    fetch_active_instances_for_name_tag(conn, node_name, node_tag, timeout).await
+    fetch_tracked_instances_for_name_tag(conn, node_name, node_tag, timeout).await
 }
 
-/// Queries the daemon for the `(name, tag)` entity in the stack and returns
-/// its active (`running`/`starting`) instance ids when present. Used by the
-/// `ResolveRef` preflight, which already has `(name, tag)` in hand, and by
-/// the `Fs` wrapper above after it reads them from `peppy.json5`.
-async fn fetch_active_instances_for_name_tag(
+/// The node `(name, tag)` with the instances the overwrite stops or whose
+/// restart it cancels, each with its state: those with a process or awaiting
+/// a restart, since the daemon clears an exited instance without asking.
+/// `None` when the daemon has no such node or none of its instances is such.
+/// Used by the `ResolveRef` preflight, which already has `(name, tag)` in
+/// hand, and by the `Fs` wrapper above after it reads them from
+/// `peppy.json5`.
+async fn fetch_tracked_instances_for_name_tag(
     conn: &DaemonConnection<'_>,
     node_name: String,
     node_tag: String,
     timeout: Duration,
-) -> Result<Option<(String, String, Vec<String>)>> {
-    let response = poll(
-        &NodeInfoRequest::new(node_name.clone(), node_tag.clone()),
-        conn.messenger,
-        &conn.core_node_name,
-        CALLER_INSTANCE_ID,
-        &conn.target_core_node,
-        timeout,
-    )
-    .await
-    .map_err(|e| {
-        Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
-    })?;
-
-    // `NotInStack` is a normal first-time-add case; there is nothing to
-    // confirm.
-    let info = match response {
-        NodeInfoResponse::NotInStack => return Ok(None),
-        NodeInfoResponse::Found(info) => info,
-    };
-
-    let active = active_instance_ids(&info.instances);
-
-    if active.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some((node_name, node_tag, active)))
-    }
-}
-
-/// The ids of the instances that are still live (`Starting` or `Running`).
-fn active_instance_ids(instances: &[NodeInstanceInfo]) -> Vec<String> {
-    instances
-        .iter()
-        .filter(|instance| !instance.state.is_terminal())
-        .map(|instance| instance.instance_id.clone())
-        .collect()
+) -> Result<Option<(String, String, Vec<(String, InstanceState)>)>> {
+    let tracked: Vec<_> = super::fetch_tracked_instances(conn, &node_name, &node_tag, timeout)
+        .await
+        .map_err(|e| {
+            Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
+        })?
+        .into_iter()
+        .filter(|(_, state)| has_or_awaits_process(*state))
+        .collect();
+    Ok((!tracked.is_empty()).then_some((node_name, node_tag, tracked)))
 }
 
 fn confirm_overwrite(
     node_name: &str,
     tag: &str,
-    instance_ids: &[String],
+    instances: &[(String, InstanceState)],
     mut reader: Option<Box<dyn BufRead>>,
 ) -> Result<bool> {
-    use crate::commands::confirm::{confirm_prompt, format_instance_ids};
-
-    let count = instance_ids.len();
-    let suffix = if count == 1 { "instance" } else { "instances" };
-    let ids = format_instance_ids(instance_ids);
-    let pronoun = if count == 1 { "it" } else { "them" };
-
-    let message = format!(
-        "Node `{node_name}:{tag}` already exists with {count} active {suffix} ({ids}). \
-         Adding this node will stop {pronoun} and overwrite the existing node. Continue? [y/n] ",
-    );
-
-    confirm_prompt(
-        &message,
+    crate::commands::confirm::confirm_prompt(
+        &overwrite_question(node_name, tag, instances),
         reader.as_mut().map(|r| r.as_mut() as &mut dyn BufRead),
+    )
+}
+
+/// The question an overwrite of `node_name:tag` asks while `instances`, each
+/// with a process or awaiting a restart, are tracked, naming each with its
+/// state. Any of them may be starting when the add reaches the daemon, which
+/// refuses to overwrite a node while one of its instances starts, so the
+/// question says so.
+fn overwrite_question(node_name: &str, tag: &str, instances: &[(String, InstanceState)]) -> String {
+    use crate::commands::confirm::TrackedInstances;
+    let tracked = TrackedInstances(instances);
+    format!(
+        "Node `{node_name}:{tag}` already exists with {tracked}. The add is refused if an \
+         instance is starting when the add reaches it; otherwise adding this node stops and \
+         clears {} and overwrites the existing node. Continue? [y/n] ",
+        tracked.pronoun()
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_node_api::InstanceState;
+
+    /// The overwrite question names each instance with its state, what the
+    /// overwrite does to them and the refusal of an add that meets a start.
+    #[test]
+    fn the_overwrite_question_names_each_instance_and_its_state() {
+        let instances = [
+            ("cam_a".to_owned(), InstanceState::Running),
+            ("cam_b".to_owned(), InstanceState::Restarting),
+        ];
+        assert_eq!(
+            overwrite_question("cam", "v1", &instances),
+            "Node `cam:v1` already exists with 2 instances (\"cam_a\" running, \"cam_b\" \
+             restarting). The add is refused if an instance is starting when the add reaches it; \
+             otherwise adding this node stops and clears them and overwrites the existing node. \
+             Continue? [y/n] "
+        );
+        let restarting = [("cam_a".to_owned(), InstanceState::Restarting)];
+        assert_eq!(
+            overwrite_question("cam", "v1", &restarting),
+            "Node `cam:v1` already exists with 1 instance (\"cam_a\" restarting). The add is \
+             refused if an instance is starting when the add reaches it; otherwise adding this \
+             node stops and clears it and overwrites the existing node. Continue? [y/n] "
+        );
+        let running = [("cam_a".to_owned(), InstanceState::Running)];
+        assert_eq!(
+            overwrite_question("cam", "v1", &running),
+            "Node `cam:v1` already exists with 1 instance (\"cam_a\" running). The add is \
+             refused if an instance is starting when the add reaches it; otherwise adding this \
+             node stops and clears it and overwrites the existing node. Continue? [y/n] "
+        );
+        let starting = [("cam_a".to_owned(), InstanceState::Starting)];
+        assert_eq!(
+            overwrite_question("cam", "v1", &starting),
+            "Node `cam:v1` already exists with 1 instance (\"cam_a\" starting). The add is \
+             refused if an instance is starting when the add reaches it; otherwise adding this \
+             node stops and clears it and overwrites the existing node. Continue? [y/n] "
+        );
+        let mixed = [
+            ("cam_a".to_owned(), InstanceState::Running),
+            ("cam_b".to_owned(), InstanceState::Restarting),
+        ];
+        assert_eq!(
+            overwrite_question("cam", "v1", &mixed),
+            "Node `cam:v1` already exists with 2 instances (\"cam_a\" running, \"cam_b\" \
+             restarting). The add is refused if an instance is starting when the add reaches it; \
+             otherwise adding this node stops and clears them and overwrites the existing node. \
+             Continue? [y/n] "
+        );
+    }
 
     #[test]
     fn validate_git_ref_rejects_empty() {
@@ -407,32 +439,5 @@ mod tests {
         let result = validate_git_ref(None).expect("should accept None");
 
         assert!(result.is_none());
-    }
-
-    fn instance_in_state(instance_id: &str, state: InstanceState) -> NodeInstanceInfo {
-        NodeInstanceInfo {
-            clock: Default::default(),
-            instance_id: instance_id.to_string(),
-            state,
-            healthy: true,
-            slot_bindings: BTreeMap::new(),
-            pairing_slots: BTreeMap::new(),
-            endpoints: Vec::new(),
-        }
-    }
-
-    /// An exited instance has nothing left to stop, and the daemon clears it
-    /// on overwrite without a refusal, so only the live instances need the
-    /// overwrite confirmation.
-    #[test]
-    fn active_instance_ids_skip_exited_instances() {
-        let instances = [
-            instance_in_state("a", InstanceState::Running),
-            instance_in_state("b", InstanceState::Starting),
-            instance_in_state("c", InstanceState::Finished),
-            instance_in_state("d", InstanceState::Failed),
-        ];
-
-        assert_eq!(active_instance_ids(&instances), ["a", "b"]);
     }
 }

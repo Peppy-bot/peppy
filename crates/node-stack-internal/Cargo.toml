@@ -64,8 +64,12 @@ httpmock = "0.8"
 daemon-config = { workspace = true, features = ["test-support"] }
 # `drain_records`, which reads what a test log exported.
 log-export = { workspace = true, features = ["test-support"] }
+# The `test-support` items below for the crate's own integration tests.
+node-stack = { path = ".", features = ["test-support"] }
 
 [features]
-# `action_log::test_support`, the readers of the log file format, for the
-# tests of downstream crates.
+# For tests, this crate's and downstream crates': `action_log::test_support`,
+# the readers of the log file format; `FirstStart::fixture`;
+# `process_group_exists`, `process_group_size` and `FORKS_A_TERM_IGNORER`;
+# and the slot's `supervision`.
 test-support = []

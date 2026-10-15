@@ -1,6 +1,7 @@
 //! Goal-admission concurrency gate shared by the built-in single-goal actions
 //! (`node_add`, `node_build`, `node_run`, the stack actions, `repo_refresh`),
-//! and the read/write gate the whole stack is changed under.
+//! the read/write gate the whole stack is changed under, and how a refusal
+//! that waits for a start names an instance whose restart is starting.
 //!
 //! Each of those actions allows only one in-flight task at a time and rejects
 //! concurrent goals with `"action already in progress (times out in Xs)"`.
@@ -38,6 +39,7 @@
 //! only while that generation is still current. A superseded task's release is
 //! thus a safe no-op.
 
+use config::runtime::Name;
 use core_node_api::encoding::CopyChange;
 use parking_lot::Mutex;
 use peppylib::messaging::GoalContext;
@@ -284,23 +286,81 @@ impl Drop for GoalSlotGuard {
     }
 }
 
-/// The refusal every stack change and every node goal meets while another
-/// holds the stack.
+/// The refusal a stack change or a node goal meets while other work holds
+/// the stack, by what holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StackBusy;
+pub enum StackBusy {
+    /// A stack change holds it: a launch, build, join, removal or reset, or
+    /// a coordinator's change to this daemon's slice.
+    Change,
+    /// Node goals hold it: a node add, build, run, stop or removal, or a
+    /// restart, from its start through the pairs its new process asks for
+    /// again.
+    NodeGoals,
+}
 
 impl std::fmt::Display for StackBusy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(core_node_api::encoding::STACK_BUSY_REASON)
+        f.write_str(match self {
+            StackBusy::Change => {
+                "a stack launch, build, join, removal or reset, or a coordinator's change to this \
+                 daemon's slice, is in progress on this daemon; run this again once it ends"
+            }
+            StackBusy::NodeGoals => {
+                "a node add, build, run, stop or removal, or a restart, is in progress on this \
+                 daemon; run this again once it ends"
+            }
+        })
     }
+}
+
+impl StackBusy {
+    /// The refusal the daemon `core_node` answers, naming each restart
+    /// `admitted_restarts` holds the stack for and the stop that ends it.
+    pub(crate) fn refusal(self, admitted_restarts: &[Name], core_node: &str) -> String {
+        let StackBusy::NodeGoals = self else {
+            return self.to_string();
+        };
+        admitted_restarts
+            .iter()
+            .fold(self.to_string(), |refusal, instance_id| {
+                format!(
+                    "{refusal}; the restart of `{instance_id}` holds this daemon, and {}",
+                    stop_ends_restart(instance_id, core_node)
+                )
+            })
+    }
+}
+
+/// How an instance in its start on the daemon `core_node` is named in a
+/// refusal that waits for starts to end: a restart's start with the stop
+/// that ends it.
+pub(crate) fn starting_instance(instance_id: &Name, restart: bool, core_node: &str) -> String {
+    if !restart {
+        return format!("`{instance_id}` is starting");
+    }
+    format!(
+        "`{instance_id}` is starting again under its restart policy, and {}",
+        stop_ends_restart(instance_id, core_node)
+    )
+}
+
+/// The stop, aimed at the daemon `core_node`, that ends the restart of
+/// `instance_id` and clears the instance.
+fn stop_ends_restart(instance_id: &Name, core_node: &str) -> String {
+    format!(
+        "{} ends it and clears the instance",
+        core_node_api::stop_command(instance_id.as_str(), core_node)
+    )
 }
 
 /// Which work the stack admits at once: one change, or any number of node
 /// goals beside each other.
 #[derive(Debug, Default)]
-pub(crate) struct StackState {
-    /// Stack changes (launch, build, join, remove, reset, a peer's slice) hold the
-    /// write guard; node goals hold read guards to completion.
+pub struct StackState {
+    /// Stack changes (a launch, build, join, removal or reset, or a
+    /// coordinator's change to this daemon's slice) hold the write guard; node
+    /// goals hold read guards to completion.
     mutation: Arc<tokio::sync::RwLock<()>>,
     cancellation: Mutex<CancellationToken>,
     /// The join or the removal of a copy that holds the stack now, as the
@@ -312,7 +372,7 @@ pub(crate) struct StackState {
 /// it clears the copy change it reported, so `stack list` never reports the
 /// change of a hold that ended.
 #[must_use = "the stack is free again once the hold is dropped"]
-pub(crate) struct StackHold {
+pub struct StackHold {
     copy_change: Arc<Mutex<Option<CopyChange>>>,
     _write: tokio::sync::OwnedRwLockWriteGuard<()>,
 }
@@ -339,12 +399,16 @@ impl StackState {
 
     /// Takes the stack for one change, refusing while a change or a node
     /// goal holds it.
-    pub(crate) fn try_begin_change(&self) -> Result<StackHold, StackBusy> {
-        let write = self
-            .mutation
-            .clone()
-            .try_write_owned()
-            .map_err(|_| StackBusy)?;
+    pub fn try_begin_change(&self) -> Result<StackHold, StackBusy> {
+        let write = self.mutation.clone().try_write_owned().map_err(|_| {
+            // Node goals share the stack, so a read admitted now says they
+            // hold it; another change holds it alone.
+            if self.mutation.try_read().is_ok() {
+                StackBusy::NodeGoals
+            } else {
+                StackBusy::Change
+            }
+        })?;
         Ok(StackHold {
             copy_change: Arc::clone(&self.copy_change),
             _write: write,
@@ -365,7 +429,12 @@ impl StackState {
         self.mutation
             .clone()
             .try_read_owned()
-            .map_err(|_| StackBusy)
+            .map_err(|_| StackBusy::Change)
+    }
+
+    /// Admits one node goal once the change holding the stack ends.
+    pub(crate) async fn admit_node_goal_waiting(&self) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        self.mutation.clone().read_owned().await
     }
 
     /// Cancels admitted work and drains its guards before the stack is cleared.
@@ -560,7 +629,7 @@ mod tests {
             assert!(!reset.is_finished(), "reset must drain the admitted worker");
             assert_eq!(
                 state.try_admit_node_goal().err(),
-                Some(StackBusy),
+                Some(StackBusy::Change),
                 "new work waits for reset"
             );
             release.send(()).unwrap();
@@ -569,7 +638,7 @@ mod tests {
             assert!(!state.cancellation().is_cancelled());
             assert_eq!(
                 state.try_admit_node_goal().err(),
-                Some(StackBusy),
+                Some(StackBusy::Change),
                 "teardown remains exclusive"
             );
             drop(reset_guard);
@@ -584,17 +653,18 @@ mod tests {
         }
     }
 
-    /// A stack change refuses while a node goal runs, and a node goal
-    /// refuses while a change runs, both with the one message.
+    /// A stack change refuses while a node goal runs, and a node goal or a
+    /// second change refuses while a change runs, each naming what holds the
+    /// stack.
     #[test]
     fn a_change_and_a_node_goal_exclude_each_other() {
         let state = StackState::default();
         let node_goal = state.try_admit_node_goal().unwrap();
-        assert_eq!(state.try_begin_change().err(), Some(StackBusy));
+        assert_eq!(state.try_begin_change().err(), Some(StackBusy::NodeGoals));
         drop(node_goal);
         let change = state.try_begin_change().unwrap();
-        assert_eq!(state.try_admit_node_goal().err(), Some(StackBusy));
-        assert_eq!(state.try_begin_change().err(), Some(StackBusy));
+        assert_eq!(state.try_admit_node_goal().err(), Some(StackBusy::Change));
+        assert_eq!(state.try_begin_change().err(), Some(StackBusy::Change));
         drop(change);
         assert!(state.try_begin_change().is_ok());
     }

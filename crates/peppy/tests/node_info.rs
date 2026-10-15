@@ -37,6 +37,8 @@ fn add_unbuilt_node(ctx: &Arc<AppContext>, peppy_json5: &str) -> tempfile::TempD
             idle_timeout: DEFAULTS.idle_secs,
             max_timeout: DEFAULTS.max_secs,
             force: true,
+            restart: None,
+            max_restarts: None,
         },
     }
     .execute(ctx)

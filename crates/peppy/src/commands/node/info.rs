@@ -1,6 +1,8 @@
-use config::node::{Interfaces, TopicRetention};
+use config::node::{Interfaces, ResolvedRestart, TopicRetention};
 use config::{DefaultValue, ParameterSpec, type_token_name};
+use core_node_api::encoding::NodeInstanceInfo;
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
+use core_node_api::{InstanceState, RestartStatus};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -18,10 +20,20 @@ pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> 
 }
 
 async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
+    print!("{}", node_info_rendered(ctx, &node_name, &node_tag).await?);
+    Ok(())
+}
+
+/// What `peppy node info` prints for `node_name:node_tag`.
+pub async fn node_info_rendered(
+    ctx: &Arc<AppContext>,
+    node_name: &str,
+    node_tag: &str,
+) -> Result<String> {
     let conn = ctx.connect_to_daemon().await?;
 
     let response = poll(
-        &NodeInfoRequest::new(node_name.clone(), node_tag.clone()),
+        &NodeInfoRequest::new(node_name, node_tag),
         conn.messenger,
         &conn.core_node_name,
         CALLER_INSTANCE_ID,
@@ -59,10 +71,11 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
 
     let mut out = String::new();
     format_node_info(&mut out, &info);
-    print!("{}", out);
-    Ok(())
+    Ok(out)
 }
 
+/// Renders the node's info; a restarting instance's wait counts down from
+/// the daemon's clock when it answered.
 fn format_node_info(out: &mut String, response: &NodeInfo) {
     let config = &response.config;
     let manifest = &config.manifest;
@@ -107,13 +120,17 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
             // Health is the daemon's last `node_health` probe result, carried
             // in `NodeInstanceInfo::healthy`; `healthy` until a probe is seen
             // to fail. Shown alongside state so a running-but-failing instance
-            // stands out without a separate `stack list` round-trip. A terminal
-            // (finished/failed) instance has no live health, so it renders `-`.
+            // stands out without a separate `stack list` round-trip. An instance
+            // without a process (restarting, finished or failed) has no live
+            // health, so it renders `-`.
             let health = crate::commands::instance_health_label(instance.state, instance.healthy);
             let _ = writeln!(
                 out,
-                "           - {}  [{}]  {}",
-                instance.instance_id, instance.state, health
+                "           - {}  [{}]  {}  {}",
+                instance.instance_id,
+                instance.state,
+                health,
+                restart_summary(instance, response.reported_at_ms)
             );
             // The endpoints the instance serves, one line per URL under the
             // label and kind its manifest declares.
@@ -416,13 +433,125 @@ fn format_default_value_inline(d: &DefaultValue) -> String {
     }
 }
 
+/// The restart policy of an instance with its origin and count, then, in one
+/// order for every state: the attempt a restarting instance waits for or a
+/// failed one was refused, the last exit, and the next start of a restarting
+/// instance from `reported_at_ms`, the daemon's clock when it answered, in
+/// whole seconds rounded up.
+fn restart_summary(instance: &NodeInstanceInfo, reported_at_ms: u64) -> String {
+    let status = &instance.restart_status;
+    let resolved = ResolvedRestart {
+        declaration: status.restart,
+        origin: status.restart_origin,
+    };
+    let mut parts = vec![
+        format!("restart {resolved}"),
+        match status.restart_count {
+            1 => "1 restart".to_owned(),
+            count => format!("{count} restarts"),
+        },
+    ];
+    if instance.state == InstanceState::Restarting {
+        parts.push(format!("attempt {}", status.attempt));
+    }
+    match restarts_ended(status, instance.state) {
+        Some(RestartsEnded::Capped(max_restarts)) => parts.push(format!(
+            "attempt {} refused: max_restarts {max_restarts} reached, failed starts included",
+            status.attempt
+        )),
+        Some(RestartsEnded::Refused) => parts.push(format!("attempt {} refused", status.attempt)),
+        None => {}
+    }
+    if let Some(exit) = &status.last_exit {
+        parts.push(format!("last exit: {exit}"));
+    }
+    if instance.state == InstanceState::Restarting
+        && let Some(next_start_ms) = status.next_start_ms
+    {
+        let wait_ms = next_start_ms.saturating_sub(reported_at_ms);
+        parts.push(if wait_ms == 0 {
+            "next start due; it waits for the last exit's notices to other daemons, or for a stack \
+             launch, build, join or removal or a `peppy node remove` in progress on this daemon"
+                .to_owned()
+        } else {
+            format!("next start in {} s", wait_ms.div_ceil(1000))
+        });
+    }
+    parts.join(", ")
+}
+
+/// How a cap or the daemon ended the restarts of a `failed` instance.
+#[derive(Debug, PartialEq)]
+enum RestartsEnded {
+    /// The attempt past `max_restarts`, which it carries, was refused.
+    Capped(std::num::NonZeroU32),
+    /// The daemon refused to start the instance again.
+    Refused,
+}
+
+/// How the restarts of an instance in `state` ended: a policy that restarts
+/// an instance moves its exit to `restarting`, so a `failed` instance with an
+/// attempt is one whose restart the cap or the daemon refused.
+fn restarts_ended(status: &RestartStatus, state: InstanceState) -> Option<RestartsEnded> {
+    if state != InstanceState::Failed || status.attempt == 0 {
+        return None;
+    }
+    Some(
+        status
+            .restart
+            .max_restarts()
+            .filter(|max_restarts| status.attempt > max_restarts.get())
+            .map_or(RestartsEnded::Refused, RestartsEnded::Capped),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use config::node::NodeConfigParser;
+    use config::node::RestartDeclaration;
     use core_node_api::encoding::NodeInstanceInfo;
     use core_node_api::{InstanceState, NodeStage};
     use std::path::PathBuf;
+
+    /// A failed instance's restarts ended at the cap once its attempt is past
+    /// `max_restarts`, by the daemon's refusal below it, and not at all with
+    /// no attempt or in another state.
+    #[test]
+    fn restarts_end_at_the_cap_or_by_a_refusal() {
+        let status = |max_restarts: Option<u32>, attempt: u32| RestartStatus {
+            restart: RestartDeclaration::new(
+                config::node::RestartPolicy::OnFailure,
+                max_restarts.and_then(std::num::NonZeroU32::new),
+            )
+            .unwrap(),
+            attempt,
+            ..RestartStatus::default()
+        };
+        let failed = InstanceState::Failed;
+        assert_eq!(
+            restarts_ended(&status(Some(2), 3), failed),
+            Some(RestartsEnded::Capped(std::num::NonZeroU32::new(2).unwrap()))
+        );
+        assert_eq!(
+            restarts_ended(&status(Some(2), 2), failed),
+            Some(RestartsEnded::Refused)
+        );
+        assert_eq!(
+            restarts_ended(&status(None, 4), failed),
+            Some(RestartsEnded::Refused)
+        );
+        assert_eq!(restarts_ended(&status(Some(2), 0), failed), None);
+        assert_eq!(
+            restarts_ended(&status(Some(2), 3), InstanceState::Restarting),
+            None
+        );
+        assert_eq!(
+            restarts_ended(&status(None, 1), InstanceState::Finished),
+            None
+        );
+    }
 
     fn sample_response() -> NodeInfo {
         sample_response_with_execution(
@@ -473,6 +602,7 @@ mod tests {
                             urls: vec!["http://127.0.0.1:8900/sensor/v1/mcp".to_string()],
                         },
                     ],
+                    restart_status: core_node_api::RestartStatus::default(),
                 },
                 NodeInstanceInfo {
                     clock: Default::default(),
@@ -482,6 +612,7 @@ mod tests {
                     slot_bindings: std::collections::BTreeMap::new(),
                     pairing_slots: std::collections::BTreeMap::new(),
                     endpoints: Vec::new(),
+                    restart_status: core_node_api::RestartStatus::default(),
                 },
             ],
             add_log_path: Some(PathBuf::from("/tmp/peppy/logs/add/sensor_node.log")),
@@ -489,6 +620,7 @@ mod tests {
                 PathBuf::from("/tmp/peppy/logs/run/inst-abc.log"),
                 PathBuf::from("/tmp/peppy/logs/run/inst-def.log"),
             ],
+            reported_at_ms: 1_700_000_000_000,
         }
     }
 
@@ -561,6 +693,108 @@ mod tests {
             "an instance serving nothing lists no endpoint: {}",
             lines[starting_line + 1]
         );
+    }
+
+    /// Each instance line carries its policy with the origin and the
+    /// count, then what its state adds: the last exit for a running or
+    /// failed instance, the attempt and the next start while it waits, and
+    /// for a failed one the attempt its cap or the daemon refused.
+    #[test]
+    fn print_node_info_renders_the_restart_summary() {
+        let mut response = sample_response();
+        let now = response.reported_at_ms;
+        response.instances[0].restart_status.restart = RestartDeclaration::new(
+            config::node::RestartPolicy::OnFailure,
+            std::num::NonZeroU32::new(5),
+        )
+        .unwrap();
+        response.instances[0].restart_status.restart_origin = config::node::RestartOrigin::Instance;
+        response.instances[0].restart_status.restart_count = 2;
+        response.instances[0].restart_status.last_exit =
+            Some(core_node_api::ExitCause::signal(9, false));
+        response.instances[1].state = InstanceState::Restarting;
+        response.instances[1].restart_status.restart =
+            RestartDeclaration::policy_only(config::node::RestartPolicy::Always);
+        response.instances[1].restart_status.restart_origin =
+            config::node::RestartOrigin::LauncherRoot;
+        response.instances[1].restart_status.attempt = 3;
+        response.instances[1].restart_status.last_exit = Some(core_node_api::ExitCause::Code(1));
+        response.instances[1].restart_status.next_start_ms = Some(now + 60_000);
+        let rendered = |response: &NodeInfo| {
+            let mut out = String::new();
+            format_node_info(&mut out, response);
+            out
+        };
+        // A running instance names no attempt, whatever its backoff holds.
+        response.instances[0].restart_status.attempt = 2;
+        let out = rendered(&response);
+        assert!(
+            out.contains(
+                "- inst-abc  [running]  healthy  restart on_failure, max_restarts 5 (instance \
+                 entry), 2 restarts, last exit: signal 9 (SIGKILL)\n"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "- inst-def  [restarting]  -  restart always (launcher root), 0 restarts, attempt \
+                 3, last exit: exit code 1, next start in 60 s"
+            ),
+            "{out}"
+        );
+
+        // A failed instance past its cap names the cap; one the daemon
+        // refused names the refused attempt; one that never restarted names
+        // no attempt. A restarting instance whose wait has passed names what
+        // it waits for.
+        response.instances[0].state = InstanceState::Failed;
+        response.instances[0].restart_status.attempt = 6;
+        response.instances[1].restart_status.next_start_ms = Some(now - 1);
+        let out = rendered(&response);
+        assert!(
+            out.contains(
+                "2 restarts, attempt 6 refused: max_restarts 5 reached, failed starts included, \
+                 last exit: signal 9"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "next start due; it waits for the last exit's notices to other daemons, or for a \
+                 stack launch, build, join or removal or a `peppy node remove` in progress on \
+                 this daemon"
+            ),
+            "{out}"
+        );
+        // The attempt at the cap was taken, so a refusal of it is the
+        // daemon's.
+        response.instances[0].restart_status.attempt = 5;
+        let out = rendered(&response);
+        assert!(
+            out.contains("2 restarts, attempt 5 refused, last exit: signal 9"),
+            "{out}"
+        );
+        response.instances[0].restart_status.attempt = 4;
+        let out = rendered(&response);
+        assert!(
+            out.contains("2 restarts, attempt 4 refused, last exit: signal 9"),
+            "{out}"
+        );
+        // The wait is rounded up to whole seconds.
+        for (left, shown) in [(1, "1 s"), (1_500, "2 s"), (2_000, "2 s")] {
+            response.instances[1].restart_status.next_start_ms = Some(now + left);
+            let out = rendered(&response);
+            assert!(out.contains(&format!("next start in {shown}")), "{out}");
+        }
+        response.instances[0].restart_status.attempt = 0;
+        let out = rendered(&response);
+        assert!(
+            out.contains("2 restarts, last exit: signal 9"),
+            "a failed instance that never took an attempt names none: {out}"
+        );
+        response.instances[0].restart_status.restart_count = 1;
+        let out = rendered(&response);
+        assert!(out.contains("1 restart, last exit"), "{out}");
     }
 
     #[test]

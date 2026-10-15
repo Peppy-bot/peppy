@@ -8,7 +8,7 @@ use node_stack::action_log::{log_line, time_after};
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// The stack log file and the exporter of its lines, with the identity the
 /// lines of one writer carry.
@@ -38,6 +38,9 @@ pub(crate) struct StackLog {
     /// The instance, as each line names it: `Instance '{id}' of node
     /// '{name}:{tag}'`.
     subject: String,
+    /// What clears the instance once it is failed, as the lines that leave
+    /// it failed end: ``{stop_command} clears it``.
+    clears: String,
 }
 
 /// What happened to an instance.
@@ -51,38 +54,113 @@ pub(crate) enum StackLogEvent {
     Unhealthy { misses: u32, reason: String },
     /// A health check passed after `misses` failed ones.
     Recovered { misses: u32 },
+    /// The daemon starts the instance again after `delay`; `attempt` counts
+    /// the attempts in a row.
+    Restarting { attempt: u32, delay: Duration },
+    /// A new process of the instance reached running.
+    Restarted { attempt: u32 },
+    /// The next process of a `restarting` instance did not reach running;
+    /// `reason` is the first line of the failure, the run log holds it whole.
+    StartFailed { reason: String },
+    /// The daemon refused to start the instance again; it is failed.
+    RestartRefused { reason: String },
+    /// `max_restarts` attempts in a row were made; the instance is failed.
+    MaxRestartsReached { max_restarts: u32 },
+    /// The health monitor killed the process, which answered no health check
+    /// for `unanswered_for`; its exit counts as a failure under the
+    /// instance's policy.
+    HealthKill { unanswered_for: Duration },
+    /// The health monitor left the process alone, which answered no health
+    /// check for `unanswered_for`: every running instance on the daemon other
+    /// than the core node's own is unhealthy, `running` of them.
+    HealthKillSkipped {
+        unanswered_for: Duration,
+        running: usize,
+    },
 }
 
 impl StackLogEvent {
     fn severity(&self) -> Severity {
         match self {
-            StackLogEvent::Finished | StackLogEvent::Recovered { .. } => Severity::Info,
-            StackLogEvent::Unhealthy { .. } => Severity::Warn,
-            StackLogEvent::Failed { .. } => Severity::Error,
+            StackLogEvent::Finished
+            | StackLogEvent::Recovered { .. }
+            | StackLogEvent::Restarted { .. } => Severity::Info,
+            StackLogEvent::Unhealthy { .. }
+            | StackLogEvent::Restarting { .. }
+            | StackLogEvent::HealthKill { .. }
+            | StackLogEvent::HealthKillSkipped { .. } => Severity::Warn,
+            StackLogEvent::Failed { .. }
+            | StackLogEvent::StartFailed { .. }
+            | StackLogEvent::RestartRefused { .. }
+            | StackLogEvent::MaxRestartsReached { .. } => Severity::Error,
         }
     }
 
-    /// What the event says about its instance, after the instance is named.
-    fn outcome(&self) -> String {
+    /// What the event says about an instance, after the instance is named;
+    /// `clears` ends the lines that leave it failed.
+    fn outcome(&self, clears: &str) -> String {
         match self {
             StackLogEvent::Finished => "finished: process exited cleanly".to_owned(),
-            StackLogEvent::Failed { detail } => format!("failed: process {detail}"),
+            StackLogEvent::Failed { detail } => format!("failed: {detail}"),
             StackLogEvent::Unhealthy { misses, reason } => format!(
                 "became unhealthy: {misses} consecutive health checks failed, last: {reason}"
             ),
             StackLogEvent::Recovered { misses } => {
                 format!("recovered after {misses} missed health checks")
             }
+            StackLogEvent::Restarting { attempt, delay } => {
+                format!(
+                    "restarting in {} (attempt {attempt})",
+                    render_duration(*delay)
+                )
+            }
+            StackLogEvent::Restarted { attempt } => format!("restarted (attempt {attempt})"),
+            StackLogEvent::StartFailed { reason } => format!("start failed: {reason}"),
+            StackLogEvent::RestartRefused { reason } => {
+                format!("restart refused: {reason}; the instance is failed, and {clears}")
+            }
+            StackLogEvent::MaxRestartsReached { max_restarts } => format!(
+                "`max_restarts` reached: {max_restarts} {} in a row; the instance is failed, and \
+                 {clears}",
+                if *max_restarts == 1 {
+                    "attempt"
+                } else {
+                    "attempts"
+                },
+            ),
+            StackLogEvent::HealthKill { unanswered_for } => format!(
+                "answered no health check for {}; killed",
+                render_duration(*unanswered_for)
+            ),
+            StackLogEvent::HealthKillSkipped {
+                unanswered_for,
+                running,
+            } => format!(
+                "answered no health check for {}; not killed: all {running} running instances \
+                 on this daemon other than the core node's own are unhealthy, which the daemon \
+                 reads as a messaging outage",
+                render_duration(*unanswered_for)
+            ),
         }
+    }
+}
+
+/// A duration as the stack log prints it: whole seconds, else milliseconds.
+fn render_duration(duration: Duration) -> String {
+    if duration.subsec_millis() == 0 {
+        format!("{} s", duration.as_secs())
+    } else {
+        format!("{} ms", duration.as_millis())
     }
 }
 
 impl StackLog {
     /// The stack log of the instance `instance_id` of `node_name:node_tag`,
-    /// started by the launch `launch_id` when it is part of one.
+    /// of the launch `launch_id` when one started it.
     pub(crate) fn for_instance(
         peppy_dirs: &PeppyDirs,
         exporter: LogExporter,
+        core_node: &str,
         instance_id: &str,
         node_name: &str,
         node_tag: &str,
@@ -98,14 +176,23 @@ impl StackLog {
                 exporter,
             },
             subject: format!("Instance '{instance_id}' of node '{node_name}:{node_tag}'"),
+            clears: format!(
+                "{} clears it",
+                core_node_api::stop_command(instance_id, core_node)
+            ),
         }
+    }
+
+    /// What `event` says about this instance, after the instance is named.
+    pub(crate) fn outcome(&self, event: &StackLogEvent) -> String {
+        event.outcome(&self.clears)
     }
 
     /// Records `event`.
     pub(crate) fn record(&self, event: &StackLogEvent) {
         self.writer.write(
             event.severity(),
-            &format!("{} {}", self.subject, event.outcome()),
+            &format!("{} {}", self.subject, self.outcome(event)),
         );
     }
 }
@@ -178,6 +265,7 @@ mod tests {
         StackLog::for_instance(
             dirs,
             exporter,
+            "cn-a",
             "arm_inst",
             "openarm_arm",
             "v1",
@@ -206,11 +294,10 @@ mod tests {
             ),
             (
                 StackLogEvent::Failed {
-                    detail: "exit status exit status: 3".to_owned(),
+                    detail: "exit code 3".to_owned(),
                 },
                 Severity::Error,
-                "Instance 'arm_inst' of node 'openarm_arm:v1' failed: process exit status exit \
-                 status: 3",
+                "Instance 'arm_inst' of node 'openarm_arm:v1' failed: exit code 3",
             ),
             (
                 StackLogEvent::Unhealthy {
@@ -226,6 +313,82 @@ mod tests {
                 Severity::Info,
                 "Instance 'arm_inst' of node 'openarm_arm:v1' recovered after 4 missed health \
                  checks",
+            ),
+            (
+                StackLogEvent::Restarting {
+                    attempt: 2,
+                    delay: Duration::from_secs(2),
+                },
+                Severity::Warn,
+                "Instance 'arm_inst' of node 'openarm_arm:v1' restarting in 2 s (attempt 2)",
+            ),
+            (
+                StackLogEvent::Restarting {
+                    attempt: 1,
+                    delay: Duration::from_millis(250),
+                },
+                Severity::Warn,
+                "Instance 'arm_inst' of node 'openarm_arm:v1' restarting in 250 ms (attempt 1)",
+            ),
+            (
+                StackLogEvent::Restarted { attempt: 2 },
+                Severity::Info,
+                "Instance 'arm_inst' of node 'openarm_arm:v1' restarted (attempt 2)",
+            ),
+            (
+                StackLogEvent::StartFailed {
+                    reason: "node process exited during startup (exit code 3)".to_owned(),
+                },
+                Severity::Error,
+                "Instance 'arm_inst' of node 'openarm_arm:v1' start failed: node process exited \
+                 during startup (exit code 3)",
+            ),
+            (
+                StackLogEvent::RestartRefused {
+                    reason: "clock domain `sim` is not running".to_owned(),
+                },
+                Severity::Error,
+                "Instance 'arm_inst' of node 'openarm_arm:v1' restart refused: clock domain \
+                 `sim` is not running; the instance is failed, and `peppy node stop arm_inst \
+                 --core-node cn-a` clears it",
+            ),
+            (
+                StackLogEvent::MaxRestartsReached { max_restarts: 1 },
+                Severity::Error,
+                "Instance 'arm_inst' of node 'openarm_arm:v1' `max_restarts` reached: 1 attempt \
+                 in a row; the instance is failed, and `peppy node stop arm_inst --core-node cn-a` clears it",
+            ),
+            (
+                StackLogEvent::MaxRestartsReached { max_restarts: 2 },
+                Severity::Error,
+                "Instance 'arm_inst' of node 'openarm_arm:v1' `max_restarts` reached: 2 attempts \
+                 in a row; the instance is failed, and `peppy node stop arm_inst --core-node cn-a` clears it",
+            ),
+            (
+                StackLogEvent::Restarting {
+                    attempt: 1,
+                    delay: Duration::from_millis(1500),
+                },
+                Severity::Warn,
+                "Instance 'arm_inst' of node 'openarm_arm:v1' restarting in 1500 ms (attempt 1)",
+            ),
+            (
+                StackLogEvent::HealthKill {
+                    unanswered_for: Duration::from_secs(60),
+                },
+                Severity::Warn,
+                "Instance 'arm_inst' of node 'openarm_arm:v1' answered no health check for 60 s; \
+                 killed",
+            ),
+            (
+                StackLogEvent::HealthKillSkipped {
+                    unanswered_for: Duration::from_secs(60),
+                    running: 2,
+                },
+                Severity::Warn,
+                "Instance 'arm_inst' of node 'openarm_arm:v1' answered no health check for 60 s; \
+                 not killed: all 2 running instances on this daemon other than the core node's \
+                 own are unhealthy, which the daemon reads as a messaging outage",
             ),
         ];
         for (event, _, _) in &events {

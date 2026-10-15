@@ -1375,7 +1375,7 @@ fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), Stri
         || adjustment
             .set_framework
             .as_ref()
-            .is_some_and(|framework| framework.clock.is_some())
+            .is_some_and(|framework| framework.clock.is_some() || framework.restart.is_some())
         || adjustment.set_links.as_ref().is_some_and(|m| !m.is_empty())
         || adjustment.add_links.as_ref().is_some_and(|m| !m.is_empty())
         || adjustment

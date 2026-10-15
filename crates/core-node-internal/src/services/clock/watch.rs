@@ -64,9 +64,11 @@ impl ClockWatches {
     }
 
     /// Watches `domain` unless this instance's exact lifetime is already
-    /// watched. A publisher restarting under the same domain name mints a new
-    /// lifetime, so its identity differs and the old watch is replaced rather
-    /// than left reporting a timeline nothing publishes any more.
+    /// watched. A publisher run again under the same domain name mints a new
+    /// lifetime, so its identity differs and the old watch is replaced. A
+    /// publisher its restart policy starts again keeps its lifetime; a listing
+    /// taken while it waited dropped its watch, so the domain reads not ready
+    /// until the new process's first tick.
     pub(crate) async fn ensure(
         &self,
         messenger: &MessengerHandle,
@@ -202,9 +204,9 @@ mod tests {
         assert_eq!(hosted[0].last_tick_ns, None);
     }
 
-    /// A publisher restarting under the same name mints a new lifetime, and
-    /// the watch follows it: the registry reports the timeline being published
-    /// now.
+    /// A publisher started again under the same name mints a new lifetime,
+    /// and the watch follows it: the registry reports the timeline being
+    /// published now.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_new_lifetime_of_a_name_replaces_the_watch_of_the_old_one() {
         let messenger = started_mock_messenger().await;

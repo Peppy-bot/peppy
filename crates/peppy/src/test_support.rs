@@ -21,6 +21,9 @@ pub use core_node::test_support::LogCapture;
 // The line a build writes when it reuses a cached artifact, so the tests that
 // read build logs match the one string the daemon emits.
 pub use node_stack::CACHED_BUILD_REUSE_PREFIX;
+// The newest run log of an instance, read by the docs harness, which depends
+// on this crate alone.
+pub use node_stack::action_log::test_support::nth_newest_run_log;
 
 /// Reads a node config, applies a mutation, writes it back, and regenerates the fingerprint.
 fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node::NodeConfig)) {
@@ -192,11 +195,8 @@ pub fn override_build_cmd(peppy_json5: &Path, cmd: Vec<String>) {
 
 /// Overrides the node `run_cmd` to a long, silent binary (`sleep 30`) and clears `build_cmd`.
 /// Used by the run-idle timeout test: the process never produces output and never registers
-/// itself with the messaging layer, so it never becomes "ready". Direct-binary form is used
-/// so the cancellation SIGKILL (sent via `abort_started → kill_child` when the run-phase
-/// idle timeout trips the cancel token) targets `sleep` directly; `sh -c "sleep N"` would
-/// orphan the grandchild `sleep` and keep the daemon's stdio pipes open for the full sleep
-/// duration.
+/// itself with the messaging layer, so it never becomes "ready", and the run-phase idle
+/// timeout cancels its start, which kills its process group.
 pub fn override_run_cmd_silent(peppy_json5: &Path) {
     modify_node_config(peppy_json5, |cfg| {
         cfg.execution.run_cmd = Some(vec!["sleep".to_string(), "30".to_string()]);
@@ -236,6 +236,27 @@ enum MessengerInstance {
 /// The core node name of an emulated daemon that a test does not name.
 const DEFAULT_CORE_NODE_NAME: &str = "test-core-node";
 
+/// The core node arguments the emulation runs with: a restart backoff that
+/// parks every restart, and a health monitor that kills nothing.
+pub fn default_arguments() -> CoreNodeArguments {
+    CoreNodeArguments {
+        node_startup_timeout: Duration::from_secs(120),
+        default_setup_timeout: config::node::SetupTimeout::from_secs(30).expect("in range"),
+        health_monitor: HealthMonitorPolicy {
+            interval: Duration::from_secs(5),
+            timeout: Duration::from_secs(3),
+            failure_threshold: NonZeroU32::new(3).expect("non-zero"),
+            kill_after: None,
+        },
+        restart_backoff: core_node::test_support::parked_restart_backoff(),
+        clock_publish_interval: Duration::from_millis(100),
+        heartbeat_interval: Duration::from_secs(5),
+        // Zero: the emulation runs on an in-memory mock broker that is
+        // authoritative immediately, with no links to settle.
+        name_claim_settle: Duration::ZERO,
+    }
+}
+
 pub struct ServeCommandEmulation {
     /// The daemon's data root. Owned when the emulation created it, borrowed
     /// when a test supplied one so that a later emulation can reopen it.
@@ -247,11 +268,34 @@ pub struct ServeCommandEmulation {
     shared_messenger: Arc<TokioMutex<Messenger>>,
     daemon_state_path: PathBuf,
     core_node_name: String,
+    slice_ownership: Arc<core_node::SliceOwnership>,
 }
 
 impl ServeCommandEmulation {
     pub async fn with_mock() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
         Self::with_mock_named(DEFAULT_CORE_NODE_NAME).await
+    }
+
+    /// Starts a daemon on a fresh mock router with the core node arguments
+    /// the test chooses, such as the restart backoff.
+    pub async fn with_mock_and_arguments(
+        arguments: CoreNodeArguments,
+    ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
+        let mut instance = MockAdapter::start_router().await?;
+        instance.messenger().start_session().await?;
+        let messenger = instance.take_messenger();
+        let port = messenger.get_host().port();
+        Self::setup_with_arguments(
+            Arc::new(TokioMutex::new(messenger)),
+            port,
+            Some(MessengerInstance::Mock(instance)),
+            DEFAULT_CORE_NODE_NAME,
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir),
+            arguments,
+        )
+        .await
     }
 
     /// Starts a named daemon on a fresh mock router.
@@ -358,6 +402,27 @@ impl ServeCommandEmulation {
         root: PathBuf,
         owned: Option<TempDir>,
     ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        Self::setup_with_arguments(
+            shared_messenger,
+            port,
+            instance,
+            core_node_name,
+            root,
+            owned,
+            default_arguments(),
+        )
+        .await
+    }
+
+    async fn setup_with_arguments(
+        shared_messenger: Arc<TokioMutex<Messenger>>,
+        port: u16,
+        instance: Option<MessengerInstance>,
+        core_node_name: &str,
+        root: PathBuf,
+        owned: Option<TempDir>,
+        arguments: CoreNodeArguments,
+    ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
         let daemon_state_path = DaemonState::state_file_in(&root);
 
         let peppy_dirs = PeppyDirs::new(&root);
@@ -375,20 +440,7 @@ impl ServeCommandEmulation {
             messenger: Arc::clone(&shared_messenger),
             node_name: Some(core_node_name.to_string()),
             host_addresses: Some(test_host_addresses()),
-            arguments: CoreNodeArguments {
-                node_startup_timeout: Duration::from_secs(120),
-                default_setup_timeout: config::node::SetupTimeout::from_secs(30).expect("in range"),
-                health_monitor: HealthMonitorPolicy {
-                    interval: Duration::from_secs(5),
-                    timeout: Duration::from_secs(3),
-                    failure_threshold: NonZeroU32::new(3).expect("non-zero"),
-                },
-                clock_publish_interval: Duration::from_millis(100),
-                heartbeat_interval: Duration::from_secs(5),
-                // Zero: the emulation runs on an in-memory mock broker that
-                // is authoritative immediately, with no links to settle.
-                name_claim_settle: Duration::ZERO,
-            },
+            arguments,
             root_dir: root.clone(),
             peppy_dirs,
             peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
@@ -397,6 +449,7 @@ impl ServeCommandEmulation {
             log_exporter: log_export::LogExporter::disabled(),
         });
         let core_node_name = core_node.node_name().to_string();
+        let slice_ownership = core_node.slice_ownership();
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let core_node_task =
@@ -439,7 +492,15 @@ impl ServeCommandEmulation {
             shared_messenger,
             daemon_state_path,
             core_node_name,
+            slice_ownership,
         })
+    }
+
+    /// Holds the daemon's restarts off until the hold drops, as a removal
+    /// does, so a test acts on a `restarting` instance for as long as it
+    /// needs.
+    pub fn hold_restarts(&self) -> core_node::RestartHold {
+        self.slice_ownership.hold_restarts()
     }
 
     pub fn messenger(&self) -> Arc<TokioMutex<Messenger>> {

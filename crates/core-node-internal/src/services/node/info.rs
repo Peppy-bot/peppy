@@ -2,13 +2,12 @@ use crate::Result;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo};
 use core_node_api::names;
-use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -19,7 +18,6 @@ pub async fn listen_for_node_info(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
-    peppy_dirs: PeppyDirs,
     timeout: Duration,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
@@ -34,12 +32,7 @@ pub async fn listen_for_node_info(
     let handle = tokio::spawn(async move {
         endpoint
             .handle_requests(|context| {
-                handle_node_info_request(
-                    context,
-                    Arc::clone(&node_stack),
-                    peppy_dirs.clone(),
-                    timeout,
-                )
+                handle_node_info_request(context, Arc::clone(&node_stack), timeout)
             })
             .await
             .map_err(Into::into)
@@ -70,14 +63,13 @@ impl From<String> for InfoError {
 async fn handle_node_info_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
-    peppy_dirs: PeppyDirs,
     timeout: Duration,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
 
     match tokio::time::timeout(
         timeout,
-        handle_node_info_request_inner(&context, node_stack, peppy_dirs),
+        handle_node_info_request_inner(&context, node_stack),
     )
     .await
     {
@@ -101,7 +93,6 @@ async fn handle_node_info_request(
 async fn handle_node_info_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
-    peppy_dirs: PeppyDirs,
 ) -> std::result::Result<Payload, InfoError> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload_bytes();
@@ -142,7 +133,6 @@ async fn handle_node_info_request_inner(
         let stage = guard.stage().to_serialized();
         let node_config = guard.config().clone();
         let tracked = guard.instances();
-        let run_log_dir = peppy_dirs.logs_dir_run();
         let pairing_deps = node_config
             .manifest
             .depends_on
@@ -166,8 +156,13 @@ async fn handle_node_info_request_inner(
                     &live_pairs,
                 ),
                 endpoints: instance.endpoints().to_vec(),
+                restart_status: instance.restart_status(),
             });
-            run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
+            run_log_paths.push(
+                instance
+                    .run_log_path()
+                    .map_or_else(PathBuf::new, Path::to_path_buf),
+            );
         }
         (node_config, stage, instances, run_log_paths)
     };
@@ -184,6 +179,7 @@ async fn handle_node_info_request_inner(
         instances,
         add_log_path,
         run_log_paths,
+        reported_at_ms: core_node_api::unix_ms(std::time::SystemTime::now()),
     }))
     .encode()
     .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))

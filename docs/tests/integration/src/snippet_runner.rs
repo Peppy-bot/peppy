@@ -1,6 +1,6 @@
 use crate::{peppy_binary, workspace_root};
 use config::node::{NodeConfig, NodeConfigParser, PeppygenLanguage};
-use peppy::test_support::{ServeCommandEmulation, wait_for_log};
+use peppy::test_support::{ServeCommandEmulation, nth_newest_run_log, wait_for_log};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -213,8 +213,8 @@ pub fn run_snippet_with_deps(
 /// [`run_snippet_with_deps`] plus an assertion on what the snippet printed.
 ///
 /// The main node runs under the deterministic instance id `<snippet_name>_1`,
-/// so its stdout is readable at `<PEPPY_HOME>/logs/run/<instance_id>.log` once
-/// the run returns. Every entry in `expected_output` must appear there. A
+/// so its stdout is readable at `<PEPPY_HOME>/logs/run/<instance_id>_<timestamp>.log`
+/// once the run returns. Every entry in `expected_output` must appear there. A
 /// snippet whose printed lines depend on what the runtime handed it (a scalar
 /// slot's `Option`, say) is then checked against what the run actually wired,
 /// not just against the exit status.
@@ -275,16 +275,14 @@ pub fn run_snippet_with_deps_asserting_output(
 /// are already produced by the time this is called; the wait covers only the
 /// daemon draining the node's stdout pipe into the log file.
 fn assert_run_log_contains(daemon_root: &Path, instance_id: &str, expected: &[&str]) {
-    let log_path = daemon_root
-        .join("logs")
-        .join("run")
-        .join(format!("{instance_id}.log"));
+    let run_logs = daemon_root.join("logs").join("run");
+    let newest_run_log = || {
+        nth_newest_run_log(&run_logs, instance_id, 0)
+            .and_then(|path| fs::read_to_string(path).ok())
+            .unwrap_or_default()
+    };
     for line in expected {
-        wait_for_log(
-            || fs::read_to_string(&log_path).unwrap_or_default(),
-            line,
-            std::time::Duration::from_secs(30),
-        );
+        wait_for_log(newest_run_log, line, std::time::Duration::from_secs(30));
     }
 }
 

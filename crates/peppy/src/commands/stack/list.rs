@@ -599,7 +599,9 @@ fn render_nodes_table(
 /// label appears only on the first row of its group, an instance id (with its
 /// status and health) only on the first of its binding rows, and a horizontal
 /// rule separates node groups.
-const BINDING_HEADERS: [&str; 6] = ["NODE", "INSTANCE", "STATUS", "HEALTH", "CLOCK", "BINDINGS"];
+const BINDING_HEADERS: [&str; 7] = [
+    "NODE", "INSTANCE", "STATUS", "HEALTH", "RESTARTS", "CLOCK", "BINDINGS",
+];
 
 /// Renders the per-instance bindings table. `nodes` must already be filtered
 /// to entries with at least one instance; the caller prints `(none)` when
@@ -634,6 +636,7 @@ fn render_bindings_table(
                 let mut instance_cell = paint(colorize, INSTANCE_COLOR, &instance.instance_id);
                 let mut status_cell = format_instance_status(instance, colorize);
                 let mut health_cell = format_instance_health(instance, colorize);
+                let mut restarts_cell = instance.restart_status.restart_count.to_string();
                 let mut clock_cell = format_instance_clock(instance, &labels, colorize);
                 for binding in format_instance_bindings(instance, colorize) {
                     rows.push(vec![
@@ -641,6 +644,7 @@ fn render_bindings_table(
                         std::mem::take(&mut instance_cell),
                         std::mem::take(&mut status_cell),
                         std::mem::take(&mut health_cell),
+                        std::mem::take(&mut restarts_cell),
                         std::mem::take(&mut clock_cell),
                         binding,
                     ]);
@@ -812,7 +816,7 @@ fn format_instance_pairings(instance: &SerializedInstance, colorize: bool) -> Ve
 fn format_instance_status(instance: &SerializedInstance, colorize: bool) -> String {
     let color = match instance.state {
         InstanceState::Running => STATUS_RUNNING_COLOR,
-        InstanceState::Starting => STATUS_STARTING_COLOR,
+        InstanceState::Starting | InstanceState::Restarting => STATUS_STARTING_COLOR,
         InstanceState::Finished => STATUS_FINISHED_COLOR,
         InstanceState::Failed => STATUS_FAILED_COLOR,
     };
@@ -822,11 +826,11 @@ fn format_instance_status(instance: &SerializedInstance, colorize: bool) -> Stri
 /// The instance's health for the HEALTH column. For a live instance this is the
 /// daemon's last `node_health` probe carried in [`SerializedInstance::healthy`]:
 /// green for `healthy`, red for `unhealthy`, so a failing instance stands out.
-/// A terminal (finished/failed) instance has exited, so it has no live health to
-/// report and renders a neutral, uncolored `-`.
+/// An instance without a process (restarting/finished/failed) has no live health
+/// to report and renders a neutral, uncolored `-`.
 fn format_instance_health(instance: &SerializedInstance, colorize: bool) -> String {
     let label = crate::commands::instance_health_label(instance.state, instance.healthy);
-    if instance.state.is_terminal() {
+    if !instance.state.has_process() {
         return label.to_string();
     }
     let color = if instance.healthy {
@@ -906,25 +910,30 @@ fn format_instances_compact(node: &SerializedNode) -> String {
     let count = |state: InstanceState| node.instances.iter().filter(|i| i.state == state).count();
     let running = count(InstanceState::Running);
     let starting = count(InstanceState::Starting);
+    let restarting = count(InstanceState::Restarting);
     let finished = count(InstanceState::Finished);
     let failed = count(InstanceState::Failed);
 
-    // The common, unambiguous cases use a compact phrasing; any mix
-    // (including terminal instances) falls through to an explicit per-state
+    // The common, unambiguous cases use a compact phrasing; any mix (including
+    // instances without a process) falls through to an explicit per-state
     // breakdown so no instance is silently dropped from the count.
-    match (running, starting, finished, failed) {
-        (r, 0, 0, 0) => format!("{r} running"),
-        (0, s, 0, 0) => format!("{s} starting"),
-        (0, 0, f, 0) => format!("{f} finished"),
-        (0, 0, 0, x) => format!("{x} failed"),
-        (r, s, f, x) => {
-            let total = r + s + f + x;
+    match (running, starting, restarting, finished, failed) {
+        (r, 0, 0, 0, 0) => format!("{r} running"),
+        (0, s, 0, 0, 0) => format!("{s} starting"),
+        (0, 0, w, 0, 0) => format!("{w} restarting"),
+        (0, 0, 0, f, 0) => format!("{f} finished"),
+        (0, 0, 0, 0, x) => format!("{x} failed"),
+        (r, s, w, f, x) => {
+            let total = r + s + w + f + x;
             let mut parts = Vec::new();
             if r > 0 {
                 parts.push(format!("{r} running"));
             }
             if s > 0 {
                 parts.push(format!("{s} starting"));
+            }
+            if w > 0 {
+                parts.push(format!("{w} restarting"));
             }
             if f > 0 {
                 parts.push(format!("{f} finished"));
@@ -978,44 +987,11 @@ fn shorten_home_with(path: &str, home: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::serialized_node;
     use crate::commands::table::strip_ansi;
     use config::runtime::{ClockBinding, ProducerRef};
     use core_node_api::{NodeStage, SerializedInstance};
     use unicode_width::UnicodeWidthStr;
-
-    /// A healthy instance on the default clock with no slot bindings,
-    /// pairing slots or endpoints; a test overrides the fields it exercises.
-    fn instance(id: &str, state: InstanceState) -> SerializedInstance {
-        SerializedInstance {
-            clock: Default::default(),
-            instance_id: id.to_string(),
-            state,
-            healthy: true,
-            slot_bindings: std::collections::BTreeMap::new(),
-            pairing_slots: std::collections::BTreeMap::new(),
-            endpoints: Vec::new(),
-        }
-    }
-
-    fn node(
-        name: &str,
-        tag: &str,
-        stage: NodeStage,
-        instances: Vec<(&str, InstanceState)>,
-    ) -> SerializedNode {
-        SerializedNode {
-            name: name.to_string(),
-            tag: tag.to_string(),
-            core_node: "core-a".to_string(),
-            config_path: format!("/tmp/{}.json5", name),
-            artifact_path: None,
-            stage,
-            instances: instances
-                .into_iter()
-                .map(|(id, state)| instance(id, state))
-                .collect(),
-        }
-    }
 
     /// A publisher that stopped leaves its consumers reading the instant it
     /// froze on, so a replacement under the same name puts two lifetimes in
@@ -1032,13 +1008,13 @@ mod tests {
                 ),
                 ProducerRef::new("core-a", "sim_1"),
             ),
-            ..instance(instance_id, InstanceState::Running)
+            ..SerializedInstance::of(instance_id.to_string(), InstanceState::Running)
         };
         let listing = |instances: Vec<SerializedInstance>| {
             format_stack_body(
                 &[SerializedNode {
                     instances,
-                    ..node("arm", "v1", NodeStage::Ready, Vec::new())
+                    ..serialized_node("arm", "v1", NodeStage::Ready, &[])
                 }],
                 &[],
                 false,
@@ -1067,11 +1043,11 @@ mod tests {
     /// and the instance that serves it.
     #[test]
     fn endpoints_are_listed_per_instance_and_only_when_served() {
-        let mut server = node(
+        let mut server = serialized_node(
             "mcp_camera_and_recording_v1",
             "builtin",
             NodeStage::Ready,
-            vec![("mcp", InstanceState::Running)],
+            &[("mcp", InstanceState::Running)],
         );
         server.instances[0].endpoints = vec![
             core_node_api::InstanceEndpoint {
@@ -1085,11 +1061,11 @@ mod tests {
                 urls: vec!["http://127.0.0.1:8900/camera_only/v1/mcp".to_string()],
             },
         ];
-        let mut panel = node(
+        let mut panel = serialized_node(
             "openarm_web_commander",
             "v1",
             NodeStage::Ready,
-            vec![("panel_inst", InstanceState::Running)],
+            &[("panel_inst", InstanceState::Running)],
         );
         panel.instances[0].endpoints = vec![core_node_api::InstanceEndpoint {
             label: "panel".to_string(),
@@ -1099,11 +1075,11 @@ mod tests {
                 "http://192.168.1.5:8765".to_string(),
             ],
         }];
-        let camera = node(
+        let camera = serialized_node(
             "uvc_camera",
             "v1",
             NodeStage::Ready,
-            vec![("the_camera", InstanceState::Running)],
+            &[("the_camera", InstanceState::Running)],
         );
         let out = format_stack_body(&[camera.clone(), server, panel], &[], false, None);
         assert!(out.contains("Instance endpoints"), "{out}");
@@ -1178,7 +1154,7 @@ mod tests {
         );
     }
 
-    /// Like [`node`] but lets each instance carry slot bindings, for
+    /// Like `commands::serialized_node` but lets each instance carry slot bindings, for
     /// exercising the bindings table. Always `Ready`/`v1`.
     fn binding_node(name: &str, instances: Vec<InstanceSpec<'_>>) -> SerializedNode {
         SerializedNode {
@@ -1195,10 +1171,10 @@ mod tests {
                             )
                         })
                         .collect(),
-                    ..instance(id, state)
+                    ..SerializedInstance::of(id.to_string(), state)
                 })
                 .collect(),
-            ..node(name, "v1", NodeStage::Ready, Vec::new())
+            ..serialized_node(name, "v1", NodeStage::Ready, &[])
         }
     }
 
@@ -1213,7 +1189,7 @@ mod tests {
             copies: Vec::new(),
             copy_change: None,
             outcome: Ok((
-                vec![node(core_node, "v1", NodeStage::Root, vec![])],
+                vec![serialized_node(core_node, "v1", NodeStage::Root, &[])],
                 Vec::new(),
             )),
         }
@@ -1228,11 +1204,11 @@ mod tests {
         let mut healthy = successful_section("core-a", "host-a");
         healthy.launch = Some(LaunchIdentity::new("launch-1", "cn-coordinator"));
         if let Ok((nodes, _)) = &mut healthy.outcome {
-            nodes.push(node(
+            nodes.push(serialized_node(
                 "worker",
                 "v1",
                 NodeStage::Ready,
-                vec![("w-1", InstanceState::Running)],
+                &[("w-1", InstanceState::Running)],
             ));
         }
         let failed = StackSection {
@@ -1440,11 +1416,11 @@ mod tests {
         let long = "a_node_with_a_very_long_name_that_overruns_any_narrow_terminal_width";
         let sections = vec![StackSection {
             outcome: Ok((
-                vec![node(
+                vec![serialized_node(
                     long,
                     "v1",
                     NodeStage::Ready,
-                    vec![("inst-1", InstanceState::Running)],
+                    &[("inst-1", InstanceState::Running)],
                 )],
                 Vec::new(),
             )),
@@ -1608,12 +1584,12 @@ mod tests {
     #[test]
     fn table_renders_headers_and_rows() {
         let nodes = vec![
-            node("sensor", "v1", NodeStage::Added, vec![]),
-            node(
+            serialized_node("sensor", "v1", NodeStage::Added, &[]),
+            serialized_node(
                 "brain",
                 "v1",
                 NodeStage::Ready,
-                vec![("i1", InstanceState::Running)],
+                &[("i1", InstanceState::Running)],
             ),
         ];
         let out = format_stack_body(&nodes, &[], false, None);
@@ -1638,11 +1614,11 @@ mod tests {
 
     #[test]
     fn mixed_running_and_starting_instances_render_with_breakdown() {
-        let nodes = vec![node(
+        let nodes = vec![serialized_node(
             "brain",
             "v1",
             NodeStage::Ready,
-            vec![
+            &[
                 ("r1", InstanceState::Running),
                 ("s1", InstanceState::Starting),
             ],
@@ -1659,11 +1635,11 @@ mod tests {
     fn instances_compact_counts_a_finished_one_shot_instance() {
         // A one-shot node whose only instance has finished must still appear in
         // the INSTANCES column, not read as "0 running".
-        let nodes = vec![node(
+        let nodes = vec![serialized_node(
             "recorder",
             "v1",
             NodeStage::Ready,
-            vec![("rec-1", InstanceState::Finished)],
+            &[("rec-1", InstanceState::Finished)],
         )];
         let out = format_stack_body(&nodes, &[], false, None);
         assert!(
@@ -1674,11 +1650,11 @@ mod tests {
 
     #[test]
     fn instances_compact_breaks_down_a_mix_with_terminal_states() {
-        let nodes = vec![node(
+        let nodes = vec![serialized_node(
             "mix",
             "v1",
             NodeStage::Ready,
-            vec![
+            &[
                 ("r1", InstanceState::Running),
                 ("f1", InstanceState::Finished),
                 ("x1", InstanceState::Failed),
@@ -1747,8 +1723,8 @@ mod tests {
 
     #[test]
     fn edges_render_as_arrows() {
-        let from = node("brain", "v1", NodeStage::Ready, vec![]);
-        let to = node("sensor", "v1", NodeStage::Ready, vec![]);
+        let from = serialized_node("brain", "v1", NodeStage::Ready, &[]);
+        let to = serialized_node("sensor", "v1", NodeStage::Ready, &[]);
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),
@@ -1767,9 +1743,9 @@ mod tests {
     /// sorts before `a:v1` (`-` is below `:`).
     #[test]
     fn sort_graph_puts_the_root_first_then_orders_by_label() {
-        let short = node("a", "v1", NodeStage::Ready, vec![]);
-        let dashed = node("a-b", "v1", NodeStage::Ready, vec![]);
-        let root = node("z", "v1", NodeStage::Root, vec![]);
+        let short = serialized_node("a", "v1", NodeStage::Ready, &[]);
+        let dashed = serialized_node("a-b", "v1", NodeStage::Ready, &[]);
+        let root = serialized_node("z", "v1", NodeStage::Root, &[]);
         let edge = |from: &SerializedNode, to: &SerializedNode| SerializedEdge {
             from: from.clone(),
             to: to.clone(),
@@ -1804,8 +1780,8 @@ mod tests {
 
     #[test]
     fn contract_implementation_edge_renders_annotation() {
-        let consumer = node("brain", "v1", NodeStage::Ready, vec![]);
-        let provider = node("camera_mock", "v1", NodeStage::Ready, vec![]);
+        let consumer = serialized_node("brain", "v1", NodeStage::Ready, &[]);
+        let provider = serialized_node("camera_mock", "v1", NodeStage::Ready, &[]);
         let edges = vec![SerializedEdge {
             from: consumer.clone(),
             to: provider.clone(),
@@ -1872,6 +1848,77 @@ mod tests {
         );
     }
 
+    /// The RESTARTS column carries the count of times a restarted process of
+    /// the instance reached running, under its header and on the instance's
+    /// first row only.
+    #[test]
+    fn bindings_table_renders_the_restart_count() {
+        let mut nodes = vec![binding_node(
+            "backbone",
+            vec![(
+                "bk-1",
+                InstanceState::Restarting,
+                vec![
+                    ("arm", vec![ProducerRef::new("core_a", "arm-1")]),
+                    ("cam", vec![ProducerRef::new("core_a", "cam-1")]),
+                ],
+            )],
+        )];
+        nodes[0].instances[0].restart_status.restart_count = 3;
+        let out = format_stack_body(&nodes, &[], false, None);
+        let section = bindings_section(&out);
+        let cells = |line: &str| -> Vec<String> {
+            line.split('│').map(|cell| cell.trim().to_owned()).collect()
+        };
+        let header = section
+            .lines()
+            .find(|line| line.contains("RESTARTS"))
+            .map(cells)
+            .expect("the header row");
+        let column = |name: &str| {
+            header
+                .iter()
+                .position(|cell| cell == name)
+                .unwrap_or_else(|| panic!("`{name}` in {header:?}"))
+        };
+        let rows: Vec<Vec<String>> = section
+            .lines()
+            .filter(|line| line.contains("arm-1") || line.contains("cam-1"))
+            .map(cells)
+            .collect();
+        assert_eq!(rows.len(), 2, "one row per binding:\n{section}");
+        assert_eq!(rows[0][column("STATUS")], "restarting");
+        assert_eq!(rows[0][column("HEALTH")], "-");
+        assert_eq!(rows[0][column("RESTARTS")], "3");
+        assert_eq!(rows[1][column("RESTARTS")], "", "the count prints once");
+    }
+
+    /// The node summary counts restarting instances alone and beside
+    /// others.
+    #[test]
+    fn compact_instance_counts_name_restarting_instances() {
+        let restarting = binding_node(
+            "arm",
+            vec![
+                ("arm-1", InstanceState::Restarting, vec![]),
+                ("arm-2", InstanceState::Restarting, vec![]),
+            ],
+        );
+        assert_eq!(format_instances_compact(&restarting), "2 restarting");
+        let mixed = binding_node(
+            "arm",
+            vec![
+                ("arm-1", InstanceState::Running, vec![]),
+                ("arm-2", InstanceState::Restarting, vec![]),
+                ("arm-3", InstanceState::Failed, vec![]),
+            ],
+        );
+        assert_eq!(
+            format_instances_compact(&mixed),
+            "3 (1 running, 1 restarting, 1 failed)"
+        );
+    }
+
     #[test]
     fn bindings_table_renders_status_column() {
         let nodes = vec![
@@ -1911,13 +1958,13 @@ mod tests {
         // `SerializedInstance::healthy` values are exercised.
         let nodes = vec![SerializedNode {
             instances: vec![
-                instance("healthy-1", InstanceState::Running),
+                SerializedInstance::of("healthy-1".to_string(), InstanceState::Running),
                 SerializedInstance {
                     healthy: false,
-                    ..instance("down-1", InstanceState::Running)
+                    ..SerializedInstance::of("down-1".to_string(), InstanceState::Running)
                 },
             ],
-            ..node("arm", "v1", NodeStage::Ready, Vec::new())
+            ..serialized_node("arm", "v1", NodeStage::Ready, &[])
         }];
         let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
@@ -2045,11 +2092,11 @@ mod tests {
 
     #[test]
     fn pairings_table_renders_paired_and_unpaired_rows() {
-        let mut arm = node(
+        let mut arm = serialized_node(
             "robot_arm",
             "v1",
             NodeStage::Ready,
-            vec![("arm_1", InstanceState::Running)],
+            &[("arm_1", InstanceState::Running)],
         );
         arm.instances[0].pairing_slots.insert(
             "controller".to_string(),
@@ -2063,11 +2110,11 @@ mod tests {
                 }],
             ),
         );
-        let mut ctrl = node(
+        let mut ctrl = serialized_node(
             "arm_controller",
             "v1",
             NodeStage::Ready,
-            vec![("ctrl_2", InstanceState::Running)],
+            &[("ctrl_2", InstanceState::Running)],
         );
         ctrl.instances[0].pairing_slots.insert(
             "arm".to_string(),
@@ -2100,11 +2147,11 @@ mod tests {
             peer_link_id: "arm".to_string(),
             copy: None,
         };
-        let mut engine = node(
+        let mut engine = serialized_node(
             "sim_engine",
             "v1",
             NodeStage::Ready,
-            vec![("engine_1", InstanceState::Running)],
+            &[("engine_1", InstanceState::Running)],
         );
         engine.instances[0].pairing_slots.insert(
             "limbs".to_string(),
@@ -2135,11 +2182,11 @@ mod tests {
     /// which is what tells one robot's limb from another's.
     #[test]
     fn pairings_table_separates_an_empty_multi_slot_and_names_each_copy() {
-        let mut engine = node(
+        let mut engine = serialized_node(
             "sim_engine",
             "v1",
             NodeStage::Ready,
-            vec![("engine_1", InstanceState::Running)],
+            &[("engine_1", InstanceState::Running)],
         );
         engine.instances[0].pairing_slots.insert(
             "limbs".to_string(),
@@ -2149,11 +2196,11 @@ mod tests {
             "governor".to_string(),
             arm_link_slot("arm", config::node::Cardinality::One, Vec::new()),
         );
-        let mut robot = node(
+        let mut robot = serialized_node(
             "backbone",
             "v1",
             NodeStage::Ready,
-            vec![("alpha_backbone", InstanceState::Running)],
+            &[("alpha_backbone", InstanceState::Running)],
         );
         robot.instances[0].pairing_slots.insert(
             "engine".to_string(),
@@ -2185,11 +2232,11 @@ mod tests {
 
     #[test]
     fn pairings_section_is_omitted_when_no_instance_declares_slots() {
-        let nodes = vec![node(
+        let nodes = vec![serialized_node(
             "sensor",
             "v1",
             NodeStage::Ready,
-            vec![("s-1", InstanceState::Running)],
+            &[("s-1", InstanceState::Running)],
         )];
         let out = format_stack_body(&nodes, &[], false, None);
         assert!(
@@ -2200,7 +2247,7 @@ mod tests {
 
     #[test]
     fn bindings_section_renders_none_when_no_node_has_instances() {
-        let nodes = vec![node("sensor", "v1", NodeStage::Added, vec![])];
+        let nodes = vec![serialized_node("sensor", "v1", NodeStage::Added, &[])];
         let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
         assert!(
@@ -2231,7 +2278,7 @@ mod tests {
                 ],
             ),
             // No instances -> must be filtered out of the bindings table.
-            node("ghost", "v1", NodeStage::Added, vec![]),
+            serialized_node("ghost", "v1", NodeStage::Added, &[]),
             binding_node("beta", vec![("beta-1", InstanceState::Running, vec![])]),
         ];
         let out = format_stack_body(&nodes, &[], false, None);
@@ -2343,7 +2390,7 @@ mod tests {
     /// its config file.
     #[test]
     fn display_path_prefers_the_artifact_over_the_config_path() {
-        let unbuilt = node("arm", "v1", NodeStage::Ready, vec![]);
+        let unbuilt = serialized_node("arm", "v1", NodeStage::Ready, &[]);
         assert_eq!(display_path(&unbuilt), shorten_home("/tmp/arm.json5"));
 
         let built = SerializedNode {
@@ -2366,8 +2413,8 @@ mod tests {
                 vec![("arm", vec![ProducerRef::new("core_a", "arm-1")])],
             )],
         )];
-        let from = node("brain", "v1", NodeStage::Ready, vec![]);
-        let to = node("sensor", "v1", NodeStage::Ready, vec![]);
+        let from = serialized_node("brain", "v1", NodeStage::Ready, &[]);
+        let to = serialized_node("sensor", "v1", NodeStage::Ready, &[]);
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),

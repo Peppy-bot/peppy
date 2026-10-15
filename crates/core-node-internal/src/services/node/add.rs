@@ -1271,22 +1271,31 @@ async fn shutdown_existing_instances(
         // it (no messenger subscriptions yet) and proceeding to push_config
         // could leave the node partially down. The caller can retry once the
         // start has either committed (Running) or aborted.
-        if guard
+        let starting: Vec<String> = guard
             .instances()
             .iter()
-            .any(|instance| instance.state() == InstanceState::Starting)
-        {
+            .filter(|instance| instance.state() == InstanceState::Starting)
+            .map(|instance| {
+                super::gate::starting_instance(
+                    instance.instance_id(),
+                    instance.starts_a_restart(),
+                    &ctx.action.bound_core_node,
+                )
+            })
+            .collect();
+        if !starting.is_empty() {
             return Err(format!(
-                "node '{}:{}' has an instance in Starting state; cannot overwrite a node with live instances",
-                node_name, node_tag
+                "node '{node_name}:{node_tag}' cannot be overwritten while an instance of it \
+                 starts: {}; run this again once none is starting",
+                starting.join("; ")
             ));
         }
         // Everything that is not `Starting` (rejected above): `Running`
-        // instances are cooperatively stopped, and terminal (`Finished`/
-        // `Failed`) instances of a one-shot node that already exited are cleared
-        // out the same way (their cooperative send is a no-op and `stop_instance`
-        // just removes them), so `push_config` does not later reject the
-        // overwrite for a node whose only instance has finished.
+        // instances are cooperatively stopped, and `restarting` and terminal
+        // (`Finished`/`Failed`) instances are cleared out the same way (they
+        // get no cooperative send and `stop_instance` just removes them), so
+        // `push_config` does not later reject the overwrite for a node whose
+        // only instance has finished or waits for a restart.
         guard
             .instances()
             .iter()
@@ -1307,7 +1316,7 @@ async fn shutdown_existing_instances(
     // entity with several stuck instances costs one grace window, not one per
     // instance. Per-instance graceful/force-killed logging happens daemon-side
     // inside the stop; the feedback lines below only confirm completion.
-    super::stop::stop_instances(
+    let mut kept = super::stop::stop_instances(
         &ctx.action.messenger,
         &ctx.action.bound_core_node,
         &ctx.action.core_instance_id,
@@ -1321,7 +1330,10 @@ async fn shutdown_existing_instances(
     for instance_id in &instances {
         ctx.action
             .relationships
-            .tear_down_instance(instance_id.as_str())
+            .tear_down_instance(
+                instance_id.as_str(),
+                kept.remove(instance_id).unwrap_or_default(),
+            )
             .await;
         ctx.announcer
             .line(format!("{} has been stopped", instance_id.as_str()));

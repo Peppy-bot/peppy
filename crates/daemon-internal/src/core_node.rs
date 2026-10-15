@@ -1,7 +1,8 @@
 use crate::error::Error;
 use crate::log_export::LogExport;
+use crate::messaging_router::WATCHDOG_RECOVERY;
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
-use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy};
+use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, RestartBackoff};
 use daemon_config::consts::PeppyDirs;
 use pmi::Messenger;
 use std::num::NonZeroU32;
@@ -12,6 +13,10 @@ use tokio::sync::{Mutex, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+/// How long an instance may answer no health check before the daemon kills
+/// it, under a policy that restarts after a failure.
+const KILL_AFTER_UNANSWERED: Duration = Duration::from_secs(60);
+
 /// Cadence and tolerance of the per-node health monitor (see
 /// `core_node::services::node::health_monitor`). The monitor probes each
 /// running instance every `interval`, allowing `timeout` per probe, and flips
@@ -20,13 +25,54 @@ use tracing::{info, warn};
 /// it back. A lone missed probe is what a node, its container, or the host
 /// produces when it stalls for a few seconds (a swapped-out VM, a saturated
 /// CPU), and it leaves the flag untouched. A node that stays silent for the
-/// full run of misses, about twenty seconds, is what turns `unhealthy`. The
-/// monitor never removes an instance, so a router outage shows up as an
-/// unhealthy window rather than tearing the stack down.
+/// full run of misses, about twenty seconds, is what turns `unhealthy`. Under
+/// a restart policy that restarts on failure, an instance that has answered
+/// no health check for [`KILL_AFTER_UNANSWERED`] is killed at its next miss,
+/// and its exit counts as a failure: a silent node is killed 60 to 68 s after
+/// the check it last answered, the minute and then the probe in flight, 8 s
+/// at most (the 5 s interval and the 3 s timeout); it went quiet up to one
+/// probe cycle (8 s) after that answer. The silence is measured the same way
+/// whether probes time out or fail at once, so the minute outlasts
+/// [`WATCHDOG_RECOVERY`] (45.5 s), the longest outage one restart of the
+/// router watchdog heals, with the probes in flight when the router dies and
+/// when it comes back (11 s at most), in either case. The kill is held while two
+/// or more instances other than the core node's own run on the daemon and none
+/// of them is healthy, which is a messaging outage; a lone silent instance is
+/// killed.
 const HEALTH_MONITOR: HealthMonitorPolicy = HealthMonitorPolicy {
     interval: Duration::from_secs(5),
     timeout: Duration::from_secs(3),
     failure_threshold: NonZeroU32::new(3).unwrap(),
+    kill_after: Some(KILL_AFTER_UNANSWERED),
+};
+
+// The kill follows the unhealthy edge (`spawn_health_monitor` asserts the
+// same for an injected policy), and the silence that kills outlasts the
+// router watchdog's worst-case recovery with the probes in flight when the
+// router dies (the silence began up to one probe cycle before the outage)
+// and when it comes back (that probe can still fail).
+const _: () = assert!(
+    KILL_AFTER_UNANSWERED.as_millis()
+        > (HEALTH_MONITOR.interval.as_millis() + HEALTH_MONITOR.timeout.as_millis())
+            * HEALTH_MONITOR.failure_threshold.get() as u128
+);
+const _: () = assert!(
+    KILL_AFTER_UNANSWERED.as_millis()
+        > WATCHDOG_RECOVERY.as_millis()
+            + HEALTH_MONITOR.interval.as_millis()
+            + HEALTH_MONITOR.timeout.as_millis()
+            + HEALTH_MONITOR.timeout.as_millis()
+);
+
+/// The backoff of an instance's restarts: one second between an exit
+/// and the next start, doubling with each exit or failed start up to a
+/// minute, and back to one second once the instance has run for two minutes
+/// (a run the health monitor ends counts up to its last answered health
+/// check).
+const RESTART_BACKOFF: RestartBackoff = RestartBackoff {
+    first_delay: Duration::from_secs(1),
+    max_delay: Duration::from_secs(60),
+    reset_after: Duration::from_secs(120),
 };
 
 /// Cadence of the daemon-liveness heartbeat each spawned node's watchdog
@@ -96,6 +142,7 @@ impl CoreNodeRunner {
             node_startup_timeout,
             default_setup_timeout,
             health_monitor: HEALTH_MONITOR,
+            restart_backoff: RESTART_BACKOFF,
             // 10 Hz: high enough to correlate logs across nodes, low enough to
             // avoid flooding the bus.
             clock_publish_interval: Duration::from_millis(100),
@@ -251,5 +298,57 @@ impl ServeAsyncCommand for CoreNodeRunner {
         });
 
         ServeAsyncHandle::new(future, Some(ready_rx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HEALTH_MONITOR, KILL_AFTER_UNANSWERED, RESTART_BACKOFF, WATCHDOG_RECOVERY};
+    use std::time::Duration;
+
+    /// The attempt and the wait the shipped backoff gives after `previous`
+    /// attempts and a run of `ran_for`.
+    fn next(previous: u32, ran_for: Option<Duration>) -> (u32, Duration) {
+        let next = RESTART_BACKOFF.next(previous, ran_for);
+        (next.attempt.get(), next.delay)
+    }
+
+    /// The backoff the daemon ships: 1 s doubling to a minute, then a minute
+    /// per attempt, and back to 1 s after a two-minute run.
+    #[test]
+    fn the_shipped_backoff_doubles_to_a_minute_and_resets_after_two() {
+        assert_eq!(next(0, None), (1, Duration::from_secs(1)));
+        assert_eq!(
+            next(7, Some(Duration::from_secs(119))),
+            (8, Duration::from_secs(60)),
+            "a run just short of two minutes backs off further"
+        );
+        assert_eq!(
+            next(7, Some(Duration::from_secs(120))),
+            (1, Duration::from_secs(1))
+        );
+    }
+
+    /// A silent node is killed 60 to 68 s after the check it last answered,
+    /// the minute and the probe in flight; the minute outlasts the router
+    /// watchdog's 45.5 s with the probes in flight when the router dies and
+    /// comes back (11 s); the kill's SIGKILL follows its SIGTERM by 12 s at
+    /// the default grace.
+    #[test]
+    fn the_shipped_kill_window_outlasts_the_router_recovery() {
+        assert_eq!(KILL_AFTER_UNANSWERED, Duration::from_secs(60));
+        let probe_to_probe = HEALTH_MONITOR.interval + HEALTH_MONITOR.timeout;
+        assert_eq!(
+            KILL_AFTER_UNANSWERED + probe_to_probe,
+            Duration::from_secs(68),
+            "a silent node is killed at its first miss past the minute, within one probe cycle"
+        );
+        assert_eq!(WATCHDOG_RECOVERY, Duration::from_millis(45_500));
+        assert_eq!(
+            core_node::force_kill_deadline(Duration::from_secs(
+                config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS
+            )),
+            Duration::from_secs(12)
+        );
     }
 }

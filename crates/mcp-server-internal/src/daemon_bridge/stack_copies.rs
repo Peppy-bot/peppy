@@ -39,8 +39,7 @@ use super::OwnDaemon;
 use change::{Change, JoinLocks, start_change, wait_for_change};
 use config::runtime::{CopyName, CoreNodeName, CoreNodeTarget};
 use core_node_api::encoding::{
-    CopyChange, CopyInfo, CopyReference, STACK_BUSY_REASON, SelectionWord, StackJoinGoal,
-    StackRemoveGoal,
+    CopyChange, CopyInfo, CopyReference, SelectionWord, StackJoinGoal, StackRemoveGoal,
 };
 use daemon_config::daemon_interface::{ScopedOption, StackCopiesScope};
 use peppy_mcp_runtime::{ActionExit, ToolCallError};
@@ -57,6 +56,11 @@ use crate::bridges::TaskSurface;
 /// How long a `join` or a `remove` waits for the daemon's list of the stack
 /// before it refuses. The daemon answers at once.
 const STACK_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The reason the bridge gives when it refuses a `join` while one it started
+/// is still in progress.
+pub(crate) const STACK_BUSY_REASON: &str =
+    "a `join` started through this server is still in progress; wait for it to finish";
 
 /// The bridge of `stack_copies:v1` to the daemon that started the server.
 pub(crate) struct StackCopies {

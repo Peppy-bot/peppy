@@ -1,0 +1,44 @@
+// A launcher whose root policy is `always`: an instance is started again
+// after any exit, which is what the rear camera gets. The front camera's
+// entry writes its own, `on_failure` capped at five attempts in a row, and
+// the wrist camera takes the `on_failure` its node declares.
+{
+  peppy_schema: "launcher/v1",
+  framework: { restart: "always" },
+  deployments: [
+    {
+      source: { name: "uvc_camera_linux", tag: "v1" },
+      instances: [
+        {
+          instance_id: "front_cam_inst",
+          framework: { restart: { policy: "on_failure", max_restarts: 5 } },
+          arguments: {
+            device_path: "/dev/video0",
+            video: {
+              frame_rate: 30,
+              resolution: { width: 1280, height: 720 },
+              camera_encoding: "mjpeg",
+              topic_encoding: "rgb8",
+            },
+          },
+        },
+        {
+          instance_id: "rear_cam_inst",
+          arguments: {
+            device_path: "/dev/video2",
+            video: {
+              frame_rate: 30,
+              resolution: { width: 1280, height: 720 },
+              camera_encoding: "mjpeg",
+              topic_encoding: "rgb8",
+            },
+          },
+        },
+      ],
+    },
+    {
+      source: { name: "wrist_camera", tag: "v1" },
+      instances: [{ instance_id: "wrist_cam_inst" }],
+    },
+  ],
+}

@@ -391,6 +391,25 @@ pub enum ParsingError {
     )]
     SetupTimeoutOutOfRange { written: String },
 
+    // -- node config: framework
+    #[error(
+        "`restart` is {accepted}; got `{value}`",
+        accepted = crate::internal::node::RestartPolicy::ACCEPTED
+    )]
+    InvalidRestartPolicy { value: String },
+    #[error(
+        "`restart` as an object needs `policy`: {accepted}",
+        accepted = crate::internal::node::RestartPolicy::ACCEPTED
+    )]
+    RestartNeedsPolicy,
+    #[error(
+        "`{key}` is a count of attempts in a row, from 1 to {}; got `{value}`",
+        u32::MAX
+    )]
+    InvalidMaxRestarts { key: &'static str, value: String },
+    #[error("unknown restart origin `{value}`")]
+    UnknownRestartOrigin { value: String },
+
     // -- container config: mount paths
     #[error(
         "Invalid mount path `{0}`: top-level system directories ({1}) cannot be used as mount sources — use a subdirectory instead (e.g., /tmp/my_app)"

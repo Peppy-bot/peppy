@@ -1,7 +1,7 @@
 use core_node_api::encoding::NodeStopRequest;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
@@ -10,23 +10,16 @@ use core_node_api::names::CORE_NODE_TAG;
 use peppylib::core_node::transport::poll_node_stop;
 use peppylib::messaging::SenderTarget;
 
-/// Time allowed beyond the daemon's worst-case stop duration (its
-/// [`core_node::force_kill_deadline`] plus [`core_node::TEARDOWN_REAP_BUDGET`]),
-/// covering the messaging round-trip. The CLI must wait slightly longer than the
-/// daemon can possibly take to cooperatively stop, then force-kill and reap a
-/// stuck node, or it would report a timeout for a stop that actually succeeded.
-const STOP_MESSAGING_MARGIN: Duration = Duration::from_secs(5);
+use super::{daemon_wait, warn_force_killed};
 
-/// How long the CLI waits for a `node_stop` to return: the daemon's full
-/// force-kill deadline (hook grace + event-loop join + interpreter finalize),
-/// plus the reap window, plus a messaging margin. Derived from the same
-/// [`core_node::force_kill_deadline`] the daemon uses so the CLI can never give
-/// up before a stop that actually succeeded. The single source of the formula:
-/// `stop_node_async` calls it and the unit test pins it.
+/// How long the CLI waits for a `node_stop` to return: the daemon's bound on
+/// a stop ([`core_node::node_stop_bound`]) plus a messaging margin. The
+/// single source of the formula: `stop_node_async` calls it and the unit
+/// test pins it.
 fn stop_request_timeout(shutdown_grace_secs: u64) -> Duration {
-    core_node::force_kill_deadline(Duration::from_secs(shutdown_grace_secs))
-        + core_node::TEARDOWN_REAP_BUDGET
-        + STOP_MESSAGING_MARGIN
+    daemon_wait(core_node::node_stop_bound(Duration::from_secs(
+        shutdown_grace_secs,
+    )))
 }
 
 pub fn stop_node(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
@@ -41,10 +34,9 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
         instance_id, conn.target_core_node
     );
 
-    // Wait long enough to outlast the daemon's full force-kill deadline (grace +
-    // event-loop join + interpreter finalize) plus its reap window; otherwise a
-    // deliberately long grace, or a node that legitimately takes most of that
-    // window to exit, would make the CLI give up before the (successful) stop
+    // Long enough to outlast the daemon's worst-case stop (see
+    // `stop_request_timeout`), so a long grace, or a node that takes most of
+    // its window to exit, does not make the CLI give up before the stop
     // returns.
     //
     // Sized from the *local* daemon's `shutdown_grace_secs`: `DaemonState`
@@ -76,14 +68,8 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
         ));
     }
 
-    // The node was stopped either way; warn the user when it had to be
-    // force-killed (it ignored the cooperative shutdown within the grace
-    // period) so it is not mistaken for a clean graceful exit.
     if stop_response.force_killed {
-        warn!(
-            "Node instance '{}' did not shut down gracefully within the grace period and was force-killed",
-            instance_id
-        );
+        warn_force_killed(&instance_id);
     } else {
         info!("Stopped node instance '{}'", instance_id);
     }
@@ -92,41 +78,34 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
 
 #[cfg(test)]
 mod tests {
+    use super::super::DAEMON_MESSAGING_MARGIN;
     use super::*;
-
-    #[test]
-    fn stop_request_timeout_is_the_documented_formula() {
-        // Pin the production formula itself (not a re-derived lower bound), so a
-        // change to any term is caught here. Uses the default grace as the anchor.
-        let grace = config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS;
-        let expected = core_node::force_kill_deadline(Duration::from_secs(grace))
-            + core_node::TEARDOWN_REAP_BUDGET
-            + STOP_MESSAGING_MARGIN;
-        assert_eq!(stop_request_timeout(grace), expected);
-    }
 
     #[test]
     fn cli_timeout_strictly_outlasts_the_daemon_worst_case_stop() {
         // The top link of the timeout chain: the CLI request timeout must exceed
-        // the daemon's entire worst-case stop (force-kill deadline + reap) for
-        // every accepted grace, with the messaging margin as the headroom. The
-        // daemon's deadline > node-bounded-exit link is pinned separately in
-        // core-node's `shutdown_grace_margin` test; together they give the full
-        // CLI > daemon-deadline > node-exit chain. A formula without the
-        // force-kill deadline fails this for any grace where the join and
-        // finalize terms matter.
+        // the daemon's bound on a stop (`node_stop_bound`, which holds
+        // the force-kill deadline) for every accepted grace, with the messaging
+        // margin as the headroom. The daemon's deadline > node-bounded-exit
+        // link is pinned separately in core-node's `shutdown_grace_margin`
+        // test; together they give the full CLI > daemon-deadline > node-exit
+        // chain.
         for grace_secs in 1..=600 {
-            let daemon_worst_case = core_node::force_kill_deadline(Duration::from_secs(grace_secs))
-                + core_node::TEARDOWN_REAP_BUDGET;
+            let grace = Duration::from_secs(grace_secs);
+            let daemon_worst_case = core_node::node_stop_bound(grace);
             let cli = stop_request_timeout(grace_secs);
+            assert!(
+                daemon_worst_case > core_node::force_kill_deadline(grace),
+                "the daemon's stop bound for grace {grace_secs}s holds its force-kill deadline",
+            );
             assert!(
                 cli > daemon_worst_case,
                 "CLI timeout {cli:?} for grace {grace_secs}s must outlast the daemon's \
-                 worst-case stop {daemon_worst_case:?} (force-kill deadline + reap)",
+                 worst-case stop {daemon_worst_case:?}",
             );
             assert_eq!(
                 cli - daemon_worst_case,
-                STOP_MESSAGING_MARGIN,
+                DAEMON_MESSAGING_MARGIN,
                 "the headroom must be exactly the messaging margin",
             );
         }

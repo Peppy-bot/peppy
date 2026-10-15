@@ -78,6 +78,7 @@ test-support = [
     "dep:log-export",
     "config/fingerprint_test_helpers",
     "core-node/test-support",
+    "node-stack/test-support",
     "auth/test-support",
 ]
 # Docker black-box coverage for two daemons sharing one real zenohd. Opting in

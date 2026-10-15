@@ -388,7 +388,7 @@ peppy node run openarm_sim_arm:v1 -i arm_inst --clock simulation
 peppy node run openarm_sim_arm:v1 -i arm_inst --clock simulation@cn-sim
 ```
 
-`--clock` takes `wall`, a short name, or a qualified `name@core_node`, and names a domain that is already running: an unknown name is refused, pointing at `peppy clock list` and at `--publish-clock`, and a short name that is ambiguous across machines is refused listing the qualified names to pick from. `--publish-clock` declares a domain and mints its lifetime on the daemon the command targets. The two flags conflict, and both are also accepted by `peppy node add --run`.
+`--clock` takes `wall`, a short name, or a qualified `name@core_node`, and names a domain that is already running: an unknown name is refused, pointing at `peppy clock list`, at `--publish-clock`, and at `peppy stack list` for a publisher that is restarting, and a short name that is ambiguous across machines is refused listing the qualified names to pick from. `--publish-clock` declares a domain and mints its lifetime on the daemon the command targets. The two flags conflict, and both are also accepted by `peppy node add --run`.
 
 `peppy clock list` prints every domain the federation is running, gathered from the daemons that host them:
 
@@ -404,12 +404,12 @@ $ peppy clock list
 
 `OWNER` is the launch that started the publisher, or `peppy node run` for a domain a command declared. `READY` reads `waiting` until the domain's first tick reaches its host and `ready` afterwards, so a publisher that has yet to publish is visible beside the instance supplying it. `CONSUMERS` counts the instances reading the domain anywhere in the federation. `--json` prints the same listing with each domain's `name`, `core_node`, `incarnation`, `last_tick_ns` and the `instance@core_node` of every consumer.
 
-Two more commands report what each instance reads: `peppy stack list` carries a `CLOCK` column per instance, showing `wall` or the domain as `name@core_node`, and `peppy stack resolve` reports the clock of every instance of a plan before anything runs:
+Two more commands report what each instance reads: `peppy stack list` carries a `CLOCK` column per instance, showing `wall` or the domain as `name@core_node`, and `peppy stack resolve` reports the clock and the restart policy of every instance of a plan before anything runs, once this machine's nodes cache holds the plan's manifests (`peppy repo refresh`):
 
 ```
-simulation_inst: publishes clock `simulation`
-arm_inst: clock `simulation`
-viewer_inst: clock `wall`
+simulation_inst: publishes clock `simulation`, restart on_failure (default)
+arm_inst: clock `simulation`, restart on_failure (default)
+viewer_inst: clock `wall`, restart on_failure (default)
 ```
 
 A launch names each domain and its publisher in its feedback as it starts:
@@ -432,7 +432,9 @@ instance `simulation_inst` publishes clock `simulation` (simulation@cn-sim)
 `alpha` supplies clock `simulation` to `backbone_inst` and to copies `bravo`; run peppy stack reset, then launch without `alpha`: drop its deployments entry from the launcher, or leave it out of the copies you join
 ```
 
-Stopping a publisher freezes its domain: the instances bound to it keep reading the last instant it committed. A domain is listed for as long as the instance supplying it is live, so a publisher that stops or crashes takes its domain out of `peppy clock list` while the instances bound to it hold that instant. Freeing the name is what lets a replacement publisher declare it again.
+Stopping a publisher freezes its domain: the instances bound to it keep reading the last instant it committed. A domain is listed for as long as the instance supplying it is live, so a publisher that stops or crashes takes its domain out of `peppy clock list` while the instances bound to it hold that instant. A publisher that is stopped, or that ends `finished` or `failed`, frees the name for a replacement publisher to declare it again.
+
+A publisher that its [restart policy](/guides/launch_files/#restart-policy) starts again keeps its domain. Through the wait the domain is absent from `peppy clock list` and its name stays taken, so a publisher declared under it meanwhile is refused; the instances bound to it hold the last instant, then read the new process's ticks. Time on the domain is whatever the new process publishes, so a simulator that starts its time over at zero takes its readers' time back with it. On the publisher's machine, an instance reading the domain does not start again while its publisher waits for its own restart: each attempt in that wait fails and counts toward its `max_restarts`, and the instance runs at its first attempt after the publisher starts. A first start of an instance reading the domain in that wait is refused: `peppy node run --clock` finds no such domain and says to run again once the publisher `peppy stack list` shows `restarting` is running, and a join names the publisher to wait for. A reader that exits after its publisher was stopped, or ended `finished` or `failed` with no restart to come, is refused its restart and stays `failed`; its stack log line names the ended domain and what publishes its name now, and [Starting a failed instance again](/guides/launch_files/#starting-a-failed-instance-again) says how to start it again. An instance reading the domain from another machine starts again after its own wait, whatever its publisher's state: it reads the domain once its publisher publishes, and reads no instant while the publisher waits, or at all once it was stopped, until a relaunch of the stack brings both back.
 
 ### Domains across machines
 

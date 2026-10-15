@@ -80,10 +80,15 @@ pub use zenohd::ZENOHD_PATH_VAR;
 /// test tooling forward the resolved binary to child processes.
 #[cfg(feature = "router")]
 pub use zenohd::ZenohdFacade;
+#[cfg(feature = "router")]
+pub use zenohd::{PROBE_SESSION_CLOSE_TIMEOUT, ROUTER_START_BOUND};
 #[cfg(feature = "zenoh")]
 pub use zenohd::{ZenohEndpoint, ZenohNetProtocol};
 // TLS material + the out-of-process router-config renderer. Available under the
 // base `zenoh` feature (no zenohd binary needed) so a client/orchestrator that
 // only renders configs and opens TLS sessions can use them.
 #[cfg(feature = "zenoh")]
-pub use zenoh_config::{ConnectIdentity, TlsConfig, probe_tls_reachable, render_router_config};
+pub use zenoh_config::{
+    ConnectIdentity, SESSION_RECONNECT_PERIOD_MAX_MS, TlsConfig, probe_tls_reachable,
+    render_router_config,
+};

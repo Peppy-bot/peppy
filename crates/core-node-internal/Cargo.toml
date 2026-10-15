@@ -66,7 +66,13 @@ tracing-subscriber = { version = "0.3", optional = true }
 build-helpers = { workspace = true }
 
 [dev-dependencies]
-# The readers of the log file format, and the records a test exporter queued.
+# This crate dev-depends on itself to turn `test-support` on for its
+# integration tests: the restart backoffs the CLI tier shares, and the slice
+# ownership a test reserves and changes the stack through.
+core-node = { path = ".", features = ["test-support"] }
+# node-stack's test support (the log file readers, the slot's `supervision`,
+# `FirstStart::fixture` and the process-group probes), and the records a test
+# exporter queued.
 node-stack = { workspace = true, features = ["test-support"] }
 log-export = { workspace = true, features = ["test-support"] }
 config = { workspace = true, features = ["fingerprint_test_helpers"] }
@@ -87,8 +93,10 @@ container_e2e = []
 # build. Needed by any test that runs a debug binary away from its build tree;
 # see the feature's own comment in generator-internal.
 debug-embed = ["rust-embed/debug-embed", "generator/debug-embed"]
-# Test-only scaffolding (`test_support` module) for downstream crates' tests;
-# this crate's own unit tests see the module via `cfg(test)` instead.
+# For tests, this crate's and downstream crates': the `test_support` module,
+# `CoreNode::slice_ownership`, `SliceOwnership::stack` and the
+# `ReserveOutcome` and `SliceOwnership` re-exports; this crate's own unit
+# tests see them via `cfg(test)`.
 test-support = ["dep:tracing-subscriber"]
 
 # Roundtrip latency benchmark: spins up two real peppy nodes (a Rust driver +

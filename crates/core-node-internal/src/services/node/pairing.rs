@@ -5,11 +5,10 @@
 //! Every establish/dissolve goes through the one [`PairingCoordinator`]
 //! instance the daemon owns, whose `op_lock` serializes operations so two
 //! concurrent `node_run`s can never interleave a reserve/deliver/revert
-//! sequence. Its callers are the node-run/launch establishment hooks, the
-//! death/stop clear paths, and the federation service, which hands it a peer
-//! daemon's `pair_commit` requests and instance-stopped notifications. There
-//! is no pairing service a user calls: pairs are only ever established at
-//! instance start.
+//! sequence (one exception, see `op_lock`). Its callers are the node-run and
+//! launch establishment hooks, a respawn's requests for the pairs it held, a
+//! peer daemon's commits, and the death and stop clear paths. A pair is made
+//! only when one of its endpoints starts.
 //!
 //! Delivery protocol per pair `(a, b)`: send `a`'s pin, then `b`'s. If `a`
 //! fails, revert the registry commit (nothing was delivered). If `b` fails,
@@ -19,19 +18,22 @@
 //! restart rejects stale re-deliveries from the old daemon's queue.
 
 use config::runtime::Name;
-use core_node_api::encoding::PairCommitRequest;
-use core_node_api::encoding::PairTarget;
+use core_node_api::encoding::{FederationVerdict, PairCommitRequest, PairTarget};
 use daemon_config::launcher::{
     AlreadyPairedSlots, DeploymentInstance, ExternallyCoveredSlots, LinkTargets, LinkValue,
     PairingValidationItem, ResolvedClocks, Selection, VacantReason, validate_clock_connections,
     validate_pairings,
 };
-use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, RemoteSlotMeta, SlotAddr};
+use node_stack::{
+    InstanceState, NodeStack, PairEndpoint, Pairing, PairingNodeSnapshot, PlannedPair,
+    RemoteSlotMeta, SlotAddr,
+};
 use peppylib::MessengerHandle;
 use peppylib::encoding::peer_update::PeerUpdateRequest;
 use peppylib::messaging::{PEER_UPDATE_SERVICE, PeerInfo, PeerMember, ProducerRef};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::common::SlotUpdateClient;
@@ -52,7 +54,13 @@ const PAIR_COMMIT_TIMEOUT: Duration = Duration::from_secs(15);
 pub struct PairingCoordinator {
     updates: SlotUpdateClient,
     /// Serializes every pairing operation end-to-end (registry commit AND
-    /// delivery), so reverts can trust that no other operation interleaved.
+    /// delivery), so a revert finds the registry as its own reservation left
+    /// it. One exception: a respawn's request for a pair it held releases the
+    /// lock while it waits for the peer daemon's answer, so that daemon's own
+    /// request for the pair, when it respawns the other end at the same time,
+    /// is answered here meanwhile and each finds the pair made; its revert,
+    /// under the lock again, clears the pair under the two slots and sends
+    /// the local slot its current set (see `pair_again`).
     op_lock: tokio::sync::Mutex<()>,
 }
 
@@ -81,16 +89,15 @@ impl PairingCoordinator {
     /// same-pairing, complementary roles, sha pins, exclusivity.
     pub async fn reserve(&self, pair: &PlannedPair) -> std::result::Result<(), String> {
         let _guard = self.op_lock.lock().await;
-        let stack = self.updates.node_stack();
         // A same-daemon pair validates both halves against local manifests. A
         // cross-daemon one validates the half this daemon owns and takes the
         // peer's identity from the coordinator, which checked both manifests
         // before anything started.
-        let result = match &pair.peer_remote_meta {
-            None => stack.pair_slots(&pair.own, &pair.peer),
-            Some(meta) => stack.pair_slot_with_remote(&pair.own, &pair.peer, meta),
-        };
-        result.map(|_| ()).map_err(|e| e.to_string())
+        self.updates
+            .node_stack()
+            .pair_planned(pair)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// Delivers the current pin state of every pair involving `instance_id`
@@ -125,21 +132,195 @@ impl PairingCoordinator {
             .collect();
         if let Some(missing) = find_missing_planned_pair(&pairs, planned) {
             return Err(format!(
-                "pair `{} ⇌ {}` was dissolved before delivery completed \
-                 (its peer was stopped or unpaired concurrently)",
-                missing.own, missing.peer
+                "pair `{missing}` was dissolved before delivery completed (its peer was stopped \
+                 or unpaired concurrently)"
             ));
         }
         for pairing in pairs {
             self.deliver_pair(&pairing).await?;
         }
+        for pair in planned {
+            self.record_held_on_both_ends(pair);
+        }
         Ok(())
+    }
+
+    /// Records a delivered pair on the instance that requested it and, for a
+    /// local peer, the mirrored pair on the peer, so a restart of either
+    /// requests it again.
+    fn record_held_on_both_ends(&self, pair: &PlannedPair) {
+        for end in pair.local_ends() {
+            self.record_held(&end);
+        }
+    }
+
+    /// Records `end` as held by its own instance. A pair it displaces from a
+    /// slot that takes one peer is forgotten on both its local ends, so its
+    /// other end's restart does not ask again for a slot paired since.
+    fn record_held(&self, end: &PlannedPair) {
+        for displaced in self.updates.node_stack().record_held_pair(end) {
+            self.forget_held_on_both_ends(&displaced);
+        }
+    }
+
+    /// Forgets `pair` on each of its local ends, so neither requests it at its
+    /// next restart: a pair the stack refused to make again, or one a newer
+    /// pair displaced from a slot that takes one peer.
+    fn forget_held_on_both_ends(&self, pair: &PlannedPair) {
+        for end in pair.local_ends() {
+            self.updates.node_stack().forget_held_pair(&end);
+        }
+    }
+
+    /// Makes again every pair an instance held before its restart, as a
+    /// respawn requests them at delivery time: a pair whose local peer is
+    /// `running` is reserved and delivered, a remote peer is asked. A pair
+    /// whose local peer is starting, restarting or gone is left held for
+    /// that peer's own commit and not handed to `on_outcome`, and a pair the
+    /// slot no longer keeps, which a stop or a newer pair ended during the
+    /// start, is skipped.
+    ///
+    /// Hands each pair tried, with its outcome, to `on_outcome` while the
+    /// process `pid` the requests are for still runs; a pair the stack
+    /// already holds counts as made, and a refused one is forgotten on its
+    /// local ends. The exit of `pid` stops the requests after the one in
+    /// flight, and `cancel`, the end of the instance's start, ends a remote
+    /// request's wait at once and stops them; either way the outcome of the
+    /// request in flight is neither applied nor handed on, and every pair
+    /// stays held as it was, for the next process to ask for again.
+    pub async fn pair_again_best_effort(
+        &self,
+        held: &[PlannedPair],
+        pid: u32,
+        cancel: &CancellationToken,
+        mut on_outcome: impl FnMut(&PlannedPair, std::result::Result<(), PairFailure>),
+    ) {
+        let stack = self.updates.node_stack();
+        let runs_pid = |pair: &PlannedPair| stack.runs_process(&pair.own.instance_id, pid);
+        for pair in held {
+            if cancel.is_cancelled() || !runs_pid(pair) {
+                break;
+            }
+            if !stack.keeps_held_pair(&pair.own, &pair.peer) {
+                continue;
+            }
+            let peer_ready = pair.peer_remote_meta.is_some()
+                || stack.instance_state(&pair.peer.instance_id) == Some(InstanceState::Running);
+            if !peer_ready {
+                continue;
+            }
+            let outcome = self.pair_again(pair, pid, cancel).await;
+            if cancel.is_cancelled() || !runs_pid(pair) {
+                break;
+            }
+            match &outcome {
+                Ok(()) => self.record_held_on_both_ends(pair),
+                Err(PairFailure::Refused(_)) => self.forget_held_on_both_ends(pair),
+                Err(PairFailure::Undelivered(_)) => {}
+            }
+            on_outcome(pair, outcome);
+        }
+    }
+
+    /// Reserves `pair` again for the process `pid` and delivers it: the local
+    /// endpoints under the pairing lock, a remote endpoint with the lock
+    /// released around the peer daemon's answer (see `op_lock`). A failed
+    /// answer, or a cancel during the wait for it, clears the pair under the
+    /// two slots only while the slot still runs `pid`: once that process
+    /// exited, its exit dissolved the reservation and a pair under the two
+    /// slots is a later process's. While it runs, the pair cleared can be one
+    /// the peer's next process made after the peer's exit, which then stays
+    /// on the peer's daemon until either end restarts.
+    async fn pair_again(
+        &self,
+        pair: &PlannedPair,
+        pid: u32,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<(), PairFailure> {
+        let stack = self.updates.node_stack();
+        let local = self.updates.core_node_name();
+        let pairing = {
+            let _guard = self.op_lock.lock().await;
+            let pairing = match stack.pair_planned(pair) {
+                Ok(pairing) => pairing,
+                Err(refusal) => return reservation_outcome(refusal),
+            };
+            let local_sides = local_first_delivery_order(&pairing, local)
+                .into_iter()
+                .filter(|(endpoint, _)| endpoint.slot.is_on(local));
+            for (index, (endpoint, peer)) in local_sides.enumerate() {
+                if let Err(reason) = self.send_peer_update(&endpoint.slot).await {
+                    let failure = self
+                        .revert_delivery(
+                            &pairing,
+                            endpoint,
+                            peer,
+                            OtherSide::at_delivery(index),
+                            &reason,
+                        )
+                        .await;
+                    return Err(PairFailure::Undelivered(failure));
+                }
+            }
+            pairing
+        };
+        let remote = local_first_delivery_order(&pairing, local)
+            .into_iter()
+            .find(|(endpoint, _)| !endpoint.slot.is_on(local));
+        let Some((endpoint, peer)) = remote else {
+            return Ok(());
+        };
+        let committed = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(PairFailure::Undelivered(
+                "the start was cancelled".to_owned(),
+            )),
+            committed = self.commit_pair_remotely(&pairing, endpoint, peer, true) => committed,
+        };
+        if let Err(answer) = committed {
+            let _guard = self.op_lock.lock().await;
+            if !stack.runs_process(&pair.own.instance_id, pid) {
+                return Err(answer);
+            }
+            let failure = self
+                .revert_delivery(
+                    &pairing,
+                    endpoint,
+                    peer,
+                    OtherSide::Pinned,
+                    &answer.to_string(),
+                )
+                .await;
+            return Err(answer.with_text(failure));
+        }
+        Ok(())
+    }
+
+    /// Reverts a pair whose delivery to `endpoint` failed: its registry
+    /// entry is cleared and, when the other side already took its pin, that
+    /// side is sent its set without the pair. Returns the failure text.
+    async fn revert_delivery(
+        &self,
+        pairing: &Pairing,
+        endpoint: &node_stack::PairEndpoint,
+        peer: &node_stack::PairEndpoint,
+        other_side: OtherSide,
+        reason: &str,
+    ) -> String {
+        self.updates
+            .node_stack()
+            .clear_pair(&endpoint.slot, &peer.slot);
+        if other_side == OtherSide::Pinned {
+            self.notify_set_best_effort(&peer.slot).await;
+        }
+        delivery_failure(pairing, endpoint, reason)
     }
 
     /// Dissolves every pair involving `instance_id` and best-effort notifies
     /// each live survivor that its slot is now Unpaired. Called from the
     /// stop paths, the process-exit watcher, and the `node_run` unwind
-    /// branches (death auto-clears; re-pairing is explicit).
+    /// branches (death auto-clears; a restart asks again for the pairs the
+    /// instance held, and any other pair is made by a link).
     pub async fn dissolve_for_instance(&self, instance_id: &str) {
         let _guard = self.op_lock.lock().await;
         for pairing in self
@@ -162,11 +343,8 @@ impl PairingCoordinator {
     /// Every core node, other than this one, hosting the peer of a pair
     /// `instance_id` holds.
     ///
-    /// Derived rather than remembered: a pair records both endpoints and the
-    /// core node each runs on, so the registry already answers this. That is
-    /// what makes cross-daemon dissolution work for a pair formed outside a
-    /// launch, by a `peppy node run --pair` naming a peer on another machine,
-    /// with no planner involved.
+    /// Derived from the registry: a pair records both endpoints and the core
+    /// node each runs on.
     ///
     /// Asked on the stop path about an instance the stack has already dropped,
     /// so it reads the registry as recorded ([`NodeStack::with_pairs`]) rather
@@ -210,23 +388,21 @@ impl PairingCoordinator {
                 }
                 self.send_peer_update(&endpoint.slot).await
             } else {
-                self.commit_pair_remotely(pairing, endpoint, peer).await
+                self.commit_pair_remotely(pairing, endpoint, peer, false)
+                    .await
+                    .map_err(|answer| answer.to_string())
             };
 
             if let Err(reason) = outcome {
-                // Revert the commit; if the OTHER side already acked its set,
-                // best-effort deliver it the set without this pair.
-                self.updates
-                    .node_stack()
-                    .clear_pair(&endpoint.slot, &peer.slot);
-                if idx == 1 {
-                    self.notify_set_best_effort(&peer.slot).await;
-                }
-                return Err(format!(
-                    "failed to deliver pair `{}` to instance '{}': {reason}",
-                    pairing_label(pairing),
-                    endpoint.slot.instance_id,
-                ));
+                return Err(self
+                    .revert_delivery(
+                        pairing,
+                        endpoint,
+                        peer,
+                        OtherSide::at_delivery(idx),
+                        &reason,
+                    )
+                    .await);
             }
         }
         Ok(())
@@ -277,7 +453,8 @@ impl PairingCoordinator {
     }
 
     /// Asks the daemon hosting `endpoint` to record its half of `pairing` and
-    /// pin its own node.
+    /// pin its own node; `held` when this daemon's endpoint held the pair
+    /// before its restart and asks for it again.
     ///
     /// The receiving daemon does not re-derive the pairing rules: it cannot
     /// read this daemon's manifests, and the launch coordinator already checked
@@ -288,7 +465,8 @@ impl PairingCoordinator {
         pairing: &Pairing,
         endpoint: &node_stack::PairEndpoint,
         peer: &node_stack::PairEndpoint,
-    ) -> std::result::Result<(), String> {
+        held: bool,
+    ) -> std::result::Result<(), PairFailure> {
         // The peer is this daemon's own endpoint of the pair, so its slot's
         // cardinality is read from the manifest here and carried across: the
         // receiver holds the far half of every pair that slot takes part in.
@@ -296,7 +474,7 @@ impl PairingCoordinator {
             .updates
             .node_stack()
             .pairing_slot_declaration(&peer.slot)
-            .map_err(|e| e.to_string())?
+            .map_err(pair_failure)?
             .cardinality;
         let request = PairCommitRequest {
             pairing_name: pairing.pairing_name.clone(),
@@ -313,6 +491,7 @@ impl PairingCoordinator {
             peer_role: peer.role.clone(),
             peer_cardinality,
             peer_copy: peer.copy.clone(),
+            held,
         };
         let response = peppylib::core_node::transport::poll(
             &request,
@@ -323,42 +502,114 @@ impl PairingCoordinator {
             PAIR_COMMIT_TIMEOUT,
         )
         .await
-        .map_err(|e| format!("`{}` did not answer: {e}", endpoint.slot.core_node))?;
+        .map_err(|e| {
+            PairFailure::Undelivered(format!("`{}` did not answer: {e}", endpoint.slot.core_node))
+        })?;
 
-        response
-            .into_result()
-            .map_err(|reason| format!("`{}` refused the pair: {reason}", endpoint.slot.core_node))
+        let peer_daemon = &endpoint.slot.core_node;
+        match response {
+            FederationVerdict::Done => Ok(()),
+            FederationVerdict::Refused(reason) => Err(PairFailure::Refused(format!(
+                "`{peer_daemon}` refused the pair: {reason}"
+            ))),
+            FederationVerdict::Undelivered(reason) => Err(PairFailure::Undelivered(format!(
+                "`{peer_daemon}` did not pin the pair: {reason}"
+            ))),
+        }
     }
 
     /// Records this daemon's half of a cross-daemon pair on behalf of the
     /// daemon that started the other endpoint, and pins the local node.
     ///
     /// The mirror image of [`Self::commit_pair_remotely`]. Refusing here makes
-    /// the requester revert its own half, so a pair is never left established
-    /// on one machine and absent on the other.
-    pub async fn commit_pair_from_peer(
-        &self,
-        request: &PairCommitRequest,
-    ) -> std::result::Result<(), String> {
+    /// the requester revert its own half, so a refused pair is left on neither
+    /// machine.
+    ///
+    /// The verdict is:
+    /// - done when the pair is made, or this daemon holds it already;
+    /// - undelivered when the local endpoint is starting a restart or has no
+    ///   process, or its node did not take the pin; a restart's request keeps
+    ///   such a pair held, while the local endpoint still keeps it;
+    /// - refused otherwise: a request routed to another daemon, a restart's
+    ///   request for a pair the local endpoint no longer keeps, whatever that
+    ///   endpoint's state, or any other refusal of the stack.
+    pub async fn commit_pair_from_peer(&self, request: &PairCommitRequest) -> FederationVerdict {
         let _guard = self.op_lock.lock().await;
         let (local, remote, remote_meta) =
-            Self::slots_from_commit_request(request, self.updates.core_node_name())?;
-        self.updates
+            match Self::slots_from_commit_request(request, self.updates.core_node_name()) {
+                Ok(slots) => slots,
+                Err(reason) => return FederationVerdict::Refused(reason),
+            };
+        // A pair a restarted peer asks for again is made only while this
+        // endpoint still keeps it: a stop of either endpoint, a refusal, or a
+        // newer pair its slot took, ended it here.
+        if request.held && !self.updates.node_stack().keeps_held_pair(&local, &remote) {
+            let instance_id = &request.local.instance_id;
+            return FederationVerdict::Refused(
+                match self.updates.node_stack().instance_state(instance_id) {
+                    Some(_) => format!(
+                        "`{instance_id}` keeps no pair with `{}` to make again",
+                        request.peer.instance_id
+                    ),
+                    None => node_stack::NodeStackError::PairingInstanceNotInStack {
+                        instance_id: instance_id.clone(),
+                    }
+                    .to_string(),
+                },
+            );
+        }
+        // A restart's process takes its pairs once it runs: it asks for the
+        // ones it held itself, so a peer asking for a held pair keeps it held,
+        // and a start's link is told to link once the instance runs.
+        if self
+            .updates
             .node_stack()
-            .pair_slot_with_remote(&local, &remote, &remote_meta)
-            .map_err(|e| e.to_string())?;
+            .starts_a_restart(&local.instance_id)
+        {
+            let instance_id = &request.local.instance_id;
+            return FederationVerdict::Undelivered(if request.held {
+                format!(
+                    "`{instance_id}` is starting again under its restart policy and asks for its \
+                     pairs once it is running"
+                )
+            } else {
+                format!(
+                    "`{instance_id}` is starting again under its restart policy; link to it once \
+                     it is running"
+                )
+            });
+        }
+        // When both daemons respawn their endpoint of one pair, each asks the
+        // other. A pair this daemon already holds is pinned here, or reserved
+        // by an operation of this daemon that pins it or reverts it, so the
+        // requester finds it made.
+        if let Err(refusal) =
+            self.updates
+                .node_stack()
+                .pair_slot_with_remote(&local, &remote, &remote_meta)
+        {
+            return match reservation_outcome(refusal) {
+                Ok(()) => FederationVerdict::Done,
+                Err(failure) => failure.into(),
+            };
+        }
 
         if let Err(reason) = self.send_peer_update(&local).await {
             // Undo the commit before answering: a pair this daemon recorded but
             // could not deliver is worse than none, because the node would
             // report a slot it never received.
             self.updates.node_stack().clear_pair(&local, &remote);
-            return Err(format!(
+            return FederationVerdict::Undelivered(format!(
                 "could not pin `{}` on this daemon: {reason}",
                 request.local.instance_id
             ));
         }
-        Ok(())
+        self.record_held(&PlannedPair {
+            own: local,
+            peer: remote,
+            peer_remote_meta: Some(remote_meta),
+        });
+        FederationVerdict::Done
     }
 
     /// Dissolves every pair involving an instance on ANOTHER daemon.
@@ -527,6 +778,100 @@ fn pairing_label(pairing: &Pairing) -> String {
     format!("{} ⇌ {}", pairing.a.slot, pairing.b.slot)
 }
 
+/// The failure of a pair's delivery to one of its endpoints.
+fn delivery_failure(pairing: &Pairing, endpoint: &PairEndpoint, reason: &str) -> String {
+    format!(
+        "failed to deliver pair `{}` to instance '{}': {reason}",
+        pairing_label(pairing),
+        endpoint.slot.instance_id,
+    )
+}
+
+/// Why a pair was not made, on this daemon or on the peer's.
+#[derive(Debug, PartialEq)]
+pub(crate) enum PairFailure {
+    /// The pair was refused: a slot is taken by another pair, the peer is
+    /// gone, the two slots do not pair, or the asked endpoint no longer keeps
+    /// a held pair. A held pair is forgotten.
+    Refused(String),
+    /// An endpoint had no process at the reservation or was starting a
+    /// restart, a node did not take the pin, a daemon did not answer, or the
+    /// start was cancelled: a held pair stays held for the next restart.
+    Undelivered(String),
+}
+
+impl PairFailure {
+    /// The same failure, with `text` as its text.
+    fn with_text(self, text: String) -> Self {
+        match self {
+            PairFailure::Refused(_) => PairFailure::Refused(text),
+            PairFailure::Undelivered(_) => PairFailure::Undelivered(text),
+        }
+    }
+}
+
+impl std::fmt::Display for PairFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PairFailure::Refused(text) | PairFailure::Undelivered(text) => f.write_str(text),
+        }
+    }
+}
+
+/// The verdict a peer daemon's pair commit answers with.
+impl From<PairFailure> for FederationVerdict {
+    fn from(failure: PairFailure) -> Self {
+        match failure {
+            PairFailure::Refused(reason) => FederationVerdict::Refused(reason),
+            PairFailure::Undelivered(reason) => FederationVerdict::Undelivered(reason),
+        }
+    }
+}
+
+/// What the stack's refusal to reserve a pair means, on either daemon: a pair
+/// the stack holds already is made, and any other refusal is
+/// [`pair_failure`]'s.
+fn reservation_outcome(
+    refusal: node_stack::NodeStackError,
+) -> std::result::Result<(), PairFailure> {
+    match refusal {
+        node_stack::NodeStackError::PairAlreadyHeld { .. } => Ok(()),
+        other => Err(pair_failure(other)),
+    }
+}
+
+/// What a refusal of the stack means for a pair: an endpoint the stack tracks
+/// without a process leaves it undelivered, held for that endpoint's next
+/// process; any other refuses it, an untracked endpoint included.
+fn pair_failure(refusal: node_stack::NodeStackError) -> PairFailure {
+    match refusal {
+        without_process @ node_stack::NodeStackError::PairingInstanceWithoutProcess { .. } => {
+            PairFailure::Undelivered(without_process.to_string())
+        }
+        other => PairFailure::Refused(other.to_string()),
+    }
+}
+
+/// Whether the other side of a pair took its pin before this side's
+/// delivery failed, so a revert sends it its set without the pair.
+#[derive(Debug, PartialEq)]
+enum OtherSide {
+    Pinned,
+    Unpinned,
+}
+
+impl OtherSide {
+    /// The other side at the delivery in position `index` of a pair's two:
+    /// the second delivery follows the first one's pin.
+    fn at_delivery(index: usize) -> Self {
+        if index == 0 {
+            OtherSide::Unpinned
+        } else {
+            OtherSide::Pinned
+        }
+    }
+}
+
 /// The first planned pair with no matching registry pair (either endpoint
 /// order), or `None` when every planned pair is present.
 fn find_missing_planned_pair<'a>(
@@ -539,18 +884,6 @@ fn find_missing_planned_pair<'a>(
                 .is_some_and(|peer| peer.slot == plan.peer)
         })
     })
-}
-
-/// One resolved `--link` request: this instance's slot and the concrete peer
-/// slot it will be paired with (ready for [`PairingCoordinator::reserve`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlannedPair {
-    pub own: SlotAddr,
-    pub peer: SlotAddr,
-    /// Set only when `peer` lives on another daemon. This daemon cannot read a
-    /// remote manifest, so the coordinator that validated the whole plan
-    /// supplies the peer's pairing identity and role here.
-    pub peer_remote_meta: Option<RemoteSlotMeta>,
 }
 
 /// The new instance's side of a plan-phase pairing check: its identity plus
@@ -913,6 +1246,51 @@ mod tests {
     use config::node::PairingParticipantDependency;
     use std::collections::BTreeMap;
 
+    /// A held pair the stack holds already is made, one whose peer the
+    /// stack tracks without a process stays held, and any other refusal ends
+    /// it, an untracked peer's included.
+    #[test]
+    fn a_reservation_refusal_ends_a_held_pair_only_when_the_stack_refuses_it() {
+        assert_eq!(
+            reservation_outcome(node_stack::NodeStackError::PairAlreadyHeld {
+                slot: "arm_inst.controller".to_owned(),
+                peer: "ctrl_inst.arm".to_owned(),
+            }),
+            Ok(())
+        );
+        let without_process = || node_stack::NodeStackError::PairingInstanceWithoutProcess {
+            instance_id: "ctrl_inst".to_owned(),
+            state: InstanceState::Restarting,
+        };
+        assert_eq!(
+            reservation_outcome(without_process()),
+            Err(PairFailure::Undelivered(without_process().to_string()))
+        );
+        let untracked = || node_stack::NodeStackError::PairingInstanceNotInStack {
+            instance_id: "ctrl_inst".to_owned(),
+        };
+        assert_eq!(
+            reservation_outcome(untracked()),
+            Err(PairFailure::Refused(untracked().to_string()))
+        );
+        let taken = || node_stack::NodeStackError::PairingSlotAlreadyPaired {
+            slot: "ctrl_inst.arm".to_owned(),
+            peer: "other_inst.controller".to_owned(),
+        };
+        assert_eq!(
+            reservation_outcome(taken()),
+            Err(PairFailure::Refused(taken().to_string()))
+        );
+    }
+
+    /// The first of a pair's two deliveries reverts alone; the second also
+    /// tells the side the first one pinned.
+    #[test]
+    fn the_second_delivery_follows_the_first_ones_pin() {
+        assert_eq!(OtherSide::at_delivery(0), OtherSide::Unpinned);
+        assert_eq!(OtherSide::at_delivery(1), OtherSide::Pinned);
+    }
+
     fn dep(role: &str, link_id: &str) -> PairingParticipantDependency {
         serde_json5::from_str(&format!(
             r#"{{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}" }}"#
@@ -1084,6 +1462,7 @@ mod tests {
             peer_role: "planner".to_owned(),
             peer_cardinality: config::node::Cardinality::One,
             peer_copy: None,
+            held: false,
         };
 
         let (local, remote, meta) =
@@ -1127,6 +1506,7 @@ mod tests {
             peer_role: "planner".to_owned(),
             peer_cardinality: config::node::Cardinality::One,
             peer_copy: None,
+            held: false,
         };
 
         let error = PairingCoordinator::slots_from_commit_request(&request, TEST_CORE)
