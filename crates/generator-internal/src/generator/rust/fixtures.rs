@@ -163,6 +163,7 @@ fn render_emitted_topic(
                 &producer,
                 #qos,
                 #retention,
+                peppylib::messaging::TopicBuffer::Backpressure,
             )
             .await?;
             Ok(Subscription { inner })

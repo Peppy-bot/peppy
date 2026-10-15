@@ -29,7 +29,8 @@ use crate::clock::{ClockSource, ClockSourceError, WallClockSource};
 use crate::error::{Error, Result};
 use crate::messaging::{
     ConcurrentAction, GoalContext, MessengerHandle, PendingGoal, SenderTarget, ServiceEndpoint,
-    ServiceMessenger, ServiceRequestContext, ServiceResponder, TopicMessenger, TopicPublisher,
+    ServiceMessenger, ServiceRequestContext, ServiceResponder, TopicBuffer, TopicMessenger,
+    TopicPublisher,
 };
 use crate::runtime::{
     CancellationToken, NodeBuilder, NodeRunner, StandaloneConfig, TaskHandle, spawn,
@@ -482,6 +483,7 @@ pub async fn subscribe_peer_pinned(
         ),
         to_topic,
         qos,
+        TopicBuffer::Backpressure,
     )
     .await
 }

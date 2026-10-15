@@ -7909,6 +7909,7 @@ pub(crate) async fn subscribe(
             &producer,
             peppylib::config::QoSProfile::SensorData,
             peppylib::config::TopicRetention::LiveOnly,
+            peppylib::messaging::TopicBuffer::Backpressure,
         )
         .await?;
     Ok(Subscription { inner })
@@ -8053,6 +8054,7 @@ pub(crate) async fn subscribe(
             &producer,
             peppylib::config::QoSProfile::SensorData,
             peppylib::config::TopicRetention::LiveOnly,
+            peppylib::messaging::TopicBuffer::Backpressure,
         )
         .await?;
     Ok(Subscription { inner })
@@ -8197,6 +8199,7 @@ pub(crate) async fn subscribe(
             &producer,
             peppylib::config::QoSProfile::Reliable,
             peppylib::config::TopicRetention::LiveOnly,
+            peppylib::messaging::TopicBuffer::Backpressure,
         )
         .await?;
     Ok(Subscription { inner })
@@ -8271,6 +8274,7 @@ pub(crate) async fn subscribe(
                 };
                 RETENTION
             },
+            peppylib::messaging::TopicBuffer::Backpressure,
         )
         .await?;
     Ok(Subscription { inner })
@@ -15603,6 +15607,7 @@ pub(crate) async fn subscribe(
             &producer,
             peppylib::config::QoSProfile::SensorData,
             peppylib::config::TopicRetention::LiveOnly,
+            peppylib::messaging::TopicBuffer::Backpressure,
         )
         .await?;
     Ok(Subscription { inner })

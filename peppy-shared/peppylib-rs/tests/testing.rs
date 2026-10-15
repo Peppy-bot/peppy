@@ -13,7 +13,7 @@ use config::node::{QoSProfile, TopicRetention};
 use peppylib::PeppyError;
 use peppylib::messaging::{
     ActionMessenger, FeedbackBuffer, NonEmptyPayload, PeerInfo, ProducerRef, SenderTarget,
-    ServiceMessenger, ServiceTarget, TopicMessenger,
+    ServiceMessenger, ServiceTarget, TopicBuffer, TopicMessenger,
 };
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use peppylib::testing::{
@@ -272,6 +272,7 @@ async fn test_topic_publisher_first_publish_is_delivered() {
         &producer,
         QoSProfile::Reliable,
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("subscribe should succeed");
@@ -346,6 +347,7 @@ async fn test_topic_publisher_on_a_retaining_topic_serves_a_late_subscription() 
             &producer,
             QoSProfile::Reliable,
             retains_latest,
+            TopicBuffer::Backpressure,
         )
     };
     let mut first_subscription = subscribe().await.expect("subscribe should succeed");
@@ -404,6 +406,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
         &node_producer,
         QoSProfile::Reliable,
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("observation subscribe should succeed");

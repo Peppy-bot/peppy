@@ -14,7 +14,8 @@
 
 use crate::error::{Error, Result};
 use crate::messaging::{
-    BoundSetState, MessengerHandle, ProducerRef, SenderTarget, Subscription, TopicMessenger,
+    BoundSetState, MessengerHandle, ProducerRef, SenderTarget, Subscription, TopicBuffer,
+    TopicMessenger,
 };
 use crate::runtime::slot_stream::{
     FollowedSlot, SlotStream, StreamWiring, published_by_producer, start_slot_stream,
@@ -63,6 +64,7 @@ impl FollowedSlot for BoundFollow {
             pin,
             wiring.qos.clone(),
             wiring.wire.retention,
+            TopicBuffer::Backpressure,
         )
         .await
     }

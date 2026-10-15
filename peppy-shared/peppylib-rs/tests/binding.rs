@@ -153,6 +153,48 @@ async fn publish(publisher: &TopicPublisher, payload: &'static [u8]) {
         .expect("publish");
 }
 
+/// Polls `future` once, without a runtime.
+fn poll_once<F: std::future::Future>(future: std::pin::Pin<&mut F>) -> std::task::Poll<()> {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    future.poll(&mut context).map(|_| ())
+}
+
+/// A node's subscription to its bound producers keeps backpressure, unlike a
+/// test's observation of a node: while the node does not read, the publish
+/// past its queue waits, and once the node reads, every message arrives in
+/// order and none is dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bound_set_subscription_waits_for_its_reader_and_drops_nothing() {
+    let (client, shared) = get_client_server().await;
+    let producer_handle = MessengerHandle::from_shared(shared);
+
+    let (_tx, watch_rx) = watch::channel(BoundSetState::seeded(producers(&["arm_1"])));
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
+    let arm_1 = declare_producer_publisher(&producer_handle, "arm_1").await;
+    wait_for_consumer(&producer_handle, "arm_1").await;
+
+    // A reliable topic's subscription queue has the standard tier's size.
+    let capacity = pmi::SubscriberBufferSizes::default().standard;
+    let state = |index: usize| format!("state-{index}").into_bytes();
+    for index in 1..=capacity {
+        arm_1
+            .publish(Payload::from(state(index)))
+            .await
+            .expect("publish");
+    }
+    let mut overflow = std::pin::pin!(arm_1.publish(Payload::from(state(capacity + 1))));
+    assert!(
+        poll_once(overflow.as_mut()).is_pending(),
+        "the publish past the queue waits for the node to read"
+    );
+
+    expect_message(&mut subscription, "arm_1", &state(1)).await;
+    overflow.await.expect("the node made room");
+    for index in 2..=capacity + 1 {
+        expect_message(&mut subscription, "arm_1", &state(index)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_empty_set_hears_nothing_until_a_producer_joins_it() {
     let (client, shared) = get_client_server().await;

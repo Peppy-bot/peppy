@@ -1362,7 +1362,9 @@ mod unread_feedback {
     use feedback_flood::{
         FLOOD_RESULT, Flood, FloodedAction, HANG_GUARD, read_to_the_end, start_flooding_provider,
     };
-    use peppylib::messaging::{ServiceMessenger, ServiceTarget, SessionScope, TopicMessenger};
+    use peppylib::messaging::{
+        ServiceMessenger, ServiceTarget, SessionScope, TopicBuffer, TopicMessenger,
+    };
     use peppylib::testing::EphemeralRouter;
 
     /// The feedback buffer of every session a router test opens: small, so
@@ -1491,6 +1493,7 @@ mod unread_feedback {
             &ProducerRef::new(CORE, PROVIDER),
             QoSProfile::Reliable,
             TopicRetention::LiveOnly,
+            TopicBuffer::Backpressure,
         )
         .await
         .expect("the caller subscribes");

@@ -12,7 +12,7 @@
 use crate::error::{Error, Result};
 use crate::messaging::{
     MessengerHandle, PeerInfo, PeerMember, PeerSetState, ProducerRef, SenderTarget, Subscription,
-    TopicMessenger, TopicPublisher,
+    TopicBuffer, TopicMessenger, TopicPublisher,
 };
 use crate::runtime::NodeRunner;
 use crate::runtime::slot_stream::{
@@ -175,6 +175,7 @@ impl FollowedSlot for PeerFollow {
             wiring.wire.recipient.clone(),
             &wiring.topic,
             wiring.qos.clone(),
+            TopicBuffer::Backpressure,
         )
         .await
     }

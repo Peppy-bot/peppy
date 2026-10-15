@@ -72,11 +72,15 @@ pub enum SubscriberQoS {
 
 /// Per-QoS subscriber channel buffer sizes (flume / mpsc capacities).
 ///
-/// `Default` is `Standard` = 128 and `HighThroughput` = 1024. The daemon
-/// overrides these from `peppy_config.json5`, mainly to tune local sessions
-/// under either managed topology. The setting matters most in peer mode,
-/// where there is no router relay to buffer between a publisher and a
-/// subscriber.
+/// `Default` takes the config model's defaults,
+/// [`DEFAULT_STANDARD_BUFFER_SIZE`](config::peppy_config::DEFAULT_STANDARD_BUFFER_SIZE)
+/// (128) and
+/// [`DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE`](config::peppy_config::DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE)
+/// (1024), the same constants that size a node's session when its runtime
+/// config sets no sizes. The daemon overrides these from `peppy_config.json5`,
+/// mainly to tune local sessions under either managed topology. The setting
+/// matters most in peer mode, where there is no router relay to buffer between
+/// a publisher and a subscriber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SubscriberBufferSizes {
     pub standard: usize,
@@ -86,8 +90,8 @@ pub struct SubscriberBufferSizes {
 impl Default for SubscriberBufferSizes {
     fn default() -> Self {
         Self {
-            standard: 128,
-            high_throughput: 1024,
+            standard: config::peppy_config::DEFAULT_STANDARD_BUFFER_SIZE,
+            high_throughput: config::peppy_config::DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
         }
     }
 }
@@ -100,6 +104,25 @@ impl SubscriberBufferSizes {
             SubscriberQoS::HighThroughput => self.high_throughput,
         }
     }
+}
+
+/// How a topic subscription holds the messages its reader has not taken yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopicBuffer {
+    /// Wait for room. A message that arrives while the queue is full waits
+    /// until the reader takes one, and the transport's reception waits with
+    /// it, so the stall reaches the publisher. The wait holds up every
+    /// message that arrives over the same connection, not only the topic's.
+    /// For a reader that consumes the stream, such as a node that follows a
+    /// dependency's topic.
+    Backpressure,
+    /// Keep the newest messages, up to the queue capacity of the topic's QoS
+    /// tier (or its retention depth, when that is larger). A message that
+    /// arrives while the queue is full drops the oldest unread one, so the
+    /// transport never waits for the reader. For a reader that can read late
+    /// or not at all, such as a test that observes a node: its unread
+    /// messages never hold up the other messages to its session.
+    KeepLatest,
 }
 
 /// How a goal's feedback subscription holds the messages its reader has not
@@ -211,11 +234,13 @@ pub trait MessengerBackend {
 
     /// Subscribe to a topic. With [`TopicRetention::Latest`] the subscription
     /// also receives the messages each publisher retains, oldest first.
+    /// `buffer` holds the messages the reader has not taken yet.
     fn subscribe_topic(
         &self,
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
         retention: TopicRetention,
+        buffer: TopicBuffer,
     ) -> impl Future<Output = Result<Subscription>> + Send;
 
     /// Publish a one-shot topic message. `is_primary` rides on the topic
@@ -390,10 +415,11 @@ impl Drop for AbortOnDrop {
 /// The channel is a `flume` channel rather than `tokio::sync::mpsc` because
 /// zenoh's reception callback runs synchronously inside zenoh's tokio
 /// runtime, where `tokio::sync::mpsc::Sender::blocking_send` panics. A
-/// topic's channel is bounded, and a full one blocks the reception thread,
-/// which carries the backpressure to the publisher. A goal's feedback channel
-/// never blocks it: see [`FeedbackBuffer`] and the `subscription_buffer`
-/// module.
+/// topic's channel is bounded. With [`TopicBuffer::Backpressure`] a full one
+/// blocks the reception thread, which carries the backpressure to the
+/// publisher; with [`TopicBuffer::KeepLatest`] it drops its oldest unread
+/// message instead. A goal's feedback channel never blocks it either: see
+/// [`FeedbackBuffer`] and the `subscription_buffer` module.
 pub struct Subscription {
     pub rx: flume::Receiver<TopicMessage>,
     _guard: Guard,
@@ -1166,8 +1192,9 @@ impl MessengerBackend for Messenger {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
         retention: TopicRetention,
+        buffer: TopicBuffer,
     ) -> Result<Subscription> {
-        dispatch!(&self.adapter, subscribe_topic, recv, qos, retention)
+        dispatch!(&self.adapter, subscribe_topic, recv, qos, retention, buffer)
     }
 
     async fn publish_topic(

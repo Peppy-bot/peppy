@@ -24,7 +24,7 @@ use config::node::TopicRetention;
 use pmi::{
     MessengerBackend, Payload, PublisherQoS, SenderTarget, ServiceKind, ServiceQueryKind,
     ServiceQueryable, ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription,
-    TopicWireReceiver, TopicWireSender, ZenohAdapter,
+    TopicBuffer, TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
 use std::time::Duration;
 
@@ -113,6 +113,7 @@ async fn topic_node_vs_contract_no_collision() {
             &node_receiver,
             SubscriberQoS::Standard,
             TopicRetention::LiveOnly,
+            TopicBuffer::Backpressure,
         )
         .await
         .unwrap();
@@ -122,6 +123,7 @@ async fn topic_node_vs_contract_no_collision() {
             &contract_receiver,
             SubscriberQoS::Standard,
             TopicRetention::LiveOnly,
+            TopicBuffer::Backpressure,
         )
         .await
         .unwrap();
@@ -205,7 +207,12 @@ async fn topic_untargeted_subscriber_matches_both_node_and_contract() {
 
     let sub = instance
         .messenger()
-        .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
+        .subscribe_topic(
+            &receiver,
+            SubscriberQoS::Standard,
+            TopicRetention::LiveOnly,
+            TopicBuffer::Backpressure,
+        )
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;

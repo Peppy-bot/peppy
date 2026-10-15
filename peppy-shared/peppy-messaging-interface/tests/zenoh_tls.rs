@@ -24,7 +24,7 @@ mod zenoh_tls_tests {
     use pmi::{
         ConnectIdentity, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
         Payload, PublisherQoS, RouterId, SubscriberBufferSizes, SubscriberQoS, Subscription,
-        TlsConfig, ZenohAdapter, ZenohNetProtocol, probe_tls_reachable,
+        TlsConfig, TopicBuffer, ZenohAdapter, ZenohNetProtocol, probe_tls_reachable,
     };
     use std::io::Write;
     use std::path::PathBuf;
@@ -199,6 +199,7 @@ mod zenoh_tls_tests {
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("subscribe over tls");
@@ -264,6 +265,7 @@ mod zenoh_tls_tests {
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("subscribe (local declare succeeds even with a dead link)");
@@ -349,6 +351,7 @@ mod zenoh_tls_tests {
                 &receiver(topic),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("subscribe on the local router");
@@ -439,7 +442,12 @@ mod zenoh_tls_tests {
 
         let settling = open_plaintext_client(federation.local_port).await;
         let settled = settling
-            .subscribe_topic(&receiver(topic), SubscriberQoS::Standard, retains_latest)
+            .subscribe_topic(
+                &receiver(topic),
+                SubscriberQoS::Standard,
+                retains_latest,
+                TopicBuffer::Backpressure,
+            )
             .await
             .expect("subscribe on the local router");
         assert_eq!(
@@ -449,7 +457,12 @@ mod zenoh_tls_tests {
 
         let subscriber = open_plaintext_client(federation.local_port).await;
         let subscription = subscriber
-            .subscribe_topic(&receiver(topic), SubscriberQoS::Standard, retains_latest)
+            .subscribe_topic(
+                &receiver(topic),
+                SubscriberQoS::Standard,
+                retains_latest,
+                TopicBuffer::Backpressure,
+            )
             .await
             .expect("subscribe on the local router");
         assert_eq!(

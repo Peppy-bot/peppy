@@ -8,7 +8,7 @@ use super::super::types::{
     IncomingRequest, LivelinessEvent, LivelinessToken, LivelinessWatch, Messenger,
     MessengerAdapter, MessengerBackend, MockResponseToken, Payload, PresenceScope, PublisherQoS,
     ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
-    SubscriberQoS, Subscription, TopicMessage, service_query_lifetime,
+    SubscriberQoS, Subscription, TopicBuffer, TopicMessage, service_query_lifetime,
 };
 use super::super::wire::zenoh_format::ZenohWireFormat;
 use super::super::wire::{
@@ -243,12 +243,13 @@ impl MessengerBackend for MockAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
         retention: TopicRetention,
+        buffer: TopicBuffer,
     ) -> Result<Subscription> {
         let drop_secondary = recv.drops_secondary_publishes();
         self.subscribe_keyexpr(
             &ZenohWireFormat::topic_subscribe(recv),
             qos,
-            Buffering::Backpressure,
+            Buffering::Topic(buffer),
             drop_secondary,
             retention,
         )
@@ -1753,7 +1754,12 @@ mod tests {
         .expect("recv right");
 
         let sub_any = adapter
-            .subscribe_topic(&recv_any, SubscriberQoS::Standard, TopicRetention::LiveOnly)
+            .subscribe_topic(
+                &recv_any,
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
+            )
             .await
             .expect("wildcard subscribe");
         let sub_left = adapter
@@ -1761,6 +1767,7 @@ mod tests {
                 &recv_left,
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("pinned left subscribe");
@@ -1769,6 +1776,7 @@ mod tests {
                 &recv_right,
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("pinned right subscribe");
@@ -1847,7 +1855,12 @@ mod tests {
         .expect("receiver");
 
         let subscription = messenger
-            .subscribe_topic(&receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
+            .subscribe_topic(
+                &receiver,
+                SubscriberQoS::Standard,
+                TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
+            )
             .await
             .expect("subscribe");
 
@@ -1984,7 +1997,12 @@ mod tests {
 
         async fn subscribe(adapter: &MockAdapter, retention: TopicRetention) -> Subscription {
             adapter
-                .subscribe_topic(&receiver(), SubscriberQoS::Standard, retention)
+                .subscribe_topic(
+                    &receiver(),
+                    SubscriberQoS::Standard,
+                    retention,
+                    TopicBuffer::Backpressure,
+                )
                 .await
                 .expect("subscribe")
         }

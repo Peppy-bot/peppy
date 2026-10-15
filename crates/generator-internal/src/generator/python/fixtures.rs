@@ -259,6 +259,7 @@ class Subscription:
                     "producer,",
                     &format!("{qos},"),
                     &format!("retention={},", retention_python(spec.retention)),
+                    "buffer=peppylib.TopicBuffer.Backpressure,",
                 ],
                 ")",
             );

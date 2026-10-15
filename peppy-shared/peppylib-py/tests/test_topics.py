@@ -17,6 +17,7 @@ from peppylib import (
     ProducerRef,
     QoSProfile,
     SenderTarget,
+    TopicBuffer,
     TopicMessenger,
     TopicRetention,
     ZenohdInstance,
@@ -186,6 +187,7 @@ async def test_messenger_communication():
             ProducerRef(core_node, instance_id),
             qos,
             TopicRetention.live_only(),
+            TopicBuffer.Backpressure,
         )
 
         # Allow subscription to propagate
@@ -280,10 +282,89 @@ async def test_a_late_subscriber_reads_the_retained_message():
             ProducerRef(core_node, instance_id),
             QoSProfile.Reliable,
             retention=retention,
+            buffer=TopicBuffer.Backpressure,
         )
 
         message = await asyncio.wait_for(subscription.on_next_message(), timeout=5.0)
         assert message.payload == b"ready"
+
+
+# A reliable topic's subscription queue: the standard tier's default size, the
+# config model's `DEFAULT_STANDARD_BUFFER_SIZE`, which a session opened with
+# `MessengerHandle.from_host_port` takes through `SubscriberBufferSizes::default()`.
+STANDARD_QUEUE = 128
+
+
+@pytest.mark.asyncio
+async def test_a_keep_latest_subscription_keeps_the_newest_messages_and_never_holds_up_its_session():
+    """A `TopicBuffer.KeepLatest` subscription can stay unread.
+
+    The publisher sends one message more than the unread queue holds, then
+    one message on a second topic of the same subscribing session. The second
+    message arrives, and the unread queue holds every message but the first.
+    The Python twin of the Rust test
+    `subscribe_peer_pinned_keeps_the_newest_messages_and_never_holds_up_its_session`.
+    """
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        test_id = uuid.uuid4().hex[:8]
+        core_node = f"test_core_{test_id}"
+        instance_id = f"test_instance_{test_id}"
+        target = SenderTarget.node(f"test_node_{test_id}", NODE_TAG)
+        producer = ProducerRef(core_node, instance_id)
+
+        receiver_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        sender_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        async def subscribe(topic, buffer):
+            return await TopicMessenger.subscribe(
+                receiver_handle,
+                core_node,
+                instance_id,
+                target,
+                topic,
+                producer,
+                QoSProfile.Reliable,
+                TopicRetention.live_only(),
+                buffer,
+            )
+
+        unread = await subscribe(f"unread_{test_id}", TopicBuffer.KeepLatest)
+        markers = await subscribe(f"marker_{test_id}", TopicBuffer.Backpressure)
+
+        # Both topics share one QoS, so the link delivers them in publish order.
+        async def declare(topic):
+            publisher = await TopicMessenger.declare_publisher(
+                sender_handle,
+                core_node,
+                instance_id,
+                target,
+                topic,
+                QoSProfile.Reliable,
+                TopicRetention.live_only(),
+            )
+            assert await TopicMessenger.wait_for_subscriber(
+                sender_handle, core_node, instance_id, target, topic, 5.0
+            ), f"the subscription to {topic} should match"
+            return publisher
+
+        unread_publisher = await declare(f"unread_{test_id}")
+        marker_publisher = await declare(f"marker_{test_id}")
+
+        published = range(1, STANDARD_QUEUE + 2)
+        for index in published:
+            await unread_publisher.publish(f"message-{index}".encode())
+        await marker_publisher.publish(b"marker")
+
+        marker = await asyncio.wait_for(markers.on_next_message(), timeout=5.0)
+        assert marker.payload == b"marker"
+
+        # Every message came before the marker, so the queue holds its newest
+        # messages now.
+        kept = []
+        for _ in range(STANDARD_QUEUE):
+            message = await asyncio.wait_for(unread.on_next_message(), timeout=5.0)
+            kept.append(message.payload.decode())
+        assert kept == [f"message-{index}" for index in published[1:]]
 
 
 @pytest.mark.asyncio
@@ -316,6 +397,7 @@ async def test_message_exposes_the_producers_bound_link_id():
             ProducerRef(core_node, instance_id),
             qos,
             TopicRetention.live_only(),
+            TopicBuffer.Backpressure,
         )
         await asyncio.sleep(0.05)
 
@@ -365,4 +447,5 @@ async def test_subscribe_rejects_producer_list():
                     producers,
                     QoSProfile.Reliable,
                     TopicRetention.live_only(),
+                    TopicBuffer.Backpressure,
                 )

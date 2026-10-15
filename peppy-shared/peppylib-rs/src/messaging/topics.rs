@@ -3,8 +3,8 @@ use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::{QoSProfile, TopicRetention};
 use pmi::{
-    MessengerPublisher, PairingRecipient, SenderTarget, TopicWireReceiver, TopicWireSender,
-    WirePeer,
+    MessengerPublisher, PairingRecipient, SenderTarget, TopicBuffer, TopicWireReceiver,
+    TopicWireSender, WirePeer,
 };
 
 use std::sync::Arc;
@@ -63,6 +63,11 @@ impl TopicMessenger {
     /// `retention` is the topic's declared policy. With
     /// [`TopicRetention::Latest`] the subscription also yields the messages
     /// the producer retains, in the order it published them.
+    ///
+    /// `buffer` holds the messages the subscription's reader has not taken
+    /// yet: [`TopicBuffer::Backpressure`] for a reader that consumes the
+    /// stream, such as a node, and [`TopicBuffer::KeepLatest`] for a reader
+    /// that can leave messages unread, such as a test that observes a node.
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
@@ -73,6 +78,7 @@ impl TopicMessenger {
         from_producer: &ProducerRef,
         qos: QoSProfile,
         retention: TopicRetention,
+        buffer: TopicBuffer,
     ) -> Result<Subscription> {
         let recv = TopicWireReceiver::new(
             as_core_node,
@@ -83,7 +89,9 @@ impl TopicMessenger {
             None,
             to_topic,
         )?;
-        let subscription = messenger.subscribe_to_topic(&recv, qos, retention).await?;
+        let subscription = messenger
+            .subscribe_to_topic(&recv, qos, retention, buffer)
+            .await?;
         Ok(Subscription::new(subscription))
     }
 
@@ -147,7 +155,12 @@ impl TopicMessenger {
             to_topic,
         )?;
         let subscription = messenger
-            .subscribe_to_topic(&recv, qos, TopicRetention::LiveOnly)
+            .subscribe_to_topic(
+                &recv,
+                qos,
+                TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
+            )
             .await?;
         Ok(Subscription::new(subscription))
     }
@@ -165,7 +178,8 @@ impl TopicMessenger {
     /// observation is pinned to a pair. Both are pairing-discriminator
     /// traffic and both pin every wire slot, so the `is_pairing` assertion holds
     /// for either caller. Applications never construct raw key expressions;
-    /// every pinned subscription comes through this seam.
+    /// every pinned subscription comes through this seam. `buffer` is as in
+    /// [`Self::subscribe`].
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn subscribe_peer_pinned(
         messenger: &MessengerHandle,
@@ -177,6 +191,7 @@ impl TopicMessenger {
         recipient: PairingRecipient,
         to_topic: &str,
         qos: QoSProfile,
+        buffer: TopicBuffer,
     ) -> Result<Subscription> {
         let producer = WirePeer::new(&peer.core_node, &peer.instance_id, peer_link_id)?;
         let recv = match recipient {
@@ -205,7 +220,7 @@ impl TopicMessenger {
             )?,
         };
         let subscription = messenger
-            .subscribe_to_topic(&recv, qos, TopicRetention::LiveOnly)
+            .subscribe_to_topic(&recv, qos, TopicRetention::LiveOnly, buffer)
             .await?;
         Ok(Subscription::new(subscription))
     }
@@ -248,7 +263,12 @@ impl TopicMessenger {
             to_topic,
         )?;
         let subscription = messenger
-            .subscribe_to_topic(&recv, qos, TopicRetention::LiveOnly)
+            .subscribe_to_topic(
+                &recv,
+                qos,
+                TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
+            )
             .await?;
         Ok(Subscription::new(subscription))
     }

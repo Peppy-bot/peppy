@@ -17,7 +17,7 @@ use tokio::sync::oneshot;
 use crate::error::Error;
 use crate::messaging::{
     ActionMessenger, FeedbackBuffer, MessengerHandle, ProducerRef, ResultStatus, SenderTarget,
-    ServiceMessenger, ServiceTarget, TopicMessenger,
+    ServiceMessenger, ServiceTarget, TopicBuffer, TopicMessenger,
 };
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
@@ -246,6 +246,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         &producer1,
         qos.clone(),
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("Should subscribe to the topic");
@@ -262,6 +263,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
         &producer2,
         qos.clone(),
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("Should subscribe to the topic");
@@ -342,6 +344,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
         &producer_core1,
         qos.clone(),
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("Should subscribe to the topic");
@@ -358,6 +361,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
         &producer_core2,
         qos.clone(),
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("Should subscribe to the topic");
@@ -436,6 +440,7 @@ async fn per_slot_pinned_subscriptions_isolate_producers() {
         &producer1,
         qos.clone(),
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("subscribe should succeed");
@@ -449,6 +454,7 @@ async fn per_slot_pinned_subscriptions_isolate_producers() {
         &producer2,
         qos.clone(),
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("subscribe should succeed");
@@ -837,6 +843,7 @@ async fn topic_publish_reliable_5000hz_messages() {
         &producer,
         qos.clone(),
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("Should subscribe to the topic");
@@ -4298,6 +4305,7 @@ async fn topic_pinned_subscription_compares_full_pairs() {
         &pin_producer,
         qos.clone(),
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("pin subscribe should succeed");

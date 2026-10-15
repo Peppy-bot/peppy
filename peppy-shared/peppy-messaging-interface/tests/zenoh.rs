@@ -11,7 +11,7 @@ mod zenoh_tests {
     use config::node::TopicRetention;
     use pmi::{
         MessengerBackend, Payload, PresenceScope, PublisherQoS, RouterId, SubscriberBufferSizes,
-        SubscriberQoS, ZenohAdapter, ZenohNetProtocol,
+        SubscriberQoS, TopicBuffer, ZenohAdapter, ZenohNetProtocol,
     };
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::{Duration, Instant};
@@ -97,6 +97,7 @@ mod zenoh_tests {
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("subscribe");
@@ -180,6 +181,7 @@ mod zenoh_tests {
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("subscribe");
@@ -282,6 +284,7 @@ mod zenoh_tests {
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("subscribe");
@@ -379,6 +382,7 @@ mod zenoh_tests {
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("subscribe");
@@ -452,6 +456,7 @@ mod zenoh_tests {
                 &receiver("basic_topic"),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("Failed to subscribe");
@@ -495,6 +500,7 @@ mod zenoh_tests {
                 &receiver("topic1"),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("Failed to subscribe to topic1");
@@ -504,6 +510,7 @@ mod zenoh_tests {
                 &receiver("topic2"),
                 SubscriberQoS::HighThroughput,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("Failed to subscribe to topic2");
@@ -560,6 +567,7 @@ mod zenoh_tests {
                 &receiver("multi_topic"),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("Failed to subscribe");
@@ -622,6 +630,7 @@ mod zenoh_tests {
                 &receiver("late_topic"),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("Failed to create late subscription");
@@ -978,6 +987,7 @@ mod zenoh_tests {
                 &receiver("connect_test"),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("Failed to subscribe");
@@ -1025,6 +1035,7 @@ mod zenoh_tests {
                 &receiver("port_test"),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("Failed to subscribe");
@@ -1097,6 +1108,7 @@ mod zenoh_tests {
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("subscribe");
@@ -1455,6 +1467,7 @@ mod zenoh_tests {
                 &receiver(TOPIC),
                 SubscriberQoS::Standard,
                 TopicRetention::LiveOnly,
+                TopicBuffer::Backpressure,
             )
             .await
             .expect("subscribe");
