@@ -991,7 +991,7 @@ peppy stack resolve physical --join so101:alpha --with xr_commander,alpha.robot_
 `stack resolve` needs no running stack. It prints the flattened `launcher/v1` document to stdout and a resolution report to stderr. An excerpt:
 
 ```
-components: robot_control=(off)  headset=xr_commander
+components: robot_control=(off)  teleop=xr_commander
 copy alpha: robot=so101  robot_commander=none  recorder=lerobot_recorder  camera_rig=(off)
 adjustments applied:
   alpha_backbone_inst.arguments.upstream_mode: "joints" -> "pose"  (so101/fragments/so101.json5)
@@ -1000,7 +1000,7 @@ adjustments applied:
   alpha_recorder_inst.arguments.robot_type: (absent) -> "so101"  (physical.json5, option `robot.so101`)
 adjustments skipped:
   alpha_backbone_inst: guard robot_commander=so101_leader is not met  (so101/fragments/so101.json5)
-  headset_inst: guard camera_rig=cameras headset=xr_commander robot_commander=none is not met  (physical.json5, option `robot.so101`, copy `alpha`)
+  headset_inst: guard camera_rig=cameras teleop=xr_commander robot_commander=none is not met  (physical.json5, option `robot.so101`, copy `alpha`)
 headset_inst: clock `wall`, restart on_failure (default)
 alpha_backbone_inst: clock `wall`, restart on_failure (default)
 alpha_recorder_inst: clock `wall`, restart on_failure (default)
