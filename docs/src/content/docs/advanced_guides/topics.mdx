@@ -689,6 +689,10 @@ or, when launching a single node during development:
 peppy node run --link uvc_camera@my-camera-instance web_video_stream:v1
 ```
 
+:::note
+`peppy node run` and `peppy node add --run` refuse a `--link` whose target instance has no process, which is a target that is `restarting`, `finished`, or `failed`. Wait for a `restarting` target to reach `running` and link to it then, or stop a `finished` or `failed` target with `peppy node stop` to clear it, then start it again as it was started before linking.
+:::
+
 ### Dependency cardinality
 
 Every `depends_on.contracts`, `depends_on.nodes`, `depends_on.pairing_observers` and `depends_on.pairings` entry may declare a `cardinality`, constraining how many sources the application may bind to the slot: producers for the first two, [observed pairings](/advanced_guides/pairing/#observing-several-pairings-through-one-slot) for the third, [pairs](/advanced_guides/pairing/#pairing-with-several-peers-through-one-slot) for the fourth.

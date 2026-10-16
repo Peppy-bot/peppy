@@ -191,7 +191,7 @@ When you know which dependency you want, skip the manual iteration with `running
         if ids:
             print(f"dispatch to {ids}")
         else:
-            print("router_target:v1 is present but all instances are still starting")
+            print("router_target:v1 is present but none of its instances is running")
     ```
   </TabItem>
   <TabItem label="Rust">
@@ -199,7 +199,7 @@ When you know which dependency you want, skip the manual iteration with `running
     let result = stack::list(&node_runner, Duration::from_secs(3)).await?;
     match result.graph.running_instance_ids_by_node("router_target", "v1") {
         Ok(ids) if !ids.is_empty() => println!("dispatch to {ids:?}"),
-        Ok(_) => println!("router_target:v1 is present but all instances are still starting"),
+        Ok(_) => println!("router_target:v1 is present but none of its instances is running"),
         Err(err) => println!("{err}"),
     }
     ```
