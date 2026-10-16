@@ -6512,7 +6512,12 @@ impl Mock {
 }
 ///Typed subscription to `joint_states` (the node emits this direction): pinned to the node's identity and slot id exactly as a real paired peer would be.
 pub mod joint_states {
-    /// A held subscription to the node's emissions on this slot.
+    /// A held subscription to the node's emissions on this slot. It
+    /// keeps the newest messages the test has not read, up to the
+    /// queue size of the topic's QoS tier: when the queue is full, a
+    /// new message drops the oldest unread one. A test can leave it
+    /// unread, and its unread messages never hold up the other
+    /// messages to the mock's session.
     pub struct Subscription {
         inner: peppylib::messaging::Subscription,
     }
@@ -6696,7 +6701,12 @@ impl Mock {
 }
 ///Typed subscription to `joint_states` (the node emits this direction): pinned to the node's identity and slot id exactly as a real paired peer would be.
 pub mod joint_states {
-    /// A held subscription to the node's emissions on this slot.
+    /// A held subscription to the node's emissions on this slot. It
+    /// keeps the newest messages the test has not read, up to the
+    /// queue size of the topic's QoS tier: when the queue is full, a
+    /// new message drops the oldest unread one. A test can leave it
+    /// unread, and its unread messages never hold up the other
+    /// messages to the mock's session.
     pub struct Subscription {
         inner: peppylib::messaging::Subscription,
     }
@@ -6880,7 +6890,12 @@ impl Mock {
 }
 ///Typed subscription to `joint_states` (the node emits this direction): pinned to the node's identity and slot id exactly as a real paired peer would be.
 pub mod joint_states {
-    /// A held subscription to the node's emissions on this slot.
+    /// A held subscription to the node's emissions on this slot. It
+    /// keeps the newest messages the test has not read, up to the
+    /// queue size of the topic's QoS tier: when the queue is full, a
+    /// new message drops the oldest unread one. A test can leave it
+    /// unread, and its unread messages never hold up the other
+    /// messages to the mock's session.
     pub struct Subscription {
         inner: peppylib::messaging::Subscription,
     }
@@ -7064,7 +7079,12 @@ impl Mock {
 }
 ///Typed subscription to `joint_states` (the node emits this direction): pinned to the node's identity and slot id exactly as a real paired peer would be.
 pub mod joint_states {
-    /// A held subscription to the node's emissions on this slot.
+    /// A held subscription to the node's emissions on this slot. It
+    /// keeps the newest messages the test has not read, up to the
+    /// queue size of the topic's QoS tier: when the queue is full, a
+    /// new message drops the oldest unread one. A test can leave it
+    /// unread, and its unread messages never hold up the other
+    /// messages to the mock's session.
     pub struct Subscription {
         inner: peppylib::messaging::Subscription,
     }
@@ -7888,7 +7908,12 @@ pub mod joint_states {
 Fixture :: emitted_topics/video_stream
 ================================================================
 //!Typed observation of the node's emitted topic `video_stream`: the harness subscribes before the node boots (pinned to the node's identity) and barriers on the subscription, so the node's very first publish is captured.
-/// A held subscription to the node's emissions on this topic.
+/// A held subscription to the node's emissions on this topic. It
+/// keeps the newest messages the test has not read, up to the queue
+/// size of the topic's QoS tier, or its retention depth when that is
+/// larger: when the queue is full, a new message drops the oldest
+/// unread one. A test can leave it unread, and its unread messages
+/// never hold up the other messages to the harness's session.
 pub struct Subscription {
     inner: peppylib::messaging::Subscription,
 }
@@ -7909,6 +7934,7 @@ pub(crate) async fn subscribe(
             &producer,
             peppylib::config::QoSProfile::SensorData,
             peppylib::config::TopicRetention::LiveOnly,
+            peppylib::messaging::TopicBuffer::KeepLatest,
         )
         .await?;
     Ok(Subscription { inner })
@@ -8032,7 +8058,12 @@ fn deserialize_message(payload: &[u8]) -> crate::Result<Message> {
 Fixture :: emitted_topics/feed/video_stream
 ================================================================
 //!Typed observation of the node's emitted topic `video_stream`: the harness subscribes before the node boots (pinned to the node's identity) and barriers on the subscription, so the node's very first publish is captured.
-/// A held subscription to the node's emissions on this topic.
+/// A held subscription to the node's emissions on this topic. It
+/// keeps the newest messages the test has not read, up to the queue
+/// size of the topic's QoS tier, or its retention depth when that is
+/// larger: when the queue is full, a new message drops the oldest
+/// unread one. A test can leave it unread, and its unread messages
+/// never hold up the other messages to the harness's session.
 pub struct Subscription {
     inner: peppylib::messaging::Subscription,
 }
@@ -8053,6 +8084,7 @@ pub(crate) async fn subscribe(
             &producer,
             peppylib::config::QoSProfile::SensorData,
             peppylib::config::TopicRetention::LiveOnly,
+            peppylib::messaging::TopicBuffer::KeepLatest,
         )
         .await?;
     Ok(Subscription { inner })
@@ -8176,7 +8208,12 @@ fn deserialize_message(payload: &[u8]) -> crate::Result<Message> {
 Fixture :: emitted_topics/heartbeat
 ================================================================
 //!Typed observation of the node's emitted topic `heartbeat`: the harness subscribes before the node boots (pinned to the node's identity) and barriers on the subscription, so the node's very first publish is captured.
-/// A held subscription to the node's emissions on this topic.
+/// A held subscription to the node's emissions on this topic. It
+/// keeps the newest messages the test has not read, up to the queue
+/// size of the topic's QoS tier, or its retention depth when that is
+/// larger: when the queue is full, a new message drops the oldest
+/// unread one. A test can leave it unread, and its unread messages
+/// never hold up the other messages to the harness's session.
 pub struct Subscription {
     inner: peppylib::messaging::Subscription,
 }
@@ -8197,6 +8234,7 @@ pub(crate) async fn subscribe(
             &producer,
             peppylib::config::QoSProfile::Reliable,
             peppylib::config::TopicRetention::LiveOnly,
+            peppylib::messaging::TopicBuffer::KeepLatest,
         )
         .await?;
     Ok(Subscription { inner })
@@ -8240,7 +8278,12 @@ fn deserialize_message(payload: &[u8]) -> crate::Result<Message> {
 Fixture :: emitted_topics/camera_state
 ================================================================
 //!Typed observation of the node's emitted topic `camera_state`: the harness subscribes before the node boots (pinned to the node's identity) and barriers on the subscription, so the node's very first publish is captured.
-/// A held subscription to the node's emissions on this topic.
+/// A held subscription to the node's emissions on this topic. It
+/// keeps the newest messages the test has not read, up to the queue
+/// size of the topic's QoS tier, or its retention depth when that is
+/// larger: when the queue is full, a new message drops the oldest
+/// unread one. A test can leave it unread, and its unread messages
+/// never hold up the other messages to the harness's session.
 pub struct Subscription {
     inner: peppylib::messaging::Subscription,
 }
@@ -8271,6 +8314,7 @@ pub(crate) async fn subscribe(
                 };
                 RETENTION
             },
+            peppylib::messaging::TopicBuffer::KeepLatest,
         )
         .await?;
     Ok(Subscription { inner })
@@ -9852,7 +9896,10 @@ pub struct Config {
     /// [`Harness::clock`]'s `tick`. `Publisher` makes the node the
     /// instance supplying that domain: it publishes its own instants
     /// and the test reads them back with
-    /// `peppylib::clock::subscribe(harness.node_runner())`.
+    /// `peppylib::clock::subscribe(harness.node_runner(),
+    /// peppylib::messaging::TopicBuffer::KeepLatest)`, which keeps
+    /// the newest ticks and never holds up the node's session when
+    /// the test reads late.
     pub clock: peppylib::testing::HarnessClock,
     ///Leave the `camera_zero_or_one` dependency slot vacant (its cardinality admits an empty binding).
     pub camera_zero_or_one_vacant: bool,
@@ -9941,7 +9988,9 @@ pub struct ObservedMocks {
     pub watchers_zero_or_more: Vec<crate::mock::observed::watchers_zero_or_more::Mock>,
 }
 /// Typed subscriptions to the node's emitted topics, opened before
-/// the node booted (so its very first publish is captured).
+/// the node booted (so its very first publish is captured). Each
+/// keeps the newest messages the test has not read and never holds
+/// up the harness's session.
 pub struct Emitted {
     pub video_stream: crate::fixtures::emitted_topics::video_stream::Subscription,
     pub feed_video_stream: crate::fixtures::emitted_topics::feed::video_stream::Subscription,
@@ -15582,7 +15631,12 @@ pub mod rich_states {
 Fixture :: emitted_topics/rich_stream
 ================================================================
 //!Typed observation of the node's emitted topic `rich_stream`: the harness subscribes before the node boots (pinned to the node's identity) and barriers on the subscription, so the node's very first publish is captured.
-/// A held subscription to the node's emissions on this topic.
+/// A held subscription to the node's emissions on this topic. It
+/// keeps the newest messages the test has not read, up to the queue
+/// size of the topic's QoS tier, or its retention depth when that is
+/// larger: when the queue is full, a new message drops the oldest
+/// unread one. A test can leave it unread, and its unread messages
+/// never hold up the other messages to the harness's session.
 pub struct Subscription {
     inner: peppylib::messaging::Subscription,
 }
@@ -15603,6 +15657,7 @@ pub(crate) async fn subscribe(
             &producer,
             peppylib::config::QoSProfile::SensorData,
             peppylib::config::TopicRetention::LiveOnly,
+            peppylib::messaging::TopicBuffer::KeepLatest,
         )
         .await?;
     Ok(Subscription { inner })
@@ -17085,7 +17140,10 @@ pub struct Config {
     /// [`Harness::clock`]'s `tick`. `Publisher` makes the node the
     /// instance supplying that domain: it publishes its own instants
     /// and the test reads them back with
-    /// `peppylib::clock::subscribe(harness.node_runner())`.
+    /// `peppylib::clock::subscribe(harness.node_runner(),
+    /// peppylib::messaging::TopicBuffer::KeepLatest)`, which keeps
+    /// the newest ticks and never holds up the node's session when
+    /// the test reads late.
     pub clock: peppylib::testing::HarnessClock,
 }
 #[allow(clippy::derivable_impls)]
@@ -17114,7 +17172,9 @@ pub struct PairingMocks {
 }
 pub struct ObservedMocks {}
 /// Typed subscriptions to the node's emitted topics, opened before
-/// the node booted (so its very first publish is captured).
+/// the node booted (so its very first publish is captured). Each
+/// keeps the newest messages the test has not read and never holds
+/// up the harness's session.
 pub struct Emitted {
     pub rich_stream: crate::fixtures::emitted_topics::rich_stream::Subscription,
 }
@@ -18137,7 +18197,10 @@ pub struct Config {
     /// [`Harness::clock`]'s `tick`. `Publisher` makes the node the
     /// instance supplying that domain: it publishes its own instants
     /// and the test reads them back with
-    /// `peppylib::clock::subscribe(harness.node_runner())`.
+    /// `peppylib::clock::subscribe(harness.node_runner(),
+    /// peppylib::messaging::TopicBuffer::KeepLatest)`, which keeps
+    /// the newest ticks and never holds up the node's session when
+    /// the test reads late.
     pub clock: peppylib::testing::HarnessClock,
 }
 #[allow(clippy::derivable_impls)]
@@ -18164,7 +18227,9 @@ pub struct DepMocks {
 pub struct PairingMocks {}
 pub struct ObservedMocks {}
 /// Typed subscriptions to the node's emitted topics, opened before
-/// the node booted (so its very first publish is captured).
+/// the node booted (so its very first publish is captured). Each
+/// keeps the newest messages the test has not read and never holds
+/// up the harness's session.
 pub struct Emitted {}
 pub struct Harness {
     core: peppylib::testing::HarnessCore,
@@ -18351,7 +18416,10 @@ pub struct Config {
     /// [`Harness::clock`]'s `tick`. `Publisher` makes the node the
     /// instance supplying that domain: it publishes its own instants
     /// and the test reads them back with
-    /// `peppylib::clock::subscribe(harness.node_runner())`.
+    /// `peppylib::clock::subscribe(harness.node_runner(),
+    /// peppylib::messaging::TopicBuffer::KeepLatest)`, which keeps
+    /// the newest ticks and never holds up the node's session when
+    /// the test reads late.
     pub clock: peppylib::testing::HarnessClock,
 }
 #[allow(clippy::derivable_impls)]
@@ -18376,7 +18444,9 @@ pub struct DepMocks {}
 pub struct PairingMocks {}
 pub struct ObservedMocks {}
 /// Typed subscriptions to the node's emitted topics, opened before
-/// the node booted (so its very first publish is captured).
+/// the node booted (so its very first publish is captured). Each
+/// keeps the newest messages the test has not read and never holds
+/// up the harness's session.
 pub struct Emitted {}
 pub struct Harness {
     core: peppylib::testing::HarnessCore,

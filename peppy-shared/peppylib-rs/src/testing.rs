@@ -29,7 +29,8 @@ use crate::clock::{ClockSource, ClockSourceError, WallClockSource};
 use crate::error::{Error, Result};
 use crate::messaging::{
     ConcurrentAction, GoalContext, MessengerHandle, PendingGoal, SenderTarget, ServiceEndpoint,
-    ServiceMessenger, ServiceRequestContext, ServiceResponder, TopicMessenger, TopicPublisher,
+    ServiceMessenger, ServiceRequestContext, ServiceResponder, TopicBuffer, TopicMessenger,
+    TopicPublisher,
 };
 use crate::runtime::{
     CancellationToken, NodeBuilder, NodeRunner, StandaloneConfig, TaskHandle, spawn,
@@ -457,6 +458,10 @@ async fn wait_for_matching_subscriber(
 /// slot `as_link_id` both pinned, without the pin-following machinery, which
 /// a mock does not need (its pin never changes). This is how a generated
 /// pairing mock receives the topics the node under test emits on its slot.
+///
+/// The subscription keeps the newest messages ([`TopicBuffer::KeepLatest`]):
+/// a test can leave it unread, and its unread messages never hold up the
+/// other messages to the mock's session.
 #[allow(clippy::too_many_arguments)]
 pub async fn subscribe_peer_pinned(
     messenger: &MessengerHandle,
@@ -482,6 +487,7 @@ pub async fn subscribe_peer_pinned(
         ),
         to_topic,
         qos,
+        TopicBuffer::KeepLatest,
     )
     .await
 }

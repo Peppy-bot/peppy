@@ -20,6 +20,7 @@ from peppylib import (
     SenderTarget,
     ServiceMessenger,
     StandaloneConfig,
+    TopicBuffer,
     TopicMessenger,
     TopicRetention,
 )
@@ -217,6 +218,7 @@ async def test_topic_publisher_first_publish_is_delivered():
             producer,
             QoSProfile.Reliable,
             TopicRetention.live_only(),
+            TopicBuffer.Backpressure,
         )
 
         publisher = await TestTopicPublisher.declare(
@@ -267,6 +269,7 @@ async def test_topic_publisher_on_a_retaining_topic_serves_a_late_subscription()
                 ProducerRef(MOCK_CORE, MOCK_INSTANCE),
                 QoSProfile.Reliable,
                 retention,
+                TopicBuffer.Backpressure,
             )
 
         first_subscription = await subscribe()
@@ -352,6 +355,7 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
             ProducerRef("standalone-core", instance_id),
             QoSProfile.Reliable,
             TopicRetention.live_only(),
+            TopicBuffer.Backpressure,
         )
 
         standalone_config = (
@@ -572,7 +576,9 @@ async def test_mock_clock_wall_serves_synchronize_ticks_and_scripted_skew(tmp_pa
             )
 
             # The periodic tick publisher carries the same skewed source.
-            subscription = await peppy_clock.subscribe(node_runner)
+            subscription = await peppy_clock.subscribe(
+                node_runner, TopicBuffer.KeepLatest
+            )
             tick = await asyncio.wait_for(subscription.on_next_tick(), timeout=10.0)
             assert tick is not None, "subscription should be open"
             assert tick.time > time.time_ns() + hour_ns / 2, (

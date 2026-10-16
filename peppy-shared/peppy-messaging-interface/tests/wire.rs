@@ -18,8 +18,8 @@ use config::node::TopicRetention;
 use pmi::{
     ActionWireReceiver, ActionWireSender, FeedbackBuffer, MessengerBackend, Payload, ProducerRef,
     PublisherQoS, ReplyStream, SenderTarget, ServiceKind, ServiceQueryKind, ServiceWireReceiver,
-    ServiceWireSender, SubscriberBufferSizes, SubscriberQoS, TopicMessage, TopicWireReceiver,
-    TopicWireSender, ZenohAdapter,
+    ServiceWireSender, SubscriberBufferSizes, SubscriberQoS, TopicBuffer, TopicMessage,
+    TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
 
 /// Waits for the next reply on a service `ReplyStream` and returns its
@@ -51,7 +51,12 @@ async fn run_topic_roundtrip(
 
     let sub = instance
         .messenger()
-        .subscribe_topic(receiver, SubscriberQoS::Standard, TopicRetention::LiveOnly)
+        .subscribe_topic(
+            receiver,
+            SubscriberQoS::Standard,
+            TopicRetention::LiveOnly,
+            TopicBuffer::Backpressure,
+        )
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;

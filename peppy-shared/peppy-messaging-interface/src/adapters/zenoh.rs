@@ -15,9 +15,9 @@
 //!
 //! Callback handlers have no intermediate channel: each callback invocation
 //! either forwards into our own `flume` channel (a subscriber, through the
-//! [`crate::subscription_buffer`] sink that decides between backpressure for a
-//! topic and a buffer that never waits for a goal's feedback; a queryable,
-//! where blocking `send` preserves backpressure) or our own tokio mpsc
+//! [`crate::subscription_buffer`] sink that decides between backpressure and
+//! a buffer that never waits; a queryable, where blocking `send` preserves
+//! backpressure) or our own tokio mpsc
 //! (`call_service`, where `try_send` silently drops on a closed/full receiver
 //! because the caller only needs the first valid reply).
 //!
@@ -34,7 +34,7 @@ use crate::types::{
     ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer, IncomingRequest,
     LivelinessEvent, LivelinessToken, LivelinessWatch, Payload, PresenceScope, PublisherQoS,
     ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
-    SubscriberQoS, TopicMessage, ZenohResponseToken, service_query_lifetime,
+    SubscriberQoS, TopicBuffer, TopicMessage, ZenohResponseToken, service_query_lifetime,
 };
 use crate::wire::zenoh_format::{ServiceReplyAttachment, TopicAttachment, ZenohWireFormat};
 use crate::wire::{
@@ -796,12 +796,13 @@ impl MessengerBackend for ZenohAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
         retention: TopicRetention,
+        buffer: TopicBuffer,
     ) -> Result<Subscription> {
         let drop_secondary = recv.drops_secondary_publishes();
         self.subscribe_keyexpr(
             ZenohWireFormat::topic_subscribe(recv),
             qos,
-            Buffering::Backpressure,
+            Buffering::Topic(buffer),
             drop_secondary,
             retention,
         )
@@ -1363,11 +1364,11 @@ impl ZenohAdapter {
 
         let session = self.open_session()?;
 
-        // The callback runs on zenoh's reception thread. A topic's full
+        // The callback runs on zenoh's reception thread. A full backpressure
         // buffer blocks that thread until the reader takes a message, so the
-        // stall reaches the publisher (backpressure); a goal's feedback stream
-        // never blocks it. See `subscription_buffer` and the module-level
-        // "Why callback handlers, not FIFO" doc.
+        // stall reaches the publisher; a keep-latest topic buffer and a goal's
+        // feedback stream never block it. See `subscription_buffer` and the
+        // module-level "Why callback handlers, not FIFO" doc.
         let subscriber = session
             .declare_subscriber(&keyexpr)
             .callback(move |sample| {
@@ -1855,6 +1856,7 @@ mod tests {
                     &topic_receiver,
                     SubscriberQoS::Standard,
                     TopicRetention::LiveOnly,
+                    TopicBuffer::Backpressure,
                 )
                 .await,
         );

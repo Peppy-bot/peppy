@@ -613,7 +613,9 @@ mod tests {
     /// before it is allowed to succeed.
     mod engine {
         use super::*;
-        use crate::messaging::{MessengerHandle, ProducerRef, SenderTarget, TopicMessenger};
+        use crate::messaging::{
+            MessengerHandle, ProducerRef, SenderTarget, TopicBuffer, TopicMessenger,
+        };
         use crate::types::Payload;
         use config::node::{QoSProfile, TopicRetention};
         use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
@@ -703,6 +705,7 @@ mod tests {
                     pin,
                     wiring.qos.clone(),
                     wiring.wire.retention,
+                    TopicBuffer::Backpressure,
                 )
                 .await
             }

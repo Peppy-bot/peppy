@@ -601,7 +601,7 @@ impl Drop for Scenario {
 const DRIVER_MAIN_RS: &str = r####"
 use peppygen::{NodeBuilder, Result};
 use peppylib::config::{QoSProfile, TopicRetention};
-use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, Subscription, TopicMessenger};
+use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, Subscription, TopicBuffer, TopicMessenger};
 use peppylib::types::Payload;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -746,6 +746,7 @@ fn main() -> Result<()> {
             &ProducerRef::new(CORE, RESPONDER_INST),
             QoSProfile::Reliable,
             TopicRetention::LiveOnly,
+            TopicBuffer::Backpressure,
         )
         .await?;
         let pong_slot: Arc<Mutex<Option<Subscription>>> = Arc::new(Mutex::new(Some(pong_sub)));
@@ -802,7 +803,7 @@ fn main() -> Result<()> {
 const RESPONDER_MAIN_RS: &str = r####"
 use peppygen::{NodeBuilder, Result};
 use peppylib::config::{QoSProfile, TopicRetention};
-use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, TopicMessenger};
+use peppylib::messaging::{ProducerRef, SenderTarget, ServiceMessenger, TopicBuffer, TopicMessenger};
 
 const TAG: &str = "v1";
 const CORE: &str = "bench_core";
@@ -865,6 +866,7 @@ fn main() -> Result<()> {
                     &ProducerRef::new(CORE, DRIVER_INST),
                     QoSProfile::Reliable,
                     TopicRetention::LiveOnly,
+                    TopicBuffer::Backpressure,
                 )
                 .await
                 .expect("subscribe ping");
@@ -900,7 +902,15 @@ import sys
 import traceback
 
 from peppygen import NodeBuilder
-from peppylib import ProducerRef, QoSProfile, SenderTarget, ServiceMessenger, TopicMessenger, TopicRetention
+from peppylib import (
+    ProducerRef,
+    QoSProfile,
+    SenderTarget,
+    ServiceMessenger,
+    TopicBuffer,
+    TopicMessenger,
+    TopicRetention,
+)
 
 TAG = "v1"
 CORE = "bench_core"
@@ -935,6 +945,7 @@ async def echo_topic(node_runner):
         ProducerRef(CORE, DRIVER_INST),
         QoSProfile.Reliable,
         TopicRetention.live_only(),
+        TopicBuffer.Backpressure,
     )
     pong = await TopicMessenger.declare_publisher(
         handle,

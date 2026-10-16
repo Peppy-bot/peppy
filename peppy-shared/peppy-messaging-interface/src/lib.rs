@@ -49,7 +49,7 @@ pub use types::{
     LivelinessEvent, LivelinessToken, LivelinessWatch, Messenger, MessengerAdapter,
     MessengerBackend, MessengerPublisher, Payload, PresenceScope, PublisherQoS, ReplyStream,
     ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,
-    Subscription, TopicMessage,
+    Subscription, TopicBuffer, TopicMessage,
 };
 /// Channel-address template helpers (`pmi::templates`) that render the zenoh
 /// key-expression grammar with caller-supplied identity slots. Consumed by

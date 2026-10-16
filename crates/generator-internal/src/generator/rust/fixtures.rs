@@ -141,7 +141,12 @@ fn render_emitted_topic(
     let module = quote! {
         #![doc = #doc]
 
-        /// A held subscription to the node's emissions on this topic.
+        /// A held subscription to the node's emissions on this topic. It
+        /// keeps the newest messages the test has not read, up to the queue
+        /// size of the topic's QoS tier, or its retention depth when that is
+        /// larger: when the queue is full, a new message drops the oldest
+        /// unread one. A test can leave it unread, and its unread messages
+        /// never hold up the other messages to the harness's session.
         pub struct Subscription {
             inner: peppylib::messaging::Subscription,
         }
@@ -163,6 +168,7 @@ fn render_emitted_topic(
                 &producer,
                 #qos,
                 #retention,
+                peppylib::messaging::TopicBuffer::KeepLatest,
             )
             .await?;
             Ok(Subscription { inner })
@@ -838,7 +844,10 @@ fn render_harness(
             /// [`Harness::clock`]'s `tick`. `Publisher` makes the node the
             /// instance supplying that domain: it publishes its own instants
             /// and the test reads them back with
-            /// `peppylib::clock::subscribe(harness.node_runner())`.
+            /// `peppylib::clock::subscribe(harness.node_runner(),
+            /// peppylib::messaging::TopicBuffer::KeepLatest)`, which keeps
+            /// the newest ticks and never holds up the node's session when
+            /// the test reads late.
             pub clock: peppylib::testing::HarnessClock,
             #( #config_fields ),*
         }
@@ -879,7 +888,9 @@ fn render_harness(
         }
 
         /// Typed subscriptions to the node's emitted topics, opened before
-        /// the node booted (so its very first publish is captured).
+        /// the node booted (so its very first publish is captured). Each
+        /// keeps the newest messages the test has not read and never holds
+        /// up the harness's session.
         pub struct Emitted {
             #( #emitted_fields ),*
         }

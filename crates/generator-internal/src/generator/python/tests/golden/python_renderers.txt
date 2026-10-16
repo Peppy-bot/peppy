@@ -3293,7 +3293,13 @@ def _deserialize_joint_states_message(payload: bytes) -> JointStatesMessage:
         return JointStatesMessage(positions=positions_0, timestamp=timestamp_2)
 
 class JointStatesSubscription:
-    """Typed subscription to `joint_states` (the node emits this direction): pinned to the node's identity and slot id exactly as a real paired peer would be."""
+    """Typed subscription to `joint_states` (the node emits this direction): pinned to the node's identity and slot id exactly as a real paired peer would be.
+
+    It keeps the newest messages the test has not read, up to the queue size of
+    the topic's QoS tier: when the queue is full, a new message drops the oldest
+    unread one. A test can leave it unread, and its unread messages never hold up
+    the other messages to the mock's session.
+    """
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -3519,7 +3525,13 @@ def _deserialize_joint_states_message(payload: bytes) -> JointStatesMessage:
         return JointStatesMessage(positions=positions_0, timestamp=timestamp_2)
 
 class JointStatesSubscription:
-    """Typed subscription to `joint_states` (the node emits this direction): pinned to the node's identity and slot id exactly as a real paired peer would be."""
+    """Typed subscription to `joint_states` (the node emits this direction): pinned to the node's identity and slot id exactly as a real paired peer would be.
+
+    It keeps the newest messages the test has not read, up to the queue size of
+    the topic's QoS tier: when the queue is full, a new message drops the oldest
+    unread one. A test can leave it unread, and its unread messages never hold up
+    the other messages to the mock's session.
+    """
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -4081,7 +4093,14 @@ def _deserialize_message(payload: bytes) -> Message:
         return Message(header=header_4, encoding=encoding_5, width=width_6, frame=frame_7)
 
 class Subscription:
-    """A held subscription to the node's emissions on this topic."""
+    """A held subscription to the node's emissions on this topic.
+
+    It keeps the newest messages the test has not read, up to the queue size of
+    the topic's QoS tier, or its retention depth when that is larger: when the
+    queue is full, a new message drops the oldest unread one. A test can leave it
+    unread, and its unread messages never hold up the other messages to the
+    harness's session.
+    """
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -4105,6 +4124,7 @@ async def subscribe(session, node_instance_id: str) -> Subscription:
         producer,
         peppylib.QoSProfile.SensorData,
         retention=peppylib.TopicRetention.live_only(),
+        buffer=peppylib.TopicBuffer.KeepLatest,
     )
     return Subscription(inner)
 
@@ -4155,7 +4175,14 @@ def _deserialize_message(payload: bytes) -> Message:
         return Message(header=header_4, encoding=encoding_5, width=width_6, frame=frame_7)
 
 class Subscription:
-    """A held subscription to the node's emissions on this topic."""
+    """A held subscription to the node's emissions on this topic.
+
+    It keeps the newest messages the test has not read, up to the queue size of
+    the topic's QoS tier, or its retention depth when that is larger: when the
+    queue is full, a new message drops the oldest unread one. A test can leave it
+    unread, and its unread messages never hold up the other messages to the
+    harness's session.
+    """
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -4179,6 +4206,7 @@ async def subscribe(session, node_instance_id: str) -> Subscription:
         producer,
         peppylib.QoSProfile.SensorData,
         retention=peppylib.TopicRetention.live_only(),
+        buffer=peppylib.TopicBuffer.KeepLatest,
     )
     return Subscription(inner)
 
@@ -4213,7 +4241,14 @@ def _deserialize_message(payload: bytes) -> Message:
         return Message()
 
 class Subscription:
-    """A held subscription to the node's emissions on this topic."""
+    """A held subscription to the node's emissions on this topic.
+
+    It keeps the newest messages the test has not read, up to the queue size of
+    the topic's QoS tier, or its retention depth when that is larger: when the
+    queue is full, a new message drops the oldest unread one. A test can leave it
+    unread, and its unread messages never hold up the other messages to the
+    harness's session.
+    """
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -4237,6 +4272,7 @@ async def subscribe(session, node_instance_id: str) -> Subscription:
         producer,
         peppylib.QoSProfile.Reliable,
         retention=peppylib.TopicRetention.live_only(),
+        buffer=peppylib.TopicBuffer.KeepLatest,
     )
     return Subscription(inner)
 
@@ -5286,7 +5322,7 @@ class ObservedMocks:
 Mocks = peppylib.testing.Mocks
 
 class Emitted:
-    """Typed subscriptions to the node's emitted topics, opened before the node booted (so its very first publish is captured)."""
+    """Typed subscriptions to the node's emitted topics, opened before the node booted (so its very first publish is captured). Each keeps the newest messages the test has not read and never holds up the harness's session."""
 
     def __init__(self, video_stream, feed_video_stream, heartbeat) -> None:
         self.video_stream = video_stream
@@ -5394,7 +5430,9 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wal
     `await harness.clock.tick(...)`. `"publisher"` makes the node the
     instance supplying that domain: it publishes its own instants and the
     test reads them back with
-    `peppylib.clock.subscribe(harness.node_runner())`.
+    `peppylib.clock.subscribe(harness.node_runner, peppylib.TopicBuffer.KeepLatest)`,
+    which keeps the newest ticks and never holds up the node's session when the
+    test reads late.
 
     spare_camera_vacant: leave the `spare_camera` dependency slot vacant (its cardinality admits an empty binding).
     camera_bank_instances: how many mock producer instances to start and bind for the `camera_bank` dependency slot.
@@ -5902,7 +5940,7 @@ class ObservedMocks:
 Mocks = peppylib.testing.Mocks
 
 class Emitted:
-    """Typed subscriptions to the node's emitted topics, opened before the node booted (so its very first publish is captured)."""
+    """Typed subscriptions to the node's emitted topics, opened before the node booted (so its very first publish is captured). Each keeps the newest messages the test has not read and never holds up the harness's session."""
 
 class Harness:
     """Generated test harness: ephemeral router + started mocks + seeded `StandaloneConfig` + the node running in-process behind the readiness barriers. Construct with `start(...)`; tear down with `await shutdown()` (or let `async with start(...)` do it)."""
@@ -6005,7 +6043,9 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wal
     `await harness.clock.tick(...)`. `"publisher"` makes the node the
     instance supplying that domain: it publishes its own instants and the
     test reads them back with
-    `peppylib.clock.subscribe(harness.node_runner())`.
+    `peppylib.clock.subscribe(harness.node_runner, peppylib.TopicBuffer.KeepLatest)`,
+    which keeps the newest ticks and never holds up the node's session when the
+    test reads late.
     """
     return _HarnessStart(_start(setup, parameters, instance_id, node_dir, clock))
 
@@ -6110,7 +6150,7 @@ class ObservedMocks:
 Mocks = peppylib.testing.Mocks
 
 class Emitted:
-    """Typed subscriptions to the node's emitted topics, opened before the node booted (so its very first publish is captured)."""
+    """Typed subscriptions to the node's emitted topics, opened before the node booted (so its very first publish is captured). Each keeps the newest messages the test has not read and never holds up the harness's session."""
 
 class Harness:
     """Generated test harness: ephemeral router + started mocks + seeded `StandaloneConfig` + the node running in-process behind the readiness barriers. Construct with `start(...)`; tear down with `await shutdown()` (or let `async with start(...)` do it)."""
@@ -6213,7 +6253,9 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wal
     `await harness.clock.tick(...)`. `"publisher"` makes the node the
     instance supplying that domain: it publishes its own instants and the
     test reads them back with
-    `peppylib.clock.subscribe(harness.node_runner())`.
+    `peppylib.clock.subscribe(harness.node_runner, peppylib.TopicBuffer.KeepLatest)`,
+    which keeps the newest ticks and never holds up the node's session when the
+    test reads late.
     """
     return _HarnessStart(_start(setup, parameters, instance_id, node_dir, clock))
 
@@ -6311,7 +6353,7 @@ class ObservedMocks:
 Mocks = peppylib.testing.Mocks
 
 class Emitted:
-    """Typed subscriptions to the node's emitted topics, opened before the node booted (so its very first publish is captured)."""
+    """Typed subscriptions to the node's emitted topics, opened before the node booted (so its very first publish is captured). Each keeps the newest messages the test has not read and never holds up the harness's session."""
 
 class Harness:
     """Generated test harness: ephemeral router + started mocks + seeded `StandaloneConfig` + the node running in-process behind the readiness barriers. Construct with `start(...)`; tear down with `await shutdown()` (or let `async with start(...)` do it)."""
@@ -6414,7 +6456,9 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wal
     `await harness.clock.tick(...)`. `"publisher"` makes the node the
     instance supplying that domain: it publishes its own instants and the
     test reads them back with
-    `peppylib.clock.subscribe(harness.node_runner())`.
+    `peppylib.clock.subscribe(harness.node_runner, peppylib.TopicBuffer.KeepLatest)`,
+    which keeps the newest ticks and never holds up the node's session when the
+    test reads late.
     """
     return _HarnessStart(_start(setup, parameters, instance_id, node_dir, clock))
 

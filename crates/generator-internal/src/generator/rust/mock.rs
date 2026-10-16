@@ -1238,7 +1238,12 @@ fn render_pair_subscription(
     let module = quote! {
         #[doc = #doc]
         pub mod #module_ident {
-            /// A held subscription to the node's emissions on this slot.
+            /// A held subscription to the node's emissions on this slot. It
+            /// keeps the newest messages the test has not read, up to the
+            /// queue size of the topic's QoS tier: when the queue is full, a
+            /// new message drops the oldest unread one. A test can leave it
+            /// unread, and its unread messages never hold up the other
+            /// messages to the mock's session.
             pub struct Subscription {
                 inner: peppylib::messaging::Subscription,
             }

@@ -27,7 +27,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 pub(crate) use topics::{
-    PyBoundSetSubscription, PySubscription, PyTopicMessage, PyTopicMessenger, PyTopicPublisher,
+    PyBoundSetSubscription, PySubscription, PyTopicBuffer, PyTopicMessage, PyTopicMessenger,
+    PyTopicPublisher,
 };
 
 /// A member's copy as the member reprs spell it: the quoted name, or `None`.
@@ -314,6 +315,7 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging_module.add_class::<PyTopicMessage>()?;
     messaging_module.add_class::<PySubscription>()?;
     messaging_module.add_class::<PyBoundSetSubscription>()?;
+    messaging_module.add_class::<PyTopicBuffer>()?;
     messaging_module.add_class::<PyTopicMessenger>()?;
     messaging_module.add_class::<PyTopicPublisher>()?;
     messaging_module.add_class::<PySenderTarget>()?;

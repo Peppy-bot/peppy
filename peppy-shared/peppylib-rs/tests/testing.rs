@@ -13,7 +13,7 @@ use config::node::{QoSProfile, TopicRetention};
 use peppylib::PeppyError;
 use peppylib::messaging::{
     ActionMessenger, FeedbackBuffer, NonEmptyPayload, PeerInfo, ProducerRef, SenderTarget,
-    ServiceMessenger, ServiceTarget, TopicMessenger,
+    ServiceMessenger, ServiceTarget, TopicBuffer, TopicMessenger,
 };
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use peppylib::testing::{
@@ -272,6 +272,7 @@ async fn test_topic_publisher_first_publish_is_delivered() {
         &producer,
         QoSProfile::Reliable,
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("subscribe should succeed");
@@ -346,6 +347,7 @@ async fn test_topic_publisher_on_a_retaining_topic_serves_a_late_subscription() 
             &producer,
             QoSProfile::Reliable,
             retains_latest,
+            TopicBuffer::Backpressure,
         )
     };
     let mut first_subscription = subscribe().await.expect("subscribe should succeed");
@@ -404,6 +406,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
         &node_producer,
         QoSProfile::Reliable,
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("observation subscribe should succeed");
@@ -666,6 +669,98 @@ async fn subscribe_peer_pinned_receives_slot_scoped_publishes() {
     router.shutdown().await.expect("router shutdown");
 }
 
+/// A test can leave a pairing mock's subscription unread. The subscription
+/// keeps its newest messages and never holds up the mock's session: the node
+/// emits one message more than the unread queue holds, then one message on a
+/// second topic of the slot. The second message reaches the mock, and the
+/// unread topic holds every message but the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subscribe_peer_pinned_keeps_the_newest_messages_and_never_holds_up_its_session() {
+    let router = EphemeralRouter::start().await.expect("start router");
+    let node_handle = router.connect().await.expect("node session");
+    let mock_handle = router.connect().await.expect("mock session");
+
+    let pairing = SenderTarget::pairing("arm_link", "v1").expect("pairing target");
+    let node = ProducerRef::new("standalone-core", "node_1");
+    let mock_peer = PeerInfo {
+        producer: ProducerRef::new("mock-core", "mock-arm"),
+        peer_link_id: "controller".to_string(),
+    };
+    let subscribe = |topic| {
+        subscribe_peer_pinned(
+            &mock_handle,
+            "mock-core",
+            "mock-arm",
+            "controller",
+            pairing.clone(),
+            &node,
+            "arm",
+            topic,
+            QoSProfile::Reliable,
+        )
+    };
+    let mut commands = subscribe("joint_commands")
+        .await
+        .expect("pinned subscription");
+    let mut markers = subscribe("marker").await.expect("pinned subscription");
+
+    // Both topics share one QoS, so the link delivers them in publish order.
+    let declare = |topic| {
+        TestTopicPublisher::declare_to_peer(
+            &node_handle,
+            "standalone-core",
+            "node_1",
+            pairing.clone(),
+            "arm",
+            topic,
+            QoSProfile::Reliable,
+            mock_peer.clone(),
+        )
+    };
+    let command_publisher = declare("joint_commands").await.expect("declare publisher");
+    let marker_publisher = declare("marker").await.expect("declare publisher");
+
+    // A reliable topic's subscription queue has the standard tier's size,
+    // and a session opened with `EphemeralRouter::connect` takes the default
+    // sizes, `SubscriberBufferSizes::default()`.
+    let capacity = pmi::SubscriberBufferSizes::default().standard;
+    let published = 1..=capacity + 1;
+    for index in published.clone() {
+        command_publisher
+            .publish(Payload::from(format!("cmd-{index}").into_bytes()))
+            .await
+            .expect("publish command");
+    }
+    marker_publisher
+        .publish(Payload::from_static(b"marker"))
+        .await
+        .expect("publish marker");
+
+    let marker = tokio::time::timeout(Duration::from_secs(5), markers.on_next_message())
+        .await
+        .expect("the unread commands must not hold up the marker")
+        .expect("subscription should be open");
+    assert_eq!(marker.payload().as_ref(), b"marker");
+
+    // Every command came before the marker, so the queue holds its newest
+    // commands now.
+    let mut kept = Vec::new();
+    for _ in 0..capacity {
+        let command = tokio::time::timeout(Duration::from_secs(5), commands.on_next_message())
+            .await
+            .expect("the queue holds its newest commands")
+            .expect("subscription should be open");
+        kept.push(String::from_utf8_lossy(command.payload().as_ref()).into_owned());
+    }
+    let newest: Vec<String> = published
+        .skip(1)
+        .map(|index| format!("cmd-{index}"))
+        .collect();
+    assert_eq!(kept, newest, "the queue drops the oldest command only");
+
+    router.shutdown().await.expect("router shutdown");
+}
+
 /// A standalone `NodeRunner` against `router`, exactly what a harness-booted
 /// node's runtime looks like to `peppylib::clock`.
 async fn standalone_node_runner(
@@ -749,7 +844,7 @@ async fn mock_clock_wall_serves_synchronize_ticks_and_scripted_skew() {
     );
 
     // The periodic tick publisher carries the same skewed source.
-    let mut subscription = peppylib::clock::subscribe(&node_runner)
+    let mut subscription = peppylib::clock::subscribe(&node_runner, TopicBuffer::KeepLatest)
         .await
         .expect("subscribe to the clock topic");
     let tick = tokio::time::timeout(Duration::from_secs(10), subscription.on_next_tick())
@@ -890,6 +985,165 @@ async fn mock_clock_publisher_leaves_the_domain_to_the_node() {
     );
 
     drop(peppy_clock);
+    drop(node_runner);
+    router.shutdown().await.expect("router shutdown");
+}
+
+/// The queue of a clock subscription on a standalone node's session. A clock
+/// subscription rides the sensor_data tier, and the session takes its sizes
+/// from the discovery section of its runtime config, which a standalone node
+/// leaves at its defaults.
+fn node_clock_queue() -> u64 {
+    config::runtime::DiscoveryConfig::default().high_throughput_buffer_size as u64
+}
+
+/// What publishes a clock's ticks in the tests below.
+trait TickPublisher: Send + 'static {
+    async fn publish_tick(&self, time: u64) -> Result<(), PeppyError>;
+}
+
+/// A node that supplies its clock domain.
+impl TickPublisher for peppylib::clock::ClockPublisher {
+    async fn publish_tick(&self, time: u64) -> Result<(), PeppyError> {
+        self.publish(time).await
+    }
+}
+
+/// A publisher of the core node's wall `clock` topic, as the daemon declares
+/// it.
+impl TickPublisher for peppylib::messaging::TopicPublisher {
+    async fn publish_tick(&self, time: u64) -> Result<(), PeppyError> {
+        let tick = core_node_api::encoding::ClockTick::new(time);
+        self.publish(tick.encode().expect("a tick encodes")).await
+    }
+}
+
+/// Publishes a tick for each of `times` from a thread of its own, and waits,
+/// within the failure bound, for every publish to return. The node's session
+/// hands each publish to its own subscriptions inside the publish, so a
+/// subscription that waited for room would block the publish itself. On a
+/// thread of its own, a blocked publish fails this wait instead of stopping
+/// the test's runtime.
+async fn publish_ticks_on_own_thread(
+    publisher: impl TickPublisher,
+    times: std::ops::RangeInclusive<u64>,
+) {
+    let (burst_done, burst_outcome) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("burst runtime");
+        let outcome = runtime.block_on(async {
+            for time in times {
+                publisher.publish_tick(time).await?;
+            }
+            Ok::<(), PeppyError>(())
+        });
+        let _ = burst_done.send(outcome.map_err(|error| error.to_string()));
+    });
+    tokio::time::timeout(Duration::from_secs(10), burst_outcome)
+        .await
+        .expect("the unread ticks must not hold up the node's publishes")
+        .expect("the burst thread reports")
+        .expect("every tick publishes");
+}
+
+/// Reads the ticks `ticks` holds and checks they are `times`, in order.
+async fn expect_ticks(
+    ticks: &mut peppylib::clock::ClockSubscription,
+    times: impl Iterator<Item = u64>,
+) {
+    for time in times {
+        let tick = tokio::time::timeout(Duration::from_secs(5), ticks.on_next_tick())
+            .await
+            .expect("the subscription holds its newest ticks")
+            .expect("tick decodes")
+            .expect("subscription open");
+        assert_eq!(
+            tick.time(),
+            time,
+            "the subscription drops the oldest tick only"
+        );
+    }
+}
+
+/// A test can leave a clock subscription on the node's own session unread.
+/// With `TopicBuffer::KeepLatest` it keeps the newest ticks and never holds
+/// up the session: the node publishes its domain's ticks, one more than the
+/// subscription holds, every publish returns, and the subscription then
+/// holds every tick but the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unread_keep_latest_clock_subscription_never_holds_up_the_node() {
+    let router = EphemeralRouter::start().await.expect("start router");
+    let clock_handle = router.connect().await.expect("clock session");
+    let temp_dir = TempDir::new().expect("temp dir");
+
+    let clock = MockClock::start(
+        &clock_handle,
+        STANDALONE_CORE_NODE,
+        MOCK_CLOCK_INSTANCE_ID,
+        HarnessClock::Publisher,
+    )
+    .await
+    .expect("start a publisher-mode mock clock");
+    let binding = clock.binding().expect("the harness binding");
+    let node_runner = standalone_node_runner(&router, &temp_dir, binding).await;
+    wait_clock_reachable(&node_runner, &clock).await;
+
+    let publisher = peppylib::clock::ClockPublisher::for_node(&node_runner)
+        .await
+        .expect("asking is not an error")
+        .expect("the harness named this node the publisher");
+    let mut ticks = peppylib::clock::subscribe(&node_runner, TopicBuffer::KeepLatest)
+        .await
+        .expect("subscribe to the node's own domain");
+
+    let published = 1..=node_clock_queue() + 1;
+    publish_ticks_on_own_thread(publisher, published.clone()).await;
+    // The publishes are done, so the subscription holds its newest ticks now.
+    expect_ticks(&mut ticks, published.skip(1)).await;
+
+    drop(ticks);
+    drop(node_runner);
+    router.shutdown().await.expect("router shutdown");
+}
+
+/// The wall-time twin of the test above. A node bound to wall time reads its
+/// core node's `clock` topic, so the ticks come from a publisher on that
+/// topic, declared on the node's own session as the daemon declares its own:
+/// the core node's target and the reserved default `link_id`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unread_keep_latest_wall_clock_subscription_never_holds_up_the_node() {
+    let router = EphemeralRouter::start().await.expect("start router");
+    let temp_dir = TempDir::new().expect("temp dir");
+    let node_runner =
+        standalone_node_runner(&router, &temp_dir, config::runtime::ClockBinding::Wall).await;
+
+    let mut ticks = peppylib::clock::subscribe(&node_runner, TopicBuffer::KeepLatest)
+        .await
+        .expect("subscribe to the core node's clock");
+    let core_node = node_runner.processor().bound_core_node().to_string();
+    let publisher = TopicMessenger::declare_publisher(
+        node_runner.messenger(),
+        &core_node,
+        "daemon_1",
+        SenderTarget::node(&core_node, core_node_api::names::CORE_NODE_TAG)
+            .expect("core node target"),
+        Some(pmi::DEFAULT_LINK_ID),
+        core_node_api::TopicId::Clock.name(),
+        QoSProfile::SensorData,
+        TopicRetention::LiveOnly,
+    )
+    .await
+    .expect("declare the core node's clock publisher");
+
+    let published = 1..=node_clock_queue() + 1;
+    publish_ticks_on_own_thread(publisher, published.clone()).await;
+    // The publishes are done, so the subscription holds its newest ticks now.
+    expect_ticks(&mut ticks, published.skip(1)).await;
+
+    drop(ticks);
     drop(node_runner);
     router.shutdown().await.expect("router shutdown");
 }

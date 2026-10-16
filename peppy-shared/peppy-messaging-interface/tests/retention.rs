@@ -26,7 +26,7 @@ use bytes::Bytes;
 use config::node::TopicRetention;
 use pmi::{
     MessengerBackend, MessengerPublisher, Payload, PeppyMessagingInterfaceError, PublisherQoS,
-    SubscriberBufferSizes, SubscriberQoS, Subscription, TopicWireSender, ZenohAdapter,
+    SubscriberBufferSizes, SubscriberQoS, Subscription, TopicBuffer, TopicWireSender, ZenohAdapter,
     ZenohNetProtocol, ZenohdInstance,
 };
 use std::ops::RangeInclusive;
@@ -109,7 +109,12 @@ fn topic_in(topology: Topology, case: &str) -> String {
 
 async fn subscribe(adapter: &ZenohAdapter, topic: &str, retention: TopicRetention) -> Subscription {
     adapter
-        .subscribe_topic(&receiver(topic), SubscriberQoS::Standard, retention)
+        .subscribe_topic(
+            &receiver(topic),
+            SubscriberQoS::Standard,
+            retention,
+            TopicBuffer::Backpressure,
+        )
         .await
         .expect("subscribe")
 }

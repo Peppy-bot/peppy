@@ -110,6 +110,8 @@ The second argument is a response timeout. Rust accepts `Option<Duration>`; Pyth
 `subscribe` opens a long-lived subscription to the ticks of this instance's own clock and returns a `ClockSubscription`. On wall time that is the bound core node's `clock` topic; on a simulated domain it is that domain's stream, whichever machine its publisher runs on.
 Call `on_next_tick` in a loop to receive each tick; it returns `None` when the subscription closes (typically because the producing side went away).
 
+`subscribe` also takes a `TopicBuffer`, which says what the subscription does with the ticks you have not read yet. The subscription lives on the node's own session. `KeepLatest` keeps the newest ticks, up to the [high-throughput buffer size](/advanced_guides/daemon_config/#zenohmanagedsubscriber_buffers-subscriber-buffer-sizes) (1024 ticks by default), and drops the oldest unread one when it is full: a reader that falls behind skips older ticks and holds up nothing. `Backpressure` waits for the reader instead, and what waits with it depends on where the ticks come from. Ticks that arrive over a connection (wall time, or a domain your node consumes) hold up every message that arrives over that connection while the subscription is full. When your node publishes its domain itself, its own publish call waits, because the node's session hands a publish to its own subscriptions inside the publish. A clock reader usually wants the newest tick, so the examples below use `KeepLatest`.
+
 The core node publishes wall ticks at **10 Hz** (every 100 ms) by default: high enough to correlate logs across nodes, low enough not to flood the bus. The rate is set on the core node side via `CoreNodeArguments.clock_publish_interval`. A simulated domain ticks whenever its publisher publishes.
 
 Each `ClockTick` carries a single instant, read with `time()` in Rust and the `time` attribute in Python: nanoseconds on the clock it came from, stamped at emission. On wall time that is the Unix epoch; on a simulated domain it is whatever origin its publisher counts from. The value is never `0`, which is the wire's "no tick observed yet" sentinel. Because the tick is one-way, the value is stale by roughly one one-way network delay on receipt; there is no RTT correction. Use `synchronize` if you need bounded staleness.
@@ -121,11 +123,12 @@ Each `ClockTick` carries a single instant, read with `time()` in Rust and the `t
 
     from peppygen import NodeBuilder, NodeRunner
     from peppygen.parameters import Parameters
+    from peppylib import TopicBuffer
     from peppylib.clock import subscribe
 
 
     async def follow_clock(node_runner: NodeRunner) -> None:
-        sub = await subscribe(node_runner)
+        sub = await subscribe(node_runner, TopicBuffer.KeepLatest)
         while True:
             tick = await sub.on_next_tick()
             if tick is None:
@@ -150,11 +153,12 @@ Each `ClockTick` carries a single instant, read with `time()` in Rust and the `t
     ```rust title="src/main.rs"
     use peppygen::{NodeBuilder, Parameters, Result};
     use peppylib::clock::subscribe;
+    use peppylib::messaging::TopicBuffer;
 
     fn main() -> Result<()> {
         NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
             tokio::spawn(async move {
-                let mut sub = subscribe(&node_runner)
+                let mut sub = subscribe(&node_runner, TopicBuffer::KeepLatest)
                     .await
                     .expect("subscribe should succeed");
 
@@ -176,7 +180,7 @@ Each `ClockTick` carries a single instant, read with `time()` in Rust and the `t
 
 ## Behavior notes
 
-- **QoS profile is `SensorData`.** Stale ticks are dropped on slow subscribers rather than back-pressuring the publisher: a clock value the network couldn't deliver fresh is not worth delivering late.
+- **QoS profile is `SensorData`.** On a congested link the transport drops ticks rather than holding up the publisher: a clock value the network could not deliver fresh is not worth delivering late. Ticks that reach the node and wait unread follow the subscription's buffer: a `KeepLatest` subscription drops its oldest unread tick when it is full, and a `Backpressure` subscription keeps every tick and holds up the connection the ticks arrive over, or the node's own publish when the node publishes its domain.
 - **`synchronize` is hardened against a misbehaving server.** Offset and delay are computed in widened arithmetic and saturated when narrowed back to `i64` / `u64`, so a peer returning extreme `t1`/`t2` cannot wrap the result or flip its sign.
 - **`on_next_tick` returning `None` is terminal.** Treat it as "the producing side went away" and rebuild the subscription if you need to keep listening.
 - **Default timeout for `synchronize` is 10 seconds.** Pass an explicit timeout from latency-sensitive paths so a slow or unreachable core node does not stall your node.

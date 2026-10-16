@@ -378,7 +378,7 @@ assert!((command.max_velocity - 0.5).abs() < f64::EPSILON);
   </TabItem>
 </Tabs>
 
-Both directions carry the pairing's deterministic delivery guarantees: the consuming direction's first publish waits for the node's pinned subscription, and the emitting direction's subscription was opened before the node booted.
+Both directions carry the pairing's deterministic delivery guarantees: the consuming direction's first publish waits for the node's pinned subscription, and the emitting direction's subscription was opened before the node booted. The mock's subscriptions keep the newest messages your test has not read, as the [emitted topic subscriptions](#emitted-topics) do, so a test can leave them unread without holding up the mock's session.
 
 A [multi slot](/advanced_guides/pairing/#pairing-with-several-peers-through-one-slot) gets one mock per member, delivered as a list in the order the configuration names them, each under its own instance id and the copy the configuration put it in; `peer_info_for(instance_id)` is the `info` the node's `peers()` lists for that member. The node's `publish_to` reaches the one mock it names:
 
@@ -475,6 +475,8 @@ assert_eq!(status.outcome, "done");
 </Tabs>
 
 `next` awaits the node's next message on the topic, in order, and returns `None` once the harness's session closes.
+
+Each subscription keeps the newest messages your test has not read: up to 128 messages, or 1024 for a `sensor_data` topic, or the topic's retention depth when that is larger. When a message arrives while the subscription is full, the oldest unread message is dropped. A test can therefore read an emitted topic late, or not at all: its unread messages never hold up the other messages to the harness's session, such as the next message of another emitted topic or the reply of a service or action the test calls. A test that must see every message of a topic never leaves more messages unread than the subscription holds.
 
 ### Exposed services
 
@@ -717,13 +719,13 @@ harness.clock.tick(2_500_000_000).await?; // time advances only when the test sa
 
 The first `tick` waits until the node's clock subscription is visible (the subscription `peppygen::clock::init` opens on a simulated domain), so it cannot be dropped by discovery; ticking a node that reads no domain raises a loud error. `tick` belongs to this mode alone: on a `wall` clock, which ticks itself, and on a `publisher` node, which supplies its own domain, it is an error naming the mode the harness booted.
 
-**`publisher`** mirrors the instance a [domain declaration](/advanced_guides/system_clock/#declaring-a-domain) names: `ClockPublisher::for_node` hands the node a publisher for the harness's domain, and the test never calls `tick`, since the node supplies the time. The harness publishes nothing itself, so a clock subscription on the node runner sees exactly what the node published, in the order it published it, and the node's stamps can be checked against those ticks.
+**`publisher`** mirrors the instance a [domain declaration](/advanced_guides/system_clock/#declaring-a-domain) names: `ClockPublisher::for_node` hands the node a publisher for the harness's domain, and the test never calls `tick`, since the node supplies the time. The harness publishes nothing itself, so a clock subscription on the node runner sees the node's ticks in the order the node published them, and the node's stamps can be checked against those ticks. The subscription lives on the node's own session, so the test opens it with `KeepLatest`: when more ticks than it holds (1024 by default) wait unread, it drops the oldest, and ticks the test reads late, or never, do not hold up the node, its own publishes included.
 
 <Tabs>
   <TabItem label="Python">
 ```python
 async with harness.start(setup, clock="publisher") as h:
-    ticks = await peppylib.clock.subscribe(h.node_runner)
+    ticks = await peppylib.clock.subscribe(h.node_runner, peppylib.TopicBuffer.KeepLatest)
     first = await ticks.on_next_tick()   # published by the node, not the test
     assert first.time >= 1               # 0 is the wire's "no tick yet"
 ```
@@ -738,7 +740,11 @@ let (harness, mocks) = Harness::start_with(
     my_simulator::setup,
 )
 .await?;
-let mut ticks = peppylib::clock::subscribe(harness.node_runner()).await?;
+let mut ticks = peppylib::clock::subscribe(
+    harness.node_runner(),
+    peppylib::messaging::TopicBuffer::KeepLatest,
+)
+.await?;
 let first = ticks.on_next_tick().await?.expect("the node publishes its clock");
 assert!(first.time() >= 1); // 0 is the wire's "no tick yet"
 ```

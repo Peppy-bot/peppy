@@ -2,7 +2,7 @@ use super::target::{PyProducerRef, PySenderTarget};
 use super::{PyMessengerHandle, duration_from_secs_f64, future_into_py_unit, to_py_err};
 use crate::config::{PyQoSProfile, PyTopicRetention};
 use config::node::TopicRetention;
-use peppylib::messaging::{Subscription, TopicMessenger, TopicPublisher};
+use peppylib::messaging::{Subscription, TopicBuffer, TopicMessenger, TopicPublisher};
 use peppylib::runtime::BoundSetSubscription;
 use peppylib::types::{Message, Payload};
 use pyo3::prelude::*;
@@ -121,6 +121,29 @@ impl PyBoundSetSubscription {
     }
 }
 
+/// How a topic subscription holds the messages its reader has not taken yet.
+///
+/// Exposes `peppylib::messaging::TopicBuffer` to Python. `Backpressure` waits
+/// for room: the transport waits with the subscription, which holds up every
+/// message that arrives over the same connection, not only the topic's.
+/// `KeepLatest` keeps the newest messages and drops the oldest unread one when
+/// the queue is full, so the transport never waits for the reader.
+#[pyclass(name = "TopicBuffer", eq, eq_int, from_py_object)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyTopicBuffer {
+    Backpressure,
+    KeepLatest,
+}
+
+impl From<PyTopicBuffer> for TopicBuffer {
+    fn from(buffer: PyTopicBuffer) -> Self {
+        match buffer {
+            PyTopicBuffer::Backpressure => TopicBuffer::Backpressure,
+            PyTopicBuffer::KeepLatest => TopicBuffer::KeepLatest,
+        }
+    }
+}
+
 /// Python wrapper for TopicMessenger
 #[pyclass(name = "TopicMessenger")]
 pub struct PyTopicMessenger;
@@ -136,9 +159,13 @@ impl PyTopicMessenger {
     /// through `node_runner.subscribe_bound_set(...)`, which follows the
     /// slot's complete bound set for every cardinality.
     ///
-    /// `retention` is the topic's declared policy.
+    /// `retention` is the topic's declared policy. `buffer` holds the
+    /// messages the reader has not taken yet: `TopicBuffer.Backpressure` for
+    /// a reader that consumes the stream, `TopicBuffer.KeepLatest` for a
+    /// reader that can leave messages unread, such as a test that observes a
+    /// node.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producer, qos, retention))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producer, qos, retention, buffer))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -150,6 +177,7 @@ impl PyTopicMessenger {
         from_producer: PyProducerRef,
         qos: PyQoSProfile,
         retention: PyTopicRetention,
+        buffer: PyTopicBuffer,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let from_target = from_target.into_inner();
@@ -164,6 +192,7 @@ impl PyTopicMessenger {
                 &from_producer.into_inner(),
                 qos.into(),
                 retention,
+                buffer.into(),
             )
             .await
             .map_err(to_py_err)?;
@@ -255,6 +284,8 @@ impl PyTopicMessenger {
     /// without the pin-following machinery (a test mock's pin never
     /// changes). Test-support seam (`peppylib::testing`); generated pairing
     /// mocks use it to receive the topics the node under test emits to them.
+    /// The subscription keeps the newest messages, so a test can leave it
+    /// unread without holding up the mock's session.
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     fn subscribe_peer_pinned<'py>(

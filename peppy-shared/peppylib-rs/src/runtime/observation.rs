@@ -18,7 +18,7 @@
 use crate::error::Result;
 use crate::messaging::{
     MessengerHandle, NonEmptyObservedSources, ObservationState, ObservedSource, ProducerRef,
-    SenderTarget, Subscription, TopicMessenger,
+    SenderTarget, Subscription, TopicBuffer, TopicMessenger,
 };
 use crate::runtime::NodeRunner;
 use crate::runtime::pairing::{PairingWire, published_on_slot};
@@ -252,6 +252,7 @@ impl FollowedSlot for ObservedFollow {
             Self::recipient(pin, &wiring.wire.recipient)?,
             &wiring.topic,
             wiring.qos.clone(),
+            TopicBuffer::Backpressure,
         )
         .await
     }

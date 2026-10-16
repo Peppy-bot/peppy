@@ -7,7 +7,7 @@ use config::runtime::{
 use core_node_api::encoding::{ClockResponse, ClockTick};
 use core_node_api::{ServiceId, TopicId, names};
 use peppylib::clock;
-use peppylib::messaging::{MessengerHandle, SenderTarget, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, SenderTarget, TopicBuffer, TopicMessenger};
 use peppylib::testing::EphemeralRouter;
 use tempfile::TempDir;
 
@@ -74,7 +74,7 @@ async fn subscribe_clock_yields_typed_ticks() {
     // first tick can land before zenoh discovery routes the subscription, and
     // the test races against propagation. With the subscription up first, any
     // tick published after the await point is delivered.
-    let mut sub = clock::subscribe(&node_runner)
+    let mut sub = clock::subscribe(&node_runner, TopicBuffer::Backpressure)
         .await
         .expect("subscribe_clock should succeed");
 
@@ -250,7 +250,9 @@ async fn a_publisher_reads_its_committed_time_and_its_domain_carries_it() {
     );
 
     // Its own subscription, which must see exactly what it sends.
-    let mut ticks = clock::subscribe(&runner).await.expect("subscribe");
+    let mut ticks = clock::subscribe(&runner, TopicBuffer::Backpressure)
+        .await
+        .expect("subscribe");
 
     publisher
         .publish(SIM_NS)
@@ -312,7 +314,9 @@ async fn a_wall_subscription_reads_only_its_daemons_ticks() {
     let (_router, _dir, runner, observer) =
         start_router_and_runner_with_clock(ClockBinding::Wall).await;
 
-    let mut ticks = clock::subscribe(&runner).await.expect("subscribe");
+    let mut ticks = clock::subscribe(&runner, TopicBuffer::Backpressure)
+        .await
+        .expect("subscribe");
 
     assert!(
         !publish_domain_tick(&observer, &domain(1), DOMAIN_NS).await,

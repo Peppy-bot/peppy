@@ -48,9 +48,12 @@ pub async fn spawn_daemon_watchdog(
     grace: Duration,
     cancellation_token: CancellationToken,
 ) -> Result<TaskHandle<Result<()>>> {
-    let subscription =
-        crate::core_node::subscribe_core_topic(&node_runner, TopicId::DaemonHeartbeat.name())
-            .await?;
+    let subscription = crate::core_node::subscribe_core_topic(
+        &node_runner,
+        TopicId::DaemonHeartbeat.name(),
+        crate::messaging::TopicBuffer::Backpressure,
+    )
+    .await?;
     Ok(spawn(run_watchdog(subscription, grace, cancellation_token)))
 }
 

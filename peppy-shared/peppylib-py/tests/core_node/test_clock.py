@@ -15,6 +15,7 @@ from peppylib import (
     QoSProfile,
     SenderTarget,
     StandaloneConfig,
+    TopicBuffer,
     TopicMessenger,
     TopicRetention,
     clock,
@@ -71,7 +72,7 @@ async def test_synchronize_computes_offset_and_delay(tmp_path):
 
 @pytest.mark.asyncio
 async def test_subscribe_clock_yields_typed_ticks(tmp_path):
-    """`clock.subscribe(node_runner)` decodes published ClockTicks for the caller.
+    """`clock.subscribe(node_runner, buffer)` decodes published ClockTicks for the caller.
 
     Mirrors `subscribe_clock_yields_typed_ticks` from the Rust integration
     test. Subscribes via the helper *before* publishing so the subscription is
@@ -79,7 +80,7 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
     """
     router, node_runner, server_handle = await start_router_and_runner(tmp_path)
     try:
-        sub = await clock.subscribe(node_runner)
+        sub = await clock.subscribe(node_runner, TopicBuffer.Backpressure)
         # Brief settle for zenoh discovery, the same idiom as test_topics.py.
         await asyncio.sleep(0.05)
 
@@ -236,7 +237,7 @@ async def test_a_publisher_reads_its_committed_time_and_its_domain_carries_it(tm
         with pytest.raises(RuntimeError):
             reader.now_ns()
 
-        subscription = await clock.subscribe(node_runner)
+        subscription = await clock.subscribe(node_runner, TopicBuffer.Backpressure)
         assert await publisher.publish(sim_ns) is None
 
         assert reader.now_ns() == sim_ns, (

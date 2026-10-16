@@ -62,7 +62,7 @@ pub use config::runtime::{BoundMember, CopyTag, ProducerRef};
 pub use pmi::{
     ActionWireSender, ContractIdentifier, CoreNodePresence, FeedbackBuffer, LivelinessEvent,
     LivelinessToken, LivelinessWatch, NodeIdentifier, PairingIdentifier, SenderTarget,
-    SenderTargetError,
+    SenderTargetError, TopicBuffer,
 };
 
 use crate::error::{Error, Result};
@@ -532,10 +532,11 @@ impl MessengerHandle {
         recv: &TopicWireReceiver,
         qos: QoSProfile,
         retention: TopicRetention,
+        buffer: TopicBuffer,
     ) -> Result<PmiSubscription> {
         let messenger = self.messenger.lock().await;
         messenger
-            .subscribe_topic(recv, qos.into(), retention)
+            .subscribe_topic(recv, qos.into(), retention, buffer)
             .await
             .map_err(Error::PeppyMessagingInterface)
     }

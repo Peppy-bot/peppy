@@ -223,7 +223,14 @@ fn render_emitted_topic(
 
     builder.py(r#"
 class Subscription:
-    """A held subscription to the node's emissions on this topic."""
+    """A held subscription to the node's emissions on this topic.
+
+    It keeps the newest messages the test has not read, up to the queue size of
+    the topic's QoS tier, or its retention depth when that is larger: when the
+    queue is full, a new message drops the oldest unread one. A test can leave it
+    unread, and its unread messages never hold up the other messages to the
+    harness's session.
+    """
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -259,6 +266,7 @@ class Subscription:
                     "producer,",
                     &format!("{qos},"),
                     &format!("retention={},", retention_python(spec.retention)),
+                    "buffer=peppylib.TopicBuffer.KeepLatest,",
                 ],
                 ")",
             );
@@ -967,7 +975,8 @@ Mocks = peppylib.testing.Mocks
         &mut builder,
         "Emitted",
         "Typed subscriptions to the node's emitted topics, opened before the node \
-         booted (so its very first publish is captured).",
+         booted (so its very first publish is captured). Each keeps the newest \
+         messages the test has not read and never holds up the harness's session.",
         &emitted_attrs,
     );
 
@@ -1103,7 +1112,9 @@ reads OS wall time, which the harness clock ticks like a daemon.
 `await harness.clock.tick(...)`. `"publisher"` makes the node the
 instance supplying that domain: it publishes its own instants and the
 test reads them back with
-`peppylib.clock.subscribe(harness.node_runner())`.
+`peppylib.clock.subscribe(harness.node_runner, peppylib.TopicBuffer.KeepLatest)`,
+which keeps the newest ticks and never holds up the node's session when the
+test reads late.
 "#);
             // One paragraph per slot the deployment lets a test vary.
             if !parts.slot_kwargs.is_empty() {

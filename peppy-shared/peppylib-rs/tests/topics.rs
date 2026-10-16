@@ -2,7 +2,7 @@ mod common;
 
 use common::{publish_once, test_node_target, wait_for_topic_subscriber};
 use config::node::{QoSProfile, TopicRetention};
-use peppylib::messaging::{MessengerHandle, ProducerRef, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, ProducerRef, TopicBuffer, TopicMessenger};
 use peppylib::types::Payload;
 use pmi::{MessengerBackend, ZenohAdapter};
 use std::time::Duration;
@@ -38,6 +38,7 @@ async fn topic_messenger_communication() {
         &producer,
         QoSProfile::Reliable,
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("subscription should succeed");
@@ -108,6 +109,7 @@ async fn node_session_recovers_after_router_restart() {
         &producer,
         QoSProfile::Reliable,
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("subscription should succeed");
@@ -244,6 +246,7 @@ async fn bidirectional_bound_topics_with_late_bound_producer() {
         &arm_1_producer,
         QoSProfile::Reliable,
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("arm_controller arm_1-slot subscription should succeed");
@@ -257,6 +260,7 @@ async fn bidirectional_bound_topics_with_late_bound_producer() {
         &arm_2_producer,
         QoSProfile::Reliable,
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("arm_controller arm_2-slot subscription should succeed");
@@ -272,6 +276,7 @@ async fn bidirectional_bound_topics_with_late_bound_producer() {
         &ctrl_producer,
         QoSProfile::Reliable,
         TopicRetention::LiveOnly,
+        TopicBuffer::Backpressure,
     )
     .await
     .expect("robot_arm subscription should succeed");
