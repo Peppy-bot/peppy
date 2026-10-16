@@ -61,8 +61,10 @@ merge-set App (webhook.py, in AWS Lambda), which hands it to the relay
 (`relay`). For an event that can change the set, the relay starts the Merge
 set workflow of peppy (merge-set.yml) for the branch of the event. The start
 and the end of each CI run, a re-run included, are such events, so the
-dashboard follows the state of the CI, and so are the reviews, so it follows
-the approvals. When the event is a box that a user ticked, the relay also
+dashboard follows the state of the CI. So is the end of each run of the PR
+title check (pr-title), so the dashboard follows that check when a title
+changes, and so are the reviews, so it follows the approvals. When the event
+is a box that a user ticked, the relay also
 answers at once on that pull request, with a link to the run it started. The
 Merge set workflow runs `sync`, one run at a time for each set. `sync` holds
 no state of its own: it reads the whole set from GitHub on every run (the
@@ -299,7 +301,7 @@ def relay_subject(
             case "issue_comment":
                 return dashboard_edit_subject(payload, bot_login)
             case "workflow_run":
-                return ci_run_subject(payload)
+                return workflow_run_subject(payload)
             case "delete":
                 return deleted_branch_subject(payload)
             case _:
@@ -382,17 +384,44 @@ def dashboard_edit_subject(payload: Mapping, bot_login: str) -> RelaySubject | N
     return RelaySubject(payload["issue"]["number"], None, None)
 
 
+def workflow_run_subject(payload: Mapping) -> RelaySubject | None:
+    """The start or the end of a CI run, or the end of a run of the PR title
+    check."""
+    workflow = payload["workflow"]["name"]
+    if workflow == CI_WORKFLOW:
+        return ci_run_subject(payload)
+    if workflow == TITLE_CHECK_WORKFLOW:
+        return title_check_run_subject(payload)
+    return None
+
+
 def ci_run_subject(payload: Mapping) -> RelaySubject | None:
     """The start or the end of a CI run of a pull request."""
     action = payload["action"]
     run = payload["workflow_run"]
     if (
-        payload["workflow"]["name"] != CI_WORKFLOW
-        or run["event"] != "pull_request"
+        run["event"] != "pull_request"
         or action not in CI_RUN_ACTIONS
         or (action == "in_progress" and run["run_attempt"] == 1)
     ):
         return None
+    return subject_of_run(run)
+
+
+def title_check_run_subject(payload: Mapping) -> RelaySubject | None:
+    """The end of a run of the PR title check of a pull request, which runs on
+    `pull_request_target`. The relay hands on the end alone: the check ends
+    within seconds of its start, and the sync reads its state when it runs."""
+    run = payload["workflow_run"]
+    if payload["action"] != "completed" or run["event"] != "pull_request_target":
+        return None
+    return subject_of_run(run)
+
+
+def subject_of_run(run: Mapping) -> RelaySubject:
+    """The pull request of a workflow run. GitHub lists none for a run of a pull
+    request from a fork, nor for a run on `pull_request_target`, so the subject
+    of such a run is its head branch alone."""
     pull_requests = run.get("pull_requests") or []
     return RelaySubject(
         pull_request=pull_requests[0]["number"] if pull_requests else None,
@@ -743,6 +772,10 @@ def parse_review_decision(value: str | None) -> ReviewDecision:
 # The name of the one CI workflow of peppy and of each hub, whose runs the
 # relay hands on.
 CI_WORKFLOW = "Tests"
+# The name of the workflow of the PR title check of peppy and of each hub
+# (.github/actions/pr-title), whose ends the relay hands on: a change of a
+# title can pass or fail that check.
+TITLE_CHECK_WORKFLOW = "pr-title"
 
 
 @dataclass(frozen=True)

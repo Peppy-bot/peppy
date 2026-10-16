@@ -351,6 +351,28 @@ class Relay(unittest.TestCase):
         self.assert_dropped("workflow_run", ci_run_event("completed", workflow="Lint"))
         self.assert_dropped("workflow_run", ci_run_event("completed", event="push"))
 
+    def test_the_end_of_a_run_of_the_title_check_names_its_branch(self):
+        # GitHub lists no pull request for a run on `pull_request_target`.
+        payload = title_check_run_event("completed")
+        payload["workflow_run"]["pull_requests"] = []
+        self.assert_relayed(
+            "workflow_run",
+            payload,
+            merge_set.RelaySubject(None, SET_NAME, "Peppy-bot/nodes-hub"),
+        )
+
+    def test_the_start_of_a_run_of_the_title_check_is_dropped(self):
+        for action, attempt in (("requested", 1), ("in_progress", 2)):
+            with self.subTest(action=action):
+                self.assert_dropped(
+                    "workflow_run", title_check_run_event(action, attempt=attempt)
+                )
+
+    def test_a_run_of_the_title_check_on_another_event_is_dropped(self):
+        self.assert_dropped(
+            "workflow_run", title_check_run_event("completed", event="pull_request")
+        )
+
     def test_a_ci_run_of_a_fork_names_no_pull_request(self):
         payload = ci_run_event("completed", head_repository="someone/nodes-hub")
         payload["workflow_run"]["pull_requests"] = []
@@ -549,6 +571,14 @@ def ci_run_event(
             "head_repository": {"full_name": head_repository},
             "pull_requests": [{"number": 7}],
         },
+    )
+
+
+def title_check_run_event(action, attempt=1, event="pull_request_target"):
+    """A `workflow_run` event of a run of the PR title check of pull request
+    7."""
+    return ci_run_event(
+        action, attempt=attempt, workflow=merge_set.TITLE_CHECK_WORKFLOW, event=event
     )
 
 
@@ -3341,6 +3371,11 @@ class RepositoryFacts(unittest.TestCase):
         self.assertIn(
             f"name: {merge_set.CI_WORKFLOW}", workflow_lines(resolve.PEPPY_CI_WORKFLOW)
         )
+
+    def test_the_relay_hands_on_the_runs_of_the_title_check_workflow(self):
+        lines = workflow_lines("pr-title.yml")
+        self.assertIn(f"name: {merge_set.TITLE_CHECK_WORKFLOW}", lines)
+        self.assertIn("pull_request_target:", lines)
 
     def test_the_changes_job_runs_these_cases(self):
         text = (WORKFLOWS / "tests.yml").read_text()
