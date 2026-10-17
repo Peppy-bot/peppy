@@ -10,6 +10,7 @@ use crate::services::repo::index::{
     PublishedItem, ReadSource, build_cache_entries, read_published_items,
 };
 use crate::services::repo::init::write_default_repos;
+use crate::services::repo::parallel::map_in_parallel;
 use crate::services::repo::status::{self, RepoStatus, RepoStatusFailure};
 use crate::services::repo::{
     REPOS_FILE, RepoOwners, normalize_repo_entries, parse_repo_entry, repo_entry_id,
@@ -30,6 +31,7 @@ use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashSet};
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::time::SystemTime;
 use tokio::task::JoinHandle;
@@ -622,6 +624,13 @@ impl RefreshScope {
 /// entries the caches hold for it and its status line, in its own slot of
 /// the id order, so the caches written from the result still hold every
 /// repository.
+///
+/// The repositories are read in parallel, up to [`MAX_PARALLEL_READS`] at
+/// once, so a refresh takes about as long as its slowest read. The progress
+/// lines of the reads interleave, and each names its repository. What the
+/// reads yield is merged in id order when every read has ended, so the
+/// priority of an entry, the discovery feedback, `failures` and `statuses`
+/// never depend on which read ends first.
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
     build: &PeppyBuild,
@@ -662,74 +671,55 @@ pub(crate) fn process_refresh(
         });
     }
 
-    for entry in &repos {
-        let id = repo_entry_id(entry).unwrap_or(0);
+    let planned: Vec<PlannedRepo> = repos
+        .iter()
+        .filter_map(|entry| plan_repo(entry, &exclusions, scope))
+        .collect();
+    let sources_to_read: Vec<&RepoSource> = planned
+        .iter()
+        .filter_map(PlannedRepo::source_to_read)
+        .collect();
+    let mut reads = map_in_parallel(
+        sources_to_read,
+        MAX_PARALLEL_READS,
+        on_feedback,
+        |source, on_feedback| read_repo(source, &exclusions, build, peppy_dirs, on_feedback),
+    )
+    .into_iter();
 
-        // An entry peppy cannot parse has no source kind or identity to
-        // record, so it is reported but gets no status line.
-        let source = match parse_repo_entry(entry) {
-            Ok(source) => source,
-            Err(error) => {
-                if scope.includes(id) {
-                    failures.push(RepoFailure {
-                        id,
-                        label: entry.to_string(),
-                        kind: RepoFailureKind::Unreachable,
-                        detail: error.to_string(),
-                        retained: 0,
-                    });
-                }
+    for repo in planned {
+        let (id, identity, source) = match repo {
+            PlannedRepo::Unparseable { id, label, detail } => {
+                failures.push(RepoFailure {
+                    id,
+                    label,
+                    kind: RepoFailureKind::Unreachable,
+                    detail,
+                    retained: 0,
+                });
                 continue;
             }
+            PlannedRepo::Kept { id, identity } => {
+                statuses.extend(status_line_of(&previous_statuses, id, &identity).cloned());
+                merged.merge(retained_items(&previous, &owners, id), on_feedback);
+                continue;
+            }
+            PlannedRepo::Read {
+                id,
+                identity,
+                source,
+            } => (id, identity, source),
         };
-
-        let identity = source_identity(&source);
-
-        if exclusions.is_excluded(&identity) {
-            debug!("Excluding {} repository: {}", source.kind(), identity);
-            continue;
-        }
-
+        let RepoRead { items, read_ref } = reads
+            .next()
+            .expect("`map_in_parallel` returns one read per source to read, in their order");
         let previous_status = status_line_of(&previous_statuses, id, &identity);
 
-        if !scope.includes(id) {
-            statuses.extend(previous_status.cloned());
-            let kept = retained_items(&previous, &owners, id);
-            merged.merge(kept, on_feedback);
-            continue;
-        }
-
-        let (read, read_ref) = match &source {
-            RepoSource::Fs(path) => (read_fs_repo(path, &exclusions, on_feedback), None),
-            RepoSource::Git { repo_url, repo_ref } => {
-                on_feedback(RepoRefreshFeedback::Progress {
-                    message: format!("Cloning {}", shown_label(&source, build)),
-                });
-                let read_ref = repo_ref.read_ref(build);
-                let read = read_git_repo(
-                    repo_url,
-                    repo_ref,
-                    read_ref.as_ref(),
-                    build,
-                    peppy_dirs,
-                    on_feedback,
-                );
-                (read, read_ref)
-            }
-        };
-
-        // A repository that could not be read and one whose index does not
-        // describe it both fall back to their previous entries; only the
-        // wording differs, so an outage never reads as a content bug.
-        let read = read.and_then(|items| {
-            build_cache_entries(items).map_err(|detail| (RepoFailureKind::Conflict, detail))
-        });
-
-        let items = match read {
+        let items = match items {
             Ok(items) => {
                 statuses.push(RepoStatus {
                     id,
-                    identity: identity.clone(),
+                    identity,
                     source_type: source.kind(),
                     last_read_unix_secs: Some(stamp),
                     read_ref,
@@ -750,7 +740,7 @@ pub(crate) fn process_refresh(
                 };
                 statuses.push(RepoStatus {
                     id,
-                    identity: identity.clone(),
+                    identity,
                     source_type: source.kind(),
                     // Carried forward untouched: the retained entries are
                     // still the ones read at that time and at that ref, and
@@ -781,6 +771,121 @@ pub(crate) fn process_refresh(
         failures,
         statuses,
     })
+}
+
+/// What one refresh does with one configured repository, decided from its
+/// entry before any repository is read.
+enum PlannedRepo {
+    /// An entry peppy cannot parse, in the scope of the refresh. It has no
+    /// source kind or identity to record, so it is reported but gets no
+    /// status line.
+    Unparseable {
+        id: u64,
+        label: String,
+        detail: String,
+    },
+    /// Outside the scope of the refresh: it keeps the entries the caches hold
+    /// for it and its status line, as they stand.
+    Kept { id: u64, identity: String },
+    /// Read by this refresh.
+    Read {
+        id: u64,
+        identity: String,
+        source: RepoSource,
+    },
+}
+
+impl PlannedRepo {
+    fn source_to_read(&self) -> Option<&RepoSource> {
+        match self {
+            PlannedRepo::Read { source, .. } => Some(source),
+            PlannedRepo::Unparseable { .. } | PlannedRepo::Kept { .. } => None,
+        }
+    }
+}
+
+/// What a refresh in `scope` does with `entry`, or `None` when it leaves the
+/// entry out: an excluded repository, or an entry peppy cannot parse outside
+/// the scope.
+fn plan_repo(
+    entry: &Value,
+    exclusions: &ExclusionSet,
+    scope: &RefreshScope,
+) -> Option<PlannedRepo> {
+    let id = repo_entry_id(entry).unwrap_or(0);
+    let source = match parse_repo_entry(entry) {
+        Ok(source) => source,
+        Err(error) => {
+            return scope.includes(id).then(|| PlannedRepo::Unparseable {
+                id,
+                label: entry.to_string(),
+                detail: error.to_string(),
+            });
+        }
+    };
+
+    let identity = source_identity(&source);
+    if exclusions.is_excluded(&identity) {
+        debug!("Excluding {} repository: {}", source.kind(), identity);
+        return None;
+    }
+    if !scope.includes(id) {
+        return Some(PlannedRepo::Kept { id, identity });
+    }
+    Some(PlannedRepo::Read {
+        id,
+        identity,
+        source,
+    })
+}
+
+/// How many repositories one refresh reads at once. A read waits mostly on
+/// the network, so the reads of the default hubs and of a few more
+/// repositories all run together, and a long repository list opens no more
+/// than this many connections at a time.
+const MAX_PARALLEL_READS: NonZeroUsize = NonZeroUsize::new(8).expect("8 is not zero");
+
+/// What reading one repository yields: the entries it publishes or why it
+/// gives none, and for a git repository the ref it was read at.
+struct RepoRead {
+    items: std::result::Result<RepoItems, (RepoFailureKind, String)>,
+    read_ref: Option<ReadRef>,
+}
+
+/// Reads one repository, with `@{peppy-release}` resolved for `build`.
+fn read_repo(
+    source: &RepoSource,
+    exclusions: &ExclusionSet,
+    build: &PeppyBuild,
+    peppy_dirs: &PeppyDirs,
+    on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
+) -> RepoRead {
+    let (read, read_ref) = match source {
+        RepoSource::Fs(path) => (read_fs_repo(path, exclusions, on_feedback), None),
+        RepoSource::Git { repo_url, repo_ref } => {
+            on_feedback(RepoRefreshFeedback::Progress {
+                message: format!("Cloning {}", shown_label(source, build)),
+            });
+            let read_ref = repo_ref.read_ref(build);
+            let read = read_git_repo(
+                repo_url,
+                repo_ref,
+                read_ref.as_ref(),
+                build,
+                peppy_dirs,
+                on_feedback,
+            );
+            (read, read_ref)
+        }
+    };
+
+    // A repository that could not be read and one whose index does not
+    // describe it both fall back to their previous entries; only the
+    // wording differs, so an outage never reads as a content bug.
+    let items = read.and_then(|items| {
+        build_cache_entries(items).map_err(|detail| (RepoFailureKind::Conflict, detail))
+    });
+    RepoRead { items, read_ref }
 }
 
 /// Every repository's entries, merged in id order, with the
@@ -1576,6 +1681,66 @@ mod tests {
         let report = failure_report(&refreshed.failures);
         assert!(report.contains("unreachable"), "{report}");
         assert!(report.contains("conflict"), "{report}");
+    }
+
+    /// Repositories of every kind, read in parallel, come back in id order:
+    /// the failures, the status lines, the merged entries and the discovery
+    /// feedback, whichever read ends first.
+    #[test]
+    fn process_refresh_returns_repositories_of_every_kind_in_id_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let first = tmp.path().join("first");
+        write_node_json5(&first.join("first"), "first", "v1");
+        let git_src = tmp.path().join("git_src");
+        let repo = git2::Repository::init(&git_src).expect("init repo");
+        write_node_json5(&git_src.join("from_git"), "from_git", "v1");
+        let branch = publish_and_commit(&repo, &git_src, &["from_git/peppy.json5"]);
+        let gone = tmp.path().join("not-mounted");
+        let last = tmp.path().join("last");
+        write_node_json5(&last.join("last"), "last", "v1");
+        let git_url = format!("file://{}", git_src.display());
+        let repos = serde_json::json!([
+            { "id": 1, "type": "fs", "path": first },
+            { "id": 2, "type": "nonsense" },
+            { "id": 3, "type": "git", "url": git_url, "ref": branch },
+            { "id": 4, "type": "fs", "path": gone },
+            { "id": 5, "type": "fs", "path": last },
+        ]);
+        write_repos(&peppy_dirs, &repos.to_string());
+
+        let mut discovered = Vec::new();
+        let refreshed = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |feedback| {
+            if let RepoRefreshFeedback::Discovered { item_name, .. } = feedback {
+                discovered.push(item_name);
+            }
+        })
+        .unwrap();
+
+        let failures: Vec<(u64, RepoFailureKind)> =
+            refreshed.failures.iter().map(|f| (f.id, f.kind)).collect();
+        assert_eq!(
+            failures,
+            vec![
+                (2, RepoFailureKind::Unreachable),
+                (4, RepoFailureKind::Unreachable)
+            ]
+        );
+        let status_ids: Vec<u64> = refreshed.statuses.iter().map(|s| s.id).collect();
+        assert_eq!(
+            status_ids,
+            vec![1, 3, 4, 5],
+            "an unparseable entry has none"
+        );
+        let nodes: Vec<&str> = refreshed
+            .items
+            .nodes
+            .iter()
+            .map(|n| n.node_name.as_str())
+            .collect();
+        assert_eq!(nodes, vec!["first", "from_git", "last"]);
+        assert_eq!(discovered, vec!["first", "from_git", "last"]);
     }
 
     /// Retention follows the same attribution rule as lookup, so a

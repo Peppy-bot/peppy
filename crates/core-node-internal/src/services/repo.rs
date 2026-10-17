@@ -4,6 +4,7 @@ mod exclude;
 pub(crate) mod index;
 mod init;
 mod list;
+mod parallel;
 mod refresh;
 mod remove;
 mod search;

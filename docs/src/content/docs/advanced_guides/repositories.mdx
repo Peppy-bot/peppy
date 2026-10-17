@@ -235,8 +235,9 @@ Re-scans all configured repositories and rebuilds the node, launcher, contract, 
 - Resolves `ref: "@{peppy-release}"` to the ref this Peppy reads: the tag `peppy-release/<version>` in a release build, `main` in any other build.
 - Skips any repository or path listed in `excluded_repositories.json5`.
 - Reads local directories in place and shallow-clones git repositories. A shallow clone holds the head of every branch and no tag, so when a git repository's `ref` names a tag, or a commit that is not the head of a branch, Peppy fetches that ref on its own before it reads the repository.
+- Reads up to 8 repositories at once, so a refresh takes about as long as its slowest repository.
 - Records what each repository's committed [`peppy_repository.json5`](#the-repository-index) publishes: nodes and their tags, together with the contract and pairing links each node's manifest declares, launchers (one per name, no tag), and contracts, pairings, and MCP exposures (keyed by their manifest `name:tag`). A repository without that file fails its read with instructions to run `peppy repo index`.
-- Reports each discovered node, launcher, contract, pairing, MCP exposure, and excluded repository in real time.
+- Reports each excluded repository and the progress of each read in real time, and each discovered node, launcher, contract, pairing, and MCP exposure when every repository is read, in priority order.
 - Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, `~/.peppy/cache/contracts.json5`, `~/.peppy/cache/pairings.json5`, and `~/.peppy/cache/mcp_exposures.json5`, and records per-repository read status in `~/.peppy/cache/repo_status.json5`.
 
 On completion it prints a summary, for example `Repository refresh complete. 12 node(s), 3 launcher(s), 5 contract(s), 2 pairing(s), 1 MCP exposure(s) found.`
