@@ -444,8 +444,8 @@ A launcher whose `components` include a `zero_or_more` or `one_or_more` axis run
 
 ```sh
 peppy stack launch physical
-peppy stack join openarm:alpha@jetson-1
-peppy stack join openarm:bravo@jetson-2 --with xr_commander,ai_brain_vla@cn-gpu-box
+peppy stack join openarm:alpha@jetson-1 --with v2
+peppy stack join openarm:bravo@jetson-2 --with v1,ai_brain_vla@cn-gpu-box
 peppy stack list
 peppy stack remove bravo
 peppy stack reset --federated
