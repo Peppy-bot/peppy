@@ -3,11 +3,16 @@
 
 A change that spans several repositories lands as pull requests that share one
 head branch name, the set name (see .github/actions/hub-ci-peppy/resolve.py).
-The CI of each hub pull request tests it with the other branches of the set,
-so the pull requests of a set are green together and merge together.
+The CI of each hub pull request tests it with the branches of the set in peppy
+and in the other hubs, so the pull requests of a set are green together and
+merge together. sim-chat, the chat that drives a stack through the MCP
+endpoints that peppy and the hubs serve, is part of a set too: no hub CI reads
+it, but its pull request merges with the set, so that its `main` and the
+`main` of the hubs change together.
 
 The `merge-set` commit status is a required check of peppy `dev` and of the
-`main` of each hub, and only the merge-set GitHub App reports it:
+`main` of each other repository of a set, and only the merge-set GitHub App
+reports it:
 
 - A pull request that is alone, because no other repository has a change on
   its branch, gets a green status, and its own merge button merges it.
@@ -19,10 +24,10 @@ The `merge-set` commit status is a required check of peppy `dev` and of the
 
 Ticking "Merge" asks the bot to merge the set. The bot checks every pull
 request of the set, sets the status green on each, checks that GitHub merges
-each one, and merges them one after the other, peppy first. GitHub merges one
-pull request at a time, so a merge that fails part way leaves the set partly
-merged: the bot then blocks the pull requests that did not merge and reports
-what merged on every pull request of the set.
+each one, and merges them one after the other, peppy first and sim-chat last.
+GitHub merges one pull request at a time, so a merge that fails part way
+leaves the set partly merged: the bot then blocks the pull requests that did
+not merge and reports what merged on every pull request of the set.
 
 The bot acts on a ticked box only for the user who opened every pull request
 of the set and has write access to every repository of it, or for a user with
@@ -47,14 +52,16 @@ to be up to date with its base, so a branch that merges its base in does not
 ask a re-run either: the merge of the set takes in that base all the same. The
 bot asks git to merge the commit and the base again, in a scratch repository
 (GitMerges), and compares the result with the head, so a conflict resolved by
-hand or any other change of the branch counts. Every job that runs the
-hub-ci-peppy action uploads the set it ran with, its set record, named after
-the check run of the job. A job that does not run the action reads no other
-repository, so it has no record and is never out of date; nor has the first
-job of each hub run, which runs the action with `wait-only` to wait for the
-peppy dev build of the set and installs nothing. Ticking "Re-run" re-runs
-every finished hub run that is out of date, at once: a re-run whose peppy dev
-build is not uploaded yet waits for it in that first job.
+hand or any other change of the branch counts. A job reads peppy and the hubs
+alone, so a change of the sim-chat branch of a set makes no hub run out of
+date. Every job that runs the hub-ci-peppy action uploads the set it ran
+with, its set record, named after the check run of the job. A job that does
+not run the action reads no other repository, so it has no record and is
+never out of date; nor has the first job of each hub run, which runs the
+action with `wait-only` to wait for the peppy dev build of the set and
+installs nothing. Ticking "Re-run" re-runs every finished hub run that is out
+of date, at once: a re-run whose peppy dev build is not uploaded yet waits for
+it in that first job.
 
 GitHub sends every event of each repository of a set to the webhook of the
 merge-set App (webhook.py, in AWS Lambda), which hands it to the relay
@@ -135,7 +142,7 @@ class Repository:
     name: str
     # The branch every pull request of a set targets in this repository.
     integration_branch: str
-    # The hub this repository is; None for peppy.
+    # The hub this repository is; None for peppy and for sim-chat.
     hub: resolve.Hub | None
 
     @property
@@ -144,13 +151,18 @@ class Repository:
 
 
 PEPPY = Repository("peppy", resolve.PEPPY_DEV_BRANCH, None)
+# The chat that drives a stack through the MCP endpoints that peppy and the
+# hubs serve. No hub CI reads it.
+SIM_CHAT = Repository("sim-chat", "main", None)
 
 # Every repository a set can span, in the order the bot merges them: peppy
-# first, then the hubs in the order of their repository ids. The order is
-# fixed, so every report of a merge reads the same way.
+# first, then the hubs in the order of their repository ids, then sim-chat,
+# which uses what they serve. The order is fixed, so every report of a merge
+# reads the same way.
 REPOSITORIES = (
     PEPPY,
     *(Repository(hub.name, resolve.HUB_MAIN_BRANCH, hub) for hub in resolve.HUBS),
+    SIM_CHAT,
 )
 REPOSITORIES_BY_NAME = {repository.name: repository for repository in REPOSITORIES}
 
@@ -769,10 +781,10 @@ def parse_review_decision(value: str | None) -> ReviewDecision:
 
 # The CI runs -----------------------------------------------------------------
 
-# The name of the one CI workflow of peppy and of each hub, whose runs the
+# The name of the one CI workflow of each repository of a set, whose runs the
 # relay hands on.
 CI_WORKFLOW = "Tests"
-# The name of the workflow of the PR title check of peppy and of each hub
+# The name of the workflow of the PR title check of each repository of a set
 # (.github/actions/pr-title), whose ends the relay hands on: a change of a
 # title can pass or fail that check.
 TITLE_CHECK_WORKFLOW = "pr-title"
@@ -977,10 +989,13 @@ class StaleJob:
 
 def tested_ref_of(tested: TestedSet, repository: Repository) -> TestedRef | None:
     """What a job ran of `repository`; None when it did not read it (a job
-    without the deploy key of the private hub, or with no peppy dev build)."""
-    if repository.hub is None:
+    without the deploy key of the private hub, or with no peppy dev build),
+    and always None for sim-chat, which no job reads."""
+    if repository.hub is not None:
+        return tested.hubs.get(repository.name)
+    if repository == PEPPY:
         return tested.peppy
-    return tested.hubs.get(repository.name)
+    return None
 
 
 def mismatches_of(
@@ -1309,11 +1324,12 @@ def render_set_dashboard(
         f"### Set `{state.name}`",
         "",
         (
-            f"These pull requests share the branch name `{state.name}`. The CI of "
-            "each hub pull request tests it with the others, so they merge "
-            "together: the `merge-set` check keeps the merge button of each one "
-            "blocked. Tick the first box below to merge all of them. The bot acts "
-            f"on a ticked box only for {WHO_MAY_ASK}."
+            f"These pull requests share the branch name `{state.name}`, so they "
+            "merge together: the CI of each hub pull request tests it with the "
+            "branches of the set in peppy and in the other hubs, and the "
+            "`merge-set` check keeps the merge button of each one blocked. Tick "
+            "the first box below to merge all of them. The bot acts on a ticked "
+            f"box only for {WHO_MAY_ASK}."
         ),
         "",
         "| Repository | Pull request | Head | CI | State |",
@@ -1371,8 +1387,9 @@ ADMIN_WAIVER = (
 # What makes the hub runs of a set current, as the dashboard and the reports
 # word it.
 CURRENT_HUB_RUNS = (
-    "each hub run ran with the head of every branch of the set, or with a "
-    "commit that differs from that head by a clean merge of its base alone"
+    "each hub run ran with the head of every branch of the set that it reads, "
+    "or with a commit that differs from that head by a clean merge of its base "
+    "alone"
 )
 
 
