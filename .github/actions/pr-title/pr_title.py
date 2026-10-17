@@ -50,6 +50,13 @@ from pathlib import Path
 
 PLANE_API_URL = "https://api.plane.so/api/v1"
 PLANE_WORKSPACE = "peppy"
+# The User-Agent of each request. Cloudflare, in front of the Plane API,
+# refuses the default User-Agent of urllib (`Python-urllib/<version>`) with
+# HTTP 403 and its error 1010, before Plane reads the request.
+USER_AGENT = "peppy-pr-title"
+# What Plane answers, with HTTP 403, to a request whose API key it does not
+# accept.
+PLANE_REFUSED_KEY_DETAIL = "Given API token is not valid"
 # The most projects Plane gives in one page.
 PLANE_PROJECTS_PAGE_SIZE = 100
 # A request that Plane answers with its rate limit or a server error, or does
@@ -277,6 +284,16 @@ def send_request(request: urllib.request.Request) -> HttpResponse:
         return HttpResponse(error.code, error.read(), error.headers.get("Retry-After"))
 
 
+def is_refused_key(response: HttpResponse) -> bool:
+    """Whether the answer is the refusal of the API key by Plane. Cloudflare
+    also refuses requests with HTTP 403, with an answer of its own."""
+    try:
+        body = json.loads(response.body)
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("detail") == PLANE_REFUSED_KEY_DETAIL
+
+
 def is_transient(status: int) -> bool:
     """Whether Plane can answer the same request in another way soon: its rate
     limit, or an error of its servers."""
@@ -373,7 +390,7 @@ class Plane:
         return self.json_of(self.get(path), what)
 
     def json_of(self, response: HttpResponse, what: str):
-        if response.status in (401, 403):
+        if response.status != 200 and is_refused_key(response):
             raise PlaneError(
                 f"Plane refused {what} (HTTP {response.status}): it does not accept "
                 "the API key of the PLANE_API_KEY secret. Put a valid key of an "
@@ -400,7 +417,11 @@ class Plane:
             )
         request = urllib.request.Request(
             f"{PLANE_API_URL}/{path}",
-            headers={"X-Api-Key": self.api_key, "Accept": "application/json"},
+            headers={
+                "X-Api-Key": self.api_key,
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
+            },
         )
         for attempt in range(1, PLANE_ATTEMPTS + 1):
             try:

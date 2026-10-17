@@ -311,9 +311,11 @@ class FakePlane:
             if isinstance(failure, OSError):
                 raise failure
             return failure
+        if request.get_header("User-agent") is None:
+            # urllib then sends its own User-Agent, which Cloudflare refuses.
+            return HttpResponse(403, CLOUDFLARE_BROWSER_SIGNATURE_BANNED, None)
         if request.get_header("X-api-key") != API_KEY:
-            # Plane answers a key it does not accept with 403, not 401.
-            return json_response({"detail": "Given API token is not valid"}, status=403)
+            return refused_key_response()
         url = urllib.parse.urlsplit(request.full_url)
         workspace = f"/api/v1/workspaces/{pr_title.PLANE_WORKSPACE}/"
         self.assert_prefix(url.path, workspace)
@@ -360,6 +362,30 @@ class FakePlane:
 
 def json_response(body, status=200, retry_after=None):
     return HttpResponse(status, json.dumps(body).encode(), retry_after)
+
+
+def refused_key_response():
+    """The answer of Plane to a key it does not accept: 403, not 401."""
+    return json_response({"detail": pr_title.PLANE_REFUSED_KEY_DETAIL}, status=403)
+
+
+# What Cloudflare, in front of the Plane API, answers with HTTP 403 to the
+# default User-Agent of urllib.
+CLOUDFLARE_BROWSER_SIGNATURE_BANNED = json.dumps(
+    {
+        "type": "https://developers.cloudflare.com/support/troubleshooting/"
+        "http-status-codes/cloudflare-1xxx-errors/error-1010/",
+        "title": "Error 1010: Access denied",
+        "status": 403,
+        "detail": "The site owner has blocked access based on your browser's "
+        "signature.",
+        "error_code": 1010,
+        "error_name": "browser_signature_banned",
+        "zone": "api.plane.so",
+        "cloudflare_error": True,
+        "retryable": False,
+    }
+).encode()
 
 
 WORKSPACE = {
@@ -415,7 +441,9 @@ class PlaneQuestions(unittest.TestCase):
         with self.assertRaisesRegex(PlaneError, "FRAMEWORK-123 without 'name'"):
             fake.plane().work_item(FRAMEWORK_123)
 
-    def test_each_request_carries_the_api_key_and_asks_for_json(self):
+    def test_each_request_carries_the_api_key_and_the_user_agent_and_asks_for_json(
+        self,
+    ):
         fake = FakePlane(WORKSPACE)
         fake.plane().work_item(FRAMEWORK_123)
         (request,) = fake.requests
@@ -426,10 +454,37 @@ class PlaneQuestions(unittest.TestCase):
         self.assertEqual(request.get_method(), "GET")
         self.assertEqual(request.get_header("X-api-key"), API_KEY)
         self.assertEqual(request.get_header("Accept"), "application/json")
+        self.assertEqual(request.get_header("User-agent"), "peppy-pr-title")
 
     def test_a_refused_key_is_a_problem_of_the_secret(self):
         with self.assertRaisesRegex(PlaneError, r"HTTP 403.*PLANE_API_KEY"):
             FakePlane(WORKSPACE).plane(api_key="revoked").projects()
+
+    def test_a_refusal_of_cloudflare_quotes_its_answer(self):
+        fake = FakePlane(
+            WORKSPACE,
+            failures=[HttpResponse(403, CLOUDFLARE_BROWSER_SIGNATURE_BANNED, None)],
+        )
+        with self.assertRaises(PlaneError) as refused:
+            fake.plane().projects()
+        self.assertIn("HTTP 403", str(refused.exception))
+        self.assertIn("Error 1010: Access denied", str(refused.exception))
+        self.assertNotIn("PLANE_API_KEY", str(refused.exception))
+        # Cloudflare refuses the same request again: no second attempt.
+        self.assertEqual(len(fake.requests), 1)
+
+    def test_only_the_answer_of_plane_to_a_key_is_a_refused_key(self):
+        self.assertTrue(pr_title.is_refused_key(refused_key_response()))
+        for case, body in (
+            ("Cloudflare", CLOUDFLARE_BROWSER_SIGNATURE_BANNED),
+            ("another detail", b'{"detail": "Not found"}'),
+            ("no detail", b'{"error": "You do not have permission"}'),
+            ("a list", b'["Given API token is not valid"]'),
+            ("no JSON", b"<html>Forbidden</html>"),
+            ("no body", b""),
+        ):
+            with self.subTest(case=case):
+                self.assertFalse(pr_title.is_refused_key(HttpResponse(403, body, None)))
 
     def test_an_empty_key_asks_nothing(self):
         fake = FakePlane(WORKSPACE)
@@ -557,7 +612,7 @@ class Checks(unittest.TestCase):
         self.assertEqual(fake.requests, [])
 
     def test_a_plane_failure_fails_the_check(self):
-        fake = FakePlane(WORKSPACE, failures=[HttpResponse(401, b"", None)])
+        fake = FakePlane(WORKSPACE, failures=[refused_key_response()])
         outcome = pr_title.check(pull_request(), PLAIN, fake.plane())
         self.assertIn("PLANE_API_KEY", outcome.problems[0])
 
