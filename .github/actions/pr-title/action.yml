@@ -1,0 +1,41 @@
+name: PR title
+description: >-
+  Fails unless the title of the pull request names, in brackets, the Plane
+  work items that the pull request implements, and each of them exists in
+  Plane. A pull request that a bot opened, or that goes into a branch other
+  than the default branch, needs no item. The docstring of pr_title.py tells
+  the two title forms and what the check asks Plane.
+
+  The pr-title workflow of each repository runs it on `pull_request_target`
+  with the types opened, edited, synchronize and reopened. That trigger runs
+  the workflow of the default branch, so a pull request cannot change the
+  check that judges it. It also gives the job the PLANE_API_KEY secret, which
+  is why the job checks out nothing of the pull request. `edited` fires on a
+  change of the title, the body or the base branch, and the job runs on each
+  one with no `if`: a job that its `if` skips concludes `skipped`, which
+  passes a required check whatever the title.
+
+inputs:
+  plane-api-key:
+    description: >-
+      An API key of a Plane account of the peppy workspace that is a member of
+      every project whose items a title can name. The check only reads.
+    required: true
+  title-form:
+    description: >-
+      `plain` for `[FRAMEWORK-123] Subject`, or `conventional-commit` for
+      `type(scope): subject [PLATFORM-123]`.
+    required: false
+    default: plain
+
+runs:
+  using: composite
+  steps:
+    # The values reach the script through the environment, so it reads them
+    # as data. The title comes from the event file, never from an expansion.
+    - name: Check the Plane items of the title
+      shell: bash
+      env:
+        PLANE_API_KEY: ${{ inputs.plane-api-key }}
+        TITLE_FORM: ${{ inputs.title-form }}
+      run: python3 "$GITHUB_ACTION_PATH/pr_title.py"

@@ -26,6 +26,7 @@ from unittest.mock import patch
 import merge_set
 from merge_set import (
     PEPPY,
+    SIM_CHAT,
     AccessRefusal,
     Action,
     ApiError,
@@ -174,18 +175,31 @@ def set_record_text(hubs, peppy=None):
 
 
 class Repositories(unittest.TestCase):
-    def test_peppy_merges_first_then_the_hubs_by_repository_id(self):
+    def test_peppy_merges_first_then_the_hubs_by_repository_id_then_sim_chat(self):
         self.assertEqual(
             [repository.name for repository in merge_set.REPOSITORIES],
-            ["peppy", *(hub.name for hub in resolve.HUBS)],
+            ["peppy", *(hub.name for hub in resolve.HUBS), "sim-chat"],
         )
 
     def test_each_repository_merges_into_its_integration_branch(self):
         self.assertEqual(PEPPY.integration_branch, "dev")
-        for repository in merge_set.REPOSITORIES[1:]:
-            with self.subTest(repository=repository.name):
+        self.assertEqual(SIM_CHAT.integration_branch, "main")
+        for hub in resolve.HUBS:
+            with self.subTest(hub=hub.name):
+                repository = merge_set.REPOSITORIES_BY_NAME[hub.name]
                 self.assertEqual(repository.integration_branch, "main")
-                self.assertIs(repository.hub, resolve.HUBS_BY_NAME[repository.name])
+                self.assertIs(repository.hub, hub)
+
+    def test_peppy_and_sim_chat_are_no_hubs(self):
+        self.assertIsNone(PEPPY.hub)
+        self.assertIsNone(SIM_CHAT.hub)
+
+    def test_a_pull_request_from_an_integration_branch_names_no_set(self):
+        for repository in merge_set.REPOSITORIES:
+            with self.subTest(repository=repository.name):
+                self.assertIn(
+                    repository.integration_branch, resolve.BRANCHES_WITHOUT_SET_NAME
+                )
 
     def test_peppy_is_the_repository_resolve_names(self):
         self.assertEqual(PEPPY.full_name, resolve.PEPPY_REPOSITORY)
@@ -194,7 +208,7 @@ class Repositories(unittest.TestCase):
         self.assertEqual(
             merge_set.repository_list(),
             "peppy,nodes-hub,launchers-hub,contracts-hub,mcp-hub,pairings-hub,"
-            "private-nodes-hub",
+            "private-nodes-hub,sim-chat",
         )
 
     def test_a_repository_outside_every_set_is_refused(self):
@@ -204,6 +218,7 @@ class Repositories(unittest.TestCase):
     def test_a_full_name_names_a_repository_of_a_set_or_none(self):
         self.assertIs(merge_set.repository_of_full_name("Peppy-bot/peppy"), PEPPY)
         self.assertIs(merge_set.repository_of_full_name("peppy-bot/peppy"), PEPPY)
+        self.assertIs(merge_set.repository_of_full_name("Peppy-bot/sim-chat"), SIM_CHAT)
         self.assertIsNone(merge_set.repository_of_full_name("someone/peppy"))
         self.assertIsNone(merge_set.repository_of_full_name("Peppy-bot/landing-page"))
 
@@ -351,6 +366,28 @@ class Relay(unittest.TestCase):
         self.assert_dropped("workflow_run", ci_run_event("completed", workflow="Lint"))
         self.assert_dropped("workflow_run", ci_run_event("completed", event="push"))
 
+    def test_the_end_of_a_run_of_the_title_check_names_its_branch(self):
+        # GitHub lists no pull request for a run on `pull_request_target`.
+        payload = title_check_run_event("completed")
+        payload["workflow_run"]["pull_requests"] = []
+        self.assert_relayed(
+            "workflow_run",
+            payload,
+            merge_set.RelaySubject(None, SET_NAME, "Peppy-bot/nodes-hub"),
+        )
+
+    def test_the_start_of_a_run_of_the_title_check_is_dropped(self):
+        for action, attempt in (("requested", 1), ("in_progress", 2)):
+            with self.subTest(action=action):
+                self.assert_dropped(
+                    "workflow_run", title_check_run_event(action, attempt=attempt)
+                )
+
+    def test_a_run_of_the_title_check_on_another_event_is_dropped(self):
+        self.assert_dropped(
+            "workflow_run", title_check_run_event("completed", event="pull_request")
+        )
+
     def test_a_ci_run_of_a_fork_names_no_pull_request(self):
         payload = ci_run_event("completed", head_repository="someone/nodes-hub")
         payload["workflow_run"]["pull_requests"] = []
@@ -423,6 +460,21 @@ class Relay(unittest.TestCase):
     def test_the_relay_starts_the_sync_for_an_event_that_can_change_a_set(self):
         text, calls = self.relay("pull_request", pull_request_event("synchronize"))
         self.assertEqual(calls, [self.DISPATCH])
+        self.assertIn(RELAY_RUN_URL, text)
+
+    def test_the_relay_starts_the_sync_for_an_event_of_sim_chat(self):
+        payload = pull_request_event(
+            "synchronize", head_repository="Peppy-bot/sim-chat"
+        )
+        payload["repository"]["full_name"] = "Peppy-bot/sim-chat"
+        text, calls = self.relay("pull_request", payload)
+        token, method, path, body = self.DISPATCH
+        inputs = {
+            **body["inputs"],
+            "repository": "sim-chat",
+            "head-repository": "Peppy-bot/sim-chat",
+        }
+        self.assertEqual(calls, [(token, method, path, {**body, "inputs": inputs})])
         self.assertIn(RELAY_RUN_URL, text)
 
     def test_the_relay_reads_the_branch_of_a_dashboard_edit(self):
@@ -549,6 +601,14 @@ def ci_run_event(
             "head_repository": {"full_name": head_repository},
             "pull_requests": [{"number": 7}],
         },
+    )
+
+
+def title_check_run_event(action, attempt=1, event="pull_request_target"):
+    """A `workflow_run` event of a run of the PR title check of pull request
+    7."""
+    return ci_run_event(
+        action, attempt=attempt, workflow=merge_set.TITLE_CHECK_WORKFLOW, event=event
     )
 
 
@@ -1193,6 +1253,17 @@ class Freshness(unittest.TestCase):
         )
         run = hub_run(NODES_HUB, records=[JobRecord("check-index", tested)])
         self.assertEqual(merge_set.stale_jobs(state, [run], no_clean_base_merge), [])
+
+    def test_the_sim_chat_branch_of_the_set_makes_no_job_stale(self):
+        # No job reads sim-chat, so its head is in no set record.
+        state = set_state(
+            *self.state().members, member(SIM_CHAT, pull_request(SIM_CHAT))
+        )
+        run = hub_run(
+            NODES_HUB, records=[JobRecord("check-index", self.fresh_record())]
+        )
+        self.assertEqual(merge_set.stale_jobs(state, [run], no_clean_base_merge), [])
+        self.assertIsNone(merge_set.tested_ref_of(self.fresh_record(), SIM_CHAT))
 
     def test_an_expired_record_is_stale(self):
         stale = self.stale_of(None)
@@ -2476,6 +2547,42 @@ class SyncMerge(unittest.TestCase):
         self.assertIn("as @bob, @alice asked", report_text)
 
 
+class SyncSimChat(unittest.TestCase):
+    """A set of nodes-hub and sim-chat: the hub run read nodes-hub at its head
+    and the dev build of peppy `dev`, as peppy has no branch of the set."""
+
+    def setUp(self):
+        self.github = FakeGitHub(self)
+        self.nodes = self.github.open_pull_request(NODES_HUB, 88)
+        self.chat = self.github.open_pull_request(SIM_CHAT, 61)
+        tested = TestedSet(
+            hubs={"nodes-hub": TestedRef("checkout", self.nodes.head_commit)},
+            peppy=TestedRef("dev", commit(PEPPY, "dev")),
+        )
+        self.github.runs[self.nodes.label] = [
+            hub_run(NODES_HUB, 10, records=[JobRecord("check-index", tested)])
+        ]
+        sync(self.github)
+
+    def test_the_set_is_ready_when_the_hub_runs_read_the_head_of_each_hub(self):
+        for pr in (self.nodes, self.chat):
+            with self.subTest(pr=pr.label):
+                body = self.github.dashboard_body(pr)
+                self.assertIn("**Ready to merge.**", body)
+                self.assertIn(f"| sim-chat | [#61]({self.chat.url}) |", body)
+                self.assertNotIn("CI out of date", body)
+                self.assertEqual(self.github.gates(pr)[-1].state, "pending")
+
+    def test_the_set_merges_sim_chat_last(self):
+        (comment,) = self.github.comments_on(self.chat)
+        self.github.tick(comment, Action.MERGE, "alice")
+        sync(self.github)
+        self.assertEqual(
+            [label for label, _ in self.github.merged],
+            ["nodes-hub#88", "sim-chat#61"],
+        )
+
+
 class SyncRerun(unittest.TestCase):
     def setUp(self):
         self.github = FakeGitHub(self)
@@ -3341,6 +3448,11 @@ class RepositoryFacts(unittest.TestCase):
         self.assertIn(
             f"name: {merge_set.CI_WORKFLOW}", workflow_lines(resolve.PEPPY_CI_WORKFLOW)
         )
+
+    def test_the_relay_hands_on_the_runs_of_the_title_check_workflow(self):
+        lines = workflow_lines("pr-title.yml")
+        self.assertIn(f"name: {merge_set.TITLE_CHECK_WORKFLOW}", lines)
+        self.assertIn("pull_request_target:", lines)
 
     def test_the_changes_job_runs_these_cases(self):
         text = (WORKFLOWS / "tests.yml").read_text()

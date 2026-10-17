@@ -1,0 +1,21 @@
+name: pr-title
+
+# The title of each pull request names, in brackets, the Plane work items that
+# it implements: `[FRAMEWORK-123] Subject`. The pr-title action holds the rule
+# for every repository of the organization, and its description tells why the
+# job runs on `pull_request_target`, on every edit, with no `if` and no
+# checkout.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - uses: Peppy-bot/peppy/.github/actions/pr-title@dev
+        with:
+          plane-api-key: ${{ secrets.PLANE_API_KEY }}
