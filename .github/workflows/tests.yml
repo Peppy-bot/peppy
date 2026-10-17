@@ -147,6 +147,16 @@ jobs:
             --start-directory .github/actions/sticky-disk-report \
             --pattern 'test_*.py' --verbose
 
+      # The pr-title workflow of each repository of the organization runs the
+      # pr-title action from `dev`, where no other repository tried a change
+      # before it merges. Its cases need nothing but Python, so they run on
+      # every change.
+      - name: Test the PR title check
+        run: |
+          python3 -m unittest discover \
+            --start-directory .github/actions/pr-title \
+            --pattern 'test_*.py' --verbose
+
       # The merge-set bot (merge-set.yml) keeps the pull requests of a set
       # together. Its cases hold the merge-set workflows to the names the bot
       # uses, so they run on every change too. Its merge checks run the git of
