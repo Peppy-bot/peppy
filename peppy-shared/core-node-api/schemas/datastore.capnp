@@ -55,3 +55,24 @@ struct DatastoreRemoveResponse {
     # True if the key existed and was removed, false if it was already absent.
     removed @0 :Bool;
 }
+
+# The answer to `datastore_store_exclusive`, whose request is a
+# DatastoreStoreRequest: the service stores a key that is absent or the
+# caller's own and makes the calling instance its owner, unless another
+# instance owns it; a key that exists with no owner is an error. The core node
+# then refuses every other instance's store and remove of the key, and removes
+# the key when the owner's process is gone.
+struct DatastoreStoreExclusiveResponse {
+    union {
+        # Discriminant zero: a message that never set an outcome decodes as
+        # `unset`, which the decoder refuses.
+        unset  @0 :Void;
+        stored @1 :Void;
+        # Another instance owns the key; the key as its owner wrote it.
+        refused :group {
+            value          @2 :Data;
+            encoding       @3 :Text;
+            lastModifiedBy @4 :Text;
+        }
+    }
+}

@@ -134,6 +134,60 @@ async fn stop_instance_removes_last_instance_keeps_ready() {
     assert!(guard.instances().is_empty());
 }
 
+/// The stack reports the incarnation of the process an instance id runs,
+/// none once the instance is stopped, and a newer one for the next instance
+/// started under the same id.
+#[tokio::test]
+async fn live_incarnation_follows_the_process_under_an_id() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
+    let config_path = harness.peppy_root.path().join("sensor.json5");
+
+    let handle = real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path).await;
+    let instance_id = Name::new("reused-inst").unwrap();
+    assert_eq!(
+        stack.live_incarnation("reused-inst"),
+        None,
+        "nothing runs yet"
+    );
+
+    let (child, started_ctx) =
+        NodeEntity::prepare_and_spawn(&handle, harness.start_context(&instance_id))
+            .await
+            .expect("the entity is Ready");
+    let first_run = real_lifecycle::RunningInstanceGuard {
+        handle: Arc::clone(&handle),
+        instance_id: instance_id.clone(),
+        pid: child.id().expect("a spawned child has a pid"),
+    };
+    let first = stack
+        .live_incarnation("reused-inst")
+        .expect("a forked start is live");
+    NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone(), Vec::new())
+        .await
+        .expect("the start commits");
+    assert_eq!(
+        stack.live_incarnation("reused-inst"),
+        Some(first),
+        "the commit to Running keeps the process's incarnation"
+    );
+    assert!(handle.write().stop_instance(&instance_id).is_some());
+    drop(first_run);
+    assert_eq!(
+        stack.live_incarnation("reused-inst"),
+        None,
+        "a stopped instance is not live"
+    );
+
+    let _second_run =
+        real_lifecycle::spawn_running_instance(Arc::clone(&handle), &harness, instance_id).await;
+    let second = stack
+        .live_incarnation("reused-inst")
+        .expect("the re-run is live");
+    assert!(second > first, "the re-run's process is newer");
+    assert_eq!(stack.live_incarnation("other-inst"), None);
+}
+
 #[tokio::test]
 async fn stop_instance_keeps_other_instances_when_one_removed() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));

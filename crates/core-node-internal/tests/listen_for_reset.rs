@@ -399,8 +399,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     // recorded for this instance. A regression that dropped the claim from
     // `collect_doomed_instances` would let the watcher relabel the force-kill as
     // `failed` in the stack log.
-    let log_content =
-        std::fs::read_to_string(started.peppy_dirs.stack_log_path()).unwrap_or_default();
+    let log_content = common::stack_log(&started);
     assert!(
         !log_content
             .lines()

@@ -2186,8 +2186,7 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
 
     // The health monitor returned on the token before it could record the now-
     // unreachable node, so no teardown-time "became unhealthy" was logged.
-    let log_content =
-        std::fs::read_to_string(started.peppy_dirs.stack_log_path()).unwrap_or_default();
+    let log_content = common::stack_log(&started);
     assert!(
         !log_content.contains("became unhealthy"),
         "no node may be reported unhealthy during a clean shutdown, got:

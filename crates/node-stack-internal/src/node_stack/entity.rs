@@ -402,6 +402,15 @@ fn next_entity_generation() -> u64 {
     NEXT_ENTITY_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Source of [`TrackedNodeInstance`] incarnations. Every process an instance
+/// starts, its first and each restart's, draws a fresh one, so no two
+/// processes in the daemon's lifetime share one, even under one instance id.
+static NEXT_INCARNATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_incarnation() -> u64 {
+    NEXT_INCARNATION.fetch_add(1, Ordering::Relaxed)
+}
+
 /// RAII guard for a temporary working directory staged by `node add` and
 /// consumed by `node build`. Removes the directory on drop, which for the
 /// shared `Arc<WorkingDirGuard>` is when its last clone drops, so removing
@@ -1957,6 +1966,11 @@ pub struct TrackedNodeInstance {
     /// available, and once the process has exited on its own.
     pid: Option<u32>,
     state: InstanceState,
+    /// The incarnation of the process this instance runs, is starting or last
+    /// ran: drawn at the first start and again at each restart's
+    /// [`Self::begin_respawn`], so a process started under a reused id never
+    /// carries an earlier process's.
+    incarnation: u64,
     /// On-disk instance directory created during start (extracted archive
     /// or freshly-created container instance dir). Persisted on the
     /// `Running` instance so `stop_instance` can clean it up. `None` for
@@ -2039,6 +2053,7 @@ impl TrackedNodeInstance {
             instance_id,
             pid: None,
             state,
+            incarnation: next_incarnation(),
             instance_dir: None,
             runtime_config_path: None,
             run_log_path: None,
@@ -2235,6 +2250,14 @@ impl TrackedNodeInstance {
         self.state
     }
 
+    /// The incarnation of the process this instance runs, or starts once the
+    /// spawn has forked it (its pid is recorded); `None` before the fork and
+    /// once the process is gone.
+    pub(crate) fn live_incarnation(&self) -> Option<u64> {
+        let forked = self.state == InstanceState::Running || self.pid.is_some();
+        (self.state.has_process() && forked).then_some(self.incarnation)
+    }
+
     /// The last `node_health` outcome the health monitor recorded for this
     /// instance. `true` until a probe is observed to fail.
     pub fn healthy(&self) -> bool {
@@ -2396,11 +2419,12 @@ impl TrackedNodeInstance {
 
     /// Same-module mutator used by `NodeEntity::prepare_and_spawn` to start
     /// the next process of a `Restarting` instance: the slot is `Starting`
-    /// again with no pid, no endpoints, no start due, a fresh health flag the
-    /// last process's monitor cannot flip, and no runtime config file (the
-    /// spawn writes a new one).
+    /// again with a fresh incarnation, no pid, no endpoints, no start due, a
+    /// fresh health flag the last process's monitor cannot flip, and no
+    /// runtime config file (the spawn writes a new one).
     fn begin_respawn(&mut self) {
         self.state = InstanceState::Starting;
+        self.incarnation = next_incarnation();
         self.pid = None;
         self.endpoints.clear();
         self.supervision.next_start = None;
@@ -4267,6 +4291,62 @@ mod tests {
         );
         slot.begin_respawn();
         assert_eq!(slot.restart_status().next_start_ms, None);
+    }
+
+    /// An incarnation is live while its process runs, or starts once it is
+    /// forked.
+    #[test]
+    fn only_a_running_or_forked_process_has_a_live_incarnation() {
+        let id = Name::new("states-1").unwrap();
+        let running = TrackedNodeInstance::new(id.clone(), InstanceState::Running, BTreeMap::new());
+        assert!(running.live_incarnation().is_some(), "a running process");
+        let mut starting =
+            TrackedNodeInstance::new(id.clone(), InstanceState::Starting, BTreeMap::new());
+        assert_eq!(
+            starting.live_incarnation(),
+            None,
+            "a start that has not forked its process"
+        );
+        starting.set_starting_pid(PID);
+        assert!(starting.live_incarnation().is_some(), "a forked start");
+        for state in [
+            InstanceState::Restarting,
+            InstanceState::Finished,
+            InstanceState::Failed,
+        ] {
+            let instance = TrackedNodeInstance::new(id.clone(), state, BTreeMap::new());
+            assert_eq!(
+                instance.live_incarnation(),
+                None,
+                "{state:?} has no process"
+            );
+        }
+    }
+
+    /// Each process of a restarting instance carries its own incarnation: the
+    /// exited process's is gone, the restart's is newer, and a restart that
+    /// failed to start leaves none live.
+    #[test]
+    fn each_process_of_a_restarting_instance_has_its_own_incarnation() {
+        let id = Name::new("waiting-9").unwrap();
+        let mut slot = waiting_instance(&id);
+        let exited = slot.incarnation;
+        assert_eq!(slot.live_incarnation(), None, "a waiting slot runs nothing");
+        slot.begin_respawn();
+        assert_eq!(
+            slot.live_incarnation(),
+            None,
+            "a restart has no process before its fork"
+        );
+        slot.set_starting_pid(PID);
+        let restarted = slot.live_incarnation().expect("a forked restart is live");
+        assert!(restarted > exited, "the restart's process is newer");
+        slot.revert_respawn();
+        assert_eq!(
+            slot.live_incarnation(),
+            None,
+            "a restart that failed to start runs nothing"
+        );
     }
 
     /// The stop of a waiting instance claims and removes its slot, and hands

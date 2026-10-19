@@ -38,6 +38,7 @@ fn pinned_service_name(id: ServiceId) -> &'static str {
         ServiceId::DatastoreGet => "datastore_get",
         ServiceId::DatastoreList => "datastore_list",
         ServiceId::DatastoreRemove => "datastore_remove",
+        ServiceId::DatastoreStoreExclusive => "datastore_store_exclusive",
         ServiceId::StackReset => "stack_reset",
         ServiceId::StackList => "stack_list",
         ServiceId::ParticipantReserve => "participant_reserve",

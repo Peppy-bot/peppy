@@ -1,0 +1,112 @@
+#![allow(dead_code)] // Each test binary uses only a subset of these shared helpers.
+
+use super::{
+    AbortOnDrop, NodeRunTestTimeouts, StartedCoreNode, TEST_NODE_TAG, answer_health_probes,
+    answer_ready_probe, default_instance_plan, node_run_goal, poll_until_explained,
+    send_node_run_goal_and_wait, settle,
+};
+use config::node::RestartRequest;
+use config::runtime::{Name, NodeInstancePlan};
+use core_node_api::InstanceState;
+use std::time::Duration;
+
+/// The goal and result bounds of a lifecycle test's `node_run`.
+pub const TIMEOUTS: NodeRunTestTimeouts = NodeRunTestTimeouts {
+    goal: Duration::from_secs(10),
+    result: Duration::from_secs(30),
+};
+/// How long a test waits for a state or a stack log line.
+pub const WAIT: Duration = Duration::from_secs(15);
+
+/// A probe answerer that stops answering when dropped.
+pub type Mock = AbortOnDrop<peppylib::PeppyResult<()>>;
+
+/// The ready and health mocks of `instance_id`, which answer for every
+/// process started under the id, settled before the run they answer.
+pub async fn mocks(started: &StartedCoreNode, name: &str, instance_id: &str) -> (Mock, Mock) {
+    let ready = answer_ready_probe(started, name, instance_id).await;
+    let health = answer_health_probes(started, name, instance_id).await;
+    settle().await;
+    (ready, health)
+}
+
+/// Runs the instance `plan` names of `name` with `restart`, returning the
+/// result; a success carries the pid.
+pub async fn run_plan(
+    started: &StartedCoreNode,
+    name: &str,
+    plan: NodeInstancePlan,
+    restart: RestartRequest,
+) -> Result<core_node_api::encoding::NodeRunResult, String> {
+    run_plan_with_env(started, name, plan, restart, Vec::new()).await
+}
+
+/// [`run_plan`] with `env_vars` on the goal.
+pub async fn run_plan_with_env(
+    started: &StartedCoreNode,
+    name: &str,
+    plan: NodeInstancePlan,
+    restart: RestartRequest,
+    env_vars: Vec<(String, String)>,
+) -> Result<core_node_api::encoding::NodeRunResult, String> {
+    send_node_run_goal_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        node_run_goal(plan, name, TEST_NODE_TAG, &TIMEOUTS)
+            .with_env_vars(env_vars)
+            .with_restart(restart),
+        &TIMEOUTS,
+    )
+    .await
+    .map(|response| response.result)
+}
+
+/// Runs `instance_id` of `name` and returns its pid.
+pub async fn run(
+    started: &StartedCoreNode,
+    name: &str,
+    instance_id: &str,
+    restart: RestartRequest,
+) -> u32 {
+    let result = run_plan(started, name, default_instance_plan(instance_id), restart)
+        .await
+        .expect("node_run completes");
+    assert!(
+        result.success,
+        "node_run failed: {:?}",
+        result.error_message
+    );
+    result.pid.expect("a started instance has a pid")
+}
+
+/// `instance_id` as a [`Name`].
+pub fn name(instance_id: &str) -> Name {
+    Name::new(instance_id).expect("valid instance id")
+}
+
+/// The daemon's stack log, empty before its first line.
+pub fn stack_log(started: &StartedCoreNode) -> String {
+    std::fs::read_to_string(started.peppy_dirs.stack_log_path()).unwrap_or_default()
+}
+
+/// The state of `instance_id`, or `None` for an id the stack does not track.
+pub fn state_of(started: &StartedCoreNode, instance_id: &str) -> Option<InstanceState> {
+    started.node_stack.instance_state(instance_id)
+}
+
+/// Waits until `instance_id` is in `state`, reporting the last state and the
+/// stack log when it never gets there.
+pub async fn wait_for_state(started: &StartedCoreNode, instance_id: &str, state: InstanceState) {
+    poll_until_explained(
+        WAIT,
+        || {
+            format!(
+                "`{instance_id}` reaches {state}, last seen {:?}; stack log:\n{}",
+                state_of(started, instance_id),
+                stack_log(started)
+            )
+        },
+        || (state_of(started, instance_id) == Some(state)).then_some(()),
+    )
+    .await;
+}

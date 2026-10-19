@@ -1,10 +1,10 @@
 //! Integration tests for the `datastore` client wrappers
-//! (`datastore::store` / `datastore::get` / `datastore::list` /
-//! `datastore::remove`).
+//! (`datastore::store` / `datastore::store_exclusive` / `datastore::get` /
+//! `datastore::list` / `datastore::remove`).
 //!
 //! peppylib can't depend on the core-node daemon crate (that would be a
 //! dependency cycle), so the stub here stands in for the daemon: it holds a
-//! real in-memory map and serves all four datastore endpoints, letting genuine
+//! real in-memory map and serves all five datastore endpoints, letting genuine
 //! store→get/list/remove round trips flow through the client wrappers over a
 //! real ephemeral zenoh router. The stub records the caller's `instance_id`
 //! (from the wire envelope, exactly as the real daemon does) so the
@@ -17,10 +17,11 @@ use std::time::Duration;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
     DatastoreGetRequest, DatastoreGetResponse, DatastoreListEntry, DatastoreListRequest,
-    DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse, DatastoreStoreRequest,
+    DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
+    DatastoreStoreExclusiveRequest, DatastoreStoreExclusiveResponse, DatastoreStoreRequest,
     DatastoreStoreResponse,
 };
-use peppylib::datastore::{self, DatastoreEntry, Encoding, StoredValue};
+use peppylib::datastore::{self, DatastoreEntry, Encoding, ExclusiveStore, StoredValue};
 use peppylib::messaging::MessengerHandle;
 use peppylib::runtime::NodeRunner;
 use peppylib::testing::EphemeralRouter;
@@ -35,9 +36,16 @@ use super::common::{
 /// `instance_id`.
 type StubStore = Arc<Mutex<HashMap<String, (Vec<u8>, String, String)>>>;
 
-/// Spins up a stateful datastore stub serving the four endpoints (store, get,
-/// list, remove) against a single shared map. All run for the lifetime of the
-/// test (aborted at teardown).
+/// The key the stub's exclusive store reports another instance owns.
+const OWNED_KEY: &str = "owned";
+/// The instance the stub reports owns [`OWNED_KEY`], and the value it stored.
+const OWNER: &str = "owner_inst";
+const OWNER_VALUE: &[u8] = b"held";
+
+/// Spins up a stateful datastore stub serving the five endpoints (store,
+/// store_exclusive, get, list, remove) against a single shared map. Its
+/// exclusive store refuses [`OWNED_KEY`], naming [`OWNER`], and stores any
+/// other key. All run for the lifetime of the test (aborted at teardown).
 async fn spawn_datastore_stub(server: MessengerHandle) {
     let store: StubStore = Arc::new(Mutex::new(HashMap::new()));
 
@@ -142,6 +150,41 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
             .await
             .expect("handle datastore_remove requests should succeed");
     });
+
+    let mut store_exclusive_endpoint =
+        listen_as_core_node(&server, ServiceId::DatastoreStoreExclusive).await;
+    let store_exclusive_map = Arc::clone(&store);
+    tokio::spawn(async move {
+        store_exclusive_endpoint
+            .handle_requests(move |request| {
+                let store = Arc::clone(&store_exclusive_map);
+                async move {
+                    let writer = request.message().instance_id().to_owned();
+                    let payload = request.message().payload();
+                    let req = DatastoreStoreExclusiveRequest::decode(payload.as_ref())
+                        .expect("decode DatastoreStoreExclusiveRequest")
+                        .into_store();
+                    let response = if req.key.as_str() == OWNED_KEY {
+                        DatastoreStoreExclusiveResponse::Refused {
+                            value: OWNER_VALUE.to_vec(),
+                            encoding: Encoding::TEXT_PLAIN.to_string(),
+                            last_modified_by: OWNER.to_owned(),
+                        }
+                    } else {
+                        store
+                            .lock()
+                            .unwrap()
+                            .insert(req.key.into_string(), (req.value, req.encoding, writer));
+                        DatastoreStoreExclusiveResponse::Stored
+                    };
+                    Ok(response
+                        .encode()
+                        .expect("encode DatastoreStoreExclusiveResponse"))
+                }
+            })
+            .await
+            .expect("handle datastore_store_exclusive requests should succeed");
+    });
 }
 
 /// Brings up the router/runner, spawns the stub, and waits for all endpoints
@@ -154,7 +197,66 @@ async fn setup_datastore_stub() -> (EphemeralRouter, TempDir, NodeRunner) {
     wait_until_reachable(node_runner.messenger(), ServiceId::DatastoreGet.name()).await;
     wait_until_reachable(node_runner.messenger(), ServiceId::DatastoreList.name()).await;
     wait_until_reachable(node_runner.messenger(), ServiceId::DatastoreRemove.name()).await;
+    wait_until_reachable(
+        node_runner.messenger(),
+        ServiceId::DatastoreStoreExclusive.name(),
+    )
+    .await;
     (router, temp_dir, node_runner)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn store_exclusive_stores_an_absent_key() {
+    let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
+
+    let answer = datastore::store_exclusive(
+        &node_runner,
+        "arm/left/driver",
+        b"mine".to_vec(),
+        Encoding::TEXT_PLAIN,
+        Duration::from_secs(3),
+    )
+    .await
+    .expect("store_exclusive should succeed");
+    assert_eq!(answer, ExclusiveStore::Stored);
+
+    let got = datastore::get(&node_runner, "arm/left/driver", Duration::from_secs(3))
+        .await
+        .expect("get should succeed");
+    assert_eq!(
+        got,
+        Some(StoredValue {
+            value: b"mine".to_vec(),
+            encoding: Encoding::TEXT_PLAIN,
+            last_modified_by: CLIENT_INSTANCE.to_owned(),
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn store_exclusive_on_an_owned_key_answers_with_the_owners_value() {
+    let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
+
+    let answer = datastore::store_exclusive(
+        &node_runner,
+        OWNED_KEY,
+        b"mine".to_vec(),
+        Encoding::TEXT_PLAIN,
+        Duration::from_secs(3),
+    )
+    .await
+    .expect("store_exclusive should succeed");
+
+    assert_eq!(
+        answer,
+        ExclusiveStore::Refused {
+            current: StoredValue {
+                value: OWNER_VALUE.to_vec(),
+                encoding: Encoding::TEXT_PLAIN,
+                last_modified_by: OWNER.to_owned(),
+            }
+        }
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

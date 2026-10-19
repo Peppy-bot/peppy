@@ -1,18 +1,18 @@
 //! Python bindings for the datastore wire types and the high-level
-//! `datastore::store` / `datastore::get` / `datastore::list` /
-//! `datastore::remove` helpers.
+//! `datastore::store` / `datastore::store_exclusive` / `datastore::get` /
+//! `datastore::list` / `datastore::remove` helpers.
 //!
 //! Mirrors `core_node_api::encoding::{DatastoreStoreResponse,
-//! DatastoreGetResponse, DatastoreListEntry, DatastoreListResponse,
-//! DatastoreRemoveResponse}` and
-//! `peppylib::datastore::{StoredValue, DatastoreEntry, store, get, list,
-//! remove}`.
+//! DatastoreStoreExclusiveResponse, DatastoreGetResponse, DatastoreListEntry,
+//! DatastoreListResponse, DatastoreRemoveResponse}` and
+//! `peppylib::datastore::{StoredValue, DatastoreEntry, ExclusiveStore, store,
+//! store_exclusive, get, list, remove}`.
 
 use core_node_api::encoding::{
     DatastoreGetResponse, DatastoreListEntry, DatastoreListResponse, DatastoreRemoveResponse,
-    DatastoreStoreResponse,
+    DatastoreStoreExclusiveResponse, DatastoreStoreResponse,
 };
-use peppylib::datastore::{DatastoreEntry, StoredValue};
+use peppylib::datastore::{DatastoreEntry, ExclusiveStore, StoredValue};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
@@ -40,6 +40,42 @@ impl PyDatastoreStoreResponse {
             "DatastoreStoreResponse",
             DatastoreStoreResponse::new().encode(),
         )
+    }
+}
+
+/// Python wrapper for `core_node_api::encoding::DatastoreStoreExclusiveResponse`,
+/// used by test stubs to produce capnp wire bytes for the
+/// `DATASTORE_STORE_EXCLUSIVE` service.
+#[pyclass(name = "DatastoreStoreExclusiveResponse", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyDatastoreStoreExclusiveResponse {
+    inner: DatastoreStoreExclusiveResponse,
+}
+
+#[pymethods]
+impl PyDatastoreStoreExclusiveResponse {
+    /// The caller owns the key.
+    #[staticmethod]
+    fn stored() -> Self {
+        Self {
+            inner: DatastoreStoreExclusiveResponse::Stored,
+        }
+    }
+
+    /// Another instance owns the key, as it stored it.
+    #[staticmethod]
+    fn refused(value: Vec<u8>, encoding: String, last_modified_by: String) -> Self {
+        Self {
+            inner: DatastoreStoreExclusiveResponse::Refused {
+                value,
+                encoding,
+                last_modified_by,
+            },
+        }
+    }
+
+    fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        encoded_to_py_bytes(py, "DatastoreStoreExclusiveResponse", self.inner.encode())
     }
 }
 
@@ -153,8 +189,8 @@ impl PyDatastoreRemoveResponse {
 /// encoding tag. The `encoding` getter returns a plain `str` (the open set of
 /// tags means an arbitrary value may come back); it compares equal to the
 /// `peppylib.datastore.Encoding` members.
-#[pyclass(name = "StoredValue", skip_from_py_object)]
-#[derive(Clone)]
+#[pyclass(name = "StoredValue", from_py_object)]
+#[derive(Clone, PartialEq)]
 pub struct PyStoredValue {
     inner: StoredValue,
 }
@@ -180,6 +216,28 @@ impl PyStoredValue {
     #[getter]
     fn last_modified_by(&self) -> &str {
         &self.inner.last_modified_by
+    }
+}
+
+/// Python mirror of `peppylib::datastore::ExclusiveStore`, the answer to
+/// `store_exclusive`: `ExclusiveStore.Stored()` when the calling instance owns the key, or
+/// `ExclusiveStore.Refused(current)` with the key as its owner stored it, the
+/// owner's `instance_id` in `current.last_modified_by`.
+#[pyclass(name = "ExclusiveStore", eq, frozen, skip_from_py_object)]
+#[derive(Clone, PartialEq)]
+pub enum PyExclusiveStore {
+    Stored(),
+    Refused { current: PyStoredValue },
+}
+
+impl From<ExclusiveStore> for PyExclusiveStore {
+    fn from(answer: ExclusiveStore) -> Self {
+        match answer {
+            ExclusiveStore::Stored => Self::Stored(),
+            ExclusiveStore::Refused { current } => Self::Refused {
+                current: current.into(),
+            },
+        }
     }
 }
 
@@ -218,7 +276,8 @@ impl PyDatastoreEntry {
 }
 
 /// Store `value` under `key` (tagged with `encoding`) on `node_runner`'s
-/// bound core node. Overwrites any existing value for `key`.
+/// bound core node. Overwrites any existing value for `key`. Fails when
+/// another instance owns `key` (see `store_exclusive`).
 ///
 /// Python equivalent of `peppylib::datastore::store`.
 #[pyfunction]
@@ -240,6 +299,33 @@ fn datastore_store<'py>(
             .await
             .map_err(to_py_err)?;
         Ok(())
+    })
+}
+
+/// Store `value` under `key` (tagged with `encoding`) and make the calling
+/// instance the key's owner until it removes the key or its process ends. Resolves to
+/// `ExclusiveStore.Stored()`, or to `ExclusiveStore.Refused(current)` when
+/// another instance owns `key`. Fails when `key` exists with no owner, as `store`
+/// writes it.
+///
+/// Python equivalent of `peppylib::datastore::store_exclusive`.
+#[pyfunction]
+#[pyo3(signature = (node_runner, key, value, encoding, response_timeout_secs=None))]
+fn datastore_store_exclusive<'py>(
+    py: Python<'py>,
+    node_runner: &PyNodeRunner,
+    key: String,
+    value: Vec<u8>,
+    encoding: String,
+    response_timeout_secs: Option<f64>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let runner = node_runner.inner.clone();
+    let timeout = optional_duration_from_secs_f64("response_timeout_secs", response_timeout_secs)?;
+    crate::py_future::future_into_py(py, async move {
+        let answer = peppylib::datastore::store_exclusive(&runner, key, value, encoding, timeout)
+            .await
+            .map_err(to_py_err)?;
+        Ok(PyExclusiveStore::from(answer))
     })
 }
 
@@ -291,7 +377,8 @@ fn datastore_list<'py>(
 }
 
 /// Remove (unset) `key` from `node_runner`'s bound core node. Resolves to `True`
-/// if the key existed and was removed, `False` if it was already absent.
+/// if the key existed and was removed, `False` if it was already absent. Fails
+/// when another instance owns `key` (see `store_exclusive`).
 ///
 /// Python equivalent of `peppylib::datastore::remove`.
 #[pyfunction]
@@ -313,16 +400,19 @@ fn datastore_remove<'py>(
 }
 
 /// Add the datastore wire-type wrappers and the `datastore::store` /
-/// `datastore::get` / `datastore::list` / `datastore::remove` helpers to the
-/// parent `core_node` Python submodule.
+/// `datastore::store_exclusive` / `datastore::get` / `datastore::list` /
+/// `datastore::remove` helpers to the parent `core_node` Python submodule.
 pub(crate) fn register_into(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDatastoreStoreResponse>()?;
+    module.add_class::<PyDatastoreStoreExclusiveResponse>()?;
+    module.add_class::<PyExclusiveStore>()?;
     module.add_class::<PyDatastoreGetResponse>()?;
     module.add_class::<PyDatastoreListResponse>()?;
     module.add_class::<PyDatastoreRemoveResponse>()?;
     module.add_class::<PyStoredValue>()?;
     module.add_class::<PyDatastoreEntry>()?;
     module.add_function(wrap_pyfunction!(datastore_store, module)?)?;
+    module.add_function(wrap_pyfunction!(datastore_store_exclusive, module)?)?;
     module.add_function(wrap_pyfunction!(datastore_get, module)?)?;
     module.add_function(wrap_pyfunction!(datastore_list, module)?)?;
     module.add_function(wrap_pyfunction!(datastore_remove, module)?)?;

@@ -19,7 +19,8 @@ pub use clock::{
 pub use datastore::{
     DatastoreGetRequest, DatastoreGetResponse, DatastoreKey, DatastoreKeyError, DatastoreListEntry,
     DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
-    DatastoreStoreRequest, DatastoreStoreResponse,
+    DatastoreStoreExclusiveRequest, DatastoreStoreExclusiveResponse, DatastoreStoreRequest,
+    DatastoreStoreResponse,
 };
 pub use federation::{
     FederationVerdict, InstanceEnd, PairCommitRequest, ParticipantInstancesRemoveRequest,

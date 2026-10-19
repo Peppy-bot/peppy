@@ -98,7 +98,7 @@ methods! {
         DatastoreList {
             name: "datastore_list",
             host: CoreNodeDaemon,
-            summary: "List datastore entries (optionally under a prefix).",
+            summary: "List every datastore key with its metadata.",
             request: DatastoreListRequest,
             response: DatastoreListResponse,
             schema: "datastore.capnp",
@@ -109,6 +109,14 @@ methods! {
             summary: "Remove a datastore entry by key.",
             request: DatastoreRemoveRequest,
             response: DatastoreRemoveResponse,
+            schema: "datastore.capnp",
+        }
+        DatastoreStoreExclusive {
+            name: "datastore_store_exclusive",
+            host: CoreNodeDaemon,
+            summary: "Store a value under a datastore key and make the caller its only writer.",
+            request: DatastoreStoreExclusiveRequest,
+            response: DatastoreStoreExclusiveResponse,
             schema: "datastore.capnp",
         }
         StackReset {
@@ -455,7 +463,7 @@ pub const SCHEMA_SOURCES: &[(&str, &str)] = &[
 /// Version of the wire protocol described by this registry. Feeds the AsyncAPI
 /// document's `info.version`. Bump the minor on additive methods/fields, the
 /// major on breaking wire changes.
-pub const WIRE_API_VERSION: &str = "0.3.0";
+pub const WIRE_API_VERSION: &str = "0.4.0";
 
 /// Version of this crate, for provenance only (not the wire version).
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -1,9 +1,11 @@
 """Datastore helpers: share small values across nodes through the core node's
 in-memory key/value store.
 
-This module is the Python face of `peppylib::datastore`. It exposes the four
-operations (`store`, `get`, `list`, `remove`), the value types (`StoredValue`,
-`DatastoreEntry`), and the `Encoding` vocabulary.
+This module is the Python face of `peppylib::datastore`. It exposes the five
+operations (`store`, `store_exclusive`, `get`, `list`, `remove`), the value
+types (`StoredValue`, `DatastoreEntry`), the answer of an exclusive store
+(`ExclusiveStore`), and the `Encoding` vocabulary. The `Datastore*Response`
+classes encode a core node's answers, for test stubs that stand in for it.
 
 `Encoding` is the Python mirror of `peppylib::datastore::Encoding`: a set of
 Zenoh-style content-type tags describing how a stored value's bytes should be
@@ -22,13 +24,16 @@ from ._peppylib.core_node import (  # type: ignore[import-not-found]
     DatastoreGetResponse,
     DatastoreListResponse,
     DatastoreRemoveResponse,
+    DatastoreStoreExclusiveResponse,
     DatastoreStoreResponse,
+    ExclusiveStore,
     StoredValue,
 )
 from ._peppylib.core_node import datastore_get as get
 from ._peppylib.core_node import datastore_list as list
 from ._peppylib.core_node import datastore_remove as remove
 from ._peppylib.core_node import datastore_store as store
+from ._peppylib.core_node import datastore_store_exclusive as store_exclusive
 
 
 class Encoding(StrEnum):
@@ -51,11 +56,14 @@ __all__ = [
     "DatastoreGetResponse",
     "DatastoreListResponse",
     "DatastoreRemoveResponse",
+    "DatastoreStoreExclusiveResponse",
     "DatastoreStoreResponse",
     "Encoding",
+    "ExclusiveStore",
     "StoredValue",
     "get",
     "list",
     "remove",
     "store",
+    "store_exclusive",
 ]

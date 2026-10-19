@@ -298,8 +298,8 @@ struct ListenerCtx<'a> {
     /// Single time authority behind both the `clock` service handler and the
     /// `clock` topic publisher.
     clock_source: Arc<dyn ClockSource>,
-    /// In-memory key/value store shared by the four datastore endpoints
-    /// (store, get, list, remove).
+    /// In-memory key/value store shared by the five datastore endpoints
+    /// (store, store_exclusive, get, list, remove).
     datastore: Arc<datastore::Datastore>,
     /// The daemon's single pairing and observation authorities, shared by every
     /// establishment hook and lifecycle teardown path.
@@ -559,6 +559,14 @@ impl CoreNode {
             )
             .boxed(),
             ServiceId::DatastoreRemove => datastore::listen_for_datastore_remove(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&ctx.datastore),
+            )
+            .boxed(),
+            ServiceId::DatastoreStoreExclusive => datastore::listen_for_datastore_store_exclusive(
                 &self.messenger,
                 ctx.core_node_name,
                 self.instance_id(),
@@ -969,7 +977,10 @@ impl CoreNode {
         let ctx = ListenerCtx {
             core_node_name,
             clock_source,
-            datastore: Arc::new(datastore::Datastore::new()),
+            datastore: Arc::new(datastore::Datastore::new(
+                Arc::clone(&self.node_stack) as _,
+                core_node_name,
+            )),
             relationships,
         };
         // Set up all listeners concurrently so startup latency is bounded by

@@ -400,6 +400,103 @@ impl DatastoreRemoveResponse {
     }
 }
 
+/// Store `value` under `key`, tagged with `encoding`, and make the calling
+/// instance the key's only writer.
+///
+/// It carries a [`DatastoreStoreRequest`] and encodes as one: its own service,
+/// `datastore_store_exclusive`, is what makes the caller the owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatastoreStoreExclusiveRequest(DatastoreStoreRequest);
+
+impl DatastoreStoreExclusiveRequest {
+    /// Builds an exclusive store request, validating `key` as a
+    /// [`DatastoreKey`]. Returns
+    /// [`Error::InvalidDatastoreKey`](crate::Error::InvalidDatastoreKey) if the
+    /// key is empty.
+    pub fn new(
+        key: impl Into<String>,
+        value: impl Into<Vec<u8>>,
+        encoding: impl Into<String>,
+    ) -> Result<Self> {
+        DatastoreStoreRequest::new(key, value, encoding).map(Self)
+    }
+
+    /// The store this request makes exclusive.
+    pub fn into_store(self) -> DatastoreStoreRequest {
+        self.0
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        self.0.encode()
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        DatastoreStoreRequest::decode(data).map(Self)
+    }
+}
+
+/// Result of an exclusive store. A refusal rides in the response as `Refused`,
+/// carrying the key as its owner wrote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatastoreStoreExclusiveResponse {
+    /// The caller owns the key, which holds the value it sent.
+    Stored,
+    /// Another instance owns the key: the key as its owner stored it.
+    Refused {
+        value: Vec<u8>,
+        encoding: String,
+        /// `instance_id` of the instance that owns the key.
+        last_modified_by: String,
+    },
+}
+
+impl DatastoreStoreExclusiveResponse {
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut response =
+                builder.init_root::<datastore_capnp::datastore_store_exclusive_response::Builder>();
+            match self {
+                DatastoreStoreExclusiveResponse::Stored => response.set_stored(()),
+                DatastoreStoreExclusiveResponse::Refused {
+                    value,
+                    encoding,
+                    last_modified_by,
+                } => {
+                    let mut refused = response.init_refused();
+                    refused.set_value(value);
+                    refused.set_encoding(encoding);
+                    refused.set_last_modified_by(last_modified_by);
+                }
+            }
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let response =
+            reader.get_root::<datastore_capnp::datastore_store_exclusive_response::Reader>()?;
+        Ok(match response.which()? {
+            datastore_capnp::datastore_store_exclusive_response::Which::Unset(()) => {
+                return Err(crate::Error::Decoding(
+                    "DatastoreStoreExclusiveResponse names no outcome".to_owned(),
+                ));
+            }
+            datastore_capnp::datastore_store_exclusive_response::Which::Stored(()) => {
+                DatastoreStoreExclusiveResponse::Stored
+            }
+            datastore_capnp::datastore_store_exclusive_response::Which::Refused(refused) => {
+                DatastoreStoreExclusiveResponse::Refused {
+                    value: refused.get_value()?.to_vec(),
+                    encoding: refused.get_encoding()?.to_str()?.to_owned(),
+                    last_modified_by: refused.get_last_modified_by()?.to_str()?.to_owned(),
+                }
+            }
+        })
+    }
+}
+
 impl crate::encoding::Wire for DatastoreStoreRequest {
     type Root = crate::datastore_capnp::datastore_store_request::Owned;
 }
@@ -430,6 +527,14 @@ impl crate::encoding::Wire for DatastoreRemoveRequest {
 
 impl crate::encoding::Wire for DatastoreRemoveResponse {
     type Root = crate::datastore_capnp::datastore_remove_response::Owned;
+}
+
+impl crate::encoding::Wire for DatastoreStoreExclusiveRequest {
+    type Root = crate::datastore_capnp::datastore_store_request::Owned;
+}
+
+impl crate::encoding::Wire for DatastoreStoreExclusiveResponse {
+    type Root = crate::datastore_capnp::datastore_store_exclusive_response::Owned;
 }
 
 #[cfg(test)]
@@ -613,6 +718,10 @@ mod tests {
             ),
             ("get", DatastoreGetRequest::new("").map(drop)),
             ("remove", DatastoreRemoveRequest::new("").map(drop)),
+            (
+                "store_exclusive",
+                DatastoreStoreExclusiveRequest::new("", b"v".to_vec(), "text/plain").map(drop),
+            ),
         ] {
             assert_invalid_datastore_key(request, result);
         }
@@ -689,5 +798,33 @@ mod tests {
         let payload = encode_message(&builder).expect("encode raw request");
 
         assert_invalid_datastore_key("remove", DatastoreRemoveRequest::decode(payload.as_ref()));
+    }
+
+    #[test]
+    fn store_exclusive_response_decode_refuses_a_message_with_no_outcome() {
+        let mut builder = Builder::new_default();
+        builder.init_root::<datastore_capnp::datastore_store_exclusive_response::Builder>();
+        let payload = encode_message(&builder).expect("encode raw response");
+
+        let err = DatastoreStoreExclusiveResponse::decode(payload.as_ref())
+            .expect_err("an unset outcome is refused");
+        assert!(matches!(err, crate::Error::Decoding(_)), "{err:?}");
+    }
+
+    #[test]
+    fn store_exclusive_response_round_trips_each_outcome() {
+        for response in [
+            DatastoreStoreExclusiveResponse::Stored,
+            DatastoreStoreExclusiveResponse::Refused {
+                value: vec![0u8, 1, 250, 255],
+                encoding: "application/octet-stream".to_owned(),
+                last_modified_by: "owner_node".to_owned(),
+            },
+        ] {
+            let payload = response.encode().expect("encode");
+            let decoded =
+                DatastoreStoreExclusiveResponse::decode(payload.as_ref()).expect("decode");
+            assert_eq!(decoded, response);
+        }
     }
 }

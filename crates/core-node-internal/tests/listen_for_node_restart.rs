@@ -7,11 +7,12 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, StartedCoreNode, always,
-    fast_health_monitor, fast_health_monitor_with_kill, never, node_service_mock, on_failure,
-    peer_daemon_service, poll_until, poll_until_explained, send_node_add_and_wait_with_force,
-    send_node_add_then_build, settle, start_core_node_with_supervision,
-    start_core_node_with_supervision_and_grace, write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, Mock, StartedCoreNode, TEST_NODE_TAG, TIMEOUTS, WAIT, always,
+    fast_health_monitor, fast_health_monitor_with_kill, mocks, name, never, node_service_mock,
+    on_failure, peer_daemon_service, poll_until, poll_until_explained, run, run_plan,
+    run_plan_with_env, send_node_add_and_wait_with_force, send_node_add_then_build, settle,
+    stack_log, start_core_node_with_supervision, start_core_node_with_supervision_and_grace,
+    state_of, wait_for_state, write_peppy_json5,
 };
 use config::node::{Cardinality, RestartDeclaration, RestartOrigin, RestartPolicy, RestartRequest};
 use config::runtime::{
@@ -39,13 +40,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
-const TAG: &str = "v1";
-const TIMEOUTS: NodeRunTestTimeouts = NodeRunTestTimeouts {
-    goal: Duration::from_secs(10),
-    result: Duration::from_secs(30),
-};
-/// How long a test waits for a state or a stack log line.
-const WAIT: Duration = Duration::from_secs(15);
 /// How long a test watches for something that must not happen.
 const QUIET: Duration = Duration::from_millis(1500);
 /// The messaging headroom a test waits beyond what the daemon takes for a
@@ -157,7 +151,7 @@ async fn add_node(
         &format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "{name}", tag: "{TAG}" }},
+                manifest: {{ name: "{name}", tag: "{TEST_NODE_TAG}" }},
                 execution: {{ language: "rust", run_cmd: {run_cmd} }},
                 {framework}
             }}"#
@@ -192,17 +186,6 @@ async fn add_and_build(started: &StartedCoreNode, dir: &std::path::Path) {
     );
 }
 
-type Mock = AbortOnDrop<peppylib::PeppyResult<()>>;
-
-/// The ready and health mocks of `instance_id`, which answer for every
-/// process started under the id, settled before the run they answer.
-async fn mocks(started: &StartedCoreNode, name: &str, instance_id: &str) -> (Mock, Mock) {
-    let ready = common::answer_ready_probe(started, name, instance_id).await;
-    let health = common::answer_health_probes(started, name, instance_id).await;
-    settle().await;
-    (ready, health)
-}
-
 /// The `run_cmd` of a node whose process runs the shell `body`.
 fn shell(body: &str) -> String {
     serde_json::to_string(&["sh", "-c", body]).expect("a run command serializes")
@@ -215,64 +198,6 @@ fn capped(max_restarts: u32) -> RestartRequest {
     )
 }
 
-/// Runs the instance `plan` names of `name` with `restart`, returning the
-/// result; a success carries the pid.
-async fn run_plan(
-    started: &StartedCoreNode,
-    name: &str,
-    plan: NodeInstancePlan,
-    restart: RestartRequest,
-) -> Result<core_node_api::encoding::NodeRunResult, String> {
-    run_plan_with_env(started, name, plan, restart, Vec::new()).await
-}
-
-/// [`run_plan`] with `env_vars` on the goal.
-async fn run_plan_with_env(
-    started: &StartedCoreNode,
-    name: &str,
-    plan: NodeInstancePlan,
-    restart: RestartRequest,
-    env_vars: Vec<(String, String)>,
-) -> Result<core_node_api::encoding::NodeRunResult, String> {
-    common::send_node_run_goal_and_wait(
-        &started.caller_handle,
-        &started.core_node_name,
-        common::node_run_goal(plan, name, TAG, &TIMEOUTS)
-            .with_env_vars(env_vars)
-            .with_restart(restart),
-        &TIMEOUTS,
-    )
-    .await
-    .map(|response| response.result)
-}
-
-/// Runs `instance_id` of `name` and returns its pid.
-async fn run(
-    started: &StartedCoreNode,
-    name: &str,
-    instance_id: &str,
-    restart: RestartRequest,
-) -> u32 {
-    let result = run_plan(
-        started,
-        name,
-        common::default_instance_plan(instance_id),
-        restart,
-    )
-    .await
-    .expect("node_run completes");
-    assert!(
-        result.success,
-        "node_run failed: {:?}",
-        result.error_message
-    );
-    result.pid.expect("a started instance has a pid")
-}
-
-fn name(instance_id: &str) -> Name {
-    Name::new(instance_id).expect("valid instance id")
-}
-
 /// The slot of `instance_id`, in any state, or `None` for an id the stack
 /// does not track.
 fn slot_of(
@@ -283,10 +208,6 @@ fn slot_of(
         .node_stack
         .find_instance_and_entity_any_state(&name(instance_id))
         .map(|(slot, _)| slot)
-}
-
-fn stack_log(started: &StartedCoreNode) -> String {
-    std::fs::read_to_string(started.peppy_dirs.stack_log_path()).unwrap_or_default()
 }
 
 /// The run log of `instance_id`'s current process, the newest of its files.
@@ -312,7 +233,7 @@ fn nth_run_log_path(started: &StartedCoreNode, instance_id: &str, n: usize) -> P
 
 /// The run logs `peppy node info` lists for the node `name`.
 async fn run_log_paths(started: &StartedCoreNode, name: &str) -> Vec<PathBuf> {
-    common::poll_node_info(started, &NodeInfoRequest::new(name, TAG), WAIT)
+    common::poll_node_info(started, &NodeInfoRequest::new(name, TEST_NODE_TAG), WAIT)
         .await
         .run_log_paths
 }
@@ -327,25 +248,6 @@ fn serialized(started: &StartedCoreNode, instance_id: &str) -> SerializedInstanc
         .flat_map(|node| node.instances)
         .find(|instance| instance.instance_id == instance_id)
         .unwrap_or_else(|| panic!("`{instance_id}` is in the stack"))
-}
-
-fn state_of(started: &StartedCoreNode, instance_id: &str) -> Option<InstanceState> {
-    started.node_stack.instance_state(instance_id)
-}
-
-async fn wait_for_state(started: &StartedCoreNode, instance_id: &str, state: InstanceState) {
-    poll_until_explained(
-        WAIT,
-        || {
-            format!(
-                "`{instance_id}` reaches {state}, last seen {:?}; stack log:\n{}",
-                state_of(started, instance_id),
-                stack_log(started)
-            )
-        },
-        || (state_of(started, instance_id) == Some(state)).then_some(()),
-    )
-    .await;
 }
 
 /// Waits until `instance_id` is in `state` with a process and returns its
@@ -459,7 +361,7 @@ async fn remove(
     stop_instances: bool,
 ) -> core_node_api::encoding::NodeRemoveResponse {
     poll(
-        &NodeRemoveRequest::new(node, TAG).with_stop_instances(stop_instances),
+        &NodeRemoveRequest::new(node, TEST_NODE_TAG).with_stop_instances(stop_instances),
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
@@ -558,7 +460,7 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
         &format!(
             r#"{{
                 peppy_schema: "node/v1",
-                manifest: {{ name: "{NODE}", tag: "{TAG}" }},
+                manifest: {{ name: "{NODE}", tag: "{TEST_NODE_TAG}" }},
                 execution: {{
                     language: "rust",
                     parameters: {{ speed: {{ $type: "u32", $default: 1 }} }},
@@ -595,7 +497,7 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
     drop(health);
     wait_for_line(
         &started,
-        &format!("'{ID}' of node '{NODE}:{TAG}' became unhealthy"),
+        &format!("'{ID}' of node '{NODE}:{TEST_NODE_TAG}' became unhealthy"),
     )
     .await;
     signal_process(first_pid, "-9");
@@ -799,7 +701,7 @@ async fn never_leaves_a_crash_failed_and_node_stop_frees_the_id() {
     assert!(!stack_log(&started).contains("restarting"));
 
     let (_shutdown, mut shutdown_asked) =
-        common::install_shutdown_listener_for_instance(&started, NODE, TAG, ID).await;
+        common::install_shutdown_listener_for_instance(&started, NODE, TEST_NODE_TAG, ID).await;
     let response = stop_ok(&started, ID).await;
     assert!(!response.force_killed);
     assert!(
@@ -1105,7 +1007,7 @@ async fn a_run_cancelled_during_its_start_names_why() {
         &started.core_node_name,
         common::default_instance_plan(ID),
         NODE,
-        TAG,
+        TEST_NODE_TAG,
         &TIMEOUTS,
         wait_for_state(&started, ID, InstanceState::Starting),
     )
@@ -1526,7 +1428,7 @@ async fn a_stop_that_claims_a_restarts_start_before_its_fork_forks_nothing() {
 
     let archive = started
         .node_stack
-        .find(NODE, TAG)
+        .find(NODE, TEST_NODE_TAG)
         .expect("the node is in the stack")
         .read()
         .artifact_path()
@@ -1654,8 +1556,8 @@ async fn node_stop_ends_a_restarts_start_in_flight() {
                 && message.contains(&format!(
                     "`{ID}` is starting again under its restart policy, and `peppy node stop \
                      {ID} --core-node {cn}` ends it and clears the instance; run `peppy node \
-                     remove {NODE}:{TAG} --stop-instances --core-node {cn}` again once none is \
-                     starting",
+                     remove {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {cn}` again once \
+                     none is starting",
                     cn = started.core_node_name
                 ))
         }),
@@ -1770,8 +1672,8 @@ async fn node_stop_of_a_first_start_is_refused() {
                 .error_message
                 .as_deref()
                 .is_some_and(|message| message.ends_with(&format!(
-                    "; {starts}; run `peppy node remove {NODE}:{TAG} --stop-instances --core-node \
-                     {}` again once none is starting",
+                    "; {starts}; run `peppy node remove {NODE}:{TEST_NODE_TAG} --stop-instances \
+                     --core-node {}` again once none is starting",
                     started.core_node_name
                 ))),
             "{:?}",
@@ -1858,8 +1760,9 @@ async fn node_remove_during_the_wait_is_refused_then_removes() {
             .as_deref()
             .is_some_and(|message| message
                 == format!(
-                    "Node '{NODE}:{TAG}' has tracked instances (e.g. '{ID}'); `peppy node remove \
-                     {NODE}:{TAG} --stop-instances --core-node {}` clears them before removing",
+                    "Node '{NODE}:{TEST_NODE_TAG}' has tracked instances (e.g. '{ID}'); `peppy \
+                     node remove {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {}` \
+                     clears them before removing",
                     started.core_node_name
                 )),
         "{:?}",
@@ -1873,7 +1776,7 @@ async fn node_remove_during_the_wait_is_refused_then_removes() {
     remove_ok(&started, NODE, true).await;
     assert_eq!(state_of(&started, ID), None);
     assert!(restart.is_cancelled(), "the removal cancels the restart");
-    assert!(started.node_stack.find(NODE, TAG).is_none());
+    assert!(started.node_stack.find(NODE, TEST_NODE_TAG).is_none());
     // The id is free: the node added and run again starts under it.
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
@@ -2121,8 +2024,8 @@ async fn node_run_under_a_tracked_id_is_rejected_before_its_run_log() {
             NODE,
             ID,
             format!(
-                "Instance ID `{ID}` already exists for node `{NODE}:{TAG}` and is restarting; \
-                 `peppy node stop {ID} --core-node {cn}` frees the id",
+                "Instance ID `{ID}` already exists for node `{NODE}:{TEST_NODE_TAG}` and is \
+                 restarting; `peppy node stop {ID} --core-node {cn}` frees the id",
                 cn = started.core_node_name
             ),
         ),
@@ -2130,8 +2033,8 @@ async fn node_run_under_a_tracked_id_is_rejected_before_its_run_log() {
             NODE,
             FAILED,
             format!(
-                "Instance ID `{FAILED}` already exists for node `{NODE}:{TAG}` and is failed; \
-                 `peppy node stop {FAILED} --core-node {cn}` frees the id",
+                "Instance ID `{FAILED}` already exists for node `{NODE}:{TEST_NODE_TAG}` and is \
+                 failed; `peppy node stop {FAILED} --core-node {cn}` frees the id",
                 cn = started.core_node_name
             ),
         ),
@@ -2139,8 +2042,8 @@ async fn node_run_under_a_tracked_id_is_rejected_before_its_run_log() {
             OTHER_NODE,
             ID,
             format!(
-                "Instance ID `{ID}` is already tracked by `{NODE}`:{TAG}; instance_ids must be \
-                 unique across the entire stack"
+                "Instance ID `{ID}` is already tracked by `{NODE}`:{TEST_NODE_TAG}; instance_ids \
+                 must be unique across the entire stack"
             ),
         ),
     ] {
@@ -2643,7 +2546,7 @@ async fn a_removal_ends_what_it_stops_and_holds_restarts_off() {
     wait_for_line(&started, "restarting in 1 s (attempt 1)").await;
 
     remove_ok(&started, NODE, true).await;
-    assert!(started.node_stack.find(NODE, TAG).is_none());
+    assert!(started.node_stack.find(NODE, TEST_NODE_TAG).is_none());
     let quick = lines_for(&started, QUICK);
     assert!(
         quick
@@ -2881,7 +2784,7 @@ async fn a_removal_kills_what_does_not_exit_and_names_it() {
         assert!(!common::is_process_running(pid), "{pid} runs on");
         wait_for_group_gone(pid, "a removed instance's process").await;
     }
-    assert!(started.node_stack.find(NODE, TAG).is_none());
+    assert!(started.node_stack.find(NODE, TEST_NODE_TAG).is_none());
 }
 
 /// A removal that finds an instance another stop claimed returns once that
@@ -2918,7 +2821,7 @@ async fn a_removal_waits_for_the_process_another_stop_ends() {
         removal.force_killed
     );
     assert!(stopped.force_killed, "the stop force-killed the node");
-    assert!(started.node_stack.find(NODE, TAG).is_none());
+    assert!(started.node_stack.find(NODE, TEST_NODE_TAG).is_none());
 }
 
 /// A stop that finds an instance a removal claimed joins that claim: it
@@ -2951,7 +2854,7 @@ async fn a_stop_joins_the_removal_that_claimed_its_process() {
         "the stop returned once the process was gone"
     );
     assert_eq!(removal.force_killed, [ID]);
-    assert!(started.node_stack.find(NODE, TAG).is_none());
+    assert!(started.node_stack.find(NODE, TEST_NODE_TAG).is_none());
 }
 
 /// A stop that joined an overwrite's claim, and still waits on its own
@@ -2997,13 +2900,18 @@ async fn a_joined_stop_leaves_a_new_run_under_the_id_alone() {
         let (overwritten, ()) =
             tokio::join!(overwrite(&started, dir.path()), kill_once_the_stop_asks);
         assert!(overwritten.success, "{:?}", overwritten.error_message);
-        common::build_staged_node(&started, NODE, TAG).await;
+        common::build_staged_node(&started, NODE, TEST_NODE_TAG).await;
         let watched = watcher(&started, Duration::ZERO).await;
         let result = common::send_node_run_goal_and_wait(
             &started.caller_handle,
             &started.core_node_name,
-            common::node_run_goal(common::default_instance_plan(ID), NODE, TAG, &TIMEOUTS)
-                .with_lifecycle_watchers(vec![WATCHER.to_owned()]),
+            common::node_run_goal(
+                common::default_instance_plan(ID),
+                NODE,
+                TEST_NODE_TAG,
+                &TIMEOUTS,
+            )
+            .with_lifecycle_watchers(vec![WATCHER.to_owned()]),
             &TIMEOUTS,
         )
         .await
@@ -3141,7 +3049,7 @@ async fn a_restarts_start_that_fails_during_a_removal_is_cleared() {
     );
     assert_eq!(removal.force_killed, [STUCK]);
     assert!(!common::is_process_running(stuck));
-    assert!(started.node_stack.find(NODE, TAG).is_none());
+    assert!(started.node_stack.find(NODE, TEST_NODE_TAG).is_none());
     assert_eq!(
         next_event(&mut heard, RESTARTING).await,
         RelationshipEvent::Ended(InstanceEnd::Stopped),
@@ -3194,7 +3102,7 @@ async fn a_first_start_that_commits_during_a_removal_keeps_the_node() {
             .as_deref()
             .is_some_and(|message| message.ends_with(&format!(
                 "; `{LATE}` runs a process this removal did not stop; run `peppy node remove \
-                 {NODE}:{TAG} --stop-instances --core-node {}` again",
+                 {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {}` again",
                 started.core_node_name
             ))),
         "{:?}",
@@ -3630,7 +3538,7 @@ async fn add_joint_link_node(
                 peppy_schema: "node/v1",
                 manifest: {{
                     name: "{name}",
-                    tag: "{TAG}",
+                    tag: "{TEST_NODE_TAG}",
                     depends_on: {{ pairings: [{{
                         name: "joint_link", tag: "v1", role: "{role}",
                         link_id: "{link_id}", cardinality: "{cardinality}"
@@ -3700,15 +3608,20 @@ async fn a_failed_start_kills_its_group_before_it_dissolves_its_pairs() {
     let follower_start = common::send_node_run_goal_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        common::node_run_goal(common::default_instance_plan(ID), NODE, TAG, &TIMEOUTS)
-            .with_requested_pairs(std::collections::BTreeMap::from([(
-                FOLLOWER_SLOT.to_owned(),
-                vec![core_node_api::encoding::PairTarget {
-                    peer: ProducerRef::new(&started.core_node_name, LEADER_ID),
-                    peer_link_id: Some(LEADER_SLOT.to_owned()),
-                    remote_peer: None,
-                }],
-            )])),
+        common::node_run_goal(
+            common::default_instance_plan(ID),
+            NODE,
+            TEST_NODE_TAG,
+            &TIMEOUTS,
+        )
+        .with_requested_pairs(std::collections::BTreeMap::from([(
+            FOLLOWER_SLOT.to_owned(),
+            vec![core_node_api::encoding::PairTarget {
+                peer: ProducerRef::new(&started.core_node_name, LEADER_ID),
+                peer_link_id: Some(LEADER_SLOT.to_owned()),
+                remote_peer: None,
+            }],
+        )])),
         &TIMEOUTS,
     );
     let child_gone_while_the_dissolve_waits = async {
@@ -3745,7 +3658,7 @@ async fn run_follower(
     let goal = common::node_run_goal(
         common::default_instance_plan(instance_id),
         name,
-        TAG,
+        TEST_NODE_TAG,
         &TIMEOUTS,
     )
     .with_vacant_pairs(std::collections::BTreeMap::from([(
@@ -4481,13 +4394,13 @@ async fn the_removal_gate_counts_an_unreachable_instance() {
     assert_eq!(
         removal.error_message,
         Some(format!(
-            "Node '{NODE}:{TAG}' has tracked instances (e.g. '{ID}'); `peppy node remove \
-             {NODE}:{TAG} --stop-instances --core-node {}` clears them before removing",
+            "Node '{NODE}:{TEST_NODE_TAG}' has tracked instances (e.g. '{ID}'); `peppy node remove \
+             {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {}` clears them before removing",
             started.core_node_name
         ))
     );
     assert!(common::is_process_running(pid));
-    assert!(started.node_stack.find(NODE, TAG).is_some());
+    assert!(started.node_stack.find(NODE, TEST_NODE_TAG).is_some());
     signal_process(pid, "-9");
 }
 
