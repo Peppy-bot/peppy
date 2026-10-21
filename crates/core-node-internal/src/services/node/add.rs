@@ -349,7 +349,6 @@ async fn clone_repo_to_temp(
             &clone_repo_url,
             clone_repo_ref.as_deref(),
             &clone_checkout_dir,
-            false,
             &mut |line| {
                 clone_announcer.progress(line);
             },

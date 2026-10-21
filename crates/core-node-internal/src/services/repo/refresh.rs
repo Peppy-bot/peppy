@@ -3,7 +3,7 @@ use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_ac
 use crate::services::node::cache as node_cache;
 use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
-use crate::services::node::{checkout_read_ref, clone_repo_shallow, head_commit};
+use crate::services::node::{ShallowCheckoutError, shallow_checkout_of_read_ref};
 use crate::services::repo::cache::{RepoCacheEntry, RepoItems, write_repo_cache};
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::index::{
@@ -1025,33 +1025,26 @@ fn read_git_repo(
     let tmp = tempfile::tempdir_in(&tmp_dir)
         .map_err(|e| unreachable(format!("failed to create temp dir: {e}")))?;
 
-    let repo = clone_repo_shallow(repo_url, tmp.path(), &mut |line| {
+    // The checkout is the commit of the ref this build reads, so the pin
+    // follows the line of development the repository was added for rather
+    // than whatever the remote's default branch happens to be. A ref the
+    // remote does not serve is a refusal: pinning the default branch instead
+    // would publish a different tree under the same repository id without
+    // saying so.
+    let commit = shallow_checkout_of_read_ref(repo_url, read_ref, tmp.path(), &mut |line| {
         on_feedback(RepoRefreshFeedback::Progress {
             message: line.to_owned(),
         });
     })
-    .map_err(unreachable)?;
-
-    // Positioned on the ref this build reads before the commit is read, so
-    // the pin follows the line of development the repository was added for
-    // rather than whatever the remote's default branch happens to be. A tag,
-    // or a commit that is not a branch head, is fetched first, since the
-    // clone holds branch heads only. A ref the remote does not serve is a
-    // refusal: pinning the default branch instead would publish a different
-    // tree under the same repository id without saying so.
-    if let Some(read) = read_ref {
-        checkout_read_ref(&repo, repo_url, read, &mut |line| {
-            on_feedback(RepoRefreshFeedback::Progress {
-                message: line.to_owned(),
-            });
-        })
-        .map_err(|e| unreachable(ref_not_served(repo_url, repo_ref, read, build, &e)))?;
-    }
-    let commit = head_commit(&repo).map_err(|e| {
-        unreachable(format!(
-            "the clone of {} has no usable commit: {e}",
+    .map_err(|e| match (e, read_ref) {
+        (ShallowCheckoutError::Unreachable(detail), _) => unreachable(detail),
+        (ShallowCheckoutError::RefNotServed(detail), Some(read)) => {
+            unreachable(ref_not_served(repo_url, repo_ref, read, build, &detail))
+        }
+        (ShallowCheckoutError::RefNotServed(detail), None) => unreachable(format!(
+            "{} has no commit to read: {detail}",
             SourceUrl::new(repo_url)
-        ))
+        )),
     })?;
 
     // The configured ref is what attributes an entry back to its repository,
@@ -1070,10 +1063,7 @@ fn read_git_repo(
     // Handed over rather than deleted: this clone is the tree every item
     // just read resolves to, so donating it is the difference between the
     // daemon fetching one commit of one repository once and fetching it
-    // again the first time anything from it is materialized. The repository
-    // handle is dropped first so no libgit2 file handle is open across the
-    // move.
-    drop(repo);
+    // again the first time anything from it is materialized.
     node_cache::git::adopt_checkout(peppy_dirs, repo_url, &commit, tmp.keep());
     Ok(items)
 }
@@ -1133,7 +1123,6 @@ mod tests {
         let fs = RepoSource::Fs("/srv/nodes".into());
         assert_eq!(shown_label(&fs, &PeppyBuild::Unreleased), "/srv/nodes");
     }
-    use crate::services::node::checkout_repo_ref;
     use crate::services::node::test_git_daemon::GitDaemon;
     use crate::services::repo::cache::test_support::{fs_repos, write_excluded_repos, write_repos};
     use crate::services::repo::cache::{
@@ -2471,60 +2460,64 @@ mod tests {
 
     /// libgit2's local transport (used for both raw paths and `file://`
     /// URLs) rejects `depth(1)` with "shallow fetch is not supported by the
-    /// local transport". The clone helper has to detect those URLs and skip
-    /// the shallow option, otherwise the clone fails outright. These cases
-    /// lock in that fallback behavior so a regression that re-enables
-    /// `depth(1)` for local URLs would fail fast.
+    /// local transport". The checkout has to detect those URLs and skip the
+    /// depth, otherwise the fetch fails outright. These cases lock in that
+    /// fallback so a regression that asks a local URL for depth 1 fails fast.
     #[rstest::rstest]
     #[case::file_url("file://")]
     #[case::raw_path("")]
-    fn clone_shallow_falls_back_to_full_clone_for_local_url(#[case] url_prefix: &str) {
+    fn a_local_repository_is_read_with_its_whole_history(#[case] url_prefix: &str) {
         let src_tmp = tempfile::tempdir().unwrap();
-        init_repo_with_commits(src_tmp.path(), 3);
+        let commits = init_repo_with_commits(src_tmp.path(), 3);
 
         let dst_tmp = tempfile::tempdir().unwrap();
         let dst = dst_tmp.path().join("clone");
         let repo_url = format!("{url_prefix}{}", src_tmp.path().display());
 
-        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {}).unwrap_or_else(|e| {
-            panic!("cloning {repo_url} should succeed (depth must be skipped): {e}")
-        });
+        let commit = shallow_checkout_of_read_ref(&repo_url, None, &dst, &mut |_| {})
+            .unwrap_or_else(|e| {
+                panic!("reading {repo_url} should succeed (depth must be skipped): {e:?}")
+            });
 
+        assert_eq!(commit.as_str(), commits[2].to_string());
         assert!(
             !dst.join(".git/shallow").exists(),
             "{repo_url} goes through libgit2's local transport which rejects \
              depth(1); .git/shallow should not exist"
         );
+        let repo = git2::Repository::open(&dst).expect("open the checkout");
         assert_eq!(count_commits(&repo), 3);
     }
 
-    /// The clone and the positioning are two steps, so a caller that wants
-    /// a specific revision gets it from the same clone every other caller
-    /// makes rather than from a clone of its own.
+    /// A commit named by its hash is fetched by that hash, through the local
+    /// transport too.
     #[test]
-    fn a_shallow_clone_positions_on_any_revision_it_brought() {
+    fn a_local_repository_is_read_at_a_commit_named_by_its_hash() {
         let src_tmp = tempfile::tempdir().unwrap();
         let commits = init_repo_with_commits(src_tmp.path(), 3);
-        let target_sha = commits[1].to_string();
+        let target = commits[1].to_string();
 
         let dst_tmp = tempfile::tempdir().unwrap();
         let dst = dst_tmp.path().join("clone");
         let repo_url = format!("file://{}", src_tmp.path().display());
 
-        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {}).expect("clone should succeed");
-        checkout_repo_ref(&repo, &target_sha).expect("position on the revision");
+        let commit = shallow_checkout_of_read_ref(
+            &repo_url,
+            Some(&ReadRef::Named(target.clone())),
+            &dst,
+            &mut |_| {},
+        )
+        .expect("the commit is read");
 
-        let head = repo.head().expect("head");
-        let head_oid = head.target().expect("head oid");
-        assert_eq!(head_oid.to_string(), target_sha);
+        assert_eq!(commit.as_str(), target);
     }
 
     /// A repository at `base/hub` that publishes `arm:v1` at each of two
     /// commits on its only branch, with the annotated tag `v1` on the first.
     /// Returns the two commits, oldest first.
     ///
-    /// Served over `git://` (see [`GitDaemon`]), its clone is a depth-1 clone
-    /// of the branch head: it holds neither the tag nor the first commit.
+    /// Served over `git://` (see [`GitDaemon`]), it is read through the
+    /// depth-1 fetch peppy makes of a real remote.
     fn hub_with_a_tag_behind_its_head(base: &Path) -> (String, String) {
         let src = base.join("hub");
         let repo = git2::Repository::init(&src).expect("init repo");
@@ -2559,8 +2552,7 @@ mod tests {
     }
 
     /// The commit `refreshed` read its one node at, after checking that the
-    /// read went through a shallow clone, which is what makes the fetch of
-    /// the configured ref necessary.
+    /// read went through a depth-1 fetch.
     fn commit_read_through_a_shallow_clone(
         peppy_dirs: &PeppyDirs,
         refreshed: &RefreshedRepos,
@@ -2584,7 +2576,7 @@ mod tests {
     }
 
     #[test]
-    fn process_refresh_fetches_a_configured_tag_the_clone_does_not_hold() {
+    fn process_refresh_fetches_a_configured_tag_behind_the_head() {
         let served = tempfile::tempdir().unwrap();
         let (tagged, _head) = hub_with_a_tag_behind_its_head(served.path());
         let daemon = GitDaemon::serve(served.path());
@@ -2636,6 +2628,127 @@ mod tests {
                 .starts_with(&format!("{url} does not serve the configured ref `v9`: ")),
             "{}",
             failure.detail
+        );
+    }
+
+    /// A refresh fetches the commit it reads and nothing else: not the
+    /// commit behind it and not the tip of another branch. It writes no
+    /// ref, not even for a tag on the commit it reads.
+    #[test]
+    fn process_refresh_fetches_the_commit_it_reads_alone() {
+        let served = tempfile::tempdir().unwrap();
+        let (behind, head) = hub_with_a_tag_behind_its_head(served.path());
+        let hub = git2::Repository::open(served.path().join("hub")).expect("open the hub");
+        let head_commit = hub
+            .find_commit(git2::Oid::from_str(&head).unwrap())
+            .expect("the head commit");
+        let signature = git2::Signature::now("Peppy", "peppy@example.com").unwrap();
+        hub.tag("v2", head_commit.as_object(), &signature, "v2", false)
+            .expect("tag the head");
+        let side = hub
+            .commit(
+                Some("refs/heads/side"),
+                &signature,
+                &signature,
+                "side",
+                &head_commit.tree().unwrap(),
+                &[&head_commit],
+            )
+            .expect("commit on another branch")
+            .to_string();
+        let daemon = GitDaemon::serve(served.path());
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+
+        let refreshed = refresh_git_repo_on(&peppy_dirs, &daemon.url("hub"), "");
+
+        assert_eq!(
+            commit_read_through_a_shallow_clone(&peppy_dirs, &refreshed),
+            head,
+            "no ref reads the remote's HEAD"
+        );
+        let checkout = refreshed_checkout(&peppy_dirs, &refreshed);
+        for (absent, what) in [
+            (behind.as_str(), "the commit behind the head"),
+            (side.as_str(), "the tip of another branch"),
+        ] {
+            assert!(
+                checkout
+                    .find_commit(git2::Oid::from_str(absent).unwrap())
+                    .is_err(),
+                "the checkout holds {what}"
+            );
+        }
+        assert_eq!(ref_names(&checkout), Vec::<String>::new());
+    }
+
+    /// The checkout the one repository of `refreshed` was read from.
+    fn refreshed_checkout(peppy_dirs: &PeppyDirs, refreshed: &RefreshedRepos) -> git2::Repository {
+        let (url, commit) = refreshed.items.nodes[0]
+            .origin
+            .checkout()
+            .expect("a git origin");
+        let dir = crate::services::node::cache::git::checkout_dir_for(peppy_dirs, url, commit);
+        git2::Repository::open(dir).expect("open the checkout")
+    }
+
+    /// The name of every ref `repo` holds.
+    fn ref_names(repo: &git2::Repository) -> Vec<String> {
+        repo.references()
+            .expect("list the refs")
+            .names()
+            .map(|name| name.expect("a UTF-8 ref name").to_owned())
+            .collect()
+    }
+
+    /// A name that is both a branch and a tag reads the branch, as
+    /// `git clone --branch` does.
+    #[test]
+    fn process_refresh_reads_a_branch_before_a_tag_of_the_same_name() {
+        let served = tempfile::tempdir().unwrap();
+        let (tagged, head) = hub_with_a_tag_behind_its_head(served.path());
+        let hub = git2::Repository::open(served.path().join("hub")).expect("open the hub");
+        let head_commit = hub
+            .find_commit(git2::Oid::from_str(&head).unwrap())
+            .expect("the head commit");
+        hub.branch("v1", &head_commit, false)
+            .expect("the branch of the tag's name");
+        let daemon = GitDaemon::serve(served.path());
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+
+        let refreshed = refresh_git_repo_on(&peppy_dirs, &daemon.url("hub"), "v1");
+
+        assert_ne!(tagged, head);
+        assert_eq!(
+            commit_read_through_a_shallow_clone(&peppy_dirs, &refreshed),
+            head
+        );
+        assert_eq!(
+            ref_names(&refreshed_checkout(&peppy_dirs, &refreshed)),
+            Vec::<String>::new(),
+            "reading a branch writes no ref"
+        );
+    }
+
+    #[test]
+    fn process_refresh_refuses_a_repository_with_no_commit() {
+        let served = tempfile::tempdir().unwrap();
+        git2::Repository::init(served.path().join("hub")).expect("init an empty repo");
+        let daemon = GitDaemon::serve(served.path());
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+        let url = daemon.url("hub");
+
+        let refreshed = refresh_git_repo_on(&peppy_dirs, &url, "");
+
+        assert!(refreshed.items.nodes.is_empty());
+        assert_eq!(refreshed.failures.len(), 1);
+        let failure = &refreshed.failures[0];
+        assert_eq!(failure.kind, RepoFailureKind::Unreachable);
+        assert_eq!(
+            failure.detail,
+            format!("{url} has no commit to read: it advertises no ref named `HEAD`")
         );
     }
     fn release(version: &str) -> PeppyBuild {
