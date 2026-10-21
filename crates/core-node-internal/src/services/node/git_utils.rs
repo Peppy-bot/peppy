@@ -1,6 +1,7 @@
 //! Git utilities shared by the node command handlers: repo-path
 //! sanitization, ref checkout, reading the commit a working tree sits on,
-//! and a clone that honors a deadline on the network transfer. Remote
+//! the shallow checkout of the one commit a read ref names, and a full
+//! clone. Remote
 //! repositories are read over HTTPS or SSH; the SSH ones authenticate the
 //! way `ssh` itself would for the host, with the agent and identity files
 //! `~/.ssh/config` selects, and have their host key checked against
@@ -75,64 +76,191 @@ pub(crate) fn checkout_repo_ref(
     Ok(())
 }
 
-/// Positions `repo`'s working tree on `read_ref`, fetching that ref first
-/// when the clone does not hold it.
+/// The name a remote advertises its HEAD under.
+const REMOTE_HEAD: &str = "HEAD";
+
+/// Why a shallow fetch of one commit failed.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ShallowCheckoutError {
+    /// The remote could not be read, or the checkout could not be written.
+    Unreachable(String),
+    /// The remote serves nothing under the read ref, or does not serve the
+    /// commit.
+    RefNotServed(String),
+}
+
+/// The one commit a shallow checkout fetches, as far as it is known before
+/// the remote is asked.
+#[derive(Debug, PartialEq, Eq)]
+enum ShallowTarget {
+    /// A commit named by its hash.
+    Commit(GitCommit),
+    /// The object of the first of these refs that the remote advertises.
+    FirstAdvertised(Vec<String>),
+}
+
+impl ShallowTarget {
+    /// What `read_ref` names, the remote's HEAD when `None`.
+    ///
+    /// A release tag is its full name alone, so that a branch of the same
+    /// short name can never stand in for it. A named ref of 40 hexadecimal
+    /// characters is a commit. Any other named ref is looked up as git looks
+    /// up a short name: as written (`HEAD`, or a full name such as
+    /// `refs/tags/v1`), then as a branch, then as a tag.
+    fn of(read_ref: Option<&ReadRef>) -> Self {
+        match read_ref {
+            None => Self::FirstAdvertised(vec![REMOTE_HEAD.to_owned()]),
+            Some(release @ ReadRef::ReleaseTag(_)) => {
+                Self::FirstAdvertised(vec![release.git_name()])
+            }
+            Some(ReadRef::Named(name)) => match GitCommit::parse(name) {
+                Ok(commit) => Self::Commit(commit),
+                Err(_) => Self::FirstAdvertised(vec![
+                    name.clone(),
+                    format!("refs/heads/{name}"),
+                    format!("refs/tags/{name}"),
+                ]),
+            },
+        }
+    }
+}
+
+/// The first of `names` that the remote advertises, with the object it
+/// advertises under that name.
+fn first_advertised<'n>(
+    advertised: &[git2::RemoteHead<'_>],
+    names: &'n [String],
+) -> Option<(&'n str, git2::Oid)> {
+    names.iter().find_map(|name| {
+        advertised
+            .iter()
+            .find(|head| head.name() == name)
+            .map(|head| (name.as_str(), head.oid()))
+    })
+}
+
+/// The name of a ref the remote advertises at `commit`, if any. The peeled
+/// line of an annotated tag (`refs/tags/v1^{}`) names the tag itself.
+fn advertised_name_of(advertised: &[git2::RemoteHead<'_>], commit: &GitCommit) -> Option<String> {
+    advertised
+        .iter()
+        .find(|head| head.oid().to_string() == commit.as_str())
+        .map(|head| {
+            let name = head.name();
+            name.strip_suffix("^{}").unwrap_or(name).to_owned()
+        })
+}
+
+/// A new, empty repository at `dst`, which a fetch fills.
 ///
-/// [`clone_repo_shallow`] brings every branch head and no tag, so a branch is
-/// already in the clone. A tag, or a commit that is not a branch head, is
-/// fetched on its own at depth 1 (see [`read_ref_refspec`]). A ref the
-/// remote does not serve fails with the error of the positioning after that
-/// fetch, or of the fetch itself.
-pub(crate) fn checkout_read_ref(
+/// It names no remote: each fetch reads its URL through an anonymous
+/// remote, so the URL, and any credentials it embeds, is never written to
+/// the repository.
+pub(crate) fn init_empty_repository(dst: &Path) -> std::result::Result<Repository, String> {
+    Repository::init(dst)
+        .map_err(|e| format!("Failed to create a repository at {}: {e}", dst.display()))
+}
+
+/// Makes `dst` a working tree of `repo_url` at the one commit `read_ref`
+/// names, the remote's HEAD when `None`, and returns that commit.
+///
+/// The way `repo refresh` reads a remote repository: [`fetch_shallow`]
+/// brings that commit alone, at depth 1.
+pub(crate) fn shallow_checkout_of_read_ref(
+    repo_url: &str,
+    read_ref: Option<&ReadRef>,
+    dst: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> std::result::Result<GitCommit, ShallowCheckoutError> {
+    use ShallowCheckoutError::Unreachable;
+
+    let repo = init_empty_repository(dst).map_err(Unreachable)?;
+    let object = fetch_shallow(&repo, repo_url, &ShallowTarget::of(read_ref), on_progress)?;
+    checkout_repo_ref(&repo, &object)
+        .map_err(|e| Unreachable(format!("Failed to check out {object}: {e}")))?;
+    head_commit(&repo).map_err(Unreachable)
+}
+
+/// Fetches `commit` alone into `repo` at depth 1 (see [`fetch_shallow`]).
+pub(crate) fn fetch_commit_shallow(
     repo: &Repository,
     repo_url: &str,
-    read_ref: &ReadRef,
+    commit: &GitCommit,
     on_progress: &mut dyn FnMut(&str),
-) -> std::result::Result<(), String> {
-    let git_name = read_ref.git_name();
-    if checkout_repo_ref(repo, &git_name).is_ok() {
-        return Ok(());
-    }
-    let refspec = read_ref_refspec(read_ref);
-    repo.find_remote("origin")
-        .and_then(|mut remote| {
-            fetch_with_progress(&mut remote, repo_url, &refspec, true, on_progress)
-        })
-        .map_err(|e| {
-            let error = SourceUrl::new(repo_url).redact_in(&e.to_string());
-            format!("fetching `{refspec}` failed: {error}")
-        })?;
-    checkout_repo_ref(repo, &git_name).map_err(|e| e.to_string())
+) -> std::result::Result<(), ShallowCheckoutError> {
+    let target = ShallowTarget::Commit(commit.clone());
+    fetch_shallow(repo, repo_url, &target, on_progress).map(drop)
 }
 
-/// What to fetch for a read ref the clone does not hold. A release tag is
-/// fetched by its full name, so that a branch of the same name cannot stand
-/// in for it. A named ref is a commit or a tag (see [`named_ref_refspec`]).
-fn read_ref_refspec(read_ref: &ReadRef) -> String {
-    match read_ref {
-        ReadRef::ReleaseTag(_) => tag_refspec(&read_ref.git_name()),
-        ReadRef::Named(name) => named_ref_refspec(name.trim()),
-    }
-}
+/// Fetches the one commit `target` names from `repo_url` into `repo` at
+/// depth 1, and returns the object to check out for it: the commit, or the
+/// annotated tag of it.
+///
+/// The fetch brings that commit's tree, without its history and without any
+/// other branch or tag of the remote, and writes no ref. The refs the remote
+/// advertises are listed first, on the connection the fetch then uses, so
+/// the two cannot disagree. A ref is looked up among them (see
+/// [`ShallowTarget::of`]) and fetched by its name. A commit is fetched by
+/// the name of a ref the remote advertises at it, which every host answers,
+/// and else by its hash, which a host answers when it serves commits by
+/// hash, as GitHub does.
+///
+/// The depth is dropped when `repo_url` targets the local transport (see
+/// [`is_local_url`]), which then brings the whole history.
+fn fetch_shallow(
+    repo: &Repository,
+    repo_url: &str,
+    target: &ShallowTarget,
+    on_progress: &mut dyn FnMut(&str),
+) -> std::result::Result<String, ShallowCheckoutError> {
+    use ShallowCheckoutError::{RefNotServed, Unreachable};
 
-/// What to fetch for a ref named as configured: 40 hexadecimal characters
-/// are a commit, fetched by its hash (a host that serves commits by hash, as
-/// GitHub does, answers it), and any other name is a tag, written by its
-/// short or its full name, fetched by its full name.
-fn named_ref_refspec(name: &str) -> String {
-    if let Ok(commit) = GitCommit::parse(name) {
-        return commit.as_str().to_owned();
-    }
-    if name.starts_with("refs/tags/") {
-        return tag_refspec(name);
-    }
-    tag_refspec(&format!("refs/tags/{name}"))
-}
+    let shown_url = SourceUrl::new(repo_url);
+    let redacted = |e: git2::Error| shown_url.redact_in(&e.to_string());
+    let mut remote = repo
+        .remote_anonymous(repo_url)
+        .map_err(|e| Unreachable(redacted(e)))?;
+    let mut connect_callbacks = git2::RemoteCallbacks::new();
+    install_credentials(&mut connect_callbacks);
+    let mut connection = remote
+        .connect_auth(git2::Direction::Fetch, Some(connect_callbacks), None)
+        .map_err(|e| Unreachable(format!("Failed to connect to {shown_url}: {}", redacted(e))))?;
+    let advertised = connection.list().map_err(|e| {
+        Unreachable(format!(
+            "Failed to list the refs of {shown_url}: {}",
+            redacted(e)
+        ))
+    })?;
 
-/// The refspec that fetches the tag with the full name `tag` into the tag
-/// of the same name.
-fn tag_refspec(tag: &str) -> String {
-    format!("+{tag}:{tag}")
+    match target {
+        ShallowTarget::Commit(commit) => {
+            let by_name = advertised_name_of(advertised, commit);
+            let refspec = by_name.as_deref().unwrap_or(commit.as_str());
+            fetch_with_progress(connection.remote(), repo_url, refspec, true, on_progress)
+                .map_err(|e| {
+                    RefNotServed(format!("fetching the commit failed: {}", redacted(e)))
+                })?;
+            Ok(commit.as_str().to_owned())
+        }
+        ShallowTarget::FirstAdvertised(names) => {
+            let Some((name, object)) = first_advertised(advertised, names) else {
+                let quoted: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
+                return Err(RefNotServed(format!(
+                    "it advertises no ref named {}",
+                    quoted.join(" or ")
+                )));
+            };
+            fetch_with_progress(connection.remote(), repo_url, name, true, on_progress).map_err(
+                |e| {
+                    Unreachable(format!(
+                        "Failed to fetch {name} from {shown_url}: {}",
+                        redacted(e)
+                    ))
+                },
+            )?;
+            Ok(object.to_string())
+        }
+    }
 }
 
 /// The commit `repo`'s working tree is sitting on.
@@ -151,48 +279,21 @@ pub(crate) fn head_commit(repo: &Repository) -> std::result::Result<GitCommit, S
         .map_err(|e| format!("the repository's HEAD is not a usable commit: {e}"))
 }
 
-/// Shallow-clones `repo_url` into `dst`, leaving the working tree wherever
-/// the remote's HEAD points.
-///
-/// The one way peppy fetches a repository it reads, shared by `repo refresh`
-/// and the commit-keyed checkout cache so the two can never disagree about
-/// what cloning a repository brings. It brings every head the remote
-/// publishes at depth 1: libgit2 clones with the standard
-/// `refs/heads/*:refs/remotes/origin/*` refspec whatever branch is asked
-/// for, so which ref a caller cares about changes nothing about the fetch.
-///
-/// Callers therefore position the working tree themselves, and the
-/// positioning is the only thing that differs between them: refresh onto
-/// the ref a repository is configured to follow, so the commit it pins is
-/// that ref's tip; the checkout cache onto the commit an entry pins, which
-/// is already here whenever it is a head's tip.
-pub(crate) fn clone_repo_shallow(
-    repo_url: &str,
-    dst: &Path,
-    on_progress: &mut dyn FnMut(&str),
-) -> std::result::Result<Repository, String> {
-    clone_with_progress(repo_url, None, dst, true, on_progress)
-}
-
-/// Clone `repo_url` into `dst` and check out `repo_ref` if set, emitting
-/// throttled (~500ms) `transfer_progress` lines via `on_progress` so callers
-/// can surface live byte/object counts instead of sitting silent for the
-/// duration of the clone.
+/// Clones `repo_url` with its whole history into `dst` and checks out
+/// `repo_ref` if set, emitting throttled (~500ms) `transfer_progress` lines
+/// via `on_progress` so callers can surface live byte/object counts instead
+/// of sitting silent for the duration of the clone.
 ///
 /// Each progress line is formatted as
 /// `"Cloning {repo_url}: received {recv}/{total} objects ({bytes})"`.
-///
-/// `shallow` requests a `depth=1` fetch, but is silently downgraded to a
-/// full clone when `repo_url` targets the local transport.
 pub(crate) fn clone_with_progress(
     repo_url: &str,
     repo_ref: Option<&str>,
     dst: &Path,
-    shallow: bool,
     on_progress: &mut dyn FnMut(&str),
 ) -> std::result::Result<Repository, String> {
     let mut builder = RepoBuilder::new();
-    builder.fetch_options(fetch_options(repo_url, shallow, "Cloning", on_progress));
+    builder.fetch_options(fetch_options(repo_url, false, "Cloning", on_progress));
 
     let repo = builder.clone(repo_url, dst).map_err(|e| {
         let shown_url = SourceUrl::new(repo_url);
@@ -211,8 +312,10 @@ pub(crate) fn clone_with_progress(
 /// via `on_progress` formatted as
 /// `"Fetching {repo_url}: received {recv}/{total} objects ({bytes})"`.
 ///
-/// `shallow` is downgraded to non-shallow for local transports, mirroring
-/// [`clone_with_progress`].
+/// `shallow` requests a `depth=1` fetch, which is dropped when `repo_url`
+/// targets the local transport (see [`is_local_url`]). The fetch brings
+/// the objects of what `refspec` names and no tag besides, and writes no
+/// `FETCH_HEAD`.
 pub(crate) fn fetch_with_progress(
     remote: &mut git2::Remote<'_>,
     repo_url: &str,
@@ -221,6 +324,8 @@ pub(crate) fn fetch_with_progress(
     on_progress: &mut dyn FnMut(&str),
 ) -> std::result::Result<(), git2::Error> {
     let mut fetch_opts = fetch_options(repo_url, shallow, "Fetching", on_progress);
+    fetch_opts.download_tags(git2::AutotagOption::None);
+    fetch_opts.update_fetchhead(false);
     remote.fetch(&[refspec], Some(&mut fetch_opts), None)
 }
 
@@ -815,28 +920,46 @@ mod tests {
     }
 
     #[test]
-    fn a_read_ref_is_fetched_as_a_commit_or_as_a_tag() {
-        let named = |name: &str| read_ref_refspec(&ReadRef::Named(name.to_owned()));
+    fn a_read_ref_targets_a_commit_or_the_refs_its_name_is_looked_up_as() {
+        let named = |name: &str| ShallowTarget::of(Some(&ReadRef::Named(name.to_owned())));
+        let first_advertised = |names: &[&str]| {
+            ShallowTarget::FirstAdvertised(names.iter().map(|name| name.to_string()).collect())
+        };
         assert_eq!(
             named("0123456789ABCDEF0123456789abcdef01234567"),
-            "0123456789abcdef0123456789abcdef01234567",
+            ShallowTarget::Commit(
+                GitCommit::parse("0123456789abcdef0123456789abcdef01234567").unwrap()
+            ),
             "40 hexadecimal characters name a commit, fetched by its hash"
         );
-        assert_eq!(named("v1.2.0"), "+refs/tags/v1.2.0:refs/tags/v1.2.0");
+        assert_eq!(
+            named("v1.2.0"),
+            first_advertised(&["v1.2.0", "refs/heads/v1.2.0", "refs/tags/v1.2.0"]),
+            "a short name is a branch before it is a tag"
+        );
         assert_eq!(
             named("refs/tags/release/v1"),
-            "+refs/tags/release/v1:refs/tags/release/v1",
-            "a full tag name is fetched as written"
+            first_advertised(&[
+                "refs/tags/release/v1",
+                "refs/heads/refs/tags/release/v1",
+                "refs/tags/refs/tags/release/v1",
+            ]),
+            "a full name is looked up as written first"
         );
         assert_eq!(
             named("0123abc"),
-            "+refs/tags/0123abc:refs/tags/0123abc",
+            first_advertised(&["0123abc", "refs/heads/0123abc", "refs/tags/0123abc"]),
             "an abbreviated hash is no commit peppy can fetch"
         );
         assert_eq!(
-            read_ref_refspec(&ReadRef::ReleaseTag("v0.31.2".to_owned())),
-            "+refs/tags/peppy-release/v0.31.2:refs/tags/peppy-release/v0.31.2",
-            "a release tag is fetched by its full name"
+            ShallowTarget::of(Some(&ReadRef::ReleaseTag("v0.31.2".to_owned()))),
+            first_advertised(&["refs/tags/peppy-release/v0.31.2"]),
+            "a release tag is its full name alone"
+        );
+        assert_eq!(
+            ShallowTarget::of(None),
+            first_advertised(&["HEAD"]),
+            "no read ref reads the remote's HEAD"
         );
     }
 

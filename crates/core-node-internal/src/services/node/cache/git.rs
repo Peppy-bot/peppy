@@ -18,7 +18,9 @@
 //! the daemon is the only writer.
 
 use super::super::checkout_repo_ref;
-use super::super::git_utils::{clone_repo_shallow, fetch_with_progress, head_commit};
+use super::super::git_utils::{
+    fetch_commit_shallow, fetch_with_progress, head_commit, init_empty_repository,
+};
 use super::key;
 use super::keyed_lock::KeyedLocks;
 use crate::services::node::Report;
@@ -183,12 +185,10 @@ pub fn materialized_checkout(
 /// Ensures a checkout of `commit` exists and returns its working-tree
 /// directory.
 ///
-/// The clone brings every head the remote publishes at depth 1, so a
-/// commit that is any of their tips (which is what a pin read from a
-/// freshly refreshed repository is) is already here and the checkout is
-/// the whole job. A commit the refs have since moved past is fetched by
-/// its own hash, falling back to deepening `read_ref`, the ref the entry was
-/// read at; one the remote no longer holds is refused rather than silently
+/// A missing checkout is fetched as [`fetch_commit`] tells: the commit alone
+/// at depth 1, or the history of `read_ref`, the ref the entry was read at,
+/// from a host that serves the commit neither under a ref nor by its hash.
+/// A commit the remote no longer holds is refused rather than silently
 /// answered with a tip.
 ///
 /// Blocking; callers inside tokio should run this via
@@ -220,23 +220,14 @@ pub fn ensure_checkout_at_commit(
     clear_dir(&dir)?;
 
     on_feedback(Report::Step(&format!(
-        "Cloning {shown_url} at {commit} into cache at {}",
+        "Fetching {shown_url} at {commit} into cache at {}",
         dir.display()
     )));
-    let repo = clone_repo_shallow(repo_url, &dir, &mut |line| {
-        on_feedback(Report::Progress(line))
+    let repo = init_empty_repository(&dir)?;
+    fetch_commit(&repo, repo_url, read_ref, commit, on_feedback)?;
+    checkout_repo_ref(&repo, commit.as_str()).map_err(|e| {
+        format!("Failed to check out commit {commit} of {shown_url} after fetching it: {e}")
     })?;
-
-    // Positioned on the pinned commit rather than on `read_ref`: an entry
-    // pins bytes, and the clone above is the same one `repo refresh` makes,
-    // so the head the pin was read from is already here. `read_ref` is what
-    // the deepening fallback starts from when it is not.
-    if checkout_repo_ref(&repo, commit.as_str()).is_err() {
-        fetch_commit(&repo, repo_url, read_ref, commit, on_feedback)?;
-        checkout_repo_ref(&repo, commit.as_str()).map_err(|e| {
-            format!("Failed to check out commit {commit} of {shown_url} after fetching it: {e}")
-        })?;
-    }
     touch_last_used(&dir);
     Ok(dir)
 }
@@ -347,13 +338,13 @@ pub fn prune_checkouts<'a>(
     removed
 }
 
-/// Brings `commit` into `repo`, having failed to find it in the shallow
-/// clone of the ref.
+/// Brings `commit` into `repo`, a repository that holds nothing yet.
 ///
-/// Two attempts, because two different things are wrong in the two cases.
-/// Asking for the commit by hash covers a branch that moved past it, and
-/// works wherever the host allows it. Deepening the ref covers a host that
-/// does not, at the cost of the history the shallow clone skipped.
+/// Two attempts. The commit alone at depth 1 is its tree and nothing else:
+/// every host serves it while a ref it advertises points at it, and a host
+/// that serves commits by hash, as GitHub does, serves it after its refs
+/// have moved past it (see [`fetch_commit_shallow`]). A host that does
+/// neither gets `read_ref` fetched with its whole history instead.
 fn fetch_commit(
     repo: &git2::Repository,
     repo_url: &str,
@@ -362,24 +353,19 @@ fn fetch_commit(
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<(), String> {
     let shown_url = SourceUrl::new(repo_url);
-    on_feedback(Report::Step(&format!(
-        "Commit {commit} is not in the shallow clone of {shown_url}; fetching it"
-    )));
-
-    let by_hash = repo.find_remote("origin").and_then(|mut remote| {
-        fetch_with_progress(&mut remote, repo_url, commit.as_str(), true, &mut |line| {
-            on_feedback(Report::Progress(line))
-        })
+    let shallow = fetch_commit_shallow(repo, repo_url, commit, &mut |line| {
+        on_feedback(Report::Progress(line))
     });
-    if by_hash.is_ok() && has_commit(repo, commit) {
+    if shallow.is_ok() && has_commit(repo, commit) {
         return Ok(());
     }
 
     let refspec = read_ref.unwrap_or("HEAD");
     on_feedback(Report::Step(&format!(
-        "{shown_url} does not serve commits by hash; fetching the full history of {refspec}"
+        "{shown_url} does not serve commit {commit} on its own; fetching the full history of \
+         {refspec}"
     )));
-    repo.find_remote("origin")
+    repo.remote_anonymous(repo_url)
         .and_then(|mut remote| {
             fetch_with_progress(&mut remote, repo_url, refspec, false, &mut |line| {
                 on_feedback(Report::Progress(line))
@@ -409,6 +395,7 @@ fn has_commit(repo: &git2::Repository, commit: &GitCommit) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::node::test_git_daemon::GitDaemon;
 
     /// A repository with one commit per entry in `contents`, returning the
     /// commit of each in order. Built with the local transport, so nothing
@@ -492,6 +479,24 @@ mod tests {
                 url,
                 branch,
             }
+        }
+
+        /// The same source served over `git://` (see [`GitDaemon`]), whose
+        /// checkouts go through the depth-1 fetch peppy makes of a real
+        /// remote. `serves_hashes` is whether the host hands out a commit by
+        /// its hash, as GitHub does.
+        fn served(contents: &[&str], serves_hashes: bool) -> (Self, GitDaemon) {
+            let mut repo = Self::new(contents);
+            git2::Repository::open(&repo.source_dir)
+                .expect("open source repo")
+                .config()
+                .expect("source repo config")
+                .set_bool("uploadpack.allowReachableSHA1InWant", serves_hashes)
+                .expect("configure fetches by hash");
+            let served_root = repo.source_dir.parent().expect("the source has a parent");
+            let daemon = GitDaemon::serve(served_root);
+            repo.url = daemon.url("source-repo");
+            (repo, daemon)
         }
 
         /// Ensures the checkout of `commit` from this source, read at
@@ -685,6 +690,111 @@ mod tests {
         );
     }
 
+    /// Whether the checkout at `dir` holds `commit` in its object database.
+    fn holds(dir: &Path, commit: &GitCommit) -> bool {
+        git2::Repository::open(dir)
+            .expect("open the checkout")
+            .find_commit(git2::Oid::from_str(commit.as_str()).unwrap())
+            .is_ok()
+    }
+
+    /// Whether the checkout at `dir` is a depth-1 fetch.
+    fn is_shallow(dir: &Path) -> bool {
+        dir.join(".git").join("shallow").exists()
+    }
+
+    /// A host that serves commits by hash hands out a commit its branch has
+    /// moved past on its own: the checkout holds neither the commit before it
+    /// nor the tip.
+    #[test]
+    fn ensure_checkout_at_commit_fetches_a_commit_behind_the_tip_alone() {
+        let (repo, _daemon) = SourceRepo::served(&["first", "second", "third"], true);
+        let [first, second, third] = &repo.commits[..] else {
+            panic!("three commits");
+        };
+
+        let (checkout, lines) = repo.checkout_recording_lines(Some(&repo.branch), second);
+        let checkout = checkout.expect("the commit is fetched by its hash");
+
+        assert_eq!(
+            std::fs::read_to_string(checkout.join("tracked.txt")).unwrap(),
+            "second"
+        );
+        assert!(is_shallow(&checkout));
+        assert!(
+            !holds(&checkout, first),
+            "the commit before it is not fetched"
+        );
+        assert!(!holds(&checkout, third), "the tip is not fetched");
+        assert!(
+            !lines.iter().any(|line| line.contains("full history")),
+            "{lines:?}"
+        );
+    }
+
+    /// A host that does not serve commits by hash still hands out a commit a
+    /// ref points at, through that ref: a branch tip, or the commit of an
+    /// annotated tag.
+    #[test]
+    fn ensure_checkout_at_commit_fetches_a_commit_a_ref_points_at_alone_from_any_host() {
+        let (repo, _daemon) = SourceRepo::served(&["first", "second", "third"], false);
+        let [first, second, third] = &repo.commits[..] else {
+            panic!("three commits");
+        };
+        let source = git2::Repository::open(&repo.source_dir).expect("open source repo");
+        let signature = git2::Signature::now("Peppy", "peppy@example.com").unwrap();
+        let tagged = source
+            .find_commit(git2::Oid::from_str(first.as_str()).unwrap())
+            .unwrap();
+        source
+            .tag("v1", tagged.as_object(), &signature, "v1", false)
+            .expect("tag the first commit");
+
+        let tip = repo
+            .checkout(Some(&repo.branch), third)
+            .expect("the tip is fetched through its branch");
+        assert!(is_shallow(&tip));
+        assert!(
+            !holds(&tip, second),
+            "the commit before the tip is not fetched"
+        );
+
+        let (at_tag, lines) = repo.checkout_recording_lines(Some("v1"), first);
+        let at_tag = at_tag.expect("the tagged commit is fetched through its tag");
+        assert_eq!(
+            std::fs::read_to_string(at_tag.join("tracked.txt")).unwrap(),
+            "first"
+        );
+        assert!(is_shallow(&at_tag));
+        assert!(
+            !lines.iter().any(|line| line.contains("full history")),
+            "{lines:?}"
+        );
+    }
+
+    /// A host that does not serve commits by hash gets the history of the
+    /// ref the entry was read at fetched for a commit no ref points at.
+    #[test]
+    fn ensure_checkout_at_commit_fetches_the_history_of_the_read_ref_from_a_host_without_hashes() {
+        let (repo, _daemon) = SourceRepo::served(&["first", "second", "third"], false);
+        let second = &repo.commits[1];
+
+        let (checkout, lines) = repo.checkout_recording_lines(Some(&repo.branch), second);
+        let checkout = checkout.expect("the commit is in the history of the branch");
+
+        assert_eq!(
+            std::fs::read_to_string(checkout.join("tracked.txt")).unwrap(),
+            "second"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains(&format!(
+                "does not serve commit {second} on its own; fetching the full history of {}",
+                repo.branch
+            ))),
+            "{lines:?}"
+        );
+    }
+
     #[test]
     fn ensure_checkout_at_commit_refuses_a_commit_the_remote_does_not_have() {
         let repo = SourceRepo::new(&["first"]);
@@ -712,7 +822,8 @@ mod tests {
         std::fs::create_dir_all(&tmp_root).expect("create the tmp root");
         let donor = tempfile::tempdir_in(&tmp_root).unwrap();
         let clone = donor.path().join("clone");
-        clone_repo_shallow(&repo.url, &clone, &mut |_| {}).expect("clone the source");
+        crate::services::node::shallow_checkout_of_read_ref(&repo.url, None, &clone, &mut |_| {})
+            .expect("clone the source");
         adopt_checkout(&repo.peppy_dirs, &repo.url, commit, clone);
 
         std::fs::remove_dir_all(&repo.source_dir).expect("remove source repo");
@@ -748,7 +859,8 @@ mod tests {
         std::fs::create_dir_all(&tmp_root).expect("create the tmp root");
         let donor = tempfile::tempdir_in(&tmp_root).unwrap();
         let clone = donor.path().join("clone");
-        clone_repo_shallow(&repo.url, &clone, &mut |_| {}).expect("clone the source");
+        crate::services::node::shallow_checkout_of_read_ref(&repo.url, None, &clone, &mut |_| {})
+            .expect("clone the source");
         adopt_checkout(&repo.peppy_dirs, &repo.url, commit, clone.clone());
 
         assert!(
