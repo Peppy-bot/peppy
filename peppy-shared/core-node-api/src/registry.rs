@@ -424,10 +424,12 @@ methods! {
         /// (derived deterministically per machine unless the operator
         /// overrides it via `core_node_name` in
         /// `~/.peppy/conf/peppy_config.json5` or `--core-node-name`) and by
-        /// the per-boot instance id of the daemon process. A node follows the
-        /// daemon of the first beat it gets and shuts itself down at the first
-        /// beat of another instance id: a restarted daemon starts with an
-        /// empty stack, which does not hold the node.
+        /// the per-boot instance id of the daemon process, which the runtime
+        /// config of each spawned node names. Only the beats of that daemon
+        /// keep the node alive, and the node shuts itself down at the first
+        /// beat of another daemon of its core node once the presence token of
+        /// its own daemon is gone: a restarted daemon starts with an empty
+        /// stack, which does not hold the node.
         DaemonHeartbeat {
             name: "daemon_heartbeat",
             summary: "Daemon liveness beacon; the payload is a constant ClockTick and only arrival matters.",

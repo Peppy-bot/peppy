@@ -151,10 +151,13 @@ async fn run_clock_publisher(
 /// silent past the configured grace period the node shuts itself down, so an
 /// uncatchable daemon death (SIGKILL / OOM / crash) does not leave orphans.
 /// Each beat carries the per-boot `instance_id` of this daemon process in its
-/// key, and a node also shuts itself down at the first beat of another
-/// instance id: a new daemon, whose stack does not hold the node. The payload
-/// is a constant `ClockTick` reused purely as a cheap carrier; the node only
-/// reads the arrival of a beat and the instance id in its key, not its value.
+/// key, the id that the runtime config of each spawned node names: only beats
+/// under that id keep a node alive. A node also shuts itself down at the first
+/// beat of another daemon of its core node once the presence token of this
+/// daemon is gone: a new daemon, whose stack does not hold the node. The
+/// payload is a constant `ClockTick` reused purely as a cheap carrier; the
+/// node only reads the arrival of a beat and the instance id in its key, not
+/// its value.
 ///
 /// `SensorData` QoS (best-effort, newest-wins, no back-pressure) is correct for
 /// a beacon: a missed beat is harmless as long as the next arrives inside grace.

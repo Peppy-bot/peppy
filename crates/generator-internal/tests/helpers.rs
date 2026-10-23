@@ -90,6 +90,9 @@ pub const TEST_NODE_TAG: &str = "v1";
 
 /// The core node every node instance of the communication tests runs on.
 pub const TEST_CORE_NODE: &str = "test_core";
+/// The per-boot instance id of the daemon that the test runtime configs name.
+/// No daemon runs in these tests, so nothing beats under it.
+pub const TEST_CORE_NODE_INSTANCE_ID: &str = "test-core-boot";
 
 /// The instance id the communication tests probe and shut nodes down as. No
 /// node runs under it: it names the test harness on the wire.
@@ -352,6 +355,7 @@ pub fn test_node_runtime_config(
         node_name,
         TEST_NODE_TAG,
         TEST_CORE_NODE,
+        TEST_CORE_NODE_INSTANCE_ID,
     )
     .unwrap()
 }

@@ -29,6 +29,12 @@ use crate::services::slot_update::SlotChannel;
 /// cannot fork.
 pub const STANDALONE_CORE_NODE: &str = "standalone-core";
 
+/// The instance id of the core node that a standalone node's runtime config
+/// names. No daemon runs beside a standalone node, so nothing beats or holds
+/// a presence token under this id, and the daemon watchdog that reads it runs
+/// only in daemon mode.
+const STANDALONE_CORE_NODE_INSTANCE_ID: &str = "standalone-core";
+
 /// Runtime processor that holds configuration for the node.
 #[derive(Clone)]
 pub struct Processor {
@@ -223,6 +229,7 @@ impl Processor {
             &node_name,
             node_config.manifest.tag.as_str(),
             STANDALONE_CORE_NODE,
+            STANDALONE_CORE_NODE_INSTANCE_ID,
         )?;
         // No daemon resolves the setup budget here: the node reads the one its
         // manifest declares, or the default setup budget, as a daemon would
@@ -288,6 +295,13 @@ impl Processor {
 
     pub fn bound_core_node(&self) -> &str {
         self.runtime_config.bound_core_node.as_str()
+    }
+
+    /// The per-boot instance id of the daemon that spawned this node, which its
+    /// heartbeat and presence token carry. Read by
+    /// [`crate::services::daemon_watchdog`].
+    pub(crate) fn bound_core_node_instance_id(&self) -> &str {
+        self.runtime_config.bound_core_node_instance_id.as_str()
     }
 
     pub(crate) fn input_arguments(&self) -> &NodeArguments {
@@ -1067,6 +1081,10 @@ mod tests {
     use std::{collections::BTreeMap, path::Path};
     use tempfile::TempDir;
 
+    /// The per-boot instance id of the daemon that the daemon-mode configs of
+    /// these tests name.
+    const DAEMON_INSTANCE_ID: &str = "brave-otter-1234";
+
     #[test]
     fn loads_runtime_config_from_path() {
         let bound_core_node = "epic-whale-6789";
@@ -1122,13 +1140,15 @@ mod tests {
             },
             node_name: "$NODE_NAME",
             node_tag: "v1",
-            bound_core_node: "$CORE_NODE"
+            bound_core_node: "$CORE_NODE",
+            bound_core_node_instance_id: "$DAEMON_INSTANCE_ID"
         }"#;
 
         let populated_config = json5_config
             .replace("$INSTANCE_ID", bound_instance_id)
             .replace("$NODE_NAME", bound_node_name)
-            .replace("$CORE_NODE", bound_core_node);
+            .replace("$CORE_NODE", bound_core_node)
+            .replace("$DAEMON_INSTANCE_ID", DAEMON_INSTANCE_ID);
 
         let runtime_config: RuntimeConfig =
             serde_json5::from_str(&populated_config).expect("runtime config should parse");
@@ -1166,6 +1186,10 @@ mod tests {
 
         assert_eq!(runtime_processor.bound_instance_id(), bound_instance_id);
         assert_eq!(runtime_processor.bound_core_node(), bound_core_node);
+        assert_eq!(
+            runtime_processor.bound_core_node_instance_id(),
+            DAEMON_INSTANCE_ID
+        );
         assert_eq!(runtime_processor.node_name(), bound_node_name);
         assert_eq!(
             serde_json::to_value(runtime_processor.input_arguments()).unwrap(),
@@ -1199,7 +1223,8 @@ mod tests {
             },
             node_name: "test_node",
             node_tag: "v1",
-            bound_core_node: "core-1234"
+            bound_core_node: "core-1234",
+            bound_core_node_instance_id: "brave-otter-1234"
         }"#;
 
         let runtime_config: RuntimeConfig =
@@ -1371,7 +1396,8 @@ mod tests {
             },
             node_name: "test_node",
             node_tag: "v1",
-            bound_core_node: "core-1234"
+            bound_core_node: "core-1234",
+            bound_core_node_instance_id: "brave-otter-1234"
         }"#;
 
         let runtime_config: RuntimeConfig =
@@ -1437,6 +1463,7 @@ mod tests {
             "built_in_server",
             "v1",
             "epic-whale-6789",
+            DAEMON_INSTANCE_ID,
         )
         .expect("runtime config builds");
 
@@ -1480,6 +1507,7 @@ mod tests {
             "built_in_server",
             "v1",
             "epic-whale-6789",
+            DAEMON_INSTANCE_ID,
         )
         .expect("runtime config builds");
         let temp_dir = TempDir::new().expect("temp dir");
@@ -1519,6 +1547,7 @@ mod tests {
             "built_in_server",
             "v1",
             "epic-whale-6789",
+            DAEMON_INSTANCE_ID,
         )
         .expect("runtime config builds");
 
@@ -1572,6 +1601,7 @@ mod tests {
             "built_in_server",
             "v1",
             "epic-whale-6789",
+            DAEMON_INSTANCE_ID,
         )
         .expect("runtime config builds");
         if let Some(budget) = setup_timeout_secs {
@@ -2102,7 +2132,8 @@ mod tests {
                 node_instance: {instance_block},
                 node_name: "consumer_node",
                 node_tag: "v1",
-                bound_core_node: "core-1234"
+                bound_core_node: "core-1234",
+                bound_core_node_instance_id: "brave-otter-1234"
             }}"#
         );
         let runtime_config: RuntimeConfig =
@@ -2390,7 +2421,8 @@ mod tests {
             },
             node_name: "consumer_node",
             node_tag: "v1",
-            bound_core_node: "core-1234"
+            bound_core_node: "core-1234",
+            bound_core_node_instance_id: "brave-otter-1234"
         }"#;
         serde_json5::from_str::<RuntimeConfig>(json5_config)
             .expect_err("a member in place of a slot's set must be a hard parse error");
@@ -2909,7 +2941,8 @@ mod tests {
                 },
                 node_name: "consumer_node",
                 node_tag: "v1",
-                bound_core_node: "core-1234"
+                bound_core_node: "core-1234",
+                bound_core_node_instance_id: "brave-otter-1234"
             }"#,
         )
         .expect("the boot config is written");

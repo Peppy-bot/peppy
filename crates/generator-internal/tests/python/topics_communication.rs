@@ -1,11 +1,11 @@
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, EMITTED_TOPIC_EXAMPLE, STUB_PYTHON_NODE_CONFIG,
-    SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, TEST_CORE_NODE, TopicScenario, assert_exited_successfully,
-    bind_slot, copy_config_to_output, generate_node_project, init_python_project_venv,
-    init_python_user_node, init_test_env, native_dep, python_consumer_stub_node_config,
-    save_runtime_config, shut_down_test_node, spawn_python_run, test_node_runtime_config,
-    test_peppy_dirs, test_wait_context, wait_for_child, wait_for_health_service_reachable_or_exit,
-    wait_for_service_reachable_or_exit,
+    SUBSCRIBED_TOPIC_FORMAT_EXAMPLE, TEST_CORE_NODE, TEST_CORE_NODE_INSTANCE_ID, TopicScenario,
+    assert_exited_successfully, bind_slot, copy_config_to_output, generate_node_project,
+    init_python_project_venv, init_python_user_node, init_test_env, native_dep,
+    python_consumer_stub_node_config, save_runtime_config, shut_down_test_node, spawn_python_run,
+    test_node_runtime_config, test_peppy_dirs, test_wait_context, wait_for_child,
+    wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -237,6 +237,7 @@ if __name__ == "__main__":
         UVC_CAMERA_NODE_NAME, // Must match the node name expected by the receiver
         "v1",
         TEST_CORE_NODE,
+        TEST_CORE_NODE_INSTANCE_ID,
     )
     .unwrap();
     let emitter_runtime_config = crate::helpers::apply_topology(emitter_runtime_config, topology);

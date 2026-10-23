@@ -17,6 +17,7 @@ use peppy::commands::stack::{
 };
 use peppy::context::AppContext;
 use peppylib::MessengerHandle;
+use peppylib::messaging::CoreNodePresenceMessenger;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 use super::common::{
@@ -84,6 +85,31 @@ fn expect_runtime_config(
             path.display()
         )
     })
+}
+
+/// The per-boot instance id of the daemon that `serve` runs, read from its
+/// presence token. A presence read can miss a live token under load, so this
+/// reads again until the token is listed, for at most 5 s.
+async fn daemon_instance_id(serve: &ServeCommandEmulation) -> String {
+    let messenger = MessengerHandle::from_shared(serve.messenger());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let claims = CoreNodePresenceMessenger::list_live(
+            &messenger,
+            Some(serve.core_node_name()),
+            CoreNodePresenceMessenger::LIST_TIMEOUT,
+        )
+        .await
+        .expect("the presence read should succeed");
+        if let [claim] = claims.as_slice() {
+            return claim.instance_id.clone();
+        }
+        assert!(
+            claims.is_empty() && Instant::now() < deadline,
+            "the daemon should hold exactly one presence token, got {claims:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Ends a test's instances once nothing reads them any more. Dropping
@@ -644,8 +670,9 @@ async fn stack_launch_fails_when_the_max_timeout_is_hit() {
 
 /// The launcher's `links` entry reaches the consumer's runtime config as a
 /// slot binding stamped with the daemon's core node, and the producer carries
-/// no slot binding. Each dummy `sh` run_cmd copies the file that
-/// `PEPPY_RUNTIME_CONFIG` names to a dump the test parses.
+/// no slot binding. Both runtime configs name the per-boot instance id of the
+/// daemon, which its presence token carries. Each dummy `sh` run_cmd copies the
+/// file that `PEPPY_RUNTIME_CONFIG` names to a dump the test parses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
     // Instances must stay in the stack until the assertions below have read
@@ -782,6 +809,20 @@ async fn stack_launch_binds_the_consumer_slot_from_launcher_links() {
         "the launcher's binding `{link_id} -> {producer_instance_id}` should be present on the \
          consumer's runtime config as a Pinned slot binding stamped with the daemon's core_node",
     );
+
+    // The daemon watchdog of each node follows the daemon that its runtime
+    // config names.
+    let daemon_instance_id = daemon_instance_id(&serve).await;
+    for (label, config) in [
+        ("producer", &producer_config),
+        ("consumer", &consumer_config),
+    ] {
+        assert_eq!(
+            config.bound_core_node_instance_id.as_str(),
+            daemon_instance_id,
+            "the {label}'s runtime config should name the per-boot instance id of its daemon"
+        );
+    }
 }
 
 /// A `one_or_more` slot bound to two producer instances through the real
