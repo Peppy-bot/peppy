@@ -17,7 +17,7 @@ use super::super::testgen::{
     FIXTURE_INSTANCE_ID, ObservedLinkSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
 use super::PythonGenerator;
-use super::code_builder::PythonCodeBuilder;
+use super::code_builder::{PythonCodeBuilder, python_string_literal};
 use super::mock::{
     emit_local_message_with_deserializer, emit_value_deserializer, emit_value_serializer,
     production_import_line, production_module_path, target_python_expr,
@@ -309,6 +309,16 @@ class Subscription:
 // exposed services
 // ---------------------------------------------------------------------------
 
+/// Re-exports the `FailureKind` and `Failure` of the production module, so a
+/// test reads the failures of the node under test from its fixture.
+fn emit_failure_reexports(builder: &mut PythonCodeBuilder) {
+    builder.lines([
+        "FailureKind = _production.FailureKind",
+        "Failure = _production.Failure",
+    ]);
+    builder.blank_line();
+}
+
 fn render_exposed_service(
     generator: &mut PythonGenerator,
     node_name: &str,
@@ -334,6 +344,7 @@ fn render_exposed_service(
 
     builder.line(&format!("SERVICE_NAME = {service_name:?}"));
     emit_fixture_identity(&mut builder);
+    emit_failure_reexports(&mut builder);
 
     let request_param = if let Some(format) = &spec.request {
         emit_value_serializer(
@@ -375,7 +386,7 @@ fn render_exposed_service(
                 "Polls the node's exposed service `{service_name}` once from the fixture \
                  session (a fresh, identity-explicit caller pinned to the node under test), \
                  gating on reachability first. `timeout` bounds the reachability gate and the \
-                 poll individually."
+                 poll individually. An error reply of the node raises the member's `Failure`."
             ));
             builder.line("producer = harness.node_producer_ref()");
             builder.call(
@@ -396,24 +407,29 @@ fn render_exposed_service(
             } else {
                 "b\"\""
             };
-            builder.call(
-                if spec.response.is_some() {
-                    "response_message = await peppylib.ServiceMessenger.poll("
-                } else {
-                    "await peppylib.ServiceMessenger.poll("
-                },
-                &[
-                    "harness.session,",
-                    "FIXTURE_CORE_NODE,",
-                    "FIXTURE_INSTANCE_ID,",
-                    &format!("{target},"),
-                    "SERVICE_NAME,",
-                    "producer,",
-                    &format!("{request_payload},"),
-                    "timeout,",
-                ],
-                ")",
-            );
+            builder.block("try:", |builder| {
+                builder.call(
+                    if spec.response.is_some() {
+                        "response_message = await peppylib.ServiceMessenger.poll("
+                    } else {
+                        "await peppylib.ServiceMessenger.poll("
+                    },
+                    &[
+                        "harness.session,",
+                        "FIXTURE_CORE_NODE,",
+                        "FIXTURE_INSTANCE_ID,",
+                        &format!("{target},"),
+                        "SERVICE_NAME,",
+                        "producer,",
+                        &format!("{request_payload},"),
+                        "timeout,",
+                    ],
+                    ")",
+                );
+            });
+            builder.block("except peppylib.FailureError as error:", |builder| {
+                builder.line("raise Failure(*error.args) from None");
+            });
             builder.line(if spec.response.is_some() {
                 "return _deserialize_response(response_message.payload)"
             } else {
@@ -470,6 +486,7 @@ fn render_exposed_action(
 
     builder.line(&format!("ACTION_NAME = {action_name:?}"));
     emit_fixture_identity(&mut builder);
+    emit_failure_reexports(&mut builder);
 
     if let Some(format) = &spec.goal_request {
         emit_value_serializer(
@@ -522,10 +539,17 @@ class ResultStatus(IntEnum):
     CANCELLED = 1
     ABANDONED = 2
     EXPIRED = 3
+    FAILED = 4
 "#);
     builder.blank_line();
 
     // Result data: fixtures deserialize; production defines no struct.
+    builder.add_import("from typing import Optional");
+    let mut result_fields = vec![
+        ("core_node", "str"),
+        ("instance_id", "str"),
+        ("status", "ResultStatus"),
+    ];
     if let Some(format) = &spec.result {
         emit_local_message_with_deserializer(
             generator,
@@ -536,26 +560,13 @@ class ResultStatus(IntEnum):
             "ResultData",
             "_deserialize_result",
         )?;
-        builder.add_import("from typing import Optional");
-        builder.dataclass(
-            "ResultResponse",
-            &[
-                ("core_node", "str"),
-                ("instance_id", "str"),
-                ("status", "ResultStatus"),
-                ("data", "Optional[ResultData]"),
-            ],
-        );
-    } else {
-        builder.dataclass(
-            "ResultResponse",
-            &[
-                ("core_node", "str"),
-                ("instance_id", "str"),
-                ("status", "ResultStatus"),
-            ],
-        );
+        result_fields.push(("data", "Optional[ResultData]"));
     }
+    result_fields.extend([
+        ("failure", "Optional[Failure]"),
+        ("cancel_reason", "Optional[str]"),
+    ]);
+    builder.dataclass("ResultResponse", &result_fields);
 
     // Feedback: fixtures deserialize; production defines no struct.
     if let Some(format) = &spec.feedback {
@@ -573,10 +584,10 @@ class ResultStatus(IntEnum):
     builder.block("class GoalHandle:", |builder| {
         builder.docstring(&format!(
             "A goal in flight against the node's action `{action_name}`; construct \
-             with `send_goal`. Attributes: `accepted` (whether the node admitted the \
-             goal), `reason` (optional human-readable rejection reason){}.",
+             with `send_goal`. Attributes: `accepted` (whether the node accepted the \
+             goal), `refusal` (the `Failure` of a refused goal, else `None`){}.",
             if spec.goal_response.is_some() {
-                ", `data` (the decoded goal response; `None` when a rejection carried no payload)"
+                ", `data` (the decoded goal response of an accepted goal, else `None`)"
             } else {
                 ""
             }
@@ -588,9 +599,10 @@ async def on_next_feedback(self) -> Feedback:
     """Receives the next decoded feedback message for this goal.
 
     Raises RuntimeError when the node closed the stream cleanly
-    (end-of-stream sentinel) and ConnectionError when the node instance
-    disappeared without closing it; in the latter case get_result
-    resolves to ResultStatus.ABANDONED.
+    (end-of-stream sentinel), ConnectionError when the node instance
+    disappeared without closing it, in which case get_result resolves to
+    ResultStatus.ABANDONED, and peppylib.FeedbackOverflowError when this
+    caller fell behind by more unread messages than its bound.
     """
     feedback = await self._inner.on_next_feedback()
     return _deserialize_feedback(feedback.payload)
@@ -623,6 +635,9 @@ reply = await peppylib.ActionMessenger.request_result(
     timeout,
 )
 status = ResultStatus(reply.status)
+failure = None
+if status is ResultStatus.FAILED:
+    failure = Failure(reply.failure_kind, reply.failure_message)
 "#);
                 // A result-bearing action decodes the body, and only on the two
                 // terminal states that carry one.
@@ -636,6 +651,8 @@ return ResultResponse(
     instance_id=reply.instance_id,
     status=status,
     data=data,
+    failure=failure,
+    cancel_reason=reply.cancel_reason,
 )
 "#);
                 } else {
@@ -644,6 +661,8 @@ return ResultResponse(
     core_node=reply.core_node,
     instance_id=reply.instance_id,
     status=status,
+    failure=failure,
+    cancel_reason=reply.cancel_reason,
 )
 "#);
                 }
@@ -659,14 +678,16 @@ return ResultResponse(
     };
     builder.block(
         &format!(
-            "async def send_goal(harness{request_param}, feedback_qos: peppylib.QoSProfile, \
-             timeout: float) -> GoalHandle:"
+            "async def send_goal(harness{request_param}, timeout: float, \
+             feedback_bound: Optional[int] = None) -> GoalHandle:"
         ),
         |builder| {
             builder.docstring(
                 "Sends a goal to the node from the fixture session (a fresh, \
                  identity-explicit caller pinned to the node under test), gating on \
-                 reachability first, and decodes the admission reply.",
+                 reachability first, and decodes the admission reply. The handle keeps \
+                 up to `feedback_bound` unread feedback messages (None takes the \
+                 default of peppylib).",
             );
             builder.line("producer = harness.node_producer_ref()");
             builder.call(
@@ -697,7 +718,7 @@ return ResultResponse(
                     "ACTION_NAME,",
                     "producer,",
                     "user_goal_payload,",
-                    "feedback_qos,",
+                    "feedback_bound,",
                     "timeout,",
                 ],
                 ")",
@@ -707,15 +728,13 @@ handle = GoalHandle()
 handle._messenger = harness.session
 handle._inner = inner
 handle.accepted = inner.accepted
-handle.reason = inner.reason
+handle.refusal = None if inner.accepted else Failure(inner.refusal_kind, inner.refusal_message)
 "#);
             if spec.goal_response.is_some() {
-                // An empty body means no response was supplied (a declared
-                // response serializes to a non-empty capnp message), which only
-                // a reject can produce.
+                // An accepted goal carries the declared response; a refused
+                // one carries none.
                 builder.py(r#"
-body = inner.goal_reply_body
-handle.data = _deserialize_goal_response(body) if body else None
+handle.data = _deserialize_goal_response(inner.goal_reply_body) if inner.accepted else None
 "#);
             }
             builder.line("return handle");
@@ -799,14 +818,6 @@ fn python_json_literal(value: &serde_json::Value) -> String {
         serde_json::Value::Null => "None".to_string(),
         other => other.to_string(),
     }
-}
-
-/// A string as a Python string literal. Every JSON string escape (`\"`,
-/// `\\`, `\n`, `\uXXXX`) is valid in Python, while Rust's `{:?}` writes
-/// non-printable and grapheme-extending characters as `\u{...}`, which
-/// Python rejects.
-fn python_string_literal(value: &str) -> String {
-    serde_json::to_string(value).expect("a str always serializes to a JSON string")
 }
 
 /// Emits a namespace class holding one attribute per link.

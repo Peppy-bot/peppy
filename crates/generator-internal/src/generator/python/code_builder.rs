@@ -36,6 +36,14 @@ pub fn emit_format_as_dataclass(
     Ok(())
 }
 
+/// A string as a Python string literal. Every JSON string escape (`\"`,
+/// `\\`, `\n`, `\uXXXX`) is valid in Python, while Rust's `{:?}` writes
+/// non-printable and grapheme-extending characters as `\u{...}`, which
+/// Python rejects.
+pub fn python_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("a str always serializes to a JSON string")
+}
+
 /// Accumulates lines of Python code with proper indentation handling.
 pub struct PythonCodeBuilder {
     imports: BTreeSet<String>,

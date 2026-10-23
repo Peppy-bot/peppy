@@ -11,6 +11,7 @@ use super::types::{
     ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact, LanguageGenerator,
     PeerContext,
 };
+use config::failure_kind::{ContractFailureKinds, FailureKindName};
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, MessageFormat, NativeEmittedTopic,
     NativeExposedAction, NativeExposedService,
@@ -213,7 +214,35 @@ pub(crate) fn contract_origin(link_id: &str) -> ContractOrigin {
         link_id: link_id.to_string(),
         contract_name: "camera_feed".to_string(),
         contract_tag: "v1".to_string(),
+        failure_kinds: failure_kinds(&[("lens_covered", "The lens of the camera is covered")]),
     }
+}
+
+/// A `failure_kinds` block that declares `kinds`, each a name and its
+/// meaning, in that order.
+pub(crate) fn failure_kinds(kinds: &[(&str, &str)]) -> ContractFailureKinds {
+    ContractFailureKinds::new(kinds.iter().map(|(name, meaning)| {
+        (
+            FailureKindName::parse(name).expect("a valid failure kind name"),
+            meaning.to_string(),
+        )
+    }))
+    .expect("a valid failure_kinds block")
+}
+
+/// The `arm_control` contract the contract-routed dependency of both goldens
+/// consumes.
+pub(crate) fn arm_control_dependency() -> DependencyContext {
+    DependencyContext::contract(
+        "arm_control",
+        "v1",
+        "left_arm",
+        Cardinality::One,
+        failure_kinds(&[
+            ("unreachable", "No plan to the target"),
+            ("leader_streaming", "A leader streams a limb of the goal"),
+        ]),
+    )
 }
 
 pub(crate) fn peer(link_id: &str, cardinality: Cardinality) -> PeerContext {

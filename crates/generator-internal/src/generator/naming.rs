@@ -233,6 +233,18 @@ pub(crate) fn sanitize_or(raw: &str, fallback: &str) -> String {
     }
 }
 
+/// The name of the parameter that carries the reason of
+/// `complete_cancelled`, beside one parameter per result field: `reason`, or
+/// `reason` with as many `_` appended as it takes to name no result field
+/// (`is_result_field`), so a result field named `reason` keeps its own name.
+pub(crate) fn cancel_reason_parameter(is_result_field: impl Fn(&str) -> bool) -> String {
+    let mut name = String::from("reason");
+    while is_result_field(&name) {
+        name.push('_');
+    }
+    name
+}
+
 /// Claims `sanitized` for `owner` within one generated surface. A second
 /// owner landing on an already-claimed identifier is a hard error naming
 /// both, so the operator sees which two inputs clashed rather than the
@@ -372,6 +384,14 @@ mod tests {
             nested_type_name("UvcCameraEnableActionGoal", "frame_header"),
             "UvcCameraEnableActionGoalFrameHeader"
         );
+    }
+
+    #[test]
+    fn the_cancel_reason_parameter_steps_aside_for_a_result_field_of_the_same_name() {
+        let parameter = |fields: &[&str]| cancel_reason_parameter(|name| fields.contains(&name));
+        assert_eq!(parameter(&["success", "pose"]), "reason");
+        assert_eq!(parameter(&["reason"]), "reason_");
+        assert_eq!(parameter(&["reason", "reason_"]), "reason__");
     }
 
     #[test]

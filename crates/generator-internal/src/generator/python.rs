@@ -4,6 +4,7 @@ mod tests;
 mod actions;
 mod code_builder;
 mod deserialization;
+mod failures;
 mod fixtures;
 mod identifiers;
 mod mock;

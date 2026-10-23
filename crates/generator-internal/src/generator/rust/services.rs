@@ -73,10 +73,12 @@ pub fn build_exposed_service_method(
         quote!(())
     };
 
+    let mut helper_tokens = Vec::new();
     let response_serialization = build_response_serialization_code(response_spec, &callback_call)?;
+    helper_tokens.extend(response_serialization.serializer);
+    let response_serialization = response_serialization.answer;
 
     let has_payload = encoding.is_some();
-    let mut helper_tokens = Vec::new();
 
     // Build helper_params once (shared across encoding/no-encoding paths).
     let mut helper_params: Vec<TokenStream> = Vec::new();
@@ -105,7 +107,16 @@ pub fn build_exposed_service_method(
         })?;
         helper_tokens.push(request_deserializer);
 
-        body_preamble.push(quote!(let #request_pattern = #request_deserializer_name(payload)?;));
+        // A request that does not fit the declared shape is the caller's
+        // problem: its error reply has the kind `rejected`.
+        body_preamble.push(quote! {
+            let #request_pattern = #request_deserializer_name(payload).map_err(|error| {
+                Failure::new(
+                    FailureKind::Rejected,
+                    format!("request does not decode: {error}"),
+                )
+            })?;
+        });
     }
 
     let request_construction = if has_payload && request_data_struct.is_some() {
@@ -116,15 +127,15 @@ pub fn build_exposed_service_method(
     body_preamble.push(request_construction);
 
     let helper_fn = quote! {
-        fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<peppylib::Payload>
+        fn #handler_helper_name<F>(
+            #(#helper_params),*
+        ) -> std::result::Result<peppylib::Payload, Failure>
         where
-            F: Fn(#request_struct) -> crate::Result<#response_ty>,
+            F: Fn(#request_struct) -> std::result::Result<#response_ty, Failure>,
         {
             #(#body_preamble)*
 
-            let response_payload = #response_serialization;
-
-            Ok(response_payload)
+            #response_serialization
         }
     };
     helper_tokens.push(helper_fn);
@@ -154,12 +165,18 @@ pub fn build_exposed_service_method(
     let service_name_ref = quote!(SERVICE_NAME);
 
     let method = quote! {
+            /// Answers the next request of this service with `handler`. The
+            /// response of the handler is a success; its `Failure` gives the
+            /// caller an error reply of a kind that this member declares. A
+            /// request that does not decode gets an error reply of the kind
+            /// `rejected`, and a response that does not serialize one of
+            /// the kind `attempt_failed`.
             pub async fn #handler_fn_name<F>(
                 node_runner: &crate::NodeRunner,
                 handler: F,
             ) -> crate::Result<()>
             where
-                F: Fn(#request_struct) -> crate::Result<#response_ty>,
+                F: Fn(#request_struct) -> std::result::Result<#response_ty, Failure>,
             {
                 let mut service = peppylib::ServiceMessenger::listen(
                     node_runner.messenger(),
@@ -172,11 +189,7 @@ pub fn build_exposed_service_method(
 
                 service
                     .handle_next_request(move |#request_context_ident| {
-                        async move {
-                            #helper_call_tokens.map_err(|error| {
-                                peppylib::PeppyError::Io(std::io::Error::other(error.to_string()))
-                            })
-                        }
+                        async move { #helper_call_tokens.map_err(|failure| failure.to_wire()) }
                     })
                     .await?;
 
@@ -256,32 +269,55 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
     ))
 }
 
+/// How a service handler's answer becomes the reply: the statements that
+/// call the handler and give `Result<peppylib::Payload, Failure>`, and the
+/// `serialize_response` helper they use when the service declares a
+/// response.
+pub struct ResponseSerialization {
+    pub answer: TokenStream,
+    pub serializer: Option<TokenStream>,
+}
+
 pub fn build_response_serialization_code(
     response_spec: Option<&ServiceResponseSpec>,
     callback_call: &TokenStream,
-) -> Result<TokenStream> {
+) -> Result<ResponseSerialization> {
     let Some(spec) = response_spec else {
-        return Ok(quote!({
-            #callback_call?;
-            peppylib::Payload::new()
-        }));
+        return Ok(ResponseSerialization {
+            answer: quote! {
+                #callback_call?;
+                Ok(peppylib::Payload::new())
+            },
+            serializer: None,
+        });
     };
 
     let error_context = quote!(format!("handle_request_payload {}", SERVICE_NAME));
-    let response_ident = Ident::new("response", Span::call_site());
-    let serialization = build_response_payload_tokens(spec, &response_ident, &error_context)?;
-
     let uses_response_data = !spec.format.0.is_empty();
-    let response_stmt = if uses_response_data {
-        quote!(let response = #callback_call?;)
+    let response_ident = if uses_response_data {
+        Ident::new("response", Span::call_site())
     } else {
-        quote!(let _ = #callback_call?;)
+        Ident::new("_response", Span::call_site())
     };
+    let serialization = build_response_payload_tokens(spec, &response_ident, &error_context)?;
+    let struct_ident = &spec.struct_ident;
 
-    Ok(quote!({
-        #response_stmt
-        #serialization
-    }))
+    Ok(ResponseSerialization {
+        answer: quote! {
+            let response = #callback_call?;
+            serialize_response(response).map_err(|error| {
+                Failure::new(
+                    FailureKind::AttemptFailed,
+                    format!("response does not serialize: {error}"),
+                )
+            })
+        },
+        serializer: Some(quote! {
+            fn serialize_response(#response_ident: #struct_ident) -> crate::Result<peppylib::Payload> {
+                Ok(#serialization)
+            }
+        }),
+    })
 }
 
 pub fn build_return_type_from_params(

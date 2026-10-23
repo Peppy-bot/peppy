@@ -6,6 +6,7 @@ use super::services::{
 };
 use super::topics::{EmitMethodSpec, build_emit_method};
 use crate::error::Result;
+use crate::generator::naming::cancel_reason_parameter;
 use config::node::MessageFormat;
 use encoding::FunctionParam;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -42,86 +43,75 @@ pub fn build_action_expose_method(
 
             Ok(Self { inner })
         }
+
+        /// Sets the sender grace of the action: how long it keeps the goals
+        /// of a sender that is gone before they receive their cancel signal,
+        /// with the cause `CancelCause::SenderGone`. Zero by default. It
+        /// applies to each sender found gone after the call.
+        pub fn set_sender_grace(&self, grace: std::time::Duration) {
+            self.inner.set_sender_grace(grace);
+        }
     }
 }
 
-/// The framework decision returned by a goal handler. Admission travels in
-/// the framework goal-ack envelope, so it stays independent of the declared
-/// `GoalResponse` fields: an accept carries the declared response when one
-/// exists, and a reject carries an optional human-readable reason plus an
-/// optional response. The `accept` / `reject` constructors cover the common
-/// paths; construct the `Reject` variant directly for full control.
+/// The decision a goal handler returns. Admission travels in the framework
+/// goal-ack envelope, so it stays independent of the declared `GoalResponse`
+/// fields: an accept carries the declared response when one exists, and a
+/// refusal carries a failure of a kind the member declares, and no response.
 pub fn build_goal_decision_enum(has_response: bool) -> TokenStream {
-    if has_response {
-        quote! {
-            #[allow(dead_code)]
-            pub enum GoalDecision {
-                Accept(GoalResponse),
-                Reject {
-                    reason: Option<String>,
-                    response: Option<GoalResponse>,
-                },
-            }
-
-            #[allow(dead_code)]
-            impl GoalDecision {
-                /// Admit the goal and reply with the declared response.
+    let (accept_variant, accept_fn) = if has_response {
+        (
+            quote!(Accept(GoalResponse),),
+            quote! {
+                /// Accepts the goal and replies with the declared response.
                 pub fn accept(response: GoalResponse) -> Self {
                     Self::Accept(response)
                 }
-
-                /// Decline the goal with a human-readable reason and no
-                /// response payload. Construct `GoalDecision::Reject`
-                /// directly to attach a response as well.
-                pub fn reject(reason: impl Into<String>) -> Self {
-                    Self::Reject {
-                        reason: Some(reason.into()),
-                        response: None,
-                    }
-                }
-            }
-        }
+            },
+        )
     } else {
-        quote! {
-            #[allow(dead_code)]
-            pub enum GoalDecision {
-                Accept,
-                Reject {
-                    reason: Option<String>,
-                },
-            }
-
-            #[allow(dead_code)]
-            impl GoalDecision {
-                /// Admit the goal.
+        (
+            quote!(Accept,),
+            quote! {
+                /// Accepts the goal.
                 pub fn accept() -> Self {
                     Self::Accept
                 }
+            },
+        )
+    };
+    quote! {
+        #[allow(dead_code)]
+        pub enum GoalDecision {
+            #accept_variant
+            Refuse(Failure),
+        }
 
-                /// Decline the goal with a human-readable reason. Construct
-                /// `GoalDecision::Reject { reason: None }` directly for a
-                /// silent reject.
-                pub fn reject(reason: impl Into<String>) -> Self {
-                    Self::Reject {
-                        reason: Some(reason.into()),
-                    }
-                }
+        #[allow(dead_code)]
+        impl GoalDecision {
+            #accept_fn
+
+            /// Refuses the goal with a failure kind that this member
+            /// declares and a message for a person. A refusal carries no
+            /// goal response.
+            pub fn refuse(kind: FailureKind, message: impl Into<String>) -> Self {
+                Self::Refuse(Failure::new(kind, message))
             }
         }
     }
 }
 
 /// `handle_goal_next_request`: returns the next *accepted* goal as a
-/// `GoalContext`. The user decider runs on each incoming goal; rejected goals
+/// `GoalContext`. The user decider runs on each incoming goal; refused goals
 /// are answered and skipped transparently (the method keeps polling), so a
 /// returned `Ok(None)` means the goal stream has closed (the node is shutting
 /// down) and the caller should stop its accept loop. A goal whose request
 /// bytes do not decode into the declared `GoalRequestData` (a field missing,
-/// a fixed-length array of the wrong length) is rejected the same way, with
-/// the decode error as the reason, before the decider ever sees it: the
-/// client sent something this server's shape does not admit, which is the
-/// client's problem to learn about, not a reason to stop serving. Transport
-/// errors propagate as `Err`.
+/// a fixed-length array of the wrong length) is refused the same way, with
+/// the kind `rejected` and the decode error as the message, before the
+/// decider ever sees it: the client sent something this server's shape does
+/// not admit, which is the client's problem to learn about, not a reason to
+/// stop serving. Transport errors propagate as `Err`.
 ///
 /// `response_serialization`, when present, serializes a local `response`
 /// (`GoalResponse`) into a `peppylib::Payload`.
@@ -135,10 +125,13 @@ pub fn build_handle_goal_next_request(
                 Ok(request_data) => request_data,
                 Err(error) => {
                     // The request does not fit this server's declared shape:
-                    // answer the client with the decode error and keep
-                    // polling for the next goal.
-                    let reason = format!("goal request does not decode: {error}");
-                    pending.reject(Some(&reason), peppylib::Payload::new()).await?;
+                    // refuse the goal with the decode error and keep polling
+                    // for the next goal.
+                    let refusal = Failure::new(
+                        FailureKind::Rejected,
+                        format!("goal request does not decode: {error}"),
+                    );
+                    pending.refuse(refusal.to_wire()).await?;
                     continue;
                 }
             };
@@ -157,42 +150,20 @@ pub fn build_handle_goal_next_request(
         }
     };
 
-    let (accept_arm, reject_arm) = match response_serialization {
-        Some(serialize) => (
-            quote! {
-                GoalDecision::Accept(response) => {
-                    let response_payload = #serialize;
-                    let inner = pending.accept(response_payload).await?;
-                    return Ok(Some(GoalContext { inner, request }));
-                }
-            },
-            quote! {
-                // Rejected: answer the client and keep polling for the
-                // next goal. A reject never ends the accept loop.
-                GoalDecision::Reject { reason, response } => {
-                    let response_payload = match response {
-                        Some(response) => #serialize,
-                        None => peppylib::Payload::new(),
-                    };
-                    pending.reject(reason.as_deref(), response_payload).await?;
-                }
-            },
-        ),
-        None => (
-            quote! {
-                GoalDecision::Accept => {
-                    let inner = pending.accept(peppylib::Payload::new()).await?;
-                    return Ok(Some(GoalContext { inner, request }));
-                }
-            },
-            quote! {
-                // Rejected: answer the client and keep polling for the next
-                // goal. A reject never ends the accept loop.
-                GoalDecision::Reject { reason } => {
-                    pending.reject(reason.as_deref(), peppylib::Payload::new()).await?;
-                }
-            },
-        ),
+    let accept_arm = match response_serialization {
+        Some(serialize) => quote! {
+            GoalDecision::Accept(response) => {
+                let response_payload = #serialize;
+                let inner = pending.accept(response_payload).await?;
+                return Ok(Some(GoalContext { inner, request }));
+            }
+        },
+        None => quote! {
+            GoalDecision::Accept => {
+                let inner = pending.accept(peppylib::Payload::new()).await?;
+                return Ok(Some(GoalContext { inner, request }));
+            }
+        },
     };
 
     quote! {
@@ -211,7 +182,11 @@ pub fn build_handle_goal_next_request(
                 #decode_and_build_request
                 match decider(&request)? {
                     #accept_arm
-                    #reject_arm
+                    // Refused: answer the client and keep polling for the
+                    // next goal. A refusal never ends the accept loop.
+                    GoalDecision::Refuse(failure) => {
+                        pending.refuse(failure.to_wire()).await?;
+                    }
                 }
             }
         }
@@ -230,8 +205,8 @@ pub fn build_goal_context_struct() -> TokenStream {
     }
 }
 
-/// `GoalContext` methods present for every action: request accessor, goal_id,
-/// and the cancel signal.
+/// `GoalContext` methods present for every action: the request, its sender
+/// and goal_id, the cancel signal and its cause, and `fail`.
 pub fn build_goal_context_base_methods() -> TokenStream {
     quote! {
         /// The decoded goal request (caller identity and, if any, data).
@@ -244,15 +219,41 @@ pub fn build_goal_context_base_methods() -> TokenStream {
             self.inner.goal_id()
         }
 
-        /// Resolves when a cancel request arrives for this goal. React by
-        /// calling `complete_cancelled`.
+        /// The process that sent this goal. The action cancels the goal
+        /// when this process is gone and its sender grace passed.
+        pub fn sender(&self) -> &peppylib::messaging::ClientPresence {
+            self.inner.sender()
+        }
+
+        /// Resolves when this goal receives its cancel signal: a cancel
+        /// request of its caller, or the end of its sender (see
+        /// `cancel_cause`). React by calling `complete_cancelled`.
         pub async fn cancel_signal(&self) {
             self.inner.cancel_signal().await
         }
 
-        /// Whether a cancel has been requested for this goal.
+        /// Whether this goal received its cancel signal.
         pub fn is_cancelled(&self) -> bool {
             self.inner.is_cancelled()
+        }
+
+        /// Why this goal received its cancel signal; `None` before it did.
+        /// `CancelCause::reason` gives a reason for `complete_cancelled`.
+        pub fn cancel_cause(&self) -> Option<peppylib::messaging::CancelCause> {
+            self.inner.cancel_cause()
+        }
+
+        /// Ends the goal with the status failed: a failure kind that this
+        /// member declares, a message for a person, and no result. The
+        /// first of `complete`, `fail` and `complete_cancelled` ends the
+        /// goal; later calls do nothing.
+        pub async fn fail(
+            &self,
+            kind: FailureKind,
+            message: impl Into<String>,
+        ) -> crate::Result<()> {
+            self.inner.fail(Failure::new(kind, message).to_wire()).await?;
+            Ok(())
         }
     }
 }
@@ -284,34 +285,42 @@ pub fn build_goal_context_publish_feedback(
     })
 }
 
-/// `complete(fields…)` / `complete_cancelled(fields…)` on `GoalContext`,
-/// serializing the result response and delivering it. `method_name` names both
-/// the generated method and the peppylib method it forwards to (they are always
-/// the same). Handles an empty result response (no fields) by sending an empty
+/// Which terminal result method of `GoalContext` to build.
+#[derive(Clone, Copy)]
+pub enum ResultDelivery {
+    /// `complete(fields…)`: the goal is a success.
+    Completed,
+    /// `complete_cancelled(reason, fields…)`: the goal ends cancelled, for
+    /// `reason`.
+    Cancelled,
+}
+
+/// `complete(fields…)` / `complete_cancelled(reason, fields…)` on
+/// `GoalContext`, serializing the result response and delivering it. Handles
+/// an action that declares no result (or an empty one) by sending an empty
 /// payload.
 pub fn build_goal_context_complete(
-    method_name: &str,
+    delivery: ResultDelivery,
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     label: &str,
 ) -> TokenStream {
-    let method_ident = Ident::new(method_name, Span::call_site());
     let label_literal = Literal::string(label);
     let error_context = quote!(format!("{} {}", #label_literal, ACTION_NAME));
 
-    let method_param_tokens: Vec<TokenStream> = params
-        .iter()
-        .map(|param| {
-            let ident = &param.ident;
-            let ty = &param.ty;
-            quote!(#ident: #ty)
-        })
-        .collect();
-    let signature = if method_param_tokens.is_empty() {
-        quote!(&self)
-    } else {
-        quote!(&self, #(#method_param_tokens),*)
-    };
+    let reason = Ident::new(
+        &cancel_reason_parameter(|name| params.iter().any(|param| param.ident == name)),
+        Span::call_site(),
+    );
+    let mut method_params: Vec<TokenStream> = Vec::new();
+    if let ResultDelivery::Cancelled = delivery {
+        method_params.push(quote!(#reason: impl Into<String>));
+    }
+    method_params.extend(params.iter().map(|param| {
+        let ident = &param.ident;
+        let ty = &param.ty;
+        quote!(#ident: #ty)
+    }));
 
     let serialize = match encoding {
         Some(spec) => {
@@ -320,11 +329,41 @@ pub fn build_goal_context_complete(
         None => quote!(peppylib::Payload::new()),
     };
 
+    let (doc, method, delivery_call) = match delivery {
+        ResultDelivery::Completed => (
+            quote! {
+                /// Ends the goal with the status completed and its result:
+                /// the goal is a success. The first of `complete`, `fail`
+                /// and `complete_cancelled` ends the goal; later calls do
+                /// nothing.
+            },
+            quote!(complete),
+            quote!(self.inner.complete(payload).await?;),
+        ),
+        ResultDelivery::Cancelled => (
+            {
+                let summary = Literal::string(&format!(
+                    " Ends the goal with the status cancelled, for `{reason}`, with its result."
+                ));
+                quote! {
+                    #[doc = #summary]
+                    /// A worker calls it after the cancel signal
+                    /// (`CancelCause::reason` gives a reason), and a member
+                    /// that ends the goals of other clients calls it with a
+                    /// reason of its own.
+                }
+            },
+            quote!(complete_cancelled),
+            quote!(self.inner.complete_cancelled(#reason, payload).await?;),
+        ),
+    };
+
     quote! {
+        #doc
         #[allow(clippy::too_many_arguments)]
-        pub async fn #method_ident(#signature) -> crate::Result<()> {
+        pub async fn #method(&self, #(#method_params),*) -> crate::Result<()> {
             let payload = #serialize;
-            self.inner.#method_ident(payload).await?;
+            #delivery_call
             Ok(())
         }
     }
