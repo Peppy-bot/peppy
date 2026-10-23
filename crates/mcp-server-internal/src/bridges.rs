@@ -7,7 +7,7 @@
 
 use crate::daemon_bridge::{DaemonTask, DaemonTool};
 use crate::serve::ServeError;
-use config::node::{MessageFormat, NativeExposedAction};
+use config::node::MessageFormat;
 use message_codec::MessageCodec;
 use message_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding,
@@ -20,7 +20,9 @@ use peppy_mcp_runtime::{
     ActionContext, ActionExit, CancelledGoal, Recipient, ResourceIngest, ToolCall, ToolCallError,
 };
 use peppylib::config::{QoSProfile, TopicRetention};
-use peppylib::messaging::{CancelState, MessengerHandle, ProducerRef, SenderTarget};
+use peppylib::messaging::{
+    CancelState, DEFAULT_FEEDBACK_BOUND, MessengerHandle, ProducerRef, SenderTarget,
+};
 use peppylib::runtime::NodeRunner;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -85,7 +87,6 @@ pub(crate) struct PreparedTask {
     pub name: String,
     pub binding: Binding,
     pub client: ActionClient,
-    pub feedback_qos: QoSProfile,
     /// How the bridge follows the goal to its end (see [`drive_goal`]).
     pub follow: GoalFollow,
 }
@@ -277,6 +278,7 @@ pub(crate) fn prepare(
                         &member_side("response"),
                         service.response_message_format.as_ref(),
                     )?,
+                    bound.failure_kinds.clone(),
                 ),
                 deadline: Duration::from_millis(entry.deadline_ms.get()),
             });
@@ -330,8 +332,8 @@ pub(crate) fn prepare(
                             .as_ref()
                             .and_then(|result| result.response_message_format.as_ref()),
                     )?,
+                    bound.failure_kinds.clone(),
                 ),
-                feedback_qos: feedback_qos(action),
                 follow,
             });
         }
@@ -346,17 +348,6 @@ pub(crate) fn prepare(
         });
     }
     Ok(prepared)
-}
-
-/// The feedback subscription follows the contract: the QoS profile the
-/// action's feedback topic declares picks the subscriber's buffering tier,
-/// and a feedback-less action's empty stream takes the default.
-fn feedback_qos(action: &NativeExposedAction) -> QoSProfile {
-    action
-        .feedback_topic
-        .as_ref()
-        .map(|topic| topic.qos_profile.clone())
-        .unwrap_or_default()
 }
 
 /// Feeds the resources of one catalog entry from its topic: every message
@@ -555,16 +546,15 @@ pub(crate) async fn drive_goal(
             binding,
             producer,
             &input,
-            task.feedback_qos.clone(),
+            DEFAULT_FEEDBACK_BOUND,
             admission,
         )
         .await
         .map_err(failed)?;
-    if !handle.accepted() {
-        return Err(ActionExit::Failed(match handle.rejection_reason() {
-            Some(reason) => format!("the provider rejected the goal: {reason}"),
-            None => "the provider rejected the goal".to_owned(),
-        }));
+    if let Some(refusal) = handle.refusal() {
+        return Err(ActionExit::Failed(format!(
+            "the provider refused the goal: {refusal}"
+        )));
     }
 
     match task.follow {
@@ -602,10 +592,13 @@ fn terminal_state(
 ) -> Result<Value, ActionExit> {
     match outcome {
         GoalOutcome::Completed(value) => Ok(value),
-        GoalOutcome::Cancelled(result) => Err(ActionExit::Cancelled(CancelledGoal {
+        GoalOutcome::Cancelled { reason, result } => Err(ActionExit::Cancelled(CancelledGoal {
             result,
-            reason: cancel_reason,
+            reason: Some(cancel_reason.unwrap_or(reason)),
         })),
+        GoalOutcome::Failed(failure) => Err(ActionExit::Failed(format!(
+            "the provider failed the goal: {failure}"
+        ))),
         GoalOutcome::Abandoned => Err(ActionExit::Failed(
             "the provider abandoned the goal".to_owned(),
         )),
@@ -643,7 +636,9 @@ async fn next_feedback_step(handle: &mut GoalHandle, surface: &impl TaskSurface)
             );
             FeedbackStep::Skipped
         }
-        Ok(None) | Err(ConsumerError::Messaging(_)) => FeedbackStep::Ended,
+        Ok(None)
+        | Err(ConsumerError::Messaging(_))
+        | Err(ConsumerError::UndeclaredFailureKind { .. }) => FeedbackStep::Ended,
     }
 }
 

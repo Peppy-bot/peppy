@@ -21,10 +21,10 @@ use core_node_api::ServiceId;
 use core_node_api::encoding::{ClockOffsetRequest, ClockOffsetResponse};
 use tracing::debug;
 
-use crate::messaging::{SenderTarget, ServiceRequestContext};
+use crate::messaging::{Failure, SenderTarget, ServiceAnswer, ServiceRequestContext};
 use crate::runtime::{NodeRunner, TaskHandle};
-use crate::types::Payload;
-use crate::{PeppyError, PeppyResult, ServiceMessenger};
+use crate::{PeppyResult, ServiceMessenger};
+use config::failure_kind::PeppyFailureKind;
 
 pub async fn listen_for_clock_offset(
     node_runner: Arc<NodeRunner>,
@@ -58,24 +58,26 @@ pub async fn listen_for_clock_offset(
 async fn handle_clock_offset_request(
     node_runner: &NodeRunner,
     context: ServiceRequestContext,
-) -> PeppyResult<Payload> {
+) -> ServiceAnswer {
     let sender_instance_id = context.message().instance_id().to_string();
 
     // Validate the (empty) request structurally so any wire-schema skew surfaces
     // loudly instead of being silently ignored.
     ClockOffsetRequest::decode(context.message().payload_bytes().as_ref()).map_err(|err| {
-        PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.clone(),
-            reason: format!("invalid clock_offset request: {err}"),
-        }
+        Failure::new(
+            PeppyFailureKind::Rejected,
+            format!("invalid clock_offset request from {sender_instance_id}: {err}"),
+        )
     })?;
     debug!("Received `clock_offset` request from {sender_instance_id}");
 
     let sync = crate::clock::synchronize(node_runner, None)
         .await
-        .map_err(|err| PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id,
-            reason: format!("clock synchronize against core node failed: {err}"),
+        .map_err(|err| {
+            Failure::new(
+                PeppyFailureKind::AttemptFailed,
+                format!("clock synchronize against core node failed: {err}"),
+            )
         })?;
 
     // The exchange runs in every domain: it measures this host's wall clock
@@ -87,5 +89,7 @@ async fn handle_clock_offset_request(
         }
         None => ClockOffsetResponse::new(sync.offset_ns, sync.round_trip_delay_ns),
     };
-    response.encode().map_err(Into::into)
+    response
+        .encode()
+        .map_err(|err| Failure::new(PeppyFailureKind::AttemptFailed, err.to_string()))
 }

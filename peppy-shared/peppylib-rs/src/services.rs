@@ -9,9 +9,8 @@ pub mod ready;
 pub mod shutdown;
 pub mod slot_update;
 
-use crate::messaging::{SenderTarget, ServiceRequestContext};
+use crate::messaging::{SenderTarget, ServiceAnswer, ServiceRequestContext};
 use crate::runtime::TaskHandle;
-use crate::types::Payload;
 use crate::{MessengerHandle, PeppyResult, ServiceMessenger};
 use tracing::debug;
 
@@ -37,10 +36,7 @@ pub(crate) async fn listen_for_echo_service(
     Ok(handle)
 }
 
-async fn handle_echo_request(
-    context: ServiceRequestContext,
-    service_name: &str,
-) -> PeppyResult<Payload> {
+async fn handle_echo_request(context: ServiceRequestContext, service_name: &str) -> ServiceAnswer {
     let sender_instance_id = context.message().instance_id();
     debug!("Received `{service_name}` request from {sender_instance_id}");
 

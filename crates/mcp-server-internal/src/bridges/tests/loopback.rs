@@ -83,6 +83,7 @@ fn prepared_exposure() -> PreparedExposure {
             topics: &contract.interfaces.topics,
             services: &contract.interfaces.services,
             actions: &contract.interfaces.actions,
+            failure_kinds: &contract.failure_kinds,
         },
     };
     let exposure = PeppyMcpExposureParser::from_content(EXPOSURE).expect("the exposure parses");

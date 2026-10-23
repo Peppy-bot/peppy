@@ -1,22 +1,23 @@
 //! Feedback of a daemon-hosted action goal sent through
-//! `core_node::transport::send_goal`: the caller keeps every line
-//! (`DAEMON_GOAL_FEEDBACK`).
+//! `core_node::transport::send_goal`: the caller keeps every line, up to
+//! `DAEMON_GOAL_FEEDBACK_BOUND` unread ones.
 
 use std::time::Duration;
 
 use core_node_api::ActionGoal;
 use core_node_api::encoding::RepoRefreshGoal;
 use peppylib::core_node::transport;
-use peppylib::messaging::{ActionMessenger, ResultStatus};
+use peppylib::messaging::{ActionMessenger, GoalOutcome};
 use peppylib::testing::EphemeralRouter;
+use peppylib::types::Payload;
 
 use super::common::{CLIENT_INSTANCE, CORE_NODE, SERVER_INSTANCE, test_node_target};
 use super::feedback_flood::{
     FLOOD_RESULT, FloodedAction, HANG_GUARD, read_to_the_end, start_flooding_provider,
 };
 
-/// More lines than a session's default feedback buffer holds.
-const LINE_COUNT: usize = 300;
+/// More lines than the default feedback bound of a caller holds.
+const LINE_COUNT: usize = 3000;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The caller reads the feedback only after the goal ended, and still gets
@@ -51,8 +52,10 @@ async fn a_daemon_goal_keeps_every_feedback_line_for_its_caller() {
     .await
     .expect("the result request must not hang")
     .expect("the result arrives");
-    assert_eq!(reply.status, ResultStatus::Completed);
-    assert_eq!(reply.body.as_ref(), FLOOD_RESULT);
+    assert_eq!(
+        reply.outcome,
+        GoalOutcome::Completed(Payload::from_static(FLOOD_RESULT))
+    );
 
     assert_eq!(
         read_to_the_end(&mut handle).await,

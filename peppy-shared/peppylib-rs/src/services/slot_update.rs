@@ -15,10 +15,10 @@
 //! once.
 
 use crate::encoding::slot_update::SlotUpdateResponse;
-use crate::messaging::{SenderTarget, ServiceRequestContext};
+use crate::messaging::{Failure, SenderTarget, ServiceAnswer, ServiceRequestContext};
 use crate::runtime::TaskHandle;
-use crate::types::Payload;
-use crate::{MessengerHandle, PeppyResult, ServiceMessenger};
+use crate::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use config::failure_kind::PeppyFailureKind;
 use config::node::Cardinality;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -151,10 +151,12 @@ fn handle_slot_update_request<U>(
     context: ServiceRequestContext,
     daemon_core_node: &str,
     slots: &BTreeMap<String, SlotChannel<U::State>>,
-) -> PeppyResult<Payload>
+) -> ServiceAnswer
 where
     U: SlotUpdate,
 {
+    let encode_failure =
+        |err: PeppyError| Failure::new(PeppyFailureKind::AttemptFailed, err.to_string());
     let caller_core_node = context.message().core_node();
     if caller_core_node != daemon_core_node {
         warn!(
@@ -168,9 +170,11 @@ where
              '{daemon_core_node}'",
             U::SERVICE
         ))
-        .encode();
+        .encode()
+        .map_err(encode_failure);
     }
-    let request = U::decode_request(&context.message().payload_bytes())?;
+    let request = U::decode_request(&context.message().payload_bytes())
+        .map_err(|err| Failure::new(PeppyFailureKind::Rejected, err.to_string()))?;
     debug!(
         service = U::SERVICE,
         link_id = %request.link_id(),
@@ -179,7 +183,9 @@ where
         "received slot update from {}",
         context.message().instance_id(),
     );
-    apply_slot_update::<U>(slots, &request).encode()
+    apply_slot_update::<U>(slots, &request)
+        .encode()
+        .map_err(encode_failure)
 }
 
 /// Applies one absolute-state update to the slot's watch channel. Split from the

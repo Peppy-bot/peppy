@@ -1,4 +1,5 @@
 use config::{
+    failure_kind::ContractFailureKinds,
     node::{NativeEmittedTopic, NativeExposedAction, NativeExposedService},
     runtime::Name,
     schema::PeppySchema,
@@ -29,6 +30,11 @@ pub struct PeppyContract {
     #[serde(deserialize_with = "deserialize_contract_v1_schema")]
     pub peppy_schema: PeppySchema,
     pub manifest: Manifest,
+    /// The failure kinds of the contract's own, each with its meaning: a
+    /// member of the contract gives one of these kinds, or a kind of peppy,
+    /// when it refuses or fails a goal or gives an error reply.
+    #[serde(default, skip_serializing_if = "ContractFailureKinds::is_empty")]
+    pub failure_kinds: ContractFailureKinds,
     pub interfaces: Interfaces,
 }
 
@@ -140,6 +146,7 @@ pub(crate) fn validate_named_items<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::failure_kind::FailureKindName;
     use config::node::{
         ArrayKind, MessageFormat, QoSProfile, SchemaType, TopicRetention, TypeToken,
     };
@@ -363,6 +370,59 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_failure_kinds_of_the_contract_in_their_order() {
+        let json5 = r#"{
+            peppy_schema: "contract/v1",
+            manifest: { name: "limb_motion", tag: "v1" },
+            failure_kinds: {
+                unreachable: "No plan to the target",
+                leader_streaming: "A leader streams a limb of the goal",
+            },
+            interfaces: {}
+        }"#;
+        let contract: PeppyContract = serde_json5::from_str(json5).expect("valid contract");
+        let kinds: Vec<(&str, &str)> = contract
+            .failure_kinds
+            .iter()
+            .map(|(name, meaning)| (name.as_str(), meaning))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("unreachable", "No plan to the target"),
+                ("leader_streaming", "A leader streams a limb of the goal"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_contract_without_failure_kinds_declares_none() {
+        let json5 = r#"{
+            peppy_schema: "contract/v1",
+            manifest: { name: "x", tag: "v1" },
+            interfaces: {}
+        }"#;
+        let contract: PeppyContract = serde_json5::from_str(json5).expect("valid contract");
+        assert!(contract.failure_kinds.is_empty());
+    }
+
+    #[test]
+    fn rejects_a_failure_kind_of_peppy_in_the_contract() {
+        let json5 = r#"{
+            peppy_schema: "contract/v1",
+            manifest: { name: "x", tag: "v1" },
+            failure_kinds: { timeout: "Too slow" },
+            interfaces: {}
+        }"#;
+        let err = serde_json5::from_str::<PeppyContract>(json5)
+            .expect_err("a kind of peppy is not the contract's own");
+        assert!(
+            err.to_string().contains("`timeout` is a kind of peppy"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn rejects_unknown_top_level_fields() {
         let json5 = r#"{
             peppy_schema: "contract/v1",
@@ -524,6 +584,11 @@ mod tests {
                 tag: "v123".to_string(),
                 labels: Some(vec!["vendor".to_string(), "sensor".to_string()]),
             },
+            failure_kinds: ContractFailureKinds::new([(
+                FailureKindName::parse("lens_covered").unwrap(),
+                "The lens is covered".to_string(),
+            )])
+            .unwrap(),
             interfaces: Interfaces {
                 topics: vec![NativeEmittedTopic {
                     name: "stream".to_string(),

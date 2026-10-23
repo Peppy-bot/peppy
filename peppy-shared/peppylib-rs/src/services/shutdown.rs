@@ -1,10 +1,9 @@
 use crate::runtime::TaskHandle;
-use crate::types::Payload;
 use std::sync::Arc;
 use tokio::sync::{Mutex, oneshot};
 use tracing::debug;
 
-use crate::messaging::{SHUTDOWN_SERVICE, SenderTarget, ServiceRequestContext};
+use crate::messaging::{SHUTDOWN_SERVICE, SenderTarget, ServiceAnswer, ServiceRequestContext};
 use crate::{MessengerHandle, PeppyResult, ServiceMessenger};
 
 /// Receiver for shutdown signals. When a shutdown request is received by the service,
@@ -46,7 +45,7 @@ pub async fn listen_for_shutdown(
 async fn handle_shutdown_request(
     context: ServiceRequestContext,
     shutdown_tx: ShutdownSender,
-) -> PeppyResult<Payload> {
+) -> ServiceAnswer {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 

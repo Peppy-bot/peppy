@@ -26,6 +26,7 @@ mod parsing;
 #[path = "."]
 mod internal {
     pub mod consts;
+    pub mod failure_kind;
     pub mod fingerprint;
     pub mod namespace;
     pub mod node;
@@ -56,6 +57,14 @@ pub mod consts {
         DEFAULT_MESSAGING_PORT, NODE_CONFIG_FILE, PEPPY_CONFIG_ENV, PEPPY_HOME_ENV,
         PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION, RUNTIME_CONFIG_VAR_NAME,
         normalize_tag,
+    };
+}
+
+// -- failure_kind --
+pub mod failure_kind {
+    pub use crate::internal::failure_kind::{
+        ContractFailureKinds, FailureKindName, InvalidContractFailureKinds, InvalidFailureKindName,
+        MemberFailureKinds, PeppyFailureKind,
     };
 }
 

@@ -23,6 +23,8 @@ struct Fixture {
 #[derive(Deserialize)]
 struct ContractDocument {
     manifest: ContractManifest,
+    #[serde(default)]
+    failure_kinds: ContractFailureKinds,
     interfaces: ContractMembers,
 }
 
@@ -46,6 +48,7 @@ impl Fixture {
             topics: &self.document.interfaces.topics,
             services: &self.document.interfaces.services,
             actions: &self.document.interfaces.actions,
+            failure_kinds: &self.document.failure_kinds,
         }
     }
 

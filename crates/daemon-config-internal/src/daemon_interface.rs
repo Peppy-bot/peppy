@@ -85,6 +85,7 @@ impl DaemonInterface {
                 topics: &interfaces.topics,
                 services: &interfaces.services,
                 actions: &interfaces.actions,
+                failure_kinds: &self.document().failure_kinds,
             },
         }
     }

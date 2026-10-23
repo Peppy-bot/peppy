@@ -14,19 +14,17 @@
 //! - A goal's feedback stream never waits ([`Buffering::Feedback`]). Its
 //!   reader often awaits the goal's result, which arrives over the same
 //!   connection, so a wait there would hold up the very reply the reader
-//!   waits for.
-//!
-//! A keep-latest topic subscription and a keep-latest feedback stream share
-//! one queue, [`LatestQueue`].
+//!   waits for. It keeps every message up to its bound of unread messages,
+//!   and overflows past it ([`FeedbackBuffer`]).
 
-use crate::types::{FeedbackBuffer, TopicBuffer, TopicMessage};
+use crate::types::{FeedbackBuffer, FeedbackOverflow, TopicBuffer, TopicMessage};
 use config::node::TopicRetention;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// What a subscription does with a message that arrives while its reader is
 /// behind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) enum Buffering {
     /// A topic subscription, held as its subscriber asked.
     Topic(TopicBuffer),
@@ -45,9 +43,8 @@ pub(crate) fn queue_capacity(tier_size: usize, retention: TopicRetention) -> usi
 }
 
 /// Opens a subscription's buffer: the sink the transport fills and the
-/// receiver the reader drains. `capacity` bounds a topic's queue and a
-/// keep-latest feedback buffer; a keep-all feedback buffer has no bound.
-/// `keyexpr` names the subscription in the log.
+/// receiver the reader drains. `capacity` bounds a topic's queue; a feedback
+/// buffer takes its own bound. `keyexpr` names the subscription in the log.
 pub(crate) fn subscription_channel(
     keyexpr: &str,
     capacity: usize,
@@ -63,7 +60,7 @@ pub(crate) fn subscription_channel(
             (SubscriptionSink::KeepLatest(Arc::new(queue)), rx)
         }
         Buffering::Feedback(buffer) => {
-            let (sink, rx) = FeedbackSink::open(keyexpr, capacity, buffer);
+            let (sink, rx) = FeedbackSink::open(keyexpr, buffer);
             (SubscriptionSink::Feedback(Arc::new(sink)), rx)
         }
     }
@@ -120,9 +117,9 @@ impl SubscriptionSink {
     }
 }
 
-/// A bounded queue that never makes its sender wait: a message that arrives
-/// while the queue is full drops the oldest unread one. The first drop of a
-/// queue is logged once, with the keyexpr of its subscription.
+/// A bounded topic queue that never makes its sender wait: a message that
+/// arrives while the queue is full drops the oldest unread one. The first
+/// drop of a queue is logged once, with the keyexpr of its subscription.
 pub(crate) struct LatestQueue {
     tx: flume::Sender<TopicMessage>,
     /// A receiver of the queue's own, which takes the oldest unread message
@@ -192,70 +189,81 @@ impl LatestQueue {
 }
 
 /// A goal's feedback buffer. An empty payload is the end of the stream (the
-/// message `publish_end` sends in peppylib): the buffer keeps it and takes
-/// nothing after it, so a keep-latest buffer never drops the end, even when a
-/// worker publishes more feedback after its goal ended.
+/// message `publish_end` sends in peppylib): the buffer always keeps it and
+/// takes nothing after it, even when a worker publishes more feedback after
+/// its goal ended.
+///
+/// Every other message stays until the reader takes it, up to the bound of
+/// unread messages. A message that arrives while `bound` messages wait
+/// overflows the buffer: it drops every unread message, takes nothing more,
+/// and raises its [`FeedbackOverflow`].
 pub(crate) struct FeedbackSink {
-    keep: Keep,
-    /// Whether the end of the stream is buffered. Each delivery holds this
-    /// lock from its check to its push, so no message lands after the end
-    /// while another delivery buffers it. The lock only waits for another
-    /// delivery, which never waits for the reader.
-    ended: Mutex<bool>,
+    /// Unbounded, so a send never waits: the bound is checked before it.
+    tx: flume::Sender<TopicMessage>,
+    /// A receiver of the buffer's own, which drops the unread messages at an
+    /// overflow.
+    unread: flume::Receiver<TopicMessage>,
+    bound: usize,
+    overflow: FeedbackOverflow,
+    /// Each delivery holds this lock from its check to its push, so no
+    /// message lands after the end or an overflow while another delivery
+    /// takes it. The lock only waits for another delivery, which never waits
+    /// for the reader.
+    state: Mutex<FeedbackState>,
+    keyexpr: String,
 }
 
-enum Keep {
-    /// Bounded: a message that arrives while the buffer is full drops the
-    /// oldest unread one.
-    Latest(LatestQueue),
-    /// Unbounded: every message stays until the reader takes it.
-    All(flume::Sender<TopicMessage>),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeedbackState {
+    Open,
+    Ended,
+    Overflowed,
 }
 
 impl FeedbackSink {
     /// Opens the buffer and the receiver its reader drains.
-    fn open(
-        keyexpr: &str,
-        capacity: usize,
-        buffer: FeedbackBuffer,
-    ) -> (Self, flume::Receiver<TopicMessage>) {
-        let (keep, rx) = match buffer {
-            FeedbackBuffer::KeepLatest => {
-                let (queue, rx) = LatestQueue::open(keyexpr, capacity);
-                (Keep::Latest(queue), rx)
-            }
-            FeedbackBuffer::KeepAll => {
-                let (tx, rx) = flume::unbounded();
-                (Keep::All(tx), rx)
-            }
-        };
+    fn open(keyexpr: &str, buffer: FeedbackBuffer) -> (Self, flume::Receiver<TopicMessage>) {
+        let (tx, rx) = flume::unbounded();
         let sink = Self {
-            keep,
-            ended: Mutex::new(false),
+            tx,
+            unread: rx.clone(),
+            bound: buffer.bound().get(),
+            overflow: buffer.overflow(),
+            state: Mutex::new(FeedbackState::Open),
+            keyexpr: keyexpr.to_string(),
         };
         (sink, rx)
     }
 
     fn deliver(&self, message: TopicMessage) {
-        let mut ended = self.ended.lock().unwrap_or_else(PoisonError::into_inner);
-        if *ended || self.reader_gone() {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if *state != FeedbackState::Open || self.reader_gone() {
             return;
         }
-        *ended = message.payload().is_empty();
-        match &self.keep {
-            // An unbounded channel is never full, so this send never waits.
-            Keep::All(tx) => {
-                let _ = tx.send(message);
-            }
-            Keep::Latest(queue) => queue.push(message),
+        if message.payload().is_empty() {
+            *state = FeedbackState::Ended;
+            let _ = self.tx.send(message);
+            return;
         }
+        if self.tx.len() >= self.bound {
+            *state = FeedbackState::Overflowed;
+            self.unread.drain().for_each(drop);
+            tracing::debug!(
+                keyexpr = %self.keyexpr,
+                bound = self.bound,
+                "the reader of this feedback stream fell behind by more than its bound; \
+                 the stream overflowed",
+            );
+            self.overflow.raise();
+            return;
+        }
+        let _ = self.tx.send(message);
     }
 
+    /// Whether the reader dropped its receiver. The buffer holds a receiver
+    /// of its own, so the reader is gone once that one is the last.
     fn reader_gone(&self) -> bool {
-        match &self.keep {
-            Keep::Latest(queue) => queue.reader_gone(),
-            Keep::All(tx) => tx.is_disconnected(),
-        }
+        self.tx.receiver_count() <= 1
     }
 }
 
@@ -282,10 +290,18 @@ mod tests {
     }
 
     fn feedback_channel(
-        capacity: usize,
-        buffer: FeedbackBuffer,
-    ) -> (SubscriptionSink, flume::Receiver<TopicMessage>) {
-        subscription_channel(KEYEXPR, capacity, Buffering::Feedback(buffer))
+        bound: usize,
+    ) -> (
+        SubscriptionSink,
+        flume::Receiver<TopicMessage>,
+        FeedbackOverflow,
+    ) {
+        let buffer = FeedbackBuffer::new(crate::FeedbackBound::new(
+            std::num::NonZeroUsize::new(bound).expect("a bound of one message or more"),
+        ));
+        let overflow = buffer.overflow();
+        let (sink, rx) = subscription_channel(KEYEXPR, 0, Buffering::Feedback(buffer));
+        (sink, rx, overflow)
     }
 
     fn keep_latest_topic_channel(
@@ -327,51 +343,78 @@ mod tests {
     }
 
     #[test]
-    fn keep_latest_drops_the_oldest_unread_message_when_full() {
-        let (sink, rx) = feedback_channel(3, FeedbackBuffer::KeepLatest);
-        for index in 0..5 {
+    fn feedback_keeps_every_message_up_to_its_bound() {
+        let (sink, rx, overflow) = feedback_channel(3);
+        for index in 0..3 {
             sink.deliver(message(index));
         }
-        assert_eq!(drain(&rx), names(2..5));
+        assert_eq!(drain(&rx), names(0..3));
+        assert!(!overflow.is_raised());
     }
 
     #[test]
-    fn keep_latest_keeps_room_the_reader_made() {
-        let (sink, rx) = feedback_channel(2, FeedbackBuffer::KeepLatest);
+    fn feedback_keeps_room_the_reader_made() {
+        let (sink, rx, overflow) = feedback_channel(2);
         sink.deliver(message(0));
         sink.deliver(message(1));
         assert_eq!(drain(&rx), names(0..2));
         sink.deliver(message(2));
         sink.deliver(message(3));
         assert_eq!(drain(&rx), names(2..4));
+        assert!(!overflow.is_raised());
     }
 
     #[test]
-    fn keep_latest_never_drops_the_end_of_the_stream() {
-        let (sink, rx) = feedback_channel(2, FeedbackBuffer::KeepLatest);
+    fn a_message_past_the_bound_overflows_the_feedback() {
+        let (sink, rx, overflow) = feedback_channel(2);
         for index in 0..3 {
             sink.deliver(message(index));
         }
+        assert!(overflow.is_raised(), "the third unread message overflows");
+        assert_eq!(
+            drain(&rx),
+            Vec::<String>::new(),
+            "the unread messages are dropped"
+        );
+        sink.deliver(message(3));
         sink.deliver(end_of_stream());
-        // Feedback a worker publishes after its goal ended.
-        for index in 3..6 {
-            sink.deliver(message(index));
-        }
-        let mut expected = names([2]);
+        assert_eq!(
+            drain(&rx),
+            Vec::<String>::new(),
+            "nothing lands after an overflow"
+        );
+    }
+
+    #[test]
+    fn the_end_of_the_stream_never_overflows_the_feedback() {
+        let (sink, rx, overflow) = feedback_channel(2);
+        sink.deliver(message(0));
+        sink.deliver(message(1));
+        sink.deliver(end_of_stream());
+        assert!(!overflow.is_raised());
+        let mut expected = names(0..2);
         expected.push(String::new());
         assert_eq!(drain(&rx), expected);
     }
 
     #[test]
-    fn keep_latest_with_no_capacity_keeps_the_newest_message() {
-        let (sink, rx) = feedback_channel(0, FeedbackBuffer::KeepLatest);
-        for index in 0..3 {
-            sink.deliver(message(index));
-        }
-        assert_eq!(drain(&rx), names([2]));
-        sink.deliver(message(3));
+    fn feedback_takes_nothing_after_the_end_of_the_stream() {
+        let (sink, rx, _overflow) = feedback_channel(4);
+        sink.deliver(message(0));
         sink.deliver(end_of_stream());
-        assert_eq!(drain(&rx), vec![String::new()]);
+        // Feedback a worker publishes after its goal ended.
+        sink.deliver(message(1));
+        assert_eq!(drain(&rx), vec!["message-0".to_string(), String::new()]);
+    }
+
+    #[tokio::test]
+    async fn an_overflow_wakes_its_waiter() {
+        let (sink, _rx, overflow) = feedback_channel(1);
+        let mut raised = std::pin::pin!(overflow.raised());
+        assert!(poll_once(raised.as_mut()).is_pending());
+        sink.deliver(message(0));
+        sink.deliver(message(1));
+        assert!(poll_once(raised.as_mut()).is_ready());
     }
 
     /// Workers publish feedback on several threads while one of them ends
@@ -381,76 +424,51 @@ mod tests {
     fn a_concurrent_end_is_kept_last() {
         const PUBLISHERS: usize = 4;
         const MESSAGES: usize = 200;
-        for buffer in [FeedbackBuffer::KeepLatest, FeedbackBuffer::KeepAll] {
-            let (sink, rx) = feedback_channel(1, buffer);
-            let start = std::sync::Barrier::new(PUBLISHERS + 1);
-            std::thread::scope(|scope| {
-                for _ in 0..PUBLISHERS {
-                    scope.spawn(|| {
-                        start.wait();
-                        for index in 0..MESSAGES {
-                            sink.deliver(message(index));
-                        }
-                    });
-                }
-                start.wait();
-                sink.deliver(end_of_stream());
-            });
-            assert_eq!(
-                drain(&rx).last(),
-                Some(&String::new()),
-                "{buffer:?}: the end must be the last message"
-            );
-        }
-    }
-
-    #[test]
-    fn keep_all_keeps_every_message_past_the_capacity() {
-        let (sink, rx) = feedback_channel(2, FeedbackBuffer::KeepAll);
-        for index in 0..10 {
-            sink.deliver(message(index));
-        }
-        assert_eq!(drain(&rx), names(0..10));
-    }
-
-    #[test]
-    fn keep_all_takes_nothing_after_the_end_of_the_stream() {
-        let (sink, rx) = feedback_channel(2, FeedbackBuffer::KeepAll);
-        sink.deliver(message(0));
-        sink.deliver(end_of_stream());
-        sink.deliver(message(1));
-        assert_eq!(drain(&rx), vec!["message-0".to_string(), String::new()]);
+        let (sink, rx, _overflow) = feedback_channel(PUBLISHERS * MESSAGES);
+        let start = std::sync::Barrier::new(PUBLISHERS + 1);
+        std::thread::scope(|scope| {
+            for _ in 0..PUBLISHERS {
+                scope.spawn(|| {
+                    start.wait();
+                    for index in 0..MESSAGES {
+                        sink.deliver(message(index));
+                    }
+                });
+            }
+            start.wait();
+            sink.deliver(end_of_stream());
+        });
+        assert_eq!(
+            drain(&rx).last(),
+            Some(&String::new()),
+            "the end must be the last message"
+        );
     }
 
     #[test]
     fn a_feedback_sink_never_waits_for_its_reader() {
-        for buffer in [FeedbackBuffer::KeepLatest, FeedbackBuffer::KeepAll] {
-            let (sink, rx) = feedback_channel(1, buffer);
-            for index in 0..3 {
-                let mut delivery = std::pin::pin!(sink.deliver_async(message(index)));
-                assert!(
-                    poll_once(delivery.as_mut()).is_ready(),
-                    "{buffer:?}: feedback {index} must not wait for the reader"
-                );
-            }
-            assert_eq!(drain(&rx).last(), Some(&"message-2".to_string()));
+        let (sink, rx, _overflow) = feedback_channel(8);
+        for index in 0..3 {
+            let mut delivery = std::pin::pin!(sink.deliver_async(message(index)));
+            assert!(
+                poll_once(delivery.as_mut()).is_ready(),
+                "feedback {index} must not wait for the reader"
+            );
         }
+        assert_eq!(drain(&rx), names(0..3));
     }
 
     #[test]
     fn a_feedback_sink_sees_its_reader_go() {
-        for buffer in [FeedbackBuffer::KeepLatest, FeedbackBuffer::KeepAll] {
-            let (sink, rx) = feedback_channel(1, buffer);
-            assert!(!sink.reader_gone(), "{buffer:?}: the reader is still there");
-            drop(rx);
-            assert!(
-                sink.reader_gone(),
-                "{buffer:?}: the reader dropped its receiver"
-            );
-            // Delivering to a gone reader discards the message and returns.
-            sink.deliver(message(0));
-            sink.deliver(message(1));
-        }
+        let (sink, rx, overflow) = feedback_channel(1);
+        assert!(!sink.reader_gone(), "the reader is still there");
+        drop(rx);
+        assert!(sink.reader_gone(), "the reader dropped its receiver");
+        // Delivering to a gone reader discards the message and returns, and
+        // never overflows.
+        sink.deliver(message(0));
+        sink.deliver(message(1));
+        assert!(!overflow.is_raised());
     }
 
     #[test]

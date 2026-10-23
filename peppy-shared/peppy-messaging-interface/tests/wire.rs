@@ -16,9 +16,9 @@ use common::{
 use bytes::Bytes;
 use config::node::TopicRetention;
 use pmi::{
-    ActionWireReceiver, ActionWireSender, FeedbackBuffer, MessengerBackend, Payload, ProducerRef,
-    PublisherQoS, ReplyStream, SenderTarget, ServiceKind, ServiceQueryKind, ServiceWireReceiver,
-    ServiceWireSender, SubscriberBufferSizes, SubscriberQoS, TopicBuffer, TopicMessage,
+    ActionWireReceiver, ActionWireSender, FeedbackBound, FeedbackBuffer, MessengerBackend, Payload,
+    ProducerRef, PublisherQoS, ReplyStream, SenderTarget, ServiceKind, ServiceQueryKind,
+    ServiceWireReceiver, ServiceWireSender, SubscriberQoS, TopicBuffer, TopicMessage,
     TopicWireReceiver, TopicWireSender, ZenohAdapter,
 };
 
@@ -285,10 +285,17 @@ fn action_sender() -> ActionWireSender {
     .expect("valid wire fields")
 }
 
-/// A keep-latest feedback subscription is bounded by the session's buffer
-/// size for its QoS tier; a keep-all one has no bound.
+fn feedback_buffer() -> FeedbackBuffer {
+    FeedbackBuffer::new(FeedbackBound::new(
+        std::num::NonZeroUsize::new(128).expect("a bound above zero"),
+    ))
+}
+
+/// A feedback subscription takes its own bound of unread messages: the
+/// session's buffer size for a QoS tier never sizes it, so the channel the
+/// reader drains has no capacity of its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_feedback_subscription_holds_the_buffer_its_caller_asked_for() {
+async fn a_feedback_subscription_is_not_sized_by_a_qos_tier() {
     let _lock = ZENOH_SERIAL.lock().await;
     let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -296,32 +303,12 @@ async fn a_feedback_subscription_holds_the_buffer_its_caller_asked_for() {
     instance.messenger().start_session().await.unwrap();
     let client = action_sender();
 
-    let keep_latest = instance
+    let subscription = instance
         .messenger()
-        .subscribe_action_feedback(
-            &client,
-            "goal_latest",
-            SubscriberQoS::HighThroughput,
-            FeedbackBuffer::KeepLatest,
-        )
+        .subscribe_action_feedback(&client, "goal_bounded", feedback_buffer())
         .await
         .unwrap();
-    assert_eq!(
-        keep_latest.rx.capacity(),
-        Some(SubscriberBufferSizes::default().size_for(SubscriberQoS::HighThroughput))
-    );
-
-    let keep_all = instance
-        .messenger()
-        .subscribe_action_feedback(
-            &client,
-            "goal_all",
-            SubscriberQoS::HighThroughput,
-            FeedbackBuffer::KeepAll,
-        )
-        .await
-        .unwrap();
-    assert_eq!(keep_all.rx.capacity(), None);
+    assert_eq!(subscription.rx.capacity(), None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -352,12 +339,7 @@ async fn action_goal_feedback_result() {
     // feedback can be lost in tight in-process tests.
     let feedback_sub = instance
         .messenger()
-        .subscribe_action_feedback(
-            &client,
-            goal_id,
-            SubscriberQoS::Standard,
-            FeedbackBuffer::KeepLatest,
-        )
+        .subscribe_action_feedback(&client, goal_id, feedback_buffer())
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;

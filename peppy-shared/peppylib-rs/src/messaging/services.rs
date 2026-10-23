@@ -5,45 +5,37 @@ use crate::messaging::ProducerRef;
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
 use pmi::{
-    Messenger, ResponseToken, SenderTarget, ServiceKind, ServiceQueryKind, ServiceQueryable,
-    ServiceWireReceiver, ServiceWireSender, TopicMessage,
+    Failure, Messenger, ResponseToken, SenderTarget, ServiceKind, ServiceQueryKind,
+    ServiceQueryable, ServiceWireReceiver, ServiceWireSender, TopicMessage,
 };
 use std::{fmt, sync::Arc};
 use tokio::{
     sync::Mutex,
     time::{Duration, Instant},
 };
-use tracing::{error, warn};
+use tracing::warn;
 
-/// Outcome of running a user service handler: either a payload to surface
-/// to the caller as a normal response, or a UTF-8 reason that the
-/// framework wraps as `Error::ServiceError`. Splitting the outcome at this
-/// layer lets the producer reply with the right `ServiceReplyKind` on the
-/// attachment instead of smuggling a sentinel through the payload.
-enum HandlerOutcome {
-    Response(Payload),
-    HandlerError(String),
-}
+/// What a service handler answers: the response payload, which is a
+/// success, or the failure of the request, a failure kind and a message,
+/// which the caller receives as an error reply.
+pub type ServiceAnswer = std::result::Result<Payload, Failure>;
 
-async fn run_handler<F, Fut>(handler: F, context: ServiceRequestContext) -> HandlerOutcome
+async fn run_handler<F, Fut>(handler: F, context: ServiceRequestContext) -> ServiceAnswer
 where
     F: FnOnce(ServiceRequestContext) -> Fut,
-    Fut: std::future::Future<Output = Result<Payload>>,
+    Fut: std::future::Future<Output = ServiceAnswer>,
 {
-    match handler(context).await {
-        Ok(payload) => HandlerOutcome::Response(payload),
-        Err(err) => {
-            let reason = err.to_string();
-            error!(%reason, "service handler returned error");
-            HandlerOutcome::HandlerError(reason)
-        }
+    let answer = handler(context).await;
+    if let Err(failure) = &answer {
+        warn!(%failure, "service handler gave an error reply");
     }
+    answer
 }
 
-async fn deliver_outcome(responder: ServiceResponder, outcome: HandlerOutcome) -> Result<()> {
-    match outcome {
-        HandlerOutcome::Response(payload) => responder.respond(payload).await,
-        HandlerOutcome::HandlerError(reason) => responder.respond_error(reason).await,
+async fn deliver_answer(responder: ServiceResponder, answer: ServiceAnswer) -> Result<()> {
+    match answer {
+        Ok(payload) => responder.respond(payload).await,
+        Err(failure) => responder.respond_failure(failure).await,
     }
 }
 
@@ -56,11 +48,11 @@ async fn answer_request<F, Fut>(
     responder: ServiceResponder,
 ) where
     F: FnOnce(ServiceRequestContext) -> Fut,
-    Fut: std::future::Future<Output = Result<Payload>>,
+    Fut: std::future::Future<Output = ServiceAnswer>,
 {
     let request_id = context.request_id().to_string();
-    let outcome = run_handler(handler, context).await;
-    if let Err(err) = deliver_outcome(responder, outcome).await {
+    let answer = run_handler(handler, context).await;
+    if let Err(err) = deliver_answer(responder, answer).await {
         warn!(
             %err,
             %request_id,
@@ -169,13 +161,12 @@ impl ServiceResponder {
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    /// Send a handler-error reply. `reason` rides in the reply payload
-    /// as UTF-8 and the attachment is marked
-    /// `ServiceReplyKind::HandlerError`; the caller's `poll` surfaces
-    /// the reason as `Error::ServiceError { reason, .. }`.
-    pub async fn respond_error(self, reason: String) -> Result<()> {
+    /// Send an error reply: `failure` rides in the reply payload and the
+    /// attachment is marked `ServiceReplyKind::Failure`; the caller's `poll`
+    /// surfaces it as `Error::ServiceFailed { failure, .. }`.
+    pub async fn respond_failure(self, failure: Failure) -> Result<()> {
         self.token
-            .respond_handler_error(reason)
+            .respond_failure(&failure)
             .await
             .map_err(Error::PeppyMessagingInterface)
     }
@@ -224,7 +215,7 @@ impl ServiceEndpoint {
     pub async fn handle_next_request<F, Fut>(&mut self, handler: F) -> Result<bool>
     where
         F: FnOnce(ServiceRequestContext) -> Fut,
-        Fut: std::future::Future<Output = Result<Payload>>,
+        Fut: std::future::Future<Output = ServiceAnswer>,
     {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(false);
@@ -239,7 +230,7 @@ impl ServiceEndpoint {
     pub async fn handle_requests<F, Fut>(&mut self, mut handler: F) -> Result<()>
     where
         F: FnMut(ServiceRequestContext) -> Fut,
-        Fut: std::future::Future<Output = Result<Payload>>,
+        Fut: std::future::Future<Output = ServiceAnswer>,
     {
         while let Some((context, responder)) = self.recv_next_request().await? {
             answer_request(&mut handler, context, responder).await;
@@ -255,14 +246,14 @@ impl ServiceEndpoint {
     ) -> Result<Option<TaskHandle<Result<()>>>>
     where
         F: FnOnce(ServiceRequestContext) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<Payload>> + Send + 'static,
+        Fut: std::future::Future<Output = ServiceAnswer> + Send + 'static,
     {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(None);
         };
         let task = spawn(async move {
-            let outcome = run_handler(handler, context).await;
-            deliver_outcome(responder, outcome).await
+            let answer = run_handler(handler, context).await;
+            deliver_answer(responder, answer).await
         });
         Ok(Some(task))
     }

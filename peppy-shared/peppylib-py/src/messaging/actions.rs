@@ -1,22 +1,24 @@
 use bytes::Bytes;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle, ActionMessenger,
-    ActionWireSender, ConcurrentAction, GoalContext, NonEmptyPayload, PendingGoal, ServiceEndpoint,
-    decode_cancel_ack,
+    ActionResultReply, ActionWireSender, CancelCause, ConcurrentAction, DEFAULT_FEEDBACK_BOUND,
+    Failure, FeedbackBound, GoalAnswer, GoalContext, GoalOutcome, NonEmptyPayload, PendingGoal,
+    ServiceEndpoint, decode_cancel_ack,
 };
 use peppylib::types::Payload;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::services::PyServiceEndpoint;
 use super::target::{PyProducerRef, PySenderTarget};
 use super::{
-    PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, future_into_py_unit, to_py_err,
+    PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, failure_from_py,
+    future_into_py_unit, to_py_err,
 };
-use crate::config::PyQoSProfile;
 
 // ---------------------------------------------------------------------------
 // ActionFeedbackPublisher
@@ -111,30 +113,72 @@ impl PyActionFeedbackPublisherFactory {
 // ---------------------------------------------------------------------------
 
 /// Python wrapper for the typed result reply returned by
-/// `ActionMessenger.request_result`. The engine's `[status:u8][body]`
-/// result-outcome envelope is stripped Rust-side, so Python reads the typed
-/// `status` and the raw result `body` directly (no re-parsing of the framing).
+/// `ActionMessenger.request_result`. The engine's result-outcome envelope is
+/// decoded Rust-side, so Python reads the typed `status`, the raw result
+/// `body`, the failure of a failed goal and the reason of a cancelled one
+/// directly (no re-parsing of the framing).
 #[pyclass(name = "ActionResultReply")]
 pub struct PyActionResultReply {
     status: u8,
     body: Vec<u8>,
+    failure: Option<Failure>,
+    cancel_reason: Option<String>,
     instance_id: String,
     core_node: String,
+}
+
+impl PyActionResultReply {
+    fn from_reply(reply: ActionResultReply) -> Self {
+        let status = reply.outcome.status() as u8;
+        let (body, failure, cancel_reason) = match reply.outcome {
+            GoalOutcome::Completed(result) => (result.to_vec(), None, None),
+            GoalOutcome::Cancelled { reason, result } => (result.to_vec(), None, Some(reason)),
+            GoalOutcome::Failed(failure) => (Vec::new(), Some(failure), None),
+            GoalOutcome::Abandoned | GoalOutcome::Expired => (Vec::new(), None, None),
+        };
+        Self {
+            status,
+            body,
+            failure,
+            cancel_reason,
+            instance_id: reply.instance_id,
+            core_node: reply.core_node,
+        }
+    }
 }
 
 #[pymethods]
 impl PyActionResultReply {
     /// The terminal [`peppylib::messaging::ResultStatus`] as its `u8` tag
-    /// (0=Completed, 1=Cancelled, 2=Abandoned, 3=Expired).
+    /// (0=Completed, 1=Cancelled, 2=Abandoned, 3=Expired, 4=Failed).
     #[getter]
     fn status(&self) -> u8 {
         self.status
     }
 
-    /// The raw user result payload. Empty for Abandoned / Expired.
+    /// The raw user result payload of a completed or cancelled goal. Empty
+    /// for the other statuses.
     #[getter]
     fn body<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.body)
+    }
+
+    /// The failure kind of a failed goal; `None` for the other statuses.
+    #[getter]
+    fn failure_kind(&self) -> Option<&str> {
+        self.failure.as_ref().map(|failure| failure.kind().as_str())
+    }
+
+    /// The failure message of a failed goal; `None` for the other statuses.
+    #[getter]
+    fn failure_message(&self) -> Option<&str> {
+        self.failure.as_ref().map(Failure::message)
+    }
+
+    /// Why a cancelled goal was cancelled; `None` for the other statuses.
+    #[getter]
+    fn cancel_reason(&self) -> Option<&str> {
+        self.cancel_reason.as_deref()
     }
 
     #[getter]
@@ -194,8 +238,7 @@ impl PyActionCancelReply {
 #[pyclass(name = "ActionGoalHandle")]
 pub struct PyActionGoalHandle {
     pub(crate) inner: Arc<Mutex<ActionGoalHandle>>,
-    accepted: bool,
-    reason: Option<String>,
+    refusal: Option<Failure>,
     goal_reply_body: Vec<u8>,
     instance_id: String,
     core_node: String,
@@ -209,19 +252,26 @@ impl PyActionGoalHandle {
     /// admission ack that wraps every goal reply.
     #[getter]
     fn accepted(&self) -> bool {
-        self.accepted
+        self.refusal.is_none()
     }
 
-    /// Optional human-readable rejection reason from the admission ack.
-    /// `None` for accepted goals and for rejections sent without a reason.
+    /// The failure kind the server refused the goal with; `None` for an
+    /// accepted goal.
     #[getter]
-    fn reason(&self) -> Option<&str> {
-        self.reason.as_deref()
+    fn refusal_kind(&self) -> Option<&str> {
+        self.refusal.as_ref().map(|failure| failure.kind().as_str())
+    }
+
+    /// The failure message the server refused the goal with; `None` for an
+    /// accepted goal.
+    #[getter]
+    fn refusal_message(&self) -> Option<&str> {
+        self.refusal.as_ref().map(Failure::message)
     }
 
     /// The producer's declared goal response payload, stripped of the
-    /// admission ack. Empty when the action declares no goal response or a
-    /// rejection carried no response.
+    /// admission ack. Empty when the action declares no goal response or the
+    /// goal was refused.
     #[getter]
     fn goal_reply_body(&self) -> &[u8] {
         &self.goal_reply_body
@@ -252,7 +302,9 @@ impl PyActionGoalHandle {
     /// published the end-of-stream sentinel) and `ConnectionError` when the
     /// pinned producer instance disappeared without closing the stream
     /// (`ActionFeedbackProducerGone`); `request_result` then resolves with
-    /// status 2 (Abandoned).
+    /// status 2 (Abandoned). Raises `peppylib.FeedbackOverflowError` once
+    /// the caller fell behind by more unread messages than its bound: the
+    /// handle cancelled the goal.
     fn on_next_feedback<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         crate::py_future::future_into_py(py, async move {
@@ -370,7 +422,11 @@ impl PyActionMessenger {
     /// explicit `target` parameter, a membership-checked member of the
     /// slot's bound set.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, target=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
+    ///
+    /// The handle keeps up to `feedback_bound` unread feedback messages
+    /// (`None` takes peppylib's default); past it, it cancels the goal and
+    /// `on_next_feedback` raises `peppylib.FeedbackOverflowError`.
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, target=None, user_payload=vec![], feedback_bound=None, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
@@ -381,10 +437,16 @@ impl PyActionMessenger {
         to_action_name: String,
         target: Option<PyProducerRef>,
         user_payload: Vec<u8>,
-        feedback_qos: PyQoSProfile,
+        feedback_bound: Option<usize>,
         goal_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
         let goal_timeout = duration_from_secs_f64("goal_timeout_secs", goal_timeout_secs)?;
+        let feedback_bound = match feedback_bound {
+            None => DEFAULT_FEEDBACK_BOUND,
+            Some(bound) => FeedbackBound::new(NonZeroUsize::new(bound).ok_or_else(|| {
+                PyValueError::new_err("feedback_bound must be one message or more")
+            })?),
+        };
         let to_target = to_target.into_inner();
         let handle = messenger.inner.clone();
         crate::py_future::future_into_py(py, async move {
@@ -397,8 +459,7 @@ impl PyActionMessenger {
                 &to_action_name,
                 target.as_ref(),
                 Payload::from(user_payload),
-                feedback_qos.into(),
-                peppylib::messaging::FeedbackBuffer::KeepLatest,
+                feedback_bound,
                 goal_timeout,
             )
             .await
@@ -407,9 +468,10 @@ impl PyActionMessenger {
             // Cache the decoded goal reply and the wire sender so cancel_goal /
             // request_result never need to lock the mutex behind ActionGoalHandle.
             let reply = goal_handle.goal_reply();
-            let accepted = reply.accepted;
-            let reason = reply.reason.clone();
-            let goal_reply_body = reply.body.as_ref().to_vec();
+            let (refusal, goal_reply_body) = match &reply.answer {
+                GoalAnswer::Accepted(response) => (None, response.as_ref().to_vec()),
+                GoalAnswer::Refused(failure) => (Some(failure.clone()), Vec::new()),
+            };
             let instance_id = reply.instance_id.clone();
             let core_node = reply.core_node.clone();
             let goal_id = goal_handle.goal_id().to_string();
@@ -417,8 +479,7 @@ impl PyActionMessenger {
 
             Ok(PyActionGoalHandle {
                 inner: Arc::new(Mutex::new(goal_handle)),
-                accepted,
-                reason,
+                refusal,
                 goal_reply_body,
                 instance_id,
                 core_node,
@@ -485,12 +546,7 @@ impl PyActionMessenger {
             )
             .await
             .map_err(to_py_err)?;
-            Ok(PyActionResultReply {
-                status: reply.status as u8,
-                body: reply.body.to_vec(),
-                instance_id: reply.instance_id,
-                core_node: reply.core_node,
-            })
+            Ok(PyActionResultReply::from_reply(reply))
         })
     }
 
@@ -580,6 +636,18 @@ impl PyConcurrentAction {
         })
     }
 
+    /// Set the sender grace of the action, in seconds: how long the engine
+    /// keeps the goals of a sender that is gone before it sends them their
+    /// cancel signal. Zero by default.
+    fn set_sender_grace<'py>(&self, py: Python<'py>, seconds: f64) -> PyResult<Bound<'py, PyAny>> {
+        let grace = duration_from_secs_f64("seconds", seconds)?;
+        let inner = Arc::clone(&self.inner);
+        future_into_py_unit(py, async move {
+            inner.lock().await.set_sender_grace(grace);
+            Ok(())
+        })
+    }
+
     /// Wait for the next goal request, returning a [`PyPendingGoal`] or `None`
     /// when the goal service stream has closed.
     fn recv_next_goal<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -604,7 +672,7 @@ impl PyConcurrentAction {
     }
 }
 
-/// Python wrapper for [`peppylib::messaging::PendingGoal`]. `accept`/`reject`
+/// Python wrapper for [`peppylib::messaging::PendingGoal`]. `accept`/`refuse`
 /// consume the underlying goal, so it is held behind an `Option` and taken on
 /// first use.
 #[pyclass(name = "PendingGoal")]
@@ -649,7 +717,7 @@ impl PyPendingGoal {
         crate::py_future::future_into_py(py, async move {
             let pending =
                 inner.lock().await.take().ok_or_else(|| {
-                    PyValueError::new_err("PendingGoal already accepted or rejected")
+                    PyValueError::new_err("PendingGoal already accepted or refused")
                 })?;
             let ctx = pending
                 .accept(Payload::from(response))
@@ -661,25 +729,23 @@ impl PyPendingGoal {
         })
     }
 
-    /// Reject the goal, replying with the optional human-readable `reason`
-    /// and the encoded `GoalResponse` bytes. No context is produced.
-    #[pyo3(signature = (reason, response))]
-    fn reject<'py>(
+    /// Refuse the goal with the failure kind `kind` and `message`. No
+    /// context is produced. Raises `ValueError` for a text that is not a
+    /// failure kind name.
+    fn refuse<'py>(
         &self,
         py: Python<'py>,
-        reason: Option<String>,
-        response: Vec<u8>,
+        kind: String,
+        message: String,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let failure = failure_from_py(&kind, message)?;
         let inner = Arc::clone(&self.inner);
         future_into_py_unit(py, async move {
             let pending =
                 inner.lock().await.take().ok_or_else(|| {
-                    PyValueError::new_err("PendingGoal already accepted or rejected")
+                    PyValueError::new_err("PendingGoal already accepted or refused")
                 })?;
-            pending
-                .reject(reason.as_deref(), Payload::from(response))
-                .await
-                .map_err(to_py_err)?;
+            pending.refuse(failure).await.map_err(to_py_err)?;
             Ok(())
         })
     }
@@ -730,7 +796,8 @@ impl PyGoalContext {
         })
     }
 
-    /// Resolves when a cancel request arrives for this goal.
+    /// Resolves when this goal receives its cancel signal: a cancel request
+    /// of its caller, or the end of its sender.
     fn cancel_signal<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         future_into_py_unit(py, async move {
@@ -739,12 +806,23 @@ impl PyGoalContext {
         })
     }
 
-    /// Whether a cancel has been requested for this goal.
+    /// Whether this goal received its cancel signal.
     fn is_cancelled(&self) -> bool {
         self.inner.is_cancelled()
     }
 
-    /// Deliver the final result. Idempotent: the first call wins.
+    /// Why this goal received its cancel signal: `"caller"` or
+    /// `"sender_gone"`; `None` before it did.
+    #[getter]
+    fn cancel_cause(&self) -> Option<&'static str> {
+        self.inner.cancel_cause().map(|cause| match cause {
+            CancelCause::Caller => "caller",
+            CancelCause::SenderGone => "sender_gone",
+        })
+    }
+
+    /// End the goal with the status completed and its result: a success.
+    /// Idempotent: the first terminal call wins.
     fn complete<'py>(&self, py: Python<'py>, result: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         future_into_py_unit(py, async move {
@@ -756,17 +834,35 @@ impl PyGoalContext {
         })
     }
 
-    /// Deliver the final result after observing a cancel. Functionally
-    /// identical to [`complete`](Self::complete).
+    /// End the goal with the status failed: the failure kind `kind` and
+    /// `message`, and no result. Raises `ValueError` for a text that is not
+    /// a failure kind name.
+    fn fail<'py>(
+        &self,
+        py: Python<'py>,
+        kind: String,
+        message: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let failure = failure_from_py(&kind, message)?;
+        let inner = Arc::clone(&self.inner);
+        future_into_py_unit(py, async move {
+            inner.fail(failure).await.map_err(to_py_err)?;
+            Ok(())
+        })
+    }
+
+    /// End the goal with the status cancelled, for `reason`, with its
+    /// result.
     fn complete_cancelled<'py>(
         &self,
         py: Python<'py>,
+        reason: String,
         result: Vec<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         future_into_py_unit(py, async move {
             inner
-                .complete_cancelled(Payload::from(result))
+                .complete_cancelled(reason, Payload::from(result))
                 .await
                 .map_err(to_py_err)?;
             Ok(())

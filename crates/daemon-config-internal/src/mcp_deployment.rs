@@ -102,6 +102,7 @@ impl PinnedContract {
                 topics: &self.document.interfaces.topics,
                 services: &self.document.interfaces.services,
                 actions: &self.document.interfaces.actions,
+                failure_kinds: &self.document.failure_kinds,
             },
         }
     }

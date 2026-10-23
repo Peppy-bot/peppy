@@ -7,7 +7,7 @@
 //! different wire form (MQTT, DDS, etc.), add a sibling module rather than
 //! diverging this one.
 
-use crate::types::{CoreNodePresence, PresenceScope};
+use crate::types::{ClientPresence, CoreNodePresence, PresenceScope};
 use crate::wire::{
     ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, PairingRecipient, Segment, SenderTarget,
     ServiceKind, ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
@@ -337,6 +337,20 @@ impl ZenohWireFormat {
         )
     }
 
+    // ─── Client presence ─────────────────────────────────────────
+
+    /// Liveliness token of one sending process:
+    /// `client_presence/{core_node}/{instance_id}/{generation}`. A provider
+    /// watches and probes this concrete key too. The generation is unique to
+    /// the process, so a process that starts again with the same identity
+    /// declares another key, and the end of the first process stays visible.
+    pub(crate) fn client_presence_token(client: &ClientPresence) -> String {
+        format!(
+            "client_presence/{}/{}/{}",
+            client.core_node, client.instance_id, client.generation
+        )
+    }
+
     // ─── Core-node presence ──────────────────────────────────────
 
     /// Concrete daemon-generation token:
@@ -603,8 +617,8 @@ impl ServiceQueryAttachment {
 
 /// Service reply kind, encoded in the [`ServiceReplyAttachment`] that
 /// rides on every `query.reply()`. The consumer's poll loop matches on
-/// this to skip ACKs, return regular responses, and surface handler
-/// errors without inspecting payload bytes.
+/// this to skip ACKs, return regular responses, and surface failure
+/// replies without inspecting payload bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceReplyKind {
     /// Sent immediately by the producer when a real user request arrives,
@@ -616,10 +630,10 @@ pub enum ServiceReplyKind {
     /// handler's response, opaque to the framework. Also used for the
     /// producer's transparent reply to a `Probe` request (empty payload).
     Response,
-    /// The user handler returned `Err(reason)` (or a Python handler raised
-    /// an exception). Payload bytes are the UTF-8 reason; the consumer
-    /// surfaces this as peppylib's `Error::ServiceError`.
-    HandlerError,
+    /// The provider gave an error reply: the payload is the wire form of a
+    /// [`Failure`](crate::Failure), a failure kind and a message. The
+    /// consumer surfaces it as peppylib's `Error::ServiceFailed`.
+    Failure,
 }
 
 impl ServiceReplyKind {
@@ -627,7 +641,7 @@ impl ServiceReplyKind {
         match self {
             Self::Ack => 0x00,
             Self::Response => 0x01,
-            Self::HandlerError => 0x02,
+            Self::Failure => 0x02,
         }
     }
 
@@ -635,7 +649,7 @@ impl ServiceReplyKind {
         match byte {
             0x00 => Some(Self::Ack),
             0x01 => Some(Self::Response),
-            0x02 => Some(Self::HandlerError),
+            0x02 => Some(Self::Failure),
             _ => None,
         }
     }
@@ -644,10 +658,10 @@ impl ServiceReplyKind {
 /// Reply attachment carrying the [`ServiceReplyKind`]. Mandatory on every
 /// service reply.
 ///
-/// Wire layout: `[0x01 magic][kind u8]`, 2 bytes total. Reasons for
-/// [`ServiceReplyKind::HandlerError`] ride in the reply payload as UTF-8
-/// (variable length stays out of the attachment lane), keeping this
-/// attachment compact and fixed-size.
+/// Wire layout: `[0x01 magic][kind u8]`, 2 bytes total. The failure of a
+/// [`ServiceReplyKind::Failure`] rides in the reply payload (variable length
+/// stays out of the attachment lane), keeping this attachment compact and
+/// fixed-size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ServiceReplyAttachment {
     pub(crate) kind: ServiceReplyKind,

@@ -9,7 +9,7 @@ use core_node_api::encoding::{
     StackRemoveGoal,
 };
 use peppylib::core_node::transport::send_goal;
-use peppylib::messaging::{ActionGoalHandle, MessengerHandle, ResultStatus};
+use peppylib::messaging::{ActionGoalHandle, Failure, GoalAnswer, GoalOutcome, MessengerHandle};
 use peppylib::runtime::NodeRunner;
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::debug;
@@ -120,6 +120,12 @@ pub enum FollowError {
     /// The daemon dropped the goal before it produced a result.
     #[error("{operation} was abandoned by its worker before producing a result")]
     Abandoned { operation: &'static str },
+    /// The daemon failed the goal: a failure kind and a message.
+    #[error("{operation} failed: {failure}")]
+    Failed {
+        operation: &'static str,
+        failure: Failure,
+    },
     /// The goal ended, and its result was gone before the request for it
     /// arrived.
     #[error("{operation} result expired before it could be fetched")]
@@ -199,7 +205,16 @@ pub async fn send<G: StackGoal>(
         operation,
         source: Box::new(source),
     })?;
-    let admission = LaunchGoalResponse::decode(handle.goal_reply().body.as_ref())
+    let response = match &handle.goal_reply().answer {
+        GoalAnswer::Accepted(response) => response,
+        GoalAnswer::Refused(failure) => {
+            return Err(SendError::Rejected {
+                operation,
+                reason: failure.to_string(),
+            });
+        }
+    };
+    let admission = LaunchGoalResponse::decode(response.as_ref())
         .map_err(|source| SendError::UndecodableAdmission { operation, source })?;
     if !admission.accepted {
         return Err(SendError::Rejected {
@@ -313,18 +328,17 @@ impl RunningStackGoal {
             operation,
             source: Box::new(source),
         })?;
-        match reply.status {
-            // The client sends no cancel, so a daemon that ends the goal
-            // cancelled ends it on its own, with its result.
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                LaunchResult::decode(reply.body.as_ref())
+        match reply.outcome {
+            GoalOutcome::Completed(result) | GoalOutcome::Cancelled { result, .. } => {
+                LaunchResult::decode(result.as_ref())
                     .map_err(|source| FollowError::UndecodableResult { operation, source })
             }
-            ResultStatus::Abandoned if self.handle.is_producer_gone() => {
+            GoalOutcome::Failed(failure) => Err(FollowError::Failed { operation, failure }),
+            GoalOutcome::Abandoned if self.handle.is_producer_gone() => {
                 Err(FollowError::DaemonGone { operation })
             }
-            ResultStatus::Abandoned => Err(FollowError::Abandoned { operation }),
-            ResultStatus::Expired => Err(FollowError::Expired { operation }),
+            GoalOutcome::Abandoned => Err(FollowError::Abandoned { operation }),
+            GoalOutcome::Expired => Err(FollowError::Expired { operation }),
         }
     }
 }
