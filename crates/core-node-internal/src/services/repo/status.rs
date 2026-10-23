@@ -34,7 +34,7 @@ pub(crate) struct RepoStatusFailure {
     /// `"unreachable"` or `"conflict"`. Text on disk so the file stays
     /// readable and an unknown value from a future peppy degrades to a
     /// label rather than a parse error.
-    pub kind: String,
+    pub read_failure: String,
     pub message: String,
     pub unix_secs: u64,
 }
@@ -142,7 +142,7 @@ mod tests {
 
         let mut failed = status(1001);
         failed.last_failure = Some(RepoStatusFailure {
-            kind: "conflict".to_owned(),
+            read_failure: "conflict".to_owned(),
             message: "two node manifests claim `a:v1`".to_owned(),
             unix_secs: 1_753_986_400,
         });
@@ -178,7 +178,7 @@ mod tests {
         let mut s = status(1000);
         assert!(!s.is_retained());
         s.last_failure = Some(RepoStatusFailure {
-            kind: "unreachable".to_owned(),
+            read_failure: "unreachable".to_owned(),
             message: "network is unreachable".to_owned(),
             unix_secs: 1_753_986_400,
         });

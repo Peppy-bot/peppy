@@ -106,7 +106,7 @@ fn repo_entry(repo: &ListedRepo, status: Option<&RepoStatus>) -> RepoListRepoEnt
         retained: status.is_some_and(|s| s.is_retained()),
         failed_read: status
             .and_then(|s| s.last_failure.as_ref())
-            .map(|f| wire_failed_read(&f.kind, &f.message)),
+            .map(|f| wire_failed_read(&f.read_failure, &f.message)),
     }
 }
 

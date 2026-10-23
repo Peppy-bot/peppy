@@ -403,12 +403,13 @@ pub(crate) struct ExcludedRepo {
     pub(crate) identity: String,
 }
 
-/// Why one repository contributed nothing new to a refresh.
+/// How the read of one repository failed, so that it contributed nothing
+/// new to a refresh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RepoFailureKind {
+pub(crate) enum RepoReadFailure {
     /// Could not be read at all: the clone failed, the configured path is
     /// gone, the configuration entry is unrecognized. Kept distinct from
-    /// [`RepoFailureKind::Conflict`] because an outage is not a content
+    /// [`RepoReadFailure::Conflict`] because an outage is not a content
     /// bug, and reporting one as the other sends the user to the wrong
     /// place entirely.
     Unreachable,
@@ -418,22 +419,22 @@ pub(crate) enum RepoFailureKind {
     Conflict,
 }
 
-impl RepoFailureKind {
+impl RepoReadFailure {
     /// Stable machine-readable value, recorded in `repo_status.json5` and
     /// put on the wire. Kept separate from [`Self::describe`] so the
     /// prose can be reworded without changing what tools match on.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            RepoFailureKind::Unreachable => "unreachable",
-            RepoFailureKind::Conflict => "conflict",
+            RepoReadFailure::Unreachable => "unreachable",
+            RepoReadFailure::Conflict => "conflict",
         }
     }
 
     /// Predicate that reads as a sentence about the repository.
     fn describe(self) -> &'static str {
         match self {
-            RepoFailureKind::Unreachable => "could not be read",
-            RepoFailureKind::Conflict => "contradicts itself",
+            RepoReadFailure::Unreachable => "could not be read",
+            RepoReadFailure::Conflict => "contradicts itself",
         }
     }
 }
@@ -445,7 +446,7 @@ pub(crate) struct RepoFailure {
     pub(crate) id: u64,
     /// Human-facing label (path for fs, `url (ref: r)` for git).
     pub(crate) label: String,
-    pub(crate) kind: RepoFailureKind,
+    pub(crate) read_failure: RepoReadFailure,
     pub(crate) detail: String,
     /// Previous entries kept in place for this repository, across all
     /// five kinds. Zero on a machine that has never read it successfully.
@@ -459,8 +460,8 @@ impl std::fmt::Display for RepoFailure {
             "repository {} ({}) {} [{}]: {}",
             self.id,
             self.label,
-            self.kind.describe(),
-            self.kind.as_str(),
+            self.read_failure.describe(),
+            self.read_failure.as_str(),
             self.detail
         )?;
         match self.retained {
@@ -733,7 +734,7 @@ pub(crate) fn process_refresh(
                 failures.push(RepoFailure {
                     id,
                     label,
-                    kind: RepoFailureKind::Unreachable,
+                    read_failure: RepoReadFailure::Unreachable,
                     detail,
                     retained: 0,
                 });
@@ -769,12 +770,12 @@ pub(crate) fn process_refresh(
                 });
                 items
             }
-            Err((kind, detail)) => {
+            Err((read_failure, detail)) => {
                 let retained = retained_items(&previous, &owners, id);
                 let failure = RepoFailure {
                     id,
                     label: shown_label(&source, build),
-                    kind,
+                    read_failure,
                     detail,
                     retained: retained.len(),
                 };
@@ -788,7 +789,7 @@ pub(crate) fn process_refresh(
                     last_read_unix_secs: previous_status.and_then(|s| s.last_read_unix_secs),
                     read_ref: previous_status.and_then(|s| s.read_ref.clone()),
                     last_failure: Some(RepoStatusFailure {
-                        kind: failure.kind.as_str().to_owned(),
+                        read_failure: failure.read_failure.as_str().to_owned(),
                         message: failure.detail.clone(),
                         unix_secs: stamp,
                     }),
@@ -888,7 +889,7 @@ const MAX_PARALLEL_READS: NonZeroUsize = NonZeroUsize::new(8).expect("8 is not z
 /// What reading one repository yields: the entries it publishes or why it
 /// gives none, and for a git repository the ref it was read at.
 struct RepoRead {
-    items: std::result::Result<RepoItems, (RepoFailureKind, String)>,
+    items: std::result::Result<RepoItems, (RepoReadFailure, String)>,
     read_ref: Option<ReadRef>,
 }
 
@@ -898,7 +899,7 @@ impl RepoRead {
     fn cancelled() -> Self {
         Self {
             items: Err((
-                RepoFailureKind::Unreachable,
+                RepoReadFailure::Unreachable,
                 "the refresh was cancelled".to_owned(),
             )),
             read_ref: None,
@@ -937,7 +938,7 @@ fn read_repo(
     // describe it both fall back to their previous entries; only the
     // wording differs, so an outage never reads as a content bug.
     let items = read.and_then(|items| {
-        build_cache_entries(items).map_err(|detail| (RepoFailureKind::Conflict, detail))
+        build_cache_entries(items).map_err(|detail| (RepoReadFailure::Conflict, detail))
     });
     RepoRead { items, read_ref }
 }
@@ -1029,7 +1030,7 @@ fn count_unique<E: RepoCacheEntry>(entries: &[E]) -> u32 {
 }
 
 /// What one repository read yields, or why it failed.
-type ReadResult = std::result::Result<Vec<PublishedItem>, (RepoFailureKind, String)>;
+type ReadResult = std::result::Result<Vec<PublishedItem>, (RepoReadFailure, String)>;
 
 /// Reads a repository that lives on this machine, minus the subtrees this
 /// machine is configured to stay out of.
@@ -1040,7 +1041,7 @@ fn read_fs_repo(
 ) -> ReadResult {
     if !root.exists() {
         return Err((
-            RepoFailureKind::Unreachable,
+            RepoReadFailure::Unreachable,
             format!("path does not exist: {}", root.display()),
         ));
     }
@@ -1071,7 +1072,7 @@ fn read_git_repo(
     peppy_dirs: &PeppyDirs,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) -> ReadResult {
-    let unreachable = |detail: String| (RepoFailureKind::Unreachable, detail);
+    let unreachable = |detail: String| (RepoReadFailure::Unreachable, detail);
 
     let tmp_dir = peppy_dirs.tmp_dir();
     std::fs::create_dir_all(&tmp_dir)
@@ -1497,7 +1498,7 @@ mod tests {
         assert_eq!(refreshed.failures.len(), 1, "only the broken repo failed");
         let failure = &refreshed.failures[0];
         assert_eq!(failure.id, 2);
-        assert_eq!(failure.kind, RepoFailureKind::Conflict);
+        assert_eq!(failure.read_failure, RepoReadFailure::Conflict);
         assert_eq!(failure.retained, 1, "one node kept from the last read");
         assert!(failure.detail.contains("gone:v1"), "{}", failure.detail);
         assert!(
@@ -1560,14 +1561,14 @@ mod tests {
         let unreachable = RepoFailure {
             id: 1002,
             label: "https://example.com/hub.git (ref: main)".to_owned(),
-            kind: RepoFailureKind::Unreachable,
+            read_failure: RepoReadFailure::Unreachable,
             detail: "failed to connect".to_owned(),
             retained: 8,
         };
         let conflict = RepoFailure {
             id: 1000,
             label: "/home/user/workspace".to_owned(),
-            kind: RepoFailureKind::Conflict,
+            read_failure: RepoReadFailure::Conflict,
             detail: "2 node manifests claim `a:v1`".to_owned(),
             retained: 0,
         };
@@ -1626,7 +1627,7 @@ mod tests {
         );
         assert!(status.is_retained());
         let failure = status.last_failure.as_ref().expect("failure recorded");
-        assert_eq!(failure.kind, "conflict");
+        assert_eq!(failure.read_failure, "conflict");
         assert_eq!(failure.unix_secs, 99_000, "the failure itself is recent");
     }
 
@@ -1674,7 +1675,10 @@ mod tests {
             "the healthy repository updated"
         );
         assert_eq!(refreshed.failures.len(), 1);
-        assert_eq!(refreshed.failures[0].kind, RepoFailureKind::Unreachable);
+        assert_eq!(
+            refreshed.failures[0].read_failure,
+            RepoReadFailure::Unreachable
+        );
         assert_eq!(
             refreshed.failures[0].retained, 0,
             "nothing was ever read from it"
@@ -1694,7 +1698,10 @@ mod tests {
         let refreshed = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
 
         assert_eq!(refreshed.failures.len(), 1);
-        assert_eq!(refreshed.failures[0].kind, RepoFailureKind::Unreachable);
+        assert_eq!(
+            refreshed.failures[0].read_failure,
+            RepoReadFailure::Unreachable
+        );
     }
 
     /// Several failures across several repositories come back in one
@@ -1713,13 +1720,16 @@ mod tests {
 
         let refreshed = refresh_publishing(&peppy_dirs, &[], TEST_NOW, &mut |_| {}).unwrap();
 
-        let seen: Vec<(u64, RepoFailureKind)> =
-            refreshed.failures.iter().map(|f| (f.id, f.kind)).collect();
+        let seen: Vec<(u64, RepoReadFailure)> = refreshed
+            .failures
+            .iter()
+            .map(|f| (f.id, f.read_failure))
+            .collect();
         assert_eq!(
             seen,
             vec![
-                (5, RepoFailureKind::Unreachable),
-                (9, RepoFailureKind::Conflict)
+                (5, RepoReadFailure::Unreachable),
+                (9, RepoReadFailure::Conflict)
             ]
         );
 
@@ -1763,13 +1773,16 @@ mod tests {
         })
         .unwrap();
 
-        let failures: Vec<(u64, RepoFailureKind)> =
-            refreshed.failures.iter().map(|f| (f.id, f.kind)).collect();
+        let failures: Vec<(u64, RepoReadFailure)> = refreshed
+            .failures
+            .iter()
+            .map(|f| (f.id, f.read_failure))
+            .collect();
         assert_eq!(
             failures,
             vec![
-                (2, RepoFailureKind::Unreachable),
-                (4, RepoFailureKind::Unreachable)
+                (2, RepoReadFailure::Unreachable),
+                (4, RepoReadFailure::Unreachable)
             ]
         );
         let status_ids: Vec<u64> = refreshed.statuses.iter().map(|s| s.id).collect();
@@ -2677,7 +2690,7 @@ mod tests {
         assert!(refreshed.items.nodes.is_empty());
         assert_eq!(refreshed.failures.len(), 1);
         let failure = &refreshed.failures[0];
-        assert_eq!(failure.kind, RepoFailureKind::Unreachable);
+        assert_eq!(failure.read_failure, RepoReadFailure::Unreachable);
         assert!(
             failure
                 .detail
@@ -2801,7 +2814,7 @@ mod tests {
         assert!(refreshed.items.nodes.is_empty());
         assert_eq!(refreshed.failures.len(), 1);
         let failure = &refreshed.failures[0];
-        assert_eq!(failure.kind, RepoFailureKind::Unreachable);
+        assert_eq!(failure.read_failure, RepoReadFailure::Unreachable);
         assert_eq!(
             failure.detail,
             format!("{url} has no commit to read: it advertises no ref named `HEAD`")
