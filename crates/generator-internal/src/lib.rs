@@ -18,7 +18,8 @@
 //! # Value objects the caller builds
 //! [`DeploymentInterface`] wraps an [`InterfaceVariant`]; consumed variants carry a
 //! [`DependencyContext`] (`native` / `contract`, each carrying the consumer
-//! manifest `link_id`). [`ContractOrigin`] tags contract-backed artifacts.
+//! manifest `link_id`). [`ContractOrigin`] tags contract-backed artifacts and carries the
+//! failure kinds of their contract.
 //! [`ConsumedActionMessage`] bundles an action's goal/feedback/result formats. These types form
 //! the deliberate, semver-relevant assembly contract between this crate and its consumer: their
 //! public fields are the construction protocol, so changes to them are breaking changes.
