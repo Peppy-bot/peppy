@@ -684,6 +684,22 @@ async fn start_set_with_parked_replay(release: &Arc<Notify>) -> support::ServedS
     .await
 }
 
+/// The entry of the newest call of `tool` in the record that `client`
+/// reads, if the record holds a call of `tool`.
+async fn newest_entry(client: &Client, tool: &str) -> Option<Value> {
+    let recorded = client
+        .call_tool(CallToolRequestParams::new("camera.recent_calls"))
+        .await
+        .expect("the record answers");
+    let calls = recorded.structured_content.expect("structured")["calls"].clone();
+    calls
+        .as_array()
+        .expect("the calls")
+        .iter()
+        .find(|call| call["tool"] == tool)
+        .cloned()
+}
+
 /// The entry of the newest call of `tool` in the record of the endpoint at
 /// `url`, once that call is no longer running. The wait is bounded by
 /// [`GUARD`] and driven by the endpoint's answers.
@@ -691,17 +707,7 @@ async fn ended_entry(url: &str, tool: &str) -> Value {
     let client = connect(url).await;
     let entry = tokio::time::timeout(GUARD, async {
         loop {
-            let recorded = client
-                .call_tool(CallToolRequestParams::new("camera.recent_calls"))
-                .await
-                .expect("the record answers");
-            let calls = recorded.structured_content.expect("structured")["calls"].clone();
-            let newest = calls
-                .as_array()
-                .expect("the calls")
-                .iter()
-                .find(|call| call["tool"] == tool)
-                .cloned();
+            let newest = newest_entry(&client, tool).await;
             if let Some(entry) = newest.filter(|entry| entry["outcome"] != "running") {
                 return entry;
             }
@@ -764,8 +770,17 @@ async fn closing_the_call_leaves_the_goal_inside_it_running_to_its_end() {
         );
         drop(response);
 
-        // The provider ends the goal after its client went away: the goal
-        // was never asked to cancel, and the record keeps its end.
+        // Another client reads the record: the goal still runs after its
+        // client went away.
+        let reader = connect(&endpoint.url).await;
+        let entry = newest_entry(&reader, "recorder.replay_episode")
+            .await
+            .expect("the record keeps the call");
+        assert_eq!(entry["outcome"], "running", "{entry}");
+        reader.cancel().await.expect("client disconnects");
+
+        // The provider ends the goal: it was never asked to cancel, and the
+        // record keeps its end.
         release.notify_one();
         let entry = ended_entry(&endpoint.url, "recorder.replay_episode").await;
         assert_eq!(entry["outcome"], "completed", "{entry}");
