@@ -1197,7 +1197,7 @@ async fn process_node_run(
         Ok(vars) => vars,
         Err(e) => {
             let msg = e.to_string();
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
     };
 
@@ -1217,7 +1217,7 @@ async fn process_node_run(
                  Run `peppy stack list` to see the nodes in the stack, or `peppy node add <dir>` \
                  to add it from its directory."
             );
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
     };
 
@@ -1230,7 +1230,7 @@ async fn process_node_run(
     if let Some(msg) =
         id_held_by_another_node(&ctx.action.node_stack, &instance_id, &node_name, &tag)
     {
-        return refuse(&ctx, msg);
+        return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
     }
 
     // A simulated domain is identified by its name and the machine hosting its
@@ -1246,7 +1246,7 @@ async fn process_node_run(
                  start its publisher on `{}`",
                 domain.name, domain.core_node, ctx.action.core_node_name, domain.core_node,
             );
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
         if let Some(owner) = ctx.action.node_stack.clock_domain_publisher(&domain.name)
             && owner != instance_id
@@ -1265,7 +1265,7 @@ async fn process_node_run(
                 core_node = ctx.action.core_node_name,
                 stop = core_node_api::stop_command(owner.as_str(), &ctx.action.core_node_name),
             );
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
         }
     }
 
@@ -1282,7 +1282,7 @@ async fn process_node_run(
                  on `{}`; `peppy clock list` shows each domain and the machine hosting it",
                 domain.core_node, publisher.core_node,
             );
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
         if domain.core_node.as_str() == ctx.action.core_node_name {
             let supplier = local_publisher_of(&ctx.action.node_stack, domain);
@@ -1308,7 +1308,7 @@ async fn process_node_run(
                          `{publisher}` is running",
                         publisher = publisher.instance_id
                     );
-                    return refuse(&ctx, msg);
+                    return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
                 }
                 DomainGate::Gone => {
                     let msg = if respawning {
@@ -1324,7 +1324,7 @@ async fn process_node_run(
                             ctx.action.core_node_name, domain.name,
                         )
                     };
-                    return refuse(&ctx, msg);
+                    return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
                 }
                 DomainGate::SuppliedBy(owner) => {
                     let msg = format!(
@@ -1334,7 +1334,7 @@ async fn process_node_run(
                         owner.as_str(),
                         publisher.instance_id,
                     );
-                    return refuse(&ctx, msg);
+                    return refuse(&ctx, PeppyFailureKind::Rejected, msg);
                 }
             }
         }
@@ -1348,7 +1348,7 @@ async fn process_node_run(
                 node_name, tag, node_name, tag
             );
             drop(guard);
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
         }
         guard.config().clone()
     };
@@ -1356,7 +1356,7 @@ async fn process_node_run(
     if let Err(msg) =
         refuse_stale_manifest(&node_name, &tag, manifest_sha256.as_deref(), &node_config)
     {
-        return refuse(&ctx, msg);
+        return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
     }
 
     // The policy of a new instance, resolved here for every path that starts
@@ -1401,7 +1401,7 @@ async fn process_node_run(
     {
         Ok(reasons) => reasons,
         Err(msg) => {
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
     };
 
@@ -1452,7 +1452,7 @@ async fn process_node_run(
         ) {
             Ok(p) => p,
             Err(msg) => {
-                return refuse(&ctx, msg);
+                return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
             }
         }
     };
@@ -1492,7 +1492,7 @@ async fn process_node_run(
     );
     if !missing.is_empty() {
         let msg = format!("Missing required parameters: {}", missing.join(", "));
-        return refuse(&ctx, msg);
+        return refuse(&ctx, PeppyFailureKind::Rejected, msg);
     }
 
     let is_container = node_config.execution.container.is_some();
@@ -1514,7 +1514,7 @@ async fn process_node_run(
     {
         Ok(paths) => paths,
         Err(msg) => {
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
     };
 
@@ -1574,7 +1574,9 @@ async fn process_node_run(
         });
         let apptainer = match setup {
             ApptainerSetup::Ready(apptainer) => apptainer,
-            ApptainerSetup::Refused(msg) => return refuse(&ctx, msg),
+            ApptainerSetup::Refused(msg) => {
+                return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
+            }
             // A failed start, as one of the run itself: a restart's next
             // attempt initializes Apptainer again.
             ApptainerSetup::InitFailed(msg) => {
@@ -1630,7 +1632,7 @@ async fn process_node_run(
         Ok(json) => json,
         Err(e) => {
             let msg = format!("Failed to serialize runtime config: {}", e);
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::AttemptFailed, msg);
         }
     };
 
@@ -2492,10 +2494,10 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
     });
 }
 
-/// Writes a refusal of the run to its run log and answers it.
-fn refuse(ctx: &ProcessNodeRunContext, msg: String) -> RunOutcome {
+/// Writes a refusal of the run to its run log and answers it with `kind`.
+fn refuse(ctx: &ProcessNodeRunContext, kind: PeppyFailureKind, msg: String) -> RunOutcome {
     ctx.announcer.log().error(&msg);
-    RunOutcome::Refused(msg)
+    RunOutcome::Refused(Failure::new(kind, msg))
 }
 
 /// How far a start got before the daemon gave it up.

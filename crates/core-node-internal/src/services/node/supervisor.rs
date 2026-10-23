@@ -26,7 +26,7 @@ pub(crate) enum RunOutcome {
         endpoints: Vec<core_node_api::InstanceEndpoint>,
     },
     /// Refused before the spawn: no process was started and none will be.
-    Refused(String),
+    Refused(Failure),
     /// The start failed: the spawn, a probe, an exit or a commit error, a
     /// panic of the run before its commit, an Apptainer that did not
     /// initialize for a container start, a respawning reader's clock
@@ -42,15 +42,15 @@ pub(crate) enum RunOutcome {
 impl RunOutcome {
     /// The outcome as the result of a `node_run` goal: the result of a
     /// process that reached `running`, or the failure of the start. A
-    /// refused start is `precondition_failed`, a start that failed is
-    /// `attempt_failed`, and a start whose slot is gone is
+    /// refused start gives the failure of its refusal, a start that failed
+    /// is `attempt_failed`, and a start whose slot is gone is
     /// `resource_unavailable`.
     pub(crate) fn into_result(self) -> Result<NodeRunResult, Failure> {
         match self {
             Self::Running { pid, endpoints } => {
                 Ok(NodeRunResult::started(pid).with_endpoints(endpoints))
             }
-            Self::Refused(msg) => Err(Failure::new(PeppyFailureKind::PreconditionFailed, msg)),
+            Self::Refused(failure) => Err(failure),
             Self::StartFailed(msg) => Err(Failure::new(PeppyFailureKind::AttemptFailed, msg)),
             Self::Gone(msg) => Err(Failure::new(PeppyFailureKind::ResourceUnavailable, msg)),
         }
@@ -163,11 +163,11 @@ async fn restart_task(
             log_next_attempt(&target.stack_log, &next);
             spawn_next_attempt(target, next);
         }
-        RunOutcome::Refused(reason) => {
+        RunOutcome::Refused(failure) => {
             if NodeEntity::mark_restart_refused(&target.entity_handle, &target.instance_id) {
-                target
-                    .stack_log
-                    .record(&StackLogEvent::RestartRefused { reason });
+                target.stack_log.record(&StackLogEvent::RestartRefused {
+                    reason: failure.message().to_owned(),
+                });
             }
         }
     }
@@ -195,7 +195,9 @@ async fn start_next_process(
     } = inputs;
     let runtime_config = match assemble_runtime_config(&goal, &target.action).await {
         Ok(runtime_config) => runtime_config,
-        Err(reason) => return RunOutcome::Refused(reason),
+        Err(reason) => {
+            return RunOutcome::Refused(Failure::new(PeppyFailureKind::Rejected, reason));
+        }
     };
     let log = match ActionLog::for_run(
         &target.action.peppy_dirs,

@@ -37,7 +37,7 @@ use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, ParticipantInstancesRemoveRequest, StackListResponse,
     StackRemoveGoal,
 };
-use daemon_config::launcher::{CopyMembership, DeploymentInstance, Placements};
+use daemon_config::launcher::{CompositionError, CopyMembership, DeploymentInstance, Placements};
 use peppylib::core_node::transport::poll;
 use peppylib::messaging::Failure;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -88,7 +88,7 @@ async fn remove_inner(
     let remaining = active
         .prepared
         .remove(&active.flat, &copy.record, &active.selection, &staying)
-        .map_err(rejected)?;
+        .map_err(composition_failure)?;
     let shrunk_slots =
         changed_slots(&copy.record, &active.planned, Change::Removal).map_err(rejected)?;
     check_not_emptied(&copy.record, &shrunk_slots, &remaining).map_err(precondition_failed)?;
@@ -702,6 +702,16 @@ fn offline_warning(active: &ActiveLaunch, copy: &StackCopy, machine: &str) -> St
         copy.record.name,
         daemon_config::format_quoted_list(&staying)
     )
+}
+
+/// The failure of a removal that the launcher's composition refuses: the
+/// last copy of a `one_or_more` axis is a copy the stack needs, and any
+/// other refusal says that the removal does not fit the launcher.
+fn composition_failure(error: CompositionError) -> Failure {
+    match error {
+        CompositionError::CopyAxisEmptied { .. } => precondition_failed(error),
+        other => rejected(other),
+    }
 }
 
 #[cfg(test)]

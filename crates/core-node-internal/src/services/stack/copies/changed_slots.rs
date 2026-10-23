@@ -471,6 +471,7 @@ async fn replace_on_participant(
 mod tests {
     use super::*;
     use crate::services::stack::fixtures::{graph_holding, placements_with, planned_deployment};
+    use config::failure_kind::PeppyFailureKind;
     use config::runtime::ProducerRef;
     use core_node_api::encoding::ObservationTarget;
     use core_node_api::encoding::SetMember;
@@ -716,8 +717,13 @@ mod tests {
 
         let refusal =
             check_hosts_live(&alpha, &slots(), &placements, &coordinator_alone).unwrap_err();
+        assert_eq!(
+            refusal.kind().as_str(),
+            PeppyFailureKind::ResourceUnavailable.name()
+        );
         assert!(
-            refusal.contains("`monitor_inst.links.robots`") && refusal.contains("`cn-cloud`"),
+            refusal.message().contains("`monitor_inst.links.robots`")
+                && refusal.message().contains("`cn-cloud`"),
             "{refusal}"
         );
         check_hosts_live(&alpha, &slots(), &placements, &both).expect("a live machine passes");
@@ -736,23 +742,33 @@ mod tests {
                            running on `cn-robot`; launch the stack again so `cn-robot` runs it, \
                            or join an option whose fragments do not add to that slot";
 
+        let refusal_of = |graph| {
+            let failure =
+                check_grown_slots_running("cn-robot", graph, &slots, &on_robot).unwrap_err();
+            (
+                failure.kind().as_str().to_string(),
+                failure.message().to_string(),
+            )
+        };
         let starting = graph_holding(&[("monitor_inst", InstanceState::Starting)]);
         assert_eq!(
-            check_grown_slots_running("cn-robot", &starting, &slots, &on_robot).unwrap_err(),
-            "joining grows `monitor_inst.links.robots`, but `monitor_inst` is starting on \
-             `cn-robot`; join again once it is running, or join an option whose fragments do not \
-             add to that slot"
+            refusal_of(&starting),
+            (
+                PeppyFailureKind::PreconditionFailed.name().to_string(),
+                "joining grows `monitor_inst.links.robots`, but `monitor_inst` is starting on \
+                 `cn-robot`; join again once it is running, or join an option whose fragments \
+                 do not add to that slot"
+                    .to_string()
+            )
+        );
+        let not_running = (
+            PeppyFailureKind::ResourceUnavailable.name().to_string(),
+            not_running.to_string(),
         );
         let finished = graph_holding(&[("monitor_inst", InstanceState::Finished)]);
-        assert_eq!(
-            check_grown_slots_running("cn-robot", &finished, &slots, &on_robot).unwrap_err(),
-            not_running
-        );
+        assert_eq!(refusal_of(&finished), not_running);
         let absent = graph_holding(&[]);
-        assert_eq!(
-            check_grown_slots_running("cn-robot", &absent, &slots, &on_robot).unwrap_err(),
-            not_running
-        );
+        assert_eq!(refusal_of(&absent), not_running);
         let running = graph_holding(&[("monitor_inst", InstanceState::Running)]);
         check_grown_slots_running("cn-robot", &running, &slots, &on_robot)
             .expect("a running instance takes the grown set");

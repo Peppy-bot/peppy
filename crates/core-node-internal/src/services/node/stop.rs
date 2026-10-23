@@ -1182,22 +1182,29 @@ mod tests {
         let cases = [
             (
                 Refusal::FirstStart,
+                PeppyFailureKind::PreconditionFailed,
                 "Node instance 'arm_inst' is in Starting state; retry after the start completes",
             ),
             (
                 Refusal::AlreadyBeingStopped,
+                PeppyFailureKind::PreconditionFailed,
                 "Node instance 'arm_inst' is already being stopped",
             ),
             (
                 Refusal::NotFound,
+                PeppyFailureKind::Rejected,
                 "Node instance 'arm_inst' not found in node stack",
             ),
-            (Refusal::CoreNode, "Cannot stop the core node"),
+            (
+                Refusal::CoreNode,
+                PeppyFailureKind::Rejected,
+                "Cannot stop the core node",
+            ),
         ];
-        for (refusal, text) in cases {
-            let response = refusal.response(&id);
-            assert!(!response.success);
-            assert_eq!(response.error_message.as_deref(), Some(text));
+        for (refusal, kind, text) in cases {
+            let failure = refusal.failure(&id);
+            assert_eq!(failure.kind().as_str(), kind.name());
+            assert_eq!(failure.message(), text);
         }
     }
 

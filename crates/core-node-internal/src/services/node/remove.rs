@@ -6,7 +6,8 @@ use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use core_node_api::names;
 use node_stack::{
-    EntityHandle, KeptRelations, NodeEntity, NodeStack, ProcessClaim, SlotLeft, SlotRemoval,
+    EntityHandle, KeptRelations, NodeEntity, NodeStack, NodeStackError, ProcessClaim, SlotLeft,
+    SlotRemoval,
 };
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
@@ -478,8 +479,16 @@ async fn handle_node_remove_request_inner(
             );
         }
         Err(e) => {
+            // An instance that started while the remove stopped the others
+            // keeps the node in the stack.
+            let kind = match e {
+                NodeStackError::CannotRemoveNodeWithInstances { .. } => {
+                    PeppyFailureKind::PreconditionFailed
+                }
+                _ => PeppyFailureKind::AttemptFailed,
+            };
             return Err(RemoveFailure {
-                kind: PeppyFailureKind::AttemptFailed,
+                kind,
                 message: format!(
                     "Failed to remove node config '{}:{}': {}{}",
                     request.node_name,
