@@ -17,7 +17,7 @@
 //! coordinator therefore finds its own launch again, `stack reset` works from
 //! any machine in the federation, and no state file is introduced anywhere.
 //!
-//! # Why the reservation is a lease
+//! # Why a reservation ends when its coordinator is gone
 //!
 //! Preflight RESERVES every participant before anything is torn down, rather
 //! than merely asking whether each is busy. Asking is a time-of-check /
@@ -28,12 +28,12 @@
 //! But a reservation that outlives its coordinator is its own failure: a
 //! coordinator that dies mid-launch would wedge every machine it had reserved
 //! until each daemon restarted, with nothing in the UI to explain why. So a
-//! reservation is a LEASE held against the coordinator's presence. The daemon
+//! reservation lasts only while its coordinator is present. The daemon
 //! watches the coordinator's core-node presence token for as long as it holds
 //! the reservation, and [`SliceOwnership::release_because_coordinator_gone`]
 //! drops it the moment that token disappears.
 //!
-//! The lease covers a coordinator that LEFT; a lost release from one that
+//! That watch covers a coordinator that LEFT; a lost release from one that
 //! stayed is covered by takeover. The release at the end of a launch is
 //! best-effort, so a coordinator whose messaging failed mid-launch ends its
 //! launch still holding this daemon while remaining present on the
@@ -67,21 +67,21 @@ use tokio_util::sync::CancellationToken;
 /// The lifetime of one reservation, handed to the presence watch supervising
 /// it.
 ///
-/// A lease ends exactly when its reservation does, whichever way that happens:
+/// A lifetime ends exactly when its reservation does, whichever way that happens:
 /// the coordinator releasing it, `stack reset` clearing it, or the watch
 /// dropping it because the coordinator left. Ending it is what stops the watch,
 /// so a daemon that serves launch after launch holds one presence subscription
 /// per HELD reservation rather than one per launch it has ever taken part in.
 ///
 /// It is also the watch's identity, which is why
-/// [`SliceOwnership::release_because_coordinator_gone`] takes a lease rather
+/// [`SliceOwnership::release_because_coordinator_gone`] takes a lifetime rather
 /// than a coordinator name: a coordinator reserves this daemon again for every
 /// launch it drives, and a watch left over from an earlier reservation of that
 /// same coordinator must not be able to drop the current one.
 #[derive(Debug, Clone)]
-pub struct Lease(CancellationToken);
+pub struct ReservationLifetime(CancellationToken);
 
-impl Lease {
+impl ReservationLifetime {
     fn new() -> Self {
         Self(CancellationToken::new())
     }
@@ -94,7 +94,7 @@ impl Lease {
         self.0.is_cancelled()
     }
 
-    /// Resolves when the reservation this lease covers ends.
+    /// Resolves when the reservation of this lifetime ends.
     pub async fn ended(&self) {
         self.0.cancelled().await;
     }
@@ -105,8 +105,8 @@ impl Lease {
 struct HeldReservation {
     launch_id: String,
     coordinator_core_node: String,
-    /// Ends when this reservation does; see [`Lease`].
-    lease: Lease,
+    /// Ends when this reservation does; see [`ReservationLifetime`].
+    lifetime: ReservationLifetime,
 }
 
 #[derive(Debug, Default)]
@@ -134,10 +134,10 @@ impl OwnershipState {
 #[derive(Debug, Clone)]
 pub enum ReserveOutcome {
     /// The reservation was just taken for the requesting launch, and owes that
-    /// reservation the one presence watch supervising it. Carrying the lease
-    /// is what pairs the two: a watch can only be spawned for a reservation
-    /// this call created, and it can only ever act on that one.
-    Reserved { lease: Lease },
+    /// reservation the one presence watch supervising it. Carrying the
+    /// lifetime is what pairs the two: a watch can only be spawned for a
+    /// reservation this call created, and it can only ever act on that one.
+    Reserved { lifetime: ReservationLifetime },
     /// The requesting launch already held it. Distinct from [`Self::Reserved`]
     /// because the two owe the caller different work: a coordinator retrying a
     /// dropped reply must not refuse itself, but it must not get a second
@@ -150,8 +150,8 @@ pub enum ReserveOutcome {
     /// what makes the handover safe: a new launch id from the holding
     /// coordinator proves the held launch ended and its release never landed.
     /// Like [`Self::AlreadyHeld`], no new presence watch is owed: the launch id
-    /// changes inside the reservation that is already held, so its lease, and
-    /// the watch holding that lease, carry over.
+    /// changes inside the reservation that is already held, so its lifetime,
+    /// and the watch holding that lifetime, carry over.
     TookOverFromSameCoordinator { stale_launch_id: String },
     /// Another launch holds it. The coordinator that receives this releases
     /// every reservation it did obtain and fails the launch, so no machine is
@@ -264,7 +264,7 @@ impl SliceOwnership {
     /// Reserving for a NEW launch from the coordinator already holding this
     /// daemon also succeeds (as
     /// [`ReserveOutcome::TookOverFromSameCoordinator`]). The release at the
-    /// end of a launch is best-effort, and the presence lease only clears a
+    /// end of a launch is best-effort, and the presence watch only clears a
     /// reservation whose coordinator LEFT the federation: a coordinator whose
     /// messaging failed mid-launch stays present, so a lost release would
     /// otherwise hold this daemon against every retry until a `stack reset`.
@@ -277,7 +277,7 @@ impl SliceOwnership {
             Some(held) if held.coordinator_core_node == coordinator => {
                 // The launch id changes inside the reservation that is already
                 // held, rather than the reservation being replaced, so the
-                // lease the watch is holding stays the live one.
+                // lifetime the watch is holding stays the live one.
                 let stale_launch_id = std::mem::replace(&mut held.launch_id, launch_id.to_owned());
                 ReserveOutcome::TookOverFromSameCoordinator { stale_launch_id }
             }
@@ -286,13 +286,13 @@ impl SliceOwnership {
                 coordinator_core_node: held.coordinator_core_node.clone(),
             },
             None => {
-                let lease = Lease::new();
+                let lifetime = ReservationLifetime::new();
                 state.reservation = Some(HeldReservation {
                     launch_id: launch_id.to_owned(),
                     coordinator_core_node: coordinator.to_owned(),
-                    lease: lease.clone(),
+                    lifetime: lifetime.clone(),
                 });
-                ReserveOutcome::Reserved { lease }
+                ReserveOutcome::Reserved { lifetime }
             }
         }
     }
@@ -315,20 +315,23 @@ impl SliceOwnership {
         }
     }
 
-    /// Drops the reservation `lease` covers, because the coordinator holding it
+    /// Drops the reservation of `lifetime`, because the coordinator holding it
     /// vanished from the federation. This is what keeps a dead coordinator from
     /// wedging a machine until its next daemon restart.
     ///
-    /// Takes the lease rather than a coordinator name so a watch that outlived
-    /// its reservation frees nothing. A lease ends with the reservation it
-    /// covers, and only one is ever live, so a watch whose lease has ended
-    /// cannot drop the reservation a later launch took, not even one driven by
-    /// the same coordinator it was watching.
+    /// Takes the lifetime rather than a coordinator name so a watch that
+    /// outlived its reservation frees nothing. A lifetime ends with its
+    /// reservation, and only one is ever live, so a watch whose lifetime has
+    /// ended cannot drop the reservation a later launch took, not even one
+    /// driven by the same coordinator it was watching.
     ///
     /// Returns the launch that was released, if any.
-    pub fn release_because_coordinator_gone(&self, lease: &Lease) -> Option<String> {
+    pub fn release_because_coordinator_gone(
+        &self,
+        lifetime: &ReservationLifetime,
+    ) -> Option<String> {
         let mut state = self.state.lock();
-        if lease.has_ended() {
+        if lifetime.has_ended() {
             return None;
         }
         let launch_id = state.reservation.as_ref()?.launch_id.clone();
@@ -406,11 +409,11 @@ impl SliceOwnership {
             if reset.is_cancelled() {
                 return None;
             }
-            if let Some(lease) = self.held_lease() {
+            if let Some(lifetime) = self.held_lifetime() {
                 drop(guard);
                 tokio::select! {
                     _ = cancel.cancelled() => return None,
-                    _ = lease.ended() => continue,
+                    _ = lifetime.ended() => continue,
                 }
             }
             let mut holds = self.restart_holds.subscribe();
@@ -434,13 +437,13 @@ impl SliceOwnership {
         }
     }
 
-    /// The lease of the reservation this daemon holds, whatever its launch.
-    fn held_lease(&self) -> Option<Lease> {
+    /// The lifetime of the reservation this daemon holds, whatever its launch.
+    fn held_lifetime(&self) -> Option<ReservationLifetime> {
         self.state
             .lock()
             .reservation
             .as_ref()
-            .map(|held| held.lease.clone())
+            .map(|held| held.lifetime.clone())
     }
 
     /// The gate this daemon's stack is changed under, for tests outside this
@@ -507,13 +510,13 @@ impl SliceOwnership {
     }
 }
 
-/// Drops the held reservation and ends its lease, which is what stops the
+/// Drops the held reservation and ends its lifetime, which is what stops the
 /// presence watch supervising it. Every way out of a reservation goes through
 /// here, so none of them can leave a watch running over a reservation that is
 /// no longer held.
 fn end_held_reservation(state: &mut OwnershipState) {
     if let Some(held) = state.reservation.take() {
-        held.lease.end();
+        held.lifetime.end();
     }
 }
 
@@ -535,27 +538,27 @@ mod tests {
     /// excludes it.
     const LOCAL: Goal = Goal(None);
 
-    /// Reserves and returns the lease the presence watch would be given.
+    /// Reserves and returns the lifetime the presence watch would be given.
     ///
     /// Every test that later acts as that watch needs it, and a reservation
     /// that is not fresh has none, so the panic states which outcome a test
     /// expected rather than leaving it as an unwrapped `None`.
-    fn reserve_expecting_a_fresh_lease(
+    fn reserve_expecting_a_fresh_lifetime(
         ownership: &SliceOwnership,
         launch_id: &str,
         coordinator: &str,
-    ) -> Lease {
-        let ReserveOutcome::Reserved { lease } = ownership.try_reserve(launch_id, coordinator)
+    ) -> ReservationLifetime {
+        let ReserveOutcome::Reserved { lifetime } = ownership.try_reserve(launch_id, coordinator)
         else {
             panic!("`{launch_id}` should have taken a fresh reservation on `{coordinator}`");
         };
-        lease
+        lifetime
     }
 
     #[test]
     fn a_free_daemon_accepts_a_reservation() {
         let ownership = SliceOwnership::new("cn-held");
-        reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
+        reserve_expecting_a_fresh_lifetime(&ownership, "launch-a", "cn-robot-7");
         assert_eq!(
             ownership.held_reservation(),
             Some(("launch-a".to_owned(), "cn-robot-7".to_owned()))
@@ -595,7 +598,7 @@ mod tests {
     #[test]
     fn re_reserving_the_same_launch_reports_the_reservation_as_already_held() {
         let ownership = SliceOwnership::new("cn-held");
-        reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
+        reserve_expecting_a_fresh_lifetime(&ownership, "launch-a", "cn-robot-7");
         assert!(
             matches!(
                 ownership.try_reserve("launch-a", "cn-robot-7"),
@@ -607,10 +610,10 @@ mod tests {
 
     /// The lost-release wedge: a launch whose release never landed (the
     /// coordinator's messaging failed mid-launch while the coordinator stayed
-    /// present, so the lease never fired) must not hold this daemon against
-    /// every retry until a `stack reset`. A coordinator drives one launch at
-    /// a time, so a new launch id from the holding coordinator proves the
-    /// held launch is over, and the reservation moves to it.
+    /// present, so the presence watch never fired) must not hold this daemon
+    /// against every retry until a `stack reset`. A coordinator drives one
+    /// launch at a time, so a new launch id from the holding coordinator
+    /// proves the held launch is over, and the reservation moves to it.
     #[test]
     fn the_same_coordinators_next_launch_takes_over_a_stale_reservation() {
         let ownership = SliceOwnership::new("cn-held");
@@ -629,21 +632,21 @@ mod tests {
         );
     }
 
-    /// The takeover keeps the lease intact: the reservation the watch is
+    /// The takeover keeps the lifetime intact: the reservation the watch is
     /// supervising changes launch, it is not replaced, so the coordinator
     /// vanishing still frees the machine after the handover.
     #[test]
     fn a_taken_over_reservation_still_releases_when_the_coordinator_vanishes() {
         let ownership = SliceOwnership::new("cn-held");
-        let lease = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
+        let lifetime = reserve_expecting_a_fresh_lifetime(&ownership, "launch-a", "cn-robot-7");
         ownership.try_reserve("launch-b", "cn-robot-7");
 
         assert!(
-            !lease.has_ended(),
-            "a takeover must not end the lease the watch is holding"
+            !lifetime.has_ended(),
+            "a takeover must not end the lifetime the watch is holding"
         );
         assert_eq!(
-            ownership.release_because_coordinator_gone(&lease),
+            ownership.release_because_coordinator_gone(&lifetime),
             Some("launch-b".to_owned())
         );
         assert_eq!(ownership.held_reservation(), None);
@@ -655,7 +658,7 @@ mod tests {
         ownership.try_reserve("launch-a", "cn-robot-7");
         assert!(ownership.release("launch-a"));
         assert_eq!(ownership.held_reservation(), None);
-        reserve_expecting_a_fresh_lease(&ownership, "launch-b", "cn-robot-9");
+        reserve_expecting_a_fresh_lifetime(&ownership, "launch-b", "cn-robot-9");
     }
 
     /// The watch is a subscription, so a reservation that ends any other way
@@ -663,18 +666,18 @@ mod tests {
     /// presence watch per launch it ever took part in, all of them supervising
     /// a reservation that is long gone.
     #[test]
-    fn every_way_out_of_a_reservation_ends_its_lease() {
+    fn every_way_out_of_a_reservation_ends_its_lifetime() {
         let ownership = SliceOwnership::new("cn-held");
 
-        let released = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
+        let released = reserve_expecting_a_fresh_lifetime(&ownership, "launch-a", "cn-robot-7");
         ownership.release("launch-a");
         assert!(released.has_ended(), "a release must stop the watch");
 
-        let reset = reserve_expecting_a_fresh_lease(&ownership, "launch-b", "cn-robot-7");
+        let reset = reserve_expecting_a_fresh_lifetime(&ownership, "launch-b", "cn-robot-7");
         ownership.clear();
         assert!(reset.has_ended(), "a `stack reset` must stop the watch");
 
-        let vanished = reserve_expecting_a_fresh_lease(&ownership, "launch-c", "cn-robot-7");
+        let vanished = reserve_expecting_a_fresh_lifetime(&ownership, "launch-c", "cn-robot-7");
         ownership.release_because_coordinator_gone(&vanished);
         assert!(
             vanished.has_ended(),
@@ -685,15 +688,15 @@ mod tests {
     /// A launch refused because another one holds the daemon leaves the holder
     /// supervised: the refusal changes nothing, so the watch must keep running.
     #[test]
-    fn a_refused_reservation_leaves_the_holders_lease_alone() {
+    fn a_refused_reservation_leaves_the_holders_lifetime_alone() {
         let ownership = SliceOwnership::new("cn-held");
-        let lease = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
+        let lifetime = reserve_expecting_a_fresh_lifetime(&ownership, "launch-a", "cn-robot-7");
 
         ownership.try_reserve("launch-b", "cn-robot-9");
 
-        assert!(!lease.has_ended());
+        assert!(!lifetime.has_ended());
         assert_eq!(
-            ownership.release_because_coordinator_gone(&lease),
+            ownership.release_because_coordinator_gone(&lifetime),
             Some("launch-a".to_owned())
         );
     }
@@ -717,19 +720,19 @@ mod tests {
         );
     }
 
-    /// The lease. Without this a coordinator that died mid-launch would wedge
-    /// every machine it had reserved until each daemon restarted.
+    /// The presence watch. Without this a coordinator that died mid-launch
+    /// would wedge every machine it had reserved until each daemon restarted.
     #[test]
     fn a_vanished_coordinator_releases_its_reservation() {
         let ownership = SliceOwnership::new("cn-held");
-        let lease = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
+        let lifetime = reserve_expecting_a_fresh_lifetime(&ownership, "launch-a", "cn-robot-7");
 
         assert_eq!(
-            ownership.release_because_coordinator_gone(&lease),
+            ownership.release_because_coordinator_gone(&lifetime),
             Some("launch-a".to_owned())
         );
         assert_eq!(ownership.held_reservation(), None);
-        reserve_expecting_a_fresh_lease(&ownership, "launch-b", "cn-robot-9");
+        reserve_expecting_a_fresh_lifetime(&ownership, "launch-b", "cn-robot-9");
     }
 
     /// A watch belonging to an already-released reservation must not free a
@@ -737,7 +740,7 @@ mod tests {
     #[test]
     fn a_stale_coordinator_watch_does_not_release_someone_elses_reservation() {
         let ownership = SliceOwnership::new("cn-held");
-        let stale = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
+        let stale = reserve_expecting_a_fresh_lifetime(&ownership, "launch-a", "cn-robot-7");
         ownership.release("launch-a");
         ownership.try_reserve("launch-b", "cn-robot-9");
 
@@ -758,9 +761,9 @@ mod tests {
     #[test]
     fn a_stale_watch_does_not_release_the_same_coordinators_next_reservation() {
         let ownership = SliceOwnership::new("cn-held");
-        let stale = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
+        let stale = reserve_expecting_a_fresh_lifetime(&ownership, "launch-a", "cn-robot-7");
         ownership.release("launch-a");
-        let live = reserve_expecting_a_fresh_lease(&ownership, "launch-b", "cn-robot-7");
+        let live = reserve_expecting_a_fresh_lifetime(&ownership, "launch-b", "cn-robot-7");
 
         assert_eq!(ownership.release_because_coordinator_gone(&stale), None);
         assert_eq!(

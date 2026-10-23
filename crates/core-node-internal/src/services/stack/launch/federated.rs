@@ -15,9 +15,9 @@
 //!
 //! Reserving first is the same reserve-then-commit discipline the pairing path
 //! uses, applied one level up where the blast radius is a whole machine rather
-//! than one slot. The reservation is a lease held against this coordinator's
-//! presence, so a coordinator that dies mid-launch frees the machines it held
-//! rather than wedging them (see `services::federation`).
+//! than one slot. A reservation ends when its coordinator is gone, so a
+//! coordinator that dies mid-launch frees the machines it held rather than
+//! wedging them (see `services::federation`).
 //!
 //! # The coordinator is the serialization point
 //!
@@ -364,7 +364,7 @@ async fn release_participants(
             Ok(Ok(())) => {}
             // A refusal is not a transport failure: the participant is holding
             // a reservation for a DIFFERENT launch, so this one never owned it
-            // and the presence lease will not clear it either. Worth its own
+            // and its end with this coordinator will not clear it either. Worth its own
             // line, because it means two coordinators overlapped.
             Ok(Err(reason)) => {
                 tracing::warn!("`{core_node}` refused to release launch `{launch_id}`: {reason}")
