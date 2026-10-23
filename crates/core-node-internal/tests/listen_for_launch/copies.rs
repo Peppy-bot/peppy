@@ -1,16 +1,18 @@
 use super::*;
 use config::node::Cardinality;
 use core_node_api::encoding::{
-    CopyAction, CopyChange, FederationVerdict, NodeStopRequest, NodeStopResponse, StackJoinGoal,
+    CopyAction, CopyChange, FederationAck, NodeStopRequest, NodeStopResponse, StackJoinGoal,
     StackListRequest, StackRemoveGoal,
 };
 use peppylib::core_node::transport::{poll, poll_node_stop};
 use peppylib::services::slot_update::SlotChannel;
 
-async fn participant_request<R: core_node_api::ServiceRequest>(
+/// The answer of the daemon to `request`, sent as the coordinator: its
+/// response, or its error reply.
+async fn participant_answer<R: core_node_api::ServiceRequest>(
     started: &StartedCoreNode,
     request: &R,
-) -> R::Response {
+) -> peppylib::PeppyResult<R::Response> {
     poll(
         request,
         &started.caller_handle,
@@ -20,53 +22,64 @@ async fn participant_request<R: core_node_api::ServiceRequest>(
         GOAL_TIMEOUT,
     )
     .await
-    .unwrap()
 }
 
-async fn execute(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoal) -> LaunchResult {
+/// The response of the daemon to `request`, sent as the coordinator. Panics
+/// on an error reply.
+async fn participant_request<R: core_node_api::ServiceRequest>(
+    started: &StartedCoreNode,
+    request: &R,
+) -> R::Response {
+    participant_answer(started, request)
+        .await
+        .unwrap_or_else(|error| panic!("{} should succeed: {error}", R::ID.name()))
+}
+
+/// The failure of the error reply of the daemon to `request`, sent as the
+/// coordinator. Panics when the daemon answers the request.
+async fn participant_refusal<R: core_node_api::ServiceRequest>(
+    started: &StartedCoreNode,
+    request: &R,
+) -> Failure
+where
+    R::Response: std::fmt::Debug,
+{
+    let error = participant_answer(started, request)
+        .await
+        .expect_err("the daemon gives an error reply");
+    error
+        .failure()
+        .cloned()
+        .unwrap_or_else(|| panic!("{} failed without an error reply: {error}", R::ID.name()))
+}
+
+async fn execute(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoal) -> StackGoalEnd {
     execute_reporting(started, goal).await.0
 }
 
-/// Runs `goal` to its result, with every feedback message the daemon sent
-/// for it, in order.
+/// Runs `goal` to its end, with every output line the daemon sent for it as
+/// feedback, in order.
 async fn execute_reporting(
     started: &StartedCoreNode,
     goal: &impl core_node_api::ActionGoal,
-) -> (LaunchResult, Vec<LaunchFeedback>) {
-    tokio::time::timeout(RESULT_TIMEOUT, async {
-        let mut handle = send_daemon_goal(
-            &started.caller_handle,
-            &started.core_node_name,
-            goal,
-            GOAL_TIMEOUT,
-        )
-        .await
-        .expect("send stack goal");
-        let response = LaunchGoalResponse::decode(handle.goal_reply().body.as_ref())
-            .expect("decode acceptance");
-        assert!(response.accepted, "{:?}", response.rejection_reason);
-        let mut feedback = Vec::new();
-        while let Ok(message) = handle.on_next_feedback().await {
-            feedback.push(
-                LaunchFeedback::decode(message.payload_bytes().as_ref()).expect("decode feedback"),
-            );
-        }
-        let body =
-            ActionMessenger::request_result_body(&started.caller_handle, &handle, GOAL_TIMEOUT)
-                .await
-                .expect("fetch result");
-        (
-            LaunchResult::decode(body.as_ref()).expect("decode result"),
-            feedback,
-        )
-    })
+) -> (StackGoalEnd, Vec<LaunchOutput>) {
+    let mut feedback = Vec::new();
+    let end = run_stack_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        goal,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        &mut |output| feedback.push(output),
+    )
     .await
-    .expect("stack operation completes within its test budget")
+    .unwrap_or_else(|error| panic!("{error}"));
+    (end, feedback)
 }
 
 /// The lines of `feedback` that report the stop of an instance, in order,
 /// each from the launcher's step.
-fn stop_reports(feedback: &[LaunchFeedback]) -> Vec<&str> {
+fn stop_reports(feedback: &[LaunchOutput]) -> Vec<&str> {
     feedback
         .iter()
         .filter(|message| message.line.starts_with("Stopping instance "))
@@ -80,8 +93,9 @@ fn stop_reports(feedback: &[LaunchFeedback]) -> Vec<&str> {
         .collect()
 }
 
-/// Sends a goal the daemon rejects at admission and returns its reason.
-async fn refusal(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoal) -> String {
+/// Sends a goal the daemon refuses at admission and returns the failure of
+/// the refusal.
+async fn refusal(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoal) -> Failure {
     let handle = send_daemon_goal(
         &started.caller_handle,
         &started.core_node_name,
@@ -90,12 +104,9 @@ async fn refusal(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoa
     )
     .await
     .expect("send stack goal");
-    let response =
-        LaunchGoalResponse::decode(handle.goal_reply().body.as_ref()).expect("decode acceptance");
-    assert!(!response.accepted, "the daemon admitted the goal");
-    response
-        .rejection_reason
-        .expect("a refusal names its reason")
+    goal_answer(&handle, LaunchGoalResponse::decode, "goal response")
+        .expect("decode the goal answer")
+        .expect_err("the daemon refuses the goal")
 }
 
 /// A join of a copy `name` of `option`, under budgets no test reaches.
@@ -156,12 +167,10 @@ async fn appended_remote_watchers_receive_existing_source_stop_notifications() {
     let launch_id = "watcher-join-test";
     let reserve = ParticipantReserveRequest::new(launch_id, "coordinator");
     let request = ParticipantSliceBeginRequest::new(launch_id, Vec::new());
-    let reserved = participant_request(&started, &reserve).await;
-    assert!(reserved.accepted, "{:?}", reserved.rejection_reason);
-    let begun = participant_request(&started, &request).await;
-    assert!(begun.ok, "{:?}", begun.rejection_reason);
+    participant_request(&started, &reserve).await;
+    participant_request(&started, &request).await;
     let released = participant_request(&started, &ParticipantReleaseRequest::new(launch_id)).await;
-    assert_eq!(released, FederationVerdict::Done);
+    assert_eq!(released, FederationAck::new());
 
     let (_directory, _instance, pid) =
         seed_running_node(&started, "watched_arm", "v1", "arm_inst").await;
@@ -185,23 +194,23 @@ async fn appended_remote_watchers_receive_existing_source_stop_notifications() {
                 async {
                     RelationshipNotificationAck::new()
                         .encode()
-                        .map_err(Into::into)
+                        .map_err(|error| {
+                            Failure::new(PeppyFailureKind::AttemptFailed, error.to_string())
+                        })
                 }
             })
             .await
     }));
-    let reserved = participant_request(&started, &reserve).await;
-    assert!(reserved.accepted);
+    participant_request(&started, &reserve).await;
     let mut append = ParticipantSliceBeginRequest::new(launch_id, Vec::new());
     append.append = true;
     append.lifecycle_watchers.insert(
         Name::new("arm_inst").unwrap(),
         std::collections::BTreeSet::from([CoreNodeName::new("cloud").unwrap()]),
     );
-    let begun = participant_request(&started, &append).await;
-    assert!(begun.ok, "{:?}", begun.rejection_reason);
+    participant_request(&started, &append).await;
     let released = participant_request(&started, &ParticipantReleaseRequest::new(launch_id)).await;
-    assert_eq!(released, FederationVerdict::Done);
+    assert_eq!(released, FederationAck::new());
     assert!(is_process_running(pid));
     let _shutdown = common::install_kill_on_shutdown_listener(
         &started,
@@ -210,8 +219,7 @@ async fn appended_remote_watchers_receive_existing_source_stop_notifications() {
         pid,
     )
     .await;
-    let stopped = stop_instance(&started, "arm_inst").await;
-    assert!(stopped.success, "{:?}", stopped.error_message);
+    stop_instance(&started, "arm_inst").await;
     let event = tokio::time::timeout(GOAL_TIMEOUT, received.recv())
         .await
         .unwrap()
@@ -255,7 +263,7 @@ async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() 
     }"#).unwrap();
     let launch = fleet_launch(launcher.clone(), "named-fragment-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     assert_eq!(
         started.node_stack.len(),
         1,
@@ -268,7 +276,7 @@ async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() 
         let id = format!("{name}_arm_inst");
         responders.extend(answer_readiness(&started, "named_robot", &id).await);
         let result = execute(&started, &robot_goal(name, "real")).await;
-        assert!(result.success, "{name}: {:?}", result.error_message);
+        result.assert_completed();
         pids.insert(name, robot_pid(&started, name));
         for (neighbor, pid) in &pids {
             assert_eq!(
@@ -283,10 +291,10 @@ async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() 
     // Selection uses the launch-time snapshot, even if its source file changes.
     fs::write(&launcher, "not a launcher anymore").unwrap();
     let duplicate = execute(&started, &robot_goal("alpha", "real")).await;
-    assert!(!duplicate.success);
-    assert!(duplicate.error_message.unwrap().contains("alpha"));
+    duplicate.assert_failed(PeppyFailureKind::PreconditionFailed, "alpha");
+    // A failing build fails the join.
     let failure = execute(&started, &robot_goal("failed", "broken")).await;
-    assert!(!failure.success, "a failing build must refuse the join");
+    failure.assert_failed(PeppyFailureKind::AttemptFailed, "broken_robot");
     assert!(
         !started
             .node_stack
@@ -302,7 +310,7 @@ async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() 
     }
 
     let result = execute(&started, &remove_goal("bravo")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     assert!(
         !is_process_running(pids.remove("bravo").unwrap()),
         "removed process has exited"
@@ -323,11 +331,10 @@ async fn six_copies_join_remove_and_rejoin_without_restarting_their_neighbors() 
         assert!(copy.selections.is_empty());
     }
     // A stopped, unrelated recorded member does not participate in this join.
-    let stopped = stop_instance(&started, "charlie_arm_inst").await;
-    assert!(stopped.success, "{:?}", stopped.error_message);
+    stop_instance(&started, "charlie_arm_inst").await;
     assert!(!is_process_running(pids.remove("charlie").unwrap()));
     let result = execute(&started, &robot_goal("bravo", "real")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     for (name, pid) in pids {
         assert_eq!(robot_pid(&started, name), pid);
         assert!(is_process_running(pid));
@@ -341,8 +348,7 @@ async fn join_and_remove_require_an_active_launcher() {
         execute(&started, &robot_goal("alpha", "real")).await,
         execute(&started, &remove_goal("alpha")).await,
     ] {
-        assert!(!result.success);
-        assert!(result.error_message.unwrap().contains("stack launch"));
+        result.assert_failed(PeppyFailureKind::PreconditionFailed, "stack launch");
     }
     assert_eq!(started.node_stack.len(), 1);
 }
@@ -384,7 +390,7 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
     )
     .unwrap();
     let launch = fleet_launch(launcher, "reset-join");
-    assert!(execute(&started, &launch).await.success);
+    execute(&started, &launch).await.assert_completed();
     let join = robot_goal("alpha", "simulated");
     let (result, ()) = tokio::join!(execute(&started, &join), async {
         let pid = common::poll_until(GOAL_TIMEOUT, "join build records its process", || {
@@ -406,32 +412,29 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
         let busy = "a stack launch, build, join, removal or reset, or a coordinator's change to \
                     this daemon's slice, is in progress on this daemon; run this again once it \
                     ends";
-        assert!(
-            refusal(&started, &robot_goal("bravo", "simulated"))
-                .await
-                .ends_with(busy)
-        );
-        let remove = remove_goal("alpha");
-        assert!(refusal(&started, &remove).await.ends_with(busy));
+        for refused in [
+            refusal(&started, &robot_goal("bravo", "simulated")).await,
+            refusal(&started, &remove_goal("alpha")).await,
+        ] {
+            assert_failure(&refused, PeppyFailureKind::PreconditionFailed, busy);
+        }
         assert!(is_process_running(pid), "refusals leave the build running");
-        let response =
-            participant_request(&started, &core_node_api::encoding::StackResetRequest::new()).await;
-        assert!(response.success, "{:?}", response.error_message);
+        participant_request(&started, &core_node_api::encoding::StackResetRequest::new()).await;
         assert!(
             !is_process_running(pid),
             "reset reaps the joined build process"
         );
         assert_eq!(started.node_stack.len(), 1);
     },);
-    assert!(!result.success);
-    assert!(result.error_message.unwrap().contains("reset"));
+    // The reset cancels the join.
+    assert_eq!(result.end.cancel_reason(), "cancelled by a stack reset");
     let list = participant_request(&started, &StackListRequest::new()).await;
     assert_eq!(
         list.copy_change, None,
         "the interrupted join reports nothing"
     );
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
 }
 
 /// A fleet of one shared node and a repeatable robot axis, both nodes idling
@@ -491,7 +494,7 @@ async fn stack_list_reports_a_removal_while_it_stops_its_copy() {
     responders.extend(answer_readiness(&started, "named_robot", "alpha_arm_inst").await);
     let launch = fleet_launch(launcher, "removal-change-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let list = participant_request(&started, &StackListRequest::new()).await;
     assert_eq!(list.copy_change, None, "no change holds the stack");
 
@@ -525,7 +528,7 @@ async fn stack_list_reports_a_removal_while_it_stops_its_copy() {
             .status()
             .expect("kill runs");
     });
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let list = participant_request(&started, &StackListRequest::new()).await;
     assert_eq!(list.copy_change, None);
     assert!(list.copies.is_empty());
@@ -544,7 +547,7 @@ async fn a_copy_the_file_deploys_launches_with_the_stack_and_removal_keeps_the_s
 
     let launch = fleet_launch(launcher, "file-copy-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let shared_pid = instance_pid(&started, "shared_node", "shared_inst");
     assert!(is_process_running(instance_pid(
         &started,
@@ -560,21 +563,20 @@ async fn a_copy_the_file_deploys_launches_with_the_stack_and_removal_keeps_the_s
 
     let alpha_pid = instance_pid(&started, "named_robot", "alpha_arm_inst");
     let result = execute(&started, &remove_goal("alpha")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     assert!(!is_process_running(alpha_pid));
     assert_eq!(
         instance_pid(&started, "shared_node", "shared_inst"),
         shared_pid
     );
     let again = execute(&started, &remove_goal("alpha")).await;
-    assert!(!again.success);
-    assert!(again.error_message.unwrap().contains("absent"));
+    again.assert_failed(PeppyFailureKind::Rejected, "absent");
 
     // The name is free again, and the stack node keeps running through it.
     let result = execute(&started, &robot_goal("alpha", "real")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let result = execute(&started, &robot_goal("bravo", "real")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     assert_eq!(
         instance_pid(&started, "shared_node", "shared_inst"),
         shared_pid
@@ -628,14 +630,14 @@ async fn a_joined_copy_starts_from_the_launchers_entry_for_its_option() {
 
     let launch = fleet_launch(launcher, "entry-settings-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
 
     let result = execute(&started, &robot_goal("bravo", "real")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let mut with_a_word = robot_goal("charlie", "real");
     with_a_word.selections = vec!["gripper".parse().unwrap()];
     let result = execute(&started, &with_a_word).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
 
     let list = participant_request(&started, &StackListRequest::new()).await;
     let copies: Vec<_> = list
@@ -697,17 +699,15 @@ async fn a_join_refuses_a_name_whose_instance_already_runs_on_the_host() {
     let _responders = answer_readiness(&started, "shared_node", "shared_inst").await;
     let launch = fleet_launch(launcher, "taken-name-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let shared_pid = instance_pid(&started, "shared_node", "shared_inst");
     let (_source, _outsider, outsider_pid) =
         seed_running_node(&started, "outsider", "v1", "bravo_arm_inst").await;
 
     let result = execute(&started, &robot_goal("bravo", "real")).await;
-    assert!(!result.success);
-    let message = result.error_message.unwrap();
-    assert!(
-        message.contains("`bravo_arm_inst` already exists"),
-        "{message}"
+    result.assert_failed(
+        PeppyFailureKind::PreconditionFailed,
+        "`bravo_arm_inst` already exists",
     );
     assert!(is_process_running(outsider_pid));
     assert_eq!(
@@ -727,15 +727,16 @@ async fn a_join_refuses_a_node_running_instances_outside_the_launcher() {
     let _responders = answer_readiness(&started, "shared_node", "shared_inst").await;
     let launch = fleet_launch(launcher, "stray-instance-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let (_source, _stray, stray_pid) =
         seed_running_node(&started, "named_robot", "v1", "stray_inst").await;
 
     let result = execute(&started, &robot_goal("bravo", "real")).await;
-    assert!(!result.success);
-    let message = result.error_message.unwrap();
-    assert!(message.contains("named_robot:v1"), "{message}");
-    assert!(message.contains("outside this launcher"), "{message}");
+    result.assert_failed(PeppyFailureKind::PreconditionFailed, "named_robot:v1");
+    result.assert_failed(
+        PeppyFailureKind::PreconditionFailed,
+        "outside this launcher",
+    );
     assert!(is_process_running(stray_pid));
     let list = participant_request(&started, &StackListRequest::new()).await;
     assert!(list.copies.is_empty());
@@ -753,29 +754,28 @@ async fn a_coordinator_refuses_to_append_another_launch_onto_its_own_stack() {
     responders.extend(answer_readiness(&started, "named_robot", "alpha_arm_inst").await);
     let launch = fleet_launch(launcher, "own-stack-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
 
     let launch_id = "someone-elses-launch";
-    let reserved = participant_request(
+    participant_request(
         &started,
         &ParticipantReserveRequest::new(launch_id, "coordinator"),
     )
     .await;
     let mut append = ParticipantSliceBeginRequest::new(launch_id, Vec::new());
     append.append = true;
-    assert!(reserved.accepted, "{:?}", reserved.rejection_reason);
-    let response = participant_request(&started, &append).await;
+    // Another launch cannot append onto a stack this daemon coordinates.
+    let refusal = participant_refusal(&started, &append).await;
     participant_request(&started, &ParticipantReleaseRequest::new(launch_id)).await;
-    assert!(
-        !response.ok,
-        "another launch cannot append onto a stack this daemon coordinates"
+    assert_failure(
+        &refusal,
+        PeppyFailureKind::PreconditionFailed,
+        "different stack",
     );
-    let refusal = response.rejection_reason.unwrap();
-    assert!(refusal.contains("different stack"), "{refusal}");
 
     // The launcher this daemon coordinates is intact: its joins still work.
     let result = execute(&started, &robot_goal("alpha", "real")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
 }
 
 /// The participant side of a set change: a daemon replaces sets only for the
@@ -803,37 +803,33 @@ async fn a_participant_refuses_sets_for_another_launch_or_an_instance_it_does_no
 
     // No reservation, no slice: the sets belong to a launch this daemon is not
     // part of.
-    let refused = participant_request(&started, &sets("monitor_inst")).await;
-    let FederationVerdict::Refused(reason) = refused else {
-        panic!("the sets are refused: {refused:?}");
-    };
-    assert!(
-        reason.contains("must both belong to launch") && reason.contains("peppy stack reset"),
-        "{reason}"
+    let refused = participant_refusal(&started, &sets("monitor_inst")).await;
+    assert_failure(
+        &refused,
+        PeppyFailureKind::PreconditionFailed,
+        "must both belong to launch",
     );
+    assert!(refused.message().contains("peppy stack reset"), "{refused}");
 
     // Holding the slice, the daemon still refuses a set for an instance it does
     // not run, naming the slot.
-    let reserved = participant_request(
+    participant_request(
         &started,
         &ParticipantReserveRequest::new(launch_id, "coordinator"),
     )
     .await;
-    assert!(reserved.accepted, "{:?}", reserved.rejection_reason);
-    let begun = participant_request(
+    participant_request(
         &started,
         &ParticipantSliceBeginRequest::new(launch_id, Vec::new()),
     )
     .await;
-    assert!(begun.ok, "{:?}", begun.rejection_reason);
-    let refused = participant_request(&started, &sets("monitor_inst")).await;
-    let FederationVerdict::Refused(reason) = refused else {
-        panic!("the sets are refused: {refused:?}");
-    };
-    assert!(
-        reason.contains("`monitor_inst.links.robots`") && reason.contains("no such instance"),
-        "{reason}"
+    let refused = participant_refusal(&started, &sets("monitor_inst")).await;
+    assert_failure(
+        &refused,
+        PeppyFailureKind::AttemptFailed,
+        "`monitor_inst.links.robots`",
     );
+    assert!(refused.message().contains("no such instance"), "{refused}");
 }
 
 /// A fleet whose every deployment comes from its repeatable robot axis, so
@@ -864,14 +860,14 @@ async fn removing_the_last_copy_leaves_the_launcher_active_on_an_empty_stack() {
     responders.extend(answer_readiness(&started, "named_robot", "bravo_arm_inst").await);
     let launch = fleet_launch(launcher, "last-copy-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
 
     let result = execute(&started, &robot_goal("alpha", "real")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let alpha_pid = instance_pid(&started, "named_robot", "alpha_arm_inst");
 
     let result = execute(&started, &remove_goal("alpha")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     assert!(!is_process_running(alpha_pid));
     let list = participant_request(&started, &StackListRequest::new()).await;
     assert!(list.copies.is_empty(), "{:?}", list.copies);
@@ -887,7 +883,7 @@ async fn removing_the_last_copy_leaves_the_launcher_active_on_an_empty_stack() {
     assert!(running.is_empty(), "{running:?}");
 
     let result = execute(&started, &robot_goal("bravo", "real")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     assert!(is_process_running(instance_pid(
         &started,
         "named_robot",
@@ -947,16 +943,16 @@ async fn a_removal_reports_each_instance_it_stops_in_reverse_start_order() {
     }
     let launch = fleet_launch(launcher, "removal-report-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let result = execute(&started, &robot_goal("bravo", "real")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let pids: Vec<u32> = ["bravo_arm_inst", "bravo_wrist_inst", "bravo_base_inst"]
         .into_iter()
         .map(|instance_id| instance_pid(&started, "named_robot", instance_id))
         .collect();
 
     let (result, feedback) = execute_reporting(&started, &remove_goal("bravo")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     assert_eq!(
         stop_reports(&feedback),
         [
@@ -966,7 +962,7 @@ async fn a_removal_reports_each_instance_it_stops_in_reverse_start_order() {
         ]
     );
     assert_eq!(
-        feedback.last().map(|message| message.line.as_str()),
+        feedback.last().map(|output| output.line.as_str()),
         Some("Copy `bravo` removed"),
         "the removal ends after its stops"
     );
@@ -990,11 +986,16 @@ async fn the_undo_of_a_failed_join_reports_each_instance_it_stops() {
     let _responders = answer_readiness(&started, "named_robot", "bravo_arm_inst").await;
     let launch = fleet_launch(launcher, "undo-report-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
 
     let (result, feedback) = execute_reporting(&started, &robot_goal("bravo", "real")).await;
-    assert!(!result.success, "the tool exits as it starts");
+    // The tool exits as it starts.
+    result.assert_failed(
+        PeppyFailureKind::AttemptFailed,
+        "failed to start node failing_tool:v1 instance bravo_tool_inst",
+    );
     let started_instances: Vec<_> = result
+        .node_logs
         .node_run_logs
         .iter()
         .map(|log| (log.instance_id.as_str(), log.failed))
@@ -1231,11 +1232,11 @@ async fn a_monitor_holding_a_later_set_keeps_its_record_through_a_join() {
     .await;
     let launch = fleet_launch(launcher, "stale-set-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let _responders = answer_readiness(&started, "named_robot", "alpha_arm_inst").await;
 
     let result = execute(&started, &robot_goal("alpha", "real")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     assert!(
         monitor.robots().is_empty(),
         "the monitor keeps the later set it holds"
@@ -1273,7 +1274,7 @@ async fn joins_grow_and_removals_shrink_a_running_monitors_sets() {
     let monitor = MonitorSlots::serve(&started, Cardinality::ZeroOrMore).await;
     let launch = fleet_launch(launcher, "growing-sets-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     assert!(
         monitor.robots().is_empty(),
         "the monitor starts binding no robot"
@@ -1291,7 +1292,7 @@ async fn joins_grow_and_removals_shrink_a_running_monitors_sets() {
     }
     let join = async |name: &str| {
         let result = execute(&started, &robot_goal(name, "real")).await;
-        assert!(result.success, "{name}: {:?}", result.error_message);
+        result.assert_completed();
     };
 
     join("alpha").await;
@@ -1333,7 +1334,7 @@ async fn joins_grow_and_removals_shrink_a_running_monitors_sets() {
     );
 
     let result = execute(&started, &remove_goal("alpha")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     assert_eq!(monitor.robots(), ["bravo_arm_inst:bravo/arm_inst"]);
     assert_eq!(monitor.fleet(), ["bravo_arm_inst/controller"]);
 
@@ -1350,18 +1351,10 @@ async fn joins_grow_and_removals_shrink_a_running_monitors_sets() {
         ["bravo_arm_inst/controller", "alpha_arm_inst/controller"]
     );
 
+    // A join adding to an undeclared slot fails.
     let refused = execute(&started, &robot_goal("charlie", "ghost")).await;
-    assert!(
-        !refused.success,
-        "a join adding to an undeclared slot is refused"
-    );
-    let message = refused
-        .error_message
-        .expect("a refused join names its reason");
-    assert!(
-        message.contains("`monitor_inst.links.ghosts`") && message.contains("does not declare"),
-        "{message}"
-    );
+    refused.assert_failed(PeppyFailureKind::Rejected, "`monitor_inst.links.ghosts`");
+    refused.assert_failed(PeppyFailureKind::Rejected, "does not declare");
     assert_eq!(
         instance_pid(&started, "monitor", "monitor_inst"),
         monitor_pid,
@@ -1379,10 +1372,10 @@ async fn a_joined_member_reads_as_not_live_while_its_source_is_down() {
     let monitor = MonitorSlots::serve(&started, Cardinality::ZeroOrMore).await;
     let launch = fleet_launch(launcher, "joined-member-liveness-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let _responders = answer_readiness(&started, "named_robot", "alpha_arm_inst").await;
     let result = execute(&started, &robot_goal("alpha", "real")).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
 
     let liveness = |state: &peppylib::messaging::ObservationState| -> Vec<(String, bool)> {
         state
@@ -1411,8 +1404,7 @@ async fn a_joined_member_reads_as_not_live_while_its_source_is_down() {
         "a joined member carries its source's incarnation"
     );
 
-    let stopped = stop_instance(&started, "alpha_arm_inst").await;
-    assert!(stopped.success, "{:?}", stopped.error_message);
+    stop_instance(&started, "alpha_arm_inst").await;
     tokio::time::timeout(
         GOAL_TIMEOUT,
         fleet.wait_for(|state| liveness(state) == [("alpha_arm_inst".to_string(), false)]),
@@ -1448,37 +1440,27 @@ async fn the_last_copy_of_a_one_or_more_axis_stays_until_the_stack_goes() {
     let _alpha = answer_readiness(&started, "named_robot", "alpha_arm_inst").await;
     let launch = fleet_launch(launcher, "one-or-more-axis-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let pid = robot_pid(&started, "alpha");
 
     let _bravo = answer_readiness(&started, "named_robot", "bravo_arm_inst").await;
     let joined = execute(&started, &robot_goal("bravo", "real")).await;
-    assert!(joined.success, "{:?}", joined.error_message);
+    joined.assert_completed();
     let above_floor = execute(&started, &remove_goal("bravo")).await;
-    assert!(above_floor.success, "{:?}", above_floor.error_message);
+    above_floor.assert_completed();
 
+    // The last copy of a one_or_more axis stays.
     let refused = execute(&started, &remove_goal("alpha")).await;
-    assert!(
-        !refused.success,
-        "the last copy of a one_or_more axis stays"
-    );
-    let message = refused
-        .error_message
-        .expect("a refused removal names its reason");
-    assert!(
-        message.contains("`alpha`")
-            && message.contains("`robot`")
-            && message.contains("one_or_more"),
-        "{message}"
+    refused.assert_failed(
+        PeppyFailureKind::Rejected,
+        "copy `alpha` is the last one on axis `robot`, which has cardinality `one_or_more`",
     );
     assert!(
         is_process_running(pid),
         "a refused removal leaves the copy running"
     );
 
-    let reset =
-        participant_request(&started, &core_node_api::encoding::StackResetRequest::new()).await;
-    assert!(reset.success, "{:?}", reset.error_message);
+    participant_request(&started, &core_node_api::encoding::StackResetRequest::new()).await;
     assert!(
         !is_process_running(pid),
         "reset takes the last copy down with the stack"
@@ -1499,21 +1481,16 @@ async fn a_removal_cannot_empty_a_running_one_or_more_set() {
     let _first = answer_readiness(&started, "named_robot", "first_arm_inst").await;
     let launch = fleet_launch(launcher, "one-or-more-set-test");
     let result = execute(&started, &launch).await;
-    assert!(result.success, "{:?}", result.error_message);
+    result.assert_completed();
     let pid = instance_pid(&started, "named_robot", "first_arm_inst");
 
+    // The last member of a one_or_more set cannot leave.
     let refused = execute(&started, &remove_goal("first")).await;
-    assert!(
-        !refused.success,
-        "the last member of a one_or_more set cannot leave"
+    refused.assert_failed(
+        PeppyFailureKind::PreconditionFailed,
+        "`monitor_inst.links.fleet`",
     );
-    let message = refused
-        .error_message
-        .expect("a refused removal names its reason");
-    assert!(
-        message.contains("`monitor_inst.links.fleet`") && message.contains("one_or_more"),
-        "{message}"
-    );
+    refused.assert_failed(PeppyFailureKind::PreconditionFailed, "one_or_more");
     assert!(
         is_process_running(pid),
         "a refused removal leaves the copy running"

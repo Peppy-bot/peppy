@@ -4,7 +4,7 @@ use std::ops::ControlFlow;
 use std::time::Duration;
 
 use common::{
-    FeedbackDrainOutcome, drain_feedback, fetch_result, send_daemon_goal,
+    FeedbackDrainOutcome, drain_feedback, fetch_end, goal_answer, send_daemon_goal,
     start_core_node_with_mock_messenger,
 };
 use config::node::NodeConfigParser;
@@ -14,7 +14,8 @@ use core_node_api::encoding::{
 };
 
 /// Drives the `stack_benchmark` action end-to-end against the in-process daemon
-/// and returns the decoded result plus the count of feedback messages received.
+/// and returns the decoded result of the completed goal plus the count of
+/// feedback messages received. Panics when the goal does not complete.
 async fn run_benchmark_goal(
     started: &common::StartedCoreNode,
     goal: StackBenchmarkGoal,
@@ -28,9 +29,13 @@ async fn run_benchmark_goal(
     .await
     .expect("send stack_benchmark goal");
 
-    let goal_response = StackBenchmarkGoalResponse::decode(&action_handle.goal_reply().body)
-        .expect("decode goal response");
-    assert!(goal_response.accepted, "benchmark goal should be accepted");
+    goal_answer(
+        &action_handle,
+        StackBenchmarkGoalResponse::decode,
+        "goal response",
+    )
+    .expect("decode goal response")
+    .expect("the daemon accepts the benchmark goal");
 
     // Drain feedback to end-of-stream with a generous overall deadline.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -49,7 +54,7 @@ async fn run_benchmark_goal(
         panic!("timed out draining benchmark feedback");
     }
 
-    let result = fetch_result(
+    let result = fetch_end(
         &started.caller_handle,
         &action_handle,
         Duration::from_secs(10),
@@ -57,12 +62,13 @@ async fn run_benchmark_goal(
         "benchmark result",
     )
     .await
-    .unwrap_or_else(|err| panic!("{err}"));
+    .unwrap_or_else(|err| panic!("{err}"))
+    .completed();
     (result, feedback_count)
 }
 
-/// An empty stack (only the core node, which consumes nothing) yields a
-/// successful, empty result, and crucially does not hang.
+/// An empty stack (only the core node, which consumes nothing) completes with
+/// an empty result, and does not hang.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_benchmark_empty_stack_completes() {
     let started = start_core_node_with_mock_messenger().await;
@@ -70,7 +76,6 @@ async fn stack_benchmark_empty_stack_completes() {
     let goal = StackBenchmarkGoal::new(2, 0, 200);
     let (result, feedback_count) = run_benchmark_goal(&started, goal).await;
 
-    assert!(result.success, "benchmark should succeed on an empty stack");
     assert!(
         result.rows.is_empty(),
         "an empty stack has no interface edges, got {} rows",
@@ -83,8 +88,8 @@ async fn stack_benchmark_empty_stack_completes() {
     );
 }
 
-/// Two benchmark goals sent one after the other both succeed: the single-goal
-/// gate is released when a run completes.
+/// Two benchmark goals sent one after the other both complete: the
+/// single-goal gate is released when a run completes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_benchmark_runs_repeatedly() {
     let started = start_core_node_with_mock_messenger().await;
@@ -92,7 +97,6 @@ async fn stack_benchmark_runs_repeatedly() {
     for _ in 0..2 {
         let goal = StackBenchmarkGoal::new(1, 0, 200);
         let (result, _) = run_benchmark_goal(&started, goal).await;
-        assert!(result.success);
         assert!(result.rows.is_empty());
     }
 }
@@ -143,7 +147,6 @@ async fn stack_benchmark_enumerates_wired_service_edge() {
     let goal = StackBenchmarkGoal::new(2, 0, 200);
     let (result, _) = run_benchmark_goal(&started, goal).await;
 
-    assert!(result.success, "benchmark should succeed");
     let svc_row = result
         .rows
         .iter()
@@ -210,7 +213,6 @@ async fn stack_benchmark_distinguishes_edges_by_link_id() {
     let goal = StackBenchmarkGoal::new(2, 0, 200);
     let (result, _) = run_benchmark_goal(&started, goal).await;
 
-    assert!(result.success, "benchmark should succeed");
     let svc_rows: Vec<_> = result
         .rows
         .iter()
@@ -292,7 +294,6 @@ async fn stack_benchmark_measures_each_edge_kind_its_own_way() {
     let goal = StackBenchmarkGoal::new(2, 0, 200);
     let (result, _) = run_benchmark_goal(&started, goal).await;
 
-    assert!(result.success, "benchmark should succeed");
     let measured: Vec<(&str, InterfaceKind, MeasurementKind)> = result
         .rows
         .iter()

@@ -1,15 +1,22 @@
 mod common;
 
 use common::{
-    NodeAddSource, acquire_container_test_guard, archive_contains_entry, entity_artifact_path,
-    path_env_with_dir_first, read_file_from_archive, send_node_add_and_wait,
-    send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
+    FeedbackDrainOutcome, GoalEnd, NodeAddSource, acquire_container_test_guard,
+    archive_contains_entry, assert_failure, entity_artifact_path, path_env_with_dir_first,
+    read_file_from_archive, send_node_add_and_wait, send_node_build_and_wait,
+    send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
     start_core_node_with_mock_messenger_outside_home, write_executable_script, write_peppy_json5,
 };
-use core_node_api::encoding::{NodeBuildFeedback, NodeBuildResult};
+use config::failure_kind::PeppyFailureKind;
+use core_node_api::encoding::{
+    NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
+};
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
-use std::path::Path;
+use peppylib::messaging::Failure;
+use std::ops::ControlFlow;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio::sync::mpsc::UnboundedSender;
 
 const BUILD_CMD_MARKER_FILE: &str = "build_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -33,15 +40,8 @@ async fn stage_node_for_build<'a>(
     )
     .await
     .expect("node_add request should succeed");
-    assert!(
-        add_result.success,
-        "node_add should succeed before build, got error: {:?}",
-        add_result.error_message
-    );
-    (
-        add_result.node_name.expect("node_name on add success"),
-        add_result.node_tag.expect("node_tag on add success"),
-    )
+    let added = add_result.completed();
+    (added.node_name, added.node_tag)
 }
 
 /// Builds a `peppy.json5` document for a Rust node whose build step runs
@@ -84,13 +84,13 @@ fn container_node_config(name: &str, tag: &str) -> String {
 }
 
 /// Builds the staged node `(node_name, node_tag)` with no env overrides and
-/// no feedback channel, and returns the result of the build.
+/// no feedback channel, and returns how the build ended.
 async fn build_node_and_wait(
     started_core_node: &common::StartedCoreNode,
     node_name: &str,
     node_tag: &str,
     result_timeout: Duration,
-) -> NodeBuildResult {
+) -> GoalEnd<NodeBuildResult> {
     send_node_build_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -103,6 +103,72 @@ async fn build_node_and_wait(
     )
     .await
     .expect("node_build request should complete")
+}
+
+/// A build that [`send_logged_node_build`] sent: the log path that the goal
+/// response of the accepted goal names, and how the build ended.
+struct LoggedBuild {
+    log_path: PathBuf,
+    end: GoalEnd<NodeBuildResult>,
+}
+
+/// Sends the build goal of the staged node `(node_name, node_tag)` with no
+/// env overrides, forwards each feedback line of the build to `feedback_tx`
+/// when there is one, and returns the log path of the accepted goal with how
+/// the build ended. Panics when the daemon refuses the goal.
+async fn send_logged_node_build(
+    started_core_node: &common::StartedCoreNode,
+    node_name: &str,
+    node_tag: &str,
+    result_timeout: Duration,
+    feedback_tx: Option<&UnboundedSender<NodeBuildFeedback>>,
+) -> LoggedBuild {
+    let goal = NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs());
+    let mut action_handle = common::send_daemon_goal(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        &goal,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect("the node_build goal should be sent");
+    let goal_response = common::goal_answer(
+        &action_handle,
+        NodeBuildGoalResponse::decode,
+        "build goal response",
+    )
+    .expect("the goal answer should decode")
+    .unwrap_or_else(|refusal| panic!("the daemon refused the node_build goal: {refusal}"));
+    let deadline = tokio::time::Instant::now() + result_timeout;
+    let drained = common::drain_feedback(
+        &mut action_handle,
+        |payload| NodeBuildFeedback::decode(payload).expect("failed to decode NodeBuildFeedback"),
+        |feedback| {
+            if let Some(tx) = feedback_tx {
+                let _ = tx.send(feedback);
+            }
+            ControlFlow::Continue(())
+        },
+        deadline,
+    )
+    .await;
+    assert!(
+        !matches!(drained, FeedbackDrainOutcome::TimedOut),
+        "the build did not end within {result_timeout:?}"
+    );
+    let end = common::fetch_end(
+        &started_core_node.caller_handle,
+        &action_handle,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+        NodeBuildResult::decode,
+        "build result",
+    )
+    .await
+    .expect("the end of the build should be fetched");
+    LoggedBuild {
+        log_path: goal_response.log_path,
+        end,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -128,14 +194,10 @@ async fn listen_for_node_build_runs_build_cmd() {
     let build_result =
         build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
-    assert!(
-        build_result.success,
-        "node_build should succeed, got error: {:?}",
-        build_result.error_message
-    );
+    let built = build_result.completed();
 
     let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
-    assert_eq!(build_result.artifact_path.as_path(), archive_path.as_path());
+    assert_eq!(built.artifact_path.as_path(), archive_path.as_path());
 
     assert!(
         archive_contains_entry(&archive_path, BUILD_CMD_MARKER_FILE),
@@ -151,7 +213,7 @@ async fn listen_for_node_build_runs_build_cmd() {
 }
 
 /// Only a node in `Added` is built. The core node is the root of the stack,
-/// so a build of it is rejected before anything runs.
+/// so the daemon refuses a build of it before anything runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_build_of_a_node_in_another_stage_than_added_is_rejected() {
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -164,18 +226,20 @@ async fn a_build_of_a_node_in_another_stage_than_added_is_rejected() {
     )
     .await;
 
-    assert!(!build_result.success);
     assert_eq!(
-        build_result.error_message,
-        Some(format!(
-            "node `{}:{}` is in stage `Root`; cannot build",
-            started_core_node.core_node_name, started_core_node.core_node_tag
-        ))
+        build_result.refusal(),
+        &Failure::new(
+            PeppyFailureKind::PreconditionFailed,
+            format!(
+                "node `{}:{}` is in stage `Root`; cannot build",
+                started_core_node.core_node_name, started_core_node.core_node_tag
+            )
+        )
     );
 }
 
-/// A node in the stack without the working dir `peppy node add` stages is
-/// rejected with the command that stages one.
+/// The daemon refuses the build of a node in the stack without the working
+/// dir `peppy node add` stages, and names the command that stages one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_build_of_a_node_without_a_staged_working_dir_is_rejected() {
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -203,10 +267,10 @@ async fn a_build_of_a_node_without_a_staged_working_dir_is_rejected() {
     let build_result =
         build_node_and_wait(&started_core_node, "unstaged_node", "v1", RESULT_TIMEOUT).await;
 
-    assert!(!build_result.success);
     assert_eq!(
-        build_result.error_message.as_deref(),
-        Some(
+        build_result.refusal(),
+        &Failure::new(
+            PeppyFailureKind::PreconditionFailed,
             "node `unstaged_node:v1` has no staged working directory; re-run `peppy node add` \
              to stage one"
         )
@@ -289,13 +353,15 @@ wheels = [
 
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
-    let build_result =
-        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
-    assert!(
-        build_result.success,
-        "node_build should succeed, got error: {:?}",
-        build_result.error_message
-    );
+    let build = send_logged_node_build(
+        &started_core_node,
+        &node_name,
+        &node_tag,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await;
+    build.end.completed();
 
     let archive_path = entity_artifact_path(&started_core_node.node_stack, NODE_NAME, NODE_TAG);
     assert_eq!(
@@ -306,7 +372,7 @@ wheels = [
             1
         )
     );
-    let log = std::fs::read_to_string(&build_result.log_path).expect("read the build log");
+    let log = std::fs::read_to_string(&build.log_path).expect("read the build log");
     assert!(
         log.contains(&format!(
             "PyPI mirror: {}; uv.lock: 1 of 2 locked files from the mirror, 1 from files.pythonhosted.org",
@@ -321,34 +387,27 @@ wheels = [
     );
 }
 
-/// Asserts that a build wrote its log under `logs_dir_build()` as
+/// Asserts that a build wrote its log `log_path` under `logs_dir_build()` as
 /// `<name>_<tag>_*.log`, and returns the content of the log.
 fn read_build_log(
     started_core_node: &common::StartedCoreNode,
-    build_result: &NodeBuildResult,
+    log_path: &Path,
     node_name: &str,
     node_tag: &str,
 ) -> String {
     assert!(
-        !build_result.log_path.as_os_str().is_empty(),
+        !log_path.as_os_str().is_empty(),
         "log_path should not be empty"
     );
-    assert!(
-        build_result.log_path.exists(),
-        "log file should exist at {:?}",
-        build_result.log_path
-    );
+    assert!(log_path.exists(), "log file should exist at {log_path:?}");
 
     let log_dir = started_core_node.peppy_dirs.logs_dir_build();
     assert!(
-        build_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
-        log_dir,
-        build_result.log_path
+        log_path.starts_with(&log_dir),
+        "log file should be in logs_dir_build(), expected to start with {log_dir:?}, got {log_path:?}"
     );
 
-    let log_filename = build_result
-        .log_path
+    let log_filename = log_path
         .file_name()
         .and_then(|n| n.to_str())
         .expect("should have log filename");
@@ -363,7 +422,7 @@ fn read_build_log(
         log_filename
     );
 
-    std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file")
+    std::fs::read_to_string(log_path).expect("should be able to read log file")
 }
 
 /// Polls until `pid_file` exists and holds a PID, returning it.
@@ -505,20 +564,17 @@ async fn force_build_cancels_inflight_and_reuses_working_dir_then_succeeds() {
         .await
         .expect("forced build task should not panic")
         .expect("forced build request should succeed");
-    assert!(
-        forced_result.success,
-        "forced build must succeed (not be rejected as `Building`), got error: {:?}",
-        forced_result.error_message
-    );
+    forced_result.completed();
 
-    // The superseded first build reports a cancellation failure, not success.
+    // The superseded first build ends cancelled, with the reason of the
+    // forced build.
     let first_result = first_build
         .await
         .expect("first build task should not panic")
         .expect("first build request should resolve");
-    assert!(
-        !first_result.success,
-        "the superseded first build must not report success"
+    assert_eq!(
+        first_result.cancel_reason(),
+        "superseded by a forced node build"
     );
 
     // The entity ends `Ready` and the archive proves the reused build_cmd ran to
@@ -565,26 +621,9 @@ async fn listen_for_node_build_fails_when_build_cmd_fails(
     let build_result =
         build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
-    assert!(
-        !build_result.success,
-        "node_build should fail when build_cmd fails"
-    );
-    assert!(
-        build_result
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains("build_cmd failed")),
-        "error message should mention build_cmd failure, got: {:?}",
-        build_result.error_message
-    );
-    assert!(
-        build_result
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains(failed_command)),
-        "error message should include the command that failed, got: {:?}",
-        build_result.error_message
-    );
+    let failure = build_result.failed();
+    assert_failure(failure, PeppyFailureKind::AttemptFailed, "build_cmd failed");
+    assert_failure(failure, PeppyFailureKind::AttemptFailed, failed_command);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -622,11 +661,7 @@ async fn listen_for_node_build_cmd_streams_stdout_and_stderr() {
     .await
     .expect("node_build request should succeed");
 
-    assert!(
-        build_result.success,
-        "node_build should succeed, got error: {:?}",
-        build_result.error_message
-    );
+    build_result.completed();
 
     let mut feedback = Vec::new();
     while let Ok(entry) = feedback_rx.try_recv() {
@@ -663,18 +698,20 @@ async fn listen_for_node_build_writes_log_file() {
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result =
-        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
+    let build = send_logged_node_build(
+        &started_core_node,
+        &node_name,
+        &node_tag,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await;
 
-    assert!(
-        build_result.success,
-        "node_build should succeed, got error: {:?}",
-        build_result.error_message
-    );
+    build.end.completed();
 
     let log_content = read_build_log(
         &started_core_node,
-        &build_result,
+        &build.log_path,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
     );
@@ -732,15 +769,11 @@ async fn listen_for_node_build_copies_files_to_storage() {
     let build_result =
         build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
-    assert!(
-        build_result.success,
-        "node_build should succeed, got error: {:?}",
-        build_result.error_message
-    );
+    let built = build_result.completed();
 
     let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(
-        build_result.artifact_path.as_path(),
+        built.artifact_path.as_path(),
         archive_path.as_path(),
         "artifact_path should match archive path"
     );
@@ -786,10 +819,10 @@ async fn listen_for_node_build_uses_env_overrides_for_path() {
     // First build attempt: should fail because `printout` is not on PATH.
     let build_result =
         build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
-    assert!(
-        !build_result.success,
-        "build should fail, printout does not exist: {:?}",
-        build_result.error_message
+    assert_failure(
+        build_result.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "printout",
     );
 
     // Create a temp bin directory with a `printout` script.
@@ -819,11 +852,7 @@ echo \"$@\"
     .await
     .expect("node_build request should succeed");
 
-    assert!(
-        build_result.success,
-        "build should succeed with PATH override, got error: {:?}",
-        build_result.error_message
-    );
+    build_result.completed();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -852,11 +881,7 @@ async fn listen_for_node_build_injects_runtime_env_vars() {
     let build_result =
         build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
 
-    assert!(
-        build_result.success,
-        "node_build should succeed when runtime env vars are injected, got error: {:?}",
-        build_result.error_message
-    );
+    build_result.completed();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -896,24 +921,21 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     )
     .await;
 
-    let build_result = build_node_and_wait(
+    let build = send_logged_node_build(
         &started_core_node,
         &node_name,
         &node_tag,
         CONTAINER_RESULT_TIMEOUT,
+        None,
     )
     .await;
 
-    assert!(
-        build_result.success,
-        "node_build should succeed, got error: {:?}",
-        build_result.error_message
-    );
+    let built = build.end.completed();
 
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
 
     let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
-    assert_eq!(build_result.artifact_path.as_path(), root_path.as_path());
+    assert_eq!(built.artifact_path.as_path(), root_path.as_path());
     assert!(
         root_path != source_dir.path(),
         "node should be stored in a different location than the source, got: {}",
@@ -955,7 +977,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
     let log_content = read_build_log(
         &started_core_node,
-        &build_result,
+        &build.log_path,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
     );
@@ -1036,13 +1058,9 @@ async fn listen_for_node_build_with_container_from_outside_home_root() {
     )
     .await;
 
-    assert!(
-        build_result.success,
-        "container build from a peppy root outside $HOME should succeed \
-         (on macOS this requires the build flow to register the root as a \
-         Lima mount), got error: {:?}",
-        build_result.error_message
-    );
+    // On macOS a build from a peppy root outside $HOME succeeds only when
+    // the build flow registers the root as a Lima mount.
+    build_result.completed();
 
     let artifact_path = entity_artifact_path(
         &started_core_node.node_stack,
@@ -1096,51 +1114,37 @@ From: nowhere
 
     let (feedback_tx, mut feedback_rx) =
         tokio::sync::mpsc::unbounded_channel::<NodeBuildFeedback>();
-    let build_result = send_node_build_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
+    let build = send_logged_node_build(
+        &started_core_node,
         &node_name,
         &node_tag,
-        GOAL_TIMEOUT,
         CONTAINER_RESULT_TIMEOUT,
-        Vec::new(),
-        Some(feedback_tx),
+        Some(&feedback_tx),
     )
-    .await
-    .expect("node_build request should complete");
+    .await;
 
-    assert!(
-        !build_result.success,
-        "node_build should fail with a broken def file"
-    );
-
-    let error_msg = build_result
-        .error_message
-        .as_ref()
-        .expect("error_message should be present");
-    assert!(
-        error_msg.contains("apptainer build failed"),
-        "error should mention apptainer build failure, got: {}",
-        error_msg
+    let failure = build.end.failed();
+    assert_failure(
+        failure,
+        PeppyFailureKind::AttemptFailed,
+        "apptainer build failed",
     );
     assert!(
-        error_msg.contains("stderr"),
-        "error should include stderr output from apptainer build, got: {}",
-        error_msg
+        failure.message().contains("stderr"),
+        "error should include stderr output from apptainer build, got: {failure}"
     );
     assert!(
-        error_msg.contains(INVALID_BOOTSTRAP_AGENT),
-        "error should identify the invalid bootstrap agent, got: {}",
-        error_msg
+        failure.message().contains(INVALID_BOOTSTRAP_AGENT),
+        "error should identify the invalid bootstrap agent, got: {failure}"
     );
 
     assert!(
-        build_result.log_path.exists(),
+        build.log_path.exists(),
         "log file should exist even on failure: {:?}",
-        build_result.log_path
+        build.log_path
     );
     let log_content =
-        std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file");
+        std::fs::read_to_string(&build.log_path).expect("should be able to read log file");
     assert!(
         log_content.contains("[stdout]") || log_content.contains("[stderr]"),
         "log file should contain streamed build output, got:
@@ -1176,37 +1180,31 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
     let (node_name, node_tag) =
         stage_node_for_build(&started_core_node, source_dir.path(), RESULT_TIMEOUT).await;
 
-    let build_result =
-        build_node_and_wait(&started_core_node, &node_name, &node_tag, RESULT_TIMEOUT).await;
+    let build = send_logged_node_build(
+        &started_core_node,
+        &node_name,
+        &node_tag,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await;
 
-    assert!(
-        !build_result.success,
-        "node_build should fail when spawn fails"
-    );
-
-    let error_msg = build_result
-        .error_message
-        .as_ref()
-        .expect("error_message should be present");
-    assert!(
-        error_msg.contains("build_cmd failed"),
-        "error should mention build_cmd failure, got: {}",
-        error_msg
-    );
-    assert!(
-        error_msg.contains("nonexistent_binary_peppy_test_xyz"),
-        "error should include the command that failed, got: {}",
-        error_msg
+    let failure = build.end.failed();
+    assert_failure(failure, PeppyFailureKind::AttemptFailed, "build_cmd failed");
+    assert_failure(
+        failure,
+        PeppyFailureKind::AttemptFailed,
+        "nonexistent_binary_peppy_test_xyz",
     );
 
     assert!(
-        build_result.log_path.exists(),
+        build.log_path.exists(),
         "log file should exist at {:?}",
-        build_result.log_path
+        build.log_path
     );
 
     let log_content =
-        std::fs::read_to_string(&build_result.log_path).expect("should be able to read log file");
+        std::fs::read_to_string(&build.log_path).expect("should be able to read log file");
     assert!(
         !log_content.is_empty(),
         "log file should not be empty when a spawn failure occurs"
@@ -1272,18 +1270,19 @@ async fn stack_reset_cancels_a_running_build_and_allows_a_new_add() {
         })
     };
     let pid = wait_for_pid_file(&pid_file).await;
-    let response = common::poll_core_node_with_timeout(
+    // The poll panics on an error reply: the reset succeeds.
+    common::poll_core_node_with_timeout(
         &started,
         &core_node_api::encoding::StackResetRequest::new(),
         RESULT_TIMEOUT,
     )
     .await;
-    assert!(response.success, "{:?}", response.error_message);
     assert!(
         !common::is_process_running(pid),
         "reset must reap the build process"
     );
     assert_eq!(started.node_stack.len(), 1, "only the daemon remains");
-    assert!(!build.await.unwrap().unwrap().success);
+    let build_end = build.await.unwrap().unwrap();
+    assert_eq!(build_end.cancel_reason(), "cancelled by a stack reset");
     stage_node_for_build(&started, source.path(), RESULT_TIMEOUT).await;
 }

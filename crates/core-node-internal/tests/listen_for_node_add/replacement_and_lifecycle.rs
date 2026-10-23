@@ -195,11 +195,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     .await
     .expect("node_add v1 should complete");
 
-    assert!(
-        add_v1.success,
-        "node_add v1 should succeed, got error: {:?}",
-        add_v1.error_message
-    );
+    add_v1.completed();
 
     assert_eq!(node_stack.len(), 2, "root + v1");
     assert_eq!(entity_instance_count(&node_stack, NODE_NAME, NODE_TAG), 0);
@@ -223,11 +219,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     .await
     .expect("node_add v2 should complete");
 
-    assert!(
-        add_v2.success,
-        "node_add should overwrite when there are no dependents, got error: {:?}",
-        add_v2.error_message
-    );
+    add_v2.completed();
 
     assert_eq!(node_stack.len(), 2, "stack should be unchanged");
     let entity = node_stack
@@ -282,11 +274,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     )
     .await
     .expect("dependency node_add v1 should complete");
-    assert!(
-        dependency_add_v1.success,
-        "dependency node_add v1 should succeed, got error: {:?}",
-        dependency_add_v1.error_message
-    );
+    dependency_add_v1.completed();
 
     let dependent_peppy_json5 = reset_sensor_consumer_config(
         DEPENDENT_NODE_NAME,
@@ -306,11 +294,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     )
     .await
     .expect("dependent node_add should complete");
-    assert!(
-        dependent_add.success,
-        "dependent node_add should succeed, got error: {:?}",
-        dependent_add.error_message
-    );
+    dependent_add.completed();
 
     assert_eq!(node_stack.len(), 3, "root + dependency + dependent");
 
@@ -330,17 +314,10 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     .await
     .expect("dependency node_add v2 should complete");
 
-    assert!(
-        !dependency_add_v2.success,
-        "overwriting an existing node should fail when it has dependents"
-    );
-    assert!(
-        dependency_add_v2
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains("Cannot overwrite node")),
-        "error message should indicate overwrite is not allowed, got: {:?}",
-        dependency_add_v2.error_message
+    assert_failure(
+        dependency_add_v2.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "Cannot overwrite node",
     );
 
     assert_eq!(node_stack.len(), 3, "stack should be unchanged");
@@ -388,11 +365,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     .await
     .expect("node_add v1 should complete");
 
-    assert!(
-        add_v1.success,
-        "node_add v1 should succeed, got error: {:?}",
-        add_v1.error_message
-    );
+    add_v1.completed();
 
     let peppy_json5_v2 = service_provider_config(NODE_NAME, "v2", "reset_sensor");
     write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
@@ -408,11 +381,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     .await
     .expect("node_add v2 should complete");
 
-    assert!(
-        add_v2.success,
-        "node_add v2 should succeed, got error: {:?}",
-        add_v2.error_message
-    );
+    add_v2.completed();
 
     assert_eq!(node_stack.len(), 3, "root + two versions");
     assert!(node_stack.contains(NODE_NAME, "v1"));
@@ -450,25 +419,16 @@ async fn listen_for_node_add_fingerprint_mismatch() {
     .await
     .expect("node_add request should complete");
 
-    assert!(
-        !add_result.success,
-        "node_add should fail when fingerprint mismatches"
+    let failure = add_result.failed();
+    assert_failure(
+        failure,
+        PeppyFailureKind::PreconditionFailed,
+        "Codegen fingerprint verification failed",
     );
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains("Codegen fingerprint verification failed")),
-        "error message should indicate fingerprint verification failure, got: {:?}",
-        add_result.error_message
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains("fingerprint mismatch")),
-        "error message should mention fingerprint mismatch, got: {:?}",
-        add_result.error_message
+    assert_failure(
+        failure,
+        PeppyFailureKind::PreconditionFailed,
+        "fingerprint mismatch",
     );
 
     // Node should not be in the stack
@@ -495,34 +455,19 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     let first_peppy_json5 = minimal_node_config(FIRST_NODE_NAME, FIRST_NODE_TAG, &[]);
     write_peppy_json5(first_source_dir.path(), &first_peppy_json5);
 
-    // Write git hash file for first node
-    let first_peppy_dir = first_source_dir.path().join(PEPPY_OUTPUT_DIR);
-    std::fs::create_dir_all(&first_peppy_dir).expect("failed to create .peppy dir");
-    std::fs::write(first_peppy_dir.join("git.hash"), TEST_GIT_HASH)
-        .expect("failed to write git hash");
-
     // Send first goal but DON'T wait for result (simulating abandoned action)
-    let first_goal = NodeAddGoal::new(
-        first_source_dir.path(),
-        TEST_GIT_HASH,
-        RESULT_TIMEOUT.as_secs(),
-    );
     let mut first_action_handle = common::send_daemon_goal(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        &first_goal,
+        &fs_add_goal(first_source_dir.path()),
         GOAL_TIMEOUT,
     )
     .await
     .expect("first goal should be sent");
-
-    // Verify first goal was accepted
-    let first_goal_response_payload = first_action_handle.goal_reply().body.clone();
-    let first_goal_response = NodeAddGoalResponse::decode(&first_goal_response_payload)
-        .expect("failed to decode first goal response");
     assert!(
-        first_goal_response.accepted,
-        "first goal should be accepted"
+        first_action_handle.goal_reply().is_accepted(),
+        "first goal should be accepted: {:?}",
+        first_action_handle.goal_reply().refusal()
     );
 
     // Settle the first action without ever fetching its result, the whole
@@ -547,11 +492,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     .await
     .expect("second node_add request should complete");
 
-    assert!(
-        second_add_result.success,
-        "second node_add should succeed even after first action was abandoned, got error: {:?}",
-        second_add_result.error_message
-    );
+    second_add_result.completed();
 
     // Verify both nodes are in the stack
     assert!(
@@ -589,11 +530,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     )
     .await
     .expect("node_add v1 should complete");
-    assert!(
-        add_v1.success,
-        "node_add v1 should succeed, got error: {:?}",
-        add_v1.error_message
-    );
+    add_v1.completed();
     build_staged_node(&started_core_node, NODE_NAME, NODE_TAG).await;
 
     let instance_id_1 = config::runtime::Name::new(INSTANCE_1).expect("valid instance id 1");
@@ -691,11 +628,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         .expect("node_add overwrite task should join")
         .expect("node_add overwrite request should complete");
 
-    assert!(
-        add_v2.success,
-        "node_add overwrite should succeed, got error: {:?}",
-        add_v2.error_message
-    );
+    add_v2.completed();
 
     assert_eq!(
         entity_instance_count(&node_stack, NODE_NAME, NODE_TAG),
@@ -747,11 +680,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
     )
     .await
     .expect("dependency node_add v1 should complete");
-    assert!(
-        dependency_add_v1.success,
-        "dependency node_add v1 should succeed: {:?}",
-        dependency_add_v1.error_message
-    );
+    dependency_add_v1.completed();
 
     let dependent_peppy_json5 = reset_sensor_consumer_config(
         DEPENDENT_NODE_NAME,
@@ -771,11 +700,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
     )
     .await
     .expect("dependent node_add should complete");
-    assert!(
-        dependent_add.success,
-        "dependent node_add should succeed: {:?}",
-        dependent_add.error_message
-    );
+    dependent_add.completed();
     build_staged_node(
         &started_core_node,
         DEPENDENCY_NODE_NAME,
@@ -848,11 +773,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         .expect("node_add re-add task should join")
         .expect("node_add re-add request should complete");
 
-    assert!(
-        add_v2.success,
-        "re-adding a node with same interface should succeed even when dependents exist, got: {:?}",
-        add_v2.error_message
-    );
+    add_v2.completed();
 
     assert_eq!(
         entity_instance_count(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG),
@@ -895,11 +816,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     )
     .await
     .expect("dependency node_add v1 should complete");
-    assert!(
-        dependency_add_v1.success,
-        "dependency node_add v1 should succeed: {:?}",
-        dependency_add_v1.error_message
-    );
+    dependency_add_v1.completed();
 
     let dependent_peppy_json5 = reset_sensor_consumer_config(
         DEPENDENT_NODE_NAME,
@@ -919,11 +836,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     )
     .await
     .expect("dependent node_add should complete");
-    assert!(
-        dependent_add.success,
-        "dependent node_add should succeed: {:?}",
-        dependent_add.error_message
-    );
+    dependent_add.completed();
     build_staged_node(
         &started_core_node,
         DEPENDENCY_NODE_NAME,
@@ -971,17 +884,10 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     .await
     .expect("node_add overwrite request should complete");
 
-    assert!(
-        !add_v2.success,
-        "overwriting with a changed interface should fail when dependents exist"
-    );
-    assert!(
-        add_v2
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains("Cannot overwrite node")),
-        "error should indicate the overwrite is blocked: {:?}",
-        add_v2.error_message
+    assert_failure(
+        add_v2.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "Cannot overwrite node",
     );
 
     // Shutdown succeeded, so the instance was stopped before push_config rejected the overwrite
@@ -1043,11 +949,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
     )
     .await
     .expect("dependency node_add v1 should complete");
-    assert!(
-        dependency_add_v1.success,
-        "dependency node_add v1 should succeed: {:?}",
-        dependency_add_v1.error_message
-    );
+    dependency_add_v1.completed();
 
     let dependent_peppy_json5 = minimal_node_config(
         DEPENDENT_NODE_NAME,
@@ -1066,11 +968,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
     )
     .await
     .expect("dependent node_add should complete");
-    assert!(
-        dependent_add.success,
-        "dependent node_add should succeed: {:?}",
-        dependent_add.error_message
-    );
+    dependent_add.completed();
     build_staged_node(
         &started_core_node,
         DEPENDENCY_NODE_NAME,
@@ -1121,11 +1019,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
     // The cooperative shutdown can NEVER succeed here (the handler blocks
     // forever and no listener kills the process), so a successful overwrite is
     // proof the stuck instance was force-killed.
-    assert!(
-        add_v2.success,
-        "node_add should force-kill the stuck instance and succeed: {:?}",
-        add_v2.error_message
-    );
+    add_v2.completed();
 
     // The stuck instance must be removed (force-killed, not orphaned).
     assert_eq!(
@@ -1212,11 +1106,7 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
     .expect("node_add request should complete");
     let elapsed = overwrite_started.elapsed();
 
-    assert!(
-        add_v2.success,
-        "node_add should force-kill both stuck instances and succeed: {:?}",
-        add_v2.error_message
-    );
+    add_v2.completed();
 
     // Lower bound: the stuck instances really did sit out a full force-kill
     // window (neither answers SHUTDOWN_SERVICE). Pins the test's premise: a
@@ -1316,11 +1206,7 @@ async fn listen_for_node_add_stages_a_generated_copy_that_removal_deletes() {
     )
     .await
     .expect("node_add should complete");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
+    add_response.completed();
 
     assert_eq!(
         file_listing(source_dir.path()),
@@ -1353,16 +1239,12 @@ async fn listen_for_node_add_stages_a_generated_copy_that_removal_deletes() {
         "the bindings are generated into the staged copy"
     );
 
-    let response = common::poll_core_node(
+    // The poll panics on an error reply: the removal succeeds.
+    common::poll_core_node(
         &started_core_node,
         &NodeRemoveRequest::new(NODE_NAME, NODE_TAG),
     )
     .await;
-    assert!(
-        response.success,
-        "node_remove should succeed, got error: {:?}",
-        response.error_message
-    );
     assert!(
         !node_stack.contains(NODE_NAME, NODE_TAG),
         "the node is removed from the stack"

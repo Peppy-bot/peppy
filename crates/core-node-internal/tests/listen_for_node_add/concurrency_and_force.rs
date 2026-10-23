@@ -19,32 +19,27 @@ async fn send_add_goal_without_waiting(
     );
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    // Create the .peppy/git.hash file so the first goal's background task does
-    // not fail fast on git-hash verification (which would transition the action
-    // state from Running → Completed before the second goal arrives, making the
-    // outcome of the second goal non-deterministic).
-    let peppy_dir = source_dir.path().join(PEPPY_OUTPUT_DIR);
-    std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
-    std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
-
-    let goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
+    // The recorded git hash keeps the first goal's background task from
+    // failing fast on git-hash verification, which would end the add before
+    // the second goal arrives.
     let action_handle = common::send_daemon_goal(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        &goal,
+        &fs_add_goal(source_dir.path()),
         GOAL_TIMEOUT,
     )
     .await
     .expect("first goal should be sent");
-
-    let response = NodeAddGoalResponse::decode(&action_handle.goal_reply().body)
-        .expect("failed to decode first goal response");
-    assert!(response.accepted, "first goal should be accepted");
+    assert!(
+        action_handle.goal_reply().is_accepted(),
+        "first goal should be accepted: {:?}",
+        action_handle.goal_reply().refusal()
+    );
     (source_dir, action_handle)
 }
 
-/// Tests that a second goal is rejected when an action is already in progress,
-/// and that the rejection message suggests using `--force`.
+/// Tests that the daemon refuses a second goal when an action is already in
+/// progress, and that the refusal suggests using `--force`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -52,7 +47,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     let (source_dir, _first_action_handle) =
         send_add_goal_without_waiting(&started_core_node, "slow_add_node").await;
 
-    // Send second goal (no force); should be rejected.
+    // Send second goal (no force); the daemon refuses it.
     let second_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -64,21 +59,15 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     .await
     .expect("second node_add request should complete");
 
-    assert!(
-        !second_result.success,
-        "second goal without --force should fail"
-    );
-    let error_msg = second_result
-        .error_message
-        .as_deref()
-        .expect("rejection should have an error message");
-    assert!(
-        error_msg.contains("action already in progress"),
-        "error should mention action in progress, got: {error_msg}"
+    let refusal = second_result.refusal();
+    assert_failure(
+        refusal,
+        PeppyFailureKind::PreconditionFailed,
+        "action already in progress",
     );
     assert!(
-        error_msg.contains("--force"),
-        "error should suggest --force, got: {error_msg}"
+        refusal.message().contains("--force"),
+        "the refusal should suggest --force, got: {refusal}"
     );
 }
 
@@ -115,11 +104,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     .await
     .expect("force node_add request should complete");
 
-    assert!(
-        second_result.success,
-        "force node_add should succeed, got error: {:?}",
-        second_result.error_message
-    );
+    second_result.completed();
 
     assert!(
         node_stack.contains(SECOND_NODE_NAME, SECOND_NODE_TAG),

@@ -7,13 +7,14 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, Mock, StartedCoreNode, TEST_NODE_TAG, TIMEOUTS, WAIT, always,
-    fast_health_monitor, fast_health_monitor_with_kill, mocks, name, never, node_service_mock,
-    on_failure, peer_daemon_service, poll_until, poll_until_explained, run, run_plan,
-    run_plan_with_env, send_node_add_and_wait_with_force, send_node_add_then_build, settle,
-    stack_log, start_core_node_with_supervision, start_core_node_with_supervision_and_grace,
-    state_of, wait_for_state, write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, GoalEnd, Mock, StartedCoreNode, TEST_NODE_TAG, TIMEOUTS, WAIT,
+    always, assert_failure, fast_health_monitor, fast_health_monitor_with_kill, mocks, name, never,
+    node_service_mock, on_failure, peer_daemon_service, poll_until, poll_until_explained, run,
+    run_plan, run_plan_with_env, send_node_add_and_wait_with_force, send_node_add_then_build,
+    settle, stack_log, start_core_node_with_supervision,
+    start_core_node_with_supervision_and_grace, state_of, wait_for_state, write_peppy_json5,
 };
+use config::failure_kind::PeppyFailureKind;
 use config::node::{Cardinality, RestartDeclaration, RestartOrigin, RestartPolicy, RestartRequest};
 use config::runtime::{
     ClockBinding, ClockDomainId, ClockIncarnation, CoreNodeName, Name, NodeInstancePlan,
@@ -26,13 +27,15 @@ use core_node::test_support::{
 };
 use core_node::{HealthMonitorPolicy, ReserveOutcome, RestartBackoff};
 use core_node_api::encoding::{
-    NodeInfoRequest, NodeRemoveRequest, NodeStopRequest, StackResetRequest,
+    FederationAck, NodeAddResult, NodeInfoRequest, NodeRemoveRequest, NodeRemoveResponse,
+    NodeStopRequest, NodeStopResponse, StackResetRequest,
 };
 use core_node_api::{ExitCause, InstanceState, SerializedInstance};
 use node_stack::action_log::restart_separator;
 use node_stack::action_log::test_support::{lines_without_time, nth_newest_run_log, time_of};
+use peppylib::PeppyError;
 use peppylib::core_node::transport::{poll, poll_node_stop};
-use peppylib::messaging::MessengerHandle;
+use peppylib::messaging::{Failure, MessengerHandle, ServiceAnswer};
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -105,6 +108,45 @@ fn request_budget() -> Duration {
         + REQUEST_MARGIN
 }
 
+/// How a federation request ends for its sender: acknowledged, or refused
+/// with the failure of its error reply.
+type Verdict = Result<FederationAck, Failure>;
+
+/// The verdict of a request its receiver refused: `precondition_failed`.
+fn refused(reason: impl Into<String>) -> Verdict {
+    Err(Failure::new(PeppyFailureKind::PreconditionFailed, reason))
+}
+
+/// The verdict of a pair its receiver could not pin: `resource_unavailable`.
+fn undelivered(reason: impl Into<String>) -> Verdict {
+    Err(Failure::new(PeppyFailureKind::ResourceUnavailable, reason))
+}
+
+/// The message of `verdict` when it is a failure of `kind`, else `None`.
+fn failure_message_of(verdict: &Verdict, kind: PeppyFailureKind) -> Option<&str> {
+    match verdict {
+        Err(failure) if failure.kind().as_str() == kind.name() => Some(failure.message()),
+        _ => None,
+    }
+}
+
+/// The answer of a peer daemon's mock that gives `verdict`.
+fn answer_with(verdict: &Verdict) -> ServiceAnswer {
+    verdict
+        .clone()
+        .map(|ack| ack.encode().expect("an acknowledgement encodes"))
+}
+
+/// The failure of the error reply that `error` carries. Panics on an error
+/// without a reply: the `request` did not complete.
+#[track_caller]
+fn error_reply(error: PeppyError, request: &str) -> Failure {
+    error
+        .failure()
+        .cloned()
+        .unwrap_or_else(|| panic!("{request} did not complete: {error}"))
+}
+
 /// A process that exits cleanly on SIGTERM.
 fn clean_on_term() -> String {
     format!(r#"["sh", "-c", "{EXIT_CLEANLY_ON_TERM}"]"#)
@@ -170,7 +212,7 @@ async fn add_node_with_manifest(started: &StartedCoreNode, peppy_json5: &str) ->
 
 /// Adds and builds the node whose manifest is in `dir`.
 async fn add_and_build(started: &StartedCoreNode, dir: &std::path::Path) {
-    let response = send_node_add_then_build(
+    send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         dir,
@@ -178,12 +220,7 @@ async fn add_and_build(started: &StartedCoreNode, dir: &std::path::Path) {
         Duration::from_secs(5),
     )
     .await
-    .expect("node_add completes");
-    assert!(
-        response.success,
-        "node_add failed: {:?}",
-        response.error_message
-    );
+    .expect("node_add and node_build complete");
 }
 
 /// The `run_cmd` of a node whose process runs the shell `body`.
@@ -354,12 +391,12 @@ fn logged(started: &StartedCoreNode, instance_id: &str, needle: &str) -> bool {
 }
 
 /// `peppy node remove` of `node`, clearing its instances when
-/// `stop_instances`.
+/// `stop_instances`: the response, or the failure of the error reply.
 async fn remove(
     started: &StartedCoreNode,
     node: &str,
     stop_instances: bool,
-) -> core_node_api::encoding::NodeRemoveResponse {
+) -> Result<NodeRemoveResponse, Failure> {
     poll(
         &NodeRemoveRequest::new(node, TEST_NODE_TAG).with_stop_instances(stop_instances),
         &started.caller_handle,
@@ -369,7 +406,7 @@ async fn remove(
         core_node::node_remove_bound(started.node_stack.shutdown_grace()) + REQUEST_MARGIN,
     )
     .await
-    .expect("node_remove completes")
+    .map_err(|error| error_reply(error, "node_remove"))
 }
 
 /// [`remove`] of `node`, which must succeed.
@@ -377,17 +414,14 @@ async fn remove_ok(
     started: &StartedCoreNode,
     node: &str,
     stop_instances: bool,
-) -> core_node_api::encoding::NodeRemoveResponse {
-    let response = remove(started, node, stop_instances).await;
-    assert!(response.success, "{:?}", response.error_message);
-    response
+) -> NodeRemoveResponse {
+    remove(started, node, stop_instances)
+        .await
+        .unwrap_or_else(|failure| panic!("node_remove failed: {failure}"))
 }
 
 /// `peppy node add --force` of the node in `dir`, which overwrites it.
-async fn overwrite(
-    started: &StartedCoreNode,
-    dir: &std::path::Path,
-) -> core_node_api::encoding::NodeAddResult {
+async fn overwrite(started: &StartedCoreNode, dir: &std::path::Path) -> GoalEnd<NodeAddResult> {
     send_node_add_and_wait_with_force(
         &started.caller_handle,
         &started.core_node_name,
@@ -400,10 +434,9 @@ async fn overwrite(
     .expect("node_add completes")
 }
 
-async fn stop(
-    started: &StartedCoreNode,
-    instance_id: &str,
-) -> core_node_api::encoding::NodeStopResponse {
+/// `peppy node stop` of `instance_id`: the response, or the failure of the
+/// error reply.
+async fn stop(started: &StartedCoreNode, instance_id: &str) -> Result<NodeStopResponse, Failure> {
     poll_node_stop(
         &NodeStopRequest::new(instance_id),
         &started.caller_handle,
@@ -414,22 +447,19 @@ async fn stop(
         core_node::node_stop_bound(started.node_stack.shutdown_grace()) + REQUEST_MARGIN,
     )
     .await
-    .expect("node_stop completes")
+    .map_err(|error| error_reply(error, "node_stop"))
 }
 
 /// [`stop`] of `instance_id`, which must succeed.
-async fn stop_ok(
-    started: &StartedCoreNode,
-    instance_id: &str,
-) -> core_node_api::encoding::NodeStopResponse {
-    let response = stop(started, instance_id).await;
-    assert!(response.success, "{:?}", response.error_message);
-    response
+async fn stop_ok(started: &StartedCoreNode, instance_id: &str) -> NodeStopResponse {
+    stop(started, instance_id)
+        .await
+        .unwrap_or_else(|failure| panic!("node_stop failed: {failure}"))
 }
 
 /// Resets the stack and waits for the reset to succeed.
 async fn reset(started: &StartedCoreNode) {
-    let response = poll(
+    poll(
         &StackResetRequest::new(),
         &started.caller_handle,
         &started.core_node_name,
@@ -438,8 +468,7 @@ async fn reset(started: &StartedCoreNode) {
         request_budget(),
     )
     .await
-    .expect("stack_reset completes");
-    assert!(response.success, "{:?}", response.error_message);
+    .unwrap_or_else(|error| panic!("stack_reset failed: {error}"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -484,8 +513,7 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
     )
     .await
     .expect("node_run completes");
-    assert!(result.success, "{:?}", result.error_message);
-    let first_pid = result.pid.expect("a pid");
+    let first_pid = result.completed().pid.expect("a pid");
     let first_slot = slot_of(&started, ID).expect("tracked");
     let first_config = first_slot
         .runtime_config_path()
@@ -888,18 +916,20 @@ async fn a_first_start_failure_fails_the_run_under_every_policy() {
         ("stillborn_on_failure", on_failure()),
         ("stillborn_always", always()),
     ] {
-        let result = run_plan(&started, NODE, common::default_instance_plan(id), restart)
+        let end = run_plan(&started, NODE, common::default_instance_plan(id), restart)
             .await
             .expect("node_run completes");
-        assert!(!result.success, "{id} fails to start");
+        // The start fails, and a first start names the rebuild.
+        assert_failure(
+            end.failed(),
+            PeppyFailureKind::AttemptFailed,
+            "exited during startup",
+        );
         assert!(
-            result
-                .error_message
-                .as_deref()
-                .is_some_and(|message| message.contains("exited during startup")
-                    && message.contains(peppylib::runtime::REBUILD_REMEDY)),
+            end.failure_message()
+                .contains(peppylib::runtime::REBUILD_REMEDY),
             "{id}: a first start names the rebuild: {:?}",
-            result.error_message
+            end.failure_message()
         );
         assert_eq!(state_of(&started, id), None, "{id} leaves no slot");
     }
@@ -994,15 +1024,15 @@ async fn a_respawn_cancelled_during_its_start_records_nothing() {
     );
 }
 
-/// A `node run` its client cancels during the ready wait fails naming why
-/// its start was abandoned.
+/// A `node run` its client cancels during the ready wait ends cancelled,
+/// with the reason of the cancel, and leaves no slot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_run_cancelled_during_its_start_names_why() {
     const NODE: &str = "abandoned";
     const ID: &str = "abandoned_inst";
     let started = daemon(instant_restart_backoff()).await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
-    let result = common::send_node_run_then_cancel(
+    let end = common::send_node_run_then_cancel(
         &started.caller_handle,
         &started.core_node_name,
         common::default_instance_plan(ID),
@@ -1013,14 +1043,16 @@ async fn a_run_cancelled_during_its_start_names_why() {
     )
     .await
     .expect("node_run completes");
-    assert!(!result.success);
+    assert_eq!(end.cancel_reason(), "cancelled by its caller");
     assert!(
-        result
-            .error_message
-            .as_deref()
-            .is_some_and(|message| message.contains("cancelled during ready-signal wait")),
-        "{:?}",
-        result.error_message
+        run_log(&started, ID).contains("cancelled during ready-signal wait"),
+        "the run log names why the start was abandoned:\n{}",
+        run_log(&started, ID)
+    );
+    assert_eq!(
+        state_of(&started, ID),
+        None,
+        "the cancelled start leaves no slot"
     );
 }
 
@@ -1122,10 +1154,10 @@ async fn run_publisher_and_reader(
         clock: ClockBinding::publisher(domain.clone()),
         ..NodeInstancePlan::new(name(PUBLISHER_ID))
     };
-    let publisher = run_plan(started, PUBLISHER, publisher_plan, publisher_restart)
+    run_plan(started, PUBLISHER, publisher_plan, publisher_restart)
         .await
-        .expect("node_run completes");
-    assert!(publisher.success, "{:?}", publisher.error_message);
+        .expect("node_run completes")
+        .completed();
     let reader_plan = NodeInstancePlan {
         clock: ClockBinding::consumer(
             domain.clone(),
@@ -1133,10 +1165,10 @@ async fn run_publisher_and_reader(
         ),
         ..NodeInstancePlan::new(name(READER_ID))
     };
-    let reader = run_plan(started, READER, reader_plan, on_failure())
+    run_plan(started, READER, reader_plan, on_failure())
         .await
-        .expect("node_run completes");
-    assert!(reader.success, "{:?}", reader.error_message);
+        .expect("node_run completes")
+        .completed();
     domain
 }
 
@@ -1246,17 +1278,14 @@ async fn a_clock_publisher_restarts_on_its_domain_and_a_restarting_reader_waits_
     let rival = run_plan(&started, PUBLISHER, rival_plan, never())
         .await
         .expect("node_run completes");
-    assert!(
-        !rival.success
-            && rival.error_message.as_deref().is_some_and(|message| {
-                message.contains(&format!(
-                    "is kept by `{PUBLISHER_ID}` on `{cn}`; choose another name, or stop that \
-                     instance with `peppy node stop {PUBLISHER_ID} --core-node {cn}`",
-                    cn = started.core_node_name
-                ))
-            }),
-        "{:?}",
-        rival.error_message
+    assert_failure(
+        rival.failed(),
+        PeppyFailureKind::PreconditionFailed,
+        &format!(
+            "is kept by `{PUBLISHER_ID}` on `{cn}`; choose another name, or stop that \
+             instance with `peppy node stop {PUBLISHER_ID} --core-node {cn}`",
+            cn = started.core_node_name
+        ),
     );
     // A first start of a reader during the wait is refused, and nothing
     // retries it.
@@ -1271,13 +1300,13 @@ async fn a_clock_publisher_restarts_on_its_domain_and_a_restarting_reader_waits_
         .await
         .expect("node_run completes");
     assert_eq!(
-        late.error_message.as_deref().filter(|_| !late.success),
-        Some(
+        late.failed(),
+        &Failure::new(
+            PeppyFailureKind::PreconditionFailed,
             format!(
                 "its clock publisher `{PUBLISHER_ID}` is restarting; run this again once \
                  `{PUBLISHER_ID}` is running"
             )
-            .as_str()
         )
     );
     assert_eq!(state_of(&started, "late_reader_inst"), None);
@@ -1338,10 +1367,10 @@ async fn a_clock_publisher_restarts_on_its_domain_and_a_restarting_reader_waits_
         )),
         ..NodeInstancePlan::new(name(PUBLISHER_ID))
     };
-    let republished = run_plan(&started, PUBLISHER, new_lifetime, on_failure())
+    run_plan(&started, PUBLISHER, new_lifetime, on_failure())
         .await
-        .expect("node_run completes");
-    assert!(republished.success, "{:?}", republished.error_message);
+        .expect("node_run completes")
+        .completed();
     signal_process(serialized_pid(&started, READER_ID), "-9");
     wait_for_line(
         &started,
@@ -1508,35 +1537,35 @@ async fn node_stop_ends_a_restarts_start_in_flight() {
         RelationshipEvent::Ended(InstanceEnd::Exited)
     );
     let starting_pid = wait_for_process(&started, ID, InstanceState::Starting).await;
-    let reserved = try_reserve(&started).await;
-    assert!(!reserved.accepted, "a launch, join or removal answers busy");
-    assert!(
-        reserved
-            .rejection_reason
-            .as_deref()
-            .is_some_and(|reason| reason.ends_with(&format!(
-                "; the restart of `{ID}` holds this daemon, and `peppy node stop {ID} \
-                 --core-node {}` ends it and clears the instance",
-                started.core_node_name
-            ))),
-        "{:?}",
-        reserved.rejection_reason
+    // A launch, join or removal answers busy.
+    let refusal = try_reserve(&started)
+        .await
+        .expect_err("the reservation is refused");
+    assert_eq!(
+        refusal.kind().as_str(),
+        PeppyFailureKind::PreconditionFailed.name(),
+        "{refusal}"
     );
-    let overwrite = overwrite(&started, dir.path()).await;
-    assert!(!overwrite.success, "an overwrite waits for the start");
     assert!(
-        overwrite
-            .error_message
-            .as_deref()
-            .is_some_and(|message| message.contains(&format!(
-                "cannot be overwritten while an instance of it starts: `{ID}` is starting again \
-                 under its restart policy, and \
-                 `peppy node stop {ID} --core-node {}` ends it and clears the instance; run this \
-                 again once none is starting",
-                started.core_node_name
-            ))),
-        "{:?}",
-        overwrite.error_message
+        refusal.message().ends_with(&format!(
+            "; the restart of `{ID}` holds this daemon, and `peppy node stop {ID} \
+             --core-node {}` ends it and clears the instance",
+            started.core_node_name
+        )),
+        "{refusal}"
+    );
+    // An overwrite waits for the start.
+    let overwrite = overwrite(&started, dir.path()).await;
+    assert_failure(
+        overwrite.failed(),
+        PeppyFailureKind::AttemptFailed,
+        &format!(
+            "cannot be overwritten while an instance of it starts: `{ID}` is starting again \
+             under its restart policy, and \
+             `peppy node stop {ID} --core-node {}` ends it and clears the instance; run this \
+             again once none is starting",
+            started.core_node_name
+        ),
     );
     assert_eq!(
         serialized_pid(&started, SIBLING),
@@ -1548,21 +1577,24 @@ async fn node_stop_ends_a_restarts_start_in_flight() {
     // with no shutdown request.
     signal_process(sibling, "-9");
     wait_for_state(&started, SIBLING, InstanceState::Failed).await;
-    let removal = remove(&started, NODE, true).await;
-    assert!(!removal.success, "a node with a starting instance stays");
+    // A node with a starting instance stays.
+    let removal = remove(&started, NODE, true)
+        .await
+        .expect_err("the removal fails");
+    assert_failure(
+        &removal,
+        PeppyFailureKind::AttemptFailed,
+        "still has instances",
+    );
     assert!(
-        removal.error_message.as_deref().is_some_and(|message| {
-            message.contains("still has instances")
-                && message.contains(&format!(
-                    "`{ID}` is starting again under its restart policy, and `peppy node stop \
-                     {ID} --core-node {cn}` ends it and clears the instance; run `peppy node \
-                     remove {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {cn}` again once \
-                     none is starting",
-                    cn = started.core_node_name
-                ))
-        }),
-        "{:?}",
-        removal.error_message
+        removal.message().contains(&format!(
+            "`{ID}` is starting again under its restart policy, and `peppy node stop \
+             {ID} --core-node {cn}` ends it and clears the instance; run `peppy node \
+             remove {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {cn}` again once \
+             none is starting",
+            cn = started.core_node_name
+        )),
+        "{removal}"
     );
 
     stop_ok(&started, ID).await;
@@ -1628,20 +1660,21 @@ async fn node_stop_of_a_first_start_is_refused() {
     let (pid, (starting_pid, response, overwrite, removals, reserved, _ready)) =
         tokio::join!(run(&started, NODE, ID, on_failure()), stop_during_the_start);
 
-    assert!(!reserved.accepted);
+    let reserved = reserved.expect_err("the reservation is refused");
+    assert_eq!(
+        reserved.kind().as_str(),
+        PeppyFailureKind::PreconditionFailed.name(),
+        "{reserved}"
+    );
     assert!(
-        reserved
-            .rejection_reason
-            .as_deref()
-            .is_some_and(|reason| !reason.contains(&format!("`{ID}`"))
-                && reason.ends_with(&format!(
-                    "is in progress on this daemon; run this again once it ends; the restart of \
-                     `{RESTARTING}` holds this daemon, and `peppy node stop {RESTARTING} \
-                     --core-node {}` ends it and clears the instance",
-                    started.core_node_name
-                ))),
-        "a first start names no restart: {:?}",
-        reserved.rejection_reason
+        !reserved.message().contains(&format!("`{ID}`"))
+            && reserved.message().ends_with(&format!(
+                "is in progress on this daemon; run this again once it ends; the restart of \
+                 `{RESTARTING}` holds this daemon, and `peppy node stop {RESTARTING} \
+                 --core-node {}` ends it and clears the instance",
+                started.core_node_name
+            )),
+        "a first start names no restart: {reserved}"
     );
 
     // The overwrite and the removal name each start in flight, a restart's
@@ -1651,42 +1684,41 @@ async fn node_stop_of_a_first_start_is_refused() {
          {RESTARTING} --core-node {}` ends it and clears the instance; `{ID}` is starting",
         started.core_node_name
     );
-    assert!(!overwrite.success);
+    let overwrite = overwrite.failed();
+    assert_eq!(
+        overwrite.kind().as_str(),
+        PeppyFailureKind::AttemptFailed.name(),
+        "{overwrite}"
+    );
     assert!(
-        overwrite
-            .error_message
-            .as_deref()
-            .is_some_and(|message| message.ends_with(&format!(
-                "cannot be overwritten while an instance of it starts: {starts}; run this again \
-                 once none is starting"
-            ))),
-        "{:?}",
-        overwrite.error_message
+        overwrite.message().ends_with(&format!(
+            "cannot be overwritten while an instance of it starts: {starts}; run this again \
+             once none is starting"
+        )),
+        "{overwrite}"
     );
     // With `--stop-instances` or without it: a start in flight is no
     // instance the gate asks the flag for.
     for removal in removals {
-        assert!(!removal.success);
+        let removal = removal.expect_err("the removal fails");
+        assert_eq!(
+            removal.kind().as_str(),
+            PeppyFailureKind::AttemptFailed.name(),
+            "{removal}"
+        );
         assert!(
-            removal
-                .error_message
-                .as_deref()
-                .is_some_and(|message| message.ends_with(&format!(
-                    "; {starts}; run `peppy node remove {NODE}:{TEST_NODE_TAG} --stop-instances \
-                     --core-node {}` again once none is starting",
-                    started.core_node_name
-                ))),
-            "{:?}",
-            removal.error_message
+            removal.message().ends_with(&format!(
+                "; {starts}; run `peppy node remove {NODE}:{TEST_NODE_TAG} --stop-instances \
+                 --core-node {}` again once none is starting",
+                started.core_node_name
+            )),
+            "{removal}"
         );
     }
-    assert!(!response.success);
-    assert!(
-        response.error_message.as_deref().is_some_and(|message| {
-            message.contains("is in Starting state; retry after the start completes")
-        }),
-        "{:?}",
-        response.error_message
+    assert_failure(
+        &response.expect_err("the stop is refused"),
+        PeppyFailureKind::PreconditionFailed,
+        "is in Starting state; retry after the start completes",
     );
     assert_eq!(pid, starting_pid);
     assert_eq!(state_of(&started, ID), Some(InstanceState::Running));
@@ -1753,20 +1785,17 @@ async fn node_remove_during_the_wait_is_refused_then_removes() {
     let (started, _dir, _mocks) = parked(NODE, ID).await;
     let restart = restart_token(&started, ID);
     let refused = remove(&started, NODE, false).await;
-    assert!(!refused.success);
-    assert!(
-        refused
-            .error_message
-            .as_deref()
-            .is_some_and(|message| message
-                == format!(
-                    "Node '{NODE}:{TEST_NODE_TAG}' has tracked instances (e.g. '{ID}'); `peppy \
-                     node remove {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {}` \
-                     clears them before removing",
-                    started.core_node_name
-                )),
-        "{:?}",
-        refused.error_message
+    assert_eq!(
+        refused,
+        Err(Failure::new(
+            PeppyFailureKind::PreconditionFailed,
+            format!(
+                "Node '{NODE}:{TEST_NODE_TAG}' has tracked instances (e.g. '{ID}'); `peppy \
+                 node remove {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {}` \
+                 clears them before removing",
+                started.core_node_name
+            )
+        ))
     );
     let slot = slot_of(&started, ID).expect("the refused removal leaves the slot");
     assert_eq!(slot.state(), InstanceState::Restarting);
@@ -1841,13 +1870,10 @@ async fn a_removal_whose_shutdown_fails_claims_nothing() {
 
     let response = remove(&started, NODE, true).await;
     let failed = std::time::Instant::now();
-    assert!(!response.success);
-    assert!(
-        response.error_message.as_deref().is_some_and(
-            |message| message.contains(&format!("Failed to stop node instance '{REFUSING}'"))
-        ),
-        "{:?}",
-        response.error_message
+    assert_failure(
+        &response.expect_err("the removal fails"),
+        PeppyFailureKind::AttemptFailed,
+        &format!("Failed to stop node instance '{REFUSING}'"),
     );
     let slot = slot_of(&started, REFUSING).expect("the failed removal leaves the instance");
     assert!(!slot.is_stopping(), "a failed removal claims nothing");
@@ -1882,11 +1908,11 @@ async fn refusing_shutdown(started: &StartedCoreNode, name: &str, instance_id: &
         name,
         instance_id,
         peppylib::messaging::SHUTDOWN_SERVICE,
-        |context| async move {
-            Err(peppylib::PeppyError::InvalidServiceRequest {
-                identifier: context.message().instance_id().to_string(),
-                reason: "this instance refuses to shut down".to_owned(),
-            })
+        |_context| async move {
+            Err(Failure::new(
+                PeppyFailureKind::Rejected,
+                "this instance refuses to shut down",
+            ))
         },
     )
     .await
@@ -1917,8 +1943,7 @@ async fn node_add_overwrite_during_the_wait_cancels_the_respawn() {
     const ID: &str = "overwritten_inst";
     let (started, dir, _mocks) = parked(NODE, ID).await;
     let restart = restart_token(&started, ID);
-    let response = overwrite(&started, dir.path()).await;
-    assert!(response.success, "{:?}", response.error_message);
+    overwrite(&started, dir.path()).await.completed();
     assert_eq!(state_of(&started, ID), None);
     assert!(restart.is_cancelled(), "the overwrite cancels the restart");
     // The overwritten node builds again, and a run under the id starts.
@@ -1975,10 +2000,12 @@ async fn a_stop_of_a_start_a_teardown_claimed_answers_already_being_stopped() {
         core_node::teardown_all_instances(&messenger, &started.core_node_name, "core", &node_stack),
         stop_after_the_teardowns_claim
     );
-    assert!(!stopped.success);
     assert_eq!(
-        stopped.error_message,
-        Some(format!("Node instance '{ID}' is already being stopped"))
+        stopped,
+        Err(Failure::new(
+            PeppyFailureKind::PreconditionFailed,
+            format!("Node instance '{ID}' is already being stopped")
+        ))
     );
     poll_until_explained(
         WAIT,
@@ -2048,10 +2075,13 @@ async fn node_run_under_a_tracked_id_is_rejected_before_its_run_log() {
         ),
     ] {
         let run_log_before = run_log(&started, id);
-        let rejected = run_plan(&started, node, common::default_instance_plan(id), never())
+        let end = run_plan(&started, node, common::default_instance_plan(id), never())
             .await
-            .expect_err("the goal is rejected");
-        assert_eq!(rejected, format!("node_run goal rejected: {refusal}"));
+            .expect("node_run completes");
+        assert_eq!(
+            end.refusal(),
+            &Failure::new(PeppyFailureKind::PreconditionFailed, refusal)
+        );
         assert!(!run_log_before.is_empty());
         assert_eq!(
             run_log(&started, id),
@@ -2568,11 +2598,12 @@ async fn a_removal_ends_what_it_stops_and_holds_restarts_off() {
     );
 }
 
-/// Sends a participant request as the launch's coordinator does.
+/// Sends a participant request as the launch's coordinator does, and gives
+/// the response or the failure of the error reply.
 async fn participant<R: core_node_api::ServiceRequest>(
     started: &StartedCoreNode,
     request: &R,
-) -> R::Response {
+) -> Result<R::Response, Failure> {
     poll(
         request,
         &started.caller_handle,
@@ -2582,14 +2613,14 @@ async fn participant<R: core_node_api::ServiceRequest>(
         request_budget(),
     )
     .await
-    .expect("the participant request completes")
+    .map_err(|error| error_reply(error, R::ID.name()))
 }
 
 /// Asks this daemon to reserve itself for [`LAUNCH`], as its coordinator
 /// does.
 async fn try_reserve(
     started: &StartedCoreNode,
-) -> core_node_api::encoding::ParticipantReserveResponse {
+) -> Result<core_node_api::encoding::ParticipantReserveResponse, Failure> {
     participant(
         started,
         &core_node_api::encoding::ParticipantReserveRequest::new(LAUNCH, "coordinator"),
@@ -2599,8 +2630,9 @@ async fn try_reserve(
 
 /// Reserves this daemon for [`LAUNCH`]; a respawn waits until the release.
 async fn reserve(started: &StartedCoreNode) {
-    let reserved = try_reserve(started).await;
-    assert!(reserved.accepted, "{:?}", reserved.rejection_reason);
+    try_reserve(started)
+        .await
+        .unwrap_or_else(|failure| panic!("the reservation is refused: {failure}"));
 }
 
 async fn release(started: &StartedCoreNode) {
@@ -2609,7 +2641,7 @@ async fn release(started: &StartedCoreNode) {
         &core_node_api::encoding::ParticipantReleaseRequest::new(LAUNCH),
     )
     .await;
-    assert_eq!(released, core_node_api::encoding::FederationVerdict::Done);
+    assert_eq!(released, Ok(FederationAck));
 }
 
 /// How a participant request changes this daemon's slice of [`LAUNCH`].
@@ -2635,8 +2667,9 @@ async fn begin_slice(started: &StartedCoreNode, change: SliceChange<'_>) {
             );
         }
     }
-    let begun = participant(started, &request).await;
-    assert!(begun.ok, "{:?}", begun.rejection_reason);
+    participant(started, &request)
+        .await
+        .unwrap_or_else(|failure| panic!("the slice does not begin: {failure}"));
 }
 
 /// A node answers its shutdown request before it exits; `peppy node remove`
@@ -2899,7 +2932,7 @@ async fn a_joined_stop_leaves_a_new_run_under_the_id_alone() {
         };
         let (overwritten, ()) =
             tokio::join!(overwrite(&started, dir.path()), kill_once_the_stop_asks);
-        assert!(overwritten.success, "{:?}", overwritten.error_message);
+        overwritten.completed();
         common::build_staged_node(&started, NODE, TEST_NODE_TAG).await;
         let watched = watcher(&started, Duration::ZERO).await;
         let result = common::send_node_run_goal_and_wait(
@@ -2916,8 +2949,8 @@ async fn a_joined_stop_leaves_a_new_run_under_the_id_alone() {
         )
         .await
         .expect("node_run completes")
-        .result;
-        assert!(result.success, "{:?}", result.error_message);
+        .end
+        .completed();
         assert!(
             !stop_returned.load(Ordering::SeqCst),
             "the joined stop still waits on its shutdown request, which the daemon gives up \
@@ -3095,23 +3128,22 @@ async fn a_first_start_that_commits_during_a_removal_keeps_the_node() {
         remove_during_the_start
     );
     assert_eq!(late, starting);
-    assert!(!removal.success);
-    assert!(
-        removal
-            .error_message
-            .as_deref()
-            .is_some_and(|message| message.ends_with(&format!(
-                "; `{LATE}` runs a process this removal did not stop; run `peppy node remove \
-                 {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {}` again",
-                started.core_node_name
-            ))),
-        "{:?}",
-        removal.error_message
+    let removal = removal.expect_err("the removal fails");
+    assert_failure(
+        &removal,
+        PeppyFailureKind::AttemptFailed,
+        &format!(
+            "; `{LATE}` runs a process this removal did not stop; run `peppy node remove \
+             {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {}` again",
+            started.core_node_name
+        ),
     );
-    assert_eq!(
-        removal.force_killed,
-        [STUCK],
-        "a failed removal names what it force-killed"
+    // A failed removal names what it force-killed.
+    assert!(
+        removal.message().ends_with(&format!(
+            "; the removal force-killed {STUCK}, which did not exit within the shutdown grace"
+        )),
+        "{removal}"
     );
     assert!(!common::is_process_running(stuck));
     assert!(
@@ -3152,12 +3184,12 @@ async fn a_set_for_an_exited_instance_names_its_state() {
         },
     )
     .await;
-    let core_node_api::encoding::FederationVerdict::Refused(reason) = verdict else {
-        panic!("the set is refused: {verdict:?}");
-    };
     assert_eq!(
-        reason,
-        format!("`{ID}.links.producers`: the instance is failed")
+        verdict,
+        Err(Failure::new(
+            PeppyFailureKind::AttemptFailed,
+            format!("`{ID}.links.producers`: the instance is failed")
+        ))
     );
     release(&started).await;
 }
@@ -3170,8 +3202,7 @@ async fn a_set_for_an_exited_instance_names_its_state() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_set_whose_delivery_fails_as_its_instance_exits_is_kept_for_the_restart() {
     use core_node_api::encoding::{
-        FederationVerdict, ObservationTarget, ObservationTargets, ParticipantSetsUpdateRequest,
-        SlotMembers, SlotSet,
+        ObservationTarget, ObservationTargets, ParticipantSetsUpdateRequest, SlotMembers, SlotSet,
     };
     const NODE: &str = "exiting_consumer";
     const CONSUMER: &str = "exiting_consumer_inst";
@@ -3225,7 +3256,7 @@ async fn a_set_whose_delivery_fails_as_its_instance_exits_is_kept_for_the_restar
         )
         .await;
         release(&started).await;
-        assert_eq!(verdict, FederationVerdict::Done, "`{id}`");
+        assert_eq!(verdict, Ok(FederationAck), "`{id}`");
         assert_eq!(state_of(&started, id), Some(InstanceState::Restarting));
     }
     assert_eq!(
@@ -3271,10 +3302,10 @@ async fn node_service_exiting(
                     .then_some(())
             })
             .await;
-            Err(peppylib::PeppyError::InvalidServiceRequest {
-                identifier: instance_id,
-                reason: "the node exited as it took the set".to_owned(),
-            })
+            Err(Failure::new(
+                PeppyFailureKind::Rejected,
+                "the node exited as it took the set",
+            ))
         }
     })
     .await
@@ -3325,9 +3356,9 @@ async fn watcher_on(
             events.send(event).expect("the test reads the events");
             async move {
                 tokio::time::sleep(ack_after).await;
-                RelationshipNotificationAck::new()
+                Ok(RelationshipNotificationAck::new()
                     .encode()
-                    .map_err(Into::into)
+                    .expect("an acknowledgement encodes"))
             }
         },
     )
@@ -3643,8 +3674,8 @@ async fn a_failed_start_kills_its_group_before_it_dissolves_its_pairs() {
         held_pins.release.notify_waiters();
     };
     let (result, ()) = tokio::join!(follower_start, child_gone_while_the_dissolve_waits);
-    let result = result.expect("node_run completes").result;
-    assert!(!result.success, "the start fails");
+    // The start fails.
+    result.expect("node_run completes").end.failed();
 }
 
 /// Runs follower `instance_id` of `name` with its slot vacant until a peer
@@ -3674,13 +3705,11 @@ async fn run_follower(
     )
     .await
     .expect("node_run completes")
-    .result;
-    assert!(
-        result.success,
-        "node_run failed: {:?}",
-        result.error_message
-    );
-    result.pid.expect("a started instance has a pid")
+    .end;
+    result
+        .completed()
+        .pid
+        .expect("a started instance has a pid")
 }
 
 /// The `peer_update` mock of `instance_id`'s follower slot, which takes every
@@ -3763,19 +3792,13 @@ fn pair_commit_of(
 
 /// [`WATCHER`]'s daemon asks this one to pair [`LEADER`] with
 /// `instance_id`, as [`LEADER`]'s link at its start does.
-async fn pair_from_watcher(
-    started: &StartedCoreNode,
-    instance_id: &str,
-) -> core_node_api::encoding::FederationVerdict {
+async fn pair_from_watcher(started: &StartedCoreNode, instance_id: &str) -> Verdict {
     ask_pair_from_watcher(started, instance_id, false).await
 }
 
 /// [`WATCHER`]'s daemon asks this one again for the pair of [`LEADER`] with
 /// `instance_id`, as [`LEADER`]'s restart does for a pair it held.
-async fn pair_again_from_watcher(
-    started: &StartedCoreNode,
-    instance_id: &str,
-) -> core_node_api::encoding::FederationVerdict {
+async fn pair_again_from_watcher(started: &StartedCoreNode, instance_id: &str) -> Verdict {
     ask_pair_from_watcher(started, instance_id, true).await
 }
 
@@ -3783,7 +3806,7 @@ async fn ask_pair_from_watcher(
     started: &StartedCoreNode,
     instance_id: &str,
     held: bool,
-) -> core_node_api::encoding::FederationVerdict {
+) -> Verdict {
     ask_pair(
         started,
         &pair_commit_from_watcher(started, instance_id, held),
@@ -3795,7 +3818,7 @@ async fn ask_pair_from_watcher(
 async fn ask_pair(
     started: &StartedCoreNode,
     request: &core_node_api::encoding::PairCommitRequest,
-) -> core_node_api::encoding::FederationVerdict {
+) -> Verdict {
     poll(
         request,
         &started.caller_handle,
@@ -3805,7 +3828,7 @@ async fn ask_pair(
         request_budget(),
     )
     .await
-    .expect("pair_commit completes")
+    .map_err(|error| error_reply(error, "pair_commit"))
 }
 
 /// The pair commits [`WATCHER`]'s daemon was asked for, by whether each
@@ -3839,15 +3862,15 @@ struct PeerDaemon {
 }
 
 /// [`WATCHER`]'s `pair_commit`, which answers the request numbered `hold`
-/// (from 0) with `verdict` once `release` is notified and every other one
-/// `Done`, or, holding none, every request with `verdict` at once. It serves
-/// one request at a time, so a later one waits behind a held one.
+/// (from 0) with `verdict` once `release` is notified and acknowledges
+/// every other one, or, holding none, answers every request with `verdict`
+/// at once. It serves one request at a time, so a later one waits behind a
+/// held one.
 async fn peer_daemon(
     started: &StartedCoreNode,
-    verdict: core_node_api::encoding::FederationVerdict,
+    verdict: Verdict,
     hold: Option<usize>,
 ) -> PeerDaemon {
-    use core_node_api::encoding::FederationVerdict;
     let asked = PairAsks::default();
     let release = Arc::new(tokio::sync::Notify::new());
     let recorder = asked.clone();
@@ -3863,16 +3886,16 @@ async fn peer_daemon(
             .expect("a pair commit decodes");
             let is_held = hold == Some(recorder.record(request.held));
             let answer = if hold.is_none() || is_held {
-                verdict.clone()
+                answer_with(&verdict)
             } else {
-                FederationVerdict::Done
+                answer_with(&Ok(FederationAck))
             };
             let released = Arc::clone(&released);
             async move {
                 if is_held {
                     released.notified().await;
                 }
-                answer.encode().map_err(Into::into)
+                answer
             }
         },
     )
@@ -3935,7 +3958,7 @@ async fn a_stop_of_a_waiting_instance_reaches_its_watchers() {
 /// though the exit dissolved it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stop_of_a_waiting_instance_reaches_its_remote_pair_peer() {
-    use core_node_api::encoding::{FederationVerdict, InstanceEnd, RelationshipEvent};
+    use core_node_api::encoding::{InstanceEnd, RelationshipEvent};
     const NODE: &str = "paired_parked";
     const ID: &str = "paired_parked_inst";
     let started = daemon(parked_restart_backoff()).await;
@@ -3944,10 +3967,7 @@ async fn a_stop_of_a_waiting_instance_reaches_its_remote_pair_peer() {
     let _peer_update = mock_peer_update(&started, NODE, ID).await;
     let (_watcher, mut heard) = watcher(&started, Duration::ZERO).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
 
     signal_process(pid, "-9");
     assert_eq!(
@@ -3984,7 +4004,7 @@ enum Removal {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_removal_of_a_failed_instance_reaches_its_remote_pair_peer() {
     use core_node_api::encoding::{
-        FederationVerdict, InstanceEnd, ParticipantInstancesRemoveRequest, RelationshipEvent,
+        InstanceEnd, ParticipantInstancesRemoveRequest, RelationshipEvent,
     };
     const NODE: &str = "paired_failed";
     const ID: &str = "paired_failed_inst";
@@ -4001,10 +4021,7 @@ async fn every_removal_of_a_failed_instance_reaches_its_remote_pair_peer() {
         let _peer_update = mock_peer_update(&started, NODE, ID).await;
         let (_watcher, mut heard) = watcher(&started, Duration::ZERO).await;
         let pid = run_follower(&started, NODE, ID, never()).await;
-        assert_eq!(
-            pair_from_watcher(&started, ID).await,
-            FederationVerdict::Done
-        );
+        assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
         signal_process(pid, "-9");
         assert_eq!(
             next_event(&mut heard, ID).await,
@@ -4022,8 +4039,7 @@ async fn every_removal_of_a_failed_instance_reaches_its_remote_pair_peer() {
                 remove_ok(&started, NODE, true).await;
             }
             Removal::Overwrite => {
-                let response = overwrite(&started, dir.path()).await;
-                assert!(response.success, "{:?}", response.error_message);
+                overwrite(&started, dir.path()).await.completed();
             }
             Removal::Coordinator => {
                 reserve(&started).await;
@@ -4035,7 +4051,7 @@ async fn every_removal_of_a_failed_instance_reaches_its_remote_pair_peer() {
                     },
                 )
                 .await;
-                assert_eq!(removed, FederationVerdict::Done, "{removal:?}");
+                assert_eq!(removed, Ok(FederationAck), "{removal:?}");
                 release(&started).await;
             }
         }
@@ -4053,20 +4069,20 @@ async fn every_removal_of_a_failed_instance_reaches_its_remote_pair_peer() {
 /// refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pair_asked_of_an_instance_without_a_process_is_undelivered() {
-    use core_node_api::encoding::FederationVerdict;
     const NODE: &str = "asked_parked";
     const ID: &str = "asked_parked_inst";
     let (started, _dir, _mocks) = parked_follower(NODE, ID).await;
 
     let verdict = pair_from_watcher(&started, ID).await;
     assert!(
-        matches!(&verdict, FederationVerdict::Undelivered(reason)
-            if reason.contains(&format!("`{ID}` is restarting, with no process to pair"))),
+        failure_message_of(&verdict, PeppyFailureKind::ResourceUnavailable).is_some_and(|reason| {
+            reason.contains(&format!("`{ID}` is restarting, with no process to pair"))
+        }),
         "{verdict:?}"
     );
     let verdict = pair_from_watcher(&started, "ghost_inst").await;
     assert!(
-        matches!(verdict, FederationVerdict::Refused(_)),
+        failure_message_of(&verdict, PeppyFailureKind::PreconditionFailed).is_some(),
         "{verdict:?}"
     );
 
@@ -4079,8 +4095,9 @@ async fn a_pair_asked_of_an_instance_without_a_process_is_undelivered() {
     wait_for_state(&started, FAILED, InstanceState::Failed).await;
     let verdict = pair_from_watcher(&started, FAILED).await;
     assert!(
-        matches!(&verdict, FederationVerdict::Undelivered(reason)
-            if reason.contains(&format!("`{FAILED}` is failed, with no process to pair"))),
+        failure_message_of(&verdict, PeppyFailureKind::ResourceUnavailable).is_some_and(|reason| {
+            reason.contains(&format!("`{FAILED}` is failed, with no process to pair"))
+        }),
         "{verdict:?}"
     );
 }
@@ -4091,7 +4108,6 @@ async fn a_pair_asked_of_an_instance_without_a_process_is_undelivered() {
 /// process runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pair_asked_of_a_restarts_start_waits_for_it_to_run() {
-    use core_node_api::encoding::FederationVerdict;
     const NODE: &str = "starting_follower";
     const ID: &str = "starting_follower_inst";
     let started = daemon(instant_restart_backoff()).await;
@@ -4099,12 +4115,9 @@ async fn a_pair_asked_of_a_restarts_start_waits_for_it_to_run() {
     let ready = common::answer_ready_probe(&started, NODE, ID).await;
     let _health = common::answer_health_probes(&started, NODE, ID).await;
     let (_peer_update, _pins) = mock_peer_update(&started, NODE, ID).await;
-    let peer = peer_daemon(&started, FederationVerdict::Done, None).await;
+    let peer = peer_daemon(&started, Ok(FederationAck), None).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
 
     // Without a ready answer the restart's start sits in its ready wait.
     drop(ready);
@@ -4112,14 +4125,14 @@ async fn a_pair_asked_of_a_restarts_start_waits_for_it_to_run() {
     wait_for_process(&started, ID, InstanceState::Starting).await;
     assert_eq!(
         pair_again_from_watcher(&started, ID).await,
-        FederationVerdict::Undelivered(format!(
+        undelivered(format!(
             "`{ID}` is starting again under its restart policy and asks for its pairs once it \
              is running"
         ))
     );
     assert_eq!(
         pair_from_watcher(&started, ID).await,
-        FederationVerdict::Undelivered(format!(
+        undelivered(format!(
             "`{ID}` is starting again under its restart policy; link to it once it is running"
         ))
     );
@@ -4150,7 +4163,6 @@ async fn a_pair_asked_of_a_restarts_start_waits_for_it_to_run() {
 /// node is not pinned again and the pair stays.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pair_already_held_is_made_for_the_peer_daemon() {
-    use core_node_api::encoding::FederationVerdict;
     const NODE: &str = "held_follower";
     const ID: &str = "held_follower_inst";
     let started = daemon(instant_restart_backoff()).await;
@@ -4158,15 +4170,12 @@ async fn a_pair_already_held_is_made_for_the_peer_daemon() {
     let _mocks = mocks(&started, NODE, ID).await;
     let (_peer_update, mut pins) = mock_peer_update(&started, NODE, ID).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
     pins.borrow_and_update();
 
     assert_eq!(
         pair_again_from_watcher(&started, ID).await,
-        FederationVerdict::Done
+        Ok(FederationAck)
     );
     settle().await;
     assert!(
@@ -4190,7 +4199,7 @@ async fn a_pair_already_held_is_made_for_the_peer_daemon() {
 /// the stack does not track is refused naming it; a start's link is made.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_held_pair_the_asked_end_no_longer_keeps_is_refused() {
-    use core_node_api::encoding::{FederationVerdict, InstanceEnd};
+    use core_node_api::encoding::InstanceEnd;
     const NODE: &str = "unheld_follower";
     const ID: &str = "unheld_follower_inst";
     let started = daemon(instant_restart_backoff()).await;
@@ -4198,26 +4207,21 @@ async fn a_held_pair_the_asked_end_no_longer_keeps_is_refused() {
     let _mocks = mocks(&started, NODE, ID).await;
     let (_peer_update, _pins) = mock_peer_update(&started, NODE, ID).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
-    let refused = FederationVerdict::Refused(format!(
+    let not_kept = refused(format!(
         "`{ID}` keeps no pair with `{LEADER}` to make again"
     ));
-    assert_eq!(pair_again_from_watcher(&started, ID).await, refused);
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_again_from_watcher(&started, ID).await, not_kept);
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
     assert_eq!(
         pair_again_from_watcher(&started, ID).await,
-        FederationVerdict::Done
+        Ok(FederationAck)
     );
 
     leader_ended(&started, InstanceEnd::Stopped).await;
-    assert_eq!(pair_again_from_watcher(&started, ID).await, refused);
+    assert_eq!(pair_again_from_watcher(&started, ID).await, not_kept);
     assert_eq!(
         pair_again_from_watcher(&started, "ghost_inst").await,
-        FederationVerdict::Refused(
-            "pairing endpoint instance `ghost_inst` is not in this stack".to_owned()
-        )
+        refused("pairing endpoint instance `ghost_inst` is not in this stack".to_owned())
     );
     signal_process(pid, "-9");
 }
@@ -4226,7 +4230,7 @@ async fn a_held_pair_the_asked_end_no_longer_keeps_is_refused() {
 /// started: here the peer daemon's leader was stopped on purpose meanwhile.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restart_asks_for_no_pair_its_slot_forgot_during_its_start() {
-    use core_node_api::encoding::{FederationVerdict, InstanceEnd};
+    use core_node_api::encoding::InstanceEnd;
     const NODE: &str = "forgetting_follower";
     const ID: &str = "forgetting_follower_inst";
     let started = daemon(instant_restart_backoff()).await;
@@ -4234,12 +4238,9 @@ async fn a_restart_asks_for_no_pair_its_slot_forgot_during_its_start() {
     let ready = common::answer_ready_probe(&started, NODE, ID).await;
     let _health = common::answer_health_probes(&started, NODE, ID).await;
     let (_peer_update, _pins) = mock_peer_update(&started, NODE, ID).await;
-    let peer = peer_daemon(&started, FederationVerdict::Done, None).await;
+    let peer = peer_daemon(&started, Ok(FederationAck), None).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
 
     // Without a ready answer the restart's start sits in its ready wait,
     // where the stop of the leader reaches its slot.
@@ -4257,7 +4258,7 @@ async fn a_restart_asks_for_no_pair_its_slot_forgot_during_its_start() {
     // A reservation is refused while the restart's admission lasts, which is
     // through its pair requests, so the first one accepted follows them.
     let admitted_until_requested = tokio::time::timeout(WAIT, async {
-        while !try_reserve(&started).await.accepted {
+        while try_reserve(&started).await.is_err() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
@@ -4279,7 +4280,6 @@ async fn a_restart_asks_for_no_pair_its_slot_forgot_during_its_start() {
 /// start's slot takes its pairs while it starts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pair_asked_of_a_first_start_is_made() {
-    use core_node_api::encoding::FederationVerdict;
     const NODE: &str = "first_start_follower";
     const ID: &str = "first_start_follower_inst";
     let started = daemon(instant_restart_backoff()).await;
@@ -4298,7 +4298,7 @@ async fn a_pair_asked_of_a_first_start_is_made() {
         run_follower(&started, NODE, ID, on_failure()),
         ask_during_the_start
     );
-    assert_eq!(verdict, FederationVerdict::Done);
+    assert_eq!(verdict, Ok(FederationAck));
     signal_process(pid, "-9");
 }
 
@@ -4306,7 +4306,6 @@ async fn a_pair_asked_of_a_first_start_is_made() {
 /// peer holds, is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pair_asked_for_a_slot_another_peer_holds_is_refused() {
-    use core_node_api::encoding::FederationVerdict;
     const NODE: &str = "taken_follower";
     const ID: &str = "taken_follower_inst";
     let started = daemon(instant_restart_backoff()).await;
@@ -4314,18 +4313,15 @@ async fn a_pair_asked_for_a_slot_another_peer_holds_is_refused() {
     let _mocks = mocks(&started, NODE, ID).await;
     let (_peer_update, _pins) = mock_peer_update(&started, NODE, ID).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
     let other = core_node_api::encoding::PairCommitRequest {
         peer: ProducerRef::new(WATCHER, "other_leader_inst"),
         ..pair_commit_from_watcher(&started, ID, false)
     };
     let verdict = ask_pair(&started, &other).await;
     assert!(
-        matches!(&verdict, FederationVerdict::Refused(reason)
-            if reason.contains("is already paired with")),
+        failure_message_of(&verdict, PeppyFailureKind::PreconditionFailed)
+            .is_some_and(|reason| reason.contains("is already paired with")),
         "{verdict:?}"
     );
     signal_process(pid, "-9");
@@ -4336,7 +4332,7 @@ async fn a_pair_asked_for_a_slot_another_peer_holds_is_refused() {
 /// free again when the restart asks.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_held_pair_another_link_displaced_is_not_taken_back() {
-    use core_node_api::encoding::{FederationVerdict, InstanceEnd};
+    use core_node_api::encoding::InstanceEnd;
     const NODE: &str = "displaced_follower";
     const ID: &str = "displaced_follower_inst";
     const OTHER: &str = "other_leader_inst";
@@ -4345,10 +4341,7 @@ async fn a_held_pair_another_link_displaced_is_not_taken_back() {
     let _mocks = mocks(&started, NODE, ID).await;
     let (_peer_update, _pins) = mock_peer_update(&started, NODE, ID).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
 
     // The leader exits and the other leader links to the free slot, which
     // displaces the held pair; then the other leader exits too.
@@ -4357,12 +4350,12 @@ async fn a_held_pair_another_link_displaced_is_not_taken_back() {
         peer: ProducerRef::new(WATCHER, OTHER),
         ..pair_commit_from_watcher(&started, ID, false)
     };
-    assert_eq!(ask_pair(&started, &other).await, FederationVerdict::Done);
+    assert_eq!(ask_pair(&started, &other).await, Ok(FederationAck));
     peer_ended(&started, OTHER, InstanceEnd::Exited).await;
 
     assert_eq!(
         pair_again_from_watcher(&started, ID).await,
-        FederationVerdict::Refused(format!(
+        refused(format!(
             "`{ID}` keeps no pair with `{LEADER}` to make again"
         ))
     );
@@ -4372,7 +4365,7 @@ async fn a_held_pair_another_link_displaced_is_not_taken_back() {
     );
     assert_eq!(
         pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done,
+        Ok(FederationAck),
         "the slot was free, so the held check refused the restart's request"
     );
     signal_process(pid, "-9");
@@ -4390,13 +4383,16 @@ async fn the_removal_gate_counts_an_unreachable_instance() {
     let _mocks = mocks(&started, NODE, ID).await;
     let pid = run(&started, NODE, ID, never()).await;
     let removal = remove(&started, NODE, false).await;
-    assert!(!removal.success);
     assert_eq!(
-        removal.error_message,
-        Some(format!(
-            "Node '{NODE}:{TEST_NODE_TAG}' has tracked instances (e.g. '{ID}'); `peppy node remove \
-             {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {}` clears them before removing",
-            started.core_node_name
+        removal,
+        Err(Failure::new(
+            PeppyFailureKind::PreconditionFailed,
+            format!(
+                "Node '{NODE}:{TEST_NODE_TAG}' has tracked instances (e.g. '{ID}'); `peppy node \
+                 remove {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {}` clears them \
+                 before removing",
+                started.core_node_name
+            )
         ))
     );
     assert!(common::is_process_running(pid));
@@ -4422,7 +4418,6 @@ async fn parked_follower(
 /// undelivered, and the asked daemon keeps no half of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pair_its_node_does_not_take_is_undelivered() {
-    use core_node_api::encoding::FederationVerdict;
     const NODE: &str = "unpinned";
     const ID: &str = "unpinned_inst";
     let started = daemon(instant_restart_backoff()).await;
@@ -4432,8 +4427,8 @@ async fn a_pair_its_node_does_not_take_is_undelivered() {
 
     let verdict = pair_from_watcher(&started, ID).await;
     assert!(
-        matches!(&verdict, FederationVerdict::Undelivered(reason)
-            if reason.contains(&format!("could not pin `{ID}`"))),
+        failure_message_of(&verdict, PeppyFailureKind::ResourceUnavailable)
+            .is_some_and(|reason| reason.contains(&format!("could not pin `{ID}`"))),
         "{verdict:?}"
     );
     assert!(held_pairs(&started, ID).is_empty());
@@ -4450,15 +4445,14 @@ async fn a_pair_its_node_does_not_take_is_undelivered() {
 /// node is sent its set without the pair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_held_pair_stays_held_unless_the_peer_daemon_refuses_it() {
-    use core_node_api::encoding::FederationVerdict;
     for (verdict, line, kept) in [
         (
-            FederationVerdict::Undelivered("the leader is restarting".to_owned()),
+            undelivered("the leader is restarting".to_owned()),
             "requested again when either end restarts",
             1,
         ),
         (
-            FederationVerdict::Refused("the arm slot is taken".to_owned()),
+            refused("the arm slot is taken".to_owned()),
             "the pair is forgotten, so launch the stack again on its coordinator with `peppy \
              stack launch`, or, for a pair a copy's `peppy stack join` made, remove that copy \
              with `peppy stack remove NAME` and join it again there",
@@ -4473,10 +4467,7 @@ async fn a_held_pair_stays_held_unless_the_peer_daemon_refuses_it() {
         let (_peer_update, pins) = mock_peer_update(&started, NODE, ID).await;
         let (_watcher, _heard) = watcher(&started, Duration::ZERO).await;
         let pid = run_follower(&started, NODE, ID, on_failure()).await;
-        assert_eq!(
-            pair_from_watcher(&started, ID).await,
-            FederationVerdict::Done
-        );
+        assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
         let peer = peer_daemon(&started, verdict.clone(), None).await;
 
         signal_process(pid, "-9");
@@ -4509,7 +4500,6 @@ async fn a_held_pair_stays_held_unless_the_peer_daemon_refuses_it() {
 /// and writes no line under the next restart's attempt line.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_late_failure_leaves_the_next_restarts_pair_alone() {
-    use core_node_api::encoding::FederationVerdict;
     /// Inside the 15 s a restart waits for the peer daemon's answer, so the
     /// answer the mock releases is one the first restart still waits for.
     const ANSWERED_IN_TIME: Duration = Duration::from_secs(10);
@@ -4521,13 +4511,10 @@ async fn a_late_failure_leaves_the_next_restarts_pair_alone() {
     let _peer_update = mock_peer_update(&started, NODE, ID).await;
     let (_watcher, _heard) = watcher(&started, Duration::ZERO).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
     let peer = peer_daemon(
         &started,
-        FederationVerdict::Undelivered("the leader did not take its pin".to_owned()),
+        undelivered("the leader did not take its pin".to_owned()),
         Some(0),
     )
     .await;
@@ -4587,7 +4574,6 @@ async fn a_late_failure_leaves_the_next_restarts_pair_alone() {
 /// ask for again, which a capped instance keeps while it is failed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refusal_after_the_process_exited_leaves_the_pair_held() {
-    use core_node_api::encoding::FederationVerdict;
     const NODE: &str = "late_refusal";
     const ID: &str = "late_refusal_inst";
     let started = daemon(instant_restart_backoff()).await;
@@ -4596,13 +4582,10 @@ async fn a_refusal_after_the_process_exited_leaves_the_pair_held() {
     let _peer_update = mock_peer_update(&started, NODE, ID).await;
     let (_watcher, _heard) = watcher(&started, Duration::ZERO).await;
     let pid = run_follower(&started, NODE, ID, capped(1)).await;
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
     let peer = peer_daemon(
         &started,
-        FederationVerdict::Refused("the arm slot is taken".to_owned()),
+        refused("the arm slot is taken".to_owned()),
         Some(0),
     )
     .await;
@@ -4640,7 +4623,6 @@ async fn a_refusal_after_the_process_exited_leaves_the_pair_held() {
 /// still holds the request for the second.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restart_logs_each_pair_as_its_request_ends() {
-    use core_node_api::encoding::FederationVerdict;
     const NODE: &str = "two_leaders";
     const ID: &str = "two_leaders_inst";
     const SECOND_LEADER: &str = "second_leader_inst";
@@ -4653,10 +4635,10 @@ async fn a_restart_logs_each_pair_as_its_request_ends() {
     for leader in [LEADER, SECOND_LEADER] {
         assert_eq!(
             ask_pair(&started, &pair_commit_of(&started, ID, leader, false)).await,
-            FederationVerdict::Done
+            Ok(FederationAck)
         );
     }
-    let peer = peer_daemon(&started, FederationVerdict::Done, Some(1)).await;
+    let peer = peer_daemon(&started, Ok(FederationAck), Some(1)).await;
 
     signal_process(pid, "-9");
     wait_for_restarts(&started, ID, 1).await;
@@ -4684,7 +4666,6 @@ async fn a_restart_logs_each_pair_as_its_request_ends() {
 /// with `Done`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_respawn_answers_the_peer_daemons_request_while_it_asks_its_own() {
-    use core_node_api::encoding::FederationVerdict;
     /// Well inside the 15 s a peer daemon's answer to a pair commit may
     /// take.
     const ANSWERED_MEANWHILE: Duration = Duration::from_secs(5);
@@ -4696,10 +4677,7 @@ async fn a_respawn_answers_the_peer_daemons_request_while_it_asks_its_own() {
     let _peer_update = mock_peer_update(&started, NODE, ID).await;
     let (_watcher, _heard) = watcher(&started, Duration::ZERO).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
     let (_peer, answered) = peer_daemon_asking_back(&started, ID).await;
 
     signal_process(pid, "-9");
@@ -4708,7 +4686,7 @@ async fn a_respawn_answers_the_peer_daemons_request_while_it_asks_its_own() {
         answered.lock().unwrap().clone()
     })
     .await;
-    assert_eq!(verdict, FederationVerdict::Done);
+    assert_eq!(verdict, Ok(FederationAck));
     assert!(
         took < ANSWERED_MEANWHILE,
         "answered while the respawn waited on its own request, after {took:?}"
@@ -4727,11 +4705,7 @@ async fn a_respawn_answers_the_peer_daemons_request_while_it_asks_its_own() {
 async fn peer_daemon_asking_back(
     started: &StartedCoreNode,
     instance_id: &str,
-) -> (
-    Mock,
-    Arc<std::sync::Mutex<Option<(core_node_api::encoding::FederationVerdict, Duration)>>>,
-) {
-    use core_node_api::encoding::FederationVerdict;
+) -> (Mock, Arc<std::sync::Mutex<Option<(Verdict, Duration)>>>) {
     let answered = Arc::new(std::sync::Mutex::new(None));
     let ask_back = pair_commit_from_watcher(started, instance_id, true);
     let messenger = started.caller_handle.clone();
@@ -4753,7 +4727,7 @@ async fn peer_daemon_asking_back(
             async move {
                 if request.held {
                     let asked = std::time::Instant::now();
-                    let verdict: FederationVerdict = poll(
+                    let verdict: Verdict = poll(
                         &ask_back,
                         &messenger,
                         WATCHER,
@@ -4762,10 +4736,10 @@ async fn peer_daemon_asking_back(
                         request_budget(),
                     )
                     .await
-                    .expect("pair_commit completes");
+                    .map_err(|error| error_reply(error, "pair_commit"));
                     *recorder.lock().unwrap() = Some((verdict, asked.elapsed()));
                 }
-                FederationVerdict::Done.encode().map_err(Into::into)
+                answer_with(&Ok(FederationAck))
             }
         },
     )
@@ -4843,7 +4817,7 @@ async fn peer_ended(
 /// daemon stopped on purpose is forgotten.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_remote_peer_stopped_on_purpose_is_forgotten() {
-    use core_node_api::encoding::{FederationVerdict, InstanceEnd};
+    use core_node_api::encoding::InstanceEnd;
     const NODE: &str = "peer_of_a_leader";
     const ID: &str = "peer_of_a_leader_inst";
     let started = daemon(instant_restart_backoff()).await;
@@ -4851,10 +4825,7 @@ async fn a_remote_peer_stopped_on_purpose_is_forgotten() {
     let _mocks = mocks(&started, NODE, ID).await;
     let _peer_update = mock_peer_update(&started, NODE, ID).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
 
     leader_ended(&started, InstanceEnd::Exited).await;
     assert_eq!(held_pairs(&started, ID).len(), 1, "an exit keeps the pair");
@@ -4868,7 +4839,6 @@ async fn a_remote_peer_stopped_on_purpose_is_forgotten() {
 /// outcome is logged for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reset_cancels_a_respawns_unanswered_pair_request() {
-    use core_node_api::encoding::FederationVerdict;
     /// Well under the 15 s a pair commit waits for its answer.
     const RESET_BOUND: Duration = Duration::from_secs(7);
     const NODE: &str = "unanswered";
@@ -4887,10 +4857,7 @@ async fn a_reset_cancels_a_respawns_unanswered_pair_request() {
     )
     .await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
-    assert_eq!(
-        pair_from_watcher(&started, ID).await,
-        FederationVerdict::Done
-    );
+    assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
     // The peer daemon takes the request and never answers it.
     let (asked, mut request_arrived) = tokio::sync::mpsc::unbounded_channel::<()>();
     let _silent = peer_daemon_service(
@@ -4901,7 +4868,7 @@ async fn a_reset_cancels_a_respawns_unanswered_pair_request() {
             let _ = asked.send(());
             async move {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
-                FederationVerdict::Done.encode().map_err(Into::into)
+                answer_with(&Ok(FederationAck))
             }
         },
     )

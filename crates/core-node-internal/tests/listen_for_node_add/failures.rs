@@ -21,14 +21,10 @@ async fn repo_node_add_fails_when_packages_cache_missing() {
     .await
     .expect("node_add should complete");
 
-    assert!(
-        !res.success,
-        "add should fail when packages cache is missing"
-    );
-    let err = res.error_message.unwrap_or_default();
-    assert!(
-        err.contains("peppy repo refresh"),
-        "expected cache-missing hint; got: {err}"
+    assert_failure(
+        res.failed(),
+        PeppyFailureKind::PreconditionFailed,
+        "peppy repo refresh",
     );
     assert_eq!(node_stack.len(), 1, "only root entity should exist");
 }
@@ -60,11 +56,11 @@ async fn repo_node_add_fails_when_root_node_unknown() {
     .await
     .expect("node_add should complete");
 
-    assert!(!res.success, "add should fail when root node unknown");
-    let err = res.error_message.unwrap_or_default();
+    let failure = res.failed();
+    assert_failure(failure, PeppyFailureKind::Rejected, "ghost:v1");
     assert!(
-        err.contains("ghost:v1") && err.contains("missing"),
-        "error should list the missing root; got: {err}"
+        failure.message().contains("missing"),
+        "the failure should list the missing root; got: {failure}"
     );
     assert_eq!(node_stack.len(), 1);
 }
@@ -100,12 +96,7 @@ async fn repo_node_add_fails_when_dep_missing_in_cache() {
     .await
     .expect("node_add should complete");
 
-    assert!(!res.success, "add should fail when dep missing");
-    let err = res.error_message.unwrap_or_default();
-    assert!(
-        err.contains("missing_dep:v999"),
-        "error should mention missing dep; got: {err}"
-    );
+    assert_failure(res.failed(), PeppyFailureKind::Rejected, "missing_dep:v999");
     assert_eq!(node_stack.len(), 1, "nothing should have been added");
 }
 
@@ -139,7 +130,11 @@ async fn repo_node_add_fails_on_cycle() {
     .await
     .expect("node_add should complete");
 
-    assert!(!res.success, "add should fail on cycle");
+    assert_failure(
+        res.failed(),
+        PeppyFailureKind::Rejected,
+        "Dependency resolution failed",
+    );
     assert_eq!(node_stack.len(), 1, "nothing should have been added");
 }
 
@@ -187,7 +182,7 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
     .await
     .expect("node_add should complete");
 
-    assert!(!res.success, "add should fail on missing transitive dep");
+    assert_failure(res.failed(), PeppyFailureKind::Rejected, "ghost_dep:v999");
     // Stack must be unchanged; no partial add.
     assert_eq!(node_stack.len(), pre_len, "stack should be unchanged");
     assert!(!node_stack.contains("a", "v1"));
@@ -221,9 +216,10 @@ async fn listen_for_node_add_no_config_found() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        !add_result.success,
-        "node_add should not succeed, the config file is missing",
+    assert_failure(
+        add_result.failed(),
+        PeppyFailureKind::AttemptFailed,
+        NODE_CONFIG_FILE,
     );
 
     assert!(!node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
@@ -256,17 +252,10 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
     .await
     .expect("node_add request should complete");
 
-    assert!(
-        !add_result.success,
-        "node_add should fail when git hash mismatches"
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains("git hash mismatch")),
-        "error message should indicate git hash mismatch, got: {:?}",
-        add_result.error_message
+    assert_failure(
+        add_result.failed(),
+        PeppyFailureKind::PreconditionFailed,
+        "git hash mismatch",
     );
     assert!(!node_stack.contains("git_hash_mismatch_node", "v1"));
 }
@@ -344,27 +333,33 @@ const CONFIG_CONSUMING_AN_ABSENT_DEPENDENCY: &str = r#"{
 #[rstest::rstest]
 #[case::invalid_json5(
     r#"{ manifest: [unclosed"#.to_string(),
+    PeppyFailureKind::AttemptFailed,
     &["Failed to parse node config"]
 )]
 #[case::no_run_cmd(
     node_config_with_execution("no_run_cmd_node", "v1", r#"{ language: "rust" }"#),
+    PeppyFailureKind::AttemptFailed,
     &["process"]
 )]
 #[case::unresolved_dependency(
     CONFIG_WITH_AN_UNRESOLVED_DEPENDENCY.to_string(),
+    PeppyFailureKind::PreconditionFailed,
     &["Failed to add node", "does not exist in the stack"]
 )]
 #[case::duplicate_link_id(
     CONFIG_WITH_A_DUPLICATE_LINK_ID.to_string(),
+    PeppyFailureKind::AttemptFailed,
     &["Duplicate link_id", "dup"]
 )]
 #[case::absent_dependency_of_a_consumed_topic(
     CONFIG_CONSUMING_AN_ABSENT_DEPENDENCY.to_string(),
+    PeppyFailureKind::PreconditionFailed,
     &["does not exist in the stack"]
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_rejects_a_config_it_cannot_add(
     #[case] peppy_json5: String,
+    #[case] expected_kind: PeppyFailureKind,
     #[case] expected_error_parts: &[&str],
 ) {
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -384,13 +379,8 @@ async fn listen_for_node_add_rejects_a_config_it_cannot_add(
     .await
     .expect("node_add request should complete");
 
-    assert!(!add_result.success, "node_add should fail");
-    let error_message = add_result.error_message.unwrap_or_default();
     for part in expected_error_parts {
-        assert!(
-            error_message.contains(part),
-            "error message should contain {part:?}, got: {error_message}"
-        );
+        assert_failure(add_result.failed(), expected_kind, part);
     }
 
     assert_eq!(node_stack.len(), 1, "only root should exist");
@@ -427,11 +417,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     .await
     .expect("dependency node_add request should complete");
 
-    assert!(
-        dep_result.success,
-        "dependency node_add should succeed, got error: {:?}",
-        dep_result.error_message
-    );
+    dep_result.completed();
     assert!(
         node_stack.contains(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG),
         "dependency node should be in the stack"
@@ -486,18 +472,10 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     .await
     .expect("node_add request should complete");
 
-    assert!(
-        !add_result.success,
-        "node_add should fail when interface is not exposed by dependency"
-    );
-
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains("is not exposed")),
-        "error message should indicate missing interface, got: {:?}",
-        add_result.error_message
+    assert_failure(
+        add_result.failed(),
+        PeppyFailureKind::PreconditionFailed,
+        "is not exposed",
     );
 
     assert!(
@@ -536,11 +514,7 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        add_result.success,
-        "node_add should succeed, got error: {:?}",
-        add_result.error_message
-    );
+    add_result.completed();
 
     let mut feedback = Vec::new();
     while let Ok(entry) = feedback_rx.try_recv() {
@@ -566,7 +540,6 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
     // Archive entry assertions (verifying excluded dirs are absent from the
     // produced artifact) live in `listen_for_node_build.rs` since the artifact
     // is built by the `node build` action.
-    let _ = add_result.log_path;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_git_add_invalid_config_fails_fast() {
@@ -592,18 +565,10 @@ async fn listen_for_node_git_add_invalid_config_fails_fast() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        !add_result.success,
-        "node_add should fail for invalid config"
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_deref()
-            .unwrap_or("")
-            .contains("Failed to parse node config"),
-        "error should mention config parse failure, got: {:?}",
-        add_result.error_message
+    assert_failure(
+        add_result.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "Failed to parse node config",
     );
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -631,18 +596,19 @@ async fn listen_for_node_git_add_missing_config_fails() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        !add_result.success,
-        "node_add should fail for missing config"
+    let failure = add_result.failed();
+    assert_eq!(
+        failure.kind().as_str(),
+        PeppyFailureKind::AttemptFailed.name(),
+        "the failure has another kind: {failure}"
     );
-    let err = add_result.error_message.as_deref().unwrap_or("");
     // The shallow probe reports "not found in repository"; if the probe falls
     // back (e.g. local transport doesn't support shallow fetch), the full clone
     // path reports a filesystem read error instead.
+    let err = failure.message();
     assert!(
         err.contains("not found in repository") || err.contains("Failed to parse node config"),
-        "error should mention config not found or parse failure, got: {:?}",
-        add_result.error_message
+        "error should mention config not found or parse failure, got: {err}"
     );
 }
 
@@ -658,27 +624,26 @@ async fn listen_for_node_git_add_failure_shows_the_url_without_its_credentials()
         .expect("the URL should parse");
 
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        NodeAddSource::Git {
-            repo_url,
-            repo_path: "nodes/any_node",
-            repo_ref: None,
-        },
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Some(feedback_tx),
-    )
-    .await
-    .expect("node_add request should complete");
+    let goal = NodeAddGoal::new_git(
+        repo_url,
+        "nodes/any_node",
+        None,
+        TEST_GIT_HASH,
+        RESULT_TIMEOUT.as_secs(),
+    );
+    let add = send_logged_node_add(&started_core_node, &goal, &feedback_tx).await;
 
-    assert!(!add_result.success, "the clone cannot succeed");
-    let error = add_result.error_message.unwrap_or_default();
+    let failure = add.end.failed();
+    assert_eq!(
+        failure.kind().as_str(),
+        PeppyFailureKind::AttemptFailed.name(),
+        "the clone cannot succeed: {failure}"
+    );
+    let error = failure.message().to_owned();
     let feedback: Vec<String> = std::iter::from_fn(|| feedback_rx.try_recv().ok())
         .map(|entry| entry.line)
         .collect();
-    let log = std::fs::read_to_string(&add_result.log_path).expect("the add log should exist");
+    let log = std::fs::read_to_string(&add.log_path).expect("the add log should exist");
 
     assert!(
         error.contains(SHOWN_URL),
