@@ -159,14 +159,20 @@ impl<R: Debug> GoalEnd<R> {
     }
 }
 
-/// Asserts that `failure` has `kind` and that its message contains `text`.
+/// Asserts that `failure` has `kind`.
 #[track_caller]
-pub fn assert_failure(failure: &Failure, kind: PeppyFailureKind, text: &str) {
+pub fn assert_failure_kind(failure: &Failure, kind: PeppyFailureKind) {
     assert_eq!(
         failure.kind().as_str(),
         kind.name(),
         "the failure has another kind: {failure}"
     );
+}
+
+/// Asserts that `failure` has `kind` and that its message contains `text`.
+#[track_caller]
+pub fn assert_failure(failure: &Failure, kind: PeppyFailureKind, text: &str) {
+    assert_failure_kind(failure, kind);
     assert!(
         failure.message().contains(text),
         "the failure message does not contain {text:?}: {failure}"

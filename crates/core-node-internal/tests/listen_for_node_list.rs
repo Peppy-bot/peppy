@@ -40,11 +40,7 @@ async fn listen_for_node_list_returns_succeeds() {
     .await
     .expect("node_add should complete");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
+    add_response.completed();
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 

@@ -10,6 +10,25 @@ use std::time::{Duration, Instant};
 
 pub const TEST_NODE_TAG: &str = "v1";
 
+/// Asserts that the CLI error `err` names the failure `kind` that the daemon
+/// gave, as "({kind})", and that it contains `text`.
+#[track_caller]
+pub fn assert_daemon_failure(
+    err: &impl std::fmt::Display,
+    kind: config::failure_kind::PeppyFailureKind,
+    text: &str,
+) {
+    let message = err.to_string();
+    assert!(
+        message.contains(&format!("({})", kind.name())),
+        "the error does not name the failure kind `{kind}`: {message}"
+    );
+    assert!(
+        message.contains(text),
+        "the error does not contain {text:?}: {message}"
+    );
+}
+
 /// The caller a test names itself in a request to the daemon.
 pub const CALLER_INSTANCE_ID: &str = "peppy-test";
 

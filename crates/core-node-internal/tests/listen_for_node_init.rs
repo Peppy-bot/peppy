@@ -1,13 +1,15 @@
 mod common;
 
-use common::start_core_node_with_mock_messenger;
+use common::{assert_failure, start_core_node_with_mock_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::failure_kind::PeppyFailureKind;
 use config::node::Toolchain;
 use config_test_support::assert_contains_all;
 use core_node_api::encoding::{NodeInitRequest, NodeInitResponse};
 use daemon_config::consts::{
     DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, PEPPY_OUTPUT_DIR, PEPPYLIB_OUTPUT_PATH,
 };
+use peppylib::messaging::Failure;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -16,12 +18,25 @@ use tempfile::tempdir;
 const NODE_INIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Sends `request` to the `node_init` service of the started core node and
-/// returns the response. Panics only when the request itself fails.
+/// returns the response, or the failure of the daemon's error reply. Panics
+/// when the request fails without a reply.
 async fn send_node_init(
     started_core_node: &common::StartedCoreNode,
     request: &NodeInitRequest,
-) -> NodeInitResponse {
-    common::poll_core_node_with_timeout(started_core_node, request, NODE_INIT_TIMEOUT).await
+) -> Result<NodeInitResponse, Failure> {
+    common::poll_core_node_as(
+        started_core_node,
+        common::CALLER_INSTANCE_ID,
+        request,
+        NODE_INIT_TIMEOUT,
+    )
+    .await
+    .map_err(|error| {
+        error
+            .failure()
+            .cloned()
+            .unwrap_or_else(|| panic!("node_init failed without an error reply: {error}"))
+    })
 }
 
 /// Asserts the files every initialized node has, whatever its toolchain: the
@@ -191,11 +206,9 @@ async fn listen_for_node_init_rust_success() {
     )
     .await;
 
-    assert!(
-        response.success,
-        "node_init should succeed, got error: {}",
-        response.error_message
-    );
+    if let Err(failure) = response {
+        panic!("node_init should succeed, got error: {failure}");
+    }
 
     let node_dir = nodes_root.path().join(NODE_NAME);
     assert_node_scaffold(&node_dir);
@@ -222,11 +235,9 @@ async fn listen_for_node_init_rust_container_success() {
     )
     .await;
 
-    assert!(
-        response.success,
-        "node_init should succeed, got error: {}",
-        response.error_message
-    );
+    if let Err(failure) = response {
+        panic!("node_init should succeed, got error: {failure}");
+    }
 
     let node_dir = nodes_root.path().join(NODE_NAME);
     assert_node_scaffold(&node_dir);
@@ -248,11 +259,9 @@ async fn listen_for_node_init_python_success() {
     )
     .await;
 
-    assert!(
-        response.success,
-        "node_init should succeed, got error: {}",
-        response.error_message
-    );
+    if let Err(failure) = response {
+        panic!("node_init should succeed, got error: {failure}");
+    }
 
     let node_dir = nodes_root.path().join(NODE_NAME);
     assert_node_scaffold(&node_dir);
@@ -273,11 +282,9 @@ async fn listen_for_node_init_python_container_success() {
     )
     .await;
 
-    assert!(
-        response.success,
-        "node_init should succeed, got error: {}",
-        response.error_message
-    );
+    if let Err(failure) = response {
+        panic!("node_init should succeed, got error: {failure}");
+    }
 
     let node_dir = nodes_root.path().join(NODE_NAME);
     assert_node_scaffold(&node_dir);
@@ -323,13 +330,10 @@ async fn listen_for_node_init_fails_if_directory_exists() {
     )
     .await;
 
-    assert!(!response.success, "node_init should fail");
-    assert!(
-        response
-            .error_message
-            .contains("Node directory already exists"),
-        "error should mention existing directory, got: {}",
-        response.error_message
+    assert_failure(
+        &response.expect_err("node_init should fail"),
+        PeppyFailureKind::PreconditionFailed,
+        "Node directory already exists",
     );
 
     assert!(
@@ -369,13 +373,17 @@ async fn listen_for_node_init_fails_if_node_directory_cannot_be_created() {
     )
     .await;
 
-    assert!(!response.success, "node_init should fail");
+    let failure = response.expect_err("node_init should fail");
+    assert_failure(
+        &failure,
+        PeppyFailureKind::AttemptFailed,
+        "Failed to create node directory: ",
+    );
     assert!(
-        response
-            .error_message
+        failure
+            .message()
             .starts_with("Failed to create node directory: "),
-        "error should say the node directory could not be created, got: {}",
-        response.error_message
+        "error should say the node directory could not be created, got: {failure}"
     );
     assert_eq!(
         fs::read_to_string(&nodes_root).expect("failed to read nodes root file"),

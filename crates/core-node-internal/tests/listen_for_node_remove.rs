@@ -1,10 +1,11 @@
 mod common;
 
 use common::{
-    AbortOnDrop, build_staged_node, install_shutdown_listener_for_instance, send_node_add_and_wait,
-    spawn_real_running_instance, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
-    wait_until_service_reachable, write_peppy_json5,
+    AbortOnDrop, assert_failure, build_staged_node, install_shutdown_listener_for_instance,
+    send_node_add_and_wait, spawn_real_running_instance, spawn_real_stuck_instance,
+    start_core_node_with_mock_messenger, wait_until_service_reachable, write_peppy_json5,
 };
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
 use core_node_api::encoding::NodeRemoveRequest;
 use peppylib::messaging::MessengerHandle;
@@ -49,11 +50,7 @@ async fn listen_for_node_remove_success() {
     .await
     .expect("node_add should complete");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
+    add_response.completed();
 
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
@@ -66,22 +63,11 @@ async fn listen_for_node_remove_success() {
         "node should have no instances"
     );
 
-    let response = common::poll_core_node(
+    common::poll_core_node(
         &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
     )
     .await;
-
-    assert!(
-        response.success,
-        "node_remove should succeed, got error: {:?}",
-        response.error_message
-    );
-    assert!(
-        response.error_message.is_none(),
-        "success response should not include error_message, got: {:?}",
-        response.error_message
-    );
 
     assert!(
         !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
@@ -99,27 +85,18 @@ async fn listen_for_node_remove_node_name_not_found_fails() {
     let node_stack = started_core_node.node_stack.clone();
     let before_len = node_stack.len();
 
-    let response = common::poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started_core_node,
         &NodeRemoveRequest::new(MISSING_NODE_NAME, MISSING_NODE_TAG),
     )
     .await;
 
-    assert!(!response.success, "node_remove should fail");
-    let error_message = response
-        .error_message
-        .as_ref()
-        .expect("failure response should include error_message");
-    assert!(
-        error_message.contains("not found in node stack"),
-        "error should mention node not found, got: {}",
-        error_message
+    assert_failure(
+        &failure,
+        PeppyFailureKind::Rejected,
+        "not found in node stack",
     );
-    assert!(
-        error_message.contains(MISSING_NODE_NAME),
-        "error should include missing node name, got: {}",
-        error_message
-    );
+    assert_failure(&failure, PeppyFailureKind::Rejected, MISSING_NODE_NAME);
 
     assert_eq!(node_stack.len(), before_len, "stack should be unchanged");
 }
@@ -138,16 +115,16 @@ async fn listen_for_node_remove_refuses_the_core_node() {
         )
     };
 
-    let response = common::poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started_core_node,
         &NodeRemoveRequest::new(&root_name, &root_tag).with_stop_instances(true),
     )
     .await;
 
-    assert!(!response.success, "node_remove should fail");
+    common::assert_failure_kind(&failure, PeppyFailureKind::Rejected);
     assert_eq!(
-        response.error_message.as_deref(),
-        Some("Cannot remove the core node from the node stack"),
+        failure.message(),
+        "Cannot remove the core node from the node stack"
     );
     assert!(
         node_stack.contains(&root_name, &root_tag),
@@ -193,11 +170,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     .await
     .expect("node_add should complete");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
+    add_response.completed();
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -243,11 +216,6 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     )
     .await;
 
-    assert!(
-        response.success,
-        "node_remove should succeed, got error: {:?}",
-        response.error_message
-    );
     assert!(
         response.force_killed.is_empty(),
         "the instance exited on its shutdown request, got force-killed: {:?}",
@@ -310,11 +278,7 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
     )
     .await
     .expect("node_add should complete");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
+    add_response.completed();
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -354,14 +318,15 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
     );
 
     // Without `stop_instances`, the tracked terminal instance still gates the remove.
-    let gated = common::poll_core_node(
+    let gated = common::poll_core_node_failure(
         &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
     )
     .await;
-    assert!(
-        !gated.success,
-        "a tracked terminal instance must gate a plain remove"
+    assert_failure(
+        &gated,
+        PeppyFailureKind::PreconditionFailed,
+        "has tracked instances",
     );
     assert!(
         node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
@@ -369,17 +334,12 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
     );
 
     // With `stop_instances`, the terminal instance is cleared and the node removed.
-    let response = common::poll_core_node_with_timeout(
+    common::poll_core_node_with_timeout(
         &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
         Duration::from_secs(10),
     )
     .await;
-    assert!(
-        response.success,
-        "node_remove should clear a terminal instance, got error: {:?}",
-        response.error_message
-    );
     assert!(
         !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
         "node should be removed from the stack"
@@ -424,11 +384,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     .await
     .expect("node_add should complete");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
+    add_response.completed();
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -469,35 +425,20 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
 
     let before_len = node_stack.len();
 
-    let response = common::poll_core_node(
+    // `stop_instances` is not set and instances run, so the remove fails.
+    let failure = common::poll_core_node_failure(
         &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
     )
     .await;
 
-    assert!(
-        !response.success,
-        "node_remove should fail when stop_instances is not set and instances are running"
-    );
-    let error_message = response
-        .error_message
-        .as_ref()
-        .expect("failure response should include error_message");
-    assert!(
-        error_message.contains("has tracked instances"),
-        "error should mention tracked instances, got: {}",
-        error_message
-    );
-    assert!(
-        error_message.contains(TARGET_NODE_NAME),
-        "error should include node name, got: {}",
-        error_message
-    );
-    assert!(
-        error_message.contains(TARGET_INSTANCE_ID),
-        "error should include an example running instance id, got: {}",
-        error_message
-    );
+    for text in [
+        "has tracked instances",
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    ] {
+        assert_failure(&failure, PeppyFailureKind::PreconditionFailed, text);
+    }
 
     assert_eq!(node_stack.len(), before_len, "stack should be unchanged");
     assert!(

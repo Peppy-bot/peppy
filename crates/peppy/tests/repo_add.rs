@@ -1,4 +1,5 @@
-use super::common::{add_repo, setup};
+use super::common::{add_repo, assert_daemon_failure, setup};
+use config::failure_kind::PeppyFailureKind;
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 
@@ -77,11 +78,7 @@ fn repo_add_duplicate_fails() {
     let result = add_repo(&ctx, source, None);
 
     let err = result.expect_err("duplicate repo add should fail");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("already exists"),
-        "error should mention 'already exists', got: {msg}"
-    );
+    assert_daemon_failure(&err, PeppyFailureKind::PreconditionFailed, "already exists");
 }
 
 #[test]
@@ -186,10 +183,10 @@ fn repo_add_explicit_id_assigns_given_id() {
     }
     .execute(&ctx)
     .expect_err("claiming a taken id should fail");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("id 2000 is already in use"),
-        "error should name the taken id, got: {msg}"
+    assert_daemon_failure(
+        &err,
+        PeppyFailureKind::PreconditionFailed,
+        "id 2000 is already in use",
     );
 }
 

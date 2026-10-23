@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::failure_kind::PeppyFailureKind;
 use config::node::{Cardinality, RestartOrigin, RestartPolicy};
 use config::runtime::{BoundProducers, CopyName, Name};
 use core_node::RestartBackoff;
@@ -31,7 +32,7 @@ use peppylib::services::slot_update::SlotChannel;
 use tokio::sync::watch;
 
 use super::common::{
-    add_built_node, emulate_cooperative_shutdown, emulate_pairing_instance,
+    add_built_node, assert_daemon_failure, emulate_cooperative_shutdown, emulate_pairing_instance,
     emulate_startup_services, install_node_manifest, launcher_args, node_add_command,
     node_run_command, pairing_node_config, pairing_node_config_writing_pid_to,
     read_daemon_git_hash, register_repo_caches, seed_pairing_repo, stack_graph, test_node_target,
@@ -981,6 +982,11 @@ async fn a_copy_removed_during_the_wait_is_absent_after_the_restart() {
             ),
         "{err}"
     );
+    assert_daemon_failure(
+        &err,
+        PeppyFailureKind::PreconditionFailed,
+        "is restarting on",
+    );
     remove_copy(&h, "alpha").await;
     assert_eq!(
         instance(&h, "hub_inst").await.state,
@@ -1925,9 +1931,10 @@ async fn a_first_start_failure_fails_the_launch_under_every_policy() {
         )
         .expect("launcher");
         let err = launch(&h, &launcher).expect_err("a first start that fails fails the launch");
-        assert!(
-            err.to_string().contains("exited during startup"),
-            "{policy}: {err}"
+        assert_daemon_failure(
+            &err,
+            PeppyFailureKind::AttemptFailed,
+            "exited during startup",
         );
         assert!(
             !stack_log(&h).contains("restarting"),

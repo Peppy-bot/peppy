@@ -7,7 +7,7 @@ use common::{
 };
 use config::consts::NODE_CONFIG_FILE;
 use core_node::repositories_list_path;
-use core_node_api::encoding::{RepoListRepoFailureKind, RepoListRequest, RepoSourceKind};
+use core_node_api::encoding::{RepoListRepoReadFailure, RepoListRequest, RepoSourceKind};
 
 /// One `nodes.json5` entry for an fs-discovered node, shaped exactly as
 /// `repo refresh` records it: the origin's path points at the manifest file.
@@ -64,9 +64,7 @@ async fn list_default_repos_creates_repositories_file() {
 
     let repos_path = repositories_list_path(&started.peppy_dirs);
 
-    let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success, "repo_list should succeed");
-    assert!(resp.error_message.is_none());
+    poll_core_node(&started, &RepoListRequest).await;
 
     assert!(
         repos_path.exists(),
@@ -104,7 +102,6 @@ async fn list_finds_nodes_in_fs_repo() {
     );
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success, "repo_list should succeed");
     assert_eq!(resp.nodes.len(), 2, "should find 2 nodes");
 
     let names: Vec<&str> = resp.nodes.iter().map(|n| n.node_name.as_str()).collect();
@@ -144,7 +141,6 @@ async fn list_reads_git_nodes_from_cache() {
     );
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success, "repo_list should succeed");
     assert_eq!(resp.nodes.len(), 2, "should find 2 git nodes from cache");
 
     let expected_label = format!("{git_url} (ref: main)");
@@ -195,7 +191,6 @@ async fn list_marks_cross_repo_duplicates_fs() {
     );
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success);
     assert_eq!(
         resp.nodes.len(),
         3,
@@ -270,7 +265,6 @@ async fn list_marks_git_duplicate_of_fs() {
     );
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success);
     assert_eq!(
         resp.nodes.len(),
         2,
@@ -310,7 +304,6 @@ async fn list_empty_repos_file() {
     write_repositories_json5(&started, "[]");
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success, "repo_list should succeed");
     assert!(resp.nodes.is_empty(), "should have no nodes");
 }
 
@@ -336,7 +329,6 @@ async fn list_excludes_fs_repo() {
     write_excluded_repositories_json5(&started, &fs_repositories_json(&[&repo_b]));
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success);
     assert_eq!(resp.nodes.len(), 1, "only node_a should be listed");
     assert_eq!(resp.nodes[0].node_name, "node_a");
 }
@@ -359,7 +351,6 @@ async fn list_omits_nodes_that_are_on_disk_but_not_indexed() {
     index_nodes(&started, vec![fs_cache_entry(&indexed, "keep_node", "v1")]);
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success);
     assert_eq!(
         resp.nodes.len(),
         1,
@@ -402,7 +393,6 @@ async fn list_excludes_git_repo() {
     );
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success);
     assert_eq!(resp.nodes.len(), 1, "only fs_node should be listed");
     assert_eq!(resp.nodes[0].node_name, "fs_node");
     assert_eq!(resp.nodes[0].source_type, RepoSourceKind::Fs);
@@ -430,7 +420,6 @@ async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
     );
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success);
 
     let shadowed: Vec<_> = resp
         .nodes
@@ -474,7 +463,7 @@ async fn list_reports_retained_entries_and_the_failure_reason() {
             "source_type": "fs",
             "last_read_unix_secs": 1_753_900_000u64,
             "last_failure": {
-                "kind": "unreachable",
+                "read_failure": "unreachable",
                 "message": "path does not exist",
                 "unix_secs": 1_753_986_400u64
             }
@@ -484,7 +473,6 @@ async fn list_reports_retained_entries_and_the_failure_reason() {
     .expect("write repo status");
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success);
 
     assert_eq!(resp.repos.len(), 1);
     let repo_status = &resp.repos[0];
@@ -495,10 +483,10 @@ async fn list_reports_retained_entries_and_the_failure_reason() {
         Some(1_753_900_000),
         "the entries date from the last clean read, not from now"
     );
-    let failure = repo_status.failure.as_ref().expect("reason reported");
+    let failed_read = repo_status.failed_read.as_ref().expect("reason reported");
     assert_eq!(
-        failure.kind,
-        RepoListRepoFailureKind::Unreachable,
+        failed_read.read_failure,
+        RepoListRepoReadFailure::Unreachable,
         "an outage must not read as a content bug"
     );
 
@@ -531,10 +519,9 @@ async fn list_reports_a_healthy_repository_as_current() {
     .expect("write repo status");
 
     let resp = poll_core_node(&started, &RepoListRequest).await;
-    assert!(resp.success);
     assert_eq!(resp.repos.len(), 1);
     assert!(!resp.repos[0].retained);
-    assert!(resp.repos[0].failure.is_none());
+    assert!(resp.repos[0].failed_read.is_none());
     assert_eq!(resp.nodes.len(), 1);
     assert!(!resp.nodes[0].duplicate);
 }

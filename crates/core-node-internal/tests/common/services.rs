@@ -73,6 +73,16 @@ pub async fn poll_core_node_as<R: ServiceRequest>(
     .await
 }
 
+/// The failure of the error reply that `error` carries. Panics when the
+/// request failed without an error reply.
+#[track_caller]
+pub fn error_reply(error: &peppylib::PeppyError) -> Failure {
+    error
+        .failure()
+        .cloned()
+        .unwrap_or_else(|| panic!("the request failed without an error reply: {error}"))
+}
+
 /// Polls the core-node service that `request` belongs to and returns the
 /// failure of the daemon's error reply. Panics when the daemon answers the
 /// request, and when the poll fails without an error reply.

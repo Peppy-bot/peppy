@@ -238,7 +238,7 @@ async fn listen_for_node_run_not_found() {
     // The start fails because the node was not found
     assert_failure(
         start_response.end.failed(),
-        PeppyFailureKind::PreconditionFailed,
+        PeppyFailureKind::Rejected,
         "not found in node stack",
     );
 }
@@ -494,7 +494,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
     // The start should fail due to missing parameters
     assert_failure(
         start_response.end.failed(),
-        PeppyFailureKind::PreconditionFailed,
+        PeppyFailureKind::Rejected,
         "Missing required parameters",
     );
     let error_msg = start_response.end.failure_message();
@@ -606,7 +606,7 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
     // The start should fail due to missing video parameters
     assert_failure(
         start_response.end.failed(),
-        PeppyFailureKind::PreconditionFailed,
+        PeppyFailureKind::Rejected,
         "Missing required parameters",
     );
     let error_msg = start_response.end.failure_message();

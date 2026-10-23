@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    FeedbackDrainOutcome, StartedCoreNode, create_node_dir, drain_feedback, fetch_result,
-    fs_repositories_json, minimal_peppy_json5, read_json5_array, send_daemon_goal,
+    FeedbackDrainOutcome, StartedCoreNode, create_node_dir, drain_feedback, fetch_end,
+    fs_repositories_json, goal_answer, minimal_peppy_json5, read_json5_array, send_daemon_goal,
     start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
     write_excluded_repositories_json5, write_repositories_json5, write_repositories_json5_in,
 };
@@ -18,7 +18,6 @@ use std::ops::ControlFlow;
 use std::time::Duration;
 
 struct RefreshTestResult {
-    goal_response: RepoRefreshGoalResponse,
     feedbacks: Vec<RepoRefreshFeedback>,
     result: RepoRefreshResult,
 }
@@ -52,7 +51,9 @@ impl RefreshTestResult {
     }
 }
 
-/// Send a refresh goal and wait for the result. The server publishes feedback
+/// Send a refresh goal and wait for the result of the completed refresh.
+/// Panics when the daemon refuses the goal or the refresh does not complete.
+/// The server publishes feedback
 /// with wildcards at caller positions, so a concrete caller identity still
 /// receives feedback over a real messenger; the mock adapter just doesn't
 /// deliver feedback.
@@ -66,8 +67,13 @@ async fn send_refresh_and_wait(started: &StartedCoreNode) -> RefreshTestResult {
     .await
     .expect("send goal should succeed");
 
-    let goal_response = RepoRefreshGoalResponse::decode(&action_handle.goal_reply().body)
-        .expect("decode goal response");
+    goal_answer(
+        &action_handle,
+        RepoRefreshGoalResponse::decode,
+        "repo_refresh goal response",
+    )
+    .unwrap_or_else(|err| panic!("{err}"))
+    .unwrap_or_else(|refusal| panic!("the daemon refused the refresh: {refusal}"));
 
     let mut feedbacks = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -91,7 +97,7 @@ async fn send_refresh_and_wait(started: &StartedCoreNode) -> RefreshTestResult {
     let fetch_timeout = deadline
         .saturating_duration_since(tokio::time::Instant::now())
         .max(Duration::from_secs(1));
-    let result = fetch_result(
+    let result = fetch_end(
         &started.caller_handle,
         &action_handle,
         fetch_timeout,
@@ -99,12 +105,9 @@ async fn send_refresh_and_wait(started: &StartedCoreNode) -> RefreshTestResult {
         "repo_refresh result",
     )
     .await
-    .unwrap_or_else(|err| panic!("{err}"));
-    RefreshTestResult {
-        goal_response,
-        feedbacks,
-        result,
-    }
+    .unwrap_or_else(|err| panic!("{err}"))
+    .completed();
+    RefreshTestResult { feedbacks, result }
 }
 
 // ── Tests with real messenger (feedback assertions) ─────────────
@@ -122,7 +125,6 @@ async fn refresh_multiple_nodes() {
 
     let result = send_refresh_and_wait(&started).await;
 
-    assert!(result.result.success, "refresh should succeed");
     assert_eq!(
         result.result.total_nodes_found, 2,
         "should find exactly 2 nodes"
@@ -154,7 +156,6 @@ async fn refresh_deduplication() {
 
     let result = send_refresh_and_wait(&started).await;
 
-    assert!(result.result.success, "refresh should succeed");
     assert_eq!(
         result.result.total_nodes_found, 1,
         "dup_node:v1 should appear exactly once"
@@ -234,12 +235,7 @@ async fn start_reads_again_a_release_repository_read_for_another_version() {
     // The defaults the daemon appended at start would send a refresh to
     // the network; this test reads its own hub only.
     write_repositories_json5(&started, &hub_on_the_release);
-    let result = send_refresh_and_wait(&started).await;
-    assert!(
-        result.goal_response.accepted,
-        "a refresh once ready is accepted"
-    );
-    assert!(result.result.success, "{:?}", result.result.error_message);
+    send_refresh_and_wait(&started).await;
 }
 
 // ── Tests with mock messenger (no feedback needed) ─────────────
@@ -277,8 +273,7 @@ async fn refresh_cache_written() {
         ),
     );
 
-    let result = send_refresh_and_wait(&started).await;
-    assert!(result.result.success, "refresh should succeed");
+    send_refresh_and_wait(&started).await;
 
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
     assert!(cache_path.exists(), "cache file should exist");
@@ -349,7 +344,6 @@ async fn refresh_cache_includes_duplicates() {
 
     let result = send_refresh_and_wait(&started).await;
 
-    assert!(result.result.success, "refresh should succeed");
     assert_eq!(
         result.result.total_nodes_found, 2,
         "unique node count should be 2 (shared_node + unique_node)"
@@ -418,11 +412,6 @@ async fn refresh_empty_repos() {
 
     let result = send_refresh_and_wait(&started).await;
 
-    assert!(result.goal_response.accepted, "goal should be accepted");
-    assert!(
-        result.result.success,
-        "refresh should succeed with empty repos"
-    );
     assert_eq!(
         result.result.total_nodes_found, 0,
         "no nodes should be found with empty repos"
@@ -458,17 +447,12 @@ async fn refresh_reports_unreadable_repos_without_failing() {
 
     let result = send_refresh_and_wait(&started).await;
 
-    assert!(
-        result.result.success,
-        "an unreadable repository does not fail the run: {:?}",
-        result.result.error_message
-    );
     assert_eq!(
         result.result.total_nodes_found, 1,
         "the readable repository still updated"
     );
 
-    let report = &result.result.failure_report;
+    let report = &result.result.read_failure_report;
     assert!(
         report.contains("2 of the configured repositories could not be updated"),
         "one message names every repository that failed: {report}"
@@ -509,7 +493,6 @@ async fn refresh_excludes_fs_repo_with_feedback() {
 
     let result = send_refresh_and_wait(&started).await;
 
-    assert!(result.result.success, "refresh should succeed");
     assert_eq!(
         result.result.total_nodes_found, 1,
         "only node_a should be counted"
@@ -567,7 +550,6 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
 
     let result = send_refresh_and_wait(&started).await;
 
-    assert!(result.result.success, "refresh should succeed");
     assert_eq!(
         result.result.total_nodes_found, 1,
         "only keep_node should be found"
@@ -623,7 +605,6 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
 
     let result = send_refresh_and_wait(&started).await;
 
-    assert!(result.result.success, "refresh should succeed");
     assert_eq!(
         result.result.total_nodes_found, 1,
         "only keep_node should be counted"
@@ -660,7 +641,6 @@ async fn refresh_excluded_repos_not_in_cache() {
     write_excluded_repositories_json5(&started, &fs_repositories_json(&[&repo_b]));
 
     let result = send_refresh_and_wait(&started).await;
-    assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
 
     let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
@@ -697,7 +677,6 @@ async fn refresh_excludes_git_repo() {
 
     let result = send_refresh_and_wait(&started).await;
 
-    assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_nodes_found, 1);
 
     let excluded_feedbacks = result.excluded();
@@ -740,7 +719,6 @@ async fn refresh_discovers_contracts() {
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
     let result = send_refresh_and_wait(&started).await;
-    assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_contracts_found, 1);
 
     let Some(RepoRefreshFeedback::Discovered {
@@ -804,8 +782,6 @@ async fn refresh_discovers_nodes() {
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
     let result = send_refresh_and_wait(&started).await;
-    assert!(result.goal_response.accepted, "goal should be accepted");
-    assert!(result.result.success, "refresh should succeed");
     assert_eq!(
         result.result.total_nodes_found, 1,
         "should find exactly 1 node"
@@ -877,7 +853,6 @@ async fn refresh_discovers_launchers() {
     write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
 
     let result = send_refresh_and_wait(&started).await;
-    assert!(result.result.success, "refresh should succeed");
     assert_eq!(result.result.total_launchers_found, 1);
 
     let Some(RepoRefreshFeedback::Discovered {

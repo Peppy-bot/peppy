@@ -398,16 +398,26 @@ fn a_daemon_exports_each_line_of_its_add_and_build_logs() {
 
 /// The entries of each log file under `dirs`, by the kind of the log, with
 /// what differs between two daemons masked: the daemon's home, the temporary
-/// directories, and the fingerprints and ids the daemon draws. The logs of
-/// a kind are sorted, since their names carry the time they were created.
+/// directories, the names of the log files that an entry names, and the
+/// fingerprints and ids the daemon draws. The logs of a kind are sorted,
+/// since their names carry the time they were created.
 fn entries_of_every_log(dirs: &PeppyDirs) -> BTreeMap<&'static str, Vec<Vec<String>>> {
     let home = dirs.root().display().to_string();
     let masked = |line: &str| -> String {
         let line = mask_hex_runs(&line.replace(&home, "<home>"));
         line.split(' ')
-            .map(|word| match word.find("/tmp/.tmp") {
-                Some(start) => format!("{}<tmp>", &word[..start]),
-                None => word.to_owned(),
+            .map(|word| {
+                if let Some(start) = word.find("/tmp/.tmp") {
+                    return format!("{}<tmp>", &word[..start]);
+                }
+                match word.rsplit_once('/') {
+                    Some((dir, file))
+                        if dir.starts_with("<home>/logs/") && file.ends_with(".log") =>
+                    {
+                        format!("{dir}/<log file>")
+                    }
+                    _ => word.to_owned(),
+                }
             })
             .collect::<Vec<_>>()
             .join(" ")

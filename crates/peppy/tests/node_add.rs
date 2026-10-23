@@ -1,4 +1,5 @@
 use config::consts::PEPPYGEN_OUTPUT_PATH;
+use config::failure_kind::PeppyFailureKind;
 use config::node::Toolchain;
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use peppy::commands::Command;
@@ -12,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::common::{
-    assert_instance_count, emulate_startup_services, node_add_command, node_run_command,
-    serve_app_context, setup, stack_graph, test_node_target,
+    assert_daemon_failure, assert_instance_count, emulate_startup_services, node_add_command,
+    node_run_command, serve_app_context, setup, stack_graph, test_node_target,
 };
 
 #[test]
@@ -232,8 +233,9 @@ fn node_add_after_failed_sync_succeeds() {
         .expect_err("node add should fail due to git hash mismatch")
         .to_string();
     assert!(
-        error_message.contains("git hash mismatch"),
-        "error should mention git hash mismatch, got: {}",
+        error_message.contains("(precondition_failed)")
+            && error_message.contains("git hash mismatch"),
+        "error should be a precondition_failed git hash mismatch, got: {}",
         error_message
     );
 
@@ -555,6 +557,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             timeouts: TimeoutConfig {
                 idle_secs: 60,
                 max_secs: 3600,
+                flags: true,
             },
             force: false,
             confirm_reader: Some(Box::new(std::io::Cursor::new(b"n\n" as &[u8]))),
@@ -627,6 +630,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             timeouts: TimeoutConfig {
                 idle_secs: 60,
                 max_secs: 3600,
+                flags: true,
             },
             force: false,
             confirm_reader: Some(Box::new(std::io::Cursor::new(b"n\n" as &[u8]))),
@@ -691,8 +695,9 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
         .expect_err("node add without --sync should fail on stale git.hash")
         .to_string();
     assert!(
-        error_message.contains("git hash mismatch"),
-        "error should mention git hash mismatch"
+        error_message.contains("(precondition_failed)")
+            && error_message.contains("git hash mismatch"),
+        "error should be a precondition_failed git hash mismatch, got: {error_message}"
     );
 
     // 4. `node add` *with* `--sync` should refresh git.hash and succeed in one step
@@ -1421,6 +1426,7 @@ fn node_add_build_force_supersedes_inflight_build() {
                 &TimeoutConfig {
                     idle_secs: 120,
                     max_secs: 600,
+                    flags: true,
                 },
                 peppy::commands::node::BuildOptions::default(),
             )
@@ -1474,18 +1480,21 @@ fn node_add_build_force_supersedes_inflight_build() {
     .execute(&node_ctx)
     .expect(
         "node add --build --force must supersede the in-flight build; a \
-         'Goal rejected: action already in progress' error here means --force \
-         was not forwarded to the chained build",
+         'Node build refused (precondition_failed): action already in progress' \
+         error here means --force was not forwarded to the chained build",
     );
 
-    // The superseded first build resolves as cancelled, proving the chained
-    // goal actually carried force=true through the daemon gate.
+    // The superseded first build ends cancelled, with the reason of the
+    // forced build. This proves that the chained goal carried force=true
+    // through the daemon gate.
     let first_build_err = rt
         .block_on(first_build)
         .expect("first build task should not panic")
         .expect_err("the superseded in-flight build must not report success");
     assert!(
-        first_build_err.to_string().contains("build cancelled"),
+        first_build_err
+            .to_string()
+            .contains("Node build was superseded by a forced node build."),
         "first build should be cancelled by the forced chained build, got: {first_build_err}"
     );
 
@@ -1611,4 +1620,5 @@ fn node_add_refuses_optional_dependency_resolvable_nowhere() {
         msg.contains("ghost_recorder:v1") && msg.contains("repo refresh"),
         "the refusal should name the dependency and the fix: {msg}"
     );
+    assert_daemon_failure(&err, PeppyFailureKind::AttemptFailed, "ghost_recorder:v1");
 }

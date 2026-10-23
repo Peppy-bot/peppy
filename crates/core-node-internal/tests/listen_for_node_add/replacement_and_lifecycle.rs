@@ -316,7 +316,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
 
     assert_failure(
         dependency_add_v2.failed(),
-        PeppyFailureKind::AttemptFailed,
+        PeppyFailureKind::PreconditionFailed,
         "Cannot overwrite node",
     );
 
@@ -886,7 +886,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
 
     assert_failure(
         add_v2.failed(),
-        PeppyFailureKind::AttemptFailed,
+        PeppyFailureKind::PreconditionFailed,
         "Cannot overwrite node",
     );
 

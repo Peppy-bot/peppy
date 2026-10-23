@@ -1558,7 +1558,7 @@ async fn node_stop_ends_a_restarts_start_in_flight() {
     let overwrite = overwrite(&started, dir.path()).await;
     assert_failure(
         overwrite.failed(),
-        PeppyFailureKind::AttemptFailed,
+        PeppyFailureKind::PreconditionFailed,
         &format!(
             "cannot be overwritten while an instance of it starts: `{ID}` is starting again \
              under its restart policy, and \
@@ -1583,7 +1583,7 @@ async fn node_stop_ends_a_restarts_start_in_flight() {
         .expect_err("the removal fails");
     assert_failure(
         &removal,
-        PeppyFailureKind::AttemptFailed,
+        PeppyFailureKind::PreconditionFailed,
         "still has instances",
     );
     assert!(
@@ -1687,7 +1687,7 @@ async fn node_stop_of_a_first_start_is_refused() {
     let overwrite = overwrite.failed();
     assert_eq!(
         overwrite.kind().as_str(),
-        PeppyFailureKind::AttemptFailed.name(),
+        PeppyFailureKind::PreconditionFailed.name(),
         "{overwrite}"
     );
     assert!(
@@ -1703,7 +1703,7 @@ async fn node_stop_of_a_first_start_is_refused() {
         let removal = removal.expect_err("the removal fails");
         assert_eq!(
             removal.kind().as_str(),
-            PeppyFailureKind::AttemptFailed.name(),
+            PeppyFailureKind::PreconditionFailed.name(),
             "{removal}"
         );
         assert!(
@@ -3131,7 +3131,7 @@ async fn a_first_start_that_commits_during_a_removal_keeps_the_node() {
     let removal = removal.expect_err("the removal fails");
     assert_failure(
         &removal,
-        PeppyFailureKind::AttemptFailed,
+        PeppyFailureKind::PreconditionFailed,
         &format!(
             "; `{LATE}` runs a process this removal did not stop; run `peppy node remove \
              {NODE}:{TEST_NODE_TAG} --stop-instances --core-node {}` again",

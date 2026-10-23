@@ -1,4 +1,5 @@
-use super::common::setup;
+use super::common::{assert_daemon_failure, setup};
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::encoding::GitRepoRef;
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
@@ -95,11 +96,7 @@ fn repo_exclude_duplicate_fails() {
     let result = exclude_repo(&ctx, source, None);
 
     let err = result.expect_err("duplicate repo exclude should fail");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("already exists"),
-        "error should mention 'already exists', got: {msg}"
-    );
+    assert_daemon_failure(&err, PeppyFailureKind::PreconditionFailed, "already exists");
 }
 
 #[test]

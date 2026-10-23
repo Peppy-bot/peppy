@@ -1452,7 +1452,7 @@ async fn the_last_copy_of_a_one_or_more_axis_stays_until_the_stack_goes() {
     // The last copy of a one_or_more axis stays.
     let refused = execute(&started, &remove_goal("alpha")).await;
     refused.assert_failed(
-        PeppyFailureKind::Rejected,
+        PeppyFailureKind::PreconditionFailed,
         "copy `alpha` is the last one on axis `robot`, which has cardinality `one_or_more`",
     );
     assert!(

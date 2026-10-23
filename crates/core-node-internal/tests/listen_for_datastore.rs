@@ -313,7 +313,7 @@ async fn stopping_the_owner_removes_its_owned_key_and_keeps_its_unowned_keys() {
     std::mem::forget(owner);
     let _kill_on_shutdown =
         install_kill_on_shutdown_listener(&started, OWNER_NODE, &name(OWNER), pid).await;
-    let response = poll_node_stop(
+    poll_node_stop(
         &NodeStopRequest::new(OWNER),
         &started.caller_handle,
         &started.core_node_name,
@@ -324,7 +324,6 @@ async fn stopping_the_owner_removes_its_owned_key_and_keeps_its_unowned_keys() {
     )
     .await
     .expect("node_stop completes");
-    assert!(response.success, "{:?}", response.error_message);
 
     assert_eq!(
         store_driver_key_exclusively(&started, "other_inst").await,
