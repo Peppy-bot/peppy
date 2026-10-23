@@ -262,6 +262,14 @@ fn nth_run_log(started: &StartedCoreNode, instance_id: &str, n: usize) -> String
         .expect("the run log is readable")
 }
 
+/// Every run log of `instance_id`, the newest first.
+fn every_run_log(started: &StartedCoreNode, instance_id: &str) -> Vec<String> {
+    (0..)
+        .map_while(|n| nth_newest_run_log(&started.peppy_dirs.logs_dir_run(), instance_id, n))
+        .map(|path| std::fs::read_to_string(path).expect("the run log is readable"))
+        .collect()
+}
+
 /// The path of the run log `n` back from `instance_id`'s current one.
 fn nth_run_log_path(started: &StartedCoreNode, instance_id: &str, n: usize) -> PathBuf {
     nth_newest_run_log(&started.peppy_dirs.logs_dir_run(), instance_id, n)
@@ -837,9 +845,14 @@ async fn a_respawn_that_dies_during_startup_schedules_the_next_attempt() {
         "a start failure's first line is the last exit: {:?}",
         instance.restart_status.last_exit
     );
+    // The restarts go on while the marker exists, so the newest run log can
+    // be of a start that has not failed yet: the log of the start that
+    // failed is one of the logs before it.
     assert!(
-        run_log(&started, ID).contains("boom"),
-        "the run log holds the whole failure, its stderr included"
+        every_run_log(&started, ID)
+            .iter()
+            .any(|log| log.contains("boom")),
+        "the run log of the failed start holds the whole failure, its stderr included"
     );
 
     std::fs::remove_file(&marker_path).expect("marker removed");

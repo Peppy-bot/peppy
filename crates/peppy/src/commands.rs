@@ -379,6 +379,24 @@ pub(crate) fn serialized_node(
 mod tests {
     use super::*;
 
+    /// The caller id is `peppy-cli-` and 8 hexadecimal digits, drawn once:
+    /// every goal of one process is sent by one sender.
+    #[test]
+    fn the_caller_id_is_drawn_once_per_process() {
+        let id = caller_instance_id();
+        let suffix = id
+            .strip_prefix("peppy-cli-")
+            .unwrap_or_else(|| panic!("{id} starts with peppy-cli-"));
+        assert_eq!(suffix.len(), 8, "{id}");
+        assert!(
+            suffix
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "{id}"
+        );
+        assert_eq!(caller_instance_id(), id);
+    }
+
     #[test]
     fn health_label_is_the_single_source_of_truth() {
         // `stack list` and `node info` both render this; pin it so they cannot
