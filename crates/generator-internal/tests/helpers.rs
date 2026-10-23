@@ -72,18 +72,43 @@ pub fn native_dep(node_name: &str, node_tag: &str, link_id: &str) -> generator::
 
 /// Contract twin of [`native_dep`]: a `depends_on.contracts` slot at the
 /// manifest's default `one` cardinality, so the generated modules address
-/// their producer through `SenderTarget::contract`.
+/// their producer through `SenderTarget::contract`. The contract declares no
+/// failure kinds of its own.
 pub fn contract_dep(
     contract_name: &str,
     contract_tag: &str,
     link_id: &str,
+) -> generator::DependencyContext {
+    contract_dep_with_kinds(contract_name, contract_tag, link_id, &[])
+}
+
+/// [`contract_dep`] for a contract whose `failure_kinds` block declares
+/// `kinds`, each a name and its meaning.
+pub fn contract_dep_with_kinds(
+    contract_name: &str,
+    contract_tag: &str,
+    link_id: &str,
+    kinds: &[(&str, &str)],
 ) -> generator::DependencyContext {
     generator::DependencyContext::contract(
         contract_name,
         contract_tag,
         link_id,
         config::node::Cardinality::One,
+        failure_kinds(kinds),
     )
+}
+
+/// A `failure_kinds` block that declares `kinds`, each a name and its
+/// meaning, in that order.
+pub fn failure_kinds(kinds: &[(&str, &str)]) -> config::failure_kind::ContractFailureKinds {
+    config::failure_kind::ContractFailureKinds::new(kinds.iter().map(|(name, meaning)| {
+        (
+            config::failure_kind::FailureKindName::parse(name).expect("a valid failure kind name"),
+            meaning.to_string(),
+        )
+    }))
+    .expect("a valid failure_kinds block")
 }
 
 pub const TEST_NODE_TAG: &str = "v1";
@@ -842,8 +867,9 @@ fn stable_test_target_dir() -> std::path::PathBuf {
     config_test_support::test_data_root().join("cache/rust/test-targets")
 }
 
-pub fn compile_project(dir: impl AsRef<Path>) {
-    let dir = dir.as_ref();
+/// Runs `cargo build` on the generated crate in `dir`, in the shared test
+/// target directory.
+fn cargo_build(dir: &Path) -> std::process::Output {
     let target_dir = stable_test_target_dir();
     fs::create_dir_all(&target_dir).expect("failed to create stable test target directory");
 
@@ -858,14 +884,32 @@ pub fn compile_project(dir: impl AsRef<Path>) {
     // dependencies (peppylib, zenoh, …) are still reused across builds.
     rename_peppygen_package(dir);
 
-    let cargo_output = Command::new("cargo")
+    Command::new("cargo")
         .arg("build")
         .env("CARGO_NET_OFFLINE", "true")
         .env("CARGO_TARGET_DIR", &target_dir)
         .current_dir(dir)
         .stdin(Stdio::null())
         .output()
-        .expect("failed to invoke cargo build on generated crate");
+        .expect("failed to invoke cargo build on generated crate")
+}
+
+/// Builds the generated crate in `dir`, which must fail to compile, and
+/// returns what the compiler wrote to stderr.
+pub fn compile_project_expecting_failure(dir: impl AsRef<Path>) -> String {
+    let cargo_output = cargo_build(dir.as_ref());
+    let stderr = String::from_utf8_lossy(&cargo_output.stderr).into_owned();
+    assert!(
+        !cargo_output.status.success(),
+        "cargo build succeeded for a crate that must not compile\nstderr:\n{stderr}"
+    );
+    stderr
+}
+
+pub fn compile_project(dir: impl AsRef<Path>) {
+    let dir = dir.as_ref();
+    let target_dir = stable_test_target_dir();
+    let cargo_output = cargo_build(dir);
     assert!(
         cargo_output.status.success(),
         "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",

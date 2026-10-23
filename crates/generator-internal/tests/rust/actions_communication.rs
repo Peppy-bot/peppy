@@ -2,8 +2,9 @@ use crate::helpers::{
     CapturedChild, ConsumerExposerOutput, DEFAULT_WAIT_TIMEOUT, EXPOSED_ACTION_EXAMPLE,
     JOINTS_CONTRACT_ACTION, JOINTS_CONTRACT_NAME, JOINTS_REFINEMENT, NodeProject,
     RUST_STUB_EXECUTION, STUB_NODE_CONFIG, TEST_CORE_NODE, assert_exited_successfully, bind_slot,
-    compile_project, consumed_move_arm_action_messages, consumer_stub_node_config,
-    contract_consumer_stub_node_config, contract_dep, generate_node_project, init_cargo_user_node,
+    compile_project, compile_project_expecting_failure, consumed_move_arm_action_messages,
+    consumer_stub_node_config, contract_consumer_stub_node_config, contract_dep,
+    contract_dep_with_kinds, failure_kinds, generate_node_project, init_cargo_user_node,
     native_dep, save_runtime_config, shut_down_test_node, spawn_cargo_run, test_contract_target,
     test_node_runtime_config, test_node_target, test_wait_context,
     wait_for_action_reachable_via_target_or_exit, wait_for_action_service_reachable_or_exit,
@@ -278,7 +279,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
             brain_move_arm::bound_producer(&node_runner),
             Duration::from_secs(5),
             request,
-            peppygen::QoSProfile::SensorData,
+            peppygen::DEFAULT_FEEDBACK_BOUND,
         ).await?;
         let result = action_handle.get_result(Duration::from_secs(5)).await?;
         match result.outcome {
@@ -494,9 +495,10 @@ use peppygen::Result;
 use std::time::Duration;
 
 async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
-    // A goal for the reserved arm is rejected through the framework
-    // admission ack; no declared response payload rides along.
-    let rejected = brain_move_arm::ActionHandle::fire_goal(
+    // A goal for the reserved arm is refused through the framework
+    // admission ack, with a kind of peppy (a native action declares no
+    // kind of its own); no declared response payload rides along.
+    let refused = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
@@ -504,13 +506,13 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
             arm_id: 99,
             desired_position: [0, 0, 0],
         },
-        peppygen::QoSProfile::SensorData,
+        peppygen::DEFAULT_FEEDBACK_BOUND,
     ).await?;
     println!(
-        "rejected goal accepted={} reason={:?} data_present={}",
-        rejected.accepted,
-        rejected.reason.as_deref(),
-        rejected.data.is_some()
+        "refused goal accepted={} refusal={:?} data_present={}",
+        refused.accepted,
+        refused.refusal,
+        refused.data.is_some()
     );
 
     let request = brain_move_arm::GoalRequest {
@@ -522,7 +524,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
-        peppygen::QoSProfile::SensorData,
+        peppygen::DEFAULT_FEEDBACK_BOUND,
     ).await?;
     let data = action_handle.data.as_ref().expect("accepted goal carries the declared response");
     println!("goal accepted={} data_accepted={}", action_handle.accepted, data.accepted);
@@ -571,7 +573,10 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
                         request.data.arm_id, request.data.desired_position
                     );
                     if request.data.arm_id == 99 {
-                        return Ok(move_arm::GoalDecision::reject("arm 99 is reserved"));
+                        return Ok(move_arm::GoalDecision::refuse(
+                            move_arm::FailureKind::PreconditionFailed,
+                            "arm 99 is reserved",
+                        ));
                     }
                     Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
@@ -612,7 +617,7 @@ fn main() -> Result<()> {
     } = run_move_arm_flow(topology, consumer_main, exposer_main).await;
     assert!(
         consumer_stdout.contains(
-            "rejected goal accepted=false reason=Some(\"arm 99 is reserved\") data_present=false"
+            "refused goal accepted=false refusal=Some(Failure { kind: PreconditionFailed, message: \"arm 99 is reserved\" }) data_present=false"
         ) && consumer_stdout.contains("goal accepted=true data_accepted=true")
             && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
             && consumer_stdout
@@ -654,7 +659,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
-        peppygen::QoSProfile::SensorData,
+        peppygen::DEFAULT_FEEDBACK_BOUND,
     ).await?;
     println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
@@ -700,7 +705,7 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
                     ctx.cancel_signal().await;
                     println!("server observed cancel for goal");
                     let _ = ctx
-                        .complete_cancelled(false, Some("goal cancelled by server".to_owned()), [0, 0, 0])
+                        .complete_cancelled("goal cancelled by server", false, Some("goal cancelled by server".to_owned()), [0, 0, 0])
                         .await;
                 }
                 _ => break,
@@ -785,7 +790,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
-        peppygen::QoSProfile::SensorData,
+        peppygen::DEFAULT_FEEDBACK_BOUND,
     ).await?;
     println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
     println!("draining feedback...");
@@ -919,6 +924,258 @@ fn main() -> Result<()> {
     );
 }
 
+/// A generated client keeps every feedback message until it reads it, up to
+/// the bound it passed to `fire_goal`: the exposer publishes 1500 messages,
+/// more than any fixed buffer of 128 or 1024 newest messages holds, and
+/// completes the goal before the consumer reads one. The consumer then reads
+/// all 1500, in order, and the end of the stream. Runs the peer topology
+/// only; the transport topology is orthogonal to what is under test here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn actions_feedback_beyond_the_old_buffers_is_kept_in_full() {
+    let consumer_main = r#"
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+use std::time::Duration;
+
+async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    let bound = peppygen::FeedbackBound::new(std::num::NonZeroUsize::new(4096).unwrap());
+    let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
+        &node_runner,
+        brain_move_arm::bound_producer(&node_runner),
+        Duration::from_secs(5),
+        brain_move_arm::GoalRequest { arm_id: 7, desired_position: [0, 0, 0] },
+        bound,
+    ).await?;
+
+    // The goal ends before the first read: every message waits unread.
+    let result = action_handle.get_result(Duration::from_secs(30)).await?;
+    assert!(matches!(result.outcome, brain_move_arm::ResultOutcome::Completed(_)));
+
+    let mut received = 0;
+    loop {
+        match action_handle.on_next_feedback_message().await {
+            Ok(feedback) => {
+                assert_eq!(feedback.new_position, [received, received, received]);
+                received += 1;
+            }
+            Err(peppygen::Error::ActionFeedbackChannelClosed) => break,
+            Err(other) => panic!("unexpected feedback error: {other}"),
+        }
+    }
+    println!("feedback received in order count={received}");
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        consume_action(&node_runner).await
+    })
+}
+"#;
+    let exposer_main = r#"
+use peppygen::exposed_actions::move_arm;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+
+async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
+    tokio::spawn(async move {
+        loop {
+            let maybe_ctx = action
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalDecision> {
+                    Ok(move_arm::GoalDecision::accept(move_arm::GoalResponse::new(true)))
+                })
+                .await;
+            let Ok(Some(ctx)) = maybe_ctx else { break };
+            for i in 0..1500 {
+                ctx.publish_feedback([i, i, i]).await.expect("publish feedback");
+            }
+            ctx.complete(true, None, [0, 0, 0]).await.expect("complete");
+            println!("server published 1500 feedback messages");
+        }
+    });
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        expose_action(&node_runner).await
+    })
+}
+"#;
+    let ConsumerExposerOutput {
+        consumer_stdout,
+        consumer_stderr,
+        exposer_stdout,
+        ..
+    } = run_move_arm_flow(
+        crate::helpers::LocalNodesTopology::Peer,
+        consumer_main,
+        exposer_main,
+    )
+    .await;
+    assert!(
+        exposer_stdout.contains("server published 1500 feedback messages"),
+        "exposer did not publish its feedback.\nstdout:\n{exposer_stdout}"
+    );
+    assert!(
+        consumer_stdout.contains("feedback received in order count=1500"),
+        "consumer did not read every feedback message.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
+    );
+}
+
+/// A generated client that falls behind its feedback by more unread
+/// messages than its bound cancels the goal itself, and reads the loss as
+/// `Error::ActionFeedbackOverflow`. The consumer passes a bound of 10 and
+/// never reads; the exposer publishes 50 messages, then ends the goal only
+/// on its cancel signal, with the reason of its cause. So the goal ends
+/// only through the cancel of the overflow. Runs the peer topology only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn actions_feedback_overflow_cancels_the_goal_and_errors() {
+    let consumer_main = r#"
+use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+use std::time::Duration;
+
+async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    let bound = peppygen::FeedbackBound::new(std::num::NonZeroUsize::new(10).unwrap());
+    let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
+        &node_runner,
+        brain_move_arm::bound_producer(&node_runner),
+        Duration::from_secs(5),
+        brain_move_arm::GoalRequest { arm_id: 7, desired_position: [0, 0, 0] },
+        bound,
+    ).await?;
+
+    let result = action_handle.get_result(Duration::from_secs(30)).await?;
+    match result.outcome {
+        brain_move_arm::ResultOutcome::Cancelled { reason, .. } => {
+            println!("goal ended cancelled reason={reason}")
+        }
+        other => panic!("expected Cancelled outcome, got {other:?}"),
+    }
+    match action_handle.on_next_feedback_message().await {
+        Err(peppygen::Error::ActionFeedbackOverflow { bound, .. }) => {
+            println!("feedback overflow bound={bound}")
+        }
+        other => panic!("expected ActionFeedbackOverflow, got {other:?}"),
+    }
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        consume_action(&node_runner).await
+    })
+}
+"#;
+    let exposer_main = r#"
+use peppygen::exposed_actions::move_arm;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+
+async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
+    tokio::spawn(async move {
+        loop {
+            let maybe_ctx = action
+                .handle_goal_next_request(|_request| -> Result<move_arm::GoalDecision> {
+                    Ok(move_arm::GoalDecision::accept(move_arm::GoalResponse::new(true)))
+                })
+                .await;
+            let Ok(Some(ctx)) = maybe_ctx else { break };
+            for i in 0..50 {
+                ctx.publish_feedback([i, i, i]).await.expect("publish feedback");
+            }
+            ctx.cancel_signal().await;
+            let cause = ctx.cancel_cause().expect("the goal is cancelled");
+            println!("server observed cancel cause={cause:?}");
+            ctx.complete_cancelled(cause.reason(), false, None, [0, 0, 0])
+                .await
+                .expect("complete cancelled");
+        }
+    });
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        expose_action(&node_runner).await
+    })
+}
+"#;
+    let ConsumerExposerOutput {
+        consumer_stdout,
+        consumer_stderr,
+        exposer_stdout,
+        ..
+    } = run_move_arm_flow(
+        crate::helpers::LocalNodesTopology::Peer,
+        consumer_main,
+        exposer_main,
+    )
+    .await;
+    assert!(
+        exposer_stdout.contains("server observed cancel cause=Caller"),
+        "the overflow did not cancel the goal.\nstdout:\n{exposer_stdout}"
+    );
+    assert!(
+        consumer_stdout.contains("goal ended cancelled reason=cancelled by its caller")
+            && consumer_stdout.contains("feedback overflow bound=10"),
+        "consumer did not read the overflow.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
+    );
+}
+
+/// A provider can give only a kind that peppy or the contract of its member
+/// declares, and the generated `FailureKind` enforces it when the node
+/// compiles: a native action declares the kinds of peppy only, so a node
+/// that refuses a goal with `Unreachable` does not compile.
+#[test]
+fn a_native_provider_cannot_give_an_undeclared_kind() {
+    let temp_dir = TempDir::new_in(config_test_support::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let dir = generate_node_project::<generator::RustGenerator>(
+        &temp_dir,
+        STUB_NODE_CONFIG,
+        |generator| {
+            generator.add_exposed_action(&exposed_action, None).unwrap();
+        },
+    );
+    init_cargo_user_node(&dir);
+    let exposer_main = r#"
+use peppygen::exposed_actions::move_arm;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
+        let _ = action
+            .handle_goal_next_request(|_request| -> Result<move_arm::GoalDecision> {
+                Ok(move_arm::GoalDecision::refuse(
+                    move_arm::FailureKind::Unreachable,
+                    "no plan to the target",
+                ))
+            })
+            .await;
+        Ok(())
+    })
+}
+"#;
+    fs::write(dir.join("src").join("main.rs"), exposer_main).expect("failed to write main");
+
+    let stderr = compile_project_expecting_failure(&dir);
+    assert!(
+        stderr.contains("error[E0599]")
+            && stderr.contains("named `Unreachable` found for enum `FailureKind`"),
+        "the compiler must refuse the undeclared kind.\nstderr:\n{stderr}"
+    );
+}
+
 /// Verifies the cancel-honored side of the action lifecycle contract: when
 /// the server's worker observes `ctx.cancel_signal()` and reacts with
 /// `ctx.complete_cancelled(...)`, completing the goal publishes an
@@ -966,7 +1223,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
-        peppygen::QoSProfile::SensorData,
+        peppygen::DEFAULT_FEEDBACK_BOUND,
     ).await?;
     println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
@@ -1031,7 +1288,7 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
             // Honor the cancel: completing-cancelled closes the feedback stream.
             ctx.cancel_signal().await;
             let _ = ctx
-                .complete_cancelled(false, Some("cancelled".to_owned()), [0, 0, 0])
+                .complete_cancelled("cancelled", false, Some("cancelled".to_owned()), [0, 0, 0])
                 .await;
             println!("server observed cancel: completing cancelled closes the feedback stream");
         }
@@ -1132,7 +1389,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
-        peppygen::QoSProfile::SensorData,
+        peppygen::DEFAULT_FEEDBACK_BOUND,
     ).await?;
     println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
@@ -1320,7 +1577,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
         request,
-        peppygen::QoSProfile::SensorData,
+        peppygen::DEFAULT_FEEDBACK_BOUND,
     ).await?;
     println!("goal accepted={}", action_handle.data.as_ref().expect("accepted goal carries the declared response").accepted);
 
@@ -1539,14 +1796,24 @@ const CONSUMED_ACTION_CONTRACT_EXAMPLE: &str = r#"
 }
 "#;
 
+/// The `failure_kinds` block of the `arm_actions` contract: both sides of the
+/// contract-slot tests generate from it.
+const ARM_CONTRACT_FAILURE_KINDS: &[(&str, &str)] = &[
+    ("arm_reserved", "The arm of the goal is reserved"),
+    ("unreachable", "No plan to the target"),
+];
+
 /// Consumer-side contract-slot capstone: the consumer's manifest declares the
 /// action's slot under `depends_on.contracts` (not `.nodes`), the producer
 /// exposes the same action through a `manifest.implements` slot, and both
 /// sides address the wire via `SenderTarget::contract`. The exposer node is
 /// deliberately named `arm_server`, a name the consumer never mentions: the
 /// contract carries the shared identity. Covers the full lifecycle over a
-/// live router: framework rejection, accept with declared response, feedback,
-/// completed result, then cancel driving a cancelled result on a second goal.
+/// live router: a refusal with a kind of the contract, accept with declared
+/// response, feedback, completed result, a cancel that ends a second goal
+/// cancelled with the reason of its cause, and a third goal that fails with
+/// a kind of the contract and no result. The consumer reads each failure as
+/// its typed `Failure`.
 #[rstest::rstest]
 #[case::peer(crate::helpers::LocalNodesTopology::Peer)]
 #[case::router(crate::helpers::LocalNodesTopology::Router)]
@@ -1579,7 +1846,12 @@ async fn actions_communication_via_contract_slot(
                 .add_consumed_action(
                     &consumed_action,
                     &action_messages,
-                    &contract_dep(ARM_CONTRACT_NAME, "v1", "arm"),
+                    &contract_dep_with_kinds(
+                        ARM_CONTRACT_NAME,
+                        "v1",
+                        "arm",
+                        ARM_CONTRACT_FAILURE_KINDS,
+                    ),
                 )
                 .unwrap();
         },
@@ -1609,8 +1881,9 @@ use peppygen::Result;
 use std::time::Duration;
 
 async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
-    // Framework rejection rides the admission ack, contract addressing or not.
-    let rejected = arm_move_arm::ActionHandle::fire_goal(
+    // A refusal with a kind of the contract rides the admission ack and
+    // reaches the consumer as its typed `Failure`.
+    let refused = arm_move_arm::ActionHandle::fire_goal(
         &node_runner,
         arm_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
@@ -1618,12 +1891,16 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
             arm_id: 99,
             desired_position: [0, 0, 0],
         },
-        peppygen::QoSProfile::SensorData,
+        peppygen::DEFAULT_FEEDBACK_BOUND,
     ).await?;
+    let refusal = refused.refusal.as_ref().expect("the goal is refused");
+    assert_eq!(refusal.kind, arm_move_arm::FailureKind::ArmReserved);
     println!(
-        "rejected goal accepted={} reason={:?}",
-        rejected.accepted,
-        rejected.reason.as_deref()
+        "refused goal accepted={} kind={} message={} data_present={}",
+        refused.accepted,
+        refusal.kind,
+        refusal.message,
+        refused.data.is_some()
     );
 
     // Accepted goal: feedback, then a completed result.
@@ -1635,7 +1912,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
             arm_id: 7,
             desired_position: [10, 20, 30],
         },
-        peppygen::QoSProfile::SensorData,
+        peppygen::DEFAULT_FEEDBACK_BOUND,
     ).await?;
     let data = action_handle.data.as_ref().expect("accepted goal carries the declared response");
     println!("goal accepted={} data_accepted={}", action_handle.accepted, data.accepted);
@@ -1662,7 +1939,7 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
             arm_id: 8,
             desired_position: [1, 2, 3],
         },
-        peppygen::QoSProfile::SensorData,
+        peppygen::DEFAULT_FEEDBACK_BOUND,
     ).await?;
     let cancel_response = cancel_handle.cancel_goal(Duration::from_secs(5)).await?;
     println!(
@@ -1671,12 +1948,34 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     );
     let result = cancel_handle.get_result(Duration::from_secs(5)).await?;
     match result.outcome {
-        arm_move_arm::ResultOutcome::Cancelled(data) => println!(
-            "cancelled result success={} error={:?}",
+        arm_move_arm::ResultOutcome::Cancelled { reason, data } => println!(
+            "cancelled result reason={} success={} error={:?}",
+            reason,
             data.success,
             data.error_msg.as_deref()
         ),
         other => panic!("expected Cancelled outcome, got {other:?}"),
+    }
+
+    // Third goal: the provider fails it with a kind of the contract, and no
+    // result.
+    let failed_handle = arm_move_arm::ActionHandle::fire_goal(
+        &node_runner,
+        arm_move_arm::bound_producer(&node_runner),
+        Duration::from_secs(5),
+        arm_move_arm::GoalRequest {
+            arm_id: 9,
+            desired_position: [500, 500, 500],
+        },
+        peppygen::DEFAULT_FEEDBACK_BOUND,
+    ).await?;
+    let result = failed_handle.get_result(Duration::from_secs(5)).await?;
+    match result.outcome {
+        arm_move_arm::ResultOutcome::Failed(failure) => {
+            assert_eq!(failure.kind, arm_move_arm::FailureKind::Unreachable);
+            println!("failed result kind={} message={}", failure.kind, failure.message)
+        }
+        other => panic!("expected Failed outcome, got {other:?}"),
     }
 
     Ok(())
@@ -1711,6 +2010,7 @@ fn main() -> Result<()> {
                         link_id: "arm_impl".to_string(),
                         contract_name: ARM_CONTRACT_NAME.to_string(),
                         contract_tag: "v1".to_string(),
+                        failure_kinds: failure_kinds(ARM_CONTRACT_FAILURE_KINDS),
                     }),
                 )
                 .unwrap();
@@ -1745,7 +2045,10 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
                         request.data.arm_id, request.data.desired_position
                     );
                     if request.data.arm_id == 99 {
-                        return Ok(move_arm::GoalDecision::reject("arm 99 is reserved"));
+                        return Ok(move_arm::GoalDecision::refuse(
+                            move_arm::FailureKind::ArmReserved,
+                            "arm 99 is reserved",
+                        ));
                     }
                     Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
                 })
@@ -1754,12 +2057,19 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
             match maybe_ctx {
                 Ok(Some(ctx)) => {
                     if ctx.request().data.arm_id == 8 {
-                        // Wait for the cancel, then report the cancelled result.
+                        // Wait for the cancel, then end the goal cancelled
+                        // with the reason of its cause.
                         ctx.cancel_signal().await;
                         println!("server observed cancel for goal");
+                        let reason = ctx.cancel_cause().expect("the goal is cancelled").reason();
                         let _ = ctx
-                            .complete_cancelled(false, Some("goal cancelled by server".to_owned()), [0, 0, 0])
+                            .complete_cancelled(reason, false, Some("goal cancelled by server".to_owned()), [0, 0, 0])
                             .await;
+                    } else if ctx.request().data.arm_id == 9 {
+                        let _ = ctx
+                            .fail(move_arm::FailureKind::Unreachable, "no plan to [500, 500, 500]")
+                            .await;
+                        println!("server failed goal");
                     } else {
                         let feedback_message = [7, 31, 43];
                         let _ = ctx.publish_feedback(feedback_message).await;
@@ -1811,15 +2121,17 @@ fn main() -> Result<()> {
     )
     .await;
     assert!(
-        consumer_stdout
-            .contains("rejected goal accepted=false reason=Some(\"arm 99 is reserved\")")
-            && consumer_stdout.contains("goal accepted=true data_accepted=true")
+        consumer_stdout.contains(
+            "refused goal accepted=false kind=arm_reserved message=arm 99 is reserved data_present=false"
+        ) && consumer_stdout.contains("goal accepted=true data_accepted=true")
             && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
             && consumer_stdout.contains("result success=true final_position=[98, 4, 26]")
             && consumer_stdout.contains("cancel signalled=true")
             && consumer_stdout.contains(
-                "cancelled result success=false error=Some(\"goal cancelled by server\")"
-            ),
+                "cancelled result reason=cancelled by its caller success=false error=Some(\"goal cancelled by server\")"
+            )
+            && consumer_stdout
+                .contains("failed result kind=unreachable message=no plan to [500, 500, 500]"),
         "consumer did not complete the contract-addressed action lifecycle.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr
@@ -1831,7 +2143,8 @@ fn main() -> Result<()> {
             && exposer_stdout.contains("server emitted feedback message [7, 31, 43]")
             && exposer_stdout.contains("server completed goal")
             && exposer_stdout.contains("server received goal arm_id=8 desired=[1, 2, 3]")
-            && exposer_stdout.contains("server observed cancel for goal"),
+            && exposer_stdout.contains("server observed cancel for goal")
+            && exposer_stdout.contains("server failed goal"),
         "exposer did not process the contract-addressed action endpoints as expected.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
@@ -1846,7 +2159,8 @@ fn main() -> Result<()> {
 /// producer and completes with a pinned result the consumer reads as a
 /// generic vector. A goal carrying two joints is valid for the contract but
 /// not for the producer's pinned shape: the generated server answers it with
-/// a rejection carrying the decode error, never hands it to the node's goal
+/// a refusal of the kind `rejected` carrying the decode error, never hands it
+/// to the node's goal
 /// handler, and keeps serving, which a third goal proves. Runs the peer
 /// topology only; the transport topology is orthogonal to what is under
 /// test here.
@@ -1918,7 +2232,7 @@ async fn fire(node_runner: &peppygen::NodeRunner, arm_id: u16, joint_positions: 
         // The consumer's generated request carries the contract's generic
         // vector; the length is whatever the caller passes.
         joints::GoalRequest { arm_id, joint_positions },
-        peppygen::QoSProfile::SensorData,
+        peppygen::DEFAULT_FEEDBACK_BOUND,
     ).await
 }
 
@@ -1936,15 +2250,18 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     }
 
     // Two joints: the contract admits it, the producer's pinned shape does
-    // not, and the answer is a rejection carrying the decode error.
-    let rejected = fire(node_runner, 2, vec![0.1, 0.2]).await?;
+    // not, and the answer is a refusal of the kind `rejected` carrying the
+    // decode error.
+    let refused = fire(node_runner, 2, vec![0.1, 0.2]).await?;
+    let refusal = refused.refusal.as_ref().expect("the goal is refused");
     println!(
-        "goal 2 accepted={} reason={:?}",
-        rejected.accepted,
-        rejected.reason.as_deref()
+        "goal 2 accepted={} kind={} message={}",
+        refused.accepted,
+        refusal.kind,
+        refusal.message
     );
 
-    // The producer kept serving after the rejection.
+    // The producer kept serving after the refusal.
     let mut handle = fire(node_runner, 3, vec![0.4, 0.5, 0.6]).await?;
     println!("goal 3 accepted={}", handle.accepted);
     let result = handle.get_result(Duration::from_secs(5)).await?;
@@ -1988,6 +2305,7 @@ fn main() -> Result<()> {
                         link_id: "arm_impl".to_string(),
                         contract_name: JOINTS_CONTRACT_NAME.to_string(),
                         contract_tag: "v1".to_string(),
+                        failure_kinds: Default::default(),
                     }),
                 )
                 .unwrap();
@@ -2075,7 +2393,7 @@ fn main() -> Result<()> {
     for needle in [
         "goal 1 accepted=true",
         "result 1 success=true final=[1.0, 2.0, 3.0]",
-        "goal 2 accepted=false reason=Some(\"goal request does not decode: ",
+        "goal 2 accepted=false kind=rejected message=goal request does not decode: ",
         "invalid fixed list length for field 'joint_positions': expected 3, got 2",
         "goal 3 accepted=true",
         "result 3 success=true",

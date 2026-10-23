@@ -235,7 +235,7 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        enable_camera::handle_next_request(&node_runner, |request| -> Result<enable_camera::Response> {
+        enable_camera::handle_next_request(&node_runner, |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
             println!("received enable_camera request from {}: enable = {}", request.instance_id, request.data.enable);
             Ok(enable_camera::Response::new(
                 request.data.enable,
@@ -317,7 +317,7 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        get_system_status::handle_next_request(&node_runner, |request| -> Result<get_system_status::Response> {
+        get_system_status::handle_next_request(&node_runner, |request| -> std::result::Result<get_system_status::Response, get_system_status::Failure> {
             println!("received get_system_status request from {}", request.instance_id);
             Ok(get_system_status::Response::new(true))
         })
@@ -423,7 +423,7 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        enable_camera::handle_next_request(&node_runner, |request| -> Result<enable_camera::Response> {
+        enable_camera::handle_next_request(&node_runner, |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
             println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
             Ok(enable_camera::Response::new(
                 request.data.enable,
@@ -455,7 +455,7 @@ use peppygen::Result;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
-        enable_camera::handle_next_request(&node_runner, |request| -> Result<enable_camera::Response> {
+        enable_camera::handle_next_request(&node_runner, |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
             println!("received enable_camera request for {}: {}", request.instance_id, request.data.enable);
             Ok(enable_camera::Response::new(
                 request.data.enable,
