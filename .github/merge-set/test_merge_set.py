@@ -26,6 +26,7 @@ from unittest.mock import patch
 import merge_set
 from merge_set import (
     PEPPY,
+    PUBLIC_PEPPY_LIBS,
     SIM_CHAT,
     AccessRefusal,
     Action,
@@ -175,14 +176,20 @@ def set_record_text(hubs, peppy=None):
 
 
 class Repositories(unittest.TestCase):
-    def test_peppy_merges_first_then_the_hubs_by_repository_id_then_sim_chat(self):
+    def test_peppy_merges_first_then_the_libs_then_the_hubs_then_sim_chat(self):
         self.assertEqual(
             [repository.name for repository in merge_set.REPOSITORIES],
-            ["peppy", *(hub.name for hub in resolve.HUBS), "sim-chat"],
+            [
+                "peppy",
+                "public-peppy-libs",
+                *(hub.name for hub in resolve.HUBS),
+                "sim-chat",
+            ],
         )
 
     def test_each_repository_merges_into_its_integration_branch(self):
         self.assertEqual(PEPPY.integration_branch, "dev")
+        self.assertEqual(PUBLIC_PEPPY_LIBS.integration_branch, "main")
         self.assertEqual(SIM_CHAT.integration_branch, "main")
         for hub in resolve.HUBS:
             with self.subTest(hub=hub.name):
@@ -190,9 +197,10 @@ class Repositories(unittest.TestCase):
                 self.assertEqual(repository.integration_branch, "main")
                 self.assertIs(repository.hub, hub)
 
-    def test_peppy_and_sim_chat_are_no_hubs(self):
-        self.assertIsNone(PEPPY.hub)
-        self.assertIsNone(SIM_CHAT.hub)
+    def test_peppy_the_libs_and_sim_chat_are_no_hubs(self):
+        for repository in (PEPPY, PUBLIC_PEPPY_LIBS, SIM_CHAT):
+            with self.subTest(repository=repository.name):
+                self.assertIsNone(repository.hub)
 
     def test_a_pull_request_from_an_integration_branch_names_no_set(self):
         for repository in merge_set.REPOSITORIES:
@@ -207,8 +215,8 @@ class Repositories(unittest.TestCase):
     def test_the_token_reaches_every_repository_of_a_set(self):
         self.assertEqual(
             merge_set.repository_list(),
-            "peppy,nodes-hub,launchers-hub,contracts-hub,mcp-hub,pairings-hub,"
-            "private-nodes-hub,sim-chat",
+            "peppy,public-peppy-libs,nodes-hub,launchers-hub,contracts-hub,"
+            "mcp-hub,pairings-hub,private-nodes-hub,sim-chat",
         )
 
     def test_a_repository_outside_every_set_is_refused(self):
@@ -218,6 +226,10 @@ class Repositories(unittest.TestCase):
     def test_a_full_name_names_a_repository_of_a_set_or_none(self):
         self.assertIs(merge_set.repository_of_full_name("Peppy-bot/peppy"), PEPPY)
         self.assertIs(merge_set.repository_of_full_name("peppy-bot/peppy"), PEPPY)
+        self.assertIs(
+            merge_set.repository_of_full_name("Peppy-bot/public-peppy-libs"),
+            PUBLIC_PEPPY_LIBS,
+        )
         self.assertIs(merge_set.repository_of_full_name("Peppy-bot/sim-chat"), SIM_CHAT)
         self.assertIsNone(merge_set.repository_of_full_name("someone/peppy"))
         self.assertIsNone(merge_set.repository_of_full_name("Peppy-bot/landing-page"))
@@ -462,20 +474,24 @@ class Relay(unittest.TestCase):
         self.assertEqual(calls, [self.DISPATCH])
         self.assertIn(RELAY_RUN_URL, text)
 
-    def test_the_relay_starts_the_sync_for_an_event_of_sim_chat(self):
-        payload = pull_request_event(
-            "synchronize", head_repository="Peppy-bot/sim-chat"
-        )
-        payload["repository"]["full_name"] = "Peppy-bot/sim-chat"
-        text, calls = self.relay("pull_request", payload)
+    def test_the_relay_starts_the_sync_for_an_event_of_the_libs_or_sim_chat(self):
         token, method, path, body = self.DISPATCH
-        inputs = {
-            **body["inputs"],
-            "repository": "sim-chat",
-            "head-repository": "Peppy-bot/sim-chat",
-        }
-        self.assertEqual(calls, [(token, method, path, {**body, "inputs": inputs})])
-        self.assertIn(RELAY_RUN_URL, text)
+        for repository in (PUBLIC_PEPPY_LIBS, SIM_CHAT):
+            with self.subTest(repository=repository.name):
+                payload = pull_request_event(
+                    "synchronize", head_repository=repository.full_name
+                )
+                payload["repository"]["full_name"] = repository.full_name
+                text, calls = self.relay("pull_request", payload)
+                inputs = {
+                    **body["inputs"],
+                    "repository": repository.name,
+                    "head-repository": repository.full_name,
+                }
+                self.assertEqual(
+                    calls, [(token, method, path, {**body, "inputs": inputs})]
+                )
+                self.assertIn(RELAY_RUN_URL, text)
 
     def test_the_relay_reads_the_branch_of_a_dashboard_edit(self):
         edit = comment_edit(before=dashboard_text(), after=dashboard_text() + "x")
@@ -1254,16 +1270,22 @@ class Freshness(unittest.TestCase):
         run = hub_run(NODES_HUB, records=[JobRecord("check-index", tested)])
         self.assertEqual(merge_set.stale_jobs(state, [run], no_clean_base_merge), [])
 
-    def test_the_sim_chat_branch_of_the_set_makes_no_job_stale(self):
-        # No job reads sim-chat, so its head is in no set record.
+    def test_the_libs_and_sim_chat_branches_of_the_set_make_no_job_stale(self):
+        # No job reads them, so their heads are in no set record.
         state = set_state(
-            *self.state().members, member(SIM_CHAT, pull_request(SIM_CHAT))
+            *self.state().members,
+            member(PUBLIC_PEPPY_LIBS, pull_request(PUBLIC_PEPPY_LIBS)),
+            member(SIM_CHAT, pull_request(SIM_CHAT)),
         )
         run = hub_run(
             NODES_HUB, records=[JobRecord("check-index", self.fresh_record())]
         )
         self.assertEqual(merge_set.stale_jobs(state, [run], no_clean_base_merge), [])
-        self.assertIsNone(merge_set.tested_ref_of(self.fresh_record(), SIM_CHAT))
+        for repository in (PUBLIC_PEPPY_LIBS, SIM_CHAT):
+            with self.subTest(repository=repository.name):
+                self.assertIsNone(
+                    merge_set.tested_ref_of(self.fresh_record(), repository)
+                )
 
     def test_an_expired_record_is_stale(self):
         stale = self.stale_of(None)
@@ -2547,14 +2569,17 @@ class SyncMerge(unittest.TestCase):
         self.assertIn("as @bob, @alice asked", report_text)
 
 
-class SyncSimChat(unittest.TestCase):
-    """A set of nodes-hub and sim-chat: the hub run read nodes-hub at its head
-    and the dev build of peppy `dev`, as peppy has no branch of the set."""
+class SyncLibsAndSimChat(unittest.TestCase):
+    """A set of public-peppy-libs, nodes-hub and sim-chat: the hub run read
+    nodes-hub at its head and the dev build of peppy `dev`, as peppy has no
+    branch of the set. The libs open last, so the merge order is the bot's
+    own."""
 
     def setUp(self):
         self.github = FakeGitHub(self)
         self.nodes = self.github.open_pull_request(NODES_HUB, 88)
         self.chat = self.github.open_pull_request(SIM_CHAT, 61)
+        self.libs = self.github.open_pull_request(PUBLIC_PEPPY_LIBS, 160)
         tested = TestedSet(
             hubs={"nodes-hub": TestedRef("checkout", self.nodes.head_commit)},
             peppy=TestedRef("dev", commit(PEPPY, "dev")),
@@ -2565,21 +2590,22 @@ class SyncSimChat(unittest.TestCase):
         sync(self.github)
 
     def test_the_set_is_ready_when_the_hub_runs_read_the_head_of_each_hub(self):
-        for pr in (self.nodes, self.chat):
+        for pr in (self.libs, self.nodes, self.chat):
             with self.subTest(pr=pr.label):
                 body = self.github.dashboard_body(pr)
                 self.assertIn("**Ready to merge.**", body)
+                self.assertIn(f"| public-peppy-libs | [#160]({self.libs.url}) |", body)
                 self.assertIn(f"| sim-chat | [#61]({self.chat.url}) |", body)
                 self.assertNotIn("CI out of date", body)
                 self.assertEqual(self.github.gates(pr)[-1].state, "pending")
 
-    def test_the_set_merges_sim_chat_last(self):
+    def test_the_set_merges_the_libs_before_the_hubs_and_sim_chat_last(self):
         (comment,) = self.github.comments_on(self.chat)
         self.github.tick(comment, Action.MERGE, "alice")
         sync(self.github)
         self.assertEqual(
             [label for label, _ in self.github.merged],
-            ["nodes-hub#88", "sim-chat#61"],
+            ["public-peppy-libs#160", "nodes-hub#88", "sim-chat#61"],
         )
 
 
