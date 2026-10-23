@@ -90,7 +90,7 @@ async fn gather(ctx: &Arc<AppContext>) -> Result<Gathered> {
                 &ClockListRequest::new(),
                 messenger,
                 caller,
-                crate::commands::CALLER_INSTANCE_ID,
+                crate::commands::caller_instance_id(),
                 &core_node,
                 REQUEST_TIMEOUT,
             )

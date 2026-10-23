@@ -8,7 +8,7 @@ use core_node_api::encoding::{
     NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, ObservationTarget,
     ObservationTargets, PairTarget, StackListRequest,
 };
-use core_node_api::{ActionId, InstanceState, NodeStage};
+use core_node_api::{InstanceState, NodeStage};
 use daemon_config::launcher::{
     BindingValidationItem, CopyMembership, DeploymentInstance, LinkValue, PairingValidationItem,
     Placements, SETS_READ_WHOLE, Selection, WALL_CLOCK, split_link_target, validate_link_plan,
@@ -24,7 +24,7 @@ use std::time::Duration;
 use tokio::time::{Instant, sleep};
 use tracing::info;
 
-use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
+use crate::commands::{GOAL_TIMEOUT, caller_instance_id};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -88,6 +88,7 @@ fn remaining_timeouts(
     Ok(TimeoutConfig {
         idle_secs: timeouts.idle_secs,
         max_secs,
+        flags: timeouts.flags,
     })
 }
 
@@ -133,7 +134,7 @@ async fn wait_for_build_to_finish(
             &NodeInfoRequest::new(node_name.to_string(), tag.to_string()),
             messenger,
             core_node_name,
-            CALLER_INSTANCE_ID,
+            caller_instance_id(),
             core_node_name,
             NODE_INFO_PREFLIGHT_TIMEOUT,
         )
@@ -535,7 +536,7 @@ async fn search_federation(
             &ClockListRequest::new(),
             messenger,
             caller_core_node,
-            CALLER_INSTANCE_ID,
+            caller_instance_id(),
             &claim.core_node,
             NODE_INFO_PREFLIGHT_TIMEOUT,
         )
@@ -640,7 +641,7 @@ async fn validate_links_against_stack(
         &StackListRequest::new(),
         messenger,
         core_node_name,
-        CALLER_INSTANCE_ID,
+        caller_instance_id(),
         core_node_name,
         NODE_INFO_PREFLIGHT_TIMEOUT,
     )
@@ -681,7 +682,7 @@ async fn validate_links_against_stack(
             &NodeInfoRequest::new(node.name.clone(), node.tag.clone()),
             messenger,
             core_node_name,
-            CALLER_INSTANCE_ID,
+            caller_instance_id(),
             core_node_name,
             NODE_INFO_PREFLIGHT_TIMEOUT,
         )
@@ -785,7 +786,7 @@ async fn validate_links_against_stack(
             &NodeInfoRequest::new(target_name.to_owned(), target_tag.to_owned()),
             messenger,
             core_node_name,
-            CALLER_INSTANCE_ID,
+            caller_instance_id(),
             core_node_name,
             NODE_INFO_PREFLIGHT_TIMEOUT,
         )
@@ -1092,7 +1093,7 @@ pub async fn run_instance_async(
         &start_goal,
         messenger_handle,
         core_node_name,
-        CALLER_INSTANCE_ID,
+        caller_instance_id(),
         Some(core_node_name),
         GOAL_TIMEOUT,
     )
@@ -1103,12 +1104,7 @@ pub async fn run_instance_async(
         NodeRunGoalResponse,
         NodeRunFeedback,
         NodeRunResult,
-    >(
-        messenger_handle,
-        &mut action_handle,
-        timeouts,
-        ActionId::NodeRun.name(),
-    )
+    >(messenger_handle, &mut action_handle, timeouts, "Node run")
     .await?;
 
     if let Some(pid) = start_result.pid {
@@ -1178,7 +1174,7 @@ async fn run_node_async(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<
             &NodeInfoRequest::new(node_name.clone(), tag.clone()),
             conn.messenger,
             &conn.core_node_name,
-            CALLER_INSTANCE_ID,
+            caller_instance_id(),
             &conn.core_node_name,
             NODE_INFO_PREFLIGHT_TIMEOUT,
         )

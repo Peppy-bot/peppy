@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
-use crate::commands::CALLER_INSTANCE_ID;
+use crate::commands::caller_instance_id;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use core_node_api::names::CORE_NODE_TAG;
@@ -51,22 +51,14 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
         &stop_request,
         conn.messenger,
         &conn.core_node_name,
-        CALLER_INSTANCE_ID,
+        caller_instance_id(),
         SenderTarget::node(&conn.target_core_node, CORE_NODE_TAG)
             .map_err(|e| Error::ExecutionFailed(format!("Failed to build sender target: {e}")))?,
         &conn.target_core_node,
         request_timeout,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_stop service: {}", e)))?;
-
-    if !stop_response.success {
-        return Err(Error::ExecutionFailed(
-            stop_response
-                .error_message
-                .unwrap_or_else(|| "node_stop failed with no error message".to_string()),
-        ));
-    }
+    .map_err(|e| crate::commands::request_error("Failed to stop the node instance", e))?;
 
     if stop_response.force_killed {
         warn_force_killed(&instance_id);

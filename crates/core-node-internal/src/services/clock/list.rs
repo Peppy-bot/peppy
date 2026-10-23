@@ -13,14 +13,14 @@ use core_node_api::encoding::{
 };
 use core_node_api::{ServiceId, names};
 use node_stack::{InstanceClock, NodeStack};
+use peppylib::messaging::ServiceAnswer;
 use peppylib::messaging::{SenderTarget, ServiceRequestContext};
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use tokio::task::JoinHandle;
 
 use super::watch::{ClockWatches, HostedDomain};
 use crate::Result;
-use crate::services::response::into_service_response;
+use crate::services::response::into_service_answer;
 
 pub(crate) async fn listen_for_clock_list(
     messenger: &MessengerHandle,
@@ -89,9 +89,9 @@ async fn handle_clock_list(
     instance_id: &str,
     node_stack: &NodeStack,
     watches: &ClockWatches,
-) -> PeppyResult<Payload> {
+) -> ServiceAnswer {
     if let Err(error) = ClockListRequest::decode(context.message().payload_bytes().as_ref()) {
-        return into_service_response(&context, Err(error.into()));
+        return into_service_answer(Err(error.into()));
     }
 
     let (publishers, consumers) = hosted_and_reading(node_stack.instance_clocks());
@@ -122,8 +122,7 @@ async fn handle_clock_list(
         }
     }
 
-    into_service_response(
-        &context,
+    into_service_answer(
         ClockListResponse {
             domains: domain_listing(&publishers, &watches.snapshot()),
             consumers,

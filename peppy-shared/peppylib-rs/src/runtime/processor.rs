@@ -2355,7 +2355,7 @@ mod tests {
                 ),
             },
         );
-        assert!(!response.accepted, "{response:?}");
+        assert!(response.is_err(), "{response:?}");
         assert_eq!(
             processor.sole_bound_producer("main").instance_id,
             "camera_1"
@@ -2387,7 +2387,7 @@ mod tests {
             )
         };
 
-        assert!(deliver(1, vec![camera_3.clone()]).accepted);
+        assert!(deliver(1, vec![camera_3.clone()]).is_ok());
         assert_eq!(
             instance_ids(&processor.bound_producers("spare_cameras")),
             ["camera_3"]
@@ -2396,7 +2396,7 @@ mod tests {
             .ensure_target_bound("spare_cameras", &camera_3)
             .expect("a delivered member passes the membership check");
 
-        assert!(deliver(2, Vec::new()).accepted);
+        assert!(deliver(2, Vec::new()).is_ok());
         assert!(processor.bound_producers("spare_cameras").is_empty());
         assert!(
             processor

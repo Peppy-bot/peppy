@@ -9,7 +9,7 @@ use futures::future::join_all;
 use peppylib::core_node::transport::poll;
 
 use super::goal::drive_stack_goal;
-use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
+use crate::commands::{GOAL_TIMEOUT, caller_instance_id};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -26,7 +26,7 @@ pub(super) fn remove(ctx: &Arc<AppContext>, name: CopyName) -> Result<()> {
             &core_node_api::encoding::StackListRequest::new(),
             conn.messenger,
             &conn.core_node_name,
-            CALLER_INSTANCE_ID,
+            caller_instance_id(),
             &conn.target_core_node,
             GOAL_TIMEOUT,
         )
@@ -51,7 +51,7 @@ pub(super) fn remove(ctx: &Arc<AppContext>, name: CopyName) -> Result<()> {
                         &core_node_api::encoding::StackListRequest::new(),
                         conn.messenger,
                         &conn.core_node_name,
-                        CALLER_INSTANCE_ID,
+                        caller_instance_id(),
                         machine.as_str(),
                         HOST_PROBE_TIMEOUT,
                     )

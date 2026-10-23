@@ -27,20 +27,22 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::ActionGoal;
 use core_node_api::encoding::{
     LaunchFeedbackStep, NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult,
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback,
     NodeRunGoal, NodeRunGoalResponse, NodeRunResult, ParticipantSliceBeginRequest,
 };
-use peppylib::ActionMessenger;
 use peppylib::core_node::transport::{poll, send_goal};
-use peppylib::messaging::ActionGoalHandle;
+use peppylib::messaging::{ActionGoalHandle, Failure, GoalAnswer};
+use peppylib::{ActionMessenger, PeppyError};
 
 use super::super::feedback::{publish_relayed, publish_stdout, publish_warning};
 use super::super::watchers::{LifecycleWatchers, set_local_watchers};
+use crate::services::response::{failure, rephrased};
 use crate::services::stack::action::StackChangeContext;
-use crate::services::stack::stack_list_on;
+use crate::services::stack::{peer_failure, stack_list_on};
 
 /// Bound on a peer accepting a dispatched goal. Accepting is a cheap
 /// admission check on the peer, so a healthy one answers well inside this; the
@@ -98,11 +100,11 @@ pub(in crate::services::stack) trait RemoteGoal: ActionGoal {
     type Outcome;
 
     fn label() -> &'static str;
-    /// Decodes the peer's goal response: the log file the peer created for
-    /// this goal, on its own filesystem, when it accepted, and the rejection
-    /// reason when it refused.
+    /// Decodes the goal response of a peer that accepted the goal: the log
+    /// file the peer created for it, on its own filesystem.
     fn decode_acceptance(payload: &[u8]) -> std::result::Result<PathBuf, String>;
     fn decode_feedback_line(payload: &[u8]) -> Option<String>;
+    /// Decodes the result of a goal the peer completed.
     fn decode_outcome(payload: &[u8]) -> std::result::Result<Self::Outcome, String>;
 }
 
@@ -118,14 +120,9 @@ macro_rules! impl_remote_goal {
             }
 
             fn decode_acceptance(payload: &[u8]) -> std::result::Result<PathBuf, String> {
-                let response = <$response>::decode(payload)
-                    .map_err(|e| format!("undecodable {} goal response: {e}", $label))?;
-                if response.accepted {
-                    return Ok(response.log_path);
-                }
-                Err(response
-                    .rejection_reason
-                    .unwrap_or_else(|| format!("{} was rejected with no reason given", $label)))
+                <$response>::decode(payload)
+                    .map(|response| response.log_path)
+                    .map_err(|e| format!("undecodable {} goal response: {e}", $label))
             }
 
             fn decode_feedback_line(payload: &[u8]) -> Option<String> {
@@ -133,14 +130,9 @@ macro_rules! impl_remote_goal {
             }
 
             fn decode_outcome(payload: &[u8]) -> std::result::Result<Self::Outcome, String> {
-                let result = <$result>::decode(payload)
-                    .map_err(|e| format!("undecodable {} result: {e}", $label))?;
-                if !result.success {
-                    return Err(result
-                        .error_message
-                        .unwrap_or_else(|| format!("{} failed with no error message", $label)));
-                }
-                Ok($take(result))
+                <$result>::decode(payload)
+                    .map($take)
+                    .map_err(|e| format!("undecodable {} result: {e}", $label))
             }
         }
     };
@@ -194,18 +186,48 @@ pub(in crate::services::stack) struct RemoteGoalRun<T> {
 /// Why an accepted goal produced no outcome.
 #[derive(Debug)]
 pub(in crate::services::stack) enum RemoteGoalFailure {
-    /// The peer answered: the goal failed there.
-    Reported(String),
-    /// This coordinator's budget ended first. The peer was told to cancel
-    /// the goal, and what it holds for the node is known only by asking it.
-    Unresolved(String),
+    /// The peer answered: the goal failed there, or ended cancelled, with
+    /// this failure.
+    Reported(Failure),
+    /// This coordinator's budget ended first, the peer went silent, or the
+    /// stack change was cancelled. The peer was told to cancel the goal, and
+    /// what it holds for the node is known only by asking it.
+    Unresolved(Failure),
+}
+
+impl RemoteGoalFailure {
+    pub(in crate::services::stack) fn failure(&self) -> &Failure {
+        match self {
+            Self::Reported(failure) | Self::Unresolved(failure) => failure,
+        }
+    }
 }
 
 impl std::fmt::Display for RemoteGoalFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Reported(reason) | Self::Unresolved(reason) => f.write_str(reason),
-        }
+        f.write_str(self.failure().message())
+    }
+}
+
+/// The failure of a goal a peer ended without its result, as the
+/// coordinator reads the error of its result request: the peer's failure
+/// keeps its kind, a goal the peer ended cancelled did not give its result,
+/// and any other error leaves the goal unresolved.
+fn ended_without_result<G: RemoteGoal>(core_node: &str, error: PeppyError) -> RemoteGoalFailure {
+    let label = G::label();
+    match error {
+        PeppyError::ActionGoalFailed { failure, .. } => RemoteGoalFailure::Reported(rephrased(
+            &failure,
+            format!("`{core_node}`: {}", failure.message()),
+        )),
+        PeppyError::ActionGoalCancelled { reason, .. } => RemoteGoalFailure::Reported(failure(
+            PeppyFailureKind::AttemptFailed,
+            format!("`{core_node}` ended the {label} cancelled: {reason}"),
+        )),
+        other => RemoteGoalFailure::Unresolved(peer_failure(
+            &other,
+            format!("`{core_node}` {label}: {other}"),
+        )),
     }
 }
 
@@ -213,7 +235,11 @@ impl std::fmt::Display for RemoteGoalFailure {
 /// feedback into this launch's stream.
 ///
 /// Returns `Err` only when the peer never accepted the goal (the send failed
-/// or the peer refused), which is the one case with no log file to name.
+/// or the peer refused), which is the one case with no log file to name. A
+/// refusal keeps the kind the peer gave it.
+///
+/// A cancel of the stack change ends the wait as a budget that ran out does:
+/// the peer is told to cancel the goal.
 ///
 /// `idle_timeout` is the same per-phase budget the in-process path uses, but
 /// measured against RELAYED feedback rather than local subprocess output: a
@@ -226,7 +252,8 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
     core_node: &str,
     goal: &G,
     idle_timeout: Duration,
-) -> std::result::Result<RemoteGoalRun<G::Outcome>, String> {
+) -> std::result::Result<RemoteGoalRun<G::Outcome>, Failure> {
+    let label = G::label();
     let mut handle = send_goal(
         goal,
         &ctx.messenger,
@@ -236,26 +263,55 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
         GOAL_ACCEPT_TIMEOUT,
     )
     .await
-    .map_err(|e| format!("`{core_node}` did not accept the {} goal: {e}", G::label()))?;
+    .map_err(|e| {
+        peer_failure(
+            &e,
+            format!("`{core_node}` did not accept the {label} goal: {e}"),
+        )
+    })?;
 
-    let log_path = G::decode_acceptance(handle.goal_reply().body.as_ref())
-        .map_err(|reason| format!("`{core_node}` refused the {}: {reason}", G::label()))?;
+    let response = match &handle.goal_reply().answer {
+        GoalAnswer::Accepted(response) => response,
+        GoalAnswer::Refused(refusal) => {
+            return Err(rephrased(
+                refusal,
+                format!("`{core_node}` refused the {label}: {}", refusal.message()),
+            ));
+        }
+    };
+    let log_path = G::decode_acceptance(response.as_ref()).map_err(|reason| {
+        failure(
+            PeppyFailureKind::AttemptFailed,
+            format!("`{core_node}` accepted the {label}: {reason}"),
+        )
+    })?;
 
     let outcome = async {
         let mut last_activity = tokio::time::Instant::now();
         loop {
             let now = tokio::time::Instant::now();
+            if ctx.cancellation.is_cancelled() {
+                return Err(RemoteGoalFailure::Unresolved(failure(
+                    PeppyFailureKind::AttemptFailed,
+                    format!(
+                        "the {} was cancelled while `{core_node}` was running {label}",
+                        ctx.action.label()
+                    ),
+                )));
+            }
             if ctx.change_deadline.is_some_and(|deadline| now >= deadline) {
-                return Err(RemoteGoalFailure::Unresolved(format!(
-                    "max timeout exceeded while `{core_node}` was running {}",
-                    G::label()
+                return Err(RemoteGoalFailure::Unresolved(failure(
+                    PeppyFailureKind::Timeout,
+                    format!("max timeout exceeded while `{core_node}` was running {label}"),
                 )));
             }
             if now.duration_since(last_activity) >= idle_timeout {
-                return Err(RemoteGoalFailure::Unresolved(format!(
-                    "`{core_node}` produced no {} output for {}s",
-                    G::label(),
-                    idle_timeout.as_secs()
+                return Err(RemoteGoalFailure::Unresolved(failure(
+                    PeppyFailureKind::Timeout,
+                    format!(
+                        "`{core_node}` produced no {label} output for {}s",
+                        idle_timeout.as_secs()
+                    ),
                 )));
             }
 
@@ -269,14 +325,20 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
                 Some(deadline) => idle_expiry.min(deadline),
                 None => idle_expiry,
             };
-            match tokio::time::timeout_at(wake_at, handle.on_next_feedback()).await {
+            let next = tokio::select! {
+                biased;
+                // The cancel is re-checked at the top of the loop.
+                () = ctx.cancellation.cancelled() => continue,
+                next = tokio::time::timeout_at(wake_at, handle.on_next_feedback()) => next,
+            };
+            match next {
                 Ok(Ok(message)) => {
                     last_activity = tokio::time::Instant::now();
                     if let Some(line) = G::decode_feedback_line(message.payload_bytes().as_ref()) {
                         publish_relayed(ctx, format!("[{core_node}] {line}"), G::STEP).await;
                     }
                 }
-                // End of stream: the peer completed the goal.
+                // End of stream: the peer ended the goal.
                 Ok(Err(_)) => break,
                 // A budget elapsed with nothing to read; the checks above name it.
                 Err(_) => {}
@@ -293,12 +355,14 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
             .unwrap_or(GOAL_ACCEPT_TIMEOUT);
         let payload = ActionMessenger::request_result_body(&ctx.messenger, &handle, result_timeout)
             .await
-            .map_err(|reason| {
-                RemoteGoalFailure::Unresolved(format!("`{core_node}` {}: {reason}", G::label()))
-            })?;
+            .map_err(|error| ended_without_result::<G>(core_node, error))?;
 
-        G::decode_outcome(payload.as_ref())
-            .map_err(|reason| RemoteGoalFailure::Reported(format!("`{core_node}`: {reason}")))
+        G::decode_outcome(payload.as_ref()).map_err(|reason| {
+            RemoteGoalFailure::Reported(failure(
+                PeppyFailureKind::AttemptFailed,
+                format!("`{core_node}`: {reason}"),
+            ))
+        })
     }
     .await;
     if matches!(outcome, Err(RemoteGoalFailure::Unresolved(_))) {
@@ -346,22 +410,28 @@ async fn cancel_remote_goal<G: RemoteGoal>(
     )
     .await;
     let line = match ActionMessenger::request_result_body(&ctx.messenger, handle, budget).await {
-        Ok(payload) => match G::decode_outcome(payload.as_ref()) {
-            Ok(_) => format!("`{core_node}` finished the {label} after the budget"),
-            Err(reason) => format!("`{core_node}` ended the {label}: {reason}"),
+        Ok(_) => format!("`{core_node}` finished the {label} after the budget"),
+        Err(PeppyError::ActionGoalCancelled { reason, .. }) => {
+            format!("`{core_node}` ended the {label} cancelled: {reason}")
+        }
+        Err(error) => match error.failure() {
+            Some(ended) => format!("`{core_node}` ended the {label}: {}", ended.message()),
+            None => format!(
+                "`{core_node}` was told to cancel the {label} and has not answered for it: \
+                 {error}"
+            ),
         },
-        Err(error) => format!(
-            "`{core_node}` was told to cancel the {label} and has not answered for it: {error}"
-        ),
     };
     publish_warning(ctx, line, LaunchFeedbackStep::LauncherStep).await;
 }
 
 /// A slice-begin some participants did not take: the machines that refused
 /// keep the stack they had, so a rollback leaves them alone; a machine that
-/// did not answer may hold the slice, so a rollback clears it.
+/// did not answer may hold the slice, so a rollback clears it. The failure
+/// is `resource_unavailable` when a machine did not answer, else
+/// `precondition_failed`.
 pub(in crate::services::stack) struct SliceBeginRefusal {
-    pub(in crate::services::stack) reason: String,
+    pub(in crate::services::stack) failure: Failure,
     refusers: Vec<String>,
 }
 
@@ -422,12 +492,22 @@ pub(in crate::services::stack) async fn begin_participant_slices(
         request
     })
     .await
-    .map_err(|refusals| SliceBeginRefusal {
-        reason: format!(
-            "could not take over every participant's stack:\n  {}",
-            refusals.lines.join("\n  ")
-        ),
-        refusers: refusals.refusers,
+    .map_err(|refusals| {
+        let kind = if refusals.a_machine_did_not_answer {
+            PeppyFailureKind::ResourceUnavailable
+        } else {
+            PeppyFailureKind::PreconditionFailed
+        };
+        SliceBeginRefusal {
+            failure: failure(
+                kind,
+                format!(
+                    "could not take over every participant's stack:\n  {}",
+                    refusals.lines.join("\n  ")
+                ),
+            ),
+            refusers: refusals.refusers,
+        }
     })
 }
 
@@ -483,6 +563,7 @@ fn watchers_hosted_by(
 struct SliceRefusals {
     refusers: Vec<String>,
     lines: Vec<String>,
+    a_machine_did_not_answer: bool,
 }
 
 /// Asks each participant to hold this launch's slice, with the request
@@ -513,10 +594,11 @@ async fn ask_participant_slices(
     let mut refusals = SliceRefusals {
         refusers: Vec::new(),
         lines: Vec::new(),
+        a_machine_did_not_answer: false,
     };
     for (core_node, outcome) in outcomes {
         match outcome {
-            Ok(response) if response.ok => {
+            Ok(response) => {
                 for src in response.auto_created_mount_sources {
                     publish_warning(
                         ctx,
@@ -526,18 +608,20 @@ async fn ask_participant_slices(
                     .await;
                 }
             }
-            Ok(response) => {
-                refusals.lines.push(format!(
-                    "`{core_node}` refused: {}",
-                    response
-                        .rejection_reason
-                        .unwrap_or_else(|| "no reason given".to_owned())
-                ));
-                refusals.refusers.push(core_node);
-            }
-            Err(e) => refusals
-                .lines
-                .push(format!("`{core_node}` did not answer: {e}")),
+            Err(e) => match e.failure() {
+                Some(refusal) => {
+                    refusals
+                        .lines
+                        .push(format!("`{core_node}` refused: {}", refusal.message()));
+                    refusals.refusers.push(core_node);
+                }
+                None => {
+                    refusals.a_machine_did_not_answer = true;
+                    refusals
+                        .lines
+                        .push(format!("`{core_node}` did not answer: {e}"));
+                }
+            },
         }
     }
 
@@ -580,13 +664,7 @@ pub(in crate::services::stack) async fn clear_participant_slices(
         )
         .await;
         match outcome {
-            Ok(response) if response.success => None,
-            Ok(response) => Some(format!(
-                "`{core_node}`: {}",
-                response
-                    .error_message
-                    .unwrap_or_else(|| "reset reported failure".to_owned())
-            )),
+            Ok(_) => None,
             Err(e) => Some(format!("`{core_node}`: {e}")),
         }
     }))

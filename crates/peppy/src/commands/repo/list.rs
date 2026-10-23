@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use core_node_api::encoding::{RepoListNodeEntry, RepoListRepoEntry, RepoListRequest};
 
-use crate::commands::CALLER_INSTANCE_ID;
+use crate::commands::caller_instance_id;
 use crate::commands::colors::{ORANGE, RED, paint};
 use crate::commands::repo::REQUEST_TIMEOUT;
 use crate::context::AppContext;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use peppylib::core_node::transport::poll;
 
 pub(super) fn list_repos(ctx: &Arc<AppContext>) -> Result<()> {
@@ -21,19 +21,12 @@ async fn list_repos_async(ctx: &Arc<AppContext>) -> Result<()> {
         &RepoListRequest,
         conn.messenger,
         &conn.core_node_name,
-        CALLER_INSTANCE_ID,
+        caller_instance_id(),
         &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to list repositories: {}", e)))?;
-
-    if !response.success {
-        return Err(Error::ExecutionFailed(format!(
-            "Failed to list repositories: {}",
-            response.error_message.unwrap_or_default()
-        )));
-    }
+    .map_err(|e| crate::commands::request_error("Failed to list repositories", e))?;
 
     if response.repos.is_empty() {
         println!("No repositories configured. Run `peppy repo init` to add the defaults.");
@@ -96,7 +89,7 @@ fn print_repo_header(repo: &RepoListRepoEntry, node_count: usize, colorize: bool
     }
     println!("{header}");
 
-    if let Some(failure) = &repo.failure {
+    if let Some(failed_read) = &repo.failed_read {
         println!(
             "{}",
             paint(
@@ -104,7 +97,7 @@ fn print_repo_header(repo: &RepoListRepoEntry, node_count: usize, colorize: bool
                 RED,
                 &format!(
                     "  last refresh failed ({}): {}",
-                    failure.kind, failure.detail
+                    failed_read.read_failure, failed_read.detail
                 ),
             )
         );

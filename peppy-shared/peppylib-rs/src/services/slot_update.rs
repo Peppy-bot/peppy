@@ -12,7 +12,7 @@
 //! decode, the slot key, and the whole slot state one absolute request
 //! asserts. The daemon-only guard, the sequence gate, unknown-slot rejection,
 //! the cardinality gate, and the shared [`SlotUpdateResponse`] ack live here
-//! once.
+//! once. Every refusal is an error reply with the failure kind `rejected`.
 
 use crate::encoding::slot_update::SlotUpdateResponse;
 use crate::messaging::{Failure, SenderTarget, ServiceAnswer, ServiceRequestContext};
@@ -155,8 +155,6 @@ fn handle_slot_update_request<U>(
 where
     U: SlotUpdate,
 {
-    let encode_failure =
-        |err: PeppyError| Failure::new(PeppyFailureKind::AttemptFailed, err.to_string());
     let caller_core_node = context.message().core_node();
     if caller_core_node != daemon_core_node {
         warn!(
@@ -165,16 +163,14 @@ where
             caller_instance_id = %context.message().instance_id(),
             "slot update from a caller outside this node's daemon; rejecting"
         );
-        return SlotUpdateResponse::rejected(format!(
+        return Err(refusal(format!(
             "{} is daemon-only: caller core_node '{caller_core_node}' is not this node's daemon \
              '{daemon_core_node}'",
             U::SERVICE
-        ))
-        .encode()
-        .map_err(encode_failure);
+        )));
     }
-    let request = U::decode_request(&context.message().payload_bytes())
-        .map_err(|err| Failure::new(PeppyFailureKind::Rejected, err.to_string()))?;
+    let request =
+        U::decode_request(&context.message().payload_bytes()).map_err(|err| refusal(err))?;
     debug!(
         service = U::SERVICE,
         link_id = %request.link_id(),
@@ -183,17 +179,23 @@ where
         "received slot update from {}",
         context.message().instance_id(),
     );
-    apply_slot_update::<U>(slots, &request)
+    apply_slot_update::<U>(slots, &request)?
         .encode()
-        .map_err(encode_failure)
+        .map_err(|err: PeppyError| Failure::new(PeppyFailureKind::AttemptFailed, err.to_string()))
 }
 
-/// Applies one absolute-state update to the slot's watch channel. Split from the
-/// service handler so tests can drive it without a wire round-trip.
+/// The error reply of a refused delivery.
+fn refusal(reason: impl ToString) -> Failure {
+    Failure::new(PeppyFailureKind::Rejected, reason.to_string())
+}
+
+/// Applies one absolute-state update to the slot's watch channel, or gives
+/// the refusal of a delivery the slot does not take. Split from the service
+/// handler so tests can drive it without a wire round-trip.
 pub(crate) fn apply_slot_update<U>(
     slots: &BTreeMap<String, SlotChannel<U::State>>,
     request: &U,
-) -> SlotUpdateResponse
+) -> Result<SlotUpdateResponse, Failure>
 where
     U: SlotUpdate,
 {
@@ -203,11 +205,11 @@ where
             link_id = %request.link_id(),
             "slot update names an undeclared slot; rejecting"
         );
-        return SlotUpdateResponse::rejected(format!(
+        return Err(refusal(format!(
             "this node holds no {} `{}`; {DISAGREEMENT_REMEDY}",
             U::SLOT_NOUN,
             request.link_id()
-        ));
+        )));
     };
     let asserted = request.to_state();
     let members = U::member_count(&asserted);
@@ -219,11 +221,11 @@ where
             cardinality = slot.cardinality().as_str(),
             "slot update carries a member count the slot's cardinality forbids; rejecting"
         );
-        return SlotUpdateResponse::rejected(format!(
+        return Err(refusal(format!(
             "`{}` admits no set of {}; {DISAGREEMENT_REMEDY}",
             slot.cardinality().as_str(),
             members_phrase(members)
-        ));
+        )));
     }
     let mut gate = SequenceGate::Applied;
     slot.sender().send_if_modified(|state| {
@@ -245,15 +247,15 @@ where
         matches!(gate, SequenceGate::Applied)
     });
     match gate {
-        SequenceGate::Stale => SlotUpdateResponse::stale(),
-        SequenceGate::Conflicting => SlotUpdateResponse::rejected(format!(
+        SequenceGate::Stale => Ok(SlotUpdateResponse::stale()),
+        SequenceGate::Conflicting => Err(refusal(format!(
             "{} for {} `{}` repeats sequence {} asserting different state",
             U::SERVICE,
             U::SLOT_NOUN,
             request.link_id(),
             request.sequence()
-        )),
-        SequenceGate::Applied | SequenceGate::Repeated => SlotUpdateResponse::accepted(),
+        ))),
+        SequenceGate::Applied | SequenceGate::Repeated => Ok(SlotUpdateResponse::taken()),
     }
 }
 

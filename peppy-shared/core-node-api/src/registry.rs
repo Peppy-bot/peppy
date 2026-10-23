@@ -168,7 +168,7 @@ methods! {
             host: CoreNodeDaemon,
             summary: "Remove selected instances from a reserved launch's slice.",
             request: ParticipantInstancesRemoveRequest,
-            response: FederationVerdict,
+            response: FederationAck,
             schema: "federation.capnp",
         }
         /// Replaces set slots of instances the receiving daemon runs, after a
@@ -179,7 +179,7 @@ methods! {
             host: CoreNodeDaemon,
             summary: "Replace set slots of instances in a reserved launch's slice.",
             request: ParticipantSetsUpdateRequest,
-            response: FederationVerdict,
+            response: FederationAck,
             schema: "federation.capnp",
         }
         /// Records the second half of a CROSS-DAEMON pair on the daemon
@@ -191,7 +191,7 @@ methods! {
             host: CoreNodeDaemon,
             summary: "Record this daemon's half of a cross-daemon pair and pin its endpoint.",
             request: PairCommitRequest,
-            response: FederationVerdict,
+            response: FederationAck,
             schema: "federation.capnp",
         }
         /// Releases a reservation, whether because a later participant
@@ -201,7 +201,7 @@ methods! {
             host: CoreNodeDaemon,
             summary: "Release a federated-launch reservation held for a launch id.",
             request: ParticipantReleaseRequest,
-            response: FederationVerdict,
+            response: FederationAck,
             schema: "federation.capnp",
         }
         /// Runtime notification from the daemon that owns an instance to a

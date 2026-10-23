@@ -344,9 +344,17 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
             request.encode().expect("encode"),
             Duration::from_secs(2),
         )
-        .await
-        .expect("every peer_update delivery gets a reply");
-        SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response")
+        .await;
+        // A refused delivery is an error reply that carries its failure.
+        match reply {
+            Ok(reply) => {
+                Ok(SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response"))
+            }
+            Err(error) => Err(error
+                .failure()
+                .cloned()
+                .unwrap_or_else(|| panic!("every peer_update delivery gets a reply: {error}"))),
+        }
     };
 
     // The "daemon" delivers a pair to the node's slot.
@@ -359,7 +367,7 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
         }],
     };
     let response = deliver(CORE, &request).await;
-    assert!(response.accepted, "delivery rejected: {}", response.message);
+    assert_eq!(response, Ok(SlotUpdateResponse::taken()));
     assert_eq!(slot_rx.borrow().members, request.members);
     assert_eq!(slot_rx.borrow().sequence, 7);
 
@@ -370,8 +378,7 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
         members: Vec::new(),
     };
     let response = deliver(CORE, &stale).await;
-    assert!(!response.accepted);
-    assert!(response.stale_sequence);
+    assert_eq!(response, Ok(SlotUpdateResponse::stale()));
     assert_eq!(slot_rx.borrow().sequence, 7, "stale must not roll back");
 
     // A caller stamped with a foreign core_node is not this node's daemon:
@@ -383,8 +390,8 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
         members: Vec::new(),
     };
     let response = deliver("foreign_core", &foreign).await;
-    assert!(!response.accepted, "foreign core_node must be rejected");
-    assert!(!response.stale_sequence);
+    let failure = response.expect_err("foreign core_node must be rejected");
+    assert_eq!(failure.kind().as_str(), "rejected");
     assert_eq!(
         slot_rx.borrow().sequence,
         7,

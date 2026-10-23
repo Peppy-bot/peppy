@@ -1,5 +1,7 @@
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::encoding::LaunchFeedbackStep;
 use node_stack::ActionLog;
+use peppylib::messaging::Failure;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -188,23 +190,30 @@ where
     timeout_kind
 }
 
-/// Runs a phase future under idle + (optional) deadline bounds and, on timeout, writes the
-/// reason to `log` and builds a caller-specified failure result. `build_failure`
-/// receives the same string that was logged so phase-specific failure types (differing in
-/// whether they carry a `log_path`) can embed it verbatim.
+/// The message of a phase that a cancel of its stack change stopped: a stack
+/// reset, the goal's caller, or the engine when the goal's sender is gone.
+pub(in crate::services::stack) const PHASE_CANCELLED: &str = "the stack operation was cancelled";
+
+/// Runs a phase future under idle + (optional) deadline bounds and, on
+/// timeout or on `cancel`, writes the reason to `log` and builds a
+/// caller-specified failure result. `build_failure` receives the failure
+/// whose message was logged: `timeout` for an idle or max timeout, and
+/// `attempt_failed` for a cancel, which ends the change as a failure of the
+/// phase does.
 ///
-/// `cancel_and_drain` controls what happens to the phase future on timeout; see
-/// [`run_phase_with_timeouts`] for the per-phase rationale.
+/// `cancel_and_drain` controls what happens to the phase future on timeout
+/// and on a cancel; see [`run_phase_with_timeouts`] for the per-phase
+/// rationale.
 #[allow(clippy::too_many_arguments)] // All args serve distinct, unrelated roles; grouping them adds noise.
 pub(super) async fn run_phase<F, T>(
     phase: Pin<Box<F>>,
     activity_notify: Arc<Notify>,
     idle_timeout: Duration,
     change_deadline: Option<Instant>,
-    reset: &CancellationToken,
+    cancel: &CancellationToken,
     log: &ActionLog,
     step: LaunchFeedbackStep,
-    build_failure: impl FnOnce(String) -> T,
+    build_failure: impl FnOnce(Failure) -> T,
     cancel_and_drain: Option<DrainOnCancel>,
 ) -> T
 where
@@ -220,14 +229,13 @@ where
     tokio::pin!(phase);
     let outcome = tokio::select! {
         biased;
-        _ = reset.cancelled() => {
+        _ = cancel.cancelled() => {
             if let Some(drain) = &cancel_and_drain {
                 drain.token.cancel();
                 let _ = tokio::time::timeout(drain.budget, phase.as_mut()).await;
             }
-            let reason = "stack operation cancelled by stack reset".to_owned();
-            log.error(&reason);
-            return build_failure(reason);
+            log.error(PHASE_CANCELLED);
+            return build_failure(Failure::new(PeppyFailureKind::AttemptFailed, PHASE_CANCELLED));
         }
         outcome = phase.as_mut() => outcome,
     };
@@ -243,12 +251,12 @@ where
                 reason = format!("{reason}; {}", slow_connection_hint(flag));
             }
             log.error(&reason);
-            build_failure(reason)
+            build_failure(Failure::new(PeppyFailureKind::Timeout, reason))
         }
         PhaseOutcome::MaxTimeout => {
             let reason = "timeout: max timeout exceeded".to_string();
             log.error(&reason);
-            build_failure(reason)
+            build_failure(Failure::new(PeppyFailureKind::Timeout, reason))
         }
     }
 }
@@ -507,7 +515,7 @@ mod tests {
             &reset,
             &log,
             LaunchFeedbackStep::RunningNode,
-            |reason| format!("failed: {reason}"),
+            |failure| format!("failed ({}): {}", failure.kind(), failure.message()),
             Some(DrainOnCancel {
                 token,
                 budget: cleanup + Duration::from_secs(1),
@@ -515,7 +523,10 @@ mod tests {
         )
         .await;
 
-        assert_eq!(failure, "failed: stack operation cancelled by stack reset");
+        assert_eq!(
+            failure,
+            "failed (attempt_failed): the stack operation was cancelled"
+        );
         assert!(
             cleanup_ran.load(Ordering::SeqCst),
             "the reset waits for the cleanup within the drain budget"
@@ -651,13 +662,15 @@ mod tests {
             &CancellationToken::new(),
             &log,
             LaunchFeedbackStep::AddingNode,
-            |reason| format!("failed: {reason}"),
+            |failure| format!("failed ({}): {}", failure.kind(), failure.message()),
             None,
         )
         .await;
 
         assert!(
-            failure.contains("failed: timeout: add idle timeout exceeded (5s without output)"),
+            failure.contains(
+                "failed (timeout): timeout: add idle timeout exceeded (5s without output)"
+            ),
             "the failure carries the phase label and budget: {failure}"
         );
         assert!(
@@ -685,12 +698,12 @@ mod tests {
             &CancellationToken::new(),
             &log,
             LaunchFeedbackStep::BuildingNode,
-            |reason| format!("failed: {reason}"),
+            |failure| format!("failed ({}): {}", failure.kind(), failure.message()),
             None,
         )
         .await;
 
-        assert_eq!(failure, "failed: timeout: max timeout exceeded");
+        assert_eq!(failure, "failed (timeout): timeout: max timeout exceeded");
         let logged = log_contents(&log);
         assert!(
             logged.contains("[error] timeout: max timeout exceeded"),

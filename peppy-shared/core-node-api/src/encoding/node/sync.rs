@@ -66,45 +66,24 @@ pub struct RepoResolvedEntry {
     pub source_kind: RepoSourceKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The response of a node sync that succeeded: where each dependency came
+/// from. A failed sync is an error reply, with a failure kind and a message.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NodeSyncResponse {
-    pub success: bool,
-    pub error_message: String,
     /// `name:tag` of every dependency resolved through the persistent
-    /// node stack. Empty on failure responses.
+    /// node stack.
     pub resolved_from_stack: Vec<String>,
     /// Every dependency materialized through the repository cache.
-    /// Empty on failure responses or when `include_repositories` was off.
+    /// Empty when `include_repositories` was off.
     pub resolved_from_repositories: Vec<RepoResolvedEntry>,
 }
 
 impl NodeSyncResponse {
-    pub fn new(success: bool, error_message: impl Into<String>) -> Self {
-        Self {
-            success,
-            error_message: error_message.into(),
-            resolved_from_stack: Vec::new(),
-            resolved_from_repositories: Vec::new(),
-        }
-    }
-
-    pub fn success() -> Self {
-        Self::new(true, "")
-    }
-
-    pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(false, error_message)
-    }
-
-    /// Constructs a successful response that carries dependency-resolution
-    /// provenance for the CLI's verbose output.
-    pub fn success_with_provenance(
+    pub fn new(
         resolved_from_stack: Vec<String>,
         resolved_from_repositories: Vec<RepoResolvedEntry>,
     ) -> Self {
         Self {
-            success: true,
-            error_message: String::new(),
             resolved_from_stack,
             resolved_from_repositories,
         }
@@ -114,8 +93,6 @@ impl NodeSyncResponse {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_sync_response::Builder>();
-            response.set_success(self.success);
-            response.set_error_message(&self.error_message);
             let stack_count = capnp_list_len(
                 self.resolved_from_stack.len(),
                 "NodeSyncResponse.resolved_from_stack",
@@ -159,8 +136,6 @@ impl NodeSyncResponse {
             });
         }
         Ok(Self {
-            success: response.get_success(),
-            error_message: response.get_error_message()?.to_str()?.to_owned(),
             resolved_from_stack,
             resolved_from_repositories,
         })
@@ -213,7 +188,7 @@ mod tests {
 
     #[test]
     fn node_sync_response_roundtrip_carries_provenance() {
-        let original = NodeSyncResponse::success_with_provenance(
+        let original = NodeSyncResponse::new(
             vec!["foo:v1".to_owned(), "bar:v1".to_owned()],
             vec![
                 RepoResolvedEntry {
@@ -233,36 +208,22 @@ mod tests {
         assert_eq!(decoded, original);
     }
 
-    #[test]
-    fn node_sync_response_failure_has_empty_provenance() {
-        let original = NodeSyncResponse::failure("nope");
-        let encoded = original.encode().unwrap();
-        let decoded = NodeSyncResponse::decode(&encoded).unwrap();
-        assert!(!decoded.success);
-        assert_eq!(decoded.error_message, "nope");
-        assert!(decoded.resolved_from_stack.is_empty());
-        assert!(decoded.resolved_from_repositories.is_empty());
-    }
-
     /// A sender that never initializes the provenance lists sends null list
     /// pointers, which read as no provenance.
     #[test]
     fn node_sync_response_without_provenance_lists_decodes_empty() {
         let mut builder = Builder::new_default();
-        builder
-            .init_root::<node_capnp::node_sync_response::Builder>()
-            .set_success(true);
+        builder.init_root::<node_capnp::node_sync_response::Builder>();
         let encoded = encode_message(&builder).unwrap();
         let decoded = NodeSyncResponse::decode(&encoded).unwrap();
-        assert_eq!(decoded, NodeSyncResponse::success());
+        assert_eq!(decoded, NodeSyncResponse::default());
     }
 
     #[test]
     fn node_sync_response_decode_refuses_an_unknown_source_kind() {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_sync_response::Builder>();
-            response.set_success(true);
+            let response = builder.init_root::<node_capnp::node_sync_response::Builder>();
             let mut entry = response.init_resolved_from_repositories(1).get(0);
             entry.set_name("baz");
             entry.set_tag("v2");

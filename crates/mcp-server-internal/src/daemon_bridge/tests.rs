@@ -1,7 +1,9 @@
 //! The daemon bridge against a fake daemon: an ephemeral router, and a
 //! fake core node that serves `stack_list` and runs `stack_join` and
 //! `stack_remove` on peppylib's production goal engine, answering each when
-//! the test tells it to. Every step waits on a peer's action, never on the
+//! the test tells it to: admitted or refused with a failure kind, then
+//! completed, failed with a failure kind, or cancelled at the bridge's
+//! cancel. Every step waits on a peer's action, never on the
 //! clock: a deadline only bounds the failure path. The progress window is
 //! tested on a bridge whose clock moves only when the test advances it (see
 //! [`PausedRuntime`]), and the bridge behind a real endpoint over HTTP at the
@@ -14,11 +16,12 @@ use super::{DaemonBridges, DaemonScopes, OwnDaemon};
 use crate::bridges::prepare;
 use crate::serve::ServeError;
 use crate::test_support::{Events, PausedRuntime, ScriptedSurface};
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::{CopyName, CoreNodeName, Name};
 use core_node_api::encoding::{
     CopyAction, CopyChange, CopyInfo, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse,
-    LaunchResult, NodeRunLogEntry, StackJoinGoal, StackListRequest, StackListResponse,
-    StackRemoveGoal,
+    LaunchOutput, LaunchResult, NodeLogs, NodeRunLogEntry, StackJoinGoal, StackListRequest,
+    StackListResponse, StackRemoveGoal,
 };
 use core_node_api::names::CORE_NODE_TAG;
 use core_node_api::{ActionGoal, ServiceRequest};
@@ -26,7 +29,9 @@ use daemon_config::daemon_interface::{DaemonInterface, StackCopiesScope};
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use peppy_mcp_catalog::build_exposure_bundle;
 use peppy_mcp_runtime::{ActionExit, CancelledGoal, ExposureServer, ExposureSet};
-use peppylib::messaging::{GoalContext, MessengerHandle, ProducerRef, SenderTarget};
+use peppylib::messaging::{
+    CancelCause, Failure, GoalContext, MessengerHandle, ProducerRef, SenderTarget,
+};
 use peppylib::testing::{
     EphemeralRouter, MockActionServerCore, MockServiceCore, READINESS_TIMEOUT,
     wait_action_reachable, wait_service_reachable,
@@ -219,7 +224,7 @@ fn copy_on(copy: &str, option: &str, machine: &str, selections: &[&str]) -> Copy
 }
 
 fn admitted() -> peppylib::types::Payload {
-    LaunchGoalResponse::accepted(STACK_LOG)
+    LaunchGoalResponse::new(STACK_LOG)
         .encode()
         .expect("the admission encodes")
 }
@@ -228,10 +233,9 @@ fn admitted() -> peppylib::types::Payload {
 const DAEMON_REFUSAL: &str =
     "a stack change is in progress on this daemon; run this again once it ends";
 
-fn rejected(reason: &str) -> peppylib::types::Payload {
-    LaunchGoalResponse::rejected(reason)
-        .encode()
-        .expect("the rejection encodes")
+/// The refusal of a daemon that runs another stack change.
+fn busy() -> Failure {
+    Failure::new(PeppyFailureKind::PreconditionFailed, DAEMON_REFUSAL)
 }
 
 impl FakeDaemon {
@@ -272,15 +276,15 @@ impl FakeDaemon {
             .expect("the daemon admits the join")
     }
 
-    /// Rejects the next join with `reason`.
-    async fn rejects_join(&mut self, reason: &str) {
+    /// Refuses the next join with `refusal`.
+    async fn refuses_join(&mut self, refusal: Failure) {
         self.join
             .next_goal(READINESS_TIMEOUT)
             .await
             .expect("the join reaches the daemon")
-            .reject(None, rejected(reason))
+            .refuse(refusal)
             .await
-            .expect("the daemon rejects the join");
+            .expect("the daemon refuses the join");
     }
 
     /// Admits the next removal, which must name `copy_name`.
@@ -331,36 +335,71 @@ fn join_goal(copy_name: &str, option: &str) -> StackJoinGoal {
     )
 }
 
-async fn publish(context: &GoalContext, feedback: &LaunchFeedback) {
+async fn publish(context: &GoalContext, output: &LaunchOutput) {
+    publish_feedback(context, LaunchFeedback::Output(output.clone())).await;
+}
+
+async fn publish_feedback(context: &GoalContext, feedback: LaunchFeedback) {
     context
         .publish_feedback(feedback.encode().expect("the feedback encodes"))
         .await
         .expect("the daemon publishes its feedback");
 }
 
-async fn complete(context: &GoalContext, result: &LaunchResult) {
+/// The daemon completes the change.
+async fn complete(context: &GoalContext) {
     context
-        .complete(result.encode().expect("the result encodes"))
+        .complete(
+            LaunchResult::default()
+                .encode()
+                .expect("the result encodes"),
+        )
         .await
         .expect("the daemon ends the goal");
 }
 
+/// The daemon fails the change with `failure`, after the node logs `logs`
+/// as the last feedback.
+async fn fail(context: &GoalContext, failure: Failure, logs: NodeLogs) {
+    publish_feedback(context, LaunchFeedback::NodeLogs(logs)).await;
+    context
+        .fail(failure)
+        .await
+        .expect("the daemon fails the goal");
+}
+
+/// The daemon ends the change cancelled, with the reason of the cancel it
+/// received.
+async fn end_cancelled(context: &GoalContext) {
+    tokio::time::timeout(READINESS_TIMEOUT, context.cancel_signal())
+        .await
+        .expect("the bridge's cancel reaches the daemon");
+    let cause = context
+        .cancel_cause()
+        .expect("a cancelled goal has a cause");
+    assert_eq!(cause, CancelCause::Caller);
+    context
+        .complete_cancelled(cause.reason(), peppylib::types::Payload::new())
+        .await
+        .expect("the daemon ends the goal cancelled");
+}
+
 /// The progress of a join, one message per step.
-fn join_progress() -> Vec<LaunchFeedback> {
+fn join_progress() -> Vec<LaunchOutput> {
     vec![
-        LaunchFeedback::stdout(
+        LaunchOutput::stdout(
             "Adding so101_sim as bravo",
             LaunchFeedbackStep::LauncherStep,
         ),
-        LaunchFeedback::stdout(
+        LaunchOutput::stdout(
             "fetching robot_initializer:v1",
             LaunchFeedbackStep::AddingNode,
         ),
-        LaunchFeedback::stderr(
+        LaunchOutput::stderr(
             "Compiling robot_initializer",
             LaunchFeedbackStep::BuildingNode,
         ),
-        LaunchFeedback::stdout(
+        LaunchOutput::stdout(
             "'bravo' does not stand yet",
             LaunchFeedbackStep::RunningNode,
         ),
@@ -448,14 +487,19 @@ fn refused(reason: &str) -> Result<Value, ActionExit> {
     Err(ActionExit::Failed(reason.to_owned()))
 }
 
-/// A call whose client stopped waiting for `subject`.
-fn stopped_waiting(subject: &str) -> Result<Value, ActionExit> {
+/// A call whose change the daemon refused because it runs another one.
+fn refused_busy(subject: &str) -> Result<Value, ActionExit> {
+    refused(&format!(
+        "the daemon refused {subject} (precondition_failed): {DAEMON_REFUSAL}"
+    ))
+}
+
+/// A call whose client cancelled `subject`, which the daemon then ended
+/// cancelled.
+fn cancelled(subject: &str) -> Result<Value, ActionExit> {
     Err(ActionExit::Cancelled(CancelledGoal {
-        result: json!({
-            "success": false,
-            "message": format!("stopped waiting; {subject} continues on the stack"),
-        }),
-        reason: None,
+        result: json!({}),
+        reason: Some(format!("{subject} was cancelled by its caller")),
     }))
 }
 
@@ -467,14 +511,8 @@ async fn join_succeeds(bridge: &ScopedStackCopies, daemon: &mut FakeDaemon, copy
     let surface = Arc::new(ScriptedSurface::new());
     let call = spawn_join(bridge, &surface, copy_name, "so101_sim");
     let context = daemon.admits_join(&join_goal(copy_name, "so101_sim")).await;
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
-    assert_eq!(
-        ended(call).await,
-        Ok(json!({
-            "success": true,
-            "message": format!("{copy_name} (so101_sim) is on the stack"),
-        }))
-    );
+    complete(&context).await;
+    assert_eq!(ended(call).await, Ok(json!({})));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -593,11 +631,8 @@ async fn list_waits_for_the_admission_of_a_join_of_the_bridge() {
         listed["change"],
         json!({ "action": "join", "name": "bravo", "option": "so101_sim" })
     );
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
-    assert_eq!(
-        ended(call).await,
-        Ok(json!({ "success": true, "message": "bravo (so101_sim) is on the stack" }))
-    );
+    complete(&context).await;
+    assert_eq!(ended(call).await, Ok(json!({})));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -619,12 +654,9 @@ async fn a_join_reports_its_acceptance_and_each_line_then_succeeds() {
         publish(&context, &line).await;
     }
     surface.reported(5).await;
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
+    complete(&context).await;
 
-    assert_eq!(
-        ended(call).await,
-        Ok(json!({ "success": true, "message": "bravo (so101_sim) is on the stack" }))
-    );
+    assert_eq!(ended(call).await, Ok(json!({})));
     assert_eq!(
         surface.feedback(),
         [
@@ -642,12 +674,12 @@ async fn a_join_reports_its_acceptance_and_each_line_then_succeeds() {
     );
 }
 
-/// A join that ran and failed completes with `success` false, its error
-/// and the log files: the stack log, then the log of the node that failed.
-/// An undo that could not clean up says so in the error, which the message
-/// keeps whole.
+/// A join that ran and failed ends failed, with its failure kind, its
+/// error and the log files: the stack log, then the log of the node that
+/// failed. An undo that could not clean up says so in the error, which the
+/// message keeps whole.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_failed_join_completes_with_its_error_and_its_log_files() {
+async fn a_failed_join_ends_with_its_kind_its_error_and_its_log_files() {
     let (mesh, mut daemon) = mesh().await;
     let bridge = mesh.bridge(simulation_scope());
     let surface = Arc::new(ScriptedSurface::new());
@@ -664,34 +696,35 @@ async fn a_failed_join_completes_with_its_error_and_its_log_files() {
         failed,
         core_node: COORDINATOR.to_owned(),
     };
-    let failed = LaunchResult::failure(STACK_LOG, error).with_node_logs(
-        Vec::new(),
-        Vec::new(),
-        vec![
+    let logs = NodeLogs {
+        node_run_logs: vec![
             run_log("bravo_arm_inst", false),
             run_log("bravo_robot_initializer_inst", true),
         ],
-    );
-    complete(&context, &failed).await;
+        ..NodeLogs::default()
+    };
+    fail(
+        &context,
+        Failure::new(PeppyFailureKind::AttemptFailed, error),
+        logs,
+    )
+    .await;
 
     assert_eq!(
         ended(call).await,
-        Ok(json!({
-            "success": false,
-            "message": format!(
-                "the addition of bravo failed: {error}. Log files: {STACK_LOG}, \
-                 /home/peppy/.peppy/logs/run/bravo_robot_initializer_inst.log"
-            ),
-        }))
+        refused(&format!(
+            "the addition of bravo failed (attempt_failed): {error}. Log files: {STACK_LOG}, \
+             /home/peppy/.peppy/logs/run/bravo_robot_initializer_inst.log"
+        ))
     );
     assert!(idle_now(&bridge));
 }
 
-/// The daemon refuses after acceptance, for example a copy of that name that
-/// joined since the bridge read the stack: the call completes with
-/// `success` false and the stack log alone.
+/// The daemon fails a change after acceptance for a state it finds, for
+/// example a copy of that name that joined since the bridge read the stack:
+/// the call ends failed with that kind and the stack log alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_refusal_after_acceptance_completes_with_success_false() {
+async fn a_failure_after_acceptance_names_its_kind_and_the_stack_log() {
     let (mesh, mut daemon) = mesh().await;
     let bridge = mesh.bridge(simulation_scope());
     let surface = Arc::new(ScriptedSurface::new());
@@ -700,14 +733,18 @@ async fn a_refusal_after_acceptance_completes_with_success_false() {
     let call = spawn_join(&bridge, &surface, "bravo", "so101_sim");
     let context = daemon.admits_join(&join_goal("bravo", "so101_sim")).await;
     let error = "copy `bravo` already exists; choose another name";
-    complete(&context, &LaunchResult::failure(STACK_LOG, error)).await;
+    fail(
+        &context,
+        Failure::new(PeppyFailureKind::PreconditionFailed, error),
+        NodeLogs::default(),
+    )
+    .await;
 
     assert_eq!(
         ended(call).await,
-        Ok(json!({
-            "success": false,
-            "message": format!("the addition of bravo failed: {error}. Log files: {STACK_LOG}"),
-        }))
+        refused(&format!(
+            "the addition of bravo failed (precondition_failed): {error}. Log files: {STACK_LOG}"
+        ))
     );
     assert!(idle_now(&bridge));
 }
@@ -771,18 +808,19 @@ async fn a_join_at_the_limit_is_refused_naming_the_copies() {
     join_succeeds(&bridge, &mut daemon, "foxtrot").await;
 }
 
-/// The daemon rejects the goal at admission: the call is refused with the
-/// daemon's reason, and the lock is free when the call hears of it.
+/// The daemon refuses the goal at admission: the call is refused with the
+/// failure kind and the reason of the daemon, and the lock is free when the
+/// call hears of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_join_the_daemon_rejects_is_refused_with_its_reason() {
+async fn a_join_the_daemon_refuses_is_refused_with_its_kind_and_reason() {
     let (mesh, mut daemon) = mesh().await;
     let bridge = mesh.bridge(simulation_scope());
     let surface = Arc::new(ScriptedSurface::new());
     daemon.lists(&[]);
 
     let call = spawn_join(&bridge, &surface, "bravo", "so101_sim");
-    daemon.rejects_join(DAEMON_REFUSAL).await;
-    assert_eq!(ended(call).await, refused(DAEMON_REFUSAL));
+    daemon.refuses_join(busy()).await;
+    assert_eq!(ended(call).await, refused_busy("the addition of bravo"));
     assert!(surface.feedback().is_empty());
     assert!(
         idle_now(&bridge),
@@ -813,17 +851,17 @@ async fn a_join_that_finds_the_lock_held_is_refused_with_the_busy_text() {
         "the refused join does not read the stack"
     );
 
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
+    complete(&context).await;
     assert!(ended(first).await.is_ok());
     assert!(idle_now(&bridge));
     join_succeeds(&bridge, &mut daemon, "charlie").await;
 }
 
-/// A cancel after the acceptance ends the call at once as cancelled, and
-/// sends the daemon nothing. The bridge follows the join to its end, and
-/// holds the lock until then.
+/// A cancel after the acceptance reaches the daemon: the daemon stops the
+/// join and ends it cancelled, and the call ends cancelled with its reason
+/// once it did. The bridge holds its lock until then.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_cancelled_join_goes_on_and_holds_the_lock_until_it_ends() {
+async fn a_cancelled_join_reaches_the_daemon_and_ends_cancelled() {
     let (mesh, mut daemon) = mesh().await;
     let bridge = mesh.bridge(simulation_scope());
     let surface = Arc::new(ScriptedSurface::new());
@@ -834,23 +872,28 @@ async fn a_cancelled_join_goes_on_and_holds_the_lock_until_it_ends() {
     surface.reported(2).await;
 
     surface.cancel.cancel();
-    assert_eq!(ended(call).await, stopped_waiting("the addition of bravo"));
-
-    // The join runs on: its lock refuses another join, also after more
-    // progress that no call reads.
-    publish(&context, &join_progress()[1]).await;
+    surface.reported(3).await;
+    // The undo runs under the lock: it refuses another join.
     let other = ScriptedSurface::new();
     assert_eq!(
         join(&bridge, &other, "charlie", "so101_sim").await,
         refused(STACK_BUSY_REASON)
     );
-    assert!(!idle_now(&bridge));
-    assert!(
-        !context.is_cancelled(),
-        "the bridge sends the daemon no cancel"
+    end_cancelled(&context).await;
+
+    assert_eq!(ended(call).await, cancelled("the addition of bravo"));
+    assert_eq!(
+        surface.feedback(),
+        [
+            "launch: the daemon accepted the addition of bravo (so101_sim)",
+            "launch: Adding so101_sim as bravo",
+            "launch: the client cancelled the addition of bravo; the daemon stops it and undoes it",
+        ]
     );
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
-    idle(&bridge).await;
+    assert!(
+        idle_now(&bridge),
+        "the lock goes before the call hears of the end"
+    );
     join_succeeds(&bridge, &mut daemon, "charlie").await;
 }
 
@@ -874,15 +917,15 @@ async fn a_dropped_call_leaves_the_join_running_under_the_lock() {
     );
     publish(&context, &join_progress()[0]).await;
     assert!(!idle_now(&bridge), "the join holds the lock");
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
+    complete(&context).await;
     idle(&bridge).await;
-    assert!(!context.is_cancelled());
+    assert!(!context.is_cancelled(), "a dropped call sends no cancel");
     join_succeeds(&bridge, &mut daemon, "charlie").await;
 }
 
 /// A cancel before the daemon answered the goal waits for that answer: a
-/// goal the daemon rejects ends the call refused, since nothing goes on,
-/// and an admitted one ends it cancelled at once.
+/// goal the daemon refuses ends the call refused, since nothing ran, and an
+/// admitted one gets the cancel at once and ends cancelled.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cancel_before_the_daemon_answers_waits_for_the_answer() {
     let (mesh, mut daemon) = mesh().await;
@@ -892,18 +935,21 @@ async fn a_cancel_before_the_daemon_answers_waits_for_the_answer() {
 
     daemon.lists(&[]);
     let call = spawn_join(&bridge, &surface, "bravo", "so101_sim");
-    daemon.rejects_join(DAEMON_REFUSAL).await;
-    assert_eq!(ended(call).await, refused(DAEMON_REFUSAL));
+    daemon.refuses_join(busy()).await;
+    assert_eq!(ended(call).await, refused_busy("the addition of bravo"));
 
     daemon.lists(&[]);
     let call = spawn_join(&bridge, &surface, "bravo", "so101_sim");
     let context = daemon.admits_join(&join_goal("bravo", "so101_sim")).await;
-    assert_eq!(ended(call).await, stopped_waiting("the addition of bravo"));
+    end_cancelled(&context).await;
+    assert_eq!(ended(call).await, cancelled("the addition of bravo"));
     assert_eq!(
         surface.feedback(),
-        ["launch: the daemon accepted the addition of bravo (so101_sim)"]
+        [
+            "launch: the daemon accepted the addition of bravo (so101_sim)",
+            "launch: the client cancelled the addition of bravo; the daemon stops it and undoes it",
+        ]
     );
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
     idle(&bridge).await;
 }
 
@@ -988,7 +1034,7 @@ async fn a_silent_daemon_fails_the_call_after_one_window_and_the_join_goes_on() 
         refused(STACK_BUSY_REASON),
         "the join goes on under the lock"
     );
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
+    complete(&context).await;
     idle(&bridge).await;
     drop(paused);
     join_succeeds(&bridge, &mut daemon, "charlie").await;
@@ -1010,17 +1056,14 @@ async fn a_removal_reports_each_stop_and_takes_the_copy_off() {
     ] {
         publish(
             &context,
-            &LaunchFeedback::stdout(line, LaunchFeedbackStep::LauncherStep),
+            &LaunchOutput::stdout(line, LaunchFeedbackStep::LauncherStep),
         )
         .await;
     }
     surface.reported(4).await;
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
+    complete(&context).await;
 
-    assert_eq!(
-        ended(call).await,
-        Ok(json!({ "success": true, "message": "bravo is off the stack" }))
-    );
+    assert_eq!(ended(call).await, Ok(json!({})));
     assert_eq!(
         surface.feedback(),
         [
@@ -1059,14 +1102,14 @@ async fn a_removal_of_a_name_that_is_no_scoped_copy_is_refused() {
     daemon.lists(&[copy("bravo", "so101_sim")]);
     let call = spawn_remove(&bridge, &surface, "bravo");
     let context = daemon.admits_removal("bravo").await;
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
+    complete(&context).await;
     assert!(ended(call).await.is_ok());
 }
 
-/// A removal that the daemon refuses after acceptance, for example a copy
-/// that the stack links to, completes with `success` false.
+/// A removal that the daemon fails after acceptance, for example a copy
+/// that the stack links to, ends failed with its kind and the stack log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_removal_the_daemon_refuses_after_acceptance_completes_with_success_false() {
+async fn a_removal_the_daemon_fails_after_acceptance_ends_with_its_kind() {
     let (mesh, mut daemon) = mesh().await;
     let bridge = mesh.bridge(simulation_scope());
     let surface = Arc::new(ScriptedSurface::new());
@@ -1075,22 +1118,26 @@ async fn a_removal_the_daemon_refuses_after_acceptance_completes_with_success_fa
     let call = spawn_remove(&bridge, &surface, "bravo");
     let context = daemon.admits_removal("bravo").await;
     let error = "removing `bravo` would leave `recorder_inst` without a member in `arms`";
-    complete(&context, &LaunchResult::failure(STACK_LOG, error)).await;
+    fail(
+        &context,
+        Failure::new(PeppyFailureKind::PreconditionFailed, error),
+        NodeLogs::default(),
+    )
+    .await;
 
     assert_eq!(
         ended(call).await,
-        Ok(json!({
-            "success": false,
-            "message": format!("the removal of bravo failed: {error}. Log files: {STACK_LOG}"),
-        }))
+        refused(&format!(
+            "the removal of bravo failed (precondition_failed): {error}. Log files: {STACK_LOG}"
+        ))
     );
 }
 
 /// A removal takes no lock of the bridge: while a join runs, the removal
-/// reaches the daemon, which refuses it with its busy text. A cancelled
-/// removal goes on as a cancelled join does.
+/// reaches the daemon, which refuses it with its busy kind and text. A
+/// cancelled removal reaches the daemon as a cancelled join does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_removal_takes_no_lock_and_a_cancel_stops_its_wait_only() {
+async fn a_removal_takes_no_lock_and_a_cancel_reaches_the_daemon() {
     let (mesh, mut daemon) = mesh().await;
     let bridge = mesh.bridge(simulation_scope());
     let surface = Arc::new(ScriptedSurface::new());
@@ -1105,11 +1152,11 @@ async fn a_removal_takes_no_lock_and_a_cancel_stops_its_wait_only() {
         .next_goal(READINESS_TIMEOUT)
         .await
         .expect("the removal reaches the daemon")
-        .reject(None, rejected(DAEMON_REFUSAL))
+        .refuse(busy())
         .await
-        .expect("the daemon rejects the removal");
-    assert_eq!(ended(removing).await, refused(DAEMON_REFUSAL));
-    complete(&join_context, &LaunchResult::success(STACK_LOG)).await;
+        .expect("the daemon refuses the removal");
+    assert_eq!(ended(removing).await, refused_busy("the removal of alpha"));
+    complete(&join_context).await;
     assert!(ended(joining).await.is_ok());
 
     let cancelling = Arc::new(ScriptedSurface::new());
@@ -1118,15 +1165,8 @@ async fn a_removal_takes_no_lock_and_a_cancel_stops_its_wait_only() {
     let context = daemon.admits_removal("alpha").await;
     cancelling.followed().await;
     cancelling.cancel.cancel();
-    assert_eq!(
-        ended(removing).await,
-        stopped_waiting("the removal of alpha")
-    );
-    assert!(
-        !context.is_cancelled(),
-        "the bridge sends the daemon no cancel"
-    );
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
+    end_cancelled(&context).await;
+    assert_eq!(ended(removing).await, cancelled("the removal of alpha"));
 }
 
 // --- Features and machines.
@@ -1155,7 +1195,7 @@ async fn sent_join(
         .accept(admitted())
         .await
         .expect("the daemon admits the join");
-    complete(&context, &LaunchResult::success(STACK_LOG)).await;
+    complete(&context).await;
     ended(call).await.expect("the join succeeds");
     goal
 }
@@ -1374,7 +1414,7 @@ fn a_failed_presence_read_fails_the_listing() {
 }
 
 /// A join the daemon ends with a failure, such as a machine that is not
-/// live, ends with success false and the daemon's reason.
+/// live, ends failed with the daemon's failure kind and reason.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_join_on_a_machine_that_is_not_live_ends_with_the_daemons_reason() {
     let (mesh, mut daemon) = mesh().await;
@@ -1396,16 +1436,18 @@ async fn a_join_on_a_machine_that_is_not_live_ends_with_the_daemons_reason() {
         .await;
     let reason = "these core nodes are not live on the federation: `cn-gone`. Live right now: \
                   `cn-coordinator`.";
-    complete(&context, &LaunchResult::failure(STACK_LOG, reason)).await;
-    let Ok(answer) = ended(call).await else {
-        panic!("a failed join ends with an answer");
+    fail(
+        &context,
+        Failure::new(PeppyFailureKind::ResourceUnavailable, reason),
+        NodeLogs::default(),
+    )
+    .await;
+    let Err(ActionExit::Failed(message)) = ended(call).await else {
+        panic!("a failed join ends failed");
     };
-    assert_eq!(answer["success"], json!(false));
     assert!(
-        answer["message"]
-            .as_str()
-            .is_some_and(|message| message.contains(reason)),
-        "{answer}"
+        message.contains("(resource_unavailable)") && message.contains(reason),
+        "{message}"
     );
 }
 
@@ -1723,14 +1765,14 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
     );
     let daemon_side = async {
         let context = daemon.admits_join(&join_goal("charlie", "so101_sim")).await;
-        complete(&context, &LaunchResult::success(STACK_LOG)).await;
+        complete(&context).await;
         context
     };
     let (joined, _context) = tokio::join!(call, daemon_side);
     assert_eq!(
         joined["result"]["structuredContent"],
-        json!({ "success": true, "message": "charlie (so101_sim) is on the stack" }),
-        "{joined}"
+        json!({}),
+        "a completed join gives no result: {joined}"
     );
 
     let recorded = endpoint.recorded().await;
@@ -1764,6 +1806,5 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
         recorded[8].1,
         "the action failed: a copy `bravo` is already on the stack; choose another name"
     );
-    assert_eq!(recorded[10].1, "charlie (so101_sim) is on the stack");
     endpoint.stop().await;
 }

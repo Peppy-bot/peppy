@@ -18,11 +18,12 @@ use super::{Lease, ReserveOutcome, SliceOwnership};
 use crate::Result;
 use crate::services::node::RelationshipCoordinators;
 use crate::services::node::gate::StackHold;
-use crate::services::response::into_service_response;
+use crate::services::response::failure;
 use crate::services::stack::LocalMounts;
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
-    FederationVerdict, InstanceEnd, LaunchIdentity, PairCommitRequest,
+    FederationAck, InstanceEnd, LaunchIdentity, PairCommitRequest,
     ParticipantInstancesRemoveRequest, ParticipantReleaseRequest, ParticipantReserveRequest,
     ParticipantReserveResponse, ParticipantSetsUpdateRequest, ParticipantSliceBeginRequest,
     ParticipantSliceBeginResponse, RelationshipEvent, RelationshipNotification,
@@ -30,7 +31,7 @@ use core_node_api::encoding::{
 };
 use core_node_api::names;
 use daemon_config::repository::DeploymentPins;
-use peppylib::messaging::{SenderTarget, ServiceRequestContext};
+use peppylib::messaging::{Failure, SenderTarget, ServiceAnswer, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{CoreNodePresenceMessenger, LivelinessEvent, MessengerHandle, ServiceMessenger};
 use std::sync::Arc;
@@ -62,10 +63,10 @@ pub(crate) struct FederationServiceContext {
 /// Declares the listener for one federation endpoint.
 ///
 /// The seven endpoints differ only in which [`ServiceId`] they bind and which
-/// handler they run; binding, spawning, and turning the handler's `Result` into
-/// a service response are identical for all of them. Stating that once is what
-/// stops a change to how these endpoints are served from landing on only some
-/// of them.
+/// handler they run; binding and spawning are identical for all of them.
+/// Stating that once is what stops a change to how these endpoints are served
+/// from landing on only some of them. Each handler answers its response, or
+/// an error reply with the failure kind of its refusal.
 macro_rules! federation_endpoint {
     ($listen:ident, $service:expr, $inner:ident) => {
         pub(crate) async fn $listen(
@@ -85,9 +86,7 @@ macro_rules! federation_endpoint {
                 endpoint
                     .handle_requests(|request| {
                         let context = context.clone();
-                        async move {
-                            into_service_response(&request, $inner(&request, &context).await)
-                        }
+                        async move { $inner(&request, &context).await }
                     })
                     .await
                     .map_err(Into::into)
@@ -132,6 +131,16 @@ federation_endpoint!(
     notify_inner
 );
 
+/// The failure of a request whose payload does not decode.
+fn undecodable(error: core_node_api::Error) -> Failure {
+    failure(PeppyFailureKind::Rejected, error)
+}
+
+/// The answer of a handler that encoded its response.
+fn encoded(response: core_node_api::Result<Payload>) -> ServiceAnswer {
+    response.map_err(|error| failure(PeppyFailureKind::AttemptFailed, error))
+}
+
 /// The refusal a request gets when this daemon's reservation and its current
 /// stack slice do not both belong to `launch_id`, naming what the request left
 /// undone (`undone`) and how to clear the machine.
@@ -150,20 +159,23 @@ fn refuse_outside_slice(
 
 /// Admits a request from the coordinator of the launch this daemon holds a
 /// slice of: the stack mutation, held for the request's lifetime, or the
-/// refusal, naming what the request left undone.
+/// refusal, naming what the request left undone. Both refusals are
+/// `precondition_failed`: the stack is busy, or the slice is another
+/// launch's.
 fn admit_slice_change(
     context: &FederationServiceContext,
     launch_id: &str,
     undone: &str,
-) -> std::result::Result<StackHold, FederationVerdict> {
+) -> std::result::Result<StackHold, Failure> {
     let mutation = context
         .ownership
         .try_begin_change()
-        .map_err(FederationVerdict::Refused)?;
+        .map_err(|refusal| failure(PeppyFailureKind::PreconditionFailed, refusal))?;
     if !context.ownership.holds_slice_of(launch_id) {
-        return Err(FederationVerdict::Refused(refuse_outside_slice(
-            context, launch_id, undone,
-        )));
+        return Err(failure(
+            PeppyFailureKind::PreconditionFailed,
+            refuse_outside_slice(context, launch_id, undone),
+        ));
     }
     Ok(mutation)
 }
@@ -173,42 +185,39 @@ fn admit_slice_change(
 async fn sets_update_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
-) -> Result<Payload> {
-    let decoded = ParticipantSetsUpdateRequest::decode(request.message().payload_bytes().as_ref())?;
-    let _mutation = match admit_slice_change(context, &decoded.launch_id, "no set was replaced") {
-        Ok(mutation) => mutation,
-        Err(refusal) => return refusal.encode().map_err(Into::into),
-    };
+) -> ServiceAnswer {
+    let decoded = ParticipantSetsUpdateRequest::decode(request.message().payload_bytes().as_ref())
+        .map_err(undecodable)?;
+    let _mutation = admit_slice_change(context, &decoded.launch_id, "no set was replaced")?;
     let failures = context.relationships.replace_sets(decoded.sets).await;
     if failures.is_empty() {
-        return FederationVerdict::Done.encode().map_err(Into::into);
+        return encoded(FederationAck::new().encode());
     }
     // One failed set per line, which the coordinator reports line by line.
-    FederationVerdict::Refused(failures.join("\n"))
-        .encode()
-        .map_err(Into::into)
+    Err(failure(
+        PeppyFailureKind::AttemptFailed,
+        failures.join("\n"),
+    ))
 }
 
 async fn instances_remove_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
-) -> Result<Payload> {
+) -> ServiceAnswer {
     let decoded =
-        ParticipantInstancesRemoveRequest::decode(request.message().payload_bytes().as_ref())?;
-    let _mutation =
-        match admit_slice_change(context, &decoded.launch_id, "no instances were removed") {
-            Ok(mutation) => mutation,
-            Err(refusal) => return refusal.encode().map_err(Into::into),
-        };
+        ParticipantInstancesRemoveRequest::decode(request.message().payload_bytes().as_ref())
+            .map_err(undecodable)?;
+    let _mutation = admit_slice_change(context, &decoded.launch_id, "no instances were removed")?;
     if decoded
         .instance_ids
         .as_slice()
         .iter()
         .any(|id| id.as_str() == context.root_instance_id)
     {
-        return FederationVerdict::Refused("cannot remove the core node".to_owned())
-            .encode()
-            .map_err(Into::into);
+        return Err(failure(
+            PeppyFailureKind::Rejected,
+            "cannot remove the core node",
+        ));
     }
     crate::services::node::stop_named_instances(
         &context.messenger,
@@ -219,22 +228,22 @@ async fn instances_remove_inner(
         decoded.instance_ids.as_slice(),
     )
     .await;
-    FederationVerdict::Done.encode().map_err(Into::into)
+    encoded(FederationAck::new().encode())
 }
 
+/// Takes the reservation of this daemon for the launch of the request, or
+/// refuses it: `precondition_failed` while the stack is busy or held for
+/// another launch, `rejected` for a pin that does not validate.
 async fn reserve_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
-) -> Result<Payload> {
-    let decoded = ParticipantReserveRequest::decode(request.message().payload_bytes().as_ref())?;
-    let _mutation = match context.ownership.try_begin_change() {
-        Ok(mutation) => mutation,
-        Err(refusal) => {
-            return ParticipantReserveResponse::rejected(refusal, &context.peppy_version)
-                .encode()
-                .map_err(Into::into);
-        }
-    };
+) -> ServiceAnswer {
+    let decoded = ParticipantReserveRequest::decode(request.message().payload_bytes().as_ref())
+        .map_err(undecodable)?;
+    let _mutation = context
+        .ownership
+        .try_begin_change()
+        .map_err(|refusal| failure(PeppyFailureKind::PreconditionFailed, refusal))?;
 
     debug!(
         "Received `participant_reserve` for launch `{}` from coordinator `{}`",
@@ -250,11 +259,8 @@ async fn reserve_inner(
     // are was decided on the coordinator. Refusing first means a rejected
     // slice never took ownership and never spawned a presence watch, so there
     // is nothing to unwind.
-    if let Err(reason) = validate_deployment_pins(&decoded.deployment_pins_json5) {
-        return ParticipantReserveResponse::rejected(reason, &context.peppy_version)
-            .encode()
-            .map_err(Into::into);
-    }
+    validate_deployment_pins(&decoded.deployment_pins_json5)
+        .map_err(|reason| failure(PeppyFailureKind::Rejected, reason))?;
 
     match context
         .ownership
@@ -270,17 +276,15 @@ async fn reserve_inner(
             // chance. The remedy names THIS machine: a bare `stack reset`
             // targets whichever daemon the operator's CLI connects to, which
             // is not the one holding the reservation.
-            return ParticipantReserveResponse::rejected(
+            return Err(failure(
+                PeppyFailureKind::PreconditionFailed,
                 format!(
                     "already reserved for launch `{launch_id}` driven by core node \
                      `{coordinator_core_node}`. If that launch is no longer running, clear \
                      this machine with `peppy stack reset --core-node {}`",
                     context.core_node_name
                 ),
-                &context.peppy_version,
-            )
-            .encode()
-            .map_err(Into::into);
+            ));
         }
         // Only a FRESH reservation needs a watch, and the lease it hands back
         // is what that watch supervises. A coordinator retrying a dropped reply
@@ -302,9 +306,9 @@ async fn reserve_inner(
         ReserveOutcome::AlreadyHeld => {}
     }
 
-    ParticipantReserveResponse::accepted(&context.peppy_version, &context.root_instance_id)
-        .encode()
-        .map_err(Into::into)
+    encoded(
+        ParticipantReserveResponse::new(&context.peppy_version, &context.root_instance_id).encode(),
+    )
 }
 
 /// Decodes every deployment's pins and refuses any that could not be
@@ -435,40 +439,34 @@ fn watch_coordinator_presence(context: &FederationServiceContext, coordinator: &
 /// already bind, or refuses. The coordinator resolved the paths, since a
 /// mount path can name an instance parameter and this daemon is handed one
 /// instance at a time.
+///
+/// Every refusal is `precondition_failed`, except a bind source the daemon
+/// cannot prepare, which is `attempt_failed`.
 async fn slice_begin_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
-) -> Result<Payload> {
-    let decoded = ParticipantSliceBeginRequest::decode(request.message().payload_bytes().as_ref())?;
+) -> ServiceAnswer {
+    let decoded = ParticipantSliceBeginRequest::decode(request.message().payload_bytes().as_ref())
+        .map_err(undecodable)?;
+    let refused = |reason: String| failure(PeppyFailureKind::PreconditionFailed, reason);
 
     let Some((held_launch, coordinator)) = context.ownership.held_reservation() else {
-        return ParticipantSliceBeginResponse::refused(format!(
+        return Err(refused(format!(
             "this daemon holds no reservation, so it will not replace its stack for launch \
              `{}`. The reservation is a lease on the coordinator's presence; if the coordinator \
              dropped off the federation it was released, and the launch has to start over.",
             decoded.launch_id
-        ))
-        .encode()
-        .map_err(Into::into);
+        )));
     };
     if held_launch != decoded.launch_id {
-        return ParticipantSliceBeginResponse::refused(format!(
+        return Err(refused(format!(
             "this daemon is reserved for launch `{held_launch}` driven by core node \
              `{coordinator}`, not `{}`",
             decoded.launch_id
-        ))
-        .encode()
-        .map_err(Into::into);
+        )));
     }
 
-    let _mutation = match context.ownership.try_begin_change() {
-        Ok(mutation) => mutation,
-        Err(refusal) => {
-            return ParticipantSliceBeginResponse::refused(refusal)
-                .encode()
-                .map_err(Into::into);
-        }
-    };
+    let _mutation = context.ownership.try_begin_change().map_err(refused)?;
     if decoded.append {
         let slice = context.ownership.slice();
         let same_launch = slice.as_ref().is_some_and(|slice| {
@@ -478,8 +476,11 @@ async fn slice_begin_inner(
         if !same_launch
             && (coordinates_its_own || crate::services::stack::holds_nodes(&context.node_stack))
         {
-            return ParticipantSliceBeginResponse::refused("this machine has a different stack; choose an empty machine or a participant of this launch")
-                .encode().map_err(Into::into);
+            return Err(refused(
+                "this machine has a different stack; choose an empty machine or a participant of \
+                 this launch"
+                    .to_owned(),
+            ));
         }
     } else {
         crate::services::stack::clear_stack_slice(
@@ -518,15 +519,16 @@ async fn slice_begin_inner(
                     &hosts.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 );
             }
-            ParticipantSliceBeginResponse::ok(auto_created)
+            encoded(ParticipantSliceBeginResponse::new(auto_created).encode())
         }
-        Err(reason) => ParticipantSliceBeginResponse::refused(format!(
-            "this daemon cannot prepare the container bind sources for launch `{}`: {reason}",
-            decoded.launch_id
+        Err(reason) => Err(failure(
+            PeppyFailureKind::AttemptFailed,
+            format!(
+                "this daemon cannot prepare the container bind sources for launch `{}`: {reason}",
+                decoded.launch_id
+            ),
         )),
     }
-    .encode()
-    .map_err(Into::into)
 }
 
 /// Records this daemon's half of a cross-daemon pair, on behalf of the daemon
@@ -537,8 +539,9 @@ async fn slice_begin_inner(
 async fn pair_commit_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
-) -> Result<Payload> {
-    let decoded = PairCommitRequest::decode(request.message().payload_bytes().as_ref())?;
+) -> ServiceAnswer {
+    let decoded = PairCommitRequest::decode(request.message().payload_bytes().as_ref())
+        .map_err(undecodable)?;
 
     debug!(
         "Received `pair_commit` for `{}`:`{}` with `{}` on `{}`",
@@ -552,33 +555,35 @@ async fn pair_commit_inner(
         .relationships
         .pairing()
         .commit_pair_from_peer(&decoded)
-        .await
-        .encode()
-        .map_err(Into::into)
+        .await?;
+    encoded(FederationAck::new().encode())
 }
 
+/// Releases the reservation of the launch the request names, or refuses
+/// with `precondition_failed` when this daemon is reserved for another one.
 async fn release_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
-) -> Result<Payload> {
-    let decoded = ParticipantReleaseRequest::decode(request.message().payload_bytes().as_ref())?;
+) -> ServiceAnswer {
+    let decoded = ParticipantReleaseRequest::decode(request.message().payload_bytes().as_ref())
+        .map_err(undecodable)?;
 
-    let response = if context.ownership.release(&decoded.launch_id) {
-        debug!("Released reservation for launch `{}`", decoded.launch_id);
-        FederationVerdict::Done
-    } else {
+    if !context.ownership.release(&decoded.launch_id) {
         let held = context
             .ownership
             .held_reservation()
             .map(|(launch_id, _)| launch_id)
             .unwrap_or_default();
-        FederationVerdict::Refused(format!(
-            "this daemon is reserved for launch `{held}`, not `{}`",
-            decoded.launch_id
-        ))
-    };
-
-    response.encode().map_err(Into::into)
+        return Err(failure(
+            PeppyFailureKind::PreconditionFailed,
+            format!(
+                "this daemon is reserved for launch `{held}`, not `{}`",
+                decoded.launch_id
+            ),
+        ));
+    }
+    debug!("Released reservation for launch `{}`", decoded.launch_id);
+    encoded(FederationAck::new().encode())
 }
 
 /// Applies a peer daemon's report about an instance it owns.
@@ -590,8 +595,9 @@ async fn release_inner(
 async fn notify_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
-) -> Result<Payload> {
-    let decoded = RelationshipNotification::decode(request.message().payload_bytes().as_ref())?;
+) -> ServiceAnswer {
+    let decoded = RelationshipNotification::decode(request.message().payload_bytes().as_ref())
+        .map_err(undecodable)?;
 
     debug!(
         "Received `relationship_notify` for `{}` on `{}`: {:?}",
@@ -638,9 +644,7 @@ async fn notify_inner(
         }
     }
 
-    RelationshipNotificationAck::new()
-        .encode()
-        .map_err(Into::into)
+    encoded(RelationshipNotificationAck::new().encode())
 }
 
 #[cfg(test)]

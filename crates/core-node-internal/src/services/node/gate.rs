@@ -39,11 +39,11 @@
 //! only while that generation is still current. A superseded task's release is
 //! thus a safe no-op.
 
+use crate::services::action_loop::GoalEnding;
 use config::runtime::Name;
 use core_node_api::encoding::CopyChange;
 use parking_lot::Mutex;
 use peppylib::messaging::GoalContext;
-use peppylib::types::Payload;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
@@ -239,9 +239,9 @@ impl ConcurrencyGate {
 /// the guard's generation.
 ///
 /// On the normal path the work task releases it explicitly just before
-/// completing the goal, via [`release_then_complete`](Self::release_then_complete):
-/// completion is what lets the client observe the goal as done, so the slot must
-/// already be free by then. As an RAII guard it also fires on every *other* exit
+/// ending the goal, via [`release_then_end`](Self::release_then_end): the end
+/// is what lets the client observe the goal as done, so the slot must already
+/// be free by then. As an RAII guard it also fires on every *other* exit
 /// path (an early return, a panic unwinding the task, or a `--force`
 /// `JoinHandle::abort` dropping the future), so the gate is never left stuck
 /// "in progress" (the failure mode every future goal would then hit with
@@ -252,31 +252,32 @@ impl ConcurrencyGate {
 ///
 /// The work task completes and drops its `GoalContext` separately; the SDK
 /// retains the result for its grace window so the client's fetch still resolves.
-#[must_use = "the guard frees the gate when dropped; release it via release_then_complete or hold it for the task's lifetime"]
+#[must_use = "the guard frees the gate when dropped; release it via release_then_end or hold it for the task's lifetime"]
 pub(crate) struct GoalSlotGuard {
     gate: ConcurrencyGate,
     generation: u64,
 }
 
 impl GoalSlotGuard {
-    /// Releases this slot, then completes the goal, in that order, which is the
-    /// whole point of bundling them. [`GoalContext::complete`] closes the goal's
-    /// feedback stream and publishes its fetchable result, so a client draining
-    /// feedback learns the goal is done and can fire its next single-goal action
-    /// the instant `complete` returns. Were the slot still held then, that next
-    /// action would be rejected with `"action already in progress"` for the
-    /// window until this task unwound to the guard's end-of-scope drop, a race
-    /// the client can win because `complete` notifies it (in-process) before the
-    /// task winds down. Releasing first closes the window.
+    /// Releases this slot, then ends the goal with `ending` (completed,
+    /// failed or cancelled), in that order, which is the whole point of
+    /// bundling them. Ending the goal closes its feedback stream and publishes
+    /// its fetchable ending, so a client draining feedback learns the goal is
+    /// done and can fire its next single-goal action the instant the end
+    /// returns. Were the slot still held then, that next action would be
+    /// refused with `"action already in progress"` for the window until this
+    /// task unwound to the guard's end-of-scope drop, a race the client can
+    /// win because the end notifies it (in-process) before the task winds
+    /// down. Releasing first closes the window.
     ///
     /// The release is generation-checked like any guard drop, so it stays a safe
     /// no-op when a later `--force` goal has already taken over.
-    pub(crate) async fn release_then_complete(self, goal_ctx: &GoalContext, payload: Payload) {
+    pub(crate) async fn release_then_end(self, goal_ctx: &GoalContext, ending: GoalEnding) {
         // Explicit drop: without it `self` would live until the end of this
-        // function (i.e. until after `complete`), which is exactly the ordering
+        // function (i.e. until after the end), which is exactly the ordering
         // this method exists to avoid.
         drop(self);
-        let _ = goal_ctx.complete(payload).await;
+        ending.end(goal_ctx).await;
     }
 }
 

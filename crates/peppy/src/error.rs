@@ -15,6 +15,9 @@ pub enum Error {
 
     // -- commands
     ExecutionFailed(String),
+    /// The operator pressed Ctrl-C while the command followed a daemon goal;
+    /// the text says how the goal ended. The process ends with code 130.
+    Interrupted(String),
     Sync(String),
 
     // -- Node
@@ -53,6 +56,7 @@ impl Display for Error {
                 let readable_msg = msg.replace("\\n", "\n");
                 write!(fmt, "{readable_msg}")
             }
+            Error::Interrupted(msg) => write!(fmt, "{msg}"),
             Error::Sync(msg) => write!(fmt, "Sync error: {msg}"),
             Error::InvalidNodeName(name) => write!(fmt, "Invalid node name: {name}"),
             Error::NodeWatcher(msg) => write!(fmt, "Node watcher error: {msg}"),
@@ -62,6 +66,17 @@ impl Display for Error {
             Error::Auth(msg) => write!(fmt, "{msg}"),
             Error::AuthEngine(e) => write!(fmt, "{e}"),
             Error::Peppy(e) => write!(fmt, "{e}"),
+        }
+    }
+}
+
+impl Error {
+    /// The exit code of a command that ends with this error: 130 after a
+    /// Ctrl-C, as a shell gives a process that SIGINT ends, and 1 otherwise.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Error::Interrupted(_) => 130,
+            _ => 1,
         }
     }
 }

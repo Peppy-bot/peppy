@@ -10,7 +10,9 @@ use super::{
     HostedNode, NodeKey, PhaseChange, PhaseGoal, PlannedDeployment, UnresolvedAdd, federated,
 };
 use crate::services::node::pins::encode_pins;
+use crate::services::response::rephrased;
 use crate::services::stack::action::StackChangeContext;
+use crate::services::stack::{ChangeResult, attempt_failed};
 use config::runtime::CoreNodeName;
 use core_node_api::encoding::{
     LaunchFeedbackStep, NodeAddGoal, NodeAddLogEntry, NodeBuildGoal, NodeBuildLogEntry, NodeSource,
@@ -18,6 +20,7 @@ use core_node_api::encoding::{
 use daemon_config::repository::DeploymentRoot;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use peppylib::messaging::Failure;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::PathBuf;
@@ -130,7 +133,7 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
     add_log_paths: &mut Vec<NodeAddLogEntry>,
     build_log_paths: &mut Vec<NodeBuildLogEntry>,
     unresolved: &mut Vec<UnresolvedAdd>,
-) -> std::result::Result<(), String> {
+) -> ChangeResult<()> {
     publish_stdout(
         ctx,
         "Adding nodes to the stack...",
@@ -146,7 +149,7 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
     )
     .await;
 
-    let mut failure: Option<String> = None;
+    let mut failure: Option<Failure> = None;
     for group in groups {
         add_log_paths.extend(group.add_logs);
         build_log_paths.extend(group.build_logs);
@@ -239,17 +242,21 @@ impl<'a> GroupNode<'a> {
     }
 }
 
-/// The failure of `step` ("add" or "build") of the node `label`. A joinable
-/// node's failure says what it was built for and names the flag that skips
-/// it.
-fn node_failure(step: &str, label: &str, purpose: Option<&str>, reason: &str) -> String {
-    match purpose {
-        None => format!("failed to {step} node {label}: {reason}"),
-        Some(purpose) => format!(
-            "failed to {step} node {label} {purpose}: {reason}; `--no-prebuild` skips the nodes \
-             built for stack joins"
-        ),
-    }
+/// The failure of `step` ("add" or "build") of the node `label`, of the
+/// kind of `failure`. A joinable node's failure says what it was built for
+/// and names the flag that skips it.
+fn node_failure(step: &str, label: &str, purpose: Option<&str>, failure: &Failure) -> Failure {
+    let reason = failure.message();
+    rephrased(
+        failure,
+        match purpose {
+            None => format!("failed to {step} node {label}: {reason}"),
+            Some(purpose) => format!(
+                "failed to {step} node {label} {purpose}: {reason}; `--no-prebuild` skips the \
+                 nodes built for stack joins"
+            ),
+        },
+    )
 }
 
 /// What one machine's add-and-build group produced.
@@ -258,7 +265,7 @@ struct GroupOutcome {
     add_logs: Vec<NodeAddLogEntry>,
     build_logs: Vec<NodeBuildLogEntry>,
     unresolved: Vec<UnresolvedAdd>,
-    failure: Option<String>,
+    failure: Option<Failure>,
 }
 
 async fn add_and_build_group(
@@ -320,7 +327,7 @@ async fn add_locally(
     phase: &PhaseGoal,
     node: &GroupNode<'_>,
     outcome: &mut GroupOutcome,
-) -> std::result::Result<Option<AddedNode>, String> {
+) -> ChangeResult<Option<AddedNode>> {
     let GroupNode { key, item, purpose } = node;
     // The identical source and pins a peer would receive: a launch adds
     // one set of bytes wherever a deployment lands, so the local arm
@@ -328,7 +335,8 @@ async fn add_locally(
     // the one deliberate difference: the caller's env vars describe this
     // machine, so they apply here and stay off the goals a peer receives.
     let (source, pins) = pinned_source(key, item)
-        .and_then(|source| encode_pins(&item.closure_pins).map(|pins| (source, pins)))?;
+        .and_then(|source| encode_pins(&item.closure_pins).map(|pins| (source, pins)))
+        .map_err(attempt_failed)?;
     let node_add_goal = NodeAddGoal::for_internal_execution(source, STACK_LAUNCH_GIT_HASH)
         .with_launch_id(&phase.launch_id)
         .with_env_vars(ctx.env_vars.clone())
@@ -345,16 +353,16 @@ async fn add_locally(
         });
     }
 
-    let added =
-        result.map_err(|reason| node_failure("add", &key.label(), purpose.as_deref(), &reason))?;
+    let added = result
+        .map_err(|failure| node_failure("add", &key.label(), purpose.as_deref(), &failure))?;
 
     if is_built_in(item) {
         return Ok(None);
     }
     Ok(Some(AddedNode {
         label: key.label(),
-        node_name: added.node_name.unwrap_or_else(|| key.name.clone()),
-        node_tag: added.node_tag.unwrap_or_else(|| key.tag.clone()),
+        node_name: added.node_name,
+        node_tag: added.node_tag,
         purpose: purpose.clone(),
     }))
 }
@@ -407,7 +415,7 @@ async fn build_added_nodes<F, Fut>(
     outcome: &mut GroupOutcome,
 ) where
     F: Fn(&AddedNode) -> Fut,
-    Fut: Future<Output = (std::result::Result<(), String>, Option<PathBuf>)>,
+    Fut: Future<Output = (ChangeResult<()>, Option<PathBuf>)>,
 {
     let mut waiting = nodes.iter().enumerate();
     let mut running = FuturesUnordered::new();
@@ -441,7 +449,7 @@ struct EndedBuild {
     /// The node's position in the add order.
     position: usize,
     log: Option<NodeBuildLogEntry>,
-    failure: Option<String>,
+    failure: Option<Failure>,
 }
 
 async fn build_one<F, Fut>(
@@ -452,7 +460,7 @@ async fn build_one<F, Fut>(
 ) -> EndedBuild
 where
     F: Fn(&AddedNode) -> Fut,
-    Fut: Future<Output = (std::result::Result<(), String>, Option<PathBuf>)>,
+    Fut: Future<Output = (ChangeResult<()>, Option<PathBuf>)>,
 {
     let (result, log_path) = build(node).await;
     EndedBuild {
@@ -465,7 +473,7 @@ where
         }),
         failure: result
             .err()
-            .map(|err| node_failure("build", &node.label, node.purpose.as_deref(), &err)),
+            .map(|failure| node_failure("build", &node.label, node.purpose.as_deref(), &failure)),
     }
 }
 
@@ -493,17 +501,17 @@ async fn add_and_build_remotely(
     key: &NodeKey,
     item: &PlannedDeployment,
     outcome: &mut GroupOutcome,
-) -> std::result::Result<(), String> {
+) -> ChangeResult<()> {
     // A real budget, unlike the in-process path's zero: this goal passes
     // through the peer's own concurrency gate, which reports the remaining time
     // when it refuses a second caller.
     let add_goal = NodeAddGoal::from_source(
-        pinned_source(key, item)?,
+        pinned_source(key, item).map_err(attempt_failed)?,
         STACK_LAUNCH_GIT_HASH,
         ctx.idle_timeouts.add.as_secs(),
     )
     .with_launch_id(&phase.launch_id)
-    .with_pins(encode_pins(&item.closure_pins)?);
+    .with_pins(encode_pins(&item.closure_pins).map_err(attempt_failed)?);
     let added =
         match federated::run_remote_goal(ctx, core_node.as_str(), &add_goal, ctx.idle_timeouts.add)
             .await
@@ -524,11 +532,20 @@ async fn add_and_build_remotely(
                         config_sha256: item.config_sha256.clone(),
                     });
                 }
-                run.outcome.map_err(|failure| failure.to_string())
+                run.outcome.map_err(|failure| failure.failure().clone())
             }
-            Err(reason) => Err(reason),
+            Err(failure) => Err(failure),
         }
-        .map_err(|reason| format!("failed to add node {}: {reason}", item.node_name))?;
+        .map_err(|failure| {
+            rephrased(
+                &failure,
+                format!(
+                    "failed to add node {}: {}",
+                    item.node_name,
+                    failure.message()
+                ),
+            )
+        })?;
 
     if is_built_in(item) {
         return Ok(());
@@ -536,8 +553,8 @@ async fn add_and_build_remotely(
 
     let build_goal = remote_build_goal(
         phase,
-        added.node_name.unwrap_or_else(|| item.node_name.clone()),
-        added.node_tag.unwrap_or_else(|| item.node_tag.clone()),
+        added.node_name,
+        added.node_tag,
         ctx.idle_timeouts.build,
     );
     match federated::run_remote_goal(
@@ -555,11 +572,20 @@ async fn add_and_build_remotely(
                 failed: run.outcome.is_err(),
                 core_node: core_node.to_string(),
             });
-            run.outcome.map_err(|failure| failure.to_string())
+            run.outcome.map_err(|failure| failure.failure().clone())
         }
-        Err(reason) => Err(reason),
+        Err(failure) => Err(failure),
     }
-    .map_err(|reason| format!("failed to build node {}: {reason}", item.node_name))
+    .map_err(|failure| {
+        rephrased(
+            &failure,
+            format!(
+                "failed to build node {}: {}",
+                item.node_name,
+                failure.message()
+            ),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -578,7 +604,17 @@ mod tests {
         }
     }
 
-    type BuildResult = std::result::Result<(), String>;
+    type BuildResult = ChangeResult<()>;
+
+    /// A build that failed with `reason`.
+    fn failed(reason: &str) -> BuildResult {
+        Err(attempt_failed(reason))
+    }
+
+    /// The message of the failure `outcome` records.
+    fn failure_message(outcome: &GroupOutcome) -> Option<&str> {
+        outcome.failure.as_ref().map(Failure::message)
+    }
 
     /// The ends of the [`HeldBuilds`] by node name: [`finish`] ends one.
     type Enders = HashMap<String, oneshot::Sender<BuildResult>>;
@@ -698,7 +734,7 @@ mod tests {
         let drive = async {
             assert_eq!(started.recv().await.unwrap(), "waldo");
             assert_eq!(started.recv().await.unwrap(), "backbone");
-            finish(&mut enders, "backbone", Err("cargo failed".to_owned()));
+            finish(&mut enders, "backbone", failed("cargo failed"));
             tokio::task::yield_now().await;
             finish(&mut enders, "waldo", Ok(()));
         };
@@ -709,7 +745,7 @@ mod tests {
             "camera must not start after backbone failed"
         );
         assert_eq!(
-            outcome.failure.as_deref(),
+            failure_message(&outcome),
             Some("failed to build node backbone:v1: cargo failed")
         );
         assert_eq!(
@@ -737,14 +773,14 @@ mod tests {
         let drive = async {
             assert_eq!(started.recv().await.unwrap(), "waldo");
             assert_eq!(started.recv().await.unwrap(), "backbone");
-            finish(&mut enders, "backbone", Err("second".to_owned()));
+            finish(&mut enders, "backbone", failed("second"));
             tokio::task::yield_now().await;
-            finish(&mut enders, "waldo", Err("first".to_owned()));
+            finish(&mut enders, "waldo", failed("first"));
         };
         tokio::join!(run, drive);
 
         assert_eq!(
-            outcome.failure.as_deref(),
+            failure_message(&outcome),
             Some("failed to build node waldo:v1: first")
         );
         assert_eq!(
@@ -795,22 +831,33 @@ mod tests {
             std::slice::from_ref(&node),
             "here",
             2,
-            |_| async { (Err("cargo failed".to_owned()), None) },
+            |_| async { (failed("cargo failed"), None) },
             &mut outcome,
         )
         .await;
 
         assert_eq!(
-            outcome.failure.as_deref(),
+            failure_message(&outcome),
             Some(
                 "failed to build node so101_backbone:v1 for stack joins of `so101_sim`: cargo \
                  failed; `--no-prebuild` skips the nodes built for stack joins"
             )
         );
+        let refusal = node_failure(
+            "add",
+            "waldo:v1",
+            None,
+            &crate::services::stack::rejected("no such node"),
+        );
         assert_eq!(
-            node_failure("add", "waldo:v1", None, "no such node"),
+            refusal.message(),
             "failed to add node waldo:v1: no such node",
             "a node the change runs names no flag"
+        );
+        assert_eq!(
+            refusal.kind().as_str(),
+            "rejected",
+            "the failure keeps the kind of the add's own"
         );
     }
 

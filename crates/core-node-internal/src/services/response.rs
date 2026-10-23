@@ -1,29 +1,30 @@
-//! Shared mapping from a synchronous core-node service handler's `Result<T>`
-//! into the wire-level `PeppyResult<T>`.
+//! How a core-node service handler answers: its encoded response, or an
+//! error reply with a failure kind and a message.
 
 use crate::Result;
-use peppylib::messaging::ServiceRequestContext;
-use peppylib::{PeppyError, PeppyResult};
+use config::failure_kind::PeppyFailureKind;
+use peppylib::messaging::{Failure, ServiceAnswer};
+use peppylib::types::Payload;
 
-/// Wraps a handler's `Result<T>` into the wire-level `PeppyResult<T>`, tagging
-/// any failure as an `InvalidServiceRequest` attributed to the *sending*
-/// instance (`context.message().instance_id()`).
+/// The failure of a request or a goal: `kind` and the message of `reason`.
+pub(crate) fn failure(kind: PeppyFailureKind, reason: impl ToString) -> Failure {
+    Failure::new(kind, reason.to_string())
+}
+
+/// `failure` with `message` as its message: a failure of the same kind, which
+/// a caller rephrases to say where it happened.
+pub(crate) fn rephrased(failure: &Failure, message: impl Into<String>) -> Failure {
+    Failure::new(failure.kind().clone(), message)
+}
+
+/// The answer of a handler whose work gives `result`: the encoded response,
+/// or the error reply of its error, with the failure kind the error gives
+/// ([`crate::Error::failure_kind`]).
 ///
-/// Plain request/response service handlers funnel their result through this,
-/// so the sender's `instance_id` is recorded consistently and the `Err` mapping
-/// lives in exactly one place.
-///
-/// Generic over the success type so handlers that thread extra state alongside
-/// the payload (repo remove/exclude return `(response, needs_refresh)`) can
-/// reuse it. A handler whose errors need another shape builds its own: node
-/// info keeps internal faults apart from caller faults, and the goal-action
-/// encoders attribute failures to the action name rather than the sender.
-pub(crate) fn into_service_response<T>(
-    context: &ServiceRequestContext,
-    result: Result<T>,
-) -> PeppyResult<T> {
-    result.map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: context.message().instance_id().to_string(),
-        reason: e.to_string(),
-    })
+/// Plain request/response service handlers funnel their result through
+/// this, so the mapping of an error to its failure lives in one place. A
+/// handler that refuses a request for a reason of its own builds that
+/// failure with [`failure`] and the kind that names the reason.
+pub(crate) fn into_service_answer(result: Result<Payload>) -> ServiceAnswer {
+    result.map_err(crate::Error::into_failure)
 }

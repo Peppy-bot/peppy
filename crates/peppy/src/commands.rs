@@ -29,8 +29,32 @@ use crate::{
     error::{Error, Result},
 };
 
-/// Instance ID used by the CLI when communicating with the daemon.
-pub(crate) const CALLER_INSTANCE_ID: &str = "peppy-cli";
+/// The instance id this process of the command line sends its requests and
+/// goals as: `peppy-cli-` and a random suffix drawn once per process. Two
+/// processes are two senders, so the daemon ends the goals of a process that
+/// stops, and of no other.
+pub(crate) fn caller_instance_id() -> &'static str {
+    static CALLER_INSTANCE_ID: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| format!("peppy-cli-{:08x}", rand::random::<u32>()));
+    &CALLER_INSTANCE_ID
+}
+
+/// The error of a request to the daemon that did not give its response,
+/// `doing` naming the request ("Failed to add repository"): the daemon's
+/// error reply with its failure kind, or why the request did not reach the
+/// daemon.
+pub(crate) fn request_error(doing: &str, error: peppylib::PeppyError) -> Error {
+    match error.failure() {
+        Some(failure) => Error::ExecutionFailed(failure_text(doing, failure)),
+        None => Error::ExecutionFailed(format!("{doing}: {error}")),
+    }
+}
+
+/// How the command line says that `doing` ended with `failure`: its failure
+/// kind, then its message, which can span lines.
+pub(crate) fn failure_text(doing: &str, failure: &peppylib::messaging::Failure) -> String {
+    format!("{doing} ({}): {}", failure.kind(), failure.message())
+}
 
 /// Timeout for action goals to be accepted by the daemon (should be fast).
 pub(crate) const GOAL_TIMEOUT: Duration = Duration::from_secs(30);

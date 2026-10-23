@@ -1,4 +1,6 @@
+use config::failure_kind::PeppyFailureKind;
 use peppylib::PeppyError;
+use peppylib::messaging::Failure;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -99,4 +101,52 @@ pub enum Error {
          `remove`, or use another key"
     )]
     DatastoreKeyUnowned { key: String },
+}
+
+impl Error {
+    /// The failure kind a caller reads for this error: a request that does
+    /// not decode or names a value the daemon refuses is `rejected`, a
+    /// datastore key in the hands of another owner is `precondition_failed`,
+    /// a peer that answered with a failure keeps its kind, a peer that is
+    /// gone is `resource_unavailable`, a peer that answers too late is
+    /// `timeout`, and any other error is `attempt_failed`.
+    pub(crate) fn failure_kind(&self) -> PeppyFailureKind {
+        match self {
+            Self::CoreNodeApi(core_node_api::Error::Encoding(_)) => PeppyFailureKind::AttemptFailed,
+            Self::CoreNodeApi(_) | Self::ForbiddenEnvVar(_) | Self::InvalidEnvVar(_) => {
+                PeppyFailureKind::Rejected
+            }
+            Self::DatastoreOwnerNotRunning { .. }
+            | Self::DatastoreKeyOwned { .. }
+            | Self::DatastoreKeyUnowned { .. } => PeppyFailureKind::PreconditionFailed,
+            Self::Peppylib(error) => peppylib_failure_kind(error),
+            _ => PeppyFailureKind::AttemptFailed,
+        }
+    }
+
+    /// The failure a caller reads for this error: its kind and its message.
+    pub(crate) fn into_failure(self) -> Failure {
+        Failure::new(self.failure_kind(), self.to_string())
+    }
+}
+
+/// The failure kind of a messaging error that a daemon met while it served a
+/// request: a peer that is gone is `resource_unavailable`, a peer that
+/// answers too late is `timeout`, and a peer that answered with a failure
+/// keeps its kind.
+pub(crate) fn peppylib_failure_kind(error: &PeppyError) -> PeppyFailureKind {
+    if let Some(failure) = error.failure() {
+        return PeppyFailureKind::from_name(failure.kind().as_str())
+            .unwrap_or(PeppyFailureKind::AttemptFailed);
+    }
+    match error {
+        PeppyError::ServiceUnreachable { .. }
+        | PeppyError::ActionResultUnreachable { .. }
+        | PeppyError::ActionFeedbackProducerGone { .. }
+        | PeppyError::ActionGoalAbandoned { .. } => PeppyFailureKind::ResourceUnavailable,
+        PeppyError::ServiceTimeout { .. } | PeppyError::ActionResultTimeout { .. } => {
+            PeppyFailureKind::Timeout
+        }
+        _ => PeppyFailureKind::AttemptFailed,
+    }
 }

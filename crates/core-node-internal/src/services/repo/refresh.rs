@@ -1,5 +1,8 @@
 use crate::Result;
-use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use crate::services::action_loop::{
+    GoalEnding, GoalHandler, accept_goal, invalid_payload, refuse_goal, run_action_loop,
+    under_goal_cancel,
+};
 use crate::services::node::cache as node_cache;
 use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
@@ -17,6 +20,7 @@ use crate::services::repo::{
     source_identity,
 };
 use crate::source_url::SourceUrl;
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
     GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, ReadRef, RepoItemKind, RepoRefreshFeedback,
@@ -26,7 +30,7 @@ use core_node_api::names;
 use daemon_config::consts::{PeppyDirs, peppy_build};
 use daemon_config::repository::GitCommit;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{ConcurrentAction, PendingGoal};
+use peppylib::messaging::{CancelCause, ConcurrentAction, Failure, PendingGoal};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
 use serde_json::Value;
@@ -35,6 +39,7 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::time::SystemTime;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 pub async fn listen_for_repo_refresh(
@@ -73,25 +78,14 @@ struct RepoRefreshGoalHandler {
 fn encode_refresh_accepted() -> PeppyResult<Payload> {
     encode_response_or_err(
         ActionId::RepoRefresh.name(),
-        RepoRefreshGoalResponse::accepted().encode(),
-    )
-}
-
-fn encode_refresh_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
-    encode_response_or_err(
-        ActionId::RepoRefresh.name(),
-        RepoRefreshGoalResponse::rejected(reason).encode(),
+        RepoRefreshGoalResponse::new().encode(),
     )
 }
 
 impl GoalHandler for RepoRefreshGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
         if let Err(e) = RepoRefreshGoal::decode(pending.request_bytes()) {
-            reject_goal(
-                pending,
-                encode_refresh_rejected(format!("invalid goal payload: {e}")),
-            )
-            .await;
+            refuse_goal(pending, invalid_payload(e)).await;
             return;
         }
 
@@ -99,9 +93,12 @@ impl GoalHandler for RepoRefreshGoalHandler {
             // `repo_refresh` never forces, so nothing is ever superseded here.
             Admission::Admitted { generation, .. } => generation,
             Admission::AlreadyRunning { .. } => {
-                reject_goal(
+                refuse_goal(
                     pending,
-                    encode_refresh_rejected("a repo refresh operation is already in progress"),
+                    Failure::new(
+                        PeppyFailureKind::PreconditionFailed,
+                        "a repo refresh operation is already in progress",
+                    ),
                 )
                 .await;
                 return;
@@ -120,8 +117,8 @@ impl GoalHandler for RepoRefreshGoalHandler {
         let gate_for_task = self.gate.clone();
 
         tokio::spawn(async move {
-            // Frees the gate slot on every exit: explicitly before completion on
-            // the normal path (via `release_then_complete` below), or on unwind
+            // Frees the gate slot on every exit: explicitly before the end on
+            // the normal path (via `release_then_end` below), or on unwind
             // for a panic. A no-op if a later goal already took over.
             let slot = gate_for_task.into_slot_guard(generation);
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RepoRefreshFeedback>();
@@ -134,33 +131,49 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 }
             });
 
-            let refreshed = refresh_and_write_caches(
-                &peppy_dirs,
-                peppy_build(),
-                RefreshScope::Every,
-                SystemTime::now(),
-                move |feedback| {
-                    let _ = tx.send(feedback);
-                },
+            // A cancel of the goal's caller, or of its gone sender, stops the
+            // refresh between two of its steps: it reads no other repository
+            // and publishes nothing, as a refresh that fails.
+            let cancel = CancellationToken::new();
+            let refreshed = under_goal_cancel(
+                &goal_ctx,
+                &cancel,
+                refresh_and_write_caches(
+                    &peppy_dirs,
+                    peppy_build(),
+                    RefreshScope::Every,
+                    SystemTime::now(),
+                    move |feedback| {
+                        let _ = tx.send(feedback);
+                    },
+                    &cancel,
+                ),
             )
             .await;
 
-            let result = match refreshed {
-                Ok(refreshed) => refresh_result(&refreshed),
+            let ending = match refreshed {
+                Ok(Some(refreshed)) => {
+                    GoalEnding::of(Ok(refresh_result(&refreshed).encode()), None)
+                }
+                Ok(None) => GoalEnding::Cancelled(
+                    goal_ctx
+                        .cancel_cause()
+                        .unwrap_or(CancelCause::Caller)
+                        .reason()
+                        .to_owned(),
+                ),
                 Err(e) => {
                     warn!("Repo refresh failed: {}", e);
-                    RepoRefreshResult::failure(e.to_string())
+                    GoalEnding::Failed(e.into_failure())
                 }
             };
 
-            // Flush all pending feedbacks before completing: the end-of-stream
-            // sentinel that `complete` emits must not race ahead of the final
+            // Flush all pending feedbacks before ending: the end-of-stream
+            // sentinel that the end emits must not race ahead of the final
             // feedback lines.
             let _ = drain.await;
 
-            if let Ok(payload) = result.encode() {
-                slot.release_then_complete(&goal_ctx, payload).await;
-            }
+            slot.release_then_end(&goal_ctx, ending).await;
         });
     }
 }
@@ -182,17 +195,11 @@ fn refresh_result(refreshed: &RefreshedRepos) -> RepoRefreshResult {
     let contracts = count_unique(&items.contracts);
     let pairings = count_unique(&items.pairings);
     let mcp_exposures = count_unique(&items.mcp_exposures);
+    let result = RepoRefreshResult::new(nodes, launchers, contracts, pairings, mcp_exposures);
     if refreshed.failures.is_empty() {
-        return RepoRefreshResult::success(nodes, launchers, contracts, pairings, mcp_exposures);
+        return result;
     }
-    RepoRefreshResult::success_with_failure_report(
-        nodes,
-        launchers,
-        contracts,
-        pairings,
-        mcp_exposures,
-        failure_report(&refreshed.failures),
-    )
+    result.with_read_failure_report(failure_report(&refreshed.failures))
 }
 
 /// One message naming every repository that failed and why, so a user
@@ -224,11 +231,13 @@ pub(crate) async fn reindex_after_change(peppy_dirs: &PeppyDirs) -> Option<Strin
         RefreshScope::Every,
         SystemTime::now(),
         |_| {},
+        &CancellationToken::new(),
     )
     .await;
     match refreshed {
-        Ok(refreshed) if refreshed.failures.is_empty() => None,
-        Ok(refreshed) => Some(failure_report(&refreshed.failures)),
+        Ok(Some(refreshed)) if refreshed.failures.is_empty() => None,
+        Ok(Some(refreshed)) => Some(failure_report(&refreshed.failures)),
+        Ok(None) => Some("re-indexing was cancelled".to_owned()),
         Err(e) => Some(format!("re-indexing failed: {e}")),
     }
 }
@@ -244,19 +253,32 @@ pub(crate) async fn reindex_after_change(peppy_dirs: &PeppyDirs) -> Option<Strin
 /// take effect, and that the ones that did not keep the entries they last
 /// published. Caches store every entry so that `repo list` can display
 /// every source and users can pick a specific `sha256`.
+///
+/// Returns `None` once `cancel` is cancelled before the caches are written:
+/// the refresh reads no other repository and publishes nothing, as a
+/// refresh that fails.
 pub(crate) async fn refresh_and_write_caches(
     peppy_dirs: &PeppyDirs,
     build: PeppyBuild,
     scope: RefreshScope,
     now: SystemTime,
     mut on_feedback: impl FnMut(RepoRefreshFeedback) + Send + 'static,
-) -> Result<RefreshedRepos> {
+    cancel: &CancellationToken,
+) -> Result<Option<RefreshedRepos>> {
     let peppy_dirs = peppy_dirs.clone();
+    let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
         let _guard = crate::services::repo::refresh_lock().lock();
-        let refreshed = process_refresh(&peppy_dirs, &build, &scope, now, &mut on_feedback)?;
+        let Some(refreshed) =
+            process_refresh(&peppy_dirs, &build, &scope, now, &mut on_feedback, &cancel)?
+        else {
+            return Ok(None);
+        };
+        if cancel.is_cancelled() {
+            return Ok(None);
+        }
         write_all_caches(&peppy_dirs, &refreshed)?;
-        Ok(refreshed)
+        Ok(Some(refreshed))
     })
     .await?
 }
@@ -363,12 +385,14 @@ pub(crate) async fn refresh_release_repositories_for_this_version(
         RefreshScope::Only(ids.clone()),
         now,
         |_| {},
+        &CancellationToken::new(),
     )
     .await?;
-    Ok(VersionRefresh::Refreshed {
-        ids,
-        failures: refreshed.failures,
-    })
+    // Nothing cancels this refresh, so it always reads.
+    let failures = refreshed
+        .map(|refreshed| refreshed.failures)
+        .unwrap_or_default();
+    Ok(VersionRefresh::Refreshed { ids, failures })
 }
 
 /// A repository that was skipped during refresh because it appears in the
@@ -631,13 +655,18 @@ impl RefreshScope {
 /// reads yield is merged in id order when every read has ended, so the
 /// priority of an entry, the discovery feedback, `failures` and `statuses`
 /// never depend on which read ends first.
+///
+/// Returns `None` once `cancel` is cancelled, checked before the reads,
+/// before each read starts and after the reads end: a read that runs ends
+/// first, and no other one starts.
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
     build: &PeppyBuild,
     scope: &RefreshScope,
     now: SystemTime,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
-) -> Result<RefreshedRepos> {
+    cancel: &CancellationToken,
+) -> Result<Option<RefreshedRepos>> {
     let (repos, exclusions) = {
         let _guard = crate::services::repo::repos_file_lock().lock();
         let repos = read_or_create_repos(peppy_dirs)?;
@@ -679,13 +708,24 @@ pub(crate) fn process_refresh(
         .iter()
         .filter_map(PlannedRepo::source_to_read)
         .collect();
+    if cancel.is_cancelled() {
+        return Ok(None);
+    }
     let mut reads = map_in_parallel(
         sources_to_read,
         MAX_PARALLEL_READS,
         on_feedback,
-        |source, on_feedback| read_repo(source, &exclusions, build, peppy_dirs, on_feedback),
+        |source, on_feedback| {
+            if cancel.is_cancelled() {
+                return RepoRead::cancelled();
+            }
+            read_repo(source, &exclusions, build, peppy_dirs, on_feedback)
+        },
     )
     .into_iter();
+    if cancel.is_cancelled() {
+        return Ok(None);
+    }
 
     for repo in planned {
         let (id, identity, source) = match repo {
@@ -765,12 +805,12 @@ pub(crate) fn process_refresh(
         merged.merge(items, on_feedback);
     }
 
-    Ok(RefreshedRepos {
+    Ok(Some(RefreshedRepos {
         items: merged.items,
         excluded: excluded_repos,
         failures,
         statuses,
-    })
+    }))
 }
 
 /// What one refresh does with one configured repository, decided from its
@@ -850,6 +890,20 @@ const MAX_PARALLEL_READS: NonZeroUsize = NonZeroUsize::new(8).expect("8 is not z
 struct RepoRead {
     items: std::result::Result<RepoItems, (RepoFailureKind, String)>,
     read_ref: Option<ReadRef>,
+}
+
+impl RepoRead {
+    /// The read a cancel stopped before it started; the refresh it belongs
+    /// to publishes nothing.
+    fn cancelled() -> Self {
+        Self {
+            items: Err((
+                RepoFailureKind::Unreachable,
+                "the refresh was cancelled".to_owned(),
+            )),
+            read_ref: None,
+        }
+    }
 }
 
 /// Reads one repository, with `@{peppy-release}` resolved for `build`.
@@ -1354,7 +1408,9 @@ mod tests {
             &RefreshScope::Every,
             now,
             on_feedback,
+            &CancellationToken::new(),
         )
+        .map(|refreshed| refreshed.expect("nothing cancels the refresh"))
     }
 
     /// Publishes only `roots`, then refreshes. For tests that deliberately
@@ -2879,8 +2935,10 @@ mod tests {
             &RefreshScope::Every,
             TEST_NOW,
             &mut |_| {},
+            &CancellationToken::new(),
         )
-        .unwrap();
+        .unwrap()
+        .expect("nothing cancels the refresh");
 
         assert!(refreshed.failures.is_empty(), "{:?}", refreshed.failures);
         let release_tag = Some(ReadRef::ReleaseTag("v0.31.2".to_owned()));
@@ -2958,8 +3016,10 @@ mod tests {
             &RefreshScope::Every,
             TEST_NOW,
             &mut |_| {},
+            &CancellationToken::new(),
         )
-        .unwrap();
+        .unwrap()
+        .expect("nothing cancels the refresh");
         write_all_caches(&peppy_dirs, &read_for_the_old_version).unwrap();
         assert_eq!(cached_node_commit(&peppy_dirs), first);
 

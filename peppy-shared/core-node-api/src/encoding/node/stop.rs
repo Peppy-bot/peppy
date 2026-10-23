@@ -3,7 +3,7 @@ use capnp::message::Builder;
 use crate::node_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::encoding::{decode_message, encode_message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeStopRequest {
@@ -35,53 +35,36 @@ impl NodeStopRequest {
     }
 }
 
+/// The response of a node stop that succeeded. A failed stop is an error
+/// reply, with a failure kind and a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeStopResponse {
-    pub success: bool,
-    pub error_message: Option<String>,
     /// `true` when the node had to be force-killed because it did not exit
     /// within the cooperative shutdown grace period. `false` when it exited
-    /// gracefully (or on any failure response).
+    /// gracefully.
     pub force_killed: bool,
 }
 
 impl NodeStopResponse {
-    pub fn new(success: bool, error_message: Option<String>) -> Self {
+    /// The node exited gracefully within the grace period, or had no
+    /// process.
+    pub fn graceful() -> Self {
         Self {
-            success,
-            error_message,
             force_killed: false,
         }
     }
 
-    /// Success after the node exited gracefully within the grace period.
-    pub fn success() -> Self {
-        Self::new(true, None)
-    }
-
-    /// Success, but the node ignored the cooperative shutdown and had to be
-    /// force-killed (SIGKILL to its process group).
-    pub fn success_force_killed() -> Self {
-        Self {
-            success: true,
-            error_message: None,
-            force_killed: true,
-        }
-    }
-
-    pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(false, Some(error_message.into()))
+    /// The node ignored the cooperative shutdown and had to be force-killed
+    /// (SIGKILL to its process group).
+    pub fn forced() -> Self {
+        Self { force_killed: true }
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_stop_response::Builder>();
-            response.set_success(self.success);
             response.set_force_killed(self.force_killed);
-            if let Some(ref error_message) = self.error_message {
-                response.set_error_message(error_message);
-            }
         }
         encode_message(&builder)
     }
@@ -90,8 +73,6 @@ impl NodeStopResponse {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_stop_response::Reader>()?;
         Ok(Self {
-            success: response.get_success(),
-            error_message: optional_text(response.get_error_message()?.to_str()?),
             force_killed: response.get_force_killed(),
         })
     }
@@ -124,69 +105,16 @@ mod tests {
             .expect_err("malformed bytes should be rejected");
     }
 
+    /// The force-killed flag survives the wire round-trip distinctly from
+    /// a graceful stop.
     #[test]
-    fn stop_response_round_trips_success() {
-        let response = NodeStopResponse::success();
-        assert!(response.success);
-        assert_eq!(response.error_message, None);
-        assert!(!response.force_killed);
-        let payload = response.encode().expect("encode");
-        let decoded = NodeStopResponse::decode(payload.as_ref()).expect("decode");
-        assert!(decoded.success);
-        assert_eq!(decoded.error_message, None);
-        assert!(!decoded.force_killed);
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn stop_response_round_trips_success_force_killed() {
-        let response = NodeStopResponse::success_force_killed();
-        assert!(response.success);
-        assert_eq!(response.error_message, None);
-        assert!(response.force_killed);
-        let payload = response.encode().expect("encode");
-        let decoded = NodeStopResponse::decode(payload.as_ref()).expect("decode");
-        assert!(decoded.success);
-        assert_eq!(decoded.error_message, None);
-        // The force-killed flag must survive the wire round-trip distinctly
-        // from a plain graceful success.
-        assert!(decoded.force_killed);
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn stop_response_force_killed_flag_is_distinct_from_plain_success() {
-        let plain = NodeStopResponse::success().encode().expect("encode plain");
-        let forced = NodeStopResponse::success_force_killed()
-            .encode()
-            .expect("encode forced");
-        let plain_decoded = NodeStopResponse::decode(plain.as_ref()).expect("decode plain");
-        let forced_decoded = NodeStopResponse::decode(forced.as_ref()).expect("decode forced");
-        assert!(!plain_decoded.force_killed);
-        assert!(forced_decoded.force_killed);
-        assert_ne!(plain_decoded, forced_decoded);
-    }
-
-    #[test]
-    fn stop_response_round_trips_failure() {
-        let response = NodeStopResponse::failure("could not stop");
-        assert!(!response.success);
-        assert_eq!(response.error_message, Some("could not stop".to_owned()));
-        assert!(!response.force_killed);
-        let payload = response.encode().expect("encode");
-        let decoded = NodeStopResponse::decode(payload.as_ref()).expect("decode");
-        assert!(!decoded.success);
-        assert_eq!(decoded.error_message, Some("could not stop".to_owned()));
-        assert!(!decoded.force_killed);
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn stop_response_new_round_trips() {
-        let response = NodeStopResponse::new(false, Some("oops".to_owned()));
-        let payload = response.encode().expect("encode");
-        let decoded = NodeStopResponse::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, response);
+    fn stop_response_round_trips_both_stops() {
+        for response in [NodeStopResponse::graceful(), NodeStopResponse::forced()] {
+            let payload = response.encode().expect("encode");
+            let decoded = NodeStopResponse::decode(payload.as_ref()).expect("decode");
+            assert_eq!(decoded, response);
+        }
+        assert_ne!(NodeStopResponse::graceful(), NodeStopResponse::forced());
     }
 
     #[test]

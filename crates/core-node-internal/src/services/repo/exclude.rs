@@ -4,15 +4,15 @@ use crate::services::repo::{
     EXCLUDED_REPOS_FILE, has_entry_with_identity, normalize_repo_entries, parse_repo_entry,
     repo_entry_id, repo_source_to_json, source_identity, write_repo_entries,
 };
-use crate::services::response::into_service_response;
+use crate::services::response::{failure, into_service_answer};
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::ServiceRequestContext;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::messaging::{Failure, ServiceAnswer, ServiceRequestContext};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -50,20 +50,19 @@ pub async fn listen_for_repo_exclude(
 async fn handle_repo_exclude_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
-) -> PeppyResult<Payload> {
-    let (mut response, needs_refresh) = into_service_response(
-        &context,
-        handle_repo_exclude_request_inner(&context, &peppy_dirs),
-    )?;
+) -> ServiceAnswer {
+    exclude_repository(&context, &peppy_dirs)?;
 
-    // The exclusion itself already landed, so `success` stays true; the
-    // report says whether the re-read that makes it take effect worked.
-    if needs_refresh && let Some(report) = reindex_after_change(&peppy_dirs).await {
-        warn!("Re-indexing after the exclusion reported problems: {report}");
-        response = RepoExcludeResponse::success_with_refresh_report(report);
-    }
-
-    into_service_response(&context, response.encode().map_err(Into::into))
+    // The exclusion itself already landed; the report says whether the
+    // re-read that makes it take effect worked.
+    let response = match reindex_after_change(&peppy_dirs).await {
+        Some(report) => {
+            warn!("Re-indexing after the exclusion reported problems: {report}");
+            RepoExcludeResponse::with_refresh_report(report)
+        }
+        None => RepoExcludeResponse::refreshed(),
+    };
+    into_service_answer(response.encode().map_err(Into::into))
 }
 
 /// Reads excluded repositories from `conf/excluded_repositories.json5`.
@@ -147,17 +146,20 @@ impl ExclusionSet {
     }
 }
 
-/// Returns `(response, needs_refresh)`. The response is returned
-/// unencoded so the caller can fold the post-change re-index report into
-/// it before putting it on the wire.
-fn handle_repo_exclude_request_inner(
+/// Adds the repository the request names to `excluded_repositories.json5`,
+/// or gives the failure of the exclusion: `rejected` for a request that
+/// does not decode or an empty source, `precondition_failed` for a
+/// repository already excluded, and `attempt_failed` for a list the daemon
+/// cannot read or write.
+fn exclude_repository(
     context: &ServiceRequestContext,
     peppy_dirs: &PeppyDirs,
-) -> Result<(RepoExcludeResponse, bool)> {
+) -> std::result::Result<(), Failure> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload_bytes();
 
-    let request = RepoExcludeRequest::decode(payload.as_ref())?;
+    let request = RepoExcludeRequest::decode(payload.as_ref())
+        .map_err(|error| failure(PeppyFailureKind::Rejected, error))?;
 
     debug!(
         "Received `repo_exclude` request from {sender_instance_id}, source={:?}",
@@ -166,9 +168,9 @@ fn handle_repo_exclude_request_inner(
 
     let identity = source_identity(&request.source);
     if identity.trim().is_empty() {
-        return Ok((
-            RepoExcludeResponse::failure("repository path/URL must not be empty"),
-            false,
+        return Err(failure(
+            PeppyFailureKind::Rejected,
+            "repository path/URL must not be empty",
         ));
     }
 
@@ -176,18 +178,14 @@ fn handle_repo_exclude_request_inner(
 
     let _guard = crate::services::repo::repos_file_lock().lock();
 
-    let mut repos = match read_excluded_repos(peppy_dirs) {
-        Ok(repos) => repos,
-        Err(e) => {
-            return Ok((RepoExcludeResponse::failure(e.to_string()), false));
-        }
-    };
+    let mut repos = read_excluded_repos(peppy_dirs)
+        .map_err(|error| failure(PeppyFailureKind::AttemptFailed, error))?;
 
     let new_identity = identity.trim();
     if has_entry_with_identity(&repos, new_identity) {
-        return Ok((
-            RepoExcludeResponse::failure(format!("repository '{}' already exists", new_identity)),
-            false,
+        return Err(failure(
+            PeppyFailureKind::PreconditionFailed,
+            format!("repository '{}' already exists", new_identity),
         ));
     }
 
@@ -200,9 +198,6 @@ fn handle_repo_exclude_request_inner(
 
     repos.push(repo_source_to_json(next_id, &request.source));
     repos.sort_by_key(|e| repo_entry_id(e).unwrap_or(0));
-    write_repo_entries(&repos_path, &repos, "excluded repositories")?;
-
-    drop(_guard);
-
-    Ok((RepoExcludeResponse::success(), true))
+    write_repo_entries(&repos_path, &repos, "excluded repositories")
+        .map_err(crate::Error::into_failure)
 }

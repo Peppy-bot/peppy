@@ -2,18 +2,18 @@ use crate::Result;
 use crate::services::repo::cache::{NodeCacheEntry, load_repo_cache};
 use crate::services::repo::status::{self, RepoStatus};
 use crate::services::repo::{ListedRepo, RepoNodes, listed_repositories, nodes_by_repository};
-use crate::services::response::into_service_response;
+use crate::services::response::{failure, into_service_answer};
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
-    RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailure, RepoListRepoFailureKind,
+    RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailedRead, RepoListRepoReadFailure,
     RepoListRequest, RepoListResponse,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::ServiceRequestContext;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::messaging::{ServiceAnswer, ServiceRequestContext};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::warn;
 
@@ -43,16 +43,6 @@ pub async fn listen_for_repo_list(
     Ok(handle)
 }
 
-async fn handle_repo_list_request(
-    context: ServiceRequestContext,
-    peppy_dirs: PeppyDirs,
-) -> PeppyResult<Payload> {
-    into_service_response(
-        &context,
-        handle_repo_list_request_inner(&context, &peppy_dirs),
-    )
-}
-
 /// Lists what will actually resolve.
 ///
 /// Every source kind is read from `nodes.json5` rather than re-walked
@@ -61,24 +51,22 @@ async fn handle_repo_list_request(
 /// it would display the entries peppy refused, and at any time it would
 /// display nodes added since the last refresh that cannot yet resolve.
 /// Reading the cache is what makes a partial update legible.
-fn handle_repo_list_request_inner(
-    context: &ServiceRequestContext,
-    peppy_dirs: &PeppyDirs,
-) -> Result<Payload> {
+///
+/// A request that does not decode is `rejected`; a repository list the
+/// daemon cannot read is `attempt_failed`.
+async fn handle_repo_list_request(
+    context: ServiceRequestContext,
+    peppy_dirs: PeppyDirs,
+) -> ServiceAnswer {
     let payload = context.message().payload_bytes();
-    let _request = RepoListRequest::decode(payload.as_ref())?;
+    RepoListRequest::decode(payload.as_ref())
+        .map_err(|error| failure(PeppyFailureKind::Rejected, error))?;
 
-    let repos = match listed_repositories(peppy_dirs) {
-        Ok(repos) => repos,
-        Err(e) => {
-            return RepoListResponse::failure(e.to_string())
-                .encode()
-                .map_err(Into::into);
-        }
-    };
+    let repos = listed_repositories(&peppy_dirs)
+        .map_err(|error| failure(PeppyFailureKind::AttemptFailed, error))?;
 
-    let statuses = status::read(peppy_dirs);
-    let cached: Vec<NodeCacheEntry> = load_repo_cache(peppy_dirs).unwrap_or_else(|e| {
+    let statuses = status::read(&peppy_dirs);
+    let cached: Vec<NodeCacheEntry> = load_repo_cache(&peppy_dirs).unwrap_or_else(|e| {
         warn!("Failed to read the nodes cache: {e}");
         Vec::new()
     });
@@ -99,9 +87,11 @@ fn handle_repo_list_request_inner(
         }));
     }
 
-    RepoListResponse::success(all_entries, all_repos)
-        .encode()
-        .map_err(Into::into)
+    into_service_answer(
+        RepoListResponse::new(all_entries, all_repos)
+            .encode()
+            .map_err(Into::into),
+    )
 }
 
 /// Projects one repository's recorded status onto the wire. A repository
@@ -114,27 +104,27 @@ fn repo_entry(repo: &ListedRepo, status: Option<&RepoStatus>) -> RepoListRepoEnt
         source_type: repo.source.kind(),
         last_read_unix_secs: status.and_then(|s| s.last_read_unix_secs),
         retained: status.is_some_and(|s| s.is_retained()),
-        failure: status
+        failed_read: status
             .and_then(|s| s.last_failure.as_ref())
-            .map(|f| wire_failure(&f.kind, &f.message)),
+            .map(|f| wire_failed_read(&f.kind, &f.message)),
     }
 }
 
-/// Projects a recorded failure onto the wire's closed kind. The status
-/// file keeps the kind as text so a value written by a future peppy is a
-/// label rather than a parse error; the wire has two kinds only, so an
-/// unrecognized one reads as unreachable with its raw label kept in the
-/// detail. Dropping the failure instead would show a retained repository
-/// with no reason at all.
-fn wire_failure(kind: &str, message: &str) -> RepoListRepoFailure {
-    match RepoListRepoFailureKind::parse(kind) {
-        Some(kind) => RepoListRepoFailure {
-            kind,
+/// Projects a recorded failed read onto the wire's closed read failure. The
+/// status file keeps the read failure as text so a value written by a
+/// future peppy is a label rather than a parse error; the wire has two read
+/// failures only, so an unrecognized one reads as unreachable with its raw
+/// label kept in the detail. Dropping the failed read instead would show a
+/// retained repository with no reason at all.
+fn wire_failed_read(read_failure: &str, message: &str) -> RepoListRepoFailedRead {
+    match RepoListRepoReadFailure::parse(read_failure) {
+        Some(read_failure) => RepoListRepoFailedRead {
+            read_failure,
             detail: message.to_owned(),
         },
-        None => RepoListRepoFailure {
-            kind: RepoListRepoFailureKind::Unreachable,
-            detail: format!("{kind}: {message}"),
+        None => RepoListRepoFailedRead {
+            read_failure: RepoListRepoReadFailure::Unreachable,
+            detail: format!("{read_failure}: {message}"),
         },
     }
 }

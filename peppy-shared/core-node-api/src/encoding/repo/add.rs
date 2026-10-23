@@ -199,44 +199,26 @@ pub(super) fn read_git_source(
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepoAddResponse {
-    pub success: bool,
-    pub error_message: String,
-}
+/// The response of a repository add that succeeded. Carries no fields: a
+/// failed add is an error reply, with a failure kind and a message.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RepoAddResponse;
 
 impl RepoAddResponse {
-    pub fn success() -> Self {
-        Self {
-            success: true,
-            error_message: String::new(),
-        }
-    }
-
-    pub fn failure(message: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            error_message: message.into(),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        {
-            let mut response = builder.init_root::<repo_capnp::repo_add_response::Builder>();
-            response.set_success(self.success);
-            response.set_error_message(&self.error_message);
-        }
+        builder.init_root::<repo_capnp::repo_add_response::Builder>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<repo_capnp::repo_add_response::Reader>()?;
-        Ok(Self {
-            success: response.get_success(),
-            error_message: response.get_error_message()?.to_str()?.to_owned(),
-        })
+        reader.get_root::<repo_capnp::repo_add_response::Reader>()?;
+        Ok(Self)
     }
 }
 
@@ -447,21 +429,12 @@ mod tests {
     }
 
     #[test]
-    fn add_response_success_roundtrips() {
-        let response = RepoAddResponse::success();
-        assert!(response.success);
-        assert_eq!(response.error_message, "");
-        let bytes = response.encode().expect("encode");
-        assert_eq!(RepoAddResponse::decode(&bytes).expect("decode"), response);
-    }
-
-    #[test]
-    fn add_response_failure_roundtrips() {
-        let response = RepoAddResponse::failure("already added");
-        assert!(!response.success);
-        assert_eq!(response.error_message, "already added");
-        let bytes = response.encode().expect("encode");
-        assert_eq!(RepoAddResponse::decode(&bytes).expect("decode"), response);
+    fn add_response_roundtrips() {
+        let bytes = RepoAddResponse::new().encode().expect("encode");
+        assert_eq!(
+            RepoAddResponse::decode(&bytes).expect("decode"),
+            RepoAddResponse
+        );
     }
 
     #[test]

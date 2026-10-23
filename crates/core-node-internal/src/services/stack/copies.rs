@@ -14,22 +14,15 @@ pub(in crate::services::stack) mod remove;
 use super::action::StackChangeContext;
 use super::state::{ActiveLaunch, active_launch};
 use super::{ChangeResult, stack_list_on};
-use core_node_api::encoding::LaunchResult;
 
 /// Runs one change over the active launch and writes the record back,
 /// whatever the outcome.
 async fn change_active_launch(
     ctx: &StackChangeContext,
     change: impl AsyncFnOnce(&mut ActiveLaunch) -> ChangeResult<()>,
-) -> LaunchResult {
-    let mut active = match active_launch(ctx) {
-        Ok(active) => active,
-        Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
-    };
+) -> ChangeResult<()> {
+    let mut active = active_launch(ctx)?;
     let outcome = change(&mut active).await;
     *ctx.slice_ownership.active.lock() = Some(active);
-    match outcome {
-        Ok(()) => LaunchResult::success(ctx.log.path()),
-        Err(reason) => LaunchResult::failure(ctx.log.path(), reason),
-    }
+    outcome
 }

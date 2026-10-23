@@ -1,36 +1,43 @@
 //! The goal path driven the way the daemon bridge of the MCP server drives
 //! it, against a mock of the daemon's `stack_join` action on peppylib's
-//! production goal engine: the acceptance at once, each feedback message in
-//! order, then the result; a rejection with the daemon's reason; a caller
-//! that drops `next()` while it waits and loses nothing; a goal handed to a
-//! task that follows it to its end; and a daemon that goes away. Every step
-//! waits on the mock's action, never on the clock: a deadline only bounds the
-//! failure path.
+//! production goal engine: the acceptance at once, each line of output in
+//! order, then the end with the node logs; a refusal with the daemon's
+//! failure kind and reason; a caller that drops `next()` while it waits and
+//! loses nothing; a goal handed to a task that follows it to its end; a
+//! cancel that reaches the daemon; a caller that goes away; and a daemon that
+//! goes away. Every step waits on the mock's action, never on the clock: a
+//! deadline only bounds the failure path.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::CoreNodeName;
 use config::runtime::Name;
 use core_node_api::encoding::{
     CopyAction, CopyChange, CopyInfo, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse,
-    LaunchResult, NodeRunLogEntry, StackJoinGoal, StackListRequest, StackListResponse,
+    LaunchOutput, LaunchResult, NodeLogs, NodeRunLogEntry, StackJoinGoal, StackListRequest,
+    StackListResponse,
 };
 use core_node_api::names::CORE_NODE_TAG;
 use core_node_api::{ActionGoal, ServiceRequest};
 use futures::FutureExt;
-use peppylib::messaging::{GoalContext, MessengerHandle, ProducerRef, SenderTarget};
+use peppylib::messaging::{
+    CancelCause, Failure, GoalContext, MessengerHandle, ProducerRef, SenderTarget,
+};
 use peppylib::testing::{
     EphemeralRouter, MockActionServerCore, MockServiceCore, READINESS_TIMEOUT,
     wait_action_reachable, wait_service_reachable,
 };
+use peppylib::types::Payload;
 use stack_goal::{
-    DEFAULT_BUDGETS, DaemonRoute, FollowError, RunningStackGoal, SendError, StackGoalEvent,
+    DEFAULT_BUDGETS, DaemonRoute, FollowError, RunningStackGoal, SendError, StackGoalEnd,
+    StackGoalEvent, StackGoalOutcome,
 };
 
-/// The reason the scripted daemon rejects a goal with.
-const REJECTION_REASON: &str = "a stack change is in progress on this daemon";
+/// The reason the scripted daemon refuses a goal with.
+const REFUSAL_REASON: &str = "a stack change is in progress on this daemon";
 
 /// The coordinator: the daemon's core node, which the bridge is bound to.
 const COORDINATOR: &str = "cn-coordinator";
@@ -119,7 +126,7 @@ async fn admit(provider: &mut MockActionServerCore, sent: &StackJoinGoal) -> Arc
         sent
     );
     pending
-        .accept(LaunchGoalResponse::accepted(LOG_PATH).encode().unwrap())
+        .accept(LaunchGoalResponse::new(LOG_PATH).encode().unwrap())
         .await
         .expect("the daemon admits the goal")
 }
@@ -140,53 +147,78 @@ async fn running_join(
     (running, context)
 }
 
-fn feedback(step: LaunchFeedbackStep, line: &str) -> LaunchFeedback {
-    LaunchFeedback::stdout(line, step)
+fn output(step: LaunchFeedbackStep, line: &str) -> LaunchOutput {
+    LaunchOutput::stdout(line, step)
 }
 
-/// The progress of a join, one message per step.
-fn join_progress() -> Vec<LaunchFeedback> {
+/// The progress of a join, one line per step.
+fn join_progress() -> Vec<LaunchOutput> {
     vec![
-        feedback(
+        output(
             LaunchFeedbackStep::LauncherStep,
             "Adding so101_sim as bravo",
         ),
-        feedback(
+        output(
             LaunchFeedbackStep::AddingNode,
             "fetching robot_initializer:v1",
         ),
-        LaunchFeedback::stderr(
+        LaunchOutput::stderr(
             "Compiling robot_initializer",
             LaunchFeedbackStep::BuildingNode,
         ),
-        feedback(
+        output(
             LaunchFeedbackStep::RunningNode,
             "'bravo' does not stand yet",
         ),
     ]
 }
 
-/// A join that failed at the start of `robot_initializer`, with its run log.
-fn failed_join() -> LaunchResult {
-    LaunchResult::failure(LOG_PATH, "bravo_robot_initializer_inst exited during setup")
-        .with_node_logs(
-            Vec::new(),
-            Vec::new(),
-            vec![NodeRunLogEntry {
-                instance_id: "bravo_robot_initializer_inst".to_owned(),
-                node_label: "robot_initializer:v1".to_owned(),
-                log_path: PathBuf::from("/home/peppy/.peppy/logs/run/bravo.log"),
-                failed: true,
-                core_node: COORDINATOR.to_owned(),
-            }],
-        )
+/// The node logs of a join that failed at the start of `robot_initializer`.
+fn failed_join_logs() -> NodeLogs {
+    NodeLogs {
+        node_run_logs: vec![NodeRunLogEntry {
+            instance_id: "bravo_robot_initializer_inst".to_owned(),
+            node_label: "robot_initializer:v1".to_owned(),
+            log_path: PathBuf::from("/home/peppy/.peppy/logs/run/bravo.log"),
+            failed: true,
+            core_node: COORDINATOR.to_owned(),
+        }],
+        ..NodeLogs::default()
+    }
 }
 
-async fn publish(context: &GoalContext, feedback: &LaunchFeedback) {
+/// The failure of that join.
+fn failed_join() -> Failure {
+    Failure::new(
+        PeppyFailureKind::AttemptFailed,
+        "bravo_robot_initializer_inst exited during setup",
+    )
+}
+
+async fn publish(context: &GoalContext, output: &LaunchOutput) {
+    publish_feedback(context, LaunchFeedback::Output(output.clone())).await;
+}
+
+async fn publish_feedback(context: &GoalContext, feedback: LaunchFeedback) {
     context
         .publish_feedback(feedback.encode().unwrap())
         .await
         .expect("the daemon publishes its feedback");
+}
+
+/// The daemon's end of a failed join: the node logs as the last feedback,
+/// then the failure.
+async fn fail_join(context: &GoalContext) {
+    publish_feedback(context, LaunchFeedback::NodeLogs(failed_join_logs())).await;
+    context.fail(failed_join()).await.unwrap();
+}
+
+/// The end the client reads for [`fail_join`].
+fn failed_join_end() -> StackGoalEnd {
+    StackGoalEnd {
+        outcome: StackGoalOutcome::Failed(failed_join()),
+        node_logs: failed_join_logs(),
+    }
 }
 
 /// The next event of `running`, which the mock already sent.
@@ -208,24 +240,21 @@ async fn stop_waiting(running: &mut RunningStackGoal) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_join_gives_its_acceptance_then_each_feedback_in_order_then_its_result() {
+async fn a_join_gives_its_acceptance_then_each_line_in_order_then_its_end() {
     let (mesh, mut provider) = mesh().await;
     let (mut running, context) = running_join(&mesh, &mut provider).await;
     for message in join_progress() {
         publish(&context, &message).await;
     }
-    context
-        .complete(failed_join().encode().unwrap())
-        .await
-        .unwrap();
+    fail_join(&context).await;
 
     for message in join_progress() {
-        let event = next_event(&mut running).await.expect("a feedback event");
-        assert_eq!(event, StackGoalEvent::Feedback(message));
+        let event = next_event(&mut running).await.expect("an output event");
+        assert_eq!(event, StackGoalEvent::Output(message));
     }
     assert_eq!(
-        next_event(&mut running).await.expect("the result"),
-        StackGoalEvent::Ended(failed_join())
+        next_event(&mut running).await.expect("the end"),
+        StackGoalEvent::Ended(failed_join_end())
     );
     assert!(matches!(
         next_event(&mut running).await,
@@ -234,36 +263,32 @@ async fn a_join_gives_its_acceptance_then_each_feedback_in_order_then_its_result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_rejected_goal_gives_the_daemons_reason() {
+async fn a_refused_goal_gives_the_daemons_failure_kind_and_reason() {
     let (mesh, mut provider) = mesh().await;
     let goal = join_goal();
+    let refusal = Failure::new(PeppyFailureKind::PreconditionFailed, REFUSAL_REASON);
     let (sent, ()) = tokio::join!(stack_goal::send(mesh.route(), &goal), async {
         provider
             .next_goal(READINESS_TIMEOUT)
             .await
             .expect("the goal reaches the daemon")
-            .reject(
-                None,
-                LaunchGoalResponse::rejected(REJECTION_REASON)
-                    .encode()
-                    .unwrap(),
-            )
+            .refuse(refusal.clone())
             .await
-            .expect("the daemon rejects the goal");
+            .expect("the daemon refuses the goal");
     });
     match sent {
-        Err(error @ SendError::Rejected { .. }) => {
+        Err(error @ SendError::Refused { .. }) => {
             assert_eq!(
                 error.to_string(),
-                format!("Join goal rejected: {REJECTION_REASON}")
+                format!("Join goal refused (precondition_failed): {REFUSAL_REASON}")
             );
-            let SendError::Rejected { reason, .. } = error else {
+            let SendError::Refused { failure, .. } = error else {
                 unreachable!()
             };
-            assert_eq!(reason, REJECTION_REASON);
+            assert_eq!(failure, refusal);
         }
-        Err(other) => panic!("expected the daemon's rejection, got {other}"),
-        Ok(_) => panic!("the daemon rejected the goal"),
+        Err(other) => panic!("expected the daemon's refusal, got {other}"),
+        Ok(_) => panic!("the daemon refused the goal"),
     }
 }
 
@@ -280,7 +305,7 @@ async fn a_caller_that_drops_next_while_it_waits_loses_no_message() {
     publish(&context, &progress[0]).await;
     assert_eq!(
         next_event(&mut running).await.unwrap(),
-        StackGoalEvent::Feedback(progress[0].clone())
+        StackGoalEvent::Output(progress[0].clone())
     );
     assert!(
         running.next().now_or_never().is_none(),
@@ -289,20 +314,17 @@ async fn a_caller_that_drops_next_while_it_waits_loses_no_message() {
     for message in &progress[1..] {
         publish(&context, message).await;
     }
-    context
-        .complete(failed_join().encode().unwrap())
-        .await
-        .unwrap();
+    fail_join(&context).await;
 
     for message in &progress[1..] {
         assert_eq!(
             next_event(&mut running).await.unwrap(),
-            StackGoalEvent::Feedback(message.clone())
+            StackGoalEvent::Output(message.clone())
         );
     }
     assert_eq!(
         next_event(&mut running).await.unwrap(),
-        StackGoalEvent::Ended(failed_join())
+        StackGoalEvent::Ended(failed_join_end())
     );
 }
 
@@ -318,15 +340,83 @@ async fn a_goal_handed_to_a_task_is_followed_to_its_result() {
     for message in join_progress() {
         publish(&context, &message).await;
     }
-    let joined = LaunchResult::success(LOG_PATH);
+    let joined = LaunchResult::default();
     context.complete(joined.encode().unwrap()).await.unwrap();
 
-    let result = tokio::time::timeout(STEP, follower)
+    let end = tokio::time::timeout(STEP, follower)
         .await
         .expect("the task ends with the goal")
         .expect("the task does not panic")
-        .expect("the goal has a result");
-    assert_eq!(result, joined);
+        .expect("the goal has an end");
+    assert_eq!(
+        end,
+        StackGoalEnd {
+            outcome: StackGoalOutcome::Completed(joined),
+            node_logs: NodeLogs::default(),
+        }
+    );
+}
+
+/// A cancel reaches the daemon's goal with the cause of its caller; the
+/// daemon ends the goal cancelled with that reason, and the caller follows
+/// the goal to that end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_reaches_the_daemon_and_the_goal_ends_cancelled() {
+    let (mesh, mut provider) = mesh().await;
+    let (mut running, context) = running_join(&mesh, &mut provider).await;
+    let progress = join_progress();
+    publish(&context, &progress[0]).await;
+    assert_eq!(
+        next_event(&mut running).await.unwrap(),
+        StackGoalEvent::Output(progress[0].clone())
+    );
+
+    running.cancel().await.expect("the daemon takes the cancel");
+    tokio::time::timeout(STEP, context.cancel_signal())
+        .await
+        .expect("the cancel reaches the daemon's goal");
+    let cause = context
+        .cancel_cause()
+        .expect("a cancelled goal has a cause");
+    assert_eq!(cause, CancelCause::Caller);
+    publish_feedback(&context, LaunchFeedback::NodeLogs(failed_join_logs())).await;
+    context
+        .complete_cancelled(cause.reason(), Payload::new())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        next_event(&mut running).await.unwrap(),
+        StackGoalEvent::Ended(StackGoalEnd {
+            outcome: StackGoalOutcome::Cancelled {
+                reason: "cancelled by its caller".to_owned(),
+            },
+            node_logs: failed_join_logs(),
+        })
+    );
+}
+
+/// A caller whose session ends, as a command line process that stops does,
+/// is a sender that is gone: the daemon's engine cancels its goal with the
+/// cause `SenderGone`, under the default sender grace of zero.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caller_that_goes_away_gets_its_goal_cancelled() {
+    let (mut mesh, mut provider) = mesh().await;
+    let (running, context) = running_join(&mesh, &mut provider).await;
+
+    drop(running);
+    // The bridge's session is the only one of its process: dropping it ends
+    // its presence on the router.
+    let bridge = std::mem::replace(
+        &mut mesh.bridge,
+        mesh._router.connect().await.expect("another session"),
+    );
+    drop(bridge);
+
+    tokio::time::timeout(READINESS_TIMEOUT, context.cancel_signal())
+        .await
+        .expect("the engine cancels the goal of a sender that is gone");
+    assert_eq!(context.cancel_cause(), Some(CancelCause::SenderGone));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -337,7 +427,7 @@ async fn a_daemon_that_goes_away_ends_the_goal_without_a_result() {
     publish(&context, &progress[0]).await;
     assert_eq!(
         next_event(&mut running).await.unwrap(),
-        StackGoalEvent::Feedback(progress[0].clone())
+        StackGoalEvent::Output(progress[0].clone())
     );
 
     provider.stop();
@@ -361,7 +451,7 @@ async fn a_result_that_expired_before_its_request_ends_the_goal_saying_so() {
     let mut provider = provider.with_result_retention_grace(Duration::ZERO);
     let (mut running, context) = running_join(&mesh, &mut provider).await;
     context
-        .complete(LaunchResult::success(LOG_PATH).encode().unwrap())
+        .complete(LaunchResult::default().encode().unwrap())
         .await
         .unwrap();
 

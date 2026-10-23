@@ -434,9 +434,17 @@ async fn binding_update_service_applies_daemon_deliveries_end_to_end() {
             request.encode().expect("encode"),
             Duration::from_secs(2),
         )
-        .await
-        .expect("binding_update delivery should get a reply");
-        SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response")
+        .await;
+        // A refused delivery is an error reply that carries its failure.
+        match reply {
+            Ok(reply) => {
+                Ok(SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response"))
+            }
+            Err(error) => Err(error
+                .failure()
+                .cloned()
+                .unwrap_or_else(|| panic!("binding_update delivery should get a reply: {error}"))),
+        }
     };
     let request = |link_id: &str, sequence: u64, instance_ids: &[&str]| BindingUpdateRequest {
         link_id: link_id.to_string(),
@@ -453,15 +461,15 @@ async fn binding_update_service_applies_daemon_deliveries_end_to_end() {
     };
 
     let response = deliver_from(CORE, request("robots", 7, &["arm_1", "arm_2"])).await;
-    assert!(response.accepted, "delivery rejected: {}", response.message);
+    assert_eq!(response, Ok(SlotUpdateResponse::taken()));
     assert_eq!(held(), ["arm_1", "arm_2"]);
 
     let response = deliver_from(CORE, request("robots", 8, &["arm_2"])).await;
-    assert!(response.accepted, "{}", response.message);
+    assert_eq!(response, Ok(SlotUpdateResponse::taken()));
     assert_eq!(held(), ["arm_2"], "a delivery replaces the set whole");
 
     let response = deliver_from(CORE, request("robots", 7, &[])).await;
-    assert!(!response.accepted && response.stale_sequence);
+    assert_eq!(response, Ok(SlotUpdateResponse::stale()));
     assert_eq!(
         held(),
         ["arm_2"],
@@ -469,25 +477,21 @@ async fn binding_update_service_applies_daemon_deliveries_end_to_end() {
     );
 
     let response = deliver_from(CORE, request("robots", 8, &["arm_1"])).await;
-    assert!(!response.accepted, "{response:?}");
+    let failure = response.expect_err("one sequence holds one set");
+    assert_eq!(failure.kind().as_str(), "rejected");
     assert_eq!(held(), ["arm_2"], "one sequence holds one set");
 
     let response = deliver_from(CORE, request("camera", 9, &["arm_1"])).await;
-    assert!(!response.accepted, "{response:?}");
+    let failure = response.expect_err("an unknown slot is refused");
     assert!(
-        response
-            .message
+        failure
+            .message()
             .contains("this node holds no `one_or_more` or `zero_or_more` producer slot `camera`"),
-        "{}",
-        response.message
+        "{failure}"
     );
 
     let response = deliver_from("another_core_node", request("robots", 9, &["arm_1"])).await;
-    assert!(!response.accepted, "{response:?}");
-    assert!(
-        response.message.contains("daemon-only"),
-        "{}",
-        response.message
-    );
+    let failure = response.expect_err("another machine is refused");
+    assert!(failure.message().contains("daemon-only"), "{failure}");
     assert_eq!(held(), ["arm_2"]);
 }

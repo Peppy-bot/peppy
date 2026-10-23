@@ -5,9 +5,12 @@
 use super::run::{NodeRunActionContext, Respawn, assemble_runtime_config, run_node_respawn};
 use super::stack_log::{StackLog, StackLogEvent};
 use crate::services::federation::RestartAdmission;
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
 use core_node_api::ExitCause;
+use core_node_api::encoding::NodeRunResult;
 use node_stack::{ActionLog, Attempt, EntityHandle, NodeEntity, RespawnInputs};
+use peppylib::messaging::Failure;
 use std::num::NonZeroU32;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -34,6 +37,24 @@ pub(crate) enum RunOutcome {
     /// whose exit takes the next attempt: nothing to record; the text is the
     /// run's failure for a caller that waits on it.
     Gone(String),
+}
+
+impl RunOutcome {
+    /// The outcome as the result of a `node_run` goal: the result of a
+    /// process that reached `running`, or the failure of the start. A
+    /// refused start is `precondition_failed`, a start that failed is
+    /// `attempt_failed`, and a start whose slot is gone is
+    /// `resource_unavailable`.
+    pub(crate) fn into_result(self) -> Result<NodeRunResult, Failure> {
+        match self {
+            Self::Running { pid, endpoints } => {
+                Ok(NodeRunResult::started(pid).with_endpoints(endpoints))
+            }
+            Self::Refused(msg) => Err(Failure::new(PeppyFailureKind::PreconditionFailed, msg)),
+            Self::StartFailed(msg) => Err(Failure::new(PeppyFailureKind::AttemptFailed, msg)),
+            Self::Gone(msg) => Err(Failure::new(PeppyFailureKind::ResourceUnavailable, msg)),
+        }
+    }
 }
 
 /// The instance a restart is scheduled for, and what its respawn needs.

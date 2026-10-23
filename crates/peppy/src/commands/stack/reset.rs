@@ -14,7 +14,7 @@ use core_node_api::encoding::{LaunchIdentity, StackListRequest, StackResetReques
 use futures::future::join_all;
 use tracing::info;
 
-use crate::commands::CALLER_INSTANCE_ID;
+use crate::commands::caller_instance_id;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use peppylib::CoreNodePresenceMessenger;
@@ -36,7 +36,7 @@ async fn reset_async(ctx: &Arc<AppContext>, federated: bool) -> Result<()> {
         &StackListRequest::new(),
         conn.messenger,
         &conn.core_node_name,
-        CALLER_INSTANCE_ID,
+        caller_instance_id(),
         &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
@@ -86,7 +86,7 @@ async fn reset_async(ctx: &Arc<AppContext>, federated: bool) -> Result<()> {
                 &StackListRequest::new(),
                 messenger,
                 caller,
-                CALLER_INSTANCE_ID,
+                caller_instance_id(),
                 core_node,
                 REQUEST_TIMEOUT,
             )
@@ -101,20 +101,19 @@ async fn reset_async(ctx: &Arc<AppContext>, federated: bool) -> Result<()> {
                 &StackResetRequest::new(),
                 messenger,
                 caller,
-                CALLER_INSTANCE_ID,
+                caller_instance_id(),
                 core_node,
                 timeout,
             )
             .await
             {
-                Ok(response) if response.success => None,
-                Ok(response) => Some(format!(
-                    "{core_node}: {}",
-                    response
-                        .error_message
-                        .unwrap_or_else(|| "stack reset failed".to_owned())
-                )),
-                Err(e) => Some(format!("{core_node}: {e}")),
+                Ok(_) => None,
+                Err(error) => Some(match error.failure() {
+                    Some(failure) => {
+                        format!("{core_node} ({}): {}", failure.kind(), failure.message())
+                    }
+                    None => format!("{core_node}: {error}"),
+                }),
             }
         }
     }))
@@ -186,7 +185,7 @@ async fn federation_holdings(
                 &StackListRequest::new(),
                 messenger,
                 caller,
-                CALLER_INSTANCE_ID,
+                caller_instance_id(),
                 &core_node,
                 REQUEST_TIMEOUT,
             )

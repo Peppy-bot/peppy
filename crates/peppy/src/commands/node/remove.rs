@@ -6,7 +6,7 @@ use core_node_api::InstanceState;
 use core_node_api::encoding::NodeRemoveRequest;
 use tracing::info;
 
-use crate::commands::CALLER_INSTANCE_ID;
+use crate::commands::caller_instance_id;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -80,23 +80,15 @@ async fn remove_node_async(
         &remove_request,
         conn.messenger,
         &conn.core_node_name,
-        CALLER_INSTANCE_ID,
+        caller_instance_id(),
         &conn.target_core_node,
         remove_request_timeout(conn.shutdown_grace_secs),
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_remove service: {}", e)))?;
+    .map_err(|e| crate::commands::request_error("Failed to remove the node", e))?;
 
-    // A failed removal may have force-killed some instances before it failed.
     for instance_id in &remove_response.force_killed {
         warn_force_killed(instance_id);
-    }
-    if !remove_response.success {
-        return Err(Error::ExecutionFailed(
-            remove_response
-                .error_message
-                .unwrap_or_else(|| "node_remove failed with no error message".to_string()),
-        ));
     }
     info!("Removed node '{}:{}'", node_name, tag);
     Ok(())

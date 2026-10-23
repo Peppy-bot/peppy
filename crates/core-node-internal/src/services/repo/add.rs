@@ -5,15 +5,15 @@ use crate::services::repo::{
     attributable_repo_id, has_entry_with_identity, repo_entry_id, repo_source_to_json,
     source_identity, write_repo_entries,
 };
-use crate::services::response::into_service_response;
+use crate::services::response::{failure, into_service_answer};
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::ServiceRequestContext;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::messaging::{Failure, ServiceAnswer, ServiceRequestContext};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use serde_json::Value;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -44,81 +44,60 @@ pub async fn listen_for_repo_add(
     Ok(handle)
 }
 
+/// Adds the repository of the request to `repositories.json5`, or gives the
+/// failure of the add: `rejected` for a request that does not decode, an
+/// empty source or an id it cannot take, `precondition_failed` for a
+/// repository or an id already in the list, and `attempt_failed` for a list
+/// the daemon cannot read or write.
 async fn handle_repo_add_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
-) -> PeppyResult<Payload> {
-    into_service_response(
-        &context,
-        handle_repo_add_request_inner(&context, &peppy_dirs),
-    )
-}
-
-fn handle_repo_add_request_inner(
-    context: &ServiceRequestContext,
-    peppy_dirs: &PeppyDirs,
-) -> Result<Payload> {
+) -> ServiceAnswer {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload_bytes();
 
-    let request = RepoAddRequest::decode(payload.as_ref())?;
+    let request = RepoAddRequest::decode(payload.as_ref())
+        .map_err(|error| failure(PeppyFailureKind::Rejected, error))?;
 
     debug!(
         "Received `repo_add` request from {sender_instance_id}, source={:?}, id={:?}",
         request.source, request.id
     );
 
-    let placement = match RepoIdPlacement::from_request(&request) {
-        Ok(placement) => placement,
-        Err(reason) => {
-            return RepoAddResponse::failure(reason)
-                .encode()
-                .map_err(Into::into);
-        }
-    };
+    let placement = RepoIdPlacement::from_request(&request)
+        .map_err(|reason| failure(PeppyFailureKind::Rejected, reason))?;
 
     let identity = source_identity(&request.source);
     if identity.trim().is_empty() {
-        return RepoAddResponse::failure("repository path/URL must not be empty")
-            .encode()
-            .map_err(Into::into);
+        return Err(failure(
+            PeppyFailureKind::Rejected,
+            "repository path/URL must not be empty",
+        ));
     }
 
-    let repos_path = repositories_list_path(peppy_dirs);
+    let repos_path = repositories_list_path(&peppy_dirs);
 
     let _guard = crate::services::repo::repos_file_lock().lock();
 
-    let mut repos = match read_or_create_repos(peppy_dirs) {
-        Ok(repos) => repos,
-        Err(e) => {
-            return RepoAddResponse::failure(e.to_string())
-                .encode()
-                .map_err(Into::into);
-        }
-    };
+    let mut repos = read_or_create_repos(&peppy_dirs)
+        .map_err(|error| failure(PeppyFailureKind::AttemptFailed, error))?;
 
     let new_identity = identity.trim();
     if has_entry_with_identity(&repos, new_identity) {
-        return RepoAddResponse::failure(format!("repository '{}' already exists", new_identity))
-            .encode()
-            .map_err(Into::into);
+        return Err(failure(
+            PeppyFailureKind::PreconditionFailed,
+            format!("repository '{}' already exists", new_identity),
+        ));
     }
 
-    let next_id = match next_repo_id(&repos, placement) {
-        Ok(id) => id,
-        Err(reason) => {
-            return RepoAddResponse::failure(reason)
-                .encode()
-                .map_err(Into::into);
-        }
-    };
+    let next_id = next_repo_id(&repos, placement)?;
 
     repos.push(repo_source_to_json(next_id, &request.source));
-    write_repo_entries(&repos_path, &repos, "repositories")?;
+    write_repo_entries(&repos_path, &repos, "repositories").map_err(crate::Error::into_failure)?;
 
     drop(_guard);
 
-    RepoAddResponse::success().encode().map_err(Into::into)
+    into_service_answer(RepoAddResponse::new().encode().map_err(Into::into))
 }
 
 /// The id an auto-assigned entry takes when the list holds no id yet.
@@ -154,14 +133,17 @@ impl RepoIdPlacement {
 }
 
 /// The id the new entry takes in `repos` at `placement`, or the refusal
-/// the caller sends back.
+/// the caller sends back: `precondition_failed` for an id another entry
+/// holds or an id the list leaves no room for, `rejected` for a pinned id out
+/// of range.
 ///
 /// The id must be one a cache entry can be attributed to (below
 /// [`UNOWNED_REPO_ID`]): `repo list` skips any other repository and its
 /// nodes rank as unowned. Above `i64::MAX` the id would also make
 /// `repositories.json5` unreadable, since serde_json5 reads integers as
 /// `i64`, and every later repo, node and launch command would fail on it.
-fn next_repo_id(repos: &[Value], placement: RepoIdPlacement) -> std::result::Result<u64, String> {
+fn next_repo_id(repos: &[Value], placement: RepoIdPlacement) -> std::result::Result<u64, Failure> {
+    let no_room = |reason: &str| failure(PeppyFailureKind::PreconditionFailed, reason);
     let mut ids = repos.iter().filter_map(repo_entry_id);
     let id = match placement {
         // The caller pinned this id (typically from the >= 2000 band
@@ -171,9 +153,12 @@ fn next_repo_id(repos: &[Value], placement: RepoIdPlacement) -> std::result::Res
         // under one owner, so it is a refusal naming the id.
         RepoIdPlacement::Pinned(id) => {
             if ids.any(|existing| existing == id) {
-                return Err(format!(
-                    "repository id {id} is already in use; pick another (ids >= 2000 are reserved \
-                     for manually pinned repositories)"
+                return Err(failure(
+                    PeppyFailureKind::PreconditionFailed,
+                    format!(
+                        "repository id {id} is already in use; pick another (ids >= 2000 are \
+                         reserved for manually pinned repositories)"
+                    ),
                 ));
             }
             id
@@ -181,26 +166,28 @@ fn next_repo_id(repos: &[Value], placement: RepoIdPlacement) -> std::result::Res
         RepoIdPlacement::BeforeAll => match ids.min() {
             None => DEFAULT_FIRST_REPO_ID,
             Some(min) => min.checked_sub(1).ok_or_else(|| {
-                "cannot add repo with top priority: existing minimum id is 0 (would underflow)"
-                    .to_owned()
+                no_room(
+                    "cannot add repo with top priority: existing minimum id is 0 (would underflow)",
+                )
             })?,
         },
         RepoIdPlacement::AfterAll => match ids.max() {
             None => DEFAULT_FIRST_REPO_ID,
             Some(max) => max.checked_add(1).ok_or_else(|| {
-                "cannot add repo: existing maximum id is u64::MAX (would overflow)".to_owned()
+                no_room("cannot add repo: existing maximum id is u64::MAX (would overflow)")
             })?,
         },
     };
     if attributable_repo_id(id).is_none() {
         return Err(match placement {
-            RepoIdPlacement::Pinned(_) => {
-                format!("repository id {id} is out of range; pick an id below {UNOWNED_REPO_ID}")
-            }
-            RepoIdPlacement::BeforeAll | RepoIdPlacement::AfterAll => format!(
+            RepoIdPlacement::Pinned(_) => failure(
+                PeppyFailureKind::Rejected,
+                format!("repository id {id} is out of range; pick an id below {UNOWNED_REPO_ID}"),
+            ),
+            RepoIdPlacement::BeforeAll | RepoIdPlacement::AfterAll => no_room(&format!(
                 "cannot add repo: the assigned id {id} is out of range; repository ids must be \
                  below {UNOWNED_REPO_ID}"
-            ),
+            )),
         });
     }
     Ok(id)

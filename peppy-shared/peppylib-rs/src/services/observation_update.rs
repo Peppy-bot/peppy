@@ -97,6 +97,7 @@ pub async fn listen_for_observation_update(
 mod tests {
     use super::*;
     use crate::encoding::slot_update::SlotUpdateResponse;
+    use crate::messaging::Failure;
     use crate::messaging::{ObservedMemberState, ObservedSource, ProducerRef};
     use crate::services::slot_update::{SlotChannel, apply_slot_update};
     use std::collections::BTreeMap;
@@ -104,7 +105,7 @@ mod tests {
     fn apply(
         slots: &BTreeMap<String, SlotChannel<ObservationState>>,
         request: &ObservationUpdateRequest,
-    ) -> SlotUpdateResponse {
+    ) -> Result<SlotUpdateResponse, Failure> {
         apply_slot_update::<ObservationUpdateRequest>(slots, request)
     }
 
@@ -164,7 +165,7 @@ mod tests {
                 vec![member("arm_2", 5, true), member("arm_1", 5, true)],
             ),
         );
-        assert!(first.accepted);
+        assert_eq!(first, Ok(SlotUpdateResponse::taken()));
         assert_eq!(
             instances(&watched.borrow()),
             ["arm_2", "arm_1"],
@@ -181,7 +182,7 @@ mod tests {
                 vec![member("arm_2", 5, true), member("arm_1", 6, true)],
             ),
         );
-        assert!(second.accepted);
+        assert_eq!(second, Ok(SlotUpdateResponse::taken()));
         let state = watched.borrow().clone();
         assert_eq!(instances(&state), ["arm_2", "arm_1"]);
         assert_eq!(state.members[0].source_generation, 5);
@@ -202,14 +203,17 @@ mod tests {
                 1,
                 vec![member("arm_1", 1, true), member("arm_2", 1, true)],
             ),
-        );
+        )
+        .expect("the slot takes the delivery");
         apply(
             &slots,
             &request("observed_arm", 2, vec![member("arm_2", 1, true)]),
-        );
+        )
+        .expect("the slot takes the delivery");
         assert_eq!(instances(&watched.borrow()), ["arm_2"]);
 
-        apply(&slots, &request("observed_arm", 3, Vec::new()));
+        apply(&slots, &request("observed_arm", 3, Vec::new()))
+            .expect("the slot takes the delivery");
         assert!(
             watched.borrow().members.is_empty(),
             "an empty delivery empties the slot"
@@ -230,7 +234,8 @@ mod tests {
                 1,
                 vec![member("arm_1", 1, true), member("arm_2", 1, true)],
             ),
-        );
+        )
+        .expect("the slot takes the delivery");
         apply(
             &slots,
             &request(
@@ -238,7 +243,8 @@ mod tests {
                 2,
                 vec![member("arm_1", 1, true), member("arm_2", 1, false)],
             ),
-        );
+        )
+        .expect("the slot takes the delivery");
         let state = watched.borrow().clone();
         assert_eq!(instances(&state), ["arm_1", "arm_2"]);
         assert!(state.members[0].source_live);
@@ -253,14 +259,14 @@ mod tests {
         apply(
             &slots,
             &request("observed_arm", 20, vec![member("arm_1", 5, true)]),
-        );
+        )
+        .expect("the slot takes the delivery");
         // A delayed earlier delivery arrives after the newer one.
         let response = apply(
             &slots,
             &request("observed_arm", 19, vec![member("arm_1", 4, false)]),
         );
-        assert!(!response.accepted);
-        assert!(response.stale_sequence);
+        assert_eq!(response, Ok(SlotUpdateResponse::stale()));
         assert_eq!(
             watched.borrow().members[0].source_generation,
             5,
@@ -276,7 +282,8 @@ mod tests {
         apply(
             &slots,
             &request("observed_arm", 5, vec![member("arm_1", 1, true)]),
-        );
+        )
+        .expect("the slot takes the delivery");
         assert!(watched.has_changed().unwrap());
         watched.mark_unchanged();
 
@@ -284,7 +291,7 @@ mod tests {
             &slots,
             &request("observed_arm", 5, vec![member("arm_1", 1, true)]),
         );
-        assert!(retry.accepted);
+        assert_eq!(retry, Ok(SlotUpdateResponse::taken()));
         assert!(
             !watched.has_changed().unwrap(),
             "an identical retry must not re-notify watchers"
@@ -298,9 +305,9 @@ mod tests {
             &slots,
             &request("observed_gripper", 1, vec![member("g_1", 1, true)]),
         );
-        assert!(!response.accepted);
-        assert!(!response.stale_sequence);
-        assert!(response.message.contains("observed_gripper"));
+        let response = response.expect_err("a refused delivery");
+        assert_eq!(response.kind().as_str(), "rejected");
+        assert!(response.message().contains("observed_gripper"));
     }
 
     /// A member whose source is down stays listed, so an empty delivery to a
@@ -312,15 +319,16 @@ mod tests {
         apply(
             &slots,
             &request("observed_arm", 1, vec![member("arm_1", 1, true)]),
-        );
+        )
+        .expect("the slot takes the delivery");
         let mut watched = slots["observed_arm"].sender().subscribe();
         watched.mark_unchanged();
 
         let response = apply(&slots, &request("observed_arm", 2, Vec::new()));
-        assert!(!response.accepted, "{response:?}");
+        let response = response.expect_err("a refused delivery");
         assert!(
             response
-                .message
+                .message()
                 .contains("`one_or_more` admits no set of 0 members; the plan and this node's manifest disagree"),
             "{response:?}"
         );

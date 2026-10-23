@@ -1,9 +1,9 @@
 use crate::commands::confirm::has_or_awaits_process;
 use config::node::NodeConfigParser;
+use core_node_api::InstanceState;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
-use core_node_api::{ActionId, InstanceState};
 use daemon_config::launcher::LinkValue;
 use std::collections::BTreeMap;
 use std::io::BufRead;
@@ -16,7 +16,7 @@ use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 use super::run::validate_and_run_instance;
 use super::source::parse_node_source;
-use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
+use crate::commands::{GOAL_TIMEOUT, caller_instance_id};
 use crate::context::{AppContext, DaemonConnection};
 use crate::error::{Error, Result};
 
@@ -202,7 +202,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         &add_goal,
         conn.messenger,
         &conn.core_node_name,
-        CALLER_INSTANCE_ID,
+        caller_instance_id(),
         Some(&conn.target_core_node),
         GOAL_TIMEOUT,
     )
@@ -213,34 +213,20 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         NodeAddGoalResponse,
         NodeAddFeedback,
         NodeAddResult,
-    >(
-        conn.messenger,
-        &mut action_handle,
-        &timeouts,
-        ActionId::NodeAdd.name(),
-    )
+    >(conn.messenger, &mut action_handle, &timeouts, "Node add")
     .await?;
 
-    if let (Some(name), Some(tag)) = (&add_result.node_name, &add_result.node_tag) {
-        info!("Added node {}:{} to the node stack", name, tag);
-    } else {
-        info!("Added node to the node stack");
-    }
+    info!(
+        "Added node {}:{} to the node stack",
+        add_result.node_name, add_result.node_tag
+    );
 
     if !chain_build && run_options.is_none() {
         return Ok(());
     }
 
-    let node_name = add_result.node_name.as_deref().ok_or_else(|| {
-        Error::ExecutionFailed(
-            "Failed to determine node name after adding. Try running `peppy stack list`.".into(),
-        )
-    })?;
-    let node_tag = add_result.node_tag.as_deref().ok_or_else(|| {
-        Error::ExecutionFailed(
-            "Failed to determine node tag after adding. Try running `peppy stack list`.".into(),
-        )
-    })?;
+    let node_name = add_result.node_name.as_str();
+    let node_tag = add_result.node_tag.as_str();
 
     crate::commands::node::builder::build_node_on(
         conn.messenger,

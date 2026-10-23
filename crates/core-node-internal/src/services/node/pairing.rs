@@ -17,8 +17,9 @@
 //! daemon's start time in unix-millis, so a node that outlives a daemon
 //! restart rejects stale re-deliveries from the old daemon's queue.
 
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
-use core_node_api::encoding::{FederationVerdict, PairCommitRequest, PairTarget};
+use core_node_api::encoding::{PairCommitRequest, PairTarget};
 use daemon_config::launcher::{
     AlreadyPairedSlots, DeploymentInstance, ExternallyCoveredSlots, LinkTargets, LinkValue,
     PairingValidationItem, ResolvedClocks, Selection, VacantReason, validate_clock_connections,
@@ -30,6 +31,7 @@ use node_stack::{
 };
 use peppylib::MessengerHandle;
 use peppylib::encoding::peer_update::PeerUpdateRequest;
+use peppylib::messaging::Failure;
 use peppylib::messaging::{PEER_UPDATE_SERVICE, PeerInfo, PeerMember, ProducerRef};
 use std::sync::Arc;
 use std::time::Duration;
@@ -493,29 +495,37 @@ impl PairingCoordinator {
             peer_copy: peer.copy.clone(),
             held,
         };
-        let response = peppylib::core_node::transport::poll(
+        let peer_daemon = &endpoint.slot.core_node;
+        let error = match peppylib::core_node::transport::poll(
             &request,
             self.updates.messenger(),
             self.updates.core_node_name(),
             self.updates.caller_instance_id(),
-            &endpoint.slot.core_node,
+            peer_daemon,
             PAIR_COMMIT_TIMEOUT,
         )
         .await
-        .map_err(|e| {
-            PairFailure::Undelivered(format!("`{}` did not answer: {e}", endpoint.slot.core_node))
-        })?;
-
-        let peer_daemon = &endpoint.slot.core_node;
-        match response {
-            FederationVerdict::Done => Ok(()),
-            FederationVerdict::Refused(reason) => Err(PairFailure::Refused(format!(
-                "`{peer_daemon}` refused the pair: {reason}"
-            ))),
-            FederationVerdict::Undelivered(reason) => Err(PairFailure::Undelivered(format!(
-                "`{peer_daemon}` did not pin the pair: {reason}"
-            ))),
+        {
+            Ok(_) => return Ok(()),
+            Err(error) => error,
+        };
+        // The peer's error reply says how it did not make its half; any
+        // other error is a peer that did not answer.
+        let Some(failure) = error.failure() else {
+            return Err(PairFailure::Undelivered(format!(
+                "`{peer_daemon}` did not answer: {error}"
+            )));
+        };
+        if failure.kind().as_str() == PeppyFailureKind::ResourceUnavailable.name() {
+            return Err(PairFailure::Undelivered(format!(
+                "`{peer_daemon}` did not pin the pair: {}",
+                failure.message()
+            )));
         }
+        Err(PairFailure::Refused(format!(
+            "`{peer_daemon}` refused the pair: {}",
+            failure.message()
+        )))
     }
 
     /// Records this daemon's half of a cross-daemon pair on behalf of the
@@ -525,27 +535,30 @@ impl PairingCoordinator {
     /// the requester revert its own half, so a refused pair is left on neither
     /// machine.
     ///
-    /// The verdict is:
-    /// - done when the pair is made, or this daemon holds it already;
-    /// - undelivered when the local endpoint is starting a restart or has no
-    ///   process, or its node did not take the pin; a restart's request keeps
-    ///   such a pair held, while the local endpoint still keeps it;
-    /// - refused otherwise: a request routed to another daemon, a restart's
-    ///   request for a pair the local endpoint no longer keeps, whatever that
-    ///   endpoint's state, or any other refusal of the stack.
-    pub async fn commit_pair_from_peer(&self, request: &PairCommitRequest) -> FederationVerdict {
+    /// The answer is:
+    /// - `Ok` when the pair is made, or this daemon holds it already;
+    /// - `resource_unavailable` when the local endpoint is starting a restart
+    ///   or has no process, or its node did not take the pin; a restart's
+    ///   request keeps such a pair held, while the local endpoint still keeps
+    ///   it;
+    /// - `rejected` for a request routed to another daemon;
+    /// - `precondition_failed` otherwise: a restart's request for a pair the
+    ///   local endpoint no longer keeps, whatever that endpoint's state, or
+    ///   any other refusal of the stack.
+    pub async fn commit_pair_from_peer(
+        &self,
+        request: &PairCommitRequest,
+    ) -> std::result::Result<(), Failure> {
         let _guard = self.op_lock.lock().await;
         let (local, remote, remote_meta) =
-            match Self::slots_from_commit_request(request, self.updates.core_node_name()) {
-                Ok(slots) => slots,
-                Err(reason) => return FederationVerdict::Refused(reason),
-            };
+            Self::slots_from_commit_request(request, self.updates.core_node_name())
+                .map_err(|reason| Failure::new(PeppyFailureKind::Rejected, reason))?;
         // A pair a restarted peer asks for again is made only while this
         // endpoint still keeps it: a stop of either endpoint, a refusal, or a
         // newer pair its slot took, ended it here.
         if request.held && !self.updates.node_stack().keeps_held_pair(&local, &remote) {
             let instance_id = &request.local.instance_id;
-            return FederationVerdict::Refused(
+            return Err(PairFailure::Refused(
                 match self.updates.node_stack().instance_state(instance_id) {
                     Some(_) => format!(
                         "`{instance_id}` keeps no pair with `{}` to make again",
@@ -556,7 +569,8 @@ impl PairingCoordinator {
                     }
                     .to_string(),
                 },
-            );
+            )
+            .into());
         }
         // A restart's process takes its pairs once it runs: it asks for the
         // ones it held itself, so a peer asking for a held pair keeps it held,
@@ -567,7 +581,7 @@ impl PairingCoordinator {
             .starts_a_restart(&local.instance_id)
         {
             let instance_id = &request.local.instance_id;
-            return FederationVerdict::Undelivered(if request.held {
+            return Err(PairFailure::Undelivered(if request.held {
                 format!(
                     "`{instance_id}` is starting again under its restart policy and asks for its \
                      pairs once it is running"
@@ -577,7 +591,8 @@ impl PairingCoordinator {
                     "`{instance_id}` is starting again under its restart policy; link to it once \
                      it is running"
                 )
-            });
+            })
+            .into());
         }
         // When both daemons respawn their endpoint of one pair, each asks the
         // other. A pair this daemon already holds is pinned here, or reserved
@@ -588,10 +603,7 @@ impl PairingCoordinator {
                 .node_stack()
                 .pair_slot_with_remote(&local, &remote, &remote_meta)
         {
-            return match reservation_outcome(refusal) {
-                Ok(()) => FederationVerdict::Done,
-                Err(failure) => failure.into(),
-            };
+            return reservation_outcome(refusal).map_err(Into::into);
         }
 
         if let Err(reason) = self.send_peer_update(&local).await {
@@ -599,17 +611,18 @@ impl PairingCoordinator {
             // could not deliver is worse than none, because the node would
             // report a slot it never received.
             self.updates.node_stack().clear_pair(&local, &remote);
-            return FederationVerdict::Undelivered(format!(
+            return Err(PairFailure::Undelivered(format!(
                 "could not pin `{}` on this daemon: {reason}",
                 request.local.instance_id
-            ));
+            ))
+            .into());
         }
         self.record_held(&PlannedPair {
             own: local,
             peer: remote,
             peer_remote_meta: Some(remote_meta),
         });
-        FederationVerdict::Done
+        Ok(())
     }
 
     /// Dissolves every pair involving an instance on ANOTHER daemon.
@@ -818,12 +831,18 @@ impl std::fmt::Display for PairFailure {
     }
 }
 
-/// The verdict a peer daemon's pair commit answers with.
-impl From<PairFailure> for FederationVerdict {
+/// The error reply a daemon gives to a peer daemon's pair commit it does not
+/// make: `precondition_failed` for a refused pair, `resource_unavailable` for
+/// one it could not deliver, which a held pair outlives.
+impl From<PairFailure> for Failure {
     fn from(failure: PairFailure) -> Self {
         match failure {
-            PairFailure::Refused(reason) => FederationVerdict::Refused(reason),
-            PairFailure::Undelivered(reason) => FederationVerdict::Undelivered(reason),
+            PairFailure::Refused(reason) => {
+                Failure::new(PeppyFailureKind::PreconditionFailed, reason)
+            }
+            PairFailure::Undelivered(reason) => {
+                Failure::new(PeppyFailureKind::ResourceUnavailable, reason)
+            }
         }
     }
 }

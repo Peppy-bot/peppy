@@ -63,46 +63,25 @@ impl NodeRemoveRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The response of a node removal that succeeded. A failed removal is an
+/// error reply, with a failure kind and a message.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NodeRemoveResponse {
-    pub success: bool,
-    pub error_message: Option<String>,
     /// The instances the removal stopped that did not exit within the
     /// cooperative shutdown window and were force-killed.
     pub force_killed: Vec<String>,
 }
 
 impl NodeRemoveResponse {
-    pub fn new(success: bool, error_message: Option<String>) -> Self {
-        Self {
-            success,
-            error_message,
-            force_killed: Vec::new(),
-        }
-    }
-
-    /// Names the instances the removal force-killed.
-    pub fn with_force_killed(mut self, force_killed: Vec<String>) -> Self {
-        self.force_killed = force_killed;
-        self
-    }
-
-    pub fn success() -> Self {
-        Self::new(true, None)
-    }
-
-    pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(false, Some(error_message.into()))
+    /// A removal that force-killed the instances `force_killed`.
+    pub fn new(force_killed: Vec<String>) -> Self {
+        Self { force_killed }
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_remove_response::Builder>();
-            response.set_success(self.success);
-            if let Some(ref error_message) = self.error_message {
-                response.set_error_message(error_message);
-            }
             let force_killed = response.reborrow().init_force_killed(capnp_list_len(
                 self.force_killed.len(),
                 "NodeRemoveResponse.force_killed",
@@ -116,8 +95,6 @@ impl NodeRemoveResponse {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_remove_response::Reader>()?;
         Ok(Self {
-            success: response.get_success(),
-            error_message: optional_text(response.get_error_message()?.to_str()?),
             force_killed: read_text_list(response.get_force_killed()?)?,
         })
     }
@@ -190,32 +167,8 @@ mod tests {
     }
 
     #[test]
-    fn remove_response_round_trips_success() {
-        let response = NodeRemoveResponse::success();
-        assert!(response.success);
-        assert_eq!(response.error_message, None);
-        let payload = response.encode().expect("encode");
-        let decoded = NodeRemoveResponse::decode(payload.as_ref()).expect("decode");
-        assert!(decoded.success);
-        assert_eq!(decoded.error_message, None);
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn remove_response_round_trips_failure() {
-        let response = NodeRemoveResponse::failure("not found");
-        assert!(!response.success);
-        assert_eq!(response.error_message, Some("not found".to_owned()));
-        let payload = response.encode().expect("encode");
-        let decoded = NodeRemoveResponse::decode(payload.as_ref()).expect("decode");
-        assert!(!decoded.success);
-        assert_eq!(decoded.error_message, Some("not found".to_owned()));
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn remove_response_new_round_trips() {
-        let response = NodeRemoveResponse::new(true, Some("partial".to_owned()));
+    fn remove_response_round_trips_a_graceful_removal() {
+        let response = NodeRemoveResponse::default();
         let payload = response.encode().expect("encode");
         let decoded = NodeRemoveResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
@@ -223,8 +176,7 @@ mod tests {
 
     #[test]
     fn remove_response_round_trips_the_force_killed_instances() {
-        let response = NodeRemoveResponse::success()
-            .with_force_killed(vec!["arm_inst".to_owned(), "cam_inst".to_owned()]);
+        let response = NodeRemoveResponse::new(vec!["arm_inst".to_owned(), "cam_inst".to_owned()]);
         let payload = response.encode().expect("encode");
         let decoded = NodeRemoveResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded.force_killed, ["arm_inst", "cam_inst"]);

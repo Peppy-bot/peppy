@@ -458,12 +458,12 @@ async fn replace_on_participant(
     )
     .await
     {
-        Ok(verdict) => verdict
-            .into_result()
-            .err()
-            .map(|reasons| reasons.lines().map(str::to_owned).collect())
-            .unwrap_or_default(),
-        Err(error) => vec![format!("did not take the sets: {error}")],
+        Ok(_) => Vec::new(),
+        // The participant's error reply names one failed set per line.
+        Err(error) => match error.failure() {
+            Some(failed) => failed.message().lines().map(str::to_owned).collect(),
+            None => vec![format!("did not take the sets: {error}")],
+        },
     }
 }
 

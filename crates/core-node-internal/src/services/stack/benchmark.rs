@@ -18,10 +18,14 @@
 //!   traffic and never publish onto a real topic key.
 
 use crate::Result;
-use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use crate::services::action_loop::{
+    GoalEnding, GoalHandler, accept_goal, invalid_payload, refuse_goal, run_action_loop,
+    under_goal_cancel,
+};
 use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_contract_doc;
+use config::failure_kind::PeppyFailureKind;
 use config::node::{
     DependsOn, MessageSizeEstimate, NodeConfig, QoSProfile, estimate_serialized_size,
     node_implements,
@@ -38,7 +42,8 @@ use latency_report::stats::summarize;
 use node_stack::NodeStack;
 use peppylib::clock::wall_now_ns;
 use peppylib::messaging::{
-    ConcurrentAction, NODE_HEALTH_SERVICE, PendingGoal, SenderTarget, ServiceTarget,
+    CancelCause, ConcurrentAction, Failure, NODE_HEALTH_SERVICE, PendingGoal, SenderTarget,
+    ServiceTarget,
 };
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult, ServiceMessenger, TopicMessenger};
@@ -47,9 +52,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-/// Gate budget of one benchmark goal. A concurrent goal is rejected with "a
+/// Gate budget of one benchmark goal. A concurrent goal is refused with "a
 /// stack benchmark is already in progress", without the remaining time.
 const BENCHMARK_GATE_TIMEOUT_SECS: u64 = 1800;
 /// Absolute floor below which a measured producer offset is treated as same-host
@@ -122,14 +128,7 @@ struct BenchmarkActionContext {
 fn encode_accepted() -> PeppyResult<Payload> {
     encode_response_or_err(
         ActionId::StackBenchmark.name(),
-        StackBenchmarkGoalResponse::accepted().encode(),
-    )
-}
-
-fn encode_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
-    encode_response_or_err(
-        ActionId::StackBenchmark.name(),
-        StackBenchmarkGoalResponse::rejected(reason).encode(),
+        StackBenchmarkGoalResponse::new().encode(),
     )
 }
 
@@ -138,11 +137,7 @@ impl GoalHandler for StackBenchmarkGoalHandler {
         let goal = match StackBenchmarkGoal::decode(pending.request_bytes()) {
             Ok(goal) => goal,
             Err(e) => {
-                reject_goal(
-                    pending,
-                    encode_rejected(format!("invalid goal payload: {e}")),
-                )
-                .await;
+                refuse_goal(pending, invalid_payload(e)).await;
                 return;
             }
         };
@@ -151,9 +146,12 @@ impl GoalHandler for StackBenchmarkGoalHandler {
             // `stack_benchmark` never forces, so nothing is ever superseded.
             Admission::Admitted { generation, .. } => generation,
             Admission::AlreadyRunning { .. } => {
-                reject_goal(
+                refuse_goal(
                     pending,
-                    encode_rejected("a stack benchmark is already in progress"),
+                    Failure::new(
+                        PeppyFailureKind::PreconditionFailed,
+                        "a stack benchmark is already in progress",
+                    ),
                 )
                 .await;
                 return;
@@ -185,16 +183,33 @@ impl GoalHandler for StackBenchmarkGoalHandler {
                 }
             });
 
-            let result = run_benchmark(&context, goal, &tx).await;
+            // A cancel of the goal's caller, or of its gone sender, stops the
+            // measurement in progress and ends the goal cancelled, with the
+            // reason of the cancel.
+            let cancel = CancellationToken::new();
+            let measured = under_goal_cancel(
+                &goal_ctx,
+                &cancel,
+                run_benchmark(&context, goal, &tx, &cancel),
+            )
+            .await;
 
-            // Close the feedback channel and flush before completing so the
+            // Close the feedback channel and flush before ending so the
             // end-of-stream sentinel doesn't race ahead of the final lines.
             drop(tx);
             let _ = drain.await;
 
-            if let Ok(payload) = result.encode() {
-                slot.release_then_complete(&goal_ctx, payload).await;
-            }
+            let ending = match measured {
+                Some(result) => GoalEnding::of(Ok(result.encode()), None),
+                None => GoalEnding::Cancelled(
+                    goal_ctx
+                        .cancel_cause()
+                        .unwrap_or(CancelCause::Caller)
+                        .reason()
+                        .to_owned(),
+                ),
+            };
+            slot.release_then_end(&goal_ctx, ending).await;
         });
     }
 }
@@ -630,11 +645,14 @@ fn payload_note(edge: &Edge, honored_full: bool) -> String {
 
 /// The benchmark executor. Returns a result even on partial failure; per-edge
 /// problems are encoded as notes on the rows rather than aborting the run.
+/// Returns `None` once `cancel` is cancelled: the measurement in progress
+/// stops, and no other one starts.
 async fn run_benchmark(
     ctx: &BenchmarkActionContext,
     goal: StackBenchmarkGoal,
     tx: &UnboundedSender<StackBenchmarkFeedback>,
-) -> StackBenchmarkResult {
+    cancel: &CancellationToken,
+) -> Option<StackBenchmarkResult> {
     let timeout = Duration::from_millis(goal.per_sample_timeout_ms);
     let warmup = goal.warmup;
     let samples = goal.samples;
@@ -680,7 +698,18 @@ async fn run_benchmark(
             ProbeTarget::Service | ProbeTarget::Action => format!("Probing {}", edge_label(edge)),
         };
         emit_feedback(tx, BenchmarkFeedbackStep::Probing, probing);
-        rows.push(measure_probe(ctx, edge, warmup, samples, timeout, probe_target).await);
+        rows.push(
+            cancel
+                .run_until_cancelled(measure_probe(
+                    ctx,
+                    edge,
+                    warmup,
+                    samples,
+                    timeout,
+                    probe_target,
+                ))
+                .await?,
+        );
 
         // A topic edge yields two rows: a synthetic node-probe (handler-free
         // round-trip with a topic-schema-sized reply) and the observe-only
@@ -691,7 +720,13 @@ async fn run_benchmark(
                 BenchmarkFeedbackStep::TopicDelivery,
                 format!("Measuring delivery {}", edge_label(edge)),
             );
-            rows.push(measure_topic_delivery(ctx, edge, warmup, samples, timeout).await);
+            rows.push(
+                cancel
+                    .run_until_cancelled(measure_topic_delivery(
+                        ctx, edge, warmup, samples, timeout,
+                    ))
+                    .await?,
+            );
         }
     }
 
@@ -700,7 +735,7 @@ async fn run_benchmark(
         BenchmarkFeedbackStep::Aggregating,
         format!("Aggregated {} row(s)", rows.len()),
     );
-    StackBenchmarkResult::success(rows)
+    Some(StackBenchmarkResult::new(rows))
 }
 
 fn edge_label(edge: &Edge) -> String {

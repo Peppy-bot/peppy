@@ -1,4 +1,3 @@
-use core_node_api::ActionId;
 use core_node_api::encoding::{
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
 };
@@ -8,7 +7,7 @@ use tracing::info;
 
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
-use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
+use crate::commands::{GOAL_TIMEOUT, caller_instance_id};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use peppylib::core_node::transport::send_goal;
@@ -99,7 +98,7 @@ pub(crate) async fn build_node_on(
         &goal,
         messenger,
         bound_core_node,
-        CALLER_INSTANCE_ID,
+        caller_instance_id(),
         Some(target_core_node),
         GOAL_TIMEOUT,
     )
@@ -110,12 +109,7 @@ pub(crate) async fn build_node_on(
         NodeBuildGoalResponse,
         NodeBuildFeedback,
         NodeBuildResult,
-    >(
-        messenger,
-        &mut action_handle,
-        timeouts,
-        ActionId::NodeBuild.name(),
-    )
+    >(messenger, &mut action_handle, timeouts, "Node build")
     .await?;
 
     info!(

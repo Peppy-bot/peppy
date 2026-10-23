@@ -1,6 +1,6 @@
 use crate::services::node::{FeedbackLine, FeedbackStream};
 use crate::services::stack::action::StackChangeContext;
-use core_node_api::encoding::{LaunchFeedback, LaunchFeedbackStep};
+use core_node_api::encoding::{LaunchFeedback, LaunchFeedbackStep, LaunchOutput, NodeLogs};
 use daemon_config::peppy_config::Severity;
 use node_stack::{ActionLog, FeedbackOwner};
 use peppylib::messaging::ActionFeedbackPublisher;
@@ -8,26 +8,37 @@ use std::sync::Arc;
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 
-/// Writes `feedback` to the launch log and publishes it. A line with a
+/// Writes `output` to the launch log and publishes it. A line with a
 /// `severity` is the launch log's own and is exported; a line with none is in
 /// the file only.
 async fn publish_feedback(
     ctx: &StackChangeContext,
-    feedback: LaunchFeedback,
+    output: LaunchOutput,
     severity: Option<Severity>,
 ) {
-    let stream = if feedback.is_stdout() {
+    let stream = if output.is_stdout() {
         FeedbackStream::Stdout
     } else {
         FeedbackStream::Stderr
     };
     match severity {
-        Some(severity) => ctx.log.narrate(stream, severity, &feedback.line),
-        None => ctx.log.relay(stream, &feedback.line),
+        Some(severity) => ctx.log.narrate(stream, severity, &output.line),
+        None => ctx.log.relay(stream, &output.line),
     }
 
-    if let Ok(payload) = feedback.encode() {
+    if let Ok(payload) = LaunchFeedback::Output(output).encode() {
         let _ = ctx.feedback_publisher.publish(payload).await;
+    }
+}
+
+/// Publishes the log file of each node phase a stack change ran, as the last
+/// feedback of its goal.
+pub(in crate::services::stack) async fn publish_node_logs(
+    publisher: &ActionFeedbackPublisher,
+    logs: NodeLogs,
+) {
+    if let Ok(payload) = LaunchFeedback::NodeLogs(logs).encode() {
+        let _ = publisher.publish(payload).await;
     }
 }
 
@@ -37,12 +48,7 @@ pub(in crate::services::stack) async fn publish_stdout(
     line: impl Into<String>,
     step: LaunchFeedbackStep,
 ) {
-    publish_feedback(
-        ctx,
-        LaunchFeedback::stdout(line, step),
-        Some(Severity::Info),
-    )
-    .await;
+    publish_feedback(ctx, LaunchOutput::stdout(line, step), Some(Severity::Info)).await;
 }
 
 /// Narrates a problem the stack change goes on after.
@@ -51,12 +57,7 @@ pub(in crate::services::stack) async fn publish_warning(
     line: impl Into<String>,
     step: LaunchFeedbackStep,
 ) {
-    publish_feedback(
-        ctx,
-        LaunchFeedback::stderr(line, step),
-        Some(Severity::Warn),
-    )
-    .await;
+    publish_feedback(ctx, LaunchOutput::stderr(line, step), Some(Severity::Warn)).await;
 }
 
 /// Narrates the problem that ends the stack change.
@@ -65,12 +66,7 @@ pub(in crate::services::stack) async fn publish_error(
     line: impl Into<String>,
     step: LaunchFeedbackStep,
 ) {
-    publish_feedback(
-        ctx,
-        LaunchFeedback::stderr(line, step),
-        Some(Severity::Error),
-    )
-    .await;
+    publish_feedback(ctx, LaunchOutput::stderr(line, step), Some(Severity::Error)).await;
 }
 
 /// Relays a line another daemon reported for its part of the stack change.
@@ -81,7 +77,7 @@ pub(in crate::services::stack) async fn publish_relayed(
     line: impl Into<String>,
     step: LaunchFeedbackStep,
 ) {
-    publish_feedback(ctx, LaunchFeedback::stdout(line, step), None).await;
+    publish_feedback(ctx, LaunchOutput::stdout(line, step), None).await;
 }
 
 /// Prefixes `line` with the label of the node action that reported it.

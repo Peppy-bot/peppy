@@ -591,7 +591,7 @@ async fn resolve_one(
     .await;
     let closure = pins::resolve_pinned_closure(&ctx.peppy_dirs, node_entries, name, tag, feedback)
         .await
-        .map_err(|e| format!("deployment {label}: {e}"))?;
+        .map_err(|failure| format!("deployment {label}: {}", failure.message()))?;
     if remote {
         refuse_unportable_pins(&label, closure.nodes.iter().map(|node| &node.pin))?;
     }

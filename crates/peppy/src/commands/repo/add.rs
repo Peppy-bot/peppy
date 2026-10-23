@@ -3,7 +3,7 @@ use std::sync::Arc;
 use core_node_api::encoding::{GitRepoRef, RepoAddRequest, RepoSource};
 use tracing::info;
 
-use crate::commands::CALLER_INSTANCE_ID;
+use crate::commands::caller_instance_id;
 use crate::commands::node::source;
 use crate::commands::repo::{REQUEST_TIMEOUT, repo_source_label};
 use crate::context::AppContext;
@@ -50,26 +50,19 @@ async fn add_repo_async(
         top,
         id,
     };
-    let response = poll(
+    poll(
         &request,
         conn.messenger,
         &conn.core_node_name,
-        CALLER_INSTANCE_ID,
+        caller_instance_id(),
         &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to add repository: {}", e)))?;
+    .map_err(|e| crate::commands::request_error("Failed to add repository", e))?;
 
-    if response.success {
-        info!("Repository '{label}' added successfully");
-        Ok(())
-    } else {
-        Err(Error::ExecutionFailed(format!(
-            "Failed to add repository: {}",
-            response.error_message
-        )))
-    }
+    info!("Repository '{label}' added successfully");
+    Ok(())
 }
 
 /// Parse a user-supplied source string into a [`RepoSource`].

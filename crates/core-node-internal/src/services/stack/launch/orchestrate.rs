@@ -6,25 +6,26 @@ use crate::services::node::{
     dispatch_node_add, run_node_build_for_entity, run_node_run,
 };
 use crate::services::stack::action::StackChangeContext;
+use crate::services::stack::{ChangeResult, attempt_failed, rejected};
 use core_node_api::encoding::{
     LaunchFeedbackStep, NodeAddGoal, NodeAddResult, NodeRunGoal, NodeRunResult,
 };
 use node_stack::{ActionLog, Announcer};
+use peppylib::messaging::Failure;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
 /// Adds one node on this machine, in process, answering with the add's
-/// outcome and its log path. `Ok` carries a successful result only; a
-/// failed add arrives as `Err` with its error message.
+/// outcome and its log path: its result, or its failure.
 pub(in crate::services::stack) async fn add_node_directly(
     ctx: &StackChangeContext,
     node_add_goal: NodeAddGoal,
-) -> (std::result::Result<NodeAddResult, String>, Option<PathBuf>) {
+) -> (ChangeResult<NodeAddResult>, Option<PathBuf>) {
     let log = match create_add_log(&ctx.peppy_dirs, &ctx.node_stack, &node_add_goal) {
         Ok(log) => log,
-        Err(e) => return (Err(e), None),
+        Err(e) => return (Err(attempt_failed(e)), None),
     };
 
     let activity_notify = Arc::new(Notify::new());
@@ -63,7 +64,7 @@ pub(in crate::services::stack) async fn add_node_directly(
         &ctx.cancellation,
         &log_for_timeout,
         LaunchFeedbackStep::AddingNode,
-        |reason| NodeAddResult::failure(log_for_timeout.path(), reason),
+        Err,
         None,
     )
     .await;
@@ -71,16 +72,7 @@ pub(in crate::services::stack) async fn add_node_directly(
     // Wait for feedback forwarder to drain.
     let _ = forwarder_handle.await;
 
-    let log_path = Some(result.log_path.clone());
-    if result.success {
-        (Ok(result), log_path)
-    } else {
-        let err = result
-            .error_message
-            .clone()
-            .unwrap_or_else(|| "node_add failed".to_string());
-        (Err(err), log_path)
-    }
+    (result, Some(log_for_timeout.path()))
 }
 
 /// Builds one node the change added on this machine. Each line of its output
@@ -92,7 +84,7 @@ pub(in crate::services::stack) async fn build_node_directly(
     node_name: String,
     node_tag: String,
     rebuild: bool,
-) -> (std::result::Result<(), String>, Option<PathBuf>) {
+) -> (ChangeResult<()>, Option<PathBuf>) {
     let log = match ActionLog::for_build(
         &ctx.peppy_dirs,
         ctx.node_stack.log_exporter().clone(),
@@ -101,7 +93,7 @@ pub(in crate::services::stack) async fn build_node_directly(
         Some(launch_id),
     ) {
         Ok(log) => log,
-        Err(e) => return (Err(e), None),
+        Err(e) => return (Err(attempt_failed(e)), None),
     };
     let log_path = log.path();
 
@@ -136,33 +128,23 @@ pub(in crate::services::stack) async fn build_node_directly(
         &ctx.cancellation,
         &log_for_timeout,
         LaunchFeedbackStep::BuildingNode,
-        |reason| core_node_api::encoding::NodeBuildResult::failure(&log_path, reason),
+        Err,
         None,
     )
     .await;
 
     let _ = forwarder_handle.await;
 
-    if result.success {
-        (Ok(()), Some(log_path))
-    } else {
-        (
-            Err(result
-                .error_message
-                .unwrap_or_else(|| "node_build failed".to_string())),
-            Some(log_path),
-        )
-    }
+    (result.map(drop), Some(log_path))
 }
 
 /// Starts one instance on this machine, in process, answering with the
-/// start's outcome and its log path. `Ok` carries a successful result only;
-/// a failed start arrives as `Err` with its error message.
+/// start's outcome and its log path: its result, or its failure.
 pub(in crate::services::stack) async fn start_node_directly(
     ctx: &StackChangeContext,
     node_run_goal: NodeRunGoal,
     log: ActionLog,
-) -> (std::result::Result<NodeRunResult, String>, Option<PathBuf>) {
+) -> (ChangeResult<NodeRunResult>, Option<PathBuf>) {
     let log_path = log.path();
     let activity_notify = Arc::new(Notify::new());
     let (feedback_tx, _forwarder_handle) = spawn_feedback_forwarder(
@@ -192,7 +174,7 @@ pub(in crate::services::stack) async fn start_node_directly(
     let log_for_timeout = log.clone();
 
     // Token triggered by `run_phase_with_timeouts` on idle/max timeout and by
-    // a stack reset; observed inside `run_node_run` to give up a half-started
+    // a cancel of the change; observed inside `run_node_run` to give up a half-started
     // node instance (its cooperative stop after the ready signal, else a kill
     // of its process group, then the removal of its `Starting` entry) before
     // we return the failure.
@@ -208,7 +190,7 @@ pub(in crate::services::stack) async fn start_node_directly(
         match crate::services::node::assemble_runtime_config(&node_run_goal, &action_context).await
         {
             Ok(config) => config,
-            Err(reason) => return (Err(reason), Some(log_path)),
+            Err(reason) => return (Err(rejected(reason)), Some(log_path)),
         };
 
     let result = run_phase(
@@ -227,7 +209,7 @@ pub(in crate::services::stack) async fn start_node_directly(
         &ctx.cancellation,
         &log_for_timeout,
         LaunchFeedbackStep::RunningNode,
-        NodeRunResult::failure,
+        Err,
         Some(give_up),
     )
     .await;
@@ -235,16 +217,7 @@ pub(in crate::services::stack) async fn start_node_directly(
     // Don't await _forwarder_handle: the node process is still running and
     // output readers keep the internal channel alive.
 
-    let node_log_path = Some(log_path);
-    if result.success {
-        (Ok(result), node_log_path)
-    } else {
-        let err = result
-            .error_message
-            .clone()
-            .unwrap_or_else(|| "node_run failed".to_string());
-        (Err(err), node_log_path)
-    }
+    (result, Some(log_path))
 }
 
 /// Launch failure path: tear down whatever partial stack got started and clear
@@ -254,12 +227,12 @@ pub(in crate::services::stack) async fn start_node_directly(
 /// half-started instances.
 pub(in crate::services::stack) async fn fail_and_clear_stack(
     ctx: &StackChangeContext,
-    reason: String,
+    failure: Failure,
     participants: &[String],
-) -> String {
+) -> Failure {
     publish_error(
         ctx,
-        format!("{} failed: {reason}", ctx.action),
+        format!("{} failed: {}", ctx.action, failure.message()),
         LaunchFeedbackStep::LauncherStep,
     )
     .await;
@@ -271,7 +244,7 @@ pub(in crate::services::stack) async fn fail_and_clear_stack(
     // never typed the name of.
     super::federated::clear_participant_slices(ctx, participants).await;
 
-    reason
+    failure
 }
 
 /// The bound producers of every consumer instance's slots, keyed by

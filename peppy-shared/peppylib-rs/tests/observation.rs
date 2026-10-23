@@ -513,9 +513,16 @@ async fn observation_update_service_applies_daemon_deliveries_end_to_end() {
             request.encode().expect("encode"),
             Duration::from_secs(2),
         )
-        .await
-        .expect("observation_update delivery should get a reply");
-        SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response")
+        .await;
+        // A refused delivery is an error reply that carries its failure.
+        match reply {
+            Ok(reply) => {
+                Ok(SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response"))
+            }
+            Err(error) => Err(error.failure().cloned().unwrap_or_else(|| {
+                panic!("observation_update delivery should get a reply: {error}")
+            })),
+        }
     };
 
     let response = deliver(ObservationUpdateRequest {
@@ -524,7 +531,7 @@ async fn observation_update_service_applies_daemon_deliveries_end_to_end() {
         members: vec![member("arm_1", 1), member("arm_2", 1)],
     })
     .await;
-    assert!(response.accepted, "delivery rejected: {}", response.message);
+    assert_eq!(response, Ok(SlotUpdateResponse::taken()));
     assert_eq!(slot_rx.borrow().members.len(), 2);
     assert_eq!(slot_rx.borrow().sequence, 7);
 
@@ -535,7 +542,7 @@ async fn observation_update_service_applies_daemon_deliveries_end_to_end() {
         members: vec![member("arm_2", 1)],
     })
     .await;
-    assert!(response.accepted);
+    assert_eq!(response, Ok(SlotUpdateResponse::taken()));
     assert_eq!(
         slot_rx
             .borrow()
@@ -553,8 +560,7 @@ async fn observation_update_service_applies_daemon_deliveries_end_to_end() {
         members: Vec::new(),
     })
     .await;
-    assert!(!response.accepted);
-    assert!(response.stale_sequence);
+    assert_eq!(response, Ok(SlotUpdateResponse::stale()));
     assert_eq!(
         slot_rx.borrow().members.len(),
         1,
