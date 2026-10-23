@@ -8,7 +8,7 @@ use common::{
     start_core_node_with_mock_messenger,
 };
 use config::node::NodeConfigParser;
-use core_node_api::encoding::{InterfaceKind, MeasurementKind};
+use core_node_api::encoding::{BenchmarkFeedbackStep, InterfaceKind, MeasurementKind};
 use core_node_api::encoding::{
     StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
@@ -318,5 +318,86 @@ async fn stack_benchmark_measures_each_edge_kind_its_own_way() {
                 MeasurementKind::ActionProbe
             ),
         ]
+    );
+}
+
+/// A benchmark accepts a cancel from its client. The measurement in progress
+/// stops, and the goal ends cancelled with the reason of the cancel. A
+/// benchmark changes nothing on the stack, so a cancelled one leaves the
+/// gate free: the next benchmark runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_benchmark_ends_cancelled_and_the_next_one_runs() {
+    let started = start_core_node_with_mock_messenger().await;
+    let provider = NodeConfigParser::from_content(action_and_topic_provider_config())
+        .expect("provider parses");
+    started
+        .node_stack
+        .push_config(provider, false, "/tmp/bench_provider")
+        .expect("push provider");
+    let consumer = NodeConfigParser::from_content(action_and_topic_consumer_config())
+        .expect("consumer parses");
+    started
+        .node_stack
+        .push_config(consumer, false, "/tmp/bench_consumer")
+        .expect("push consumer");
+
+    // Each measurement of the topic edge waits, for a sample bound that the
+    // test does not reach, for an answer or for live traffic that no
+    // instance gives: only the cancel ends the benchmark.
+    let mut action_handle = send_daemon_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        &StackBenchmarkGoal::new(2, 0, 3_600_000),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("send stack_benchmark goal");
+    goal_answer(
+        &action_handle,
+        StackBenchmarkGoalResponse::decode,
+        "goal response",
+    )
+    .expect("decode goal response")
+    .expect("the daemon accepts the benchmark goal");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| StackBenchmarkFeedback::decode(payload).expect("decode feedback"),
+        |feedback| match feedback.step {
+            BenchmarkFeedbackStep::Probing => ControlFlow::Break(()),
+            _ => ControlFlow::Continue(()),
+        },
+        deadline,
+    )
+    .await;
+    assert!(
+        matches!(drained, FeedbackDrainOutcome::Stopped),
+        "the benchmark reaches its first measurement"
+    );
+
+    peppylib::ActionMessenger::cancel_goal(
+        &started.caller_handle,
+        &action_handle,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("the daemon answers the cancel");
+    common::wait_until_action_completes(&mut action_handle, Duration::from_secs(30)).await;
+    let end = fetch_end(
+        &started.caller_handle,
+        &action_handle,
+        Duration::from_secs(10),
+        StackBenchmarkResult::decode,
+        "benchmark result",
+    )
+    .await
+    .unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(end.cancel_reason(), "cancelled by its caller");
+
+    let (result, _) = run_benchmark_goal(&started, StackBenchmarkGoal::new(1, 0, 200)).await;
+    assert_eq!(
+        result.rows.len(),
+        3,
+        "the next benchmark measures every edge"
     );
 }

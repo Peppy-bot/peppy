@@ -168,7 +168,15 @@ async fn remove_inner(
     .await?;
     let outcome = async {
         report_machines_left(ctx, active, &copy, &states).await;
-        stop_copy(ctx, &active.launch_id, &copy, &active.placements, &states).await?;
+        stop_copy(
+            ctx,
+            &active.launch_id,
+            &copy,
+            &active.placements,
+            &states,
+            StopsOnCancel::End,
+        )
+        .await?;
         active.copies.remove(name);
         active.flat = remaining;
         active.planned = remaining_planned;
@@ -504,6 +512,17 @@ impl<'a> StopWalk<'a> {
     }
 }
 
+/// What a cancel of the stack goal does to the stops of a copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StopsOnCancel {
+    /// A removal ends at the cancel, before its next stop: the copy stays,
+    /// as a removal whose stop fails leaves it.
+    End,
+    /// The undo of a join stops every instance: a cancel is one of the
+    /// failures that start the undo.
+    Continue,
+}
+
 /// Stops the copy's instances, the last started first, one at a time across
 /// its machines. On this daemon's machine each stop takes up to the bound on
 /// a stop, so the change reports each instance the stack holds before it
@@ -511,19 +530,23 @@ impl<'a> StopWalk<'a> {
 /// it holds stops through one request within that machine's bound on a stop,
 /// after a line. An instance on a machine that is not live, or that
 /// holds no slice of this launch, is not stopped. A stop that fails skips
-/// the later stops on its machine, and the others still run.
+/// the later stops on its machine, and the others still run. `on_cancel`
+/// says whether a cancel of the goal ends the stops before the next one.
 pub(super) async fn stop_copy(
     ctx: &StackChangeContext,
     launch_id: &str,
     copy: &StackCopy,
     placements: &Placements,
     states: &MachineStates,
+    on_cancel: StopsOnCancel,
 ) -> ChangeResult<()> {
     let coordinator = ctx.bound_core_node.as_str();
     let planned = stops(copy, placements, states, coordinator);
     let mut walk = StopWalk::default();
     for stop in &planned {
-        ctx.stop_if_cancelled()?;
+        if on_cancel == StopsOnCancel::End {
+            ctx.stop_if_cancelled()?;
+        }
         let machine = stop.machine(coordinator);
         if walk.skips(machine) {
             continue;
@@ -555,7 +578,7 @@ pub(super) async fn stop_copy(
 }
 
 /// [`stop_copy`] on the machines `live` holds, read again: what a join's
-/// rollback stops.
+/// rollback stops, every instance of it, a cancel of the goal or not.
 pub(super) async fn stop_copy_on_live_machines(
     ctx: &StackChangeContext,
     launch_id: &str,
@@ -564,7 +587,15 @@ pub(super) async fn stop_copy_on_live_machines(
     live: &BTreeSet<String>,
 ) -> ChangeResult<()> {
     let states = MachineStates::read(ctx, launch_id, copy_machines(copy, placements), live).await?;
-    stop_copy(ctx, launch_id, copy, placements, &states).await
+    stop_copy(
+        ctx,
+        launch_id,
+        copy,
+        placements,
+        &states,
+        StopsOnCancel::Continue,
+    )
+    .await
 }
 
 async fn stop_local_instance(ctx: &StackChangeContext, copy: &CopyName, instance: &Name) {

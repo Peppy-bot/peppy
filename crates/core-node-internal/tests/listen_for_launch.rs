@@ -16,7 +16,7 @@ use core_node_api::encoding::{
 };
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
-use peppylib::messaging::{Failure, MessengerHandle};
+use peppylib::messaging::{ActionGoalHandle, Failure, MessengerHandle};
 use std::fs;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -432,6 +432,50 @@ async fn run_stack_goal(
         end,
         node_logs,
     })
+}
+
+/// Sends the stack goal `goal` and returns its live handle. Panics when the
+/// daemon refuses the goal.
+async fn send_accepted_stack_goal(
+    started: &StartedCoreNode,
+    goal: &impl core_node_api::ActionGoal,
+) -> ActionGoalHandle {
+    let handle = send_daemon_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        goal,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect("send the stack goal");
+    goal_answer(&handle, LaunchGoalResponse::decode, "goal response")
+        .expect("decode the goal answer")
+        .unwrap_or_else(|refusal| panic!("the daemon refused the stack goal: {refusal}"));
+    handle
+}
+
+/// Cancels the stack goal of `handle` as its client does, runs
+/// `after_cancel` once the daemon answered the cancel, and returns how the
+/// goal ended. Panics when the goal does not end within the result budget.
+async fn cancel_and_follow_to_end(
+    started: &StartedCoreNode,
+    mut handle: ActionGoalHandle,
+    after_cancel: impl std::future::Future<Output = ()>,
+) -> GoalEnd<LaunchResult> {
+    peppylib::ActionMessenger::cancel_goal(&started.caller_handle, &handle, GOAL_TIMEOUT)
+        .await
+        .expect("the daemon answers the cancel");
+    after_cancel.await;
+    common::wait_until_action_completes(&mut handle, RESULT_TIMEOUT).await;
+    fetch_end(
+        &started.caller_handle,
+        &handle,
+        GOAL_TIMEOUT,
+        LaunchResult::decode,
+        "launch result",
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"))
 }
 
 async fn send_node_launch_and_wait(
@@ -1388,6 +1432,76 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         node_b_pid,
         Duration::from_secs(15),
         &format!("partial new instance {node_b_pid} should be terminated, not orphaned"),
+    )
+    .await;
+}
+
+/// A launch accepts a cancel from its client. The start in progress stops,
+/// the launch clears the stack as a launch whose start fails clears it, and
+/// the goal ends cancelled with the reason of the cancel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_launch_clears_the_stack_and_ends_cancelled() {
+    const NODE_TAG: &str = "v1";
+
+    // A setup budget that the test does not reach: only the cancel ends the
+    // start.
+    let started = start_core_node_with_default_setup_timeout(config::node::SetupTimeout::MAX).await;
+    let node_stack = started.node_stack.clone();
+    let nodes_dir = tempdir().expect("failed to create nodes dir");
+    let node_path = write_node_config(
+        nodes_dir.path(),
+        "waiting_node",
+        NODE_TAG,
+        &["sleep", "300"],
+    );
+    // The instance answers ready and never answers its health check, so its
+    // setup waits. Its shutdown request ends it at once.
+    let _ready = answer_ready_probe(&started, "waiting_node", "waiting_inst").await;
+    let (_shutdown, _) = common::install_shutdown_listener_for_instance(
+        &started,
+        "waiting_node",
+        NODE_TAG,
+        "waiting_inst",
+    )
+    .await;
+    let launcher = nodes_dir.path().join("peppy_launcher.json5");
+    fs::write(
+        &launcher,
+        r#"{ peppy_schema: "launcher/v1", deployments: [ { source: { name: "waiting_node:v1" }, instances: [ { instance_id: "waiting_inst" } ] } ] }"#,
+    )
+    .expect("failed to write launch file");
+    TestPackagesCache::new()
+        .fs_entry("waiting_node", NODE_TAG, &node_path)
+        .write(&started.peppy_dirs);
+    let goal = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        TEST_LAUNCH_ID,
+        StackBudgets::new(300, 300, 300, Some(3600)),
+    );
+
+    let handle = send_accepted_stack_goal(&started, &goal).await;
+    let pid = poll_until(
+        RESULT_TIMEOUT,
+        "the start of waiting_inst records its process",
+        || {
+            node_stack
+                .find("waiting_node", NODE_TAG)
+                .and_then(|h| h.read().instances().first().and_then(|i| i.pid()))
+        },
+    )
+    .await;
+    let end = cancel_and_follow_to_end(&started, handle, async {}).await;
+
+    assert_eq!(end.cancel_reason(), "cancelled by its caller");
+    assert_eq!(
+        node_stack.len(),
+        1,
+        "the cancelled launch clears the stack as a failed launch does"
+    );
+    wait_until_process_exits(
+        pid,
+        Duration::from_secs(15),
+        &format!("the cancel stops the start of process {pid}"),
     )
     .await;
 }

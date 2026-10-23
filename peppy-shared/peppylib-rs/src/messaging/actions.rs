@@ -2324,6 +2324,14 @@ impl GoalContext {
         self.slot.cancel.is_cancelled()
     }
 
+    /// A token that the cancel signal of this goal cancels, at the signal and
+    /// before the engine answers the cancel request. Hand it to work that
+    /// runs off the goal's task, such as a blocking thread, which then sees
+    /// the cancel at its next check.
+    pub fn cancellation(&self) -> CancellationToken {
+        self.slot.cancel.child_token()
+    }
+
     /// Why this goal received its cancel signal; `None` before it did.
     pub fn cancel_cause(&self) -> Option<CancelCause> {
         self.slot.cancel_cause()
@@ -3261,6 +3269,24 @@ mod engine_tests {
             }
             other => panic!("expected the failed goal, got {other:?}"),
         }
+    }
+
+    /// The token of a goal's cancellation is cancelled once the engine
+    /// answers the cancel request: work off the goal's task sees the cancel
+    /// at its next check, with no poll of the goal's task in between.
+    #[tokio::test(start_paused = true)]
+    async fn the_cancellation_of_a_goal_is_cancelled_when_the_cancel_is_answered() {
+        let session = mock_session().await;
+        let mut action = expose_on(&process_on(&session)).await;
+        let caller = process_on(&session);
+        let (goal, context) = send_and_accept(&caller, &mut action).await;
+        let cancellation = context.cancellation();
+        assert!(!cancellation.is_cancelled());
+
+        ActionMessenger::cancel_goal(&caller, &goal, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(cancellation.is_cancelled());
     }
 
     /// A cancel of the caller reaches the worker with the cause `Caller`; the

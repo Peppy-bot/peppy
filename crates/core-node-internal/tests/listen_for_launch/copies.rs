@@ -437,6 +437,170 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
     result.assert_completed();
 }
 
+/// A join accepts a cancel from its client. The build in progress stops,
+/// the join undoes what it did as a join whose build fails undoes it, and
+/// the goal ends cancelled with the reason of the cancel. The stack keeps
+/// its launch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_join_is_undone_and_ends_cancelled() {
+    let started = start_core_node_with_mock_messenger().await;
+    let directory = tempdir().unwrap();
+    let pid_file = directory.path().join("build.pid");
+    let command = format!("echo $$ > '{}'; exec sleep 300", pid_file.display());
+    let robot = write_node_config_with_options(
+        directory.path(),
+        "blocked_robot",
+        "v1",
+        NodeConfigOptions {
+            build_cmd: &[&command],
+            run_cmd: &["true"],
+            ..Default::default()
+        },
+    );
+    TestPackagesCache::new()
+        .fs_entry("blocked_robot", "v1", &robot)
+        .write(&started.peppy_dirs);
+    let launcher = directory.path().join("fleet.json5");
+    fs::write(
+        &launcher,
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "zero_or_more", options: {
+            simulated: { deployments: [{
+                source: { name: "blocked_robot", tag: "v1" },
+                instances: [{ instance_id: "arm_inst" }],
+            }] },
+        } }],
+    }"#,
+    )
+    .unwrap();
+    execute(&started, &fleet_launch(launcher, "cancel-join"))
+        .await
+        .assert_completed();
+
+    let handle = send_accepted_stack_goal(&started, &robot_goal("alpha", "simulated")).await;
+    let pid = common::poll_until(GOAL_TIMEOUT, "join build records its process", || {
+        fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+    })
+    .await;
+    let end = cancel_and_follow_to_end(&started, handle, async {}).await;
+
+    assert_eq!(end.cancel_reason(), "cancelled by its caller");
+    wait_until_process_exits(
+        pid,
+        Duration::from_secs(15),
+        &format!("the cancel stops the build process {pid}"),
+    )
+    .await;
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    assert_eq!(list.copy_change, None, "no change holds the stack");
+    assert!(list.copies.is_empty(), "the cancelled join leaves no copy");
+    assert!(list.launch.is_some(), "the stack keeps its launch");
+    assert!(
+        !started.node_stack.contains("blocked_robot", "v1"),
+        "the join removes the node it added"
+    );
+}
+
+/// A removal accepts a cancel from its client. The removal ends before its
+/// next stop, as a removal whose stop fails ends: the copy stays listed, the
+/// instance it stopped is gone, and the instance it did not reach runs. The
+/// goal ends cancelled with the reason of the cancel. Each instance hears
+/// the shutdown request and exits only when the test kills it, under a
+/// grace that outlasts the test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_removal_keeps_the_copy_and_the_instance_it_did_not_stop() {
+    const INSTANCES: [&str; 2] = ["alpha_arm_inst", "alpha_cam_inst"];
+    let started = common::start_core_node_with_shutdown_grace(3600).await;
+    let directory = tempdir().unwrap();
+    let robot = write_node_config(directory.path(), "named_robot", "v1", &["sleep", "300"]);
+    TestPackagesCache::new()
+        .fs_entry("named_robot", "v1", &robot)
+        .write(&started.peppy_dirs);
+    let launcher = directory.path().join("fleet.json5");
+    fs::write(
+        &launcher,
+        r#"{
+        peppy_schema: "launcher/v1",
+        deployments: [{ robot: "real", instances: [{ instance_id: "alpha" }] }],
+        components: [{ name: "robot", cardinality: "zero_or_more", options: {
+            real: { deployments: [{
+                source: { name: "named_robot", tag: "v1" },
+                instances: [{ instance_id: "arm_inst" }, { instance_id: "cam_inst" }],
+            }] },
+        } }],
+    }"#,
+    )
+    .unwrap();
+    let mut responders = Vec::new();
+    for instance in INSTANCES {
+        responders.extend(answer_readiness(&started, "named_robot", instance).await);
+    }
+    execute(&started, &fleet_launch(launcher, "cancel-removal"))
+        .await
+        .assert_completed();
+
+    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let mut listeners = Vec::new();
+    let mut shutdowns = Vec::new();
+    for instance in INSTANCES {
+        let (listener, shutdown) = peppylib::services::shutdown::listen_for_shutdown(
+            &messenger,
+            &started.core_node_name,
+            instance,
+            common::test_node_target("named_robot"),
+        )
+        .await
+        .unwrap();
+        listeners.push(listener);
+        shutdowns.push(shutdown);
+    }
+    let pids = INSTANCES.map(|instance| instance_pid(&started, "named_robot", instance));
+
+    let handle = send_accepted_stack_goal(&started, &remove_goal("alpha")).await;
+    // The removal asks one instance to shut down, and waits for its process.
+    let [first, second] = shutdowns.try_into().expect("two shutdown listeners");
+    let (stopped, kept) = tokio::select! {
+        asked = first => {
+            asked.expect("the removal asks an instance to shut down");
+            (0, 1)
+        }
+        asked = second => {
+            asked.expect("the removal asks an instance to shut down");
+            (1, 0)
+        }
+    };
+    let end = cancel_and_follow_to_end(&started, handle, async {
+        std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(pids[stopped].to_string())
+            .status()
+            .expect("kill runs");
+    })
+    .await;
+
+    assert_eq!(end.cancel_reason(), "cancelled by its caller");
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    assert_eq!(list.copy_change, None, "no change holds the stack");
+    assert_eq!(list.copies.len(), 1, "the copy stays listed");
+    assert_eq!(list.copies[0].name, "alpha");
+    assert!(
+        !is_process_running(pids[stopped]),
+        "the instance the removal stopped is gone"
+    );
+    assert!(
+        is_process_running(pids[kept]),
+        "the instance the removal did not reach runs"
+    );
+    std::process::Command::new("kill")
+        .arg("-KILL")
+        .arg(pids[kept].to_string())
+        .status()
+        .expect("kill runs");
+}
+
 /// A fleet of one shared node and a repeatable robot axis, both nodes idling
 /// in `sleep`; `copies` are the `deployments` entries the file starts beside
 /// the shared node.

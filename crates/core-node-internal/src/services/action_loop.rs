@@ -83,6 +83,10 @@ pub(crate) async fn accept_goal(
 /// Runs `work` under its goal's cancellation: a cancel request from the
 /// goal's caller, or the engine's cancel of a goal whose sender is gone,
 /// signals `token`, and the work finishes through its own cancel path.
+///
+/// The cancel signal is read before each step of the work: once the engine
+/// answers a cancel request, the next step of the work sees `token`
+/// cancelled.
 pub(crate) async fn under_goal_cancel<T>(
     goal_ctx: &GoalContext,
     token: &CancellationToken,
@@ -91,11 +95,11 @@ pub(crate) async fn under_goal_cancel<T>(
     tokio::pin!(work);
     tokio::select! {
         biased;
-        result = work.as_mut() => result,
         _ = goal_ctx.cancel_signal() => {
             token.cancel();
             work.await
         }
+        result = work.as_mut() => result,
     }
 }
 

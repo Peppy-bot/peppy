@@ -1,7 +1,6 @@
 use crate::Result;
 use crate::services::action_loop::{
     GoalEnding, GoalHandler, accept_goal, invalid_payload, refuse_goal, run_action_loop,
-    under_goal_cancel,
 };
 use crate::services::node::cache as node_cache;
 use crate::services::node::common::encode_response_or_err;
@@ -31,6 +30,7 @@ use daemon_config::consts::{PeppyDirs, peppy_build};
 use daemon_config::repository::GitCommit;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{CancelCause, ConcurrentAction, Failure, PendingGoal};
+use peppylib::runtime::CancellationToken;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
 use serde_json::Value;
@@ -39,7 +39,6 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::time::SystemTime;
 use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 pub async fn listen_for_repo_refresh(
@@ -133,21 +132,18 @@ impl GoalHandler for RepoRefreshGoalHandler {
 
             // A cancel of the goal's caller, or of its gone sender, stops the
             // refresh between two of its steps: it reads no other repository
-            // and publishes nothing, as a refresh that fails.
-            let cancel = CancellationToken::new();
-            let refreshed = under_goal_cancel(
-                &goal_ctx,
-                &cancel,
-                refresh_and_write_caches(
-                    &peppy_dirs,
-                    peppy_build(),
-                    RefreshScope::Every,
-                    SystemTime::now(),
-                    move |feedback| {
-                        let _ = tx.send(feedback);
-                    },
-                    &cancel,
-                ),
+            // and publishes nothing, as a refresh that fails. The refresh runs
+            // on a blocking thread, which reads the cancel of the goal
+            // itself.
+            let refreshed = refresh_and_write_caches(
+                &peppy_dirs,
+                peppy_build(),
+                RefreshScope::Every,
+                SystemTime::now(),
+                move |feedback| {
+                    let _ = tx.send(feedback);
+                },
+                &goal_ctx.cancellation(),
             )
             .await;
 
@@ -1527,6 +1523,51 @@ mod tests {
             .expect("the re-index published the node cache");
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].node_name, "first");
+    }
+
+    /// A refresh whose cancel came before its reads reads no repository and
+    /// publishes nothing: the caches keep what they held, here none.
+    #[tokio::test]
+    async fn a_refresh_cancelled_before_its_reads_reads_nothing_and_publishes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let repo = tmp.path().join("repo");
+        write_node_json5(&repo.join("first"), "first", "v1");
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
+        publish_repo(&repo);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let mut feedback = Vec::new();
+        let read = process_refresh(
+            &peppy_dirs,
+            &peppy_build(),
+            &RefreshScope::Every,
+            TEST_NOW,
+            &mut |line| feedback.push(line),
+            &cancel,
+        )
+        .expect("the refresh runs");
+        assert!(read.is_none(), "the cancel stops the refresh");
+        assert!(feedback.is_empty(), "no repository is read: {feedback:?}");
+
+        let published = refresh_and_write_caches(
+            &peppy_dirs,
+            peppy_build(),
+            RefreshScope::Every,
+            TEST_NOW,
+            |_| {},
+            &cancel,
+        )
+        .await
+        .expect("the refresh runs");
+        assert!(published.is_none(), "the cancel stops the refresh");
+        assert!(
+            crate::services::repo::cache::load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
+                .unwrap_or_default()
+                .is_empty(),
+            "a cancelled refresh publishes no cache"
+        );
     }
 
     /// A re-index that cannot read the configuration at all reports it:

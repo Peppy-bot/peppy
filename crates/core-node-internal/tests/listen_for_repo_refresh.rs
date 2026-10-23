@@ -900,3 +900,94 @@ async fn refresh_discovers_launchers() {
         "sha256 should be non-empty"
     );
 }
+
+/// A refresh accepts a cancel from its client. The read in progress ends
+/// first, and the refresh then publishes nothing, as a refresh that fails:
+/// the caches keep what the last refresh published. The goal ends cancelled
+/// with the reason of the cancel. The index of the repository is a named
+/// pipe: the test knows the read started when the pipe has its reader, and
+/// writes the index only after the cancel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_refresh_publishes_nothing_and_ends_cancelled() {
+    let started = start_core_node_with_mock_messenger().await;
+    let repo_dir = started.peppy_dirs.root().join("piped_repo");
+    create_node_dir(&repo_dir, "kept_node", "v1");
+    common::publish_repo_index(&repo_dir);
+    write_repositories_json5(&started, &fs_repositories_json(&[&repo_dir]));
+    send_refresh_and_wait(&started).await;
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
+    let published = std::fs::read_to_string(&cache_path).expect("the first refresh publishes");
+
+    // The repository gains a node, and its index becomes a named pipe.
+    create_node_dir(&repo_dir, "new_node", "v1");
+    common::publish_repo_index(&repo_dir);
+    let index_path = repo_dir.join(daemon_config::consts::REPOSITORY_INDEX_FILE);
+    let index = std::fs::read_to_string(&index_path).expect("read the index");
+    std::fs::remove_file(&index_path).expect("remove the index");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&index_path)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success(), "mkfifo makes the pipe");
+
+    // Opening the pipe for writing waits for its reader: the read of the
+    // refresh. The writer then waits for the cancel before it writes.
+    let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+    let (write_tx, write_rx) = std::sync::mpsc::channel::<()>();
+    let writer = std::thread::spawn(move || {
+        use std::io::Write;
+        let mut pipe = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&index_path)
+            .expect("open the pipe");
+        opened_tx.send(()).expect("the test waits for the reader");
+        write_rx.recv().expect("the test lets the writer write");
+        pipe.write_all(index.as_bytes()).expect("write the index");
+    });
+
+    let mut action_handle = send_daemon_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        &RepoRefreshGoal,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("send goal should succeed");
+    goal_answer(
+        &action_handle,
+        RepoRefreshGoalResponse::decode,
+        "repo_refresh goal response",
+    )
+    .unwrap_or_else(|err| panic!("{err}"))
+    .unwrap_or_else(|refusal| panic!("the daemon refused the refresh: {refusal}"));
+    tokio::task::spawn_blocking(move || opened_rx.recv_timeout(Duration::from_secs(30)))
+        .await
+        .expect("the wait does not panic")
+        .expect("the refresh reads the index");
+    peppylib::ActionMessenger::cancel_goal(
+        &started.caller_handle,
+        &action_handle,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("the daemon answers the cancel");
+    write_tx.send(()).expect("the writer waits");
+    writer.join().expect("the writer does not panic");
+    common::wait_until_action_completes(&mut action_handle, Duration::from_secs(30)).await;
+    let end = fetch_end(
+        &started.caller_handle,
+        &action_handle,
+        Duration::from_secs(5),
+        RepoRefreshResult::decode,
+        "repo_refresh result",
+    )
+    .await
+    .unwrap_or_else(|err| panic!("{err}"));
+
+    assert_eq!(end.cancel_reason(), "cancelled by its caller");
+    assert_eq!(
+        std::fs::read_to_string(&cache_path).expect("the cache stays"),
+        published,
+        "the cancelled refresh publishes nothing"
+    );
+}
