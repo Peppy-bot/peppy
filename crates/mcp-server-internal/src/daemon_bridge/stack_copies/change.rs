@@ -110,18 +110,16 @@ impl Change {
     /// The end of a call whose client cancelled after the daemon accepted
     /// the change.
     fn stopped_waiting(&self) -> ActionExit {
+        let words = format!("stopped waiting; {} continues on the stack", self.subject());
         ActionExit::Cancelled(CancelledGoal {
-            result: json!({
-                "success": false,
-                "message": format!("stopped waiting; {} continues on the stack", self.subject()),
-            }),
-            reason: None,
+            result: json!({ "success": false, "message": words }),
+            reason: words,
         })
     }
 
     /// The end of a call the daemon sent nothing to for `window`.
     fn silent(&self, window: Duration) -> ActionExit {
-        ActionExit::Failed(format!(
+        ActionExit::Error(format!(
             "the daemon sent nothing for {} s; {} can still be running",
             seconds(window),
             self.subject()
@@ -327,9 +325,9 @@ pub(super) async fn wait_for_change(
     let StartedChange { start, mut events } = started;
     let log_path = match start.await {
         Ok(Start::Accepted { log_path }) => log_path,
-        Ok(Start::Refused(refusal)) => return Err(ActionExit::Failed(refusal)),
+        Ok(Start::Refused(refusal)) => return Err(ActionExit::Error(refusal)),
         Err(_) => {
-            return Err(ActionExit::Failed(format!(
+            return Err(ActionExit::Error(format!(
                 "{} ended before the daemon answered its goal",
                 change.subject()
             )));
@@ -357,12 +355,12 @@ pub(super) async fn wait_for_change(
             }
             Some(ChangeEvent::Ended(result)) => return Ok(change.outcome(&result)),
             Some(ChangeEvent::NoResult(error)) => {
-                return Err(ActionExit::Failed(
+                return Err(ActionExit::Error(
                     change.failed(&error.to_string(), &[log_path.as_path()]),
                 ));
             }
             None => {
-                return Err(ActionExit::Failed(format!(
+                return Err(ActionExit::Error(format!(
                     "{} ended without its last event",
                     change.subject()
                 )));
@@ -432,14 +430,14 @@ mod tests {
         let window = Duration::from_secs(660);
         assert_eq!(
             addition().silent(window),
-            ActionExit::Failed(
+            ActionExit::Error(
                 "the daemon sent nothing for 660 s; the addition of bravo can still be running"
                     .to_owned()
             )
         );
         assert_eq!(
             removal().silent(window),
-            ActionExit::Failed(
+            ActionExit::Error(
                 "the daemon sent nothing for 660 s; the removal of bravo can still be running"
                     .to_owned()
             )
@@ -454,7 +452,9 @@ mod tests {
                             "stopped waiting; the {subject} of bravo continues on the stack"
                         ),
                     }),
-                    reason: None,
+                    reason: format!(
+                        "stopped waiting; the {subject} of bravo continues on the stack"
+                    ),
                 })
             );
         }

@@ -278,7 +278,7 @@ impl FakeDaemon {
             .next_goal(READINESS_TIMEOUT)
             .await
             .expect("the join reaches the daemon")
-            .reject(None, rejected(reason))
+            .accept(rejected(reason))
             .await
             .expect("the daemon rejects the join");
     }
@@ -445,17 +445,15 @@ fn idle_now(bridge: &ScopedStackCopies) -> bool {
 }
 
 fn refused(reason: &str) -> Result<Value, ActionExit> {
-    Err(ActionExit::Failed(reason.to_owned()))
+    Err(ActionExit::Error(reason.to_owned()))
 }
 
 /// A call whose client stopped waiting for `subject`.
 fn stopped_waiting(subject: &str) -> Result<Value, ActionExit> {
+    let words = format!("stopped waiting; {subject} continues on the stack");
     Err(ActionExit::Cancelled(CancelledGoal {
-        result: json!({
-            "success": false,
-            "message": format!("stopped waiting; {subject} continues on the stack"),
-        }),
-        reason: None,
+        result: json!({ "success": false, "message": words }),
+        reason: words,
     }))
 }
 
@@ -1105,7 +1103,7 @@ async fn a_removal_takes_no_lock_and_a_cancel_stops_its_wait_only() {
         .next_goal(READINESS_TIMEOUT)
         .await
         .expect("the removal reaches the daemon")
-        .reject(None, rejected(DAEMON_REFUSAL))
+        .accept(rejected(DAEMON_REFUSAL))
         .await
         .expect("the daemon rejects the removal");
     assert_eq!(ended(removing).await, refused(DAEMON_REFUSAL));
@@ -1365,7 +1363,7 @@ fn a_failed_presence_read_fails_the_listing() {
     .expect_err("the listing fails");
     assert_eq!(
         error.to_string(),
-        peppy_mcp_runtime::ToolCallError::Failed(
+        peppy_mcp_runtime::ToolCallError::Error(
             "the live machines of the federation could not be read: the session is closed"
                 .to_owned()
         )
@@ -1764,6 +1762,10 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
         recorded[8].1,
         "the action failed: a copy `bravo` is already on the stack; choose another name"
     );
-    assert_eq!(recorded[10].1, "charlie (so101_sim) is on the stack");
+    assert_eq!(
+        recorded[10].1,
+        Value::Null,
+        "a completed call keeps nothing of its result"
+    );
     endpoint.stop().await;
 }

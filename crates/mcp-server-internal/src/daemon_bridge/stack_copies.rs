@@ -157,7 +157,7 @@ impl ScopedStackCopies {
             ),
         );
         let listed = listed.map_err(|error| {
-            ToolCallError::Failed(format!("the daemon did not list the stack: {error}"))
+            ToolCallError::Error(format!("the daemon did not list the stack: {error}"))
         })?;
         let machines = live_machines_or_refusal(machines)?;
         let options: Vec<Value> = self
@@ -213,10 +213,10 @@ impl ScopedStackCopies {
         window: Option<Duration>,
     ) -> Result<Value, ActionExit> {
         let input: JoinInput = parse_input(input)?;
-        let TypedJoin { copy, words } = self.typed_join(&input).map_err(ActionExit::Failed)?;
+        let TypedJoin { copy, words } = self.typed_join(&input).map_err(ActionExit::Error)?;
         let join = Arc::clone(&self.bridge.joins)
             .try_lock_owned()
-            .map_err(|_| ActionExit::Failed(STACK_BUSY_REASON.to_owned()))?;
+            .map_err(|_| ActionExit::Error(STACK_BUSY_REASON.to_owned()))?;
         let admission = Arc::clone(&self.bridge.admission).lock_owned().await;
         let change = Change::Addition {
             name: copy.name.clone(),
@@ -252,7 +252,7 @@ impl ScopedStackCopies {
     ) -> Result<Value, ActionExit> {
         let input: RemoveInput = parse_input(input)?;
         let name = CopyName::new(input.name.as_str())
-            .map_err(|error| ActionExit::Failed(error.to_string()))?;
+            .map_err(|error| ActionExit::Error(error.to_string()))?;
         let change = Change::Removal { name: name.clone() };
         let daemon = self.bridge.daemon.clone();
         let scope = Arc::clone(&self.scope);
@@ -326,7 +326,7 @@ impl ScopedStackCopies {
 /// The goal of a call, which the narrowed schema already checked.
 fn parse_input<T: serde::de::DeserializeOwned>(input: &Value) -> Result<T, ActionExit> {
     T::deserialize(input)
-        .map_err(|error| ActionExit::Failed(format!("the goal does not parse: {error}")))
+        .map_err(|error| ActionExit::Error(format!("the goal does not parse: {error}")))
 }
 
 /// The copies on the stack, or the refusal of a change that cannot read
@@ -349,7 +349,7 @@ pub(super) fn live_machines_or_refusal(
     read: peppylib::PeppyResult<std::collections::BTreeSet<String>>,
 ) -> Result<std::collections::BTreeSet<String>, ToolCallError> {
     read.map_err(|error| {
-        ToolCallError::Failed(format!(
+        ToolCallError::Error(format!(
             "the live machines of the federation could not be read: {error}"
         ))
     })
