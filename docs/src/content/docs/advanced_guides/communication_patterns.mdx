@@ -17,8 +17,8 @@ The choice comes down to two independent questions:
 | | Exchange | Initiated by | Lifecycle | Reach for it when |
 |---|---|---|---|---|
 | [Topics](/advanced_guides/topics/) | One-way stream from a producer to its consumers | The producer, whenever it has data | Continuous while the producer runs | Sensor readings, camera frames, state updates |
-| [Services](/advanced_guides/services/) | One request, one response | The consumer | One bounded exchange per call | Queries, toggles, quick one-shot computations |
-| [Actions](/advanced_guides/actions/) | Goal in, feedback stream out, result on completion | The consumer fires a goal; the producer drives it to an end | A discrete job with an explicit start, end, and cancel | Navigation, arm movements, calibration runs |
+| [Services](/advanced_guides/services/) | One request, one response or one error reply | The consumer | One bounded exchange per call | Queries, toggles, quick one-shot computations |
+| [Actions](/advanced_guides/actions/) | Goal in, feedback stream out, result on completion | The consumer fires a goal; the producer drives it to an end | A discrete job with an explicit start, end, and cancel; it ends when its sender is gone | Navigation, arm movements, calibration runs |
 | [Pairing](/advanced_guides/pairing/) | Two independent one-way streams under one two-role contract | Either side, whenever it has data | Continuous while both instances live; dissolves when either dies | Inner control loops between two specific instances |
 | [Datastore](/advanced_guides/datastore/) | Write a small value, read it back later | Writer and reader, at independent times | The value persists on the core node until overwritten or removed; a key an instance owns through `store_exclusive` is removed when its owner's process ends | Calibration results and other values that outlive the node that wrote them |
 
@@ -34,6 +34,8 @@ The same choices, phrased the way the requirement usually sounds:
 Two boundaries account for most wrong first guesses:
 
 - **Service or action?** Duration and observability, not importance. If the caller only needs a result and the work is quick, a service is enough. The moment you want progress updates or a cancel button, it is an action. A node can drive several goals of the same action concurrently; its goal handler sets the acceptance policy.
+
+Services and actions say why they fail in the same way. An error reply of a service, and a refused or failed goal, give a [failure kind](/advanced_guides/actions/#how-a-goal-ends) and a message, from the closed set that peppy and the contract of the member declare. So a client can try again, plan again or call a person without reading a text.
 - **Action or pairing?** Whether the exchange ends. "Do this and report when done" is an action. "Keep exchanging state for as long as we are both up" is a pairing. The two coexist happily on the same nodes; see [Pairing vs. actions](/advanced_guides/pairing/#pairing-vs-actions).
 
 ## How is the peer chosen?
