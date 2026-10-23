@@ -170,7 +170,7 @@ where
         )));
     }
     let request =
-        U::decode_request(&context.message().payload_bytes()).map_err(|err| refusal(err))?;
+        U::decode_request(&context.message().payload_bytes()).map_err(refusal)?;
     debug!(
         service = U::SERVICE,
         link_id = %request.link_id(),

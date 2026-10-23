@@ -488,12 +488,12 @@ impl MessengerHandle {
         };
         let identity = (client.core_node.clone(), client.instance_id.clone());
         let mut tokens = self.client_presence.tokens.lock().await;
-        if !tokens.contains_key(&identity) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = tokens.entry(identity) {
             let token = {
                 let messenger = self.messenger.lock().await;
                 messenger.declare_client_presence(&client).await?
             };
-            tokens.insert(identity, token);
+            entry.insert(token);
         }
         Ok(client)
     }
