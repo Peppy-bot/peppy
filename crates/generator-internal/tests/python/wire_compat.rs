@@ -330,7 +330,7 @@ if __name__ == "__main__":
     // tear down a pending task under parallel load.
     let consumer_main = r#"
 import asyncio
-from peppygen import NodeBuilder, QoSProfile
+from peppygen import NodeBuilder
 from peppygen.exposed_services import result_received
 from peppygen.consumed_actions.producer import perform_scan as producer_perform_scan
 
@@ -338,7 +338,7 @@ async def consume_action(node_runner, done):
     request = producer_perform_scan.GoalRequest(scan_id=7)
     producer = producer_perform_scan.bound_producer(node_runner)
     goal = await producer_perform_scan.ActionHandle.fire_goal(
-        node_runner, producer, request, 5.0, QoSProfile.SensorData
+        node_runner, producer, request, 5.0
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
