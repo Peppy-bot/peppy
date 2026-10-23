@@ -6,10 +6,12 @@ peppy-shared/peppylib-rs/tests/services.rs.
 """
 
 import asyncio
+import re
 
 import pytest
 
 from peppylib import (
+    FailureError,
     MessengerHandle,
     ProducerRef,
     SenderTarget,
@@ -158,9 +160,9 @@ async def test_service_poll_rejects_invalid_timeout():
             )
 
 
-@pytest.mark.asyncio
-async def test_service_handler_exception_returns_service_error():
-    """Handler exceptions should be returned as protocol service errors, not timeouts."""
+async def _poll_once_against(handler, timeout: float = 2.0):
+    """Answers one request with `handler` and polls the service once. Returns
+    the poll's exception, or raises when the poll succeeds."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
@@ -172,13 +174,9 @@ async def test_service_handler_exception_returns_service_error():
             SenderTarget.node(NODE_NAME, NODE_TAG),
             SERVICE_NAME,
         )
+        handled = asyncio.ensure_future(service.handle_next_request(handler))
 
-        def failing_handler(_request):
-            raise RuntimeError("handler boom")
-
-        handler = asyncio.ensure_future(service.handle_next_request(failing_handler))
-
-        with pytest.raises(RuntimeError, match="handler boom"):
+        with pytest.raises(FailureError) as raised:
             await ServiceMessenger.poll(
                 client_handle,
                 CORE_NODE,
@@ -187,11 +185,28 @@ async def test_service_handler_exception_returns_service_error():
                 SERVICE_NAME,
                 ProducerRef(CORE_NODE, INSTANCE_ID),
                 REQUEST_PAYLOAD,
-                2.0,
+                timeout,
             )
 
-        handled = await asyncio.wait_for(handler, timeout=2.0)
-        assert handled is True
+        assert await asyncio.wait_for(handled, timeout=timeout) is True
+        return raised.value
+
+
+@pytest.mark.asyncio
+async def test_a_raised_failure_error_gives_an_error_reply_of_its_kind():
+    """A handler that raises FailureError(kind, message) answers the caller
+    with an error reply of that kind and message, which the caller's poll
+    raises as a FailureError."""
+
+    def refusing_handler(_request):
+        raise FailureError("unreachable", "no plan to the target")
+
+    error = await _poll_once_against(refusing_handler)
+    assert error.args == ("unreachable", "no plan to the target")
+
+
+def _raise_in_handler(_request):
+    raise RuntimeError("handler boom")
 
 
 async def _raise_in_async_handler(_request):
@@ -202,50 +217,35 @@ async def _return_text_from_async_handler(_request):
     return "not bytes"
 
 
+def _raise_an_invalid_kind(_request):
+    raise FailureError("Not A Kind", "never sent")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("async_handler", "reason"),
+    ("handler", "message"),
     [
-        (_raise_in_async_handler, "returned error: RuntimeError: async handler boom$"),
+        (_raise_in_handler, "^RuntimeError: handler boom$"),
+        (_raise_in_async_handler, "^RuntimeError: async handler boom$"),
         (
             _return_text_from_async_handler,
-            "returned error: TypeError: Can't extract `str` to `Vec`$",
+            "^TypeError: Can't extract `str` to `Vec`$",
         ),
+        (_raise_an_invalid_kind, "invalid failure kind name"),
     ],
-    ids=["raises", "returns_text"],
+    ids=["raises", "async_raises", "async_returns_text", "invalid_kind"],
 )
-async def test_async_service_handler_failure_returns_service_error(
-    async_handler, reason
+async def test_any_other_handler_failure_gives_an_attempt_failed_error_reply(
+    handler, message
 ):
-    """An async handler that raises, or resolves to something other than
-    bytes, answers the caller with a service error carrying the reason, as a
-    synchronous handler does."""
-    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
-        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
-        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
-
-        service = await ServiceMessenger.listen(
-            server_handle,
-            CORE_NODE,
-            INSTANCE_ID,
-            SenderTarget.node(NODE_NAME, NODE_TAG),
-            SERVICE_NAME,
-        )
-        handler = asyncio.ensure_future(service.handle_next_request(async_handler))
-
-        with pytest.raises(RuntimeError, match=reason):
-            await ServiceMessenger.poll(
-                client_handle,
-                CORE_NODE,
-                INSTANCE_ID,
-                SenderTarget.node(NODE_NAME, NODE_TAG),
-                SERVICE_NAME,
-                ProducerRef(CORE_NODE, INSTANCE_ID),
-                REQUEST_PAYLOAD,
-                5.0,
-            )
-
-        assert await handler is True
+    """A handler that raises anything but a valid FailureError, or resolves to
+    something other than bytes, answers the caller with an error reply of the
+    kind `attempt_failed` that names what went wrong, as fast as a response:
+    never a timeout."""
+    error = await _poll_once_against(handler)
+    kind, text = error.args
+    assert kind == "attempt_failed"
+    assert re.search(message, text), text
 
 
 @pytest.mark.asyncio

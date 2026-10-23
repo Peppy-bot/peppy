@@ -13,16 +13,19 @@ import pytest
 from peppylib import (
     ActionMessenger,
     ConcurrentAction,
+    FailureError,
+    FeedbackOverflowError,
     MessengerHandle,
     ProducerRef,
-    QoSProfile,
     SenderTarget,
     ZenohdInstance,
 )
 
 # Wire tags returned by the typed action replies (see peppylib::messaging).
 RESULT_STATUS_COMPLETED = 0
+RESULT_STATUS_CANCELLED = 1
 RESULT_STATUS_ABANDONED = 2
+RESULT_STATUS_FAILED = 4
 CANCEL_STATE_SIGNALLED = 0
 
 CORE_NODE = "test_core"
@@ -37,20 +40,15 @@ RESULT_PAYLOAD = b"action result"
 TEST_PRODUCER = ProducerRef(CORE_NODE, INSTANCE_ID)
 
 
-def wrap_goal_ack(body: bytes, accepted: bool = True, reason: str = "") -> bytes:
-    """Frame a goal reply the way the engine does: [accepted][reason_len u16 BE][reason][body].
+def wrap_goal_accepted(response: bytes) -> bytes:
+    """Frame the answer of an accepted goal the way the engine does: [1][response].
 
     Raw goal-service handlers bypass PendingGoal (which applies this framing
     itself), so tests driving the service directly must wrap their replies.
-    Mirrors peppylib's Rust wrap_goal_ack and independently pins the layout.
+    Mirrors peppylib's Rust wrap_goal_accepted and independently pins the
+    layout.
     """
-    reason_bytes = reason.encode()
-    return (
-        bytes([1 if accepted else 0])
-        + len(reason_bytes).to_bytes(2, "big")
-        + reason_bytes
-        + body
-    )
+    return bytes([1]) + response
 
 
 async def _expose_test_action(server_handle: MessengerHandle) -> ConcurrentAction:
@@ -71,10 +69,12 @@ async def _send_test_goal(
     payload: bytes = GOAL_PAYLOAD,
     target: ProducerRef = TEST_PRODUCER,
     timeout_secs: float = 2.0,
+    feedback_bound: int | None = None,
 ):
     """Send a goal for the test action to `target`. No caller needs a settle
     sleep first: send_goal retries a cold-start miss within its timeout until
-    the goal service queryable propagates."""
+    the goal service queryable propagates. `feedback_bound` None takes the
+    default bound of peppylib."""
     return await ActionMessenger.send_goal(
         client_handle,
         CORE_NODE,
@@ -83,8 +83,8 @@ async def _send_test_goal(
         ACTION_NAME,
         target,
         payload,
-        QoSProfile.Reliable,
-        timeout_secs,
+        feedback_bound=feedback_bound,
+        goal_timeout_secs=timeout_secs,
     )
 
 
@@ -115,7 +115,7 @@ async def test_action_messenger_communication():
         goal_handle = await _send_test_goal(client_handle)
 
         assert goal_handle.accepted
-        assert goal_handle.reason is None
+        assert goal_handle.refusal_kind is None
         assert goal_handle.goal_reply_body == GOAL_RESPONSE_PAYLOAD
         assert goal_handle.core_node == CORE_NODE
         assert goal_handle.instance_id == INSTANCE_ID
@@ -221,7 +221,7 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
         goal_handle = await _send_test_goal(client_handle)
 
         assert goal_handle.accepted
-        assert goal_handle.reason is None
+        assert goal_handle.refusal_kind is None
         assert goal_handle.goal_reply_body == GOAL_RESPONSE_PAYLOAD
 
         # The goal is live: first feedback arrives normally.
@@ -294,7 +294,7 @@ async def test_send_goal_honors_target_pair():
         # Pinned to the producer's exact pair: the goal goes through.
         goal_handle = await _send_test_goal(client_handle)
         assert goal_handle.accepted
-        assert goal_handle.reason is None
+        assert goal_handle.refusal_kind is None
         assert goal_handle.goal_reply_body == GOAL_RESPONSE_PAYLOAD
 
         await server_task
@@ -349,7 +349,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
                     bytes(req.message.payload),
                 )
                 captured[0] = publisher
-                return wrap_goal_ack(response)
+                return wrap_goal_accepted(response)
 
             await action.goal_service.handle_next_request(on_goal)
             return captured[0]
@@ -369,8 +369,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             "move",
             ProducerRef(CORE_NODE, INSTANCE_ID),
             b"native_goal",
-            QoSProfile.Reliable,
-            2.0,
+            goal_timeout_secs=2.0,
         )
         assert native_goal.accepted
         assert native_goal.goal_reply_body == native_goal_response
@@ -383,8 +382,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             "move",
             ProducerRef(CORE_NODE, INSTANCE_ID),
             b"iface_goal",
-            QoSProfile.Reliable,
-            2.0,
+            goal_timeout_secs=2.0,
         )
         assert iface_goal.accepted
         assert iface_goal.goal_reply_body == iface_goal_response
@@ -394,14 +392,14 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
 
 
 @pytest.mark.asyncio
-async def test_reject_then_accept_through_concurrent_action():
-    """A rejected goal is still answered (the client gets its goal response)
-    without creating a context, and the server keeps serving so a later goal is
-    accepted and its typed result routes back by goal_id.
+async def test_refuse_then_accept_through_concurrent_action():
+    """A refused goal is answered with its failure kind and message, and no
+    goal response, without creating a context; the server keeps serving so
+    a later goal is accepted and its typed result routes back by goal_id.
 
-    Python mirror of `concurrent_action_reject_then_accept` in
+    Python mirror of `concurrent_action_refuse_then_accept` in
     peppy-shared/peppylib-rs/tests/actions.rs. Guards the binding's
-    accept/reject mapping and the typed-result framing for the engine path,
+    accept/refuse mapping and the typed-result framing for the engine path,
     which the Rust tests do not cover from Python.
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
@@ -411,11 +409,11 @@ async def test_reject_then_accept_through_concurrent_action():
         action = await _expose_test_action(server_handle)
 
         async def server():
-            # First goal is rejected; the second is accepted and completed.
-            rejected = await action.recv_next_goal()
-            assert rejected is not None
-            assert rejected.request_bytes == b"reject"
-            await rejected.reject("resource is busy", b"rejected")
+            # First goal is refused; the second is accepted and completed.
+            refused = await action.recv_next_goal()
+            assert refused is not None
+            assert refused.request_bytes == b"refuse"
+            await refused.refuse("resource_unavailable", "resource is busy")
 
             accepted = await action.recv_next_goal()
             assert accepted is not None
@@ -425,20 +423,246 @@ async def test_reject_then_accept_through_concurrent_action():
 
         server_task = asyncio.create_task(server())
 
-        # A rejected goal still resolves with the server's goal response.
-        goal_a = await _send_test_goal(client_handle, payload=b"reject")
+        # A refused goal resolves with its failure and no goal response.
+        goal_a = await _send_test_goal(client_handle, payload=b"refuse")
         assert not goal_a.accepted
-        assert goal_a.reason == "resource is busy"
-        assert goal_a.goal_reply_body == b"rejected"
+        assert goal_a.refusal_kind == "resource_unavailable"
+        assert goal_a.refusal_message == "resource is busy"
+        assert goal_a.goal_reply_body == b""
 
-        # The server kept serving past the rejection: the next goal is accepted
+        # The server kept serving past the refusal: the next goal is accepted
         # and its typed Completed result routes back.
         goal_b = await _send_test_goal(client_handle, payload=b"B")
         assert goal_b.accepted
-        assert goal_b.reason is None
+        assert goal_b.refusal_kind is None
+        assert goal_b.refusal_message is None
         assert goal_b.goal_reply_body == b"accepted"
         result_b = await ActionMessenger.request_result(client_handle, goal_b, 2.0)
         assert result_b.status == RESULT_STATUS_COMPLETED
         assert result_b.body == b"result:B"
+        assert result_b.failure_kind is None
+        assert result_b.cancel_reason is None
 
         await asyncio.wait_for(server_task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_refusal_with_an_invalid_kind_name_raises_before_the_wire():
+    """A kind that is not a failure kind name raises ValueError in the
+    provider: nothing reaches the wire, and the goal stays pending until the
+    provider answers it with a valid kind."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        action = await _expose_test_action(server_handle)
+
+        async def server():
+            pending = await action.recv_next_goal()
+            assert pending is not None
+            with pytest.raises(ValueError, match="invalid failure kind name"):
+                await pending.refuse("Not A Kind", "never sent")
+            await pending.refuse("rejected", "the goal asks too much")
+
+        server_task = asyncio.create_task(server())
+
+        goal = await _send_test_goal(client_handle)
+        assert not goal.accepted
+        assert goal.refusal_kind == "rejected"
+        assert goal.refusal_message == "the goal asks too much"
+
+        await asyncio.wait_for(server_task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_failed_goal_gives_its_kind_and_message_and_no_result():
+    """`fail` ends the goal with the status failed: the result reply carries
+    the failure kind and message, and no result body."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        action = await _expose_test_action(server_handle)
+
+        async def server():
+            pending = await action.recv_next_goal()
+            assert pending is not None
+            ctx = await pending.accept(GOAL_RESPONSE_PAYLOAD)
+            await ctx.fail("unreachable", "no plan to the target")
+
+        server_task = asyncio.create_task(server())
+
+        goal = await _send_test_goal(client_handle)
+        assert goal.accepted
+        result = await ActionMessenger.request_result(client_handle, goal, 2.0)
+        assert result.status == RESULT_STATUS_FAILED
+        assert result.failure_kind == "unreachable"
+        assert result.failure_message == "no plan to the target"
+        assert result.body == b""
+        assert result.cancel_reason is None
+
+        await asyncio.wait_for(server_task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_goal_gives_its_reason_and_result():
+    """A cancel request reaches the worker with the cause "caller"; the
+    worker ends the goal cancelled for a reason, and the client reads the
+    reason with the result."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        action = await _expose_test_action(server_handle)
+
+        async def server():
+            pending = await action.recv_next_goal()
+            assert pending is not None
+            ctx = await pending.accept(GOAL_RESPONSE_PAYLOAD)
+            assert ctx.cancel_cause is None
+            await ctx.cancel_signal()
+            assert ctx.cancel_cause == "caller"
+            await ctx.complete_cancelled("stopped by the operator", b"partial")
+
+        server_task = asyncio.create_task(server())
+
+        goal = await _send_test_goal(client_handle)
+        cancel_reply = await ActionMessenger.cancel_goal(client_handle, goal, 2.0)
+        assert cancel_reply.state == CANCEL_STATE_SIGNALLED
+
+        result = await ActionMessenger.request_result(client_handle, goal, 2.0)
+        assert result.status == RESULT_STATUS_CANCELLED
+        assert result.cancel_reason == "stopped by the operator"
+        assert result.body == b"partial"
+        assert result.failure_kind is None
+
+        await asyncio.wait_for(server_task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_the_goal_of_a_sender_that_is_gone_receives_its_cancel_signal():
+    """A provider cancels the goal of a sender that is gone: once the client
+    releases its goal handle and its session, the goal receives its cancel
+    signal with the cause "sender_gone", after the sender grace of the action
+    (zero here). Python mirror of
+    `the_goal_of_a_sender_that_is_gone_receives_its_cancel_signal` in
+    peppy-shared/peppylib-rs/src/messaging/actions.rs."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        action = await _expose_test_action(server_handle)
+        await action.set_sender_grace(0.0)
+
+        async def server():
+            pending = await action.recv_next_goal()
+            assert pending is not None
+            ctx = await pending.accept(GOAL_RESPONSE_PAYLOAD)
+            await ctx.cancel_signal()
+            cause = ctx.cancel_cause
+            await ctx.complete_cancelled("its sender is gone", b"")
+            return cause
+
+        server_task = asyncio.create_task(server())
+
+        goal = await _send_test_goal(client_handle)
+        assert goal.accepted
+
+        # The client goes away: its goal handle and its session.
+        del goal, client_handle
+        gc.collect()
+
+        cause = await asyncio.wait_for(server_task, timeout=30.0)
+        assert cause == "sender_gone"
+
+
+@pytest.mark.asyncio
+async def test_feedback_is_kept_in_full_up_to_the_bound():
+    """The handle keeps every feedback message until it is read, up to its
+    bound: the server publishes 1500 messages, more than any buffer of the
+    newest 128 or 1024 messages holds, and ends the goal before the client
+    reads one. The client then reads all of them, in order, and the end of
+    the stream."""
+    message_count = 1500
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        action = await _expose_test_action(server_handle)
+
+        async def server():
+            pending = await action.recv_next_goal()
+            assert pending is not None
+            ctx = await pending.accept(GOAL_RESPONSE_PAYLOAD)
+            for index in range(message_count):
+                await ctx.publish_feedback(f"feedback-{index}".encode())
+            await ctx.complete(RESULT_PAYLOAD)
+
+        server_task = asyncio.create_task(server())
+
+        goal = await _send_test_goal(client_handle, feedback_bound=2 * message_count)
+        result = await ActionMessenger.request_result(client_handle, goal, 30.0)
+        assert result.status == RESULT_STATUS_COMPLETED
+
+        for index in range(message_count):
+            feedback = await asyncio.wait_for(goal.on_next_feedback(), timeout=10.0)
+            assert feedback.payload == f"feedback-{index}".encode()
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(goal.on_next_feedback(), timeout=10.0)
+
+        await asyncio.wait_for(server_task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_feedback_overflow_cancels_the_goal_and_raises():
+    """A caller that falls behind by more unread messages than its bound
+    cancels the goal, and reads the loss as FeedbackOverflowError. The
+    server publishes more messages than the bound and ends the goal only on
+    its cancel signal, so the goal ends only through the cancel of the
+    overflow."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        action = await _expose_test_action(server_handle)
+
+        async def server():
+            pending = await action.recv_next_goal()
+            assert pending is not None
+            ctx = await pending.accept(GOAL_RESPONSE_PAYLOAD)
+            for index in range(20):
+                await ctx.publish_feedback(f"feedback-{index}".encode())
+            await ctx.cancel_signal()
+            assert ctx.cancel_cause == "caller"
+            await ctx.complete_cancelled("cancelled by its caller", b"")
+
+        server_task = asyncio.create_task(server())
+
+        goal = await _send_test_goal(client_handle, feedback_bound=5)
+        result = await ActionMessenger.request_result(client_handle, goal, 30.0)
+        assert result.status == RESULT_STATUS_CANCELLED
+        assert result.cancel_reason == "cancelled by its caller"
+
+        with pytest.raises(FeedbackOverflowError):
+            await asyncio.wait_for(goal.on_next_feedback(), timeout=10.0)
+
+        await asyncio.wait_for(server_task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_send_goal_rejects_a_zero_feedback_bound():
+    """A feedback bound holds one message or more."""
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        with pytest.raises(ValueError, match="feedback_bound"):
+            await _send_test_goal(client_handle, feedback_bound=0)
+
+
+@pytest.mark.asyncio
+async def test_failure_error_carries_the_kind_and_the_message():
+    """FailureError is a RuntimeError whose args are the failure kind and the
+    message, so a service handler can raise it and a caller can read it."""
+    error = FailureError("unreachable", "no plan to the target")
+    assert isinstance(error, RuntimeError)
+    assert error.args == ("unreachable", "no plan to the target")
