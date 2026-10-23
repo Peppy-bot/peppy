@@ -149,9 +149,12 @@ async fn run_clock_publisher(
 ///
 /// Each spawned node runs a watchdog subscribed to this topic; if the beats go
 /// silent past the configured grace period the node shuts itself down, so an
-/// uncatchable daemon death (SIGKILL / OOM / crash) does not leave orphans. The
-/// payload is a constant `ClockTick` reused purely as a cheap carrier; the
-/// node only cares that a message arrived, not its value.
+/// uncatchable daemon death (SIGKILL / OOM / crash) does not leave orphans.
+/// Each beat carries the per-boot `instance_id` of this daemon process in its
+/// key, and a node also shuts itself down at the first beat of another
+/// instance id: a new daemon, whose stack does not hold the node. The payload
+/// is a constant `ClockTick` reused purely as a cheap carrier; the node only
+/// reads the arrival of a beat and the instance id in its key, not its value.
 ///
 /// `SensorData` QoS (best-effort, newest-wins, no back-pressure) is correct for
 /// a beacon: a missed beat is harmless as long as the next arrives inside grace.
@@ -181,8 +184,9 @@ async fn run_heartbeat_publisher(
     interval: Duration,
     cancel: CancellationToken,
 ) -> Result<()> {
-    // The value is never read by the node (only the message's arrival matters)
-    // so encode the constant payload once, outside the loop.
+    // The value is never read by the node (only the message's arrival and the
+    // instance id in its key matter) so encode the constant payload once,
+    // outside the loop.
     let payload = ClockTick::new(ClockTick::MIN_TIME_NS).encode()?;
     let mut ticker = tokio::time::interval(interval);
     // A late beat is uninteresting; skip catch-up bursts after a stall.
