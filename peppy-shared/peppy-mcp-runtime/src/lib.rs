@@ -47,6 +47,7 @@ pub mod bridge;
 mod call_record;
 pub mod clock;
 pub mod error;
+mod failure;
 pub mod fleet;
 pub mod representation;
 pub mod server;
@@ -55,6 +56,7 @@ pub mod tasks;
 
 pub use clock::Clock;
 pub use error::{BuildError, PublishError, ToolCallError};
+pub use failure::ProviderFailure;
 pub use fleet::{FleetMember, FleetSource, MemberAddress};
 pub use peppy_mcp_catalog as catalog;
 pub use server::{

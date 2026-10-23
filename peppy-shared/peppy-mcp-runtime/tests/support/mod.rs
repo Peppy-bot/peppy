@@ -11,10 +11,11 @@
 //! subset of it, so unused-item warnings are suppressed for the module.
 #![allow(dead_code)]
 
+use peppy_config_model::failure_kind::FailureKindName;
 use peppy_mcp_catalog::ExposureBundle;
 use peppy_mcp_runtime::{
     ActionContext, ActionExit, CancelledGoal, Clock, ExposureServer, ExposureServerBuilder,
-    ExposureSet, ResourceIngest, ToolCall,
+    ExposureSet, ProviderFailure, ResourceIngest, ToolCall,
 };
 use rmcp::model::{
     ClientCapabilities, ClientConfig, DetailedTask, GetTaskParams, ProgressNotificationParam,
@@ -336,9 +337,14 @@ pub fn cancelled_episode() -> Value {
     json!({ "frames": 0 })
 }
 
+/// The reason a recorder goal that its client cancelled ends with: the
+/// words of a peppylib provider.
+pub const CANCELLED_BY_ITS_CALLER: &str = "cancelled by its caller";
+
 /// The goal behind both recorder actions: reports `<verb> \`<episode>\``
 /// as feedback, parks on cancellation for `wait_for_cancel` and then ends
-/// cancelled with [`cancelled_episode`], completes otherwise.
+/// cancelled with [`cancelled_episode`] for [`CANCELLED_BY_ITS_CALLER`],
+/// completes otherwise.
 async fn episode_goal(
     verb: &str,
     input: Value,
@@ -353,19 +359,23 @@ async fn episode_goal(
         context.cancel_requested().await;
         return Err(ActionExit::Cancelled(CancelledGoal {
             result: cancelled_episode(),
-            reason: None,
+            reason: CANCELLED_BY_ITS_CALLER.to_owned(),
         }));
     }
     Ok(json!({ "frames": 120 }))
 }
 
 /// Asserts that `task` ended as a task does when its goal ends cancelled:
-/// `cancelled`, its status message saying so with [`cancelled_episode`].
+/// `cancelled`, its status message saying so with the reason and
+/// [`cancelled_episode`].
 pub fn assert_ended_cancelled(task: &DetailedTask) {
     assert_eq!(task.status(), TaskStatus::Cancelled, "{:?}", task.payload);
     assert_eq!(
         task.task.status_message,
-        Some(format!("the action was cancelled: {}", cancelled_episode()))
+        Some(format!(
+            "the action was cancelled: {CANCELLED_BY_ITS_CALLER}: {}",
+            cancelled_episode()
+        ))
     );
 }
 
@@ -444,12 +454,19 @@ fn with_camera_tools(
         .with_tool("front_camera.set_brightness", |call: ToolCall| async move {
             let value = call.input["value"].as_i64().expect("validated integer");
             if value == 13 {
-                return Err(peppy_mcp_runtime::ToolCallError::Failed(
-                    "13 is reserved".to_string(),
-                ));
+                return Err(peppy_mcp_runtime::ToolCallError::Failed(reserved_value()));
             }
             Ok(json!({ "applied": true }))
         })
+}
+
+/// The error reply of `front_camera.set_brightness` for the value 13: a
+/// kind of the camera's contract and its message.
+pub fn reserved_value() -> ProviderFailure {
+    ProviderFailure::new(
+        FailureKindName::parse("reserved_value").expect("a valid failure kind name"),
+        "13 is reserved",
+    )
 }
 
 /// Binds an OS-assigned loopback port and serves the servers as one set.

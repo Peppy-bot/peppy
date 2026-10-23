@@ -3796,6 +3796,7 @@ dependencies = [
  "image",
  "indexmap 2.14.2",
  "jsonschema",
+ "peppy-config-model",
  "peppy-mcp-catalog",
  "rmcp",
  "serde",
