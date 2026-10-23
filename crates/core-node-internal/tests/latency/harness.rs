@@ -43,6 +43,9 @@ use crate::helpers::{
 // Each scenario gets its own ephemeral router, so reusing these names across
 // scenarios is safe.
 const CORE: &str = "bench_core";
+/// The per-boot instance id of the daemon that the node configs name. No
+/// daemon runs in a scenario, so nothing beats under it.
+const CORE_INSTANCE: &str = "bench-core-boot";
 const TAG: &str = "v1";
 const DRIVER_NODE: &str = "driver";
 const DRIVER_INST: &str = "driver_inst";
@@ -382,6 +385,7 @@ fn write_runtime_config(
         node_name,
         TAG,
         CORE,
+        CORE_INSTANCE,
     )
     .expect("build runtime config");
     let path = cfg_dir.join(format!("{node_name}_runtime.json5"));

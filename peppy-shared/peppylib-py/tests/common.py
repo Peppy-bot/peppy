@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 TEST_NODE_NAME = "test_node"
 TEST_NODE_TAG = "v1"
 TEST_INSTANCE_ID = "test_instance"
+# The per-boot instance id of the daemon that a test runtime config names. No
+# daemon runs in these tests, so nothing beats under it.
+TEST_CORE_NODE_INSTANCE_ID = "test-core-boot"
 TEST_FREQUENCY_HZ = 10.0
 
 PEPPY_CONFIG = """{
@@ -133,6 +136,7 @@ def create_runtime_config(
         "node_name": node_name,
         "node_tag": node_tag,
         "bound_core_node": core_node,
+        "bound_core_node_instance_id": TEST_CORE_NODE_INSTANCE_ID,
         "node_instance": {
             "instance_id": instance_id,
             "arguments": arguments,

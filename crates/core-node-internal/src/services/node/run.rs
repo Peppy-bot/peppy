@@ -537,11 +537,12 @@ impl node_stack::OutputReaderHooks for FeedbackSync {
 ///
 /// The ONLY place a `RuntimeConfig` is built from a request. Everything the
 /// requester is not allowed to choose is supplied here from this daemon's own
-/// state: the messaging endpoint of its router and its own core node name. A
-/// requester therefore cannot name an endpoint
-/// or a daemon at all, which is what makes "a daemon owns the runtime identity
-/// of every node it spawns" checkable in one function rather than trusted
-/// across three call sites.
+/// state: the messaging endpoint of its router, its own core node name, and the
+/// per-boot instance id that its heartbeat and presence token carry, which the
+/// node's daemon watchdog follows. A requester therefore cannot name an
+/// endpoint or a daemon at all, which is what makes "a daemon owns the
+/// runtime identity of every node it spawns" checkable in one function rather
+/// than trusted across three call sites.
 ///
 /// The daemon-global session settings (`apply_daemon_defaults`) and the
 /// container gateway rewrite are applied later, in `process_node_run`, once
@@ -567,6 +568,8 @@ pub(crate) async fn assemble_runtime_config(
         goal.node_name.as_str(),
         goal.tag.as_str(),
         action_context.core_node_name.as_str(),
+        // The daemon calls its nodes under its per-boot instance id.
+        action_context.caller_instance_id.as_str(),
     )
     .map_err(|e| format!("failed to assemble runtime config: {e}"))
 }
@@ -2926,6 +2929,7 @@ mod tests {
             "camera",
             "v1",
             "core_node",
+            "core-node-boot",
         )
         .expect("valid test runtime config")
     }

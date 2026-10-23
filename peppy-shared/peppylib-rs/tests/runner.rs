@@ -17,6 +17,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const TEST_CORE_NODE: &str = "test_core";
+/// The per-boot instance id of the daemon that the daemon-mode configs name.
+/// No daemon runs in these tests, so nothing beats under it.
+const TEST_CORE_NODE_INSTANCE_ID: &str = "test-core-boot";
 const TEST_NODE_NAME: &str = "test_node";
 const TEST_INSTANCE_ID: &str = "test_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
@@ -236,6 +239,7 @@ async fn start_daemon_stack_with_lifecycle(
         TEST_NODE_NAME,
         "v1",
         TEST_CORE_NODE,
+        TEST_CORE_NODE_INSTANCE_ID,
     )
     .expect("runtime config should build");
     configure(&mut runtime_config.lifecycle);

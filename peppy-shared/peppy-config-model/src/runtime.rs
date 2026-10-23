@@ -488,8 +488,8 @@ impl NodeInstanceConfig {
 /// would let the requester dictate the node's runtime identity.
 ///
 /// This is what travels on a `node_run` goal. It deliberately carries no
-/// messaging endpoint, no `bound_core_node`, and no resolved framework
-/// values: a daemon owns the runtime identity of every node it spawns, so
+/// messaging endpoint, no `bound_core_node` or instance id of it, and no
+/// resolved framework values: a daemon owns the runtime identity of every node it spawns, so
 /// those are supplied by the daemon that does the spawning, on every path.
 /// A federated launch makes the reason concrete (a coordinator-assembled
 /// endpoint names the coordinator's own router, which no node on a peer can
@@ -687,6 +687,11 @@ pub struct RuntimeConfig {
     pub node_name: Name,
     pub node_tag: Name,
     pub bound_core_node: Name,
+    /// The per-boot instance id of the daemon process that spawned the node:
+    /// the id its `daemon_heartbeat` beats and its presence token carry. A
+    /// daemon draws a new one each time it starts, so the node's daemon
+    /// watchdog tells its own daemon from a new daemon of the same core node.
+    pub bound_core_node_instance_id: Name,
     pub node_instance: NodeInstanceConfig,
     /// Peer-discovery settings. Defaulted, and omitted from serialized configs
     /// when they hold the default, so a config without a `discovery` block
@@ -709,6 +714,7 @@ impl RuntimeConfig {
         node_name: impl Into<String>,
         node_tag: impl Into<String>,
         bound_core_node: impl Into<String>,
+        bound_core_node_instance_id: impl Into<String>,
     ) -> Result<Self> {
         Ok(Self {
             messaging_host: messaging_host.to_owned(),
@@ -717,6 +723,7 @@ impl RuntimeConfig {
             node_name: Name::new(node_name.into())?,
             node_tag: Name::new(node_tag.into())?,
             bound_core_node: Name::new(bound_core_node.into())?,
+            bound_core_node_instance_id: Name::new(bound_core_node_instance_id.into())?,
             discovery: DiscoveryConfig::default(),
             lifecycle: LifecycleRuntimeConfig::default(),
         })
@@ -798,6 +805,7 @@ mod tests {
                 node_name: "camera",
                 node_tag: "v1",
                 bound_core_node: "core_node",
+                bound_core_node_instance_id: "core_node_boot",
                 {extra_fields}
             }}"#
         )
@@ -1159,6 +1167,25 @@ mod tests {
         );
     }
 
+    /// The node's daemon watchdog needs the instance id of the daemon that
+    /// spawned it: a runtime config without one, or with one that is not a
+    /// name, does not parse.
+    #[test]
+    fn runtime_config_requires_the_instance_id_of_its_core_node() {
+        let without_instance_id = runtime_config_json5(CAMERA_FRONT_INSTANCE, "")
+            .replace(r#"bound_core_node_instance_id: "core_node_boot","#, "");
+        assert!(
+            serde_json5::from_str::<RuntimeConfig>(&without_instance_id).is_err(),
+            "a runtime config must name the instance id of its core node"
+        );
+        let invalid_instance_id = runtime_config_json5(CAMERA_FRONT_INSTANCE, "")
+            .replace(r#""core_node_boot""#, r#""not a name""#);
+        assert!(
+            serde_json5::from_str::<RuntimeConfig>(&invalid_instance_id).is_err(),
+            "the instance id of the core node must be a name"
+        );
+    }
+
     #[test]
     fn writes_launch_config_and_creates_parent_dir() {
         let dir = TempDir::new().unwrap();
@@ -1177,6 +1204,7 @@ mod tests {
         assert_eq!(parsed.node_name, "camera");
         assert_eq!(parsed.node_instance.instance_id, "camera_front");
         assert_eq!(parsed.bound_core_node, "core_node");
+        assert_eq!(parsed.bound_core_node_instance_id, "core_node_boot");
         assert_eq!(
             parsed.node_instance.instance_id,
             config.node_instance.instance_id
@@ -1479,7 +1507,8 @@ mod tests {
                 },
                 node_name: "sim_engine",
                 node_tag: "v1",
-                bound_core_node: "core_node"
+                bound_core_node: "core_node",
+                bound_core_node_instance_id: "core_node_boot"
             }"#,
         )
         .unwrap();
