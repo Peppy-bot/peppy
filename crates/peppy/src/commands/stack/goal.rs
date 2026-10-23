@@ -388,6 +388,76 @@ mod tests {
         );
     }
 
+    const LOG_PATH: &str = "/logs/launch/launch_20260101_000000_000.log";
+
+    fn end_of(outcome: StackGoalOutcome, cancel_sent: bool) -> Result<()> {
+        report_end("Launch", Path::new(LOG_PATH), outcome, cancel_sent)
+    }
+
+    /// A failed stack goal ends the command with the kind and the message of
+    /// its failure and the launch log, and exit code 1.
+    #[test]
+    fn a_failed_stack_goal_gives_its_kind_and_its_log() {
+        let failure = peppylib::messaging::Failure::new(
+            config::failure_kind::PeppyFailureKind::Timeout,
+            "the build of `arm:v1` produced no output for 180 s",
+        );
+        let error = end_of(StackGoalOutcome::Failed(failure), false).expect_err("failed");
+        assert_eq!(error.exit_code(), 1);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Launch failed (timeout): the build of `arm:v1` produced no output for 180 s. \
+                 Log file: {LOG_PATH}"
+            )
+        );
+    }
+
+    /// After a Ctrl-C, the command says how the goal ended and exits with
+    /// code 130, whichever way the goal ended.
+    #[test]
+    fn after_a_ctrl_c_the_command_says_how_the_goal_ended_and_exits_with_130() {
+        let cancelled = end_of(
+            StackGoalOutcome::Cancelled {
+                reason: "cancelled by its caller".to_owned(),
+            },
+            true,
+        )
+        .expect_err("cancelled");
+        assert_eq!(cancelled.exit_code(), 130);
+        assert_eq!(
+            cancelled.to_string(),
+            format!("Launch was cancelled by its caller. Log file: {LOG_PATH}")
+        );
+
+        let completed = end_of(StackGoalOutcome::Completed(Default::default()), true)
+            .expect_err("the Ctrl-C ends the command");
+        assert_eq!(completed.exit_code(), 130);
+        assert_eq!(
+            completed.to_string(),
+            format!("Launch completed before the cancel took effect. Log file: {LOG_PATH}")
+        );
+    }
+
+    /// A goal that the daemon cancels for another reason, such as a stack
+    /// reset, fails the command with that reason.
+    #[test]
+    fn a_goal_cancelled_by_a_reset_fails_the_command_with_the_reason() {
+        let error = end_of(
+            StackGoalOutcome::Cancelled {
+                reason: "cancelled by a stack reset".to_owned(),
+            },
+            false,
+        )
+        .expect_err("cancelled");
+        assert_eq!(error.exit_code(), 1);
+        assert_eq!(
+            error.to_string(),
+            format!("Launch was cancelled by a stack reset. Log file: {LOG_PATH}")
+        );
+        assert!(end_of(StackGoalOutcome::Completed(Default::default()), false).is_ok());
+    }
+
     /// A change of step ends the scrolling output of the step before it; the
     /// add, build and run steps write into one, the launcher step does not.
     #[test]

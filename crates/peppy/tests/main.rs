@@ -1,3 +1,4 @@
+mod cli_goal_e2e;
 mod common;
 mod container;
 mod daemon_drop_e2e;

@@ -532,3 +532,288 @@ mod tests {
         );
     }
 }
+
+/// The end of a goal as the command line says it, and the Ctrl-C path, on
+/// a daemon's goal engine over the in-process mock messaging. The presses
+/// come from the test, at fixed points.
+#[cfg(test)]
+mod ctrl_c {
+    use super::*;
+    use config::failure_kind::PeppyFailureKind;
+    use core_node_api::encoding::{
+        NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult,
+    };
+    use core_node_api::names::CORE_NODE_TAG;
+    use peppylib::messaging::{
+        CancelCause, ConcurrentAction, Failure, GoalContext, PendingGoal, SenderTarget,
+    };
+    use peppylib::types::Payload;
+    use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, mpsc};
+
+    const CORE_NODE: &str = "cn-ctrl-c";
+    const LOG_PATH: &str = "/logs/add/source_20260101_000000_000.log";
+
+    /// Ctrl-C presses that the test gives, one at a time.
+    struct Presses(mpsc::UnboundedReceiver<()>);
+
+    impl Interrupts for Presses {
+        async fn next(&mut self) {
+            if self.0.recv().await.is_none() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+
+    /// `count` presses, given before the command follows its goal.
+    fn presses(count: usize) -> Presses {
+        let (press, presses) = mpsc::unbounded_channel();
+        for _ in 0..count {
+            press.send(()).expect("the command reads the press");
+        }
+        Presses(presses)
+    }
+
+    /// A daemon that exposes `node_add` on a mock messenger, and the
+    /// messenger a command uses to reach it.
+    async fn daemon() -> (MessengerHandle, ConcurrentAction) {
+        let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
+        messenger
+            .start_session()
+            .await
+            .expect("the mock session starts");
+        let messenger = MessengerHandle::from_shared(Arc::new(Mutex::new(messenger)));
+        let engine = ConcurrentAction::expose(
+            &messenger,
+            CORE_NODE,
+            "daemon",
+            SenderTarget::node(CORE_NODE, CORE_NODE_TAG).expect("a core node identity"),
+            core_node_api::ActionId::NodeAdd.name(),
+            true,
+        )
+        .await
+        .expect("the daemon exposes node_add");
+        (messenger, engine)
+    }
+
+    /// The daemon's next pending goal.
+    async fn next_goal(engine: &mut ConcurrentAction) -> PendingGoal {
+        engine
+            .recv_next_goal()
+            .await
+            .expect("the goal service runs")
+            .expect("the goal arrives")
+    }
+
+    /// The daemon accepts its next goal with the add log [`LOG_PATH`].
+    fn accept_next(
+        mut engine: ConcurrentAction,
+    ) -> tokio::task::JoinHandle<(GoalContext, ConcurrentAction)> {
+        tokio::spawn(async move {
+            let context = next_goal(&mut engine)
+                .await
+                .accept(
+                    NodeAddGoalResponse::new(LOG_PATH)
+                        .encode()
+                        .expect("the goal response encodes"),
+                )
+                .await
+                .expect("the daemon accepts the goal");
+            (context, engine)
+        })
+    }
+
+    /// Sends a `node_add` goal from the command.
+    async fn send_node_add(messenger: &MessengerHandle) -> ActionGoalHandle {
+        peppylib::core_node::transport::send_goal(
+            &NodeAddGoal::new("/tmp/source", "hash", 60),
+            messenger,
+            CORE_NODE,
+            "peppy-cli-test",
+            Some(CORE_NODE),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("the command sends the goal")
+    }
+
+    /// Follows `handle` as `node add` does, with `presses`.
+    async fn follow(
+        messenger: &MessengerHandle,
+        handle: &mut ActionGoalHandle,
+        presses: &mut Presses,
+    ) -> Result<NodeAddResult> {
+        let goal = FollowedGoal {
+            doing: "Node add",
+            log_path: Some(Path::new(LOG_PATH)),
+        };
+        poll_action_to_completion(
+            messenger,
+            handle,
+            &TimeoutConfig {
+                idle_secs: 3600,
+                max_secs: 3600,
+                flags: true,
+            },
+            &mut ScrollingOutput::new(SCROLLING_OUTPUT_LINES),
+            |_, _| {},
+            |payload| NodeAddResult::decode(payload).map_err(|error| error.to_string()),
+            &goal,
+            presses,
+        )
+        .await
+    }
+
+    /// A Ctrl-C sends the daemon a cancel. The command follows the goal to
+    /// the end the daemon gives it, says how it ended, and exits with code
+    /// 130.
+    #[tokio::test]
+    async fn a_ctrl_c_cancels_the_goal_and_the_command_says_how_it_ended() {
+        let (messenger, engine) = daemon().await;
+        let accepted = accept_next(engine);
+        let mut handle = send_node_add(&messenger).await;
+        let (context, _engine) = accepted.await.expect("the daemon does not panic");
+
+        let mut presses = presses(1);
+        let (ended, ()) = tokio::join!(follow(&messenger, &mut handle, &mut presses), async {
+            context.cancel_signal().await;
+            assert_eq!(context.cancel_cause(), Some(CancelCause::Caller));
+            context
+                .complete_cancelled(CancelCause::Caller.reason(), Payload::new())
+                .await
+                .expect("the daemon ends the goal cancelled");
+        });
+
+        let error = ended.expect_err("the command ends with the cancel");
+        assert_eq!(error.exit_code(), 130);
+        assert_eq!(
+            error.to_string(),
+            format!("Node add was cancelled by its caller. Log file: {LOG_PATH}")
+        );
+    }
+
+    /// A goal that completes before the cancel takes effect still ends the
+    /// command with code 130, and the command says that it completed.
+    #[tokio::test]
+    async fn a_goal_that_completes_before_the_cancel_still_ends_the_command_with_130() {
+        let (messenger, engine) = daemon().await;
+        let accepted = accept_next(engine);
+        let mut handle = send_node_add(&messenger).await;
+        let (context, _engine) = accepted.await.expect("the daemon does not panic");
+
+        let mut presses = presses(1);
+        let (ended, ()) = tokio::join!(follow(&messenger, &mut handle, &mut presses), async {
+            context.cancel_signal().await;
+            context
+                .complete(
+                    NodeAddResult::new("source", "v1")
+                        .encode()
+                        .expect("the result encodes"),
+                )
+                .await
+                .expect("the daemon completes the goal");
+        });
+
+        let error = ended.expect_err("the command ends with the Ctrl-C");
+        assert_eq!(error.exit_code(), 130);
+        assert_eq!(
+            error.to_string(),
+            format!("Node add completed before the cancel took effect. Log file: {LOG_PATH}")
+        );
+    }
+
+    /// A second Ctrl-C stops the wait at once: the daemon goes on with the
+    /// cancel that the first one sent.
+    #[tokio::test]
+    async fn a_second_ctrl_c_stops_the_wait() {
+        let (messenger, engine) = daemon().await;
+        let accepted = accept_next(engine);
+        let mut handle = send_node_add(&messenger).await;
+        let (context, _engine) = accepted.await.expect("the daemon does not panic");
+
+        let error = follow(&messenger, &mut handle, &mut presses(2))
+            .await
+            .expect_err("the second press stops the wait");
+
+        assert_eq!(error.exit_code(), 130);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Stopped waiting: the daemon goes on with the cancel of the node add. \
+                 Log file: {LOG_PATH}"
+            )
+        );
+        assert!(context.is_cancelled(), "the first press sent the cancel");
+    }
+
+    /// A goal that fails ends the command with the kind and the message of
+    /// its failure and the goal's log file, and exit code 1.
+    #[tokio::test]
+    async fn a_failed_goal_gives_its_kind_to_the_command() {
+        let (messenger, engine) = daemon().await;
+        let accepted = accept_next(engine);
+        let mut handle = send_node_add(&messenger).await;
+        let (context, _engine) = accepted.await.expect("the daemon does not panic");
+        context
+            .fail(Failure::new(
+                PeppyFailureKind::PreconditionFailed,
+                "Git hash mismatch: run `peppy node sync`",
+            ))
+            .await
+            .expect("the daemon fails the goal");
+
+        let error = follow(&messenger, &mut handle, &mut presses(0))
+            .await
+            .expect_err("the goal failed");
+
+        assert_eq!(error.exit_code(), 1);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Node add failed (precondition_failed): Git hash mismatch: run `peppy node \
+                 sync`. Log file: {LOG_PATH}"
+            )
+        );
+    }
+
+    /// A goal that the daemon refuses ends the command with the kind and the
+    /// message of the refusal.
+    #[tokio::test]
+    async fn a_refused_goal_gives_its_kind_to_the_command() {
+        let (messenger, mut engine) = daemon().await;
+        let refused = tokio::spawn(async move {
+            next_goal(&mut engine)
+                .await
+                .refuse(Failure::new(
+                    PeppyFailureKind::PreconditionFailed,
+                    "action already in progress, use `--force` to force adding the node",
+                ))
+                .await
+                .expect("the daemon refuses the goal");
+            engine
+        });
+        let mut handle = send_node_add(&messenger).await;
+        let _engine = refused.await.expect("the daemon does not panic");
+
+        let error =
+            run_action_with_feedback::<NodeAddGoalResponse, NodeAddFeedback, NodeAddResult>(
+                &messenger,
+                &mut handle,
+                &TimeoutConfig {
+                    idle_secs: 3600,
+                    max_secs: 3600,
+                    flags: true,
+                },
+                "Node add",
+            )
+            .await
+            .expect_err("the daemon refused the goal");
+
+        assert_eq!(
+            error.to_string(),
+            "Node add refused (precondition_failed): action already in progress, use `--force` \
+             to force adding the node"
+        );
+    }
+}
