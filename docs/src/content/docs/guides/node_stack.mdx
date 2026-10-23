@@ -159,7 +159,7 @@ When the instance answers ready, the daemon sends a progress line. This line res
 When the daemon stops a start before it ends, the step of the start decides how:
 
 - **Before the ready signal**, the node does not listen for the shutdown request. The daemon kills the whole process group of the instance at once: the node and every process that it started in its group.
-- **After the ready signal**, the daemon stops the instance as [`peppy node stop`](#stopping-your-node) stops a running instance. It sends the shutdown request, waits for the shutdown grace and the runtime teardown, and then kills the process group. The node runs its [shutdown hooks](/guides/first_node/#graceful-shutdown), so a setup that holds a resource (a lock, a robot in a simulation) releases it. This applies when the setup outlasts its budget, when the endpoints step fails, when the run budget of a launch or a join runs out (`--node-run-idle-timeout-secs`, `--max-timeout-secs`), and when `peppy stack reset` cancels the start. A stack reset waits for this stop to end before it clears the stack.
+- **After the ready signal**, the daemon stops the instance as [`peppy node stop`](#stopping-your-node) stops a running instance. It sends the shutdown request, waits for the shutdown grace and the runtime teardown, and then kills the process group. The node runs its [shutdown hooks](/guides/first_node/#graceful-shutdown), so a setup that holds a resource (a lock, a robot in a simulation) releases it. This applies when the setup outlasts its budget, when the endpoints step fails, when the run budget of a launch or a join runs out (`--node-run-idle-timeout-secs`, `--max-timeout-secs`), when `peppy stack reset` cancels the start, and when the command that started it cancels it (see [When a node command ends early](#when-a-node-command-ends-early)). A stack reset waits for this stop to end before it clears the stack.
 
 A synchronous Python `setup` cannot see the shutdown request before it returns. When it does not return within the grace and the runtime teardown, the kill ends it. An `async` setup stops at its next `await`. The [shutdown lifecycle guide](/advanced_guides/shutdown/) gives the full sequence.
 
@@ -181,6 +181,28 @@ peppy node add -sr .    # sync, then add, then build, then run an instance
 
 Run-only options (trailing `key=value` arguments, `--instance-id`, `--link KEY@VALUE`, `--vacant-link SLOT=<why>`, `--clock DOMAIN`, `--publish-clock DOMAIN`, `--restart POLICY` and `--max-restarts N`) are only accepted alongside `-r`/`--run`; combining them with a plain `peppy node add` is rejected at parse time so an arg you cared about isn't silently dropped. Keep `key=value` arguments **after** the source path (e.g. `peppy node add -sr . frequency=30`) so the source positional isn't confused with the trailing args. `--link` mirrors the `peppy node run --link` flag and runs the same validator; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).
 :::
+
+### When a node command ends early
+
+`peppy node add`, `build` and `run` each send the daemon one goal and follow it to its end. The daemon refuses a goal that it cannot start, and a goal can fail. Either way the command prints the [failure kind](/guides/launch_files/#how-a-stack-command-ends) and the reason, a failure also the log file, and exits with code 1:
+
+```
+Error: Node add refused (precondition_failed): action already in progress (times out in 590s), use `--force` to force adding the node
+Error: Node build failed (attempt_failed): build_cmd `uv sync` failed with status exit status: 2. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312.log
+```
+
+The first Ctrl+C sends the daemon a cancel of the goal. The daemon stops the work at its next step: an add publishes no node, a build kills its `build_cmd` and leaves the node `Added`, and a start stops its instance as [How an instance starts](#how-an-instance-starts) describes. The command follows the goal to that end, prints how it ended, and exits with code 130:
+
+```
+Cancelling the node build; press Ctrl-C again to stop waiting for its end
+Error: Node build was cancelled by its caller. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312.log
+```
+
+A goal that ended before the cancel reached it keeps its end, and the command says so: `Node build completed before the cancel took effect.` It also exits with code 130. A second Ctrl+C stops the wait at once, and the daemon goes on with the cancel. A command whose process goes away, for example when its terminal closes, cancels its goal too: the daemon sees that the sender of the goal is gone, and cancels the goal at once.
+
+`--force` on `peppy node add` or `peppy node build` cancels the add or the build of the node that runs. That goal ends `Node add was superseded by a forced node add.` or `Node build was superseded by a forced node build.`, and the forced one starts once it ended.
+
+`--idle-timeout` and `--max-timeout` bound the wait of the command, not the work: a command whose budget runs out stops waiting, sends no cancel, and the daemon goes on with the goal.
 
 ## Checking node status
 

@@ -530,7 +530,7 @@ A launch adds, builds and starts its nodes one phase at a time, and each phase r
 | `--node-build-idle-timeout-secs` | running its `build_cmd`, or downloading and assembling its image; bytes landing on disk and CPU time the build burns count as output too | 180 |
 | `--node-run-idle-timeout-secs` | starting an instance, until its setup ends and the daemon records it as running | 600 |
 
-These defaults are the only ones: the daemon has no budgets of its own, and every launch, build and join carries the budgets of its caller. When no output arrives, the command waits for the largest of the three budgets plus 60 s before it stops, so the daemon's error for the silent phase comes first.
+These defaults are the only ones: the daemon has no budgets of its own, and every launch, build and join carries the budgets of its caller. When no output arrives, the command waits for the largest of the three budgets plus 60 s before it stops, so the daemon's error for the silent phase comes first. A command that stops waiting sends no cancel: the change goes on to its end on the daemon.
 
 A join over MCP, through the `join` tool of a [`stack_copies` daemon target](/advanced_guides/mcp/#what-the-tools-of-stack_copies-do), sends these same defaults, with no overall budget. Give such a tool a progress window of the largest of the three budgets plus the same 60 s, 660 s for the defaults, so that the daemon's error for a silent phase comes first.
 
@@ -547,6 +547,50 @@ When a budget runs out the launch fails, names the phase and, for an idle budget
 `peppy stack build` takes the same flags and ends after the build phase, so `--node-run-idle-timeout-secs` bounds nothing in a build. `peppy stack join` takes the same flags and runs its copy's nodes through the same phases, `--max-timeout-secs` bounding the whole join. A join whose budget runs out fails as any [failed join](#copies) does: it stops what it started and removes the nodes it added, leaving the stack it joined running.
 
 Only the node's own output and, in the run phase, the ready signal of the instance reset a phase's clock; the launcher's progress lines do not. Inside the run phase, the daemon also waits for each setup for the [setup budget](/guides/node_stack/#how-an-instance-starts) of its node, at most 540 seconds, which is less than the default run idle budget.
+
+## How a stack command ends
+
+`peppy stack launch`, `build`, `join` and `remove` each send the daemon one goal and follow it to its end. The daemon refuses a goal that it cannot start, for example while another stack change runs, and the command prints the refusal with its failure kind:
+
+```text
+Error: Launch refused (precondition_failed): a stack launch, build, join, removal or reset, or a coordinator's change to this daemon's slice, is in progress on this daemon; run this again once it ends
+```
+
+A goal that fails ends the command with its failure kind, the reason, and the launch log, after the log files of the nodes:
+
+```text
+Error: Launch failed (attempt_failed): failed to build node arm:v1: build_cmd `cargo build --release` failed with status exit status: 101. Log file: /home/ubuntu/.peppy/logs/launch/launch_20261023_101500_123.log
+```
+
+| Kind | What it says |
+| --- | --- |
+| `rejected` | The launcher, a word of the command or a value in it is not valid, or it names something that is not there |
+| `precondition_failed` | The stack or a machine does not allow the change now: another change runs, an instance or a copy is in the way, a machine is held by another launch |
+| `resource_unavailable` | A machine of the change is not live, or did not answer |
+| `timeout` | A budget ran out |
+| `attempt_failed` | A step failed, for example a build or the start of an instance |
+
+The command exits with code 1 when the goal is refused or fails.
+
+### Stopping a stack command with Ctrl+C
+
+The first Ctrl+C sends the daemon a cancel of the goal, and the command says so:
+
+```text
+Cancelling the launch; press Ctrl-C again to stop waiting for its end
+```
+
+The daemon stops the change at the step it reached, and ends it as a failure at that step ends it: a launch or a build clears the stack, a join is undone, and a removal keeps its copy, with the instances that it did not stop yet. A step that runs on another machine gets the cancel too. The command follows the change to that end, prints how it ended, and exits with code 130:
+
+```text
+Error: Launch was cancelled by its caller. Log file: /home/ubuntu/.peppy/logs/launch/launch_20261023_101500_123.log
+```
+
+A change that ended before the cancel reached it keeps its end, and the command says so: `Launch completed before the cancel took effect.` It also exits with code 130. A second Ctrl+C stops the wait at once, and the daemon goes on with the cancel.
+
+A command whose process goes away, for example when its terminal closes or the process is killed, cancels its goal too: the daemon sees that the sender of the goal is gone, and cancels the goal at once. The launch log then ends with `cancelled: its sender is gone`. Each `peppy` process is a sender of its own, so the goals of other `peppy` processes go on.
+
+A `peppy stack reset` cancels the change that runs: the change ends, `Launch was cancelled by a stack reset.`, and the command exits with code 1.
 
 ## Running one launcher across several machines
 
