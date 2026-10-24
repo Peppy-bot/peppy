@@ -657,7 +657,7 @@ async fn parked_until_released(
     release: Arc<Notify>,
     context: ActionContext,
 ) -> Result<Value, ActionExit> {
-    context.report_feedback("parked");
+    context.report_feedback("parked").await;
     tokio::select! {
         biased;
         () = context.cancel_requested() => Err(ActionExit::Cancelled(CancelledGoal {

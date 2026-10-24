@@ -39,16 +39,17 @@ pub enum ActionExit {
     /// as a refused goal does.
     Failed(ProviderFailure),
     /// The Peppy action ended cancelled, whoever cancelled it: the client,
-    /// the bridge, or the provider on its own. A call answers with a tool
-    /// error that carries the provider's result; a task ends `cancelled`,
-    /// and its status message carries the reason and that result.
+    /// or the provider on its own. A call answers with a tool error that
+    /// carries the provider's result; a task ends `cancelled`, and its
+    /// status message carries the reason and that result.
     Cancelled(CancelledGoal),
     /// The goal ended in no completion, refusal, failure or cancel that
     /// the provider gave: the goal could not be sent, its feedback
     /// overflowed, its provider abandoned it or gave a failure kind that
-    /// the member does not declare, its result expired, or it went silent.
-    /// The message says which. A call answers with a tool error of this
-    /// text; a task ends `failed` with it.
+    /// the member does not declare, its result expired, or a progress
+    /// window went by without a sign of progress. The message says which.
+    /// A call answers with a tool error of this text; a task ends `failed`
+    /// with it.
     Error(String),
 }
 
@@ -86,10 +87,7 @@ impl std::fmt::Display for ActionExit {
 pub struct CancelledGoal {
     /// The canonical JSON of the result the provider ended the goal with.
     pub result: Value,
-    /// Why the goal was cancelled: the reason the provider ended it with,
-    /// or the bridge's own reason when the bridge cancelled the goal for
-    /// one that the provider cannot know, for example a progress window
-    /// that went by without a sign of progress.
+    /// Why the goal was cancelled: the reason the provider ended it with.
     pub reason: String,
 }
 
@@ -134,8 +132,13 @@ pub(crate) enum ActionSurface {
     /// closes, is the cancel signal. In Streamable HTTP a client cancels a
     /// call by closing it, and a client that disconnects closes it too: the
     /// endpoint cannot tell the two apart, and takes both as a cancel.
+    ///
+    /// `feedback` is the relay to the client, which holds one message: a
+    /// report waits while the client has not taken the message before it.
+    /// The relay stops when the call closes, and a report after that drops
+    /// its message at once.
     Call {
-        feedback: mpsc::UnboundedSender<String>,
+        feedback: mpsc::Sender<String>,
         closed: CancellationToken,
     },
 }
@@ -150,13 +153,19 @@ impl ActionContext {
     /// Publishes a feedback message to the client: as the task's status
     /// message, which `tasks/get` reports, or as a progress notification on
     /// the call the goal runs in.
-    pub fn report_feedback(&self, message: impl Into<String>) {
+    ///
+    /// On a task it returns at once. On a call it returns once the relay to
+    /// the client takes the message, and the relay holds one message: a
+    /// bridge that reads its goal's feedback only after this returns keeps
+    /// the messages that the client is not ready for in the goal's feedback
+    /// buffer, whose bound holds a client that falls behind. On a call that
+    /// closed it returns at once and drops the message, which has no
+    /// reader.
+    pub async fn report_feedback(&self, message: impl Into<String>) {
         match &self.surface {
             ActionSurface::Task(task) => task.set_status_message(message),
-            // A closed receiver means the call already settled; feedback
-            // after that has no reader.
             ActionSurface::Call { feedback, .. } => {
-                let _ = feedback.send(message.into());
+                let _ = feedback.send(message.into()).await;
             }
         }
     }

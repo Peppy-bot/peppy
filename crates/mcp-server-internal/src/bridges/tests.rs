@@ -7,8 +7,8 @@
 //! bridge behind a real endpoint over HTTP in [`loopback`].
 
 use super::{
-    AfterCancel, Binding, CancelReason, FeedbackStep, GoalFollow, PreparedTask, PreparedTool,
-    Silence, Turn, after_cancel, call_service, drive_goal, next_turn, service_call_error,
+    AfterCancel, Binding, FeedbackStep, GoalFollow, PreparedTask, PreparedTool, Silence, Turn,
+    after_cancel, call_service, drive_goal, next_turn, service_call_error,
 };
 use crate::test_support::{PausedRuntime, ScriptedSurface};
 use config::failure_kind::{
@@ -293,12 +293,11 @@ async fn end_cancelled(context: &GoalContext) {
 }
 
 /// How the bridge reports a goal the provider ended cancelled with
-/// [`end_cancelled`]: for the bridge's own `reason` when it has one, for
-/// the provider's reason otherwise.
-fn ended_cancelled(reason: Option<&str>) -> Result<Value, ActionExit> {
+/// [`end_cancelled`]: with the provider's result and reason.
+fn ended_cancelled() -> Result<Value, ActionExit> {
     Err(ActionExit::Cancelled(CancelledGoal {
         result: cancelled_result(),
-        reason: reason.unwrap_or(PROVIDER_REASON).to_owned(),
+        reason: PROVIDER_REASON.to_owned(),
     }))
 }
 
@@ -337,7 +336,7 @@ async fn a_feedback_less_goal_settles_cancelled_once_the_provider_honors_the_can
         context
     });
 
-    assert_eq!(outcome, ended_cancelled(None));
+    assert_eq!(outcome, ended_cancelled());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -427,10 +426,9 @@ impl ProgressGoal {
         goal
     }
 
-    /// A whole window goes by without a sign of progress, and the provider
-    /// sees the cancel the bridge sends for it.
-    async fn stall(&self) {
-        self.bridge.advance(WINDOW).await;
+    /// The client cancels the goal, and the provider sees the cancel.
+    async fn cancelled_by_the_client(&self) {
+        self.surface.cancel.cancel();
         cancel_seen(&self.context).await;
     }
 }
@@ -486,7 +484,7 @@ async fn a_client_cancel_reaches_a_whole_goal_after_feedback_that_does_not_conve
         context
     });
 
-    assert_eq!(outcome, ended_cancelled(None));
+    assert_eq!(outcome, ended_cancelled());
     assert_eq!(surface.feedback(), vec![r#"{"percent":50}"#.to_owned()]);
 }
 
@@ -501,9 +499,8 @@ async fn feedback_that_does_not_convert_is_a_sign_of_progress() {
     publish_garbage(&goal.context).await;
     goal.bridge.logged_warnings(1).await;
     goal.bridge.advance(WITHIN_THE_WINDOW).await;
-    // A cancel sent for a silence is awaited before the next message is
-    // taken, so once this one is shown, any such cancel has reached the
-    // provider.
+    // A silence would end the follow: once this message is shown, no window
+    // went by without a sign of progress.
     publish_percent(&goal.context, 20).await;
     goal.surface.reported(2).await;
     goal.context
@@ -547,25 +544,37 @@ async fn a_goal_that_keeps_reporting_progress_runs_past_one_window() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_goal_silent_for_one_window_is_cancelled_and_reported_stalled() {
+async fn a_goal_silent_for_one_window_fails_the_call_and_gets_no_cancel() {
     let (mesh, mut provider) = mesh(true).await;
     let goal = ProgressGoal::reporting(&mesh, &mut provider).await;
 
-    goal.stall().await;
-    end_cancelled(&goal.context).await;
+    goal.bridge.advance(WINDOW).await;
 
     assert_eq!(
         goal.bridge.outcome().await,
-        ended_cancelled(Some("no progress within 60000 ms"))
+        Err(ActionExit::Error(
+            "no progress within 60000 ms; the endpoint sent no cancel, and the goal can still \
+             be running"
+                .to_owned()
+        ))
     );
+    assert!(
+        !goal.context.is_cancelled(),
+        "a silence sends the provider no cancel"
+    );
+    // The goal runs on, and its provider ends it when it is done.
+    goal.context
+        .complete(reached_width())
+        .await
+        .expect("the provider completes the goal");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_provider_that_ignores_the_cancel_is_reported_one_window_later() {
+async fn a_provider_that_does_not_answer_the_clients_cancel_fails_the_call_one_window_later() {
     let (mesh, mut provider) = mesh(true).await;
     let goal = ProgressGoal::reporting(&mesh, &mut provider).await;
 
-    goal.stall().await;
+    goal.cancelled_by_the_client().await;
     // The bridge takes feedback again only once the provider's reply to the
     // cancel is in, and the reply is timed on the bridge's clock: the window
     // passes only after this message is shown. The provider reports once
@@ -584,11 +593,11 @@ async fn a_provider_that_ignores_the_cancel_is_reported_one_window_later() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_goal_that_completes_after_the_cancel_is_reported_with_its_result() {
+async fn a_goal_that_completes_after_the_clients_cancel_is_reported_with_its_result() {
     let (mesh, mut provider) = mesh(true).await;
     let goal = ProgressGoal::reporting(&mesh, &mut provider).await;
 
-    goal.stall().await;
+    goal.cancelled_by_the_client().await;
     goal.context
         .complete(reached_width())
         .await
@@ -599,8 +608,8 @@ async fn a_goal_that_completes_after_the_cancel_is_reported_with_its_result() {
 
 /// The provider completes the goal, and no end of its feedback stream
 /// reaches the bridge: a provider without a feedback publisher stands in
-/// for a lost end. The cancel the silence brings is answered with "already
-/// ended", and the bridge reads the result at once.
+/// for a lost end. The client's cancel is answered with "already ended",
+/// and the bridge reads the result at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_goal_that_ended_unseen_is_reported_with_its_result_once_the_cancel_says_so() {
     let (mesh, mut provider) = mesh(false).await;
@@ -610,7 +619,7 @@ async fn a_goal_that_ended_unseen_is_reported_with_its_result_once_the_cancel_sa
         .await
         .expect("the provider completes the goal");
 
-    goal.bridge.advance(WINDOW).await;
+    goal.surface.cancel.cancel();
 
     assert_eq!(goal.bridge.outcome().await, Ok(completed_result()));
 }
@@ -625,7 +634,7 @@ async fn a_goal_that_ended_unseen_with_its_result_gone_fails_saying_so() {
         .await
         .expect("the provider completes the goal");
 
-    goal.bridge.advance(WINDOW).await;
+    goal.surface.cancel.cancel();
 
     assert_eq!(
         goal.bridge.outcome().await,
@@ -640,11 +649,10 @@ async fn a_client_cancel_ends_a_progress_bound_goal_cancelled() {
     let (mesh, mut provider) = mesh(true).await;
     let goal = ProgressGoal::reporting(&mesh, &mut provider).await;
 
-    goal.surface.cancel.cancel();
-    cancel_seen(&goal.context).await;
+    goal.cancelled_by_the_client().await;
     end_cancelled(&goal.context).await;
 
-    assert_eq!(goal.bridge.outcome().await, ended_cancelled(None));
+    assert_eq!(goal.bridge.outcome().await, ended_cancelled());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -736,19 +744,20 @@ async fn a_kind_the_member_does_not_declare_ends_the_goal_with_a_readable_error(
     assert_eq!(failed, undeclared_kind());
 }
 
-/// The surface of a client that does not take its feedback: the bridge's
-/// report of the first message holds it until the test lets it go, so the
-/// next messages wait unread in the goal's buffer.
+/// The surface of a slow client: the report of the first message waits
+/// until the test lets it go, as a report on a call waits while the client
+/// has not taken the message before it, so the next messages wait unread
+/// in the goal's buffer.
 struct HeldSurface {
     surface: ScriptedSurface,
-    hold: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    hold: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     held: tokio::sync::watch::Sender<bool>,
 }
 
 impl HeldSurface {
     /// The surface, and what lets the bridge go once it holds it.
-    fn new() -> (Self, std::sync::mpsc::Sender<()>) {
-        let (release, hold) = std::sync::mpsc::channel();
+    fn new() -> (Self, tokio::sync::oneshot::Sender<()>) {
+        let (release, hold) = tokio::sync::oneshot::channel();
         let surface = Self {
             surface: ScriptedSurface::new(),
             hold: std::sync::Mutex::new(Some(hold)),
@@ -768,16 +777,14 @@ impl HeldSurface {
 }
 
 impl super::TaskSurface for HeldSurface {
-    fn report_feedback(&self, message: String) {
-        self.surface.report_feedback(message);
+    async fn report_feedback(&self, message: String) {
+        self.surface.report_feedback(message).await;
         let hold = self.hold.lock().expect("the hold is never poisoned").take();
         let Some(hold) = hold else {
             return;
         };
         self.held.send_replace(true);
-        // The worker hands its other tasks to another thread while it
-        // waits, so the mesh and the goal's handle go on.
-        tokio::task::block_in_place(|| hold.recv().expect("the test lets the bridge go"));
+        hold.await.expect("the test lets the bridge go");
     }
 
     fn cancel_requested(&self) -> impl std::future::Future<Output = ()> + Send {
@@ -786,7 +793,7 @@ impl super::TaskSurface for HeldSurface {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_bridge_that_falls_behind_the_feedback_fails_the_call_and_cancels_the_goal() {
+async fn a_slow_client_makes_the_goal_overflow_and_the_call_fail_with_the_loss() {
     let (mesh, mut provider) = mesh(true).await;
     let task = PreparedTask {
         feedback_bound: FeedbackBound::new(std::num::NonZeroUsize::MIN),
@@ -816,8 +823,9 @@ async fn a_bridge_that_falls_behind_the_feedback_fails_the_call_and_cancels_the_
     publish_percent(&context, 10).await;
     surface.holds_the_bridge().await;
 
-    // The bound keeps one unread message: the second one overflows it, and
-    // the goal's handle cancels the goal.
+    // The bridge reads no more feedback while the client holds the first
+    // message. The bound keeps one unread message: the second one overflows
+    // it, and the goal's handle cancels the goal.
     publish_percent(&context, 20).await;
     publish_percent(&context, 30).await;
     cancel_seen(&context).await;
@@ -977,6 +985,11 @@ fn a_service_call_error_says_whether_the_provider_answered() {
     );
 }
 
+/// A feedback message, as the stream yields it.
+fn shown() -> FeedbackStep {
+    FeedbackStep::Message(r#"{"percent":10}"#.to_owned())
+}
+
 /// Rounds of the turn tests below. Tokio's `select!` polls its branches
 /// from a random one unless it is biased: with two of them ready, the
 /// wrong one wins about one round in three, so an order that is not fixed
@@ -991,14 +1004,8 @@ async fn a_message_already_delivered_wins_over_a_window_that_ran_out() {
         // showed progress, and is not cancelled for a silence.
         let mut silence = Silence::new(WINDOW);
         tokio::time::advance(WINDOW).await;
-        let turn = next_turn(
-            &mut silence,
-            &surface,
-            true,
-            std::future::ready(FeedbackStep::Shown),
-        )
-        .await;
-        assert_eq!(turn, Turn::Feedback(FeedbackStep::Shown), "round {round}");
+        let turn = next_turn(&mut silence, &surface, true, std::future::ready(shown())).await;
+        assert_eq!(turn, Turn::Feedback(shown()), "round {round}");
     }
 }
 
@@ -1009,7 +1016,7 @@ async fn the_client_s_cancel_comes_first_and_the_silence_last() {
     for round in 0..TURN_ROUNDS {
         let mut silence = Silence::new(WINDOW);
         tokio::time::advance(WINDOW).await;
-        let delivered = || std::future::ready(FeedbackStep::Shown);
+        let delivered = || std::future::ready(shown());
         assert_eq!(
             next_turn(&mut silence, &surface, true, delivered()).await,
             Turn::CancelRequested,
@@ -1017,7 +1024,7 @@ async fn the_client_s_cancel_comes_first_and_the_silence_last() {
         );
         assert_eq!(
             next_turn(&mut silence, &surface, false, delivered()).await,
-            Turn::Feedback(FeedbackStep::Shown),
+            Turn::Feedback(shown()),
             "round {round}: once the cancel is sent, a message comes before the silence"
         );
         assert_eq!(
@@ -1052,64 +1059,29 @@ fn a_progress_bound_is_followed_only_on_an_action_that_reports_feedback() {
 
 #[test]
 fn the_reply_to_a_cancel_says_whether_to_follow_the_goal_or_read_its_result() {
-    for reason in [CancelReason::Client, CancelReason::Silence] {
-        assert_eq!(
-            after_cancel(Ok(CancelState::Signalled), reason, WINDOW, "goal"),
-            Ok(AfterCancel::KeepFollowing)
-        );
-        assert_eq!(
-            after_cancel(Ok(CancelState::AlreadyTerminal), reason, WINDOW, "goal"),
-            Ok(AfterCancel::ReadTheResult)
-        );
-    }
+    assert_eq!(
+        after_cancel(Ok(CancelState::Signalled), "goal"),
+        Ok(AfterCancel::KeepFollowing)
+    );
+    assert_eq!(
+        after_cancel(Ok(CancelState::AlreadyTerminal), "goal"),
+        Ok(AfterCancel::ReadTheResult)
+    );
 }
 
 #[test]
 fn a_cancel_the_provider_cannot_act_on_ends_the_follow_saying_why() {
     assert_eq!(
-        after_cancel(
-            Ok(CancelState::Unknown),
-            CancelReason::Silence,
-            WINDOW,
-            "goal"
-        ),
-        Err(ActionExit::Error(
-            "no progress within 60000 ms; a cancel was sent and the provider does not know the goal"
-                .to_owned()
-        ))
-    );
-    assert_eq!(
-        after_cancel(
-            Ok(CancelState::Unknown),
-            CancelReason::Client,
-            WINDOW,
-            "goal"
-        ),
+        after_cancel(Ok(CancelState::Unknown), "goal"),
         Err(ActionExit::Error(
             "a cancel was sent and the provider does not know the goal".to_owned()
         ))
     );
 
-    let unreachable = || PeppyError::Io(std::io::Error::other("the provider is unreachable"));
-    let error = unreachable().to_string();
+    let unreachable = PeppyError::Io(std::io::Error::other("the provider is unreachable"));
+    let error = unreachable.to_string();
     assert_eq!(
-        after_cancel(
-            Err(ConsumerError::Messaging(unreachable())),
-            CancelReason::Silence,
-            WINDOW,
-            "goal"
-        ),
-        Err(ActionExit::Error(format!(
-            "no progress within 60000 ms; a cancel was sent and failed: {error}"
-        )))
-    );
-    assert_eq!(
-        after_cancel(
-            Err(ConsumerError::Messaging(unreachable())),
-            CancelReason::Client,
-            WINDOW,
-            "goal"
-        ),
+        after_cancel(Err(ConsumerError::Messaging(unreachable)), "goal"),
         Err(ActionExit::Error(format!(
             "a cancel was sent and failed: {error}"
         )))

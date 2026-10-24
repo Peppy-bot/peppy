@@ -354,7 +354,7 @@ async fn episode_goal(
         .as_str()
         .expect("validated string")
         .to_string();
-    context.report_feedback(format!("{verb} `{episode}`"));
+    context.report_feedback(format!("{verb} `{episode}`")).await;
     if episode == "wait_for_cancel" {
         context.cancel_requested().await;
         return Err(ActionExit::Cancelled(CancelledGoal {

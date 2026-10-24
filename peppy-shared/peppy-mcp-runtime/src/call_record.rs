@@ -25,10 +25,14 @@ use std::time::{Duration, UNIX_EPOCH};
 /// arguments are kept as their size alone.
 const ARGUMENTS_KEPT_BYTES: u64 = 1024;
 
-/// What a recording that is dropped while its call runs says: the task
-/// was cancelled before its goal started, or the endpoint stopped the task,
-/// before the call reached an end of its own.
-const CANCELLED_BEFORE_ITS_END: &str = "the call was cancelled before it ended";
+/// What a recording that is dropped while its call runs says. The task
+/// manager drops the operation of a task, and the recording with it, when
+/// the TTL of the task passes. That is no cancel: the endpoint stops
+/// following the goal and the goal runs on. The manager also drops the
+/// operations of its tasks when the endpoint stops, after which no client
+/// reads the record.
+const EXPIRED_BEFORE_ITS_END: &str =
+    "the task expired before its goal ended; the endpoint did not cancel the goal";
 
 /// How a recorded call stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -42,9 +46,10 @@ enum Outcome {
     /// The goal failed or the service gave an error reply, with the kind
     /// the provider gave; or the call did not reach an end that the
     /// provider gave: a deadline, a transport error, a goal that was
-    /// abandoned.
+    /// abandoned, a task that expired.
     Failed,
-    /// The goal ended cancelled, or the task was cancelled.
+    /// The goal ended cancelled, or the client cancelled the task before
+    /// its goal started.
     Cancelled,
     /// The provider refused the goal, with the kind it gave; or the call
     /// never reached the provider: its arguments were refused, or the call
@@ -156,7 +161,7 @@ impl CallRecord {
                             "outcome": {
                                 "type": "string",
                                 "enum": ["running", "completed", "failed", "cancelled", "refused"],
-                                "description": "How the call stands. `completed`: the goal completed or the service answered with its response. `failed`: the goal failed or the service gave an error reply, or the call did not reach an end that the provider gave. `refused`: the provider refused the goal, or the call never reached the provider. `cancelled`: the goal or the task was cancelled.",
+                                "description": "How the call stands. `completed`: the goal completed or the service answered with its response. `failed`: the goal failed or the service gave an error reply, or the call did not reach an end that the provider gave. `refused`: the provider refused the goal, or the call never reached the provider. `cancelled`: the goal ended cancelled, or the task was cancelled before its goal started.",
                             },
                             "failure_kind": { "type": ["string", "null"], "description": "The failure kind the provider gave a refused or failed call: a kind of peppy or of the contract of the member. Null when the provider gave none." },
                             "message": { "type": ["string", "null"], "description": "What ended a call that did not complete: the provider's message of a refused or failed call, the reason of a cancelled call, or the endpoint's words. Null for a running or completed call." },
@@ -227,8 +232,8 @@ impl CallRecord {
 
 /// A call from its start to its end: the entry it writes when the endpoint
 /// records it, nothing otherwise. The first end recorded stands; a
-/// recording dropped before one ends its call as cancelled, in the words
-/// of [`CANCELLED_BEFORE_ITS_END`].
+/// recording dropped before one ends its call as failed, in the words of
+/// [`EXPIRED_BEFORE_ITS_END`].
 pub(crate) struct Recording {
     kept: Option<Kept>,
 }
@@ -273,7 +278,8 @@ impl Recording {
         self.end(End::worded(Outcome::Failed, message));
     }
 
-    /// The goal ended cancelled for `reason`, or the task was.
+    /// The goal ended cancelled for `reason`, or the task was before its
+    /// goal started.
     pub(crate) fn cancelled(&mut self, reason: String) {
         self.end(End::worded(Outcome::Cancelled, reason));
     }
@@ -329,7 +335,7 @@ impl Recording {
 
 impl Drop for Recording {
     fn drop(&mut self) {
-        self.cancelled(CANCELLED_BEFORE_ITS_END.to_string());
+        self.failed(EXPIRED_BEFORE_ITS_END.to_string());
     }
 }
 
@@ -447,13 +453,17 @@ mod tests {
     }
 
     #[test]
-    fn a_recording_dropped_while_running_ends_as_cancelled() {
+    fn a_recording_dropped_while_running_ends_failed_saying_the_goal_was_not_cancelled() {
         let (record, _) = record(2);
         let recording = record.start(None, "tool", &object(json!({})));
         drop(recording);
         let answer = record.answer();
-        assert_eq!(answer["calls"][0]["outcome"], "cancelled");
-        assert_eq!(answer["calls"][0]["message"], CANCELLED_BEFORE_ITS_END);
+        assert_eq!(answer["calls"][0]["outcome"], "failed");
+        assert_eq!(answer["calls"][0]["failure_kind"], Value::Null);
+        assert_eq!(
+            answer["calls"][0]["message"],
+            "the task expired before its goal ended; the endpoint did not cancel the goal"
+        );
     }
 
     /// The entry an action's exit leaves, newest first in the record.

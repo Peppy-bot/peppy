@@ -44,6 +44,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
+use tokio_util::sync::CancellationToken;
 
 /// The id the SEP-2663 tasks extension is declared under in a client's
 /// `extensions` capability map.
@@ -614,7 +615,7 @@ impl ExposureServer {
     /// streams it holds open.
     fn http_service(
         self,
-        shutdown: &tokio_util::sync::CancellationToken,
+        shutdown: &CancellationToken,
     ) -> StreamableHttpService<Self, LocalSessionManager> {
         let config = StreamableHttpServerConfig::default()
             .with_legacy_session_mode(false)
@@ -919,7 +920,10 @@ impl ExposureServer {
     /// the HTTP status and headers with the handler's first message, so the
     /// first progress notification reaches the client as soon as the goal
     /// reports, and a call without a progress token receives nothing, not
-    /// even its headers, before the result.
+    /// even its headers, before the result. The relay to the client holds
+    /// [`RELAYED_FEEDBACK_MESSAGES`] message: the bridge reads the next
+    /// message of its goal only once the client takes the one before (see
+    /// [`ActionContext::report_feedback`]).
     ///
     /// A confirmation-gated action is refused: the confirmation is an
     /// in-task input request, so a task is the only surface that can ask
@@ -930,8 +934,8 @@ impl ExposureServer {
         task: &Arc<TaskState>,
         arguments: JsonObject,
         client: Option<ClientIdentity>,
-        closed: tokio_util::sync::CancellationToken,
-        progress: Option<ProgressReporter>,
+        closed: CancellationToken,
+        progress: impl FeedbackSink,
     ) -> Result<CallToolResult, McpError> {
         let mut recording = self.record_call(client, &task.entry.name, &arguments);
         if task.entry.confirmation_required {
@@ -947,14 +951,17 @@ impl ExposureServer {
             &mut recording,
         )?;
 
-        let (feedback, relay) = mpsc::unbounded_channel();
+        let (feedback, relay) = mpsc::channel(RELAYED_FEEDBACK_MESSAGES);
         let action_context = ActionContext {
-            surface: ActionSurface::Call { feedback, closed },
+            surface: ActionSurface::Call {
+                feedback,
+                closed: closed.clone(),
+            },
         };
         let operation = task.handler.start(call, action_context);
         let outcome = within_goal_bound(
             task.entry.bound,
-            relay_feedback_until_settled(operation, relay, progress),
+            relay_feedback_until_settled(operation, relay, progress, &closed),
         )
         .await;
         let outcome = match outcome {
@@ -1023,10 +1030,12 @@ fn tool_answer(entry: &ToolEntry, value: Value) -> Result<CallToolResult, String
 /// runtime enforces and never races it.
 ///
 /// Under a progress bound it is [`PROGRESS_TASK_TTL_MS`]. The goal's bridge
-/// fails it once it goes a whole window without a sign of progress, long
-/// before that; the TTL ends, with the manager's generic expiry, only a goal
-/// that keeps making progress for a whole day. The one wait before the
-/// goal, the confirmation, is refused together with a progress bound.
+/// fails the task once the goal goes a whole window without a sign of
+/// progress, long before that; the TTL ends, with the manager's generic
+/// expiry, only a task whose goal keeps making progress for a whole day.
+/// The goal gets no cancel at the TTL: the task's entry in the call record
+/// says so. The one wait before the goal, the confirmation, is refused
+/// together with a progress bound.
 fn task_ttl_ms(bound: GoalBound) -> u64 {
     match bound {
         GoalBound::WholeGoal { deadline_ms } => deadline_ms.get().saturating_add(TASK_TTL_GRACE_MS),
@@ -1035,13 +1044,13 @@ fn task_ttl_ms(bound: GoalBound) -> u64 {
 }
 
 /// Runs a goal's operation under the goal's bound. A whole-goal deadline is
-/// enforced here, and the error is the failure message of an overrun. A
-/// progress-bound goal runs to its end: its bridge, the one layer that sees
-/// every sign of progress, bounds the time between two of them, and a
-/// timeout here would cut a goal that still makes progress (and, dropping
-/// the bridge, leave the provider without a cancel). Its total time is
-/// bounded outside: in a task by the TTL (see [`task_ttl_ms`]), in a call by
-/// the client, which decides how long it waits for the call.
+/// enforced here, and the error is the failure message of an overrun: the
+/// operation is dropped, and the goal gets no cancel. A progress-bound goal
+/// runs to its end: its bridge, the one layer that sees every sign of
+/// progress, bounds the time between two of them, and a timeout here would
+/// cut a goal that still makes progress. Its total time is bounded outside:
+/// in a task by the TTL (see [`task_ttl_ms`]), in a call by the client,
+/// which decides how long it waits for the call.
 async fn within_goal_bound<T>(
     bound: GoalBound,
     operation: impl Future<Output = T>,
@@ -1084,25 +1093,60 @@ fn deadline_exceeded(deadline: Duration) -> String {
     )
 }
 
-/// Relays a goal's feedback to `sink`, in the order it was reported, while
-/// the goal runs. Feedback still queued when the goal settles is relayed
-/// before the outcome is returned, so the result never overtakes the
-/// progress that led to it.
+/// How many feedback messages the relay of a call holds for its client:
+/// one. Unread feedback waits in the goal's feedback buffer, whose bound
+/// holds a client that falls behind, and not in the endpoint's memory.
+const RELAYED_FEEDBACK_MESSAGES: usize = 1;
+
+/// Runs a goal's `operation` and relays its feedback to `sink`, in the
+/// order it was reported, until the goal settles. Feedback still queued
+/// when the goal settles is relayed before the outcome is returned, so the
+/// result never overtakes the progress that led to it.
+///
+/// The operation runs while a message waits for the client, so a bridge
+/// sees the close of the call at once and sends its goal the cancel. The
+/// relay stops when the call closes, a message that waits for the client
+/// included: after the close nothing reads the call, and a notification on
+/// it waits for the transport to give up.
 async fn relay_feedback_until_settled(
-    mut operation: Pin<Box<dyn Future<Output = Result<Value, ActionExit>> + Send>>,
-    mut relay: mpsc::UnboundedReceiver<String>,
-    mut sink: impl FeedbackSink,
+    operation: Pin<Box<dyn Future<Output = Result<Value, ActionExit>> + Send>>,
+    relay: mpsc::Receiver<String>,
+    sink: impl FeedbackSink,
+    closed: &CancellationToken,
 ) -> Result<Value, ActionExit> {
-    let outcome = loop {
+    let settled = CancellationToken::new();
+    let goal = async {
+        let outcome = operation.await;
+        settled.cancel();
+        outcome
+    };
+    let relaying = async {
         tokio::select! {
-            outcome = &mut operation => break outcome,
-            Some(message) = relay.recv() => sink.report(message).await,
+            () = relay_feedback(relay, sink, &settled) => {}
+            () = closed.cancelled() => {}
         }
     };
-    while let Ok(message) = relay.try_recv() {
+    let (outcome, ()) = tokio::join!(goal, relaying);
+    outcome
+}
+
+/// Relays each message of `relay` to `sink` until the goal has `settled`,
+/// then the messages that it reported before it settled.
+async fn relay_feedback(
+    mut relay: mpsc::Receiver<String>,
+    mut sink: impl FeedbackSink,
+    settled: &CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            Some(message) = relay.recv() => sink.report(message).await,
+            () = settled.cancelled() => break,
+        }
+    }
+    relay.close();
+    while let Some(message) = relay.recv().await {
         sink.report(message).await;
     }
-    outcome
 }
 
 /// Where a call relays the goal's feedback to.
@@ -1147,8 +1191,7 @@ impl FeedbackSink for ProgressReporter {
             .with_message(message);
         if let Err(error) = self.peer.notify_progress(notification).await {
             // The call's stream is the only route to the client; once it
-            // is gone the goal is being cancelled and feedback has no
-            // reader.
+            // is gone the call is closed and feedback has no reader.
             tracing::debug!(%error, "dropping feedback the call can no longer deliver");
         }
     }
@@ -1209,7 +1252,7 @@ impl ExposureSet {
     pub async fn serve(
         self,
         listener: tokio::net::TcpListener,
-        shutdown: tokio_util::sync::CancellationToken,
+        shutdown: CancellationToken,
     ) -> std::io::Result<()> {
         let mut router = axum::Router::new();
         let mut managers = Vec::with_capacity(self.servers.len());
@@ -1257,6 +1300,10 @@ const CONFIRMATION_INPUT_KEY: &str = "confirmation";
 /// What the record says of a task whose confirmation was not accepted.
 const CONFIRMATION_DECLINED: &str = "the confirmation was declined: the goal never ran";
 
+/// What the record says of a task that its client cancelled while the
+/// confirmation waited.
+const CANCELLED_BEFORE_THE_GOAL: &str = "the task was cancelled before its goal started";
+
 async fn drive_task(
     task: Arc<TaskState>,
     call: ToolCall,
@@ -1277,9 +1324,16 @@ async fn drive_task(
             ),
             requested_schema: ElicitationSchema::new(Default::default()),
         });
-        let response = context
+        let response = match context
             .request_input(CONFIRMATION_INPUT_KEY, InputRequest::Elicitation(request))
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(exit) => {
+                record_confirmation_exit(recording, &exit);
+                return Err(exit);
+            }
+        };
         let confirmed = serde_json::from_value::<ElicitResult>(response)
             .is_ok_and(|result| result.action == ElicitationAction::Accept);
         if !confirmed {
@@ -1316,6 +1370,16 @@ async fn drive_task(
             other.to_string(),
             None,
         ))),
+    }
+}
+
+/// Records how a task ended that left its confirmation before an answer:
+/// cancelled when its client cancelled it, failed with the manager's
+/// words otherwise.
+fn record_confirmation_exit(recording: &mut Recording, exit: &TaskExit) {
+    match exit {
+        TaskExit::Cancelled => recording.cancelled(CANCELLED_BEFORE_THE_GOAL.to_string()),
+        TaskExit::Error(error) => recording.failed(error.message.to_string()),
     }
 }
 
@@ -1847,7 +1911,6 @@ mod tests {
     use crate::tasks::CancelledGoal;
     use rmcp::model::ErrorCode;
     use std::sync::atomic::Ordering;
-    use tokio_util::sync::CancellationToken;
 
     fn test_bundle() -> ExposureBundle {
         ExposureBundle::from_json_str(
@@ -2106,9 +2169,19 @@ mod tests {
         closed: CancellationToken,
     ) -> Result<CallToolResult, McpError> {
         server
-            .run_action_in_call(&task_named(server, name), arguments, None, closed, None)
+            .run_action_in_call(
+                &task_named(server, name),
+                arguments,
+                None,
+                closed,
+                NO_PROGRESS_TOKEN,
+            )
             .await
     }
+
+    /// The progress notifications of a call that carries no progress
+    /// token: none.
+    const NO_PROGRESS_TOKEN: Option<ProgressReporter> = None;
 
     /// Stands in for the call's progress notifications: every relayed
     /// message lands on the channel in the order the relay handed it over.
@@ -2387,34 +2460,172 @@ mod tests {
     async fn feedback_inside_a_call_is_relayed_in_order_before_the_result() {
         let (relayed, mut received) = mpsc::unbounded_channel();
         let server = server_with_resume(|_call: ToolCall, context: ActionContext| async move {
-            context.report_feedback("frame 1");
-            context.report_feedback("frame 2");
+            context.report_feedback("frame 1").await;
+            context.report_feedback("frame 2").await;
             Ok(json!({ "resumed": true }))
         });
-        let task = task_named(&server, "recorder.resume_session");
-        let (feedback, relay) = mpsc::unbounded_channel();
-        let context = ActionContext {
-            surface: ActionSurface::Call {
-                feedback,
-                closed: CancellationToken::new(),
-            },
-        };
-        let operation = task.handler.start(
-            ToolCall {
-                input: JsonObject::new().into(),
-                recipient: Recipient::BoundProducer,
-            },
-            context,
-        );
-        let outcome = relay_feedback_until_settled(operation, relay, Some(relayed))
+        let result = server
+            .run_action_in_call(
+                &task_named(&server, "recorder.resume_session"),
+                JsonObject::new(),
+                None,
+                CancellationToken::new(),
+                Some(relayed),
+            )
             .await
-            .expect("the goal completes");
-        assert_eq!(outcome, json!({ "resumed": true }));
+            .expect("the call answers with the goal's result");
+        assert_eq!(result.structured_content, Some(json!({ "resumed": true })));
         let mut messages = Vec::new();
         while let Ok(message) = received.try_recv() {
             messages.push(message);
         }
         assert_eq!(messages, ["frame 1", "frame 2"]);
+    }
+
+    /// The progress notifications of a client that takes the first one
+    /// only when the test lets it go: each message is kept in the order
+    /// the relay handed it over.
+    struct HeldClient {
+        taken: Arc<std::sync::Mutex<Vec<String>>>,
+        holds: Arc<tokio::sync::Notify>,
+        release: Option<tokio::sync::oneshot::Receiver<()>>,
+    }
+
+    /// What the test keeps of a [`HeldClient`]: what it took, the signal
+    /// that it holds the first message, and what lets it go.
+    struct HeldClientHandle {
+        taken: Arc<std::sync::Mutex<Vec<String>>>,
+        holds: Arc<tokio::sync::Notify>,
+        release: tokio::sync::oneshot::Sender<()>,
+    }
+
+    impl HeldClient {
+        fn new() -> (Self, HeldClientHandle) {
+            let taken = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let holds = Arc::new(tokio::sync::Notify::new());
+            let (release, released) = tokio::sync::oneshot::channel();
+            let client = Self {
+                taken: Arc::clone(&taken),
+                holds: Arc::clone(&holds),
+                release: Some(released),
+            };
+            let handle = HeldClientHandle {
+                taken,
+                holds,
+                release,
+            };
+            (client, handle)
+        }
+    }
+
+    impl HeldClientHandle {
+        fn taken(&self) -> Vec<String> {
+            self.taken.lock().expect("never poisoned").clone()
+        }
+    }
+
+    impl FeedbackSink for HeldClient {
+        async fn report(&mut self, message: String) {
+            self.taken.lock().expect("never poisoned").push(message);
+            let Some(release) = self.release.take() else {
+                return;
+            };
+            self.holds.notify_one();
+            // A client that is never let go holds the message for good, as
+            // a notification on a closed call waits for the transport.
+            let _ = release.await;
+        }
+    }
+
+    /// A server whose progress-bound `recorder.resume_session` goal runs
+    /// `goal`: nothing but the goal and the test bounds it.
+    fn server_with_progress_goal(goal: impl TaskHandler) -> ExposureServer {
+        server_with_actions(progress_bundle(), record_handler, goal)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_call_relays_one_message_at_a_time_and_its_goal_waits_for_the_client() {
+        let reported = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&reported);
+        let server = server_with_progress_goal(move |_call: ToolCall, context: ActionContext| {
+            let reported = Arc::clone(&counted);
+            async move {
+                for frame in 1..=3 {
+                    context.report_feedback(format!("frame {frame}")).await;
+                    reported.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(json!({ "resumed": true }))
+            }
+        });
+        let (client, held) = HeldClient::new();
+        let task = task_named(&server, "recorder.resume_session");
+        let call = server.run_action_in_call(
+            &task,
+            JsonObject::new(),
+            None,
+            CancellationToken::new(),
+            client,
+        );
+        let client_side = async {
+            held.holds.notified().await;
+            // Paused time moves on only once nothing else can run: by then
+            // the goal reported all that the relay takes.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            assert_eq!(
+                reported.load(Ordering::SeqCst),
+                2,
+                "frame 1 waits for the client, frame 2 waits in the relay, frame 3 waits for room"
+            );
+            assert_eq!(held.taken(), ["frame 1"]);
+            held.release.send(()).expect("the client still holds");
+            held.taken
+        };
+        let (result, taken) = tokio::join!(call, client_side);
+        let result = result.expect("the call answers with the goal's result");
+        assert_eq!(result.structured_content, Some(json!({ "resumed": true })));
+        assert_eq!(reported.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            *taken.lock().expect("never poisoned"),
+            ["frame 1", "frame 2", "frame 3"]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn closing_the_call_reaches_the_goal_while_a_message_waits_for_the_client() {
+        let server =
+            server_with_progress_goal(|_call: ToolCall, context: ActionContext| async move {
+                context.report_feedback("frame 1").await;
+                context.cancel_requested().await;
+                // The relay stopped at the close: a report returns at once.
+                context.report_feedback("frame 2").await;
+                Err(ActionExit::Cancelled(CancelledGoal {
+                    result: cancelled_resume(),
+                    reason: "cancelled by its caller".to_owned(),
+                }))
+            });
+        // The client never takes frame 1.
+        let (client, held) = HeldClient::new();
+        let closed = CancellationToken::new();
+        let task = task_named(&server, "recorder.resume_session");
+        let call =
+            server.run_action_in_call(&task, JsonObject::new(), None, closed.clone(), client);
+        let close = async {
+            held.holds.notified().await;
+            closed.cancel();
+        };
+        // Paused time: a goal that does not see the close leaves nothing to
+        // run, and the clock jumps to the end of this bound at once.
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(3600), async {
+            tokio::join!(call, close)
+        })
+        .await
+        .expect("the goal sees the close while the client holds a message");
+        let result = result.expect("a cancelled goal is a tool error, not a protocol error");
+        assert_eq!(
+            tool_error_text(&result),
+            "the action was cancelled: cancelled by its caller"
+        );
+        assert_eq!(held.taken(), ["frame 1"]);
     }
 
     #[tokio::test]
@@ -2451,11 +2662,11 @@ mod tests {
     async fn feedback_reports_as_the_status_message_and_a_cancelled_goal_cancels_the_task_saying_why()
      {
         let server = server_with_resume(|_call: ToolCall, context: ActionContext| async move {
-            context.report_feedback("resuming at frame 42");
+            context.report_feedback("resuming at frame 42").await;
             context.cancel_requested().await;
             Err(ActionExit::Cancelled(CancelledGoal {
                 result: cancelled_resume(),
-                reason: "no progress within 2000 ms".to_owned(),
+                reason: "cancelled by its caller".to_owned(),
             }))
         });
         let created = start_task(&server, "recorder.resume_session", JsonObject::new())
@@ -2473,7 +2684,7 @@ mod tests {
         assert_eq!(
             task.task.status_message,
             Some(format!(
-                "the action was cancelled: no progress within 2000 ms: {}",
+                "the action was cancelled: cancelled by its caller: {}",
                 cancelled_resume()
             ))
         );
@@ -2683,7 +2894,7 @@ mod tests {
                 let started = Arc::clone(&started);
                 let gate = Arc::clone(&gate);
                 async move {
-                    context.report_feedback("resuming");
+                    context.report_feedback("resuming").await;
                     started.notify_one();
                     gate.notified().await;
                     Ok(json!({ "resumed": true }))
@@ -4744,7 +4955,7 @@ mod tests {
                 JsonObject::new(),
                 a_client(),
                 CancellationToken::new(),
-                None,
+                NO_PROGRESS_TOKEN,
             )
             .await
             .expect("the call answers");
@@ -4826,7 +5037,7 @@ mod tests {
                 JsonObject::new(),
                 None,
                 closed,
-                None,
+                NO_PROGRESS_TOKEN,
             )
             .await
             .expect("a cancelled goal is a tool error");
@@ -4845,7 +5056,7 @@ mod tests {
                 JsonObject::new(),
                 None,
                 CancellationToken::new(),
-                None,
+                NO_PROGRESS_TOKEN,
             )
             .await
             .expect("a refused goal is a tool error");
@@ -4886,7 +5097,7 @@ mod tests {
                 JsonObject::new(),
                 None,
                 CancellationToken::new(),
-                None,
+                NO_PROGRESS_TOKEN,
             )
             .await
             .expect("an overrun is a tool error");
@@ -4909,7 +5120,7 @@ mod tests {
                 object(json!({ "episode_name": "demo" })),
                 None,
                 CancellationToken::new(),
-                None,
+                NO_PROGRESS_TOKEN,
             )
             .await
             .expect_err("the confirmation needs a task");
@@ -4964,5 +5175,92 @@ mod tests {
         assert_eq!(calls[0]["tool"], "front_camera.set_brightness");
         assert_eq!(calls[1]["tool"], "recorder.record_episode");
         assert_eq!(calls[1]["outcome"], "cancelled");
+    }
+
+    #[tokio::test]
+    async fn a_cancel_while_the_confirmation_waits_is_recorded_as_cancelled() {
+        let (server, _) = built_record_server();
+        let created = server
+            .start_task(
+                &task_named(&server, "recorder.record_episode"),
+                object(json!({ "episode_name": "demo" })),
+                None,
+            )
+            .expect("the task starts");
+        let task_id = created.task.task_id;
+        task_matching(&server, &task_id, "input_required", |task| {
+            task.status() == rmcp::model::TaskStatus::InputRequired
+        })
+        .await;
+        server.state.manager.cancel_task(&task_id).expect("cancels");
+        let task = settled(&server, &task_id).await;
+        assert_eq!(task.status(), rmcp::model::TaskStatus::Cancelled);
+        let calls = recorded_calls(&server);
+        assert_eq!(calls[0]["outcome"], "cancelled");
+        assert_eq!(calls[0]["failure_kind"], Value::Null);
+        assert_eq!(calls[0]["message"], CANCELLED_BEFORE_THE_GOAL);
+    }
+
+    #[tokio::test]
+    async fn a_task_that_expires_is_recorded_as_failed_and_its_goal_gets_no_cancel() {
+        let (contexts, mut running) = mpsc::unbounded_channel();
+        let (builder, _) = record_builder();
+        let server = builder
+            .with_task(
+                "recorder.resume_session",
+                move |_call: ToolCall, context: ActionContext| {
+                    let contexts = contexts.clone();
+                    async move {
+                        contexts
+                            .send(context.clone())
+                            .expect("the test holds the receiver");
+                        context.cancel_requested().await;
+                        Err(ActionExit::Cancelled(CancelledGoal {
+                            result: cancelled_resume(),
+                            reason: "cancelled by its caller".to_owned(),
+                        }))
+                    }
+                },
+            )
+            .build()
+            .expect("builds");
+        let task = task_named(&server, "recorder.resume_session");
+        let arguments = JsonObject::new();
+        let recording = server.record_call(None, &task.entry.name, &arguments);
+        let call = ToolCall {
+            input: Value::Object(arguments),
+            recipient: Recipient::BoundProducer,
+        };
+        // The task runs as `start_task` runs it, under a TTL that has passed
+        // at the manager's first look.
+        server
+            .state
+            .manager
+            .spawn(TaskOptions::new().with_ttl_ms(0), move |context| {
+                Box::pin(run_task_operation(task, call, context, recording))
+            });
+        let context = running.recv().await.expect("the goal runs");
+
+        // The manager's next look ends the task at its TTL and aborts its
+        // operation. The entry ends once the runtime dropped the operation.
+        assert_eq!(server.state.manager.running_task_count(), 0);
+        let mut entry = Value::Null;
+        for _ in 0..100_000 {
+            entry = recorded_calls(&server)[0].clone();
+            if entry["outcome"] != "running" {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(entry["outcome"], "failed", "{entry}");
+        assert_eq!(entry["failure_kind"], Value::Null, "{entry}");
+        assert_eq!(
+            entry["message"],
+            "the task expired before its goal ended; the endpoint did not cancel the goal"
+        );
+        assert!(
+            !context.is_cancel_requested(),
+            "the expiry asks the goal for no cancel"
+        );
     }
 }

@@ -341,11 +341,13 @@ fn log_unwatched_end(change: &Change, end: &ChangeEvent) {
 /// Waits, on behalf of a call, for a change that a task of the bridge owns
 /// (see the module's documentation for how the call ends). Each line of the
 /// change's progress reaches the client through `surface` as "{step}:
-/// {line}", the first one as soon as the daemon admits the change. A cancel
-/// of the client reaches the daemon, and the call waits for the end the
-/// daemon then gives the change. `window` is the most silence the call waits
-/// through, `None` under a whole-goal deadline that the runtime holds the
-/// call to.
+/// {line}", the first one as soon as the daemon admits the change, and the
+/// next event is read once the client took the line. A cancel of the client
+/// reaches the daemon, and the call waits for the end the daemon then gives
+/// the change. `window` is the most silence the call waits through, `None`
+/// under a whole-goal deadline that the runtime holds the call to. An event
+/// that arrived while the client took a line wins over a window that ran
+/// out meanwhile: the daemon showed progress.
 pub(super) async fn wait_for_change(
     started: StartedChange,
     change: &Change,
@@ -367,14 +369,14 @@ pub(super) async fn wait_for_change(
             )));
         }
     };
-    surface.report_feedback(change.accepted());
+    surface.report_feedback(change.accepted()).await;
     let mut silence = window.map(Silence::new);
     loop {
         let event = tokio::select! {
             biased;
             () = surface.cancel_requested(), if !cancel.is_cancelled() => {
                 cancel.cancel();
-                surface.report_feedback(change.cancelling());
+                surface.report_feedback(change.cancelling()).await;
                 continue;
             }
             event = events.recv() => event,
@@ -382,10 +384,12 @@ pub(super) async fn wait_for_change(
         };
         match event {
             Some(ChangeEvent::Progress(output)) => {
-                surface.report_feedback(format!("{}: {}", output.step.phase_label(), output.line));
                 if let Some(silence) = &mut silence {
                     silence.restart();
                 }
+                surface
+                    .report_feedback(format!("{}: {}", output.step.phase_label(), output.line))
+                    .await;
             }
             Some(ChangeEvent::Ended(end)) => return change.outcome(&end, &log_path),
             Some(ChangeEvent::NoEnd(error)) => {
