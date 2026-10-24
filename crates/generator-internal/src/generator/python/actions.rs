@@ -103,33 +103,49 @@ pub fn build_exposed_action(
     // GoalDecision controls framework admission, carried by the goal-ack
     // envelope independently of the declared response payload. An accept
     // carries the declared GoalResponse when one exists; a refusal carries a
-    // failure of a kind the member declares, and no response.
-    let response_type = if has_goal_response {
-        "GoalResponse | None"
-    } else {
-        "None"
-    };
+    // failure of a kind the member declares, and no response. The
+    // constructor takes no other pair, so a decision that the server cannot
+    // send raises where it is built.
     builder.block("class GoalDecision:", |builder| {
         builder.docstring(
             "The decision of a goal handler: accept the goal, or refuse it with a failure.",
         );
         builder.blank_line();
-        builder.block(
-            &format!(
-                "def __init__(self, response: {response_type}, refusal: Failure | None) -> None:"
-            ),
-            |builder| {
-                builder.lines(["self.response = response", "self.refusal = refusal"]);
-            },
-        );
+        if has_goal_response {
+            builder.py(r#"
+def __init__(self, response: GoalResponse | None, refusal: Failure | None) -> None:
+    """An accept with the declared `response`, or a refusal with no response.
+
+    Raises ValueError for both or neither. The refusal is parsed again as a
+    Failure of this member, which raises for a kind that this member does
+    not declare.
+    """
+    if (response is None) == (refusal is None):
+        raise ValueError("a goal decision is an accept with the declared GoalResponse, or a refusal with no response")
+    self.response = response
+    self.refusal = None if refusal is None else Failure(*refusal.args)
+"#);
+        } else {
+            builder.py(r#"
+def __init__(self, response: None, refusal: Failure | None) -> None:
+    """An accept when `refusal` is None, else a refusal.
+
+    Raises ValueError for a response, which this action does not declare.
+    The refusal is parsed again as a Failure of this member, which raises
+    for a kind that this member does not declare.
+    """
+    if response is not None:
+        raise ValueError("this action declares no GoalResponse")
+    self.response = None
+    self.refusal = None if refusal is None else Failure(*refusal.args)
+"#);
+        }
         builder.blank_line();
         builder.line("@staticmethod");
         if has_goal_response {
             builder.py(r#"
 def accept(response: GoalResponse) -> "GoalDecision":
     """Accepts the goal and replies with the declared response."""
-    if response is None:
-        raise ValueError("GoalDecision.accept requires the declared GoalResponse")
     return GoalDecision(response, None)
 "#);
         } else {
@@ -145,7 +161,8 @@ def accept() -> "GoalDecision":
 def refuse(kind: FailureKind, message: str) -> "GoalDecision":
     """Refuses the goal with a failure kind that this member declares and a message.
 
-    Raises ValueError for any other kind. A refusal carries no goal response.
+    Raises ValueError for any other kind, and TypeError for a message that
+    is not a str. A refusal carries no goal response.
     """
     return GoalDecision(None, Failure(kind, message))
 "#);
@@ -198,6 +215,41 @@ def refuse(kind: FailureKind, message: str) -> "GoalDecision":
     let expose_target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
     let has_feedback_py = if has_feedback { "True" } else { "False" };
+
+    // The answer of the handler to one goal. A handler shared between
+    // members can give the GoalDecision of another member: building it
+    // again as a decision of this member parses its refusal as a failure of
+    // this member, so a kind that this member does not declare raises
+    // ValueError before the wire.
+    builder.block(
+        "async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> \"Failure | bytes\":",
+        |builder| {
+            builder.multiline_docstring(
+                "The answer of `handler` to the goal `request`: a refusal, or the encoded response of an accept.",
+                [
+                    "The decision of `handler` is built again as a decision of this member,",
+                    "so a decision that this member cannot send raises.",
+                ],
+            );
+            builder.py(r#"
+decision = handler(request)
+if hasattr(decision, "__await__"):
+    decision = await decision
+decision = GoalDecision(decision.response, decision.refusal)
+if decision.refusal is not None:
+    return decision.refusal
+"#);
+            if let Some((fmt, info)) = goal_response_format.zip(goal_response_schema_info) {
+                builder.line("response = decision.response");
+                serialization::emit_new_capnp_message(builder, info, fmt, "response");
+                builder.line("return capnp_msg.to_bytes()");
+            } else {
+                builder.line("return b\"\"");
+            }
+        },
+    );
+    builder.blank_line();
+
     builder.block("class ActionHandle:", |builder| {
         // expose
         builder.line("@classmethod");
@@ -241,6 +293,22 @@ async def set_sender_grace(self, seconds: float) -> None:
         builder.block(
             "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> \"GoalContext | None\":",
             |builder| {
+                let mut doc = vec![
+                    "Gives the context of that goal, or None when the goal stream closes.",
+                    "Each refused goal is answered and skipped.",
+                ];
+                if has_goal_request {
+                    doc.push("A goal request that does not decode is refused with the kind `rejected`.");
+                }
+                doc.extend([
+                    "A handler that raises, or that gives a decision that this action cannot",
+                    "send, refuses the goal with the kind `attempt_failed` and the text of the",
+                    "error.",
+                ]);
+                builder.multiline_docstring(
+                    "Answers the goals of this action with `handler` up to the next goal that it accepts.",
+                    doc,
+                );
                 builder.block("while True:", |builder| {
                     builder.py(r#"
 pending = await self._inner.recv_next_goal()
@@ -264,26 +332,21 @@ request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_no
                             "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)",
                         );
                     }
-                    // Refused: answer the client and keep polling for the
-                    // next goal. A refusal never ends the accept loop.
+                    // A refusal answers the client, and the loop polls for
+                    // the next goal: a refusal never ends the accept loop. A
+                    // handler that raises, or that gives a decision that
+                    // this member cannot send, refuses the goal with
+                    // `attempt_failed` and the error, as a service handler
+                    // that raises gives an error reply of that kind.
                     builder.py(r#"
-decision = handler(request)
-if hasattr(decision, "__await__"):
-    decision = await decision
-if decision.refusal is not None:
-    await pending.refuse(decision.refusal.kind.value, decision.refusal.message)
+try:
+    answer = await _goal_answer(handler, request)
+except Exception as error:
+    answer = Failure(FailureKind.ATTEMPT_FAILED, f"the goal handler raised {type(error).__name__}: {error}")
+if isinstance(answer, Failure):
+    await pending.refuse(answer.kind.value, answer.message)
     continue
-"#);
-                    // Serialize the declared GoalResponse an accept carries.
-                    if let Some((fmt, info)) = goal_response_format.zip(goal_response_schema_info) {
-                        builder.line("response = decision.response");
-                        serialization::emit_new_capnp_message(builder, info, fmt, "response");
-                        builder.line("response_bytes = capnp_msg.to_bytes()");
-                    } else {
-                        builder.line("response_bytes = b\"\"");
-                    }
-                    builder.py(r#"
-ctx = await pending.accept(response_bytes)
+ctx = await pending.accept(answer)
 return GoalContext(ctx, request)
 "#);
                 });
@@ -321,12 +384,20 @@ def is_cancelled(self) -> bool:
 def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
     """Why this goal received its cancel signal; None before it did."""
     return self._inner.cancel_cause
+def cancel_reason(self) -> str | None:
+    """The reason that the cause of the cancel signal gives, for complete_cancelled.
+
+    "cancelled by its caller" or "its sender is gone"; None before the goal
+    received its cancel signal.
+    """
+    return self._inner.cancel_reason
 async def fail(self, kind: FailureKind, message: str) -> None:
     """Ends the goal with the status failed, with no result.
 
     A failure kind that this member declares and a message: raises
-    ValueError for any other kind. The first of complete, fail and
-    complete_cancelled ends the goal; later calls do nothing.
+    ValueError for any other kind, and TypeError for a message that is not
+    a str. The first of complete, fail and complete_cancelled ends the goal;
+    later calls do nothing.
     """
     failure = Failure(kind, message)
     await self._inner.fail(failure.kind.value, failure.message)

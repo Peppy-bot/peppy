@@ -897,6 +897,13 @@ def __init__(self, context) -> None:
             },
         );
         builder.blank_line();
+        builder.block("def cancel_reason(self) -> str | None:", |builder| {
+            builder.docstring(
+                "The reason that the cause of the cancel signal gives, for complete_cancelled; None before the goal received its cancel signal.",
+            );
+            builder.line("return self._context.cancel_reason");
+        });
+        builder.blank_line();
         builder.block(
             &format!("async def complete(self{complete_arg}) -> None:"),
             |builder| {

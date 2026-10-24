@@ -430,7 +430,7 @@ if __name__ == "__main__":
 
 /// Verifies that an **async goal decider** works end-to-end through the
 /// Python codegen: `handle_goal_next_request` awaits the handler when it
-/// returns an awaitable, so a server can `await` inside its accept/reject
+/// returns an awaitable, so a server can `await` inside its accept or refuse
 /// decision. After accepting, the worker publishes feedback through the
 /// `GoalContext` and completes the goal.
 #[rstest::rstest]
@@ -1512,7 +1512,7 @@ async def run_exposer(node_runner):
             # reason of its cause.
             await ctx.cancel_signal()
             print(f"server observed cancel for goal cause={ctx.cancel_cause()}", flush=True)
-            await ctx.complete_cancelled("cancelled by its caller", False, "goal cancelled by server", [0, 0, 0])
+            await ctx.complete_cancelled(ctx.cancel_reason(), False, "goal cancelled by server", [0, 0, 0])
         elif ctx.request().data.arm_id == 9:
             await ctx.fail(move_arm.FailureKind.UNREACHABLE, "no plan to [500, 500, 500]")
             print("server failed goal", flush=True)

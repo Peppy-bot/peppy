@@ -221,20 +221,20 @@ request = Request(instance_id=instance_id, core_node=core_node, data=request_dat
             }
 
             // The handler gives an error reply by raising or returning a
-            // `Failure`. A `peppylib.FailureError` of a kind this member does
-            // not declare raises ValueError here, so only a declared kind
-            // reaches the wire; any other exception gives `attempt_failed`.
+            // `peppylib.FailureError`: the `Failure` of this member, of
+            // another member, or of peppylib. Each is parsed again as a
+            // failure of this member, so a kind that this member does not
+            // declare raises ValueError here, before the wire, and gives
+            // `attempt_failed` as any other exception does.
             builder.py(r#"
 try:
     response = handler(request)
     if hasattr(response, "__await__"):
         response = await response
-except Failure:
-    raise
 except peppylib.FailureError as error:
     raise Failure(*error.args) from error
-if isinstance(response, Failure):
-    raise response
+if isinstance(response, peppylib.FailureError):
+    raise Failure(*response.args) from None
 "#);
             let Some((resp_fmt, resp_info)) = response_format.zip(response_schema_info) else {
                 builder.line("return b\"\"");
@@ -259,10 +259,11 @@ if isinstance(response, Failure):
                 "Answers the next request of this service with `handler`.",
                 [
                     "The response of the handler is a success. A `Failure` that it raises or",
-                    "returns gives the caller an error reply of a kind that this member",
-                    "declares. A request that does not decode gets an error reply of the",
-                    "kind `rejected`, and any other exception one of the kind",
-                    "`attempt_failed`.",
+                    "returns gives the caller an error reply of its kind. So does any",
+                    "`peppylib.FailureError`, such as the `Failure` of another member, when",
+                    "this member declares its kind. A request that does not decode gets an",
+                    "error reply of the kind `rejected`, and any other exception, or a kind",
+                    "that this member does not declare, one of the kind `attempt_failed`.",
                 ],
             );
             builder.call(

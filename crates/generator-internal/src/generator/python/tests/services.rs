@@ -195,10 +195,17 @@ fn expose_service() {
             "response = await response",
             "except peppylib.FailureError as error:",
             "raise Failure(*error.args) from error",
-            "if isinstance(response, Failure):",
-            "raise response",
+            "if isinstance(response, peppylib.FailureError):",
+            "raise Failure(*response.args) from None",
             "return capnp_msg.to_bytes()",
         ],
+    );
+    // Every failure of the handler, raised or returned, is parsed again as a
+    // failure of this member: none reaches the wire as it is.
+    assert_rendered!(
+        !rendered.contains("except Failure:") && !rendered.contains("raise response\n"),
+        &rendered,
+        "expected no failure of the handler to reach the wire without a new parse"
     );
 
     // A native service gives the kinds of peppy only.

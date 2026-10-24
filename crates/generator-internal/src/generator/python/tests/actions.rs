@@ -212,13 +212,19 @@ fn exposed_action() {
 
     // GoalResponse mirrors response_message_format exactly. GoalDecision
     // controls framework admission independently: an accept carries the
-    // declared payload, a refusal carries a failure of a declared kind.
+    // declared payload, a refusal carries a failure of a declared kind. The
+    // constructor takes no other pair, and parses the refusal again as a
+    // failure of this member.
     assert_contains_all(
         &rendered,
         &[
             "class GoalResponse:",
             "accepted: bool",
             "class GoalDecision:",
+            "def __init__(self, response: GoalResponse | None, refusal: Failure | None) -> None:",
+            "if (response is None) == (refusal is None):",
+            "raise ValueError(\"a goal decision is an accept with the declared GoalResponse, or a refusal with no response\")",
+            "self.refusal = None if refusal is None else Failure(*refusal.args)",
             "def accept(response: GoalResponse) -> \"GoalDecision\":",
             "def refuse(kind: FailureKind, message: str) -> \"GoalDecision\":",
             "return GoalDecision(None, Failure(kind, message))",
@@ -284,17 +290,39 @@ fn exposed_action() {
         &rendered,
         &[
             "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> \"GoalContext | None\":",
+            "A goal request that does not decode is refused with the kind `rejected`.",
             "pending = await self._inner.recv_next_goal()",
             "    request_data = _deserialize_goal_request(pending.request_bytes)",
             "except (ValueError, capnp.KjException) as error:",
             "await pending.refuse(FailureKind.REJECTED.value, f\"goal request does not decode: {error}\")",
             "continue",
             "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)",
-            "if decision.refusal is not None:",
-            "await pending.refuse(decision.refusal.kind.value, decision.refusal.message)",
-            "response = decision.response",
-            "ctx = await pending.accept(response_bytes)",
+            "ctx = await pending.accept(answer)",
             "return GoalContext(ctx, request)",
+        ],
+    );
+
+    // The answer of the handler: its decision is built again as a decision
+    // of this member before anything of it reaches the wire, and an accept
+    // gives the encoded response.
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> \"Failure | bytes\":",
+            "decision = handler(request)",
+            "decision = await decision",
+            "decision = GoalDecision(decision.response, decision.refusal)\n    if decision.refusal is not None:\n        return decision.refusal\n    response = decision.response\n",
+            "return capnp_msg.to_bytes()",
+        ],
+    );
+
+    // A handler that raises, or that gives a decision that this member
+    // cannot send, refuses the goal with `attempt_failed`: the goal gets an
+    // answer and the loop keeps polling.
+    assert_contains_all(
+        &rendered,
+        &[
+            "            try:\n                answer = await _goal_answer(handler, request)\n            except Exception as error:\n                answer = Failure(FailureKind.ATTEMPT_FAILED, f\"the goal handler raised {type(error).__name__}: {error}\")\n            if isinstance(answer, Failure):\n                await pending.refuse(answer.kind.value, answer.message)\n                continue\n",
         ],
     );
 
@@ -317,6 +345,8 @@ fn exposed_action() {
             "async def cancel_signal(self) -> None:",
             "def is_cancelled(self) -> bool:",
             "def cancel_cause(self) -> Literal[\"caller\", \"sender_gone\"] | None:",
+            "def cancel_reason(self) -> str | None:",
+            "return self._inner.cancel_reason",
             "async def fail(self, kind: FailureKind, message: str) -> None:",
             "await self._inner.fail(failure.kind.value, failure.message)",
             "async def publish_feedback(self, new_position: list[int]) -> None:",
@@ -354,11 +384,17 @@ fn expose_action_without_request_body() {
             "async def handle_goal_next_request(",
         ],
     );
-    // No request data → no deserializer and a GoalRequest without `data`.
+    // No request data → no deserializer, no decode refusal, and a
+    // GoalRequest without `data`.
     assert_rendered!(
         !rendered.contains("def _deserialize_goal_request"),
         &rendered,
         "expected no _deserialize_goal_request when there is no request body"
+    );
+    assert_rendered!(
+        !rendered.contains("does not decode"),
+        &rendered,
+        "expected no decode refusal when there is no request body"
     );
     assert_contains_all(
         &rendered,
@@ -380,6 +416,38 @@ fn expose_action_without_request_body() {
     assert_contains_all(
         &rendered,
         &["async def publish_feedback(self, new_position: int, speed: int) -> None:"],
+    );
+}
+
+/// An action that declares no goal response accepts with no response: its
+/// decision takes none, and raises for one.
+#[test]
+fn expose_action_without_goal_response_takes_no_response_in_its_decision() {
+    let action: NativeExposedAction = serde_json5::from_str(r#"{ name: "home_arm" }"#).unwrap();
+
+    let mut generator = PythonGenerator::new();
+    generator.add_exposed_action(&action, None).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "def __init__(self, response: None, refusal: Failure | None) -> None:",
+            "if response is not None:",
+            "raise ValueError(\"this action declares no GoalResponse\")",
+            "self.refusal = None if refusal is None else Failure(*refusal.args)",
+            "def accept() -> \"GoalDecision\":",
+            "return GoalDecision(None, None)",
+            "decision = GoalDecision(decision.response, decision.refusal)\n    if decision.refusal is not None:\n        return decision.refusal\n    return b\"\"\n",
+        ],
+    );
+    assert_rendered!(
+        !rendered.contains("class GoalResponse"),
+        &rendered,
+        "expected no GoalResponse for an action that declares none"
     );
 }
 

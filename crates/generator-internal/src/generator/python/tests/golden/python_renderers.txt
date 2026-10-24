@@ -172,18 +172,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -218,12 +221,10 @@ async def _handle_request_payload(payload: bytes, handler: Callable[[Request], R
         response = handler(request)
         if hasattr(response, "__await__"):
             response = await response
-    except Failure:
-        raise
     except peppylib.FailureError as error:
         raise Failure(*error.args) from error
-    if isinstance(response, Failure):
-        raise response
+    if isinstance(response, peppylib.FailureError):
+        raise Failure(*response.args) from None
     capnp_msg = _enable_camera_response_message_capnp().EnableCameraResponseMessage.new_message()
     capnp_msg.enabled = response.enabled
     if response.error_msg is not None:
@@ -234,10 +235,11 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
     """Answers the next request of this service with `handler`.
 
     The response of the handler is a success. A `Failure` that it raises or
-    returns gives the caller an error reply of a kind that this member
-    declares. A request that does not decode gets an error reply of the
-    kind `rejected`, and any other exception one of the kind
-    `attempt_failed`.
+    returns gives the caller an error reply of its kind. So does any
+    `peppylib.FailureError`, such as the `Failure` of another member, when
+    this member declares its kind. A request that does not decode gets an
+    error reply of the kind `rejected`, and any other exception, or a kind
+    that this member does not declare, one of the kind `attempt_failed`.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -301,18 +303,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -347,22 +352,21 @@ async def _handle_request_payload(payload: bytes, handler: Callable[[Request], F
         response = handler(request)
         if hasattr(response, "__await__"):
             response = await response
-    except Failure:
-        raise
     except peppylib.FailureError as error:
         raise Failure(*error.args) from error
-    if isinstance(response, Failure):
-        raise response
+    if isinstance(response, peppylib.FailureError):
+        raise Failure(*response.args) from None
     return b""
 
 async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Failure | None]) -> None:
     """Answers the next request of this service with `handler`.
 
     The response of the handler is a success. A `Failure` that it raises or
-    returns gives the caller an error reply of a kind that this member
-    declares. A request that does not decode gets an error reply of the
-    kind `rejected`, and any other exception one of the kind
-    `attempt_failed`.
+    returns gives the caller an error reply of its kind. So does any
+    `peppylib.FailureError`, such as the `Failure` of another member, when
+    this member declares its kind. A request that does not decode gets an
+    error reply of the kind `rejected`, and any other exception, or a kind
+    that this member does not declare, one of the kind `attempt_failed`.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -425,18 +429,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -462,12 +469,10 @@ async def _handle_request_payload(handler: Callable[[Request], Response | Failur
         response = handler(request)
         if hasattr(response, "__await__"):
             response = await response
-    except Failure:
-        raise
     except peppylib.FailureError as error:
         raise Failure(*error.args) from error
-    if isinstance(response, Failure):
-        raise response
+    if isinstance(response, peppylib.FailureError):
+        raise Failure(*response.args) from None
     capnp_msg = _get_system_status_response_message_capnp().GetSystemStatusResponseMessage.new_message()
     capnp_msg.healthy = response.healthy
     return capnp_msg.to_bytes()
@@ -476,10 +481,11 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
     """Answers the next request of this service with `handler`.
 
     The response of the handler is a success. A `Failure` that it raises or
-    returns gives the caller an error reply of a kind that this member
-    declares. A request that does not decode gets an error reply of the
-    kind `rejected`, and any other exception one of the kind
-    `attempt_failed`.
+    returns gives the caller an error reply of its kind. So does any
+    `peppylib.FailureError`, such as the `Failure` of another member, when
+    this member declares its kind. A request that does not decode gets an
+    error reply of the kind `rejected`, and any other exception, or a kind
+    that this member does not declare, one of the kind `attempt_failed`.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -529,18 +535,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -566,22 +575,21 @@ async def _handle_request_payload(handler: Callable[[Request], Failure | None], 
         response = handler(request)
         if hasattr(response, "__await__"):
             response = await response
-    except Failure:
-        raise
     except peppylib.FailureError as error:
         raise Failure(*error.args) from error
-    if isinstance(response, Failure):
-        raise response
+    if isinstance(response, peppylib.FailureError):
+        raise Failure(*response.args) from None
     return b""
 
 async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Failure | None]) -> None:
     """Answers the next request of this service with `handler`.
 
     The response of the handler is a success. A `Failure` that it raises or
-    returns gives the caller an error reply of a kind that this member
-    declares. A request that does not decode gets an error reply of the
-    kind `rejected`, and any other exception one of the kind
-    `attempt_failed`.
+    returns gives the caller an error reply of its kind. So does any
+    `peppylib.FailureError`, such as the `Failure` of another member, when
+    this member declares its kind. A request that does not decode gets an
+    error reply of the kind `rejected`, and any other exception, or a kind
+    that this member does not declare, one of the kind `attempt_failed`.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -656,18 +664,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -702,12 +713,10 @@ async def _handle_request_payload(payload: bytes, handler: Callable[[Request], R
         response = handler(request)
         if hasattr(response, "__await__"):
             response = await response
-    except Failure:
-        raise
     except peppylib.FailureError as error:
         raise Failure(*error.args) from error
-    if isinstance(response, Failure):
-        raise response
+    if isinstance(response, peppylib.FailureError):
+        raise Failure(*response.args) from None
     capnp_msg = _camera_feed_v1_enable_camera_response_message_capnp().CameraFeedV1EnableCameraResponseMessage.new_message()
     capnp_msg.enabled = response.enabled
     if response.error_msg is not None:
@@ -718,10 +727,11 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
     """Answers the next request of this service with `handler`.
 
     The response of the handler is a success. A `Failure` that it raises or
-    returns gives the caller an error reply of a kind that this member
-    declares. A request that does not decode gets an error reply of the
-    kind `rejected`, and any other exception one of the kind
-    `attempt_failed`.
+    returns gives the caller an error reply of its kind. So does any
+    `peppylib.FailureError`, such as the `Failure` of another member, when
+    this member declares its kind. A request that does not decode gets an
+    error reply of the kind `rejected`, and any other exception, or a kind
+    that this member does not declare, one of the kind `attempt_failed`.
     """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
@@ -790,18 +800,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {ACTION_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -839,21 +852,28 @@ class GoalDecision:
     """The decision of a goal handler: accept the goal, or refuse it with a failure."""
 
     def __init__(self, response: GoalResponse | None, refusal: Failure | None) -> None:
+        """An accept with the declared `response`, or a refusal with no response.
+
+        Raises ValueError for both or neither. The refusal is parsed again as a
+        Failure of this member, which raises for a kind that this member does
+        not declare.
+        """
+        if (response is None) == (refusal is None):
+            raise ValueError("a goal decision is an accept with the declared GoalResponse, or a refusal with no response")
         self.response = response
-        self.refusal = refusal
+        self.refusal = None if refusal is None else Failure(*refusal.args)
 
     @staticmethod
     def accept(response: GoalResponse) -> "GoalDecision":
         """Accepts the goal and replies with the declared response."""
-        if response is None:
-            raise ValueError("GoalDecision.accept requires the declared GoalResponse")
         return GoalDecision(response, None)
 
     @staticmethod
     def refuse(kind: FailureKind, message: str) -> "GoalDecision":
         """Refuses the goal with a failure kind that this member declares and a message.
 
-        Raises ValueError for any other kind. A refusal carries no goal response.
+        Raises ValueError for any other kind, and TypeError for a message that
+        is not a str. A refusal carries no goal response.
         """
         return GoalDecision(None, Failure(kind, message))
 
@@ -865,6 +885,23 @@ def _deserialize_goal_request(payload: bytes) -> GoalRequestData:
         if len(desired_position_1) != 3:
             raise ValueError("invalid fixed list length for field 'desired_position': expected 3, got " + str(len(desired_position_1)))
         return GoalRequestData(arm_id=arm_id_0, desired_position=desired_position_1)
+
+async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> "Failure | bytes":
+    """The answer of `handler` to the goal `request`: a refusal, or the encoded response of an accept.
+
+    The decision of `handler` is built again as a decision of this member,
+    so a decision that this member cannot send raises.
+    """
+    decision = handler(request)
+    if hasattr(decision, "__await__"):
+        decision = await decision
+    decision = GoalDecision(decision.response, decision.refusal)
+    if decision.refusal is not None:
+        return decision.refusal
+    response = decision.response
+    capnp_msg = _move_arm_goal_response_message_capnp().MoveArmGoalResponseMessage.new_message()
+    capnp_msg.accepted = response.accepted
+    return capnp_msg.to_bytes()
 
 class ActionHandle:
     @classmethod
@@ -891,6 +928,15 @@ class ActionHandle:
         await self._inner.set_sender_grace(seconds)
 
     async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> "GoalContext | None":
+        """Answers the goals of this action with `handler` up to the next goal that it accepts.
+
+        Gives the context of that goal, or None when the goal stream closes.
+        Each refused goal is answered and skipped.
+        A goal request that does not decode is refused with the kind `rejected`.
+        A handler that raises, or that gives a decision that this action cannot
+        send, refuses the goal with the kind `attempt_failed` and the text of the
+        error.
+        """
         while True:
             pending = await self._inner.recv_next_goal()
             if pending is None:
@@ -901,17 +947,14 @@ class ActionHandle:
                 await pending.refuse(FailureKind.REJECTED.value, f"goal request does not decode: {error}")
                 continue
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)
-            decision = handler(request)
-            if hasattr(decision, "__await__"):
-                decision = await decision
-            if decision.refusal is not None:
-                await pending.refuse(decision.refusal.kind.value, decision.refusal.message)
+            try:
+                answer = await _goal_answer(handler, request)
+            except Exception as error:
+                answer = Failure(FailureKind.ATTEMPT_FAILED, f"the goal handler raised {type(error).__name__}: {error}")
+            if isinstance(answer, Failure):
+                await pending.refuse(answer.kind.value, answer.message)
                 continue
-            response = decision.response
-            capnp_msg = _move_arm_goal_response_message_capnp().MoveArmGoalResponseMessage.new_message()
-            capnp_msg.accepted = response.accepted
-            response_bytes = capnp_msg.to_bytes()
-            ctx = await pending.accept(response_bytes)
+            ctx = await pending.accept(answer)
             return GoalContext(ctx, request)
 
 class GoalContext:
@@ -935,12 +978,20 @@ class GoalContext:
     def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
         """Why this goal received its cancel signal; None before it did."""
         return self._inner.cancel_cause
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled.
+
+        "cancelled by its caller" or "its sender is gone"; None before the goal
+        received its cancel signal.
+        """
+        return self._inner.cancel_reason
     async def fail(self, kind: FailureKind, message: str) -> None:
         """Ends the goal with the status failed, with no result.
 
         A failure kind that this member declares and a message: raises
-        ValueError for any other kind. The first of complete, fail and
-        complete_cancelled ends the goal; later calls do nothing.
+        ValueError for any other kind, and TypeError for a message that is not
+        a str. The first of complete, fail and complete_cancelled ends the goal;
+        later calls do nothing.
         """
         failure = Failure(kind, message)
         await self._inner.fail(failure.kind.value, failure.message)
@@ -999,18 +1050,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {ACTION_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -1038,8 +1092,16 @@ class GoalDecision:
     """The decision of a goal handler: accept the goal, or refuse it with a failure."""
 
     def __init__(self, response: None, refusal: Failure | None) -> None:
-        self.response = response
-        self.refusal = refusal
+        """An accept when `refusal` is None, else a refusal.
+
+        Raises ValueError for a response, which this action does not declare.
+        The refusal is parsed again as a Failure of this member, which raises
+        for a kind that this member does not declare.
+        """
+        if response is not None:
+            raise ValueError("this action declares no GoalResponse")
+        self.response = None
+        self.refusal = None if refusal is None else Failure(*refusal.args)
 
     @staticmethod
     def accept() -> "GoalDecision":
@@ -1050,9 +1112,24 @@ class GoalDecision:
     def refuse(kind: FailureKind, message: str) -> "GoalDecision":
         """Refuses the goal with a failure kind that this member declares and a message.
 
-        Raises ValueError for any other kind. A refusal carries no goal response.
+        Raises ValueError for any other kind, and TypeError for a message that
+        is not a str. A refusal carries no goal response.
         """
         return GoalDecision(None, Failure(kind, message))
+
+async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> "Failure | bytes":
+    """The answer of `handler` to the goal `request`: a refusal, or the encoded response of an accept.
+
+    The decision of `handler` is built again as a decision of this member,
+    so a decision that this member cannot send raises.
+    """
+    decision = handler(request)
+    if hasattr(decision, "__await__"):
+        decision = await decision
+    decision = GoalDecision(decision.response, decision.refusal)
+    if decision.refusal is not None:
+        return decision.refusal
+    return b""
 
 class ActionHandle:
     @classmethod
@@ -1079,19 +1156,27 @@ class ActionHandle:
         await self._inner.set_sender_grace(seconds)
 
     async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> "GoalContext | None":
+        """Answers the goals of this action with `handler` up to the next goal that it accepts.
+
+        Gives the context of that goal, or None when the goal stream closes.
+        Each refused goal is answered and skipped.
+        A handler that raises, or that gives a decision that this action cannot
+        send, refuses the goal with the kind `attempt_failed` and the text of the
+        error.
+        """
         while True:
             pending = await self._inner.recv_next_goal()
             if pending is None:
                 return None  # goal stream closed (node shutting down)
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)
-            decision = handler(request)
-            if hasattr(decision, "__await__"):
-                decision = await decision
-            if decision.refusal is not None:
-                await pending.refuse(decision.refusal.kind.value, decision.refusal.message)
+            try:
+                answer = await _goal_answer(handler, request)
+            except Exception as error:
+                answer = Failure(FailureKind.ATTEMPT_FAILED, f"the goal handler raised {type(error).__name__}: {error}")
+            if isinstance(answer, Failure):
+                await pending.refuse(answer.kind.value, answer.message)
                 continue
-            response_bytes = b""
-            ctx = await pending.accept(response_bytes)
+            ctx = await pending.accept(answer)
             return GoalContext(ctx, request)
 
 class GoalContext:
@@ -1115,12 +1200,20 @@ class GoalContext:
     def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
         """Why this goal received its cancel signal; None before it did."""
         return self._inner.cancel_cause
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled.
+
+        "cancelled by its caller" or "its sender is gone"; None before the goal
+        received its cancel signal.
+        """
+        return self._inner.cancel_reason
     async def fail(self, kind: FailureKind, message: str) -> None:
         """Ends the goal with the status failed, with no result.
 
         A failure kind that this member declares and a message: raises
-        ValueError for any other kind. The first of complete, fail and
-        complete_cancelled ends the goal; later calls do nothing.
+        ValueError for any other kind, and TypeError for a message that is not
+        a str. The first of complete, fail and complete_cancelled ends the goal;
+        later calls do nothing.
         """
         failure = Failure(kind, message)
         await self._inner.fail(failure.kind.value, failure.message)
@@ -1172,18 +1265,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {ACTION_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -1211,8 +1307,16 @@ class GoalDecision:
     """The decision of a goal handler: accept the goal, or refuse it with a failure."""
 
     def __init__(self, response: None, refusal: Failure | None) -> None:
-        self.response = response
-        self.refusal = refusal
+        """An accept when `refusal` is None, else a refusal.
+
+        Raises ValueError for a response, which this action does not declare.
+        The refusal is parsed again as a Failure of this member, which raises
+        for a kind that this member does not declare.
+        """
+        if response is not None:
+            raise ValueError("this action declares no GoalResponse")
+        self.response = None
+        self.refusal = None if refusal is None else Failure(*refusal.args)
 
     @staticmethod
     def accept() -> "GoalDecision":
@@ -1223,9 +1327,24 @@ class GoalDecision:
     def refuse(kind: FailureKind, message: str) -> "GoalDecision":
         """Refuses the goal with a failure kind that this member declares and a message.
 
-        Raises ValueError for any other kind. A refusal carries no goal response.
+        Raises ValueError for any other kind, and TypeError for a message that
+        is not a str. A refusal carries no goal response.
         """
         return GoalDecision(None, Failure(kind, message))
+
+async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> "Failure | bytes":
+    """The answer of `handler` to the goal `request`: a refusal, or the encoded response of an accept.
+
+    The decision of `handler` is built again as a decision of this member,
+    so a decision that this member cannot send raises.
+    """
+    decision = handler(request)
+    if hasattr(decision, "__await__"):
+        decision = await decision
+    decision = GoalDecision(decision.response, decision.refusal)
+    if decision.refusal is not None:
+        return decision.refusal
+    return b""
 
 class ActionHandle:
     @classmethod
@@ -1252,19 +1371,27 @@ class ActionHandle:
         await self._inner.set_sender_grace(seconds)
 
     async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> "GoalContext | None":
+        """Answers the goals of this action with `handler` up to the next goal that it accepts.
+
+        Gives the context of that goal, or None when the goal stream closes.
+        Each refused goal is answered and skipped.
+        A handler that raises, or that gives a decision that this action cannot
+        send, refuses the goal with the kind `attempt_failed` and the text of the
+        error.
+        """
         while True:
             pending = await self._inner.recv_next_goal()
             if pending is None:
                 return None  # goal stream closed (node shutting down)
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)
-            decision = handler(request)
-            if hasattr(decision, "__await__"):
-                decision = await decision
-            if decision.refusal is not None:
-                await pending.refuse(decision.refusal.kind.value, decision.refusal.message)
+            try:
+                answer = await _goal_answer(handler, request)
+            except Exception as error:
+                answer = Failure(FailureKind.ATTEMPT_FAILED, f"the goal handler raised {type(error).__name__}: {error}")
+            if isinstance(answer, Failure):
+                await pending.refuse(answer.kind.value, answer.message)
                 continue
-            response_bytes = b""
-            ctx = await pending.accept(response_bytes)
+            ctx = await pending.accept(answer)
             return GoalContext(ctx, request)
 
 class GoalContext:
@@ -1288,12 +1415,20 @@ class GoalContext:
     def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
         """Why this goal received its cancel signal; None before it did."""
         return self._inner.cancel_cause
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled.
+
+        "cancelled by its caller" or "its sender is gone"; None before the goal
+        received its cancel signal.
+        """
+        return self._inner.cancel_reason
     async def fail(self, kind: FailureKind, message: str) -> None:
         """Ends the goal with the status failed, with no result.
 
         A failure kind that this member declares and a message: raises
-        ValueError for any other kind. The first of complete, fail and
-        complete_cancelled ends the goal; later calls do nothing.
+        ValueError for any other kind, and TypeError for a message that is not
+        a str. The first of complete, fail and complete_cancelled ends the goal;
+        later calls do nothing.
         """
         failure = Failure(kind, message)
         await self._inner.fail(failure.kind.value, failure.message)
@@ -1342,18 +1477,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {ACTION_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -1381,8 +1519,16 @@ class GoalDecision:
     """The decision of a goal handler: accept the goal, or refuse it with a failure."""
 
     def __init__(self, response: None, refusal: Failure | None) -> None:
-        self.response = response
-        self.refusal = refusal
+        """An accept when `refusal` is None, else a refusal.
+
+        Raises ValueError for a response, which this action does not declare.
+        The refusal is parsed again as a Failure of this member, which raises
+        for a kind that this member does not declare.
+        """
+        if response is not None:
+            raise ValueError("this action declares no GoalResponse")
+        self.response = None
+        self.refusal = None if refusal is None else Failure(*refusal.args)
 
     @staticmethod
     def accept() -> "GoalDecision":
@@ -1393,9 +1539,24 @@ class GoalDecision:
     def refuse(kind: FailureKind, message: str) -> "GoalDecision":
         """Refuses the goal with a failure kind that this member declares and a message.
 
-        Raises ValueError for any other kind. A refusal carries no goal response.
+        Raises ValueError for any other kind, and TypeError for a message that
+        is not a str. A refusal carries no goal response.
         """
         return GoalDecision(None, Failure(kind, message))
+
+async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> "Failure | bytes":
+    """The answer of `handler` to the goal `request`: a refusal, or the encoded response of an accept.
+
+    The decision of `handler` is built again as a decision of this member,
+    so a decision that this member cannot send raises.
+    """
+    decision = handler(request)
+    if hasattr(decision, "__await__"):
+        decision = await decision
+    decision = GoalDecision(decision.response, decision.refusal)
+    if decision.refusal is not None:
+        return decision.refusal
+    return b""
 
 class ActionHandle:
     @classmethod
@@ -1422,19 +1583,27 @@ class ActionHandle:
         await self._inner.set_sender_grace(seconds)
 
     async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> "GoalContext | None":
+        """Answers the goals of this action with `handler` up to the next goal that it accepts.
+
+        Gives the context of that goal, or None when the goal stream closes.
+        Each refused goal is answered and skipped.
+        A handler that raises, or that gives a decision that this action cannot
+        send, refuses the goal with the kind `attempt_failed` and the text of the
+        error.
+        """
         while True:
             pending = await self._inner.recv_next_goal()
             if pending is None:
                 return None  # goal stream closed (node shutting down)
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)
-            decision = handler(request)
-            if hasattr(decision, "__await__"):
-                decision = await decision
-            if decision.refusal is not None:
-                await pending.refuse(decision.refusal.kind.value, decision.refusal.message)
+            try:
+                answer = await _goal_answer(handler, request)
+            except Exception as error:
+                answer = Failure(FailureKind.ATTEMPT_FAILED, f"the goal handler raised {type(error).__name__}: {error}")
+            if isinstance(answer, Failure):
+                await pending.refuse(answer.kind.value, answer.message)
                 continue
-            response_bytes = b""
-            ctx = await pending.accept(response_bytes)
+            ctx = await pending.accept(answer)
             return GoalContext(ctx, request)
 
 class GoalContext:
@@ -1458,12 +1627,20 @@ class GoalContext:
     def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
         """Why this goal received its cancel signal; None before it did."""
         return self._inner.cancel_cause
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled.
+
+        "cancelled by its caller" or "its sender is gone"; None before the goal
+        received its cancel signal.
+        """
+        return self._inner.cancel_reason
     async def fail(self, kind: FailureKind, message: str) -> None:
         """Ends the goal with the status failed, with no result.
 
         A failure kind that this member declares and a message: raises
-        ValueError for any other kind. The first of complete, fail and
-        complete_cancelled ends the goal; later calls do nothing.
+        ValueError for any other kind, and TypeError for a message that is not
+        a str. The first of complete, fail and complete_cancelled ends the goal;
+        later calls do nothing.
         """
         failure = Failure(kind, message)
         await self._inner.fail(failure.kind.value, failure.message)
@@ -1530,18 +1707,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {ACTION_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -1579,21 +1759,28 @@ class GoalDecision:
     """The decision of a goal handler: accept the goal, or refuse it with a failure."""
 
     def __init__(self, response: GoalResponse | None, refusal: Failure | None) -> None:
+        """An accept with the declared `response`, or a refusal with no response.
+
+        Raises ValueError for both or neither. The refusal is parsed again as a
+        Failure of this member, which raises for a kind that this member does
+        not declare.
+        """
+        if (response is None) == (refusal is None):
+            raise ValueError("a goal decision is an accept with the declared GoalResponse, or a refusal with no response")
         self.response = response
-        self.refusal = refusal
+        self.refusal = None if refusal is None else Failure(*refusal.args)
 
     @staticmethod
     def accept(response: GoalResponse) -> "GoalDecision":
         """Accepts the goal and replies with the declared response."""
-        if response is None:
-            raise ValueError("GoalDecision.accept requires the declared GoalResponse")
         return GoalDecision(response, None)
 
     @staticmethod
     def refuse(kind: FailureKind, message: str) -> "GoalDecision":
         """Refuses the goal with a failure kind that this member declares and a message.
 
-        Raises ValueError for any other kind. A refusal carries no goal response.
+        Raises ValueError for any other kind, and TypeError for a message that
+        is not a str. A refusal carries no goal response.
         """
         return GoalDecision(None, Failure(kind, message))
 
@@ -1605,6 +1792,23 @@ def _deserialize_goal_request(payload: bytes) -> GoalRequestData:
         if len(desired_position_1) != 3:
             raise ValueError("invalid fixed list length for field 'desired_position': expected 3, got " + str(len(desired_position_1)))
         return GoalRequestData(arm_id=arm_id_0, desired_position=desired_position_1)
+
+async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> "Failure | bytes":
+    """The answer of `handler` to the goal `request`: a refusal, or the encoded response of an accept.
+
+    The decision of `handler` is built again as a decision of this member,
+    so a decision that this member cannot send raises.
+    """
+    decision = handler(request)
+    if hasattr(decision, "__await__"):
+        decision = await decision
+    decision = GoalDecision(decision.response, decision.refusal)
+    if decision.refusal is not None:
+        return decision.refusal
+    response = decision.response
+    capnp_msg = _camera_feed_v1_move_arm_goal_response_message_capnp().CameraFeedV1MoveArmGoalResponseMessage.new_message()
+    capnp_msg.accepted = response.accepted
+    return capnp_msg.to_bytes()
 
 class ActionHandle:
     @classmethod
@@ -1631,6 +1835,15 @@ class ActionHandle:
         await self._inner.set_sender_grace(seconds)
 
     async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> "GoalContext | None":
+        """Answers the goals of this action with `handler` up to the next goal that it accepts.
+
+        Gives the context of that goal, or None when the goal stream closes.
+        Each refused goal is answered and skipped.
+        A goal request that does not decode is refused with the kind `rejected`.
+        A handler that raises, or that gives a decision that this action cannot
+        send, refuses the goal with the kind `attempt_failed` and the text of the
+        error.
+        """
         while True:
             pending = await self._inner.recv_next_goal()
             if pending is None:
@@ -1641,17 +1854,14 @@ class ActionHandle:
                 await pending.refuse(FailureKind.REJECTED.value, f"goal request does not decode: {error}")
                 continue
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)
-            decision = handler(request)
-            if hasattr(decision, "__await__"):
-                decision = await decision
-            if decision.refusal is not None:
-                await pending.refuse(decision.refusal.kind.value, decision.refusal.message)
+            try:
+                answer = await _goal_answer(handler, request)
+            except Exception as error:
+                answer = Failure(FailureKind.ATTEMPT_FAILED, f"the goal handler raised {type(error).__name__}: {error}")
+            if isinstance(answer, Failure):
+                await pending.refuse(answer.kind.value, answer.message)
                 continue
-            response = decision.response
-            capnp_msg = _camera_feed_v1_move_arm_goal_response_message_capnp().CameraFeedV1MoveArmGoalResponseMessage.new_message()
-            capnp_msg.accepted = response.accepted
-            response_bytes = capnp_msg.to_bytes()
-            ctx = await pending.accept(response_bytes)
+            ctx = await pending.accept(answer)
             return GoalContext(ctx, request)
 
 class GoalContext:
@@ -1675,12 +1885,20 @@ class GoalContext:
     def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
         """Why this goal received its cancel signal; None before it did."""
         return self._inner.cancel_cause
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled.
+
+        "cancelled by its caller" or "its sender is gone"; None before the goal
+        received its cancel signal.
+        """
+        return self._inner.cancel_reason
     async def fail(self, kind: FailureKind, message: str) -> None:
         """Ends the goal with the status failed, with no result.
 
         A failure kind that this member declares and a message: raises
-        ValueError for any other kind. The first of complete, fail and
-        complete_cancelled ends the goal; later calls do nothing.
+        ValueError for any other kind, and TypeError for a message that is not
+        a str. The first of complete, fail and complete_cancelled ends the goal;
+        later calls do nothing.
         """
         failure = Failure(kind, message)
         await self._inner.fail(failure.kind.value, failure.message)
@@ -1833,18 +2051,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -2059,18 +2280,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -2299,18 +2523,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -2550,18 +2777,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -2719,18 +2949,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {TARGET_ACTION_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {TARGET_ACTION_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {TARGET_ACTION_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -4266,6 +4499,10 @@ class MoveArmActiveGoal:
     def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
         """Why this goal received its cancel signal; None before it did."""
         return self._context.cancel_cause
+
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled; None before the goal received its cancel signal."""
+        return self._context.cancel_reason
 
     async def complete(self, result: _move_arm.ResultResponseData) -> None:
         """Ends the goal with the status completed: a success."""
@@ -6822,18 +7059,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -6925,18 +7165,21 @@ class Failure(peppylib.FailureError):
     """Why this member refused or failed a goal, or gave an error reply.
 
     A kind that this member declares, and a message for a person. The
-    constructor raises ValueError for any other kind. A service handler
-    raises or returns it to give an error reply of its kind.
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
     """
 
     kind: FailureKind
     message: str
 
     def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {TARGET_ACTION_NAME} is a str, not {type(message).__name__}")
         try:
             parsed = FailureKind(kind)
         except ValueError:
-            raise ValueError(f"{kind!r} is not a failure kind of {TARGET_ACTION_NAME}") from None
+            raise ValueError(f"{kind!r} is not a failure kind of {TARGET_ACTION_NAME} (message: {message!r})") from None
         super().__init__(parsed.value, message)
         self.kind = parsed
         self.message = message
@@ -7150,6 +7393,10 @@ class HomeAllActiveGoal:
     def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
         """Why this goal received its cancel signal; None before it did."""
         return self._context.cancel_cause
+
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled; None before the goal received its cancel signal."""
+        return self._context.cancel_reason
 
     async def complete(self) -> None:
         """Ends the goal with the status completed: a success."""

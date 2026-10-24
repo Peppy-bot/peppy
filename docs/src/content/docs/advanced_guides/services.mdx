@@ -285,7 +285,7 @@ def handler(request):
     return enable_camera.Response(enabled=request.data.enable, error_msg=None)
 ```
 
-    A handler that raises any other exception gives an error reply of the kind `attempt_failed`, with the text of the exception.
+    The handler can also raise or return any other `peppylib.FailureError`, such as the `Failure` of another service. It gives an error reply of its kind when this service declares that kind, and else an error reply of the kind `attempt_failed`, whose message keeps the message of the failure. A handler that raises any other exception gives an error reply of the kind `attempt_failed`, with the text of the exception. `Failure` raises `TypeError` for a message that is not a `str`, so a handler that gives `Failure(kind, error)` with an exception `error` gives an error reply of the kind `attempt_failed`: write `Failure(kind, str(error))`.
   </TabItem>
   <TabItem label="Rust">
 ```rust
@@ -681,4 +681,4 @@ match enable_camera::poll(&node_runner, camera, Duration::from_secs(5), request)
   </TabItem>
 </Tabs>
 
-An error reply with a kind that the service does not declare breaks the contract of the service: the generated `poll` gives a deserialization error (`ValueError` in Python) instead of a failure of an unknown kind.
+An error reply with a kind that the service does not declare breaks the contract of the service: the generated `poll` gives a deserialization error (`ValueError` in Python) instead of a failure of an unknown kind. The text of the error keeps the message of the provider.

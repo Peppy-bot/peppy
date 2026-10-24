@@ -8,7 +8,12 @@
 //! failure from the wire through it.
 //!
 //! `Failure` is a `peppylib.FailureError`, so a service handler raises it to
-//! give an error reply of its kind, and a caller catches it from `poll`.
+//! give an error reply of its kind, and a caller catches it from `poll`. The
+//! generated code parses each failure that it gets from user code again with
+//! `Failure(*failure.args)`: a failure of another member, or a bare
+//! `peppylib.FailureError`, then gives a failure of this member, or raises
+//! `ValueError` for a kind that this member does not declare and
+//! `TypeError` for a message that is not a `str`.
 
 use super::code_builder::{PythonCodeBuilder, python_string_literal};
 use config::failure_kind::MemberFailureKinds;
@@ -46,8 +51,9 @@ pub(super) fn emit_failure_items(
             "Why this member refused or failed a goal, or gave an error reply.",
             [
                 "A kind that this member declares, and a message for a person. The",
-                "constructor raises ValueError for any other kind. A service handler",
-                "raises or returns it to give an error reply of its kind.",
+                "constructor raises ValueError for any other kind, with the message in",
+                "its text, and TypeError for a message that is not a str. A service",
+                "handler raises or returns it to give an error reply of its kind.",
             ],
         );
         builder.blank_line();
@@ -56,10 +62,17 @@ pub(super) fn emit_failure_items(
         builder.block(
             "def __init__(self, kind: FailureKind | str, message: str) -> None:",
             |builder| {
+                // The runtime reads a failure as two str: a message of
+                // another type would lose its kind on the wire.
+                builder.block("if not isinstance(message, str):", |builder| {
+                    builder.line(&format!(
+                        "raise TypeError(f\"the message of a failure of {{{member_name}}} is a str, not {{type(message).__name__}}\")"
+                    ));
+                });
                 builder.block("try:", |builder| builder.line("parsed = FailureKind(kind)"));
                 builder.block("except ValueError:", |builder| {
                     builder.line(&format!(
-                        "raise ValueError(f\"{{kind!r}} is not a failure kind of {{{member_name}}}\") from None"
+                        "raise ValueError(f\"{{kind!r}} is not a failure kind of {{{member_name}}} (message: {{message!r}})\") from None"
                     ));
                 });
                 builder.py(r#"
@@ -131,13 +144,29 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_names_its_member_when_it_refuses_a_kind() {
+    fn a_failure_names_its_member_and_keeps_its_message_when_it_refuses_a_kind() {
         let rendered = render(&MemberFailureKinds::peppy_only());
         assert!(
             rendered.contains(
-                "raise ValueError(f\"{kind!r} is not a failure kind of {SERVICE_NAME}\") from None"
+                "raise ValueError(f\"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})\") from None"
             ),
             "{rendered}"
         );
+    }
+
+    #[test]
+    fn a_failure_refuses_a_message_that_is_not_a_str() {
+        let rendered = render(&MemberFailureKinds::peppy_only());
+        let check = rendered
+            .find(
+                "        if not isinstance(message, str):\n            raise TypeError(f\"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}\")\n",
+            )
+            .expect("the constructor checks the type of the message");
+        let parse = rendered.find("parsed = FailureKind(kind)").unwrap();
+        assert!(
+            check < parse,
+            "the message is a str before the error of a kind names it: {rendered}"
+        );
+        assert!(!rendered.contains("str(message)"), "{rendered}");
     }
 }
