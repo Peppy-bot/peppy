@@ -804,6 +804,7 @@ fn stage_provider(
         link_id: link_id.to_string(),
         contract_name: contract.manifest.name.to_string(),
         contract_tag: contract.manifest.tag.to_string(),
+        failure_kinds: contract.failure_kinds.clone(),
     };
     let mut generator = generator::RustGenerator::default();
     register_contract_members(&mut generator, &contract, &origin);
@@ -3326,12 +3327,10 @@ async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
             json!({ "name": name, "option": "featured_robot", "core_node": this, "features": features }),
         )
         .await;
+        assert_eq!(joined.is_error, Some(false), "{joined:?}\n{}", stack.run_logs());
         assert_eq!(
             joined.structured_content,
-            Some(json!({
-                "success": true,
-                "message": format!("{name} (featured_robot) is on the stack"),
-            })),
+            Some(json!({})),
             "{joined:?}\n{}",
             stack.run_logs()
         );
@@ -3348,19 +3347,11 @@ async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
 
     // --- A listed robot is the goal that adds it again.
     let removed = call(&client, "stack.remove", json!({ "name": "alpha" })).await;
-    assert_eq!(
-        removed.structured_content,
-        Some(json!({ "success": true, "message": "alpha is off the stack" }))
-    );
+    assert_eq!(removed.is_error, Some(false), "{removed:?}");
+    assert_eq!(removed.structured_content, Some(json!({})));
     let rejoined = call(&client, "stack.join", items[0].clone()).await;
-    assert_eq!(
-        rejoined
-            .structured_content
-            .as_ref()
-            .map(|answer| answer["success"].clone()),
-        Some(json!(true)),
-        "{rejoined:?}"
-    );
+    assert_eq!(rejoined.is_error, Some(false), "{rejoined:?}");
+    assert_eq!(rejoined.structured_content, Some(json!({})), "{rejoined:?}");
     assert_eq!(listed_items(&client).await, items);
 
     // --- A daemon that joins the federation is a machine of the next list.
@@ -3389,8 +3380,8 @@ async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
         json!(machines)
     );
 
-    // --- A machine no daemon claims is refused by the daemon, which names
-    // the live machines.
+    // --- A join on a machine no daemon claims fails in the daemon with
+    // `resource_unavailable`, and the message names the live machines.
     let refused = call(
         &client,
         "stack.join",
@@ -3401,7 +3392,9 @@ async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
         .structured_content
         .clone()
         .unwrap_or_else(|| panic!("the join ran and answers: {refused:?}"));
-    assert_eq!(answer["success"], false, "{answer}");
+    assert_eq!(refused.is_error, Some(true), "{refused:?}");
+    assert_eq!(answer["outcome"], "failed", "{answer}");
+    assert_eq!(answer["failure_kind"], "resource_unavailable", "{answer}");
     let message = answer["message"].as_str().expect("a message");
     assert!(
         message.contains("these core nodes are not live on the federation: `cn-gone`")
@@ -3474,12 +3467,10 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
     // lines of the join, the start of its instance included.
     for copy_name in ["alpha", "bravo"] {
         let joined = call(&client, "stack.join", goal(copy_name, "recorder_robot")).await;
+        assert_eq!(joined.is_error, Some(false), "{joined:?}\n{}", stack.run_logs());
         assert_eq!(
             joined.structured_content,
-            Some(json!({
-                "success": true,
-                "message": format!("{copy_name} (recorder_robot) is on the stack"),
-            })),
+            Some(json!({})),
             "{joined:?}\n{}",
             stack.run_logs()
         );
@@ -3531,10 +3522,8 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
 
     // --- A removal reports each instance it stops.
     let removed = call(&client, "stack.remove", json!({ "name": "bravo" })).await;
-    assert_eq!(
-        removed.structured_content,
-        Some(json!({ "success": true, "message": "bravo is off the stack" }))
-    );
+    assert_eq!(removed.is_error, Some(false), "{removed:?}");
+    assert_eq!(removed.structured_content, Some(json!({})));
     let accepted = "launch: the daemon accepted the removal of bravo";
     let lines = progress_of(&mut progress, accepted, |lines| {
         lines
@@ -3549,8 +3538,9 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
     let failure = failed
         .structured_content
         .clone()
-        .unwrap_or_else(|| panic!("a join that ran answers its result: {failed:?}"));
-    assert_eq!(failure["success"], false, "{failure}");
+        .unwrap_or_else(|| panic!("a join that failed answers its failure: {failed:?}"));
+    assert_eq!(failed.is_error, Some(true), "{failed:?}");
+    assert_eq!(failure["outcome"], "failed", "{failure}");
     let message = failure["message"].as_str().expect("a message");
     let (error, logs) = message
         .strip_prefix("the addition of delta failed: ")
@@ -3962,11 +3952,12 @@ async fn a_launch_builds_the_nodes_a_join_of_its_scope_brings_and_the_joins_buil
     )
     .await;
     assert_eq!(
-        joined.structured_content,
-        Some(json!({ "success": true, "message": "alpha (rig_robot) is on the stack" })),
+        joined.is_error,
+        Some(false),
         "{joined:?}\n{}",
         joinable.stack.run_logs()
     );
+    assert_eq!(joined.structured_content, Some(json!({})));
     let log = joinable.last_build_log("mock_uvc_camera");
     assert!(
         log.contains(&format!("{CACHED_BUILD_REUSE_PREFIX} mock_uvc_camera:v1")),
