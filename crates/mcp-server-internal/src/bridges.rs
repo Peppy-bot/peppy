@@ -17,11 +17,14 @@ use peppy_mcp_catalog::{
     BundleContractPin, ExposureBundle, GoalBound, MemberSource, ValidatedExposure,
 };
 use peppy_mcp_runtime::{
-    ActionContext, ActionExit, CancelledGoal, Recipient, ResourceIngest, ToolCall, ToolCallError,
+    ActionContext, ActionExit, CancelledGoal, ProviderFailure, Recipient, ResourceIngest, ToolCall,
+    ToolCallError,
 };
+use peppylib::PeppyError;
 use peppylib::config::{QoSProfile, TopicRetention};
 use peppylib::messaging::{
-    CancelState, DEFAULT_FEEDBACK_BOUND, MessengerHandle, ProducerRef, SenderTarget,
+    CancelState, DEFAULT_FEEDBACK_BOUND, Failure, FeedbackBound, MessengerHandle, ProducerRef,
+    SenderTarget,
 };
 use peppylib::runtime::NodeRunner;
 use serde_json::Value;
@@ -89,6 +92,9 @@ pub(crate) struct PreparedTask {
     pub client: ActionClient,
     /// How the bridge follows the goal to its end (see [`drive_goal`]).
     pub follow: GoalFollow,
+    /// How many feedback messages of a goal may wait unread before the
+    /// goal's handle cancels it: peppylib's default.
+    pub feedback_bound: FeedbackBound,
 }
 
 /// How the bridge follows a goal to its end: the tool's bound, together
@@ -335,6 +341,7 @@ pub(crate) fn prepare(
                     bound.failure_kinds.clone(),
                 ),
                 follow,
+                feedback_bound: DEFAULT_FEEDBACK_BOUND,
             });
         }
 
@@ -439,17 +446,60 @@ pub(crate) async fn call_tool(
 ) -> Result<Value, ToolCallError> {
     let binding = tool.binding.member_binding();
     let producer = producer_of(node_runner, &tool.binding.target, call.recipient);
+    call_service(
+        tool,
+        node_runner.messenger(),
+        identity,
+        &binding,
+        &producer,
+        &call.input,
+    )
+    .await
+}
+
+/// Calls the service behind a tool on `producer` and waits at most the
+/// tool's deadline for its answer: the response, or the tool error of a
+/// call that failed (see [`service_call_error`]).
+pub(crate) async fn call_service(
+    tool: &PreparedTool,
+    messenger: &MessengerHandle,
+    identity: &ConsumerIdentity,
+    binding: &MemberBinding,
+    producer: &ProducerRef,
+    input: &Value,
+) -> Result<Value, ToolCallError> {
     tool.client
-        .call(
-            node_runner.messenger(),
-            identity,
-            &binding,
-            &producer,
-            &call.input,
-            tool.deadline,
-        )
+        .call(messenger, identity, binding, producer, input, tool.deadline)
         .await
-        .map_err(|error| ToolCallError::Failed(error.to_string()))
+        .map_err(|error| service_call_error(error, tool.deadline))
+}
+
+/// The tool error of a service call that failed with `error`, under the
+/// tool's `deadline`: an error reply gives its failure kind and message, a
+/// provider that cannot be reached is unavailable, a provider that does
+/// not answer in time overran the deadline, and every other error, an
+/// error reply with a kind that the member does not declare included, is
+/// a readable text.
+fn service_call_error(error: ConsumerError, deadline: Duration) -> ToolCallError {
+    let ConsumerError::Messaging(messaging) = &error else {
+        return ToolCallError::Error(error.to_string());
+    };
+    if let Some(failure) = messaging.failure() {
+        return ToolCallError::Failed(provider_failure(failure));
+    }
+    match messaging {
+        PeppyError::ServiceUnreachable { .. } => ToolCallError::Unavailable(error.to_string()),
+        PeppyError::ServiceTimeout { .. } => ToolCallError::Deadline(format!(
+            "the provider did not answer within {} ms",
+            deadline.as_millis()
+        )),
+        _ => ToolCallError::Error(error.to_string()),
+    }
+}
+
+/// The failure a provider gave, as the runtime carries it to the client.
+fn provider_failure(failure: &Failure) -> ProviderFailure {
+    ProviderFailure::new(failure.kind().clone(), failure.message())
 }
 
 /// The runtime-side surface a goal drives while it runs: its feedback
@@ -503,7 +553,19 @@ pub(crate) async fn run_task(
 /// client's cancel request is forwarded once to the Peppy cancel path, and
 /// the terminal result the provider settles on decides the terminal state.
 /// A goal that ends cancelled, whoever cancelled it, carries the result the
-/// provider ended it with (see [`terminal_state`]).
+/// provider ended it with (see [`terminal_state`]). A goal that the
+/// provider refuses or fails carries its failure kind and message.
+///
+/// The server's node is the sender of the goal: the provider ends the goal
+/// when the server stops, and an MCP client that disconnects ends nothing.
+/// The bridge sends a cancel only for the client's `tasks/cancel` and for a
+/// progress window that goes by in silence.
+///
+/// The goal's handle keeps up to `task.feedback_bound` unread feedback
+/// messages. A bridge that falls further behind loses the stream: the
+/// handle cancels the goal, the bridge follows it to its end so that the
+/// cancel goes out, and the call fails with the loss (see
+/// [`feedback_overflowed`]).
 ///
 /// The tool's bound decides how long the bridge follows the goal:
 ///
@@ -546,15 +608,13 @@ pub(crate) async fn drive_goal(
             binding,
             producer,
             &input,
-            DEFAULT_FEEDBACK_BOUND,
+            task.feedback_bound,
             admission,
         )
         .await
         .map_err(failed)?;
     if let Some(refusal) = handle.refusal() {
-        return Err(ActionExit::Failed(format!(
-            "the provider refused the goal: {refusal}"
-        )));
+        return Err(ActionExit::Refused(provider_failure(refusal)));
     }
 
     match task.follow {
@@ -566,9 +626,10 @@ pub(crate) async fn drive_goal(
             let outcome = if reports_feedback {
                 settle_after_feedback(&mut handle, messenger, surface, &remaining).await
             } else {
-                settle_on_result(&handle, messenger, surface, &remaining).await
-            }
-            .map_err(failed)?;
+                settle_on_result(&handle, messenger, surface, &remaining)
+                    .await
+                    .map_err(failed)
+            }?;
             terminal_state(outcome, None)
         }
         GoalFollow::Progress { window } => {
@@ -577,15 +638,26 @@ pub(crate) async fn drive_goal(
     }
 }
 
-/// The failure of a goal the bridge could not follow to its end.
+/// The end of a goal the bridge could not follow to its end. A refusal or
+/// a failure with a kind that the member does not declare is one: the
+/// error names the kind.
 fn failed(error: ConsumerError) -> ActionExit {
-    ActionExit::Failed(error.to_string())
+    ActionExit::Error(error.to_string())
+}
+
+/// The end of a goal whose feedback overflowed `bound` unread messages.
+fn feedback_overflowed(bound: usize) -> ActionExit {
+    ActionExit::Error(format!(
+        "the endpoint fell behind the feedback of the goal by more than {bound} unread \
+         messages, so it cancelled the goal"
+    ))
 }
 
 /// The MCP terminal state of a goal's terminal outcome. A goal that ended
-/// cancelled carries the result its provider ended it with, and
-/// `cancel_reason`, why the bridge cancelled it when the bridge did so for
-/// a reason of its own.
+/// cancelled carries the result its provider ended it with and the
+/// provider's reason, or `cancel_reason`, why the bridge cancelled it when
+/// the bridge did so for a reason of its own. A failed goal carries the
+/// provider's failure kind and message.
 fn terminal_state(
     outcome: GoalOutcome,
     cancel_reason: Option<String>,
@@ -594,15 +666,13 @@ fn terminal_state(
         GoalOutcome::Completed(value) => Ok(value),
         GoalOutcome::Cancelled { reason, result } => Err(ActionExit::Cancelled(CancelledGoal {
             result,
-            reason: Some(cancel_reason.unwrap_or(reason)),
+            reason: cancel_reason.unwrap_or(reason),
         })),
-        GoalOutcome::Failed(failure) => Err(ActionExit::Failed(format!(
-            "the provider failed the goal: {failure}"
-        ))),
-        GoalOutcome::Abandoned => Err(ActionExit::Failed(
+        GoalOutcome::Failed(failure) => Err(ActionExit::Failed(provider_failure(&failure))),
+        GoalOutcome::Abandoned => Err(ActionExit::Error(
             "the provider abandoned the goal".to_owned(),
         )),
-        GoalOutcome::Expired => Err(ActionExit::Failed(
+        GoalOutcome::Expired => Err(ActionExit::Error(
             "the goal ended, but its result is no longer readable".to_owned(),
         )),
     }
@@ -617,6 +687,9 @@ enum FeedbackStep {
     Skipped,
     /// The stream ended: the goal settled, or its provider is gone.
     Ended,
+    /// The bridge fell behind by more than `bound` unread messages: the
+    /// handle dropped them, took nothing more and cancelled the goal.
+    Overflowed { bound: usize },
 }
 
 /// Takes the next message of a goal's feedback stream and shows it to the
@@ -636,23 +709,48 @@ async fn next_feedback_step(handle: &mut GoalHandle, surface: &impl TaskSurface)
             );
             FeedbackStep::Skipped
         }
+        Err(ConsumerError::Messaging(PeppyError::ActionFeedbackOverflow { bound, .. })) => {
+            FeedbackStep::Overflowed { bound }
+        }
         Ok(None)
         | Err(ConsumerError::Messaging(_))
         | Err(ConsumerError::UndeclaredFailureKind { .. }) => FeedbackStep::Ended,
     }
 }
 
+/// Follows a goal whose feedback overflowed `bound` to its end, within
+/// `deadline`, and fails it with the loss. The handle cancelled the goal
+/// itself; holding the handle until the provider ends the goal lets that
+/// cancel go out. How the goal ended does not change the failure: the
+/// client lost feedback it was owed.
+async fn end_overflowed_goal(
+    handle: &GoalHandle,
+    messenger: &MessengerHandle,
+    bound: usize,
+    deadline: Duration,
+) -> ActionExit {
+    if let Err(error) = handle.result(messenger, deadline).await {
+        tracing::warn!(
+            %error,
+            goal_id = handle.goal_id(),
+            "the end of a goal whose feedback overflowed is unknown; the provider may still run it"
+        );
+    }
+    feedback_overflowed(bound)
+}
+
 /// Settles a goal on an action with feedback under a whole-goal deadline:
 /// every message the goal's handle yields is shown to the client (see
 /// [`next_feedback_step`]) until the provider closes the stream at the
 /// terminal result (or disappears), then the result reply decides the
-/// outcome.
+/// outcome. A stream that overflows fails the goal (see
+/// [`end_overflowed_goal`]).
 async fn settle_after_feedback(
     handle: &mut GoalHandle,
     messenger: &MessengerHandle,
     surface: &impl TaskSurface,
     remaining: &impl Fn() -> Duration,
-) -> Result<GoalOutcome, ConsumerError> {
+) -> Result<GoalOutcome, ActionExit> {
     let mut cancel_pending = false;
     let mut cancel_forwarded = false;
     // Armed once: the deadline bounds the whole goal, so no message moves
@@ -673,10 +771,13 @@ async fn settle_after_feedback(
             step = next_feedback_step(handle, surface) => match step {
                 FeedbackStep::Shown | FeedbackStep::Skipped => {}
                 FeedbackStep::Ended => break,
+                FeedbackStep::Overflowed { bound } => {
+                    return Err(end_overflowed_goal(handle, messenger, bound, remaining()).await);
+                }
             }
         }
     }
-    handle.result(messenger, remaining()).await
+    handle.result(messenger, remaining()).await.map_err(failed)
 }
 
 /// Settles a goal on a feedback-less action under a whole-goal deadline:
@@ -746,7 +847,7 @@ fn no_progress_within(window: Duration) -> String {
 /// The failure of a goal that went `window` without a sign of progress,
 /// after which `what` happened.
 fn stalled(window: Duration, what: &str) -> ActionExit {
-    ActionExit::Failed(format!("{}; {what}", no_progress_within(window)))
+    ActionExit::Error(format!("{}; {what}", no_progress_within(window)))
 }
 
 /// Why the bridge sent the provider its one cancel for a progress-bound
@@ -765,7 +866,7 @@ impl CancelReason {
     /// `what`.
     fn failure(self, window: Duration, what: &str) -> ActionExit {
         match self {
-            Self::Client => ActionExit::Failed(what.to_owned()),
+            Self::Client => ActionExit::Error(what.to_owned()),
             Self::Silence => stalled(window, what),
         }
     }
@@ -855,7 +956,9 @@ async fn cancel_goal(
 /// read (see [`after_cancel`]): a goal that had already ended has its
 /// result read at once, since the end of its stream is the one sign that
 /// did not come through. A message that arrives as the window runs out is
-/// progress all the same (see [`next_turn`]).
+/// progress all the same (see [`next_turn`]). A stream that overflows fails
+/// the goal (see [`end_overflowed_goal`]), the end of the goal read within
+/// one window.
 async fn follow_progress(
     handle: &mut GoalHandle,
     messenger: &MessengerHandle,
@@ -874,6 +977,9 @@ async fn follow_progress(
                 continue;
             }
             Turn::Feedback(FeedbackStep::Ended) => break,
+            Turn::Feedback(FeedbackStep::Overflowed { bound }) => {
+                return Err(end_overflowed_goal(handle, messenger, bound, window).await);
+            }
             Turn::Silence if went_silent => {
                 return Err(stalled(
                     window,

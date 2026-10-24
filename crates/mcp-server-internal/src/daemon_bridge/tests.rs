@@ -28,7 +28,7 @@ use core_node_api::{ActionGoal, ServiceRequest};
 use daemon_config::daemon_interface::{DaemonInterface, StackCopiesScope};
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use peppy_mcp_catalog::build_exposure_bundle;
-use peppy_mcp_runtime::{ActionExit, CancelledGoal, ExposureServer, ExposureSet};
+use peppy_mcp_runtime::{ActionExit, CancelledGoal, ExposureServer, ExposureSet, ProviderFailure};
 use peppylib::messaging::{
     CancelCause, Failure, GoalContext, MessengerHandle, ProducerRef, SenderTarget,
 };
@@ -483,15 +483,28 @@ fn idle_now(bridge: &ScopedStackCopies) -> bool {
     bridge.is_idle()
 }
 
-fn refused(reason: &str) -> Result<Value, ActionExit> {
-    Err(ActionExit::Failed(reason.to_owned()))
+/// A call that the bridge or the daemon refused with `kind` before the
+/// change ran.
+fn refused(kind: PeppyFailureKind, reason: &str) -> Result<Value, ActionExit> {
+    Err(ActionExit::Refused(ProviderFailure::new(kind, reason)))
+}
+
+/// A call whose change the daemon failed with `kind`.
+fn failed(kind: PeppyFailureKind, message: &str) -> Result<Value, ActionExit> {
+    Err(ActionExit::Failed(ProviderFailure::new(kind, message)))
+}
+
+/// A call that ended in no end the daemon gave.
+fn errored(message: &str) -> Result<Value, ActionExit> {
+    Err(ActionExit::Error(message.to_owned()))
 }
 
 /// A call whose change the daemon refused because it runs another one.
 fn refused_busy(subject: &str) -> Result<Value, ActionExit> {
-    refused(&format!(
-        "the daemon refused {subject} (precondition_failed): {DAEMON_REFUSAL}"
-    ))
+    refused(
+        PeppyFailureKind::PreconditionFailed,
+        &format!("the daemon refused {subject}: {DAEMON_REFUSAL}"),
+    )
 }
 
 /// A call whose client cancelled `subject`, which the daemon then ended
@@ -499,7 +512,7 @@ fn refused_busy(subject: &str) -> Result<Value, ActionExit> {
 fn cancelled(subject: &str) -> Result<Value, ActionExit> {
     Err(ActionExit::Cancelled(CancelledGoal {
         result: json!({}),
-        reason: Some(format!("{subject} was cancelled by its caller")),
+        reason: format!("{subject} was cancelled by its caller"),
     }))
 }
 
@@ -712,10 +725,13 @@ async fn a_failed_join_ends_with_its_kind_its_error_and_its_log_files() {
 
     assert_eq!(
         ended(call).await,
-        refused(&format!(
-            "the addition of bravo failed (attempt_failed): {error}. Log files: {STACK_LOG}, \
-             /home/peppy/.peppy/logs/run/bravo_robot_initializer_inst.log"
-        ))
+        failed(
+            PeppyFailureKind::AttemptFailed,
+            &format!(
+                "the addition of bravo failed: {error}. Log files: {STACK_LOG}, \
+                 /home/peppy/.peppy/logs/run/bravo_robot_initializer_inst.log"
+            )
+        )
     );
     assert!(idle_now(&bridge));
 }
@@ -742,9 +758,10 @@ async fn a_failure_after_acceptance_names_its_kind_and_the_stack_log() {
 
     assert_eq!(
         ended(call).await,
-        refused(&format!(
-            "the addition of bravo failed (precondition_failed): {error}. Log files: {STACK_LOG}"
-        ))
+        failed(
+            PeppyFailureKind::PreconditionFailed,
+            &format!("the addition of bravo failed: {error}. Log files: {STACK_LOG}")
+        )
     );
     assert!(idle_now(&bridge));
 }
@@ -760,7 +777,10 @@ async fn a_name_on_the_stack_is_refused_before_any_goal() {
 
     assert_eq!(
         join(&bridge, &surface, "bravo", "so101_sim").await,
-        refused("a copy `bravo` is already on the stack; choose another name")
+        refused(
+            PeppyFailureKind::PreconditionFailed,
+            "a copy `bravo` is already on the stack; choose another name"
+        )
     );
     assert!(
         surface.feedback().is_empty(),
@@ -790,6 +810,7 @@ async fn a_join_at_the_limit_is_refused_naming_the_copies() {
     assert_eq!(
         join(&bridge, &surface, "foxtrot", "so101_sim").await,
         refused(
+            PeppyFailureKind::PreconditionFailed,
             "the stack holds 4 copies of the options openarm_sim and so101_sim (bravo, charlie, \
              delta, echo), the most the scope of this endpoint allows; remove one first"
         )
@@ -800,6 +821,7 @@ async fn a_join_at_the_limit_is_refused_naming_the_copies() {
     assert_eq!(
         join(&single, &surface, "charlie", "so101_sim").await,
         refused(
+            PeppyFailureKind::PreconditionFailed,
             "the stack holds 1 copy of the option so101_sim (bravo), the most the scope of this \
              endpoint allows; remove one first"
         )
@@ -843,7 +865,7 @@ async fn a_join_that_finds_the_lock_held_is_refused_with_the_busy_text() {
     let other = ScriptedSurface::new();
     assert_eq!(
         join(&bridge, &other, "charlie", "openarm_sim").await,
-        refused(STACK_BUSY_REASON)
+        refused(PeppyFailureKind::PreconditionFailed, STACK_BUSY_REASON)
     );
     assert_eq!(
         daemon.reads(),
@@ -877,7 +899,7 @@ async fn a_cancelled_join_reaches_the_daemon_and_ends_cancelled() {
     let other = ScriptedSurface::new();
     assert_eq!(
         join(&bridge, &other, "charlie", "so101_sim").await,
-        refused(STACK_BUSY_REASON)
+        refused(PeppyFailureKind::PreconditionFailed, STACK_BUSY_REASON)
     );
     end_cancelled(&context).await;
 
@@ -979,7 +1001,7 @@ async fn a_daemon_that_goes_away_fails_the_join_and_frees_the_lock() {
 
     assert_eq!(
         ended(call).await,
-        refused(&format!(
+        errored(&format!(
             "the addition of bravo failed: Join ended without a result: its daemon is gone. Log \
              files: {STACK_LOG}"
         ))
@@ -1022,7 +1044,7 @@ async fn a_silent_daemon_fails_the_call_after_one_window_and_the_join_goes_on() 
     paused.advance(WINDOW).await;
     assert_eq!(
         paused.ended().await,
-        refused("the daemon sent nothing for 660 s; the addition of bravo can still be running")
+        errored("the daemon sent nothing for 660 s; the addition of bravo can still be running")
     );
     assert!(
         !context.is_cancelled(),
@@ -1031,7 +1053,7 @@ async fn a_silent_daemon_fails_the_call_after_one_window_and_the_join_goes_on() 
     let other = ScriptedSurface::new();
     assert_eq!(
         join(&bridge, &other, "charlie", "so101_sim").await,
-        refused(STACK_BUSY_REASON),
+        refused(PeppyFailureKind::PreconditionFailed, STACK_BUSY_REASON),
         "the join goes on under the lock"
     );
     complete(&context).await;
@@ -1086,16 +1108,23 @@ async fn a_removal_of_a_name_that_is_no_scoped_copy_is_refused() {
         daemon.lists(&[copy("zulu", "web_commander"), copy("bravo", "so101_sim")]);
         assert_eq!(
             remove(&bridge, &surface, refused_name).await,
-            refused(&format!(
-                "no copy `{refused_name}` of the options openarm_sim and so101_sim on the stack"
-            ))
+            refused(
+                PeppyFailureKind::Rejected,
+                &format!(
+                    "no copy `{refused_name}` of the options openarm_sim and so101_sim on the \
+                     stack"
+                )
+            )
         );
     }
     let single = mesh.bridge(single_scope());
     daemon.lists(&[copy("alpha", "openarm_sim")]);
     assert_eq!(
         remove(&single, &surface, "alpha").await,
-        refused("no copy `alpha` of the option so101_sim on the stack")
+        refused(
+            PeppyFailureKind::Rejected,
+            "no copy `alpha` of the option so101_sim on the stack"
+        )
     );
 
     // The daemon's next removal is the first one the bridge sends.
@@ -1127,9 +1156,10 @@ async fn a_removal_the_daemon_fails_after_acceptance_ends_with_its_kind() {
 
     assert_eq!(
         ended(call).await,
-        refused(&format!(
-            "the removal of bravo failed (precondition_failed): {error}. Log files: {STACK_LOG}"
-        ))
+        failed(
+            PeppyFailureKind::PreconditionFailed,
+            &format!("the removal of bravo failed: {error}. Log files: {STACK_LOG}")
+        )
     );
 }
 
@@ -1280,7 +1310,7 @@ async fn a_feature_outside_the_option_or_named_twice_is_refused_before_the_daemo
     ] {
         assert_eq!(
             bridge.join(&input, &surface, Some(WINDOW)).await,
-            refused(reason),
+            refused(PeppyFailureKind::Rejected, reason),
             "{input}"
         );
     }
@@ -1405,7 +1435,7 @@ fn a_failed_presence_read_fails_the_listing() {
     .expect_err("the listing fails");
     assert_eq!(
         error.to_string(),
-        peppy_mcp_runtime::ToolCallError::Failed(
+        peppy_mcp_runtime::ToolCallError::Error(
             "the live machines of the federation could not be read: the session is closed"
                 .to_owned()
         )
@@ -1442,13 +1472,14 @@ async fn a_join_on_a_machine_that_is_not_live_ends_with_the_daemons_reason() {
         NodeLogs::default(),
     )
     .await;
-    let Err(ActionExit::Failed(message)) = ended(call).await else {
+    let Err(ActionExit::Failed(failure)) = ended(call).await else {
         panic!("a failed join ends failed");
     };
-    assert!(
-        message.contains("(resource_unavailable)") && message.contains(reason),
-        "{message}"
+    assert_eq!(
+        failure.kind().as_str(),
+        PeppyFailureKind::ResourceUnavailable.name()
     );
+    assert!(failure.message().contains(reason), "{failure}");
 }
 
 // --- The scopes the server starts with.
@@ -1708,8 +1739,8 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
     assert_eq!(answer["result"]["isError"], true, "{answer}");
     assert_eq!(
         answer["result"]["content"][0]["text"],
-        "the action failed: `ai_brain` is not a feature of option `so101_sim`, which has no \
-         feature"
+        "the provider refused the goal: rejected: `ai_brain` is not a feature of option \
+         `so101_sim`, which has no feature"
     );
     assert_eq!(
         daemon.reads(),
@@ -1727,7 +1758,8 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
     assert_eq!(answer["result"]["isError"], true, "{answer}");
     assert_eq!(
         answer["result"]["content"][0]["text"],
-        "the action failed: a copy `bravo` is already on the stack; choose another name"
+        "the provider refused the goal: precondition_failed: a copy `bravo` is already on the \
+         stack; choose another name"
     );
 
     daemon.lists(&[copy_on(
@@ -1754,7 +1786,8 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
     let answer = endpoint.call("stack.join", copies[0].clone()).await;
     assert_eq!(
         answer["result"]["content"][0]["text"],
-        "the action failed: a copy `bravo` is already on the stack; choose another name",
+        "the provider refused the goal: precondition_failed: a copy `bravo` is already on the \
+         stack; choose another name",
         "{answer}"
     );
 
@@ -1790,21 +1823,20 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
             "refused",
             "refused",
             "refused",
-            "failed",
-            "failed",
-            "failed",
+            "refused",
+            "refused",
+            "refused",
             "completed"
         ],
         "{recorded:?}"
     );
     assert_eq!(
         recorded[7].1,
-        "the action failed: `ai_brain` is not a feature of option `so101_sim`, which has no \
-         feature"
+        "`ai_brain` is not a feature of option `so101_sim`, which has no feature"
     );
     assert_eq!(
         recorded[8].1,
-        "the action failed: a copy `bravo` is already on the stack; choose another name"
+        "a copy `bravo` is already on the stack; choose another name"
     );
     endpoint.stop().await;
 }

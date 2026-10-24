@@ -13,15 +13,15 @@
 //!
 //! The call ends:
 //!
-//! - refused (`failed` in the call record) when the bridge or the daemon
-//!   refuses the goal before it runs, with the failure kind of the refusal:
-//!   "the daemon refused the addition of bravo (precondition_failed): a
-//!   stack change is in progress on this daemon";
+//! - refused when the bridge or the daemon refuses the goal before it
+//!   runs, with the failure kind of the refusal: `precondition_failed`,
+//!   "the daemon refused the addition of bravo: a stack change is in
+//!   progress on this daemon";
 //! - with an empty result when the daemon completed the change: the copy is
 //!   on the stack, or off it;
 //! - failed when the daemon failed the change, with its failure kind and
-//!   the log files: "the addition of bravo failed (attempt_failed): {error}.
-//!   Log files: {logs}";
+//!   the log files: `attempt_failed`, "the addition of bravo failed:
+//!   {error}. Log files: {logs}";
 //! - cancelled when the client cancels: the bridge sends the daemon a
 //!   cancel, the daemon stops the change at the step it reached and undoes
 //!   it as a failure there does, and the call ends with the daemon's reason
@@ -37,7 +37,7 @@ use crate::bridges::{Silence, TaskSurface};
 use crate::daemon_bridge::OwnDaemon;
 use config::runtime::{CopyName, Name};
 use core_node_api::encoding::{LaunchFeedbackStep, LaunchOutput};
-use peppy_mcp_runtime::{ActionExit, CancelledGoal};
+use peppy_mcp_runtime::{ActionExit, CancelledGoal, ProviderFailure};
 use peppylib::messaging::Failure;
 use serde_json::{Value, json};
 use stack_goal::{
@@ -92,33 +92,31 @@ impl Change {
     /// The message of a change that failed for `error`, with the log files
     /// that say more. An `error` that ends its own sentence keeps one period.
     fn failed(&self, error: &str, logs: &[&Path]) -> String {
-        self.failed_as("", error, logs)
-    }
-
-    /// The message of a change that the daemon failed with `failure`, with
-    /// its failure kind and the log files that say more.
-    fn failed_with(&self, failure: &Failure, logs: &[&Path]) -> String {
-        self.failed_as(&format!(" ({})", failure.kind()), failure.message(), logs)
-    }
-
-    fn failed_as(&self, kind: &str, error: &str, logs: &[&Path]) -> String {
         let logs: Vec<String> = logs.iter().map(|log| log.display().to_string()).collect();
         format!(
-            "{} failed{kind}: {}. Log files: {}",
+            "{} failed: {}. Log files: {}",
             self.subject(),
             error.trim_end_matches('.'),
             logs.join(", ")
         )
     }
 
+    /// The failure of a change that the daemon failed with `failure`: its
+    /// failure kind, and a message with the log files that say more.
+    fn failed_with(&self, failure: &Failure, logs: &[&Path]) -> ProviderFailure {
+        ProviderFailure::new(failure.kind().clone(), self.failed(failure.message(), logs))
+    }
+
     /// The end of a call whose change the daemon refused before it ran: the
     /// failure kind and the reason of the refusal.
     fn refused(&self, refusal: &Failure) -> ActionExit {
-        ActionExit::Failed(format!(
-            "the daemon refused {} ({}): {}",
-            self.subject(),
-            refusal.kind(),
-            refusal.message()
+        ActionExit::Refused(ProviderFailure::new(
+            refusal.kind().clone(),
+            format!(
+                "the daemon refused {}: {}",
+                self.subject(),
+                refusal.message()
+            ),
         ))
     }
 
@@ -136,14 +134,14 @@ impl Change {
             }
             StackGoalOutcome::Cancelled { reason } => Err(ActionExit::Cancelled(CancelledGoal {
                 result: json!({}),
-                reason: Some(format!("{} was {reason}", self.subject())),
+                reason: format!("{} was {reason}", self.subject()),
             })),
         }
     }
 
     /// The end of a call the daemon sent nothing to for `window`.
     fn silent(&self, window: Duration) -> ActionExit {
-        ActionExit::Failed(format!(
+        ActionExit::Error(format!(
             "the daemon sent nothing for {} s; {} can still be running",
             seconds(window),
             self.subject()
@@ -219,7 +217,7 @@ pub(super) fn start_change<G>(
     daemon: OwnDaemon,
     locks: Option<JoinLocks>,
     change: Change,
-    goal: impl Future<Output = Result<G, String>> + Send + 'static,
+    goal: impl Future<Output = Result<G, ActionExit>> + Send + 'static,
 ) -> StartedChange
 where
     G: StackGoal + Send + Sync + 'static,
@@ -259,14 +257,14 @@ where
 async fn admit_goal<G: StackGoal>(
     daemon: &OwnDaemon,
     change: &Change,
-    goal: impl Future<Output = Result<G, String>>,
+    goal: impl Future<Output = Result<G, ActionExit>>,
 ) -> Result<RunningStackGoal, ActionExit> {
-    let goal = goal.await.map_err(ActionExit::Failed)?;
+    let goal = goal.await?;
     stack_goal::send(daemon.route(), &goal)
         .await
         .map_err(|error| match error {
             SendError::Refused { failure, .. } => change.refused(&failure),
-            other => ActionExit::Failed(format!(
+            other => ActionExit::Error(format!(
                 "the daemon did not take {}: {other}",
                 change.subject()
             )),
@@ -363,7 +361,7 @@ pub(super) async fn wait_for_change(
         Ok(Start::Accepted { log_path }) => log_path,
         Ok(Start::Refused(refusal)) => return Err(refusal),
         Err(_) => {
-            return Err(ActionExit::Failed(format!(
+            return Err(ActionExit::Error(format!(
                 "{} ended before the daemon answered its goal",
                 change.subject()
             )));
@@ -391,12 +389,12 @@ pub(super) async fn wait_for_change(
             }
             Some(ChangeEvent::Ended(end)) => return change.outcome(&end, &log_path),
             Some(ChangeEvent::NoEnd(error)) => {
-                return Err(ActionExit::Failed(
+                return Err(ActionExit::Error(
                     change.failed(&error.to_string(), &[log_path.as_path()]),
                 ));
             }
             None => {
-                return Err(ActionExit::Failed(format!(
+                return Err(ActionExit::Error(format!(
                     "{} ended without its last event",
                     change.subject()
                 )));
@@ -471,14 +469,14 @@ mod tests {
         let window = Duration::from_secs(660);
         assert_eq!(
             addition().silent(window),
-            ActionExit::Failed(
+            ActionExit::Error(
                 "the daemon sent nothing for 660 s; the addition of bravo can still be running"
                     .to_owned()
             )
         );
         assert_eq!(
             removal().silent(window),
-            ActionExit::Failed(
+            ActionExit::Error(
                 "the daemon sent nothing for 660 s; the removal of bravo can still be running"
                     .to_owned()
             )
@@ -489,11 +487,11 @@ mod tests {
         );
         assert_eq!(
             removal().refused(&busy),
-            ActionExit::Failed(
-                "the daemon refused the removal of bravo (precondition_failed): a stack change \
-                 is in progress on this daemon"
-                    .to_owned()
-            )
+            ActionExit::Refused(ProviderFailure::new(
+                PeppyFailureKind::PreconditionFailed,
+                "the daemon refused the removal of bravo: a stack change is in progress on this \
+                 daemon"
+            ))
         );
     }
 
@@ -540,11 +538,11 @@ mod tests {
         );
         assert_eq!(
             addition().outcome(&at_start, join_log),
-            Err(ActionExit::Failed(
-                "the addition of bravo failed (attempt_failed): it exited during setup. Log \
-                 files: /logs/stack/join.log, /logs/run/bravo_init_inst.log"
-                    .to_owned()
-            ))
+            Err(ActionExit::Failed(ProviderFailure::new(
+                PeppyFailureKind::AttemptFailed,
+                "the addition of bravo failed: it exited during setup. Log files: \
+                 /logs/stack/join.log, /logs/run/bravo_init_inst.log"
+            )))
         );
 
         let at_build = ended(
@@ -557,11 +555,11 @@ mod tests {
         );
         assert_eq!(
             addition().outcome(&at_build, join_log),
-            Err(ActionExit::Failed(
-                "the addition of bravo failed (timeout): the build went quiet. Log files: \
+            Err(ActionExit::Failed(ProviderFailure::new(
+                PeppyFailureKind::Timeout,
+                "the addition of bravo failed: the build went quiet. Log files: \
                  /logs/stack/join.log, /logs/build/robot_initializer.log"
-                    .to_owned()
-            ))
+            )))
         );
 
         let not_live = ended(
@@ -573,12 +571,11 @@ mod tests {
         );
         assert_eq!(
             addition().outcome(&not_live, join_log),
-            Err(ActionExit::Failed(
-                "the addition of bravo failed (resource_unavailable): these core nodes are not \
-                 live on the federation: `cn-gone`. Live right now: `cn`. Log files: \
-                 /logs/stack/join.log"
-                    .to_owned()
-            ))
+            Err(ActionExit::Failed(ProviderFailure::new(
+                PeppyFailureKind::ResourceUnavailable,
+                "the addition of bravo failed: these core nodes are not live on the federation: \
+                 `cn-gone`. Live right now: `cn`. Log files: /logs/stack/join.log"
+            )))
         );
     }
 
@@ -609,7 +606,7 @@ mod tests {
             ),
             Err(ActionExit::Cancelled(CancelledGoal {
                 result: json!({}),
-                reason: Some("the addition of bravo was cancelled by its caller".to_owned()),
+                reason: "the addition of bravo was cancelled by its caller".to_owned(),
             }))
         );
     }

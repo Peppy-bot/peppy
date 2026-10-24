@@ -65,10 +65,14 @@ const FRAME_URI: &str = "peppy://resource/front_camera.latest_frame";
 /// The camera contract: two topics, four services, one action, so every
 /// published behaviour has a member behind it. `freeze_probe` is never
 /// answered by the provider, which is what exercises the deadline path;
-/// `snapshot` answers with a frame, or with none when asked for a blank.
+/// `snapshot` answers with a frame, or with the error reply of the kind
+/// `shutter_closed` when asked for a blank.
 const CAMERA_CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
     manifest: { name: "rgb_camera", tag: "v1" },
+    failure_kinds: {
+        shutter_closed: "The shutter of the camera is closed",
+    },
     interfaces: {
         topics: [
             {
@@ -113,8 +117,6 @@ const CAMERA_CONTRACT: &str = r#"{
                 name: "snapshot",
                 request_message_format: { blank: "bool" },
                 response_message_format: {
-                    success: "bool",
-                    message: "string",
                     frame: { $type: "array", $items: "u8" },
                     encoding: "string",
                     width: "u16",
@@ -207,10 +209,10 @@ const CAMERA_NODE_CONFIG: &str = r#"{
 
 /// The camera: 8x8 rgb8 frames and a status snapshot every 100 ms, the
 /// info, brightness and snapshot services, never an answer to
-/// `freeze_probe`, and
-/// `record_clip` running short goals to completion while parking long ones
-/// on the cancel signal (republishing feedback so progress is observable
-/// regardless of sensor-data QoS drops).
+/// `freeze_probe`, and `record_clip` running a clip of fewer than 1000
+/// frames to completion at once, and a longer one at a frame every 100 ms,
+/// for its frames past 1000 or until the cancel signal (republishing
+/// feedback so progress is observable regardless of sensor-data QoS drops).
 const CAMERA_MAIN: &str = r#"
 use peppygen::emitted_topics::camera::{camera_status, video_stream};
 use peppygen::exposed_actions::camera::record_clip;
@@ -235,14 +237,26 @@ fn main() -> Result<()> {
                     Ok(Some(ctx)) => {
                         let duration = ctx.request().data.duration_frames;
                         if duration >= 1000 {
-                            loop {
-                                let _ = ctx.publish_feedback(1).await;
+                            let frames = duration - 1000;
+                            let mut written = 0;
+                            let cancelled = loop {
+                                written += 1;
+                                let _ = ctx.publish_feedback(written).await;
+                                if written == frames {
+                                    break false;
+                                }
                                 tokio::select! {
-                                    _ = ctx.cancel_signal() => break,
+                                    _ = ctx.cancel_signal() => break true,
                                     _ = tokio::time::sleep(Duration::from_millis(100)) => {}
                                 }
+                            };
+                            if cancelled {
+                                ctx.complete_cancelled("the clip stopped on the cancel", 1)
+                                    .await
+                                    .expect("complete cancelled");
+                            } else {
+                                ctx.complete(frames).await.expect("complete");
                             }
-                            ctx.complete_cancelled(1).await.expect("complete cancelled");
                         } else {
                             for frame in 1..=duration {
                                 ctx.publish_feedback(frame).await.expect("publish feedback");
@@ -309,24 +323,13 @@ fn main() -> Result<()> {
             loop {
                 snapshot::handle_next_request(&runner, |request| {
                     if request.data.blank {
-                        return Ok(snapshot::Response::new(
-                            false,
-                            "the shutter is closed".to_owned(),
-                            Vec::new(),
-                            String::new(),
-                            0,
-                            0,
+                        return Err(snapshot::Failure::new(
+                            snapshot::FailureKind::ShutterClosed,
+                            "the shutter is closed",
                         ));
                     }
                     let frame: Vec<u8> = (0..8u32 * 8 * 3).map(|i| (i % 251) as u8).collect();
-                    Ok(snapshot::Response::new(
-                        true,
-                        String::new(),
-                        frame,
-                        "rgb8".to_owned(),
-                        8,
-                        8,
-                    ))
+                    Ok(snapshot::Response::new(frame, "rgb8".to_owned(), 8, 8))
                 })
                 .await
                 .expect("handle snapshot");
@@ -638,6 +641,11 @@ fn camera_and_recording_exposure() -> String {
         server: {{
             title: "OpenArm camera and recording",
             instructions: "Observe the front camera and record episodes on this robot.",
+        }},
+        call_record: {{
+            tool: "recording.recent_calls",
+            description: "The last state-changing calls of this endpoint, newest first.",
+            keep: 50,
         }},
         targets: {{
             front_camera: {{
@@ -1263,19 +1271,23 @@ async fn raw_status(port: u16, method: &str, path: &str) -> String {
     response.lines().next().unwrap_or("").to_owned()
 }
 
-/// Opens a raw `tools/call` of `front_camera.record_clip` for a goal that
-/// parks until cancelled, from a client that declares no tasks extension,
-/// and returns the connection once the goal's first feedback has arrived
-/// on it as a progress event. Dropping the connection is the client going
-/// away mid-call.
-async fn open_record_clip_until_progress(port: u16, path: &str) -> tokio::net::TcpStream {
+/// Opens a raw `tools/call` of `front_camera.record_clip` for a clip of
+/// `duration_frames`, from a client that declares no tasks extension, and
+/// returns the connection once the goal's first feedback has arrived on it
+/// as a progress event. Dropping the connection is the client going away
+/// mid-call.
+async fn open_record_clip_until_progress(
+    port: u16,
+    path: &str,
+    duration_frames: u32,
+) -> tokio::net::TcpStream {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/call",
         "params": {
             "name": "front_camera.record_clip",
-            "arguments": { "duration_frames": 100000 },
+            "arguments": { "duration_frames": duration_frames },
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                 "io.modelcontextprotocol/clientInfo": { "name": "raw", "version": "0" },
@@ -1348,13 +1360,39 @@ async fn await_resource_updates(subscription: &mut Subscription, expected: &[&st
 
 /// Asserts that `task` ended as a task does when its `record_clip` goal
 /// ends cancelled: `cancelled`, its status message saying so with the
-/// result the camera provider ends a cancelled clip with.
+/// reason and the result the camera provider ends a cancelled clip with.
 fn assert_record_clip_ended_cancelled(task: &rmcp::model::DetailedTask) {
     assert_eq!(task.status(), TaskStatus::Cancelled, "{:?}", task.payload);
     assert_eq!(
         task.task.status_message.as_deref(),
-        Some(r#"the action was cancelled: {"frames_written":1}"#)
+        Some(r#"the action was cancelled: the clip stopped on the cancel: {"frames_written":1}"#)
     );
+}
+
+/// The entry of the newest call of `tool` in the record that `record_tool`
+/// of `client`'s endpoint answers, once that call is no longer running.
+/// The wait is bounded by [`WAIT`] and driven by the endpoint's answers.
+async fn ended_call(client: &mcp_test_support::Client, record_tool: &str, tool: &str) -> Value {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let recorded = client
+                .call_tool(CallToolRequestParams::new(record_tool.to_owned()))
+                .await
+                .expect("the record answers");
+            let newest = recorded.structured_content.expect("structured")["calls"]
+                .as_array()
+                .expect("the calls")
+                .iter()
+                .find(|call| call["tool"] == tool)
+                .cloned();
+            if let Some(entry) = newest.filter(|entry| entry["outcome"] != "running") {
+                return entry;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the call of `{tool}` never ended"))
 }
 
 /// Fires `record_clip` as a task and walks the confirmation gate.
@@ -1760,7 +1798,8 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     assert_eq!(called.is_error, Some(true), "got {:?}", called.content);
 
     // --- A service that answers with a picture: the frame as an image
-    // block beside the document, and a refusal as the document alone.
+    // block beside the document, and an error reply as a tool error with
+    // its failure kind.
     let snapped = client
         .call_tool(
             CallToolRequestParams::new("front_camera.snapshot")
@@ -1770,7 +1809,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         .expect("the pictured service answers");
     assert_eq!(
         looked_document(snapped),
-        json!({ "success": true, "message": "", "encoding": "mjpeg", "width": 8, "height": 8 })
+        json!({ "encoding": "mjpeg", "width": 8, "height": 8 })
     );
     let blank = client
         .call_tool(
@@ -1779,22 +1818,20 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         )
         .await
         .expect("the pictured service answers");
-    assert_eq!(blank.is_error, Some(false), "got {:?}", blank.content);
+    assert_eq!(blank.is_error, Some(true), "got {:?}", blank.content);
     assert_eq!(
         blank.structured_content,
         Some(json!({
-            "success": false,
+            "outcome": "failed",
+            "failure_kind": "shutter_closed",
             "message": "the shutter is closed",
-            "encoding": "",
-            "width": 0,
-            "height": 0,
         }))
     );
     assert_eq!(
-        blank.content.len(),
-        1,
-        "the document alone: {:?}",
-        blank.content
+        blank.content,
+        vec![rmcp::model::ContentBlock::text(
+            "the provider gave an error reply: shutter_closed: the shutter is closed"
+        )]
     );
 
     // --- The record: the three brightness calls, newest first, under the
@@ -1912,7 +1949,8 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         [
             "front_camera.info",
             "front_camera.record_clip",
-            "recorder.record_episode"
+            "recorder.record_episode",
+            "recording.recent_calls"
         ]
     );
     let called = both_client
@@ -1951,19 +1989,27 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         recorded.structured_content,
         Some(json!({ "frames_written": 3 }))
     );
-    // A parked goal reports its feedback as progress on the call, and the
-    // client going away mid-call cancels it on the provider: the provider
-    // serves one goal at a time, so the next clip completing is the parked
-    // goal having ended.
-    let parked = open_record_clip_until_progress(port, "/camera_and_recording/v1/mcp").await;
-    drop(parked);
+    // A goal reports its feedback as progress on the call, and the client
+    // going away mid-call ends nothing: the endpoint is the sender of the
+    // goal, so the goal runs on to its end, which the record keeps. The
+    // clip writes 30 frames, one every 100 ms; the provider serves one goal
+    // at a time, so the next clip runs once it ends.
+    let running = open_record_clip_until_progress(port, "/camera_and_recording/v1/mcp", 1030).await;
+    drop(running);
+    let ended = ended_call(
+        &both_client,
+        "recording.recent_calls",
+        "front_camera.record_clip",
+    )
+    .await;
+    assert_eq!(ended["outcome"], "completed", "{ended}");
     let recorded = both_client
         .call_tool(
             CallToolRequestParams::new("front_camera.record_clip")
                 .with_arguments(object(json!({ "duration_frames": 2 }))),
         )
         .await
-        .expect("the provider is free again once the closed call's goal is cancelled");
+        .expect("the provider is free again once the closed call's goal ended");
     assert_eq!(
         recorded.structured_content,
         Some(json!({ "frames_written": 2 }))
@@ -3542,7 +3588,7 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
             (
                 call["tool"].as_str().expect("a tool").to_owned(),
                 call["outcome"].clone(),
-                call["success"].clone(),
+                call["failure_kind"].clone(),
             )
         })
         .collect();
@@ -3550,13 +3596,13 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
     assert_eq!(
         calls,
         [
-            ("stack.join".to_owned(), json!("completed"), json!(true)),
-            ("stack.join".to_owned(), json!("completed"), json!(true)),
+            ("stack.join".to_owned(), json!("completed"), Value::Null),
+            ("stack.join".to_owned(), json!("completed"), Value::Null),
             ("stack.join".to_owned(), json!("failed"), Value::Null),
             ("stack.join".to_owned(), json!("failed"), Value::Null),
             ("stack.join".to_owned(), json!("refused"), Value::Null),
-            ("stack.remove".to_owned(), json!("completed"), json!(true)),
-            ("stack.join".to_owned(), json!("completed"), json!(false)),
+            ("stack.remove".to_owned(), json!("completed"), Value::Null),
+            ("stack.join".to_owned(), json!("completed"), Value::Null),
         ],
         "{record}"
     );

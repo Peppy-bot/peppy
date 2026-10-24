@@ -11,6 +11,7 @@
 
 use crate::bridge::time_to_rfc3339;
 use crate::clock::Clock;
+use crate::failure::{CallFailure, FailureOutcome};
 use crate::server::{read_only_annotations, serialized_len};
 use crate::tasks::ActionExit;
 use rmcp::model::{Implementation, JsonObject, Tool, object};
@@ -25,27 +26,39 @@ use std::time::{Duration, UNIX_EPOCH};
 const ARGUMENTS_KEPT_BYTES: u64 = 1024;
 
 /// What a recording that is dropped while its call runs says: the task
-/// was cancelled or aborted, or the call's connection closed, before the
-/// call reached an end of its own.
+/// was cancelled before its goal started, or the endpoint stopped the task,
+/// before the call reached an end of its own.
 const CANCELLED_BEFORE_ITS_END: &str = "the call was cancelled before it ended";
 
 /// How a recorded call stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Outcome {
-    /// The call runs: a task that has not ended.
+    /// The call runs: a task that has not ended, or a goal that runs on
+    /// after its client closed the call.
     Running,
-    /// The provider answered; `success` and `message` say what it
-    /// answered.
+    /// The goal completed, or the service answered with its response.
     Completed,
-    /// The call did not reach an answer: a deadline, a provider error, a
-    /// goal that failed.
+    /// The goal failed or the service gave an error reply, with the kind
+    /// the provider gave; or the call did not reach an end that the
+    /// provider gave: a deadline, a transport error, a goal that was
+    /// abandoned.
     Failed,
     /// The goal ended cancelled, or the task was cancelled.
     Cancelled,
-    /// The call never reached the provider: its arguments were refused, or
-    /// the call could not be made.
+    /// The provider refused the goal, with the kind it gave; or the call
+    /// never reached the provider: its arguments were refused, or the call
+    /// could not be made.
     Refused,
+}
+
+impl From<FailureOutcome> for Outcome {
+    fn from(outcome: FailureOutcome) -> Self {
+        match outcome {
+            FailureOutcome::Refused => Self::Refused,
+            FailureOutcome::Failed => Self::Failed,
+        }
+    }
 }
 
 /// The client that made a call, as the request named it.
@@ -64,27 +77,6 @@ impl ClientIdentity {
     }
 }
 
-/// What a completed call reports: the `success` and `message` members of
-/// its result, when the result has them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Completion {
-    success: Option<bool>,
-    message: String,
-}
-
-impl Completion {
-    pub(crate) fn of(result: &Value) -> Self {
-        Self {
-            success: result.get("success").and_then(Value::as_bool),
-            message: result
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        }
-    }
-}
-
 /// One recorded call.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct RecordedCall {
@@ -98,9 +90,12 @@ struct RecordedCall {
     /// The size of the arguments' JSON, bytes.
     arguments_bytes: u64,
     outcome: Outcome,
-    /// The result's `success` member, when the call completed with one.
-    success: Option<bool>,
-    message: String,
+    /// The failure kind the provider gave a refused or failed call.
+    failure_kind: Option<String>,
+    /// What ended a call that did not complete: the provider's message of
+    /// a refused or failed call, the reason of a cancelled one, or the
+    /// endpoint's words.
+    message: Option<String>,
     /// How long the call ran, once it ended.
     duration_ms: Option<u64>,
     #[serde(skip)]
@@ -158,12 +153,16 @@ impl CallRecord {
                             "tool": { "type": "string" },
                             "arguments": { "type": ["object", "null"], "description": format!("The arguments as sent, when their JSON is {ARGUMENTS_KEPT_BYTES} bytes or fewer; else null.") },
                             "arguments_bytes": { "type": "integer", "description": "The size of the arguments' JSON, bytes." },
-                            "outcome": { "type": "string", "enum": ["running", "completed", "failed", "cancelled", "refused"] },
-                            "success": { "type": ["boolean", "null"], "description": "The result's `success` member of a completed call that has one: a completed call with success false ran to its end and reports a failure." },
-                            "message": { "type": "string" },
+                            "outcome": {
+                                "type": "string",
+                                "enum": ["running", "completed", "failed", "cancelled", "refused"],
+                                "description": "How the call stands. `completed`: the goal completed or the service answered with its response. `failed`: the goal failed or the service gave an error reply, or the call did not reach an end that the provider gave. `refused`: the provider refused the goal, or the call never reached the provider. `cancelled`: the goal or the task was cancelled.",
+                            },
+                            "failure_kind": { "type": ["string", "null"], "description": "The failure kind the provider gave a refused or failed call: a kind of peppy or of the contract of the member. Null when the provider gave none." },
+                            "message": { "type": ["string", "null"], "description": "What ended a call that did not complete: the provider's message of a refused or failed call, the reason of a cancelled call, or the endpoint's words. Null for a running or completed call." },
                             "duration_ms": { "type": ["integer", "null"], "description": "How long the call ran, once it ended." },
                         },
-                        "required": ["started_at", "client", "tool", "arguments", "arguments_bytes", "outcome", "success", "message", "duration_ms"],
+                        "required": ["started_at", "client", "tool", "arguments", "arguments_bytes", "outcome", "failure_kind", "message", "duration_ms"],
                     },
                 },
             },
@@ -194,8 +193,8 @@ impl CallRecord {
             arguments,
             arguments_bytes,
             outcome: Outcome::Running,
-            success: None,
-            message: String::new(),
+            failure_kind: None,
+            message: None,
             duration_ms: None,
             started_at_nanos: now,
         }));
@@ -239,6 +238,24 @@ struct Kept {
     clock: Clock,
 }
 
+/// How a call ended, as its entry keeps it.
+struct End {
+    outcome: Outcome,
+    failure_kind: Option<String>,
+    message: Option<String>,
+}
+
+impl End {
+    /// An end that the endpoint words: no failure kind.
+    fn worded(outcome: Outcome, message: String) -> Self {
+        Self {
+            outcome,
+            failure_kind: None,
+            message: Some(message),
+        }
+    }
+}
+
 impl Recording {
     /// The recording of a call the endpoint does not record: a read-only
     /// tool, or an endpoint without a record.
@@ -248,44 +265,64 @@ impl Recording {
 
     /// The call never reached the provider.
     pub(crate) fn refused(&mut self, message: String) {
-        self.end(Outcome::Refused, None, message);
+        self.end(End::worded(Outcome::Refused, message));
     }
 
-    /// The call did not reach an answer.
+    /// The call did not reach an end that the provider gave.
     pub(crate) fn failed(&mut self, message: String) {
-        self.end(Outcome::Failed, None, message);
+        self.end(End::worded(Outcome::Failed, message));
     }
 
-    /// The goal ended cancelled, or the task was.
-    pub(crate) fn cancelled(&mut self, message: String) {
-        self.end(Outcome::Cancelled, None, message);
+    /// The goal ended cancelled for `reason`, or the task was.
+    pub(crate) fn cancelled(&mut self, reason: String) {
+        self.end(End::worded(Outcome::Cancelled, reason));
     }
 
-    /// The provider answered, with what `completion` reports.
-    pub(crate) fn completed(&mut self, completion: Completion) {
-        self.end(Outcome::Completed, completion.success, completion.message);
+    /// The goal completed, or the service answered with its response.
+    pub(crate) fn completed(&mut self) {
+        self.end(End {
+            outcome: Outcome::Completed,
+            failure_kind: None,
+            message: None,
+        });
     }
 
-    /// The end of an action: completed with the result's report, cancelled
-    /// with the words a task's status message carries, or failed with the
-    /// exit's words.
+    /// The provider refused or failed the call with a failure kind and a
+    /// message.
+    pub(crate) fn ended_with(&mut self, failure: &CallFailure<'_>) {
+        self.end(End {
+            outcome: failure.outcome.into(),
+            failure_kind: Some(failure.failure.kind().to_string()),
+            message: Some(failure.failure.message().to_owned()),
+        });
+    }
+
+    /// The end of an action: completed, refused or failed with the
+    /// provider's failure, cancelled with the goal's reason, or failed in
+    /// the words of the exit.
     pub(crate) fn ended_by(&mut self, outcome: &Result<Value, ActionExit>) {
-        match outcome {
-            Ok(value) => self.completed(Completion::of(value)),
-            Err(ActionExit::Cancelled(goal)) => self.cancelled(goal.status_message()),
-            Err(exit @ ActionExit::Failed(_)) => self.failed(exit.to_string()),
+        let exit = match outcome {
+            Ok(_) => return self.completed(),
+            Err(exit) => exit,
+        };
+        if let Some(failure) = exit.call_failure() {
+            return self.ended_with(&failure);
+        }
+        match exit {
+            ActionExit::Cancelled(goal) => self.cancelled(goal.reason.clone()),
+            other => self.failed(other.to_string()),
         }
     }
 
-    fn end(&mut self, outcome: Outcome, success: Option<bool>, message: String) {
+    fn end(&mut self, end: End) {
         let Some(kept) = self.kept.take() else {
             return;
         };
         let now = kept.clock.now_nanos();
         let mut call = kept.call.lock().expect("call lock is never poisoned");
-        call.outcome = outcome;
-        call.success = success;
-        call.message = message;
+        call.outcome = end.outcome;
+        call.failure_kind = end.failure_kind;
+        call.message = end.message;
         call.duration_ms = Some(now.saturating_sub(call.started_at_nanos) / 1_000_000);
     }
 }
@@ -300,6 +337,7 @@ impl Drop for Recording {
 mod tests {
     use super::*;
     use crate::clock::test_support::{MS, manual_clock};
+    use crate::failure::test_support::failure;
     use crate::tasks::CancelledGoal;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -331,29 +369,41 @@ mod tests {
             &object(json!({ "arm_name": "left_arm" })),
         );
         nanos.store(1_400 * MS, Ordering::SeqCst);
-        first.completed(Completion::of(
-            &json!({ "success": false, "message": "no plan reaches the pose" }),
-        ));
+        first.completed();
         nanos.store(2_000 * MS, Ordering::SeqCst);
         let mut second = record.start(None, "robot.stop", &object(json!({ "reason": "" })));
 
         let answer = record.answer();
         let calls = answer["calls"].as_array().expect("calls");
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0]["tool"], "robot.stop");
-        assert_eq!(calls[0]["outcome"], "running");
-        assert_eq!(calls[0]["client"], Value::Null);
-        assert_eq!(calls[0]["success"], Value::Null);
-        assert_eq!(calls[0]["duration_ms"], Value::Null);
-        assert_eq!(calls[0]["started_at"], "1970-01-01T00:00:02.000000000Z");
-        assert_eq!(calls[1]["tool"], "robot.move_arm");
-        assert_eq!(calls[1]["outcome"], "completed");
-        assert_eq!(calls[1]["success"], false);
-        assert_eq!(calls[1]["message"], "no plan reaches the pose");
-        assert_eq!(calls[1]["duration_ms"], 400);
-        assert_eq!(calls[1]["client"]["name"], "alice");
-        assert_eq!(calls[1]["arguments"]["arm_name"], "left_arm");
-        assert_eq!(calls[1]["arguments_bytes"], 23);
+        assert_eq!(
+            calls[0],
+            json!({
+                "started_at": "1970-01-01T00:00:02.000000000Z",
+                "client": null,
+                "tool": "robot.stop",
+                "arguments": { "reason": "" },
+                "arguments_bytes": 13,
+                "outcome": "running",
+                "failure_kind": null,
+                "message": null,
+                "duration_ms": null,
+            })
+        );
+        assert_eq!(
+            calls[1],
+            json!({
+                "started_at": "1970-01-01T00:00:01.000000000Z",
+                "client": { "name": "alice", "version": "1.0" },
+                "tool": "robot.move_arm",
+                "arguments": { "arm_name": "left_arm" },
+                "arguments_bytes": 23,
+                "outcome": "completed",
+                "failure_kind": null,
+                "message": null,
+                "duration_ms": 400,
+            })
+        );
 
         nanos.store(2_500 * MS, Ordering::SeqCst);
         second.cancelled("stopped: the operator asked".into());
@@ -361,6 +411,7 @@ mod tests {
         second.failed("too late".into());
         let answer = record.answer();
         assert_eq!(answer["calls"][0]["outcome"], "cancelled");
+        assert_eq!(answer["calls"][0]["failure_kind"], Value::Null);
         assert_eq!(answer["calls"][0]["message"], "stopped: the operator asked");
         assert_eq!(answer["calls"][0]["duration_ms"], 500);
     }
@@ -382,6 +433,7 @@ mod tests {
             .collect();
         assert_eq!(tools, ["tool_2", "tool_1"]);
         assert_eq!(answer["calls"][0]["outcome"], "refused");
+        assert_eq!(answer["calls"][0]["failure_kind"], Value::Null);
 
         let large = object(json!({ "text": "x".repeat(2000) }));
         record
@@ -391,6 +443,7 @@ mod tests {
         assert_eq!(answer["calls"][0]["arguments"], Value::Null);
         assert_eq!(answer["calls"][0]["arguments_bytes"], 2011);
         assert_eq!(answer["calls"][0]["outcome"], "failed");
+        assert_eq!(answer["calls"][0]["message"], "deadline");
     }
 
     #[test]
@@ -403,37 +456,83 @@ mod tests {
         assert_eq!(answer["calls"][0]["message"], CANCELLED_BEFORE_ITS_END);
     }
 
+    /// The entry an action's exit leaves, newest first in the record.
+    fn entry_of(exit: Result<Value, ActionExit>) -> Value {
+        let (record, _) = record(1);
+        record
+            .start(None, "robot.move_arm", &object(json!({})))
+            .ended_by(&exit);
+        record.answer()["calls"][0].clone()
+    }
+
+    /// The `outcome`, `failure_kind` and `message` of an entry.
+    fn end_of(entry: &Value) -> Value {
+        json!({
+            "outcome": entry["outcome"],
+            "failure_kind": entry["failure_kind"],
+            "message": entry["message"],
+        })
+    }
+
     #[test]
-    fn an_actions_exit_ends_its_recording_in_the_words_of_the_exit() {
-        let (record, _) = record(3);
-        record
-            .start(None, "done", &object(json!({})))
-            .ended_by(&Ok(json!({ "success": true, "message": "at the pose" })));
-        record
-            .start(None, "cancelled", &object(json!({})))
-            .ended_by(&Err(ActionExit::Cancelled(CancelledGoal {
-                result: json!({ "success": false }),
-                reason: Some("no progress within 2000 ms".into()),
-            })));
-        record
-            .start(None, "failed", &object(json!({})))
-            .ended_by(&Err(ActionExit::Failed(
-                "the provider abandoned the goal".into(),
-            )));
-        let answer = record.answer();
-        assert_eq!(answer["calls"][2]["outcome"], "completed");
-        assert_eq!(answer["calls"][2]["success"], true);
-        assert_eq!(answer["calls"][2]["message"], "at the pose");
-        assert_eq!(answer["calls"][1]["outcome"], "cancelled");
+    fn an_actions_exit_ends_its_recording_with_the_providers_kind_or_reason() {
         assert_eq!(
-            answer["calls"][1]["message"],
-            "the action was cancelled: no progress within 2000 ms: {\"success\":false}"
+            end_of(&entry_of(Ok(json!({ "reached": true })))),
+            json!({ "outcome": "completed", "failure_kind": null, "message": null })
         );
-        assert_eq!(answer["calls"][0]["outcome"], "failed");
         assert_eq!(
-            answer["calls"][0]["message"],
-            "the action failed: the provider abandoned the goal"
+            end_of(&entry_of(Err(ActionExit::Refused(failure(
+                "leader_streaming",
+                "a leader streams the left arm"
+            ))))),
+            json!({
+                "outcome": "refused",
+                "failure_kind": "leader_streaming",
+                "message": "a leader streams the left arm",
+            })
         );
+        assert_eq!(
+            end_of(&entry_of(Err(ActionExit::Failed(failure(
+                "unreachable",
+                "no plan reaches the pose"
+            ))))),
+            json!({
+                "outcome": "failed",
+                "failure_kind": "unreachable",
+                "message": "no plan reaches the pose",
+            })
+        );
+        assert_eq!(
+            end_of(&entry_of(Err(ActionExit::Cancelled(CancelledGoal {
+                result: json!({ "reached": false }),
+                reason: "replaced by a newer goal".into(),
+            })))),
+            json!({
+                "outcome": "cancelled",
+                "failure_kind": null,
+                "message": "replaced by a newer goal",
+            })
+        );
+        assert_eq!(
+            end_of(&entry_of(Err(ActionExit::Error(
+                "the provider abandoned the goal".into()
+            )))),
+            json!({
+                "outcome": "failed",
+                "failure_kind": null,
+                "message": "the action failed: the provider abandoned the goal",
+            })
+        );
+    }
+
+    #[test]
+    fn a_completed_call_keeps_nothing_of_its_result() {
+        // A result is data: a field named like a report of the call is no
+        // part of how the call ended.
+        let entry = entry_of(Ok(json!({ "success": false, "message": "no plan" })));
+        assert_eq!(entry["outcome"], "completed");
+        assert_eq!(entry["message"], Value::Null);
+        assert!(entry.get("success").is_none(), "{entry}");
     }
 
     #[test]

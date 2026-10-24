@@ -37,12 +37,13 @@ mod change;
 
 use super::OwnDaemon;
 use change::{Change, JoinLocks, start_change, wait_for_change};
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::{CopyName, CoreNodeName, CoreNodeTarget};
 use core_node_api::encoding::{
     CopyChange, CopyInfo, CopyReference, SelectionWord, StackJoinGoal, StackRemoveGoal,
 };
 use daemon_config::daemon_interface::{ScopedOption, StackCopiesScope};
-use peppy_mcp_runtime::{ActionExit, ToolCallError};
+use peppy_mcp_runtime::{ActionExit, ProviderFailure, ToolCallError};
 use peppylib::CoreNodePresenceMessenger;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -157,7 +158,7 @@ impl ScopedStackCopies {
             ),
         );
         let listed = listed.map_err(|error| {
-            ToolCallError::Failed(format!("the daemon did not list the stack: {error}"))
+            ToolCallError::Error(format!("the daemon did not list the stack: {error}"))
         })?;
         let machines = live_machines_or_refusal(machines)?;
         let options: Vec<Value> = self
@@ -213,10 +214,12 @@ impl ScopedStackCopies {
         window: Option<Duration>,
     ) -> Result<Value, ActionExit> {
         let input: JoinInput = parse_input(input)?;
-        let TypedJoin { copy, words } = self.typed_join(&input).map_err(ActionExit::Failed)?;
+        let TypedJoin { copy, words } = self
+            .typed_join(&input)
+            .map_err(|reason| refusal(PeppyFailureKind::Rejected, reason))?;
         let join = Arc::clone(&self.bridge.joins)
             .try_lock_owned()
-            .map_err(|_| ActionExit::Failed(STACK_BUSY_REASON.to_owned()))?;
+            .map_err(|_| refusal(PeppyFailureKind::PreconditionFailed, STACK_BUSY_REASON))?;
         let admission = Arc::clone(&self.bridge.admission).lock_owned().await;
         let change = Change::Addition {
             name: copy.name.clone(),
@@ -225,8 +228,9 @@ impl ScopedStackCopies {
         let daemon = self.bridge.daemon.clone();
         let scope = Arc::clone(&self.scope);
         let goal = async move {
-            let copies = read_copies(&daemon).await?;
-            refuse_join(&scope, &copies, &copy.name)?;
+            let copies = read_copies(&daemon).await.map_err(ActionExit::Error)?;
+            refuse_join(&scope, &copies, &copy.name)
+                .map_err(|reason| refusal(PeppyFailureKind::PreconditionFailed, reason))?;
             Ok(StackJoinGoal {
                 selections: words,
                 ..StackJoinGoal::new(copy, DEFAULT_BUDGETS)
@@ -252,13 +256,14 @@ impl ScopedStackCopies {
     ) -> Result<Value, ActionExit> {
         let input: RemoveInput = parse_input(input)?;
         let name = CopyName::new(input.name.as_str())
-            .map_err(|error| ActionExit::Failed(error.to_string()))?;
+            .map_err(|error| refusal(PeppyFailureKind::Rejected, error.to_string()))?;
         let change = Change::Removal { name: name.clone() };
         let daemon = self.bridge.daemon.clone();
         let scope = Arc::clone(&self.scope);
         let goal = async move {
-            let copies = read_copies(&daemon).await?;
-            refuse_removal(&scope, &copies, &name)?;
+            let copies = read_copies(&daemon).await.map_err(ActionExit::Error)?;
+            refuse_removal(&scope, &copies, &name)
+                .map_err(|reason| refusal(PeppyFailureKind::Rejected, reason))?;
             Ok(StackRemoveGoal::new(name))
         };
         let started = start_change(self.bridge.daemon.clone(), None, change.clone(), goal);
@@ -323,10 +328,18 @@ impl ScopedStackCopies {
     }
 }
 
+/// The refusal of a change that the bridge gives before any goal reaches the
+/// daemon, with `kind`: `rejected` for an input that names what the scope
+/// does not hold, `precondition_failed` for a stack or a bridge that does not
+/// allow the change now.
+fn refusal(kind: PeppyFailureKind, reason: impl Into<String>) -> ActionExit {
+    ActionExit::Refused(ProviderFailure::new(kind, reason))
+}
+
 /// The goal of a call, which the narrowed schema already checked.
 fn parse_input<T: serde::de::DeserializeOwned>(input: &Value) -> Result<T, ActionExit> {
     T::deserialize(input)
-        .map_err(|error| ActionExit::Failed(format!("the goal does not parse: {error}")))
+        .map_err(|error| ActionExit::Error(format!("the goal does not parse: {error}")))
 }
 
 /// The copies on the stack, or the refusal of a change that cannot read
@@ -349,7 +362,7 @@ pub(super) fn live_machines_or_refusal(
     read: peppylib::PeppyResult<std::collections::BTreeSet<String>>,
 ) -> Result<std::collections::BTreeSet<String>, ToolCallError> {
     read.map_err(|error| {
-        ToolCallError::Failed(format!(
+        ToolCallError::Error(format!(
             "the live machines of the federation could not be read: {error}"
         ))
     })

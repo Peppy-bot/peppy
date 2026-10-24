@@ -2,6 +2,7 @@
 //! bundle and composing servers into a set, feeding snapshots through the
 //! topic policies, and reporting bridge failures back to MCP clients.
 
+use crate::failure::ProviderFailure;
 use std::fmt;
 
 /// Why a bundle plus its registered handlers cannot become a server, or why
@@ -166,8 +167,13 @@ pub enum ToolCallError {
     Unavailable(String),
     /// The provider did not answer within the exposure's deadline.
     Deadline(String),
-    /// The provider answered with a failure.
-    Failed(String),
+    /// The provider gave an error reply, with a failure kind and a message.
+    /// The tool error carries the failure as structured content as well.
+    Failed(ProviderFailure),
+    /// The call failed for another reason, for example a transport error,
+    /// a response that does not convert, or an error reply with a kind that
+    /// the member does not declare.
+    Error(String),
 }
 
 impl fmt::Display for ToolCallError {
@@ -175,7 +181,8 @@ impl fmt::Display for ToolCallError {
         match self {
             Self::Unavailable(detail) => write!(f, "provider unavailable: {detail}"),
             Self::Deadline(detail) => write!(f, "deadline exceeded: {detail}"),
-            Self::Failed(detail) => write!(f, "call failed: {detail}"),
+            Self::Failed(failure) => write!(f, "the provider gave an error reply: {failure}"),
+            Self::Error(detail) => write!(f, "call failed: {detail}"),
         }
     }
 }
