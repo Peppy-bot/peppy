@@ -338,7 +338,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -346,8 +347,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -598,7 +599,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -606,8 +608,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -817,7 +819,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -825,8 +828,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -1028,7 +1031,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -1036,8 +1040,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -1208,7 +1212,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -1216,8 +1221,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -1488,7 +1493,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -1496,8 +1502,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        ACTION_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), ACTION_NAME, failure.message()
                     ),
                 )
             })?;
@@ -1895,7 +1901,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -1903,8 +1910,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        ACTION_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), ACTION_NAME, failure.message()
                     ),
                 )
             })?;
@@ -2140,7 +2147,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -2148,8 +2156,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        ACTION_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), ACTION_NAME, failure.message()
                     ),
                 )
             })?;
@@ -2416,7 +2424,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -2424,8 +2433,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        ACTION_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), ACTION_NAME, failure.message()
                     ),
                 )
             })?;
@@ -2682,7 +2691,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -2690,8 +2700,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        ACTION_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), ACTION_NAME, failure.message()
                     ),
                 )
             })?;
@@ -3235,7 +3245,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -3243,8 +3254,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -3645,7 +3656,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -3653,8 +3665,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -4079,7 +4091,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -4087,8 +4100,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -4358,7 +4371,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -4366,8 +4380,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        TARGET_ACTION_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), TARGET_ACTION_NAME, failure.message()
                     ),
                 )
             })?;
@@ -4997,7 +5011,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -5005,8 +5020,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -5424,7 +5439,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -5432,8 +5448,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        TARGET_ACTION_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), TARGET_ACTION_NAME, failure.message()
                     ),
                 )
             })?;
@@ -7634,7 +7650,8 @@ pub mod move_arm {
             self.context.is_cancelled()
         }
         /// Why this goal received its cancel signal; `None` before
-        /// it did.
+        /// it did. `CancelCause::reason` gives a reason for
+        /// `complete_cancelled`.
         pub fn cancel_cause(&self) -> Option<peppylib::messaging::CancelCause> {
             self.context.cancel_cause()
         }
@@ -8266,7 +8283,8 @@ pub mod move_arm {
             self.context.is_cancelled()
         }
         /// Why this goal received its cancel signal; `None` before
-        /// it did.
+        /// it did. `CancelCause::reason` gives a reason for
+        /// `complete_cancelled`.
         pub fn cancel_cause(&self) -> Option<peppylib::messaging::CancelCause> {
             self.context.cancel_cause()
         }
@@ -13539,7 +13557,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -13547,8 +13566,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -14338,7 +14357,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -14346,8 +14366,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        ACTION_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), ACTION_NAME, failure.message()
                     ),
                 )
             })?;
@@ -15185,7 +15205,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -15193,8 +15214,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -15979,7 +16000,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -15987,8 +16009,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        TARGET_ACTION_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), TARGET_ACTION_NAME, failure.message()
                     ),
                 )
             })?;
@@ -17887,7 +17909,8 @@ pub mod rich_action {
             self.context.is_cancelled()
         }
         /// Why this goal received its cancel signal; `None` before
-        /// it did.
+        /// it did. `CancelCause::reason` gives a reason for
+        /// `complete_cancelled`.
         pub fn cancel_cause(&self) -> Option<peppylib::messaging::CancelCause> {
             self.context.cancel_cause()
         }
@@ -20465,7 +20488,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -20473,8 +20497,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        SERVICE_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), SERVICE_NAME, failure.message()
                     ),
                 )
             })?;
@@ -20629,7 +20653,8 @@ impl Failure {
         peppylib::messaging::Failure::new(kind, self.message.clone())
     }
     /// Parses a failure from the wire. A kind that this member does
-    /// not declare is a deserialization error.
+    /// not declare is a deserialization error, whose text keeps the
+    /// message of the provider.
     pub(crate) fn from_wire(
         failure: &peppylib::messaging::Failure,
     ) -> crate::Result<Self> {
@@ -20637,8 +20662,8 @@ impl Failure {
             .ok_or_else(|| {
                 crate::Error::Deserialization(
                     format!(
-                        "the failure kind `{}` is not a kind of `{}`", failure.kind(),
-                        TARGET_ACTION_NAME
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
+                        failure.kind(), TARGET_ACTION_NAME, failure.message()
                     ),
                 )
             })?;
@@ -20995,7 +21020,8 @@ pub mod home_all {
             self.context.is_cancelled()
         }
         /// Why this goal received its cancel signal; `None` before
-        /// it did.
+        /// it did. `CancelCause::reason` gives a reason for
+        /// `complete_cancelled`.
         pub fn cancel_cause(&self) -> Option<peppylib::messaging::CancelCause> {
             self.context.cancel_cause()
         }

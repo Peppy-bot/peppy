@@ -949,7 +949,8 @@ fn render_dep_action(
                 }
 
                 /// Why this goal received its cancel signal; `None` before
-                /// it did.
+                /// it did. `CancelCause::reason` gives a reason for
+                /// `complete_cancelled`.
                 pub fn cancel_cause(&self) -> Option<peppylib::messaging::CancelCause> {
                     self.context.cancel_cause()
                 }

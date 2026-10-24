@@ -142,13 +142,15 @@ pub(super) fn build_failure_items(
             }
 
             /// Parses a failure from the wire. A kind that this member does
-            /// not declare is a deserialization error.
+            /// not declare is a deserialization error, whose text keeps the
+            /// message of the provider.
             pub(crate) fn from_wire(failure: &peppylib::messaging::Failure) -> crate::Result<Self> {
                 let kind = FailureKind::parse(failure.kind().as_str()).ok_or_else(|| {
                     crate::Error::Deserialization(format!(
-                        "the failure kind `{}` is not a kind of `{}`",
+                        "the failure kind `{}` is not a kind of `{}` (message: {:?})",
                         failure.kind(),
-                        #member_name
+                        #member_name,
+                        failure.message()
                     ))
                 })?;
                 Ok(Self::new(kind, failure.message()))
@@ -218,6 +220,21 @@ mod tests {
         let service = render(&MemberFailureKinds::peppy_only(), FailingMember::Service);
         assert!(service.contains("pub fn of(error: &crate::Error) -> Option<Self>"));
         assert!(service.contains("pub(crate) fn reject_undeclared_kind("));
+    }
+
+    #[test]
+    fn an_undeclared_kind_keeps_the_message_of_the_provider() {
+        let rendered = render(&MemberFailureKinds::peppy_only(), FailingMember::Action);
+        assert!(
+            rendered.contains("\"the failure kind `{}` is not a kind of `{}` (message: {:?})\""),
+            "{rendered}"
+        );
+        // Once in the error of an undeclared kind, once in the failure.
+        assert_eq!(
+            rendered.matches("failure.message()").count(),
+            2,
+            "the error of an undeclared kind gives the message of the provider: {rendered}"
+        );
     }
 
     #[test]

@@ -1037,8 +1037,8 @@ impl LanguageGenerator for RustGenerator {
         let has_feedback = action.feedback_topic.is_some();
 
         // Every action is goal-driven in the concurrent model: clients fire a
-        // goal, the server accepts/rejects and (when accepted) drives it through
-        // a GoalContext. An absent `goal_service` simply means the goal carries
+        // goal, the server accepts or refuses it and (when accepted) drives it
+        // through a GoalContext. An absent `goal_service` simply means the goal carries
         // no request/response payload. The block yields the
         // `handle_goal_next_request` method of `impl ActionHandle`.
         let handle_goal_method = {
@@ -1113,11 +1113,12 @@ impl LanguageGenerator for RustGenerator {
                 helper_tokens.push(deserializer_fn);
             }
 
-            // The user closure returns this to accept or reject the goal.
+            // The user closure returns this to accept or refuse the goal.
             extra_items.push(build_goal_decision_enum(response_artifacts.is_some()));
 
-            // Serialization for the accepted/rejected `GoalResponse` (reads a
-            // local `response` variable). `None` when the goal has no response.
+            // Serialization for the `GoalResponse` of an accepted goal (reads a
+            // local `response` variable); a refusal carries no response. `None`
+            // when the goal has no response.
             let response_serialization = if let Some(return_artifacts) = response_artifacts.as_ref()
             {
                 let response_schema_prefix = format!("{schema_struct_prefix}Response");

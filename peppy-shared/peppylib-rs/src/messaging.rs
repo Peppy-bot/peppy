@@ -413,7 +413,7 @@ fn service_timed_out(sender: &ServiceWireSender) -> Error {
 
 /// How one service query attempt ends when it ends without an error.
 enum QueryAttempt {
-    /// The first `Response` or `HandlerError` of the attempt.
+    /// The first `Response` or `Failure` reply of the attempt.
     Terminal(ServiceReply),
     /// The query finalized with no reply and no `Ack` before it, so the
     /// target was never reached and the caller may issue the query again.
