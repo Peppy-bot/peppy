@@ -664,7 +664,7 @@ The MCP server is the sender of the goals of its tools: the provider sees the se
 How a client cancels a goal depends on the surface it runs on:
 
 - A task outlives the connection that started it. A client that disconnects while its goal runs cancels nothing: the goal runs on, and a client that reconnects reads the same task. `tasks/cancel` is the one cancel of a task.
-- A goal that runs inside a call ends with its call. In Streamable HTTP a client cancels a call by closing it, and a client that disconnects closes it too: the endpoint cannot tell the two apart, and takes both as a cancel. Closing the call sends the provider a cancel, so a client that stops waiting, for example when its user interrupts it, stops the robot it moves. A client that must keep a goal running after it goes away declares the tasks extension.
+- A goal that runs inside a call is cancelled when its call closes. In Streamable HTTP a client cancels a call by closing it, and a client that disconnects closes it too: the endpoint cannot tell the two apart, and takes both as a cancel. Closing the call sends the provider a cancel, so a client that stops waiting, for example when its user interrupts it, stops the robot it moves. A client that must keep a goal running after it goes away declares the tasks extension.
 
 The endpoint sends a cancel of its own only when a window of `progress_timeout_ms` goes by without a sign of progress, and when the feedback of a goal overflows its buffer. A deadline sends no cancel.
 
