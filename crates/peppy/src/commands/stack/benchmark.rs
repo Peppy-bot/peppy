@@ -126,7 +126,7 @@ async fn benchmark_async(
             doing: "Benchmark",
             log_path: None,
         },
-        &mut CtrlC,
+        &mut CtrlC::listen(),
     )
     .await?;
 

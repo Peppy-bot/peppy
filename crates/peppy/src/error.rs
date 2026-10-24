@@ -3,6 +3,10 @@ use derive_more::From;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// The exit code of a command that a Ctrl-C ended, as a shell gives a
+/// process that SIGINT ends.
+pub const INTERRUPTED_EXIT_CODE: i32 = 130;
+
 #[derive(Debug, From)]
 pub enum Error {
     // -- general
@@ -71,11 +75,11 @@ impl Display for Error {
 }
 
 impl Error {
-    /// The exit code of a command that ends with this error: 130 after a
-    /// Ctrl-C, as a shell gives a process that SIGINT ends, and 1 otherwise.
+    /// The exit code of a command that ends with this error:
+    /// [`INTERRUPTED_EXIT_CODE`] after a Ctrl-C, and 1 otherwise.
     pub fn exit_code(&self) -> i32 {
         match self {
-            Error::Interrupted(_) => 130,
+            Error::Interrupted(_) => INTERRUPTED_EXIT_CODE,
             _ => 1,
         }
     }

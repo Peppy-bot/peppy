@@ -1,6 +1,7 @@
 //! Sending a stack goal, following its feedback, cancelling it, and reading
 //! how it ended.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -127,6 +128,19 @@ pub enum FollowError {
     /// The daemon dropped the goal before it ended it.
     #[error("{operation} was abandoned by its worker before producing a result")]
     Abandoned { operation: &'static str },
+    /// The caller fell behind the output of the goal by more than `bound`
+    /// unread messages: the goal's feedback buffer dropped them, and the
+    /// handle of the goal sent the daemon a cancel of it.
+    #[error(
+        "the caller fell behind the output of the {} by more than {bound} unread messages, \
+         so it cancelled the {}",
+        .operation.to_lowercase(),
+        .operation.to_lowercase()
+    )]
+    FellBehind {
+        operation: &'static str,
+        bound: usize,
+    },
     /// The goal ended, and its end was gone before the request for it
     /// arrived.
     #[error("{operation} result expired before it could be fetched")]
@@ -304,18 +318,28 @@ impl RunningStackGoal {
     /// the step it reached, rolls back as a failure there does, and ends the
     /// goal cancelled: the caller follows the goal with [`next`](Self::next)
     /// to that end. A goal that already ended keeps its end.
-    pub async fn cancel(&self) -> Result<(), CancelError> {
+    ///
+    /// The request does not borrow the goal: a caller can hand it to a task
+    /// of its own, so it reaches the daemon also when the caller stops
+    /// waiting for its answer.
+    pub fn cancel(&self) -> impl Future<Output = Result<(), CancelError>> + Send + 'static {
         let operation = self.operation;
-        let unsent = |source| CancelError::Unsent {
-            operation,
-            source: Box::new(source),
-        };
-        let ack = ActionMessenger::cancel_goal(&self.messenger, &self.handle, CANCEL_TIMEOUT)
-            .await
-            .map_err(unsent)?;
-        let state: CancelState = decode_cancel_ack(&ack.payload_bytes()).map_err(unsent)?;
-        debug!(operation, ?state, "the daemon answered the cancel");
-        Ok(())
+        let messenger = self.messenger.clone();
+        let sender = self.handle.sender().clone();
+        let goal_id = self.handle.goal_id().to_owned();
+        async move {
+            let unsent = |source| CancelError::Unsent {
+                operation,
+                source: Box::new(source),
+            };
+            let ack =
+                ActionMessenger::cancel_with_sender(&messenger, &sender, &goal_id, CANCEL_TIMEOUT)
+                    .await
+                    .map_err(unsent)?;
+            let state: CancelState = decode_cancel_ack(&ack.payload_bytes()).map_err(unsent)?;
+            debug!(operation, ?state, "the daemon answered the cancel");
+            Ok(())
+        }
     }
 
     /// Follows the goal to its end and returns it, without its output. A
@@ -333,8 +357,10 @@ impl RunningStackGoal {
     /// The next line of output, or `None` once the feedback ends, which
     /// moves the goal to its end. The node logs the daemon sends as the last
     /// feedback are kept for the end. A message that does not decode is
-    /// skipped. The stage changes only after an await completes, so a
-    /// dropped call leaves it as it was.
+    /// skipped. A caller that fell behind the output gets
+    /// [`FollowError::FellBehind`]: its handle cancelled the goal. The stage
+    /// changes only after an await completes, so a dropped call leaves it as
+    /// it was.
     async fn next_output(&mut self) -> Result<Option<LaunchOutput>, FollowError> {
         loop {
             match self.handle.on_next_feedback().await {
@@ -353,6 +379,13 @@ impl RunningStackGoal {
                     self.stage = Stage::Ended;
                     return Err(FollowError::DaemonGone {
                         operation: self.operation,
+                    });
+                }
+                Err(PeppyError::ActionFeedbackOverflow { bound, .. }) => {
+                    self.stage = Stage::Ended;
+                    return Err(FollowError::FellBehind {
+                        operation: self.operation,
+                        bound,
                     });
                 }
                 // The end of the feedback: the daemon ended the goal.

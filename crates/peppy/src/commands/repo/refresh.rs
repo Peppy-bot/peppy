@@ -68,7 +68,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
             doing: "Repository refresh",
             log_path: None,
         },
-        &mut CtrlC,
+        &mut CtrlC::listen(),
     )
     .await?;
 

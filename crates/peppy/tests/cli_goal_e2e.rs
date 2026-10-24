@@ -1,6 +1,7 @@
 //! Real-binary end-to-end coverage of the goals a command line process
-//! sends: each `peppy` process is a sender of its own, and the daemon
-//! cancels the goal of a process that is gone.
+//! sends: each `peppy` process is a sender of its own, the daemon cancels
+//! the goal of a process that is gone, and a Ctrl-C of a command cancels its
+//! goal.
 //!
 //! Linux only: the managed zenohd is what lets a second process reach the
 //! daemon.
@@ -8,7 +9,7 @@
 #![cfg(target_os = "linux")]
 
 use super::common::{ZenohDaemon, install_node_manifest, poll_for, publish_repo_index};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::mpsc;
@@ -101,6 +102,63 @@ fn printed_by(child: Child) -> (std::process::ExitStatus, String) {
             String::from_utf8_lossy(&output.stderr)
         ),
     )
+}
+
+/// The lines that a command prints, on its stdout or on its stderr, which
+/// the test reads as they come, and the ones it read so far.
+struct PrintedLines {
+    lines: mpsc::Receiver<String>,
+    read: Vec<String>,
+}
+
+impl PrintedLines {
+    /// Reads each line that `child` prints until the child closes its
+    /// stdout and its stderr.
+    fn of(child: &mut Child) -> Self {
+        let (line_tx, lines) = mpsc::channel();
+        let stdout: Box<dyn Read + Send> = Box::new(child.stdout.take().expect("piped stdout"));
+        let stderr: Box<dyn Read + Send> = Box::new(child.stderr.take().expect("piped stderr"));
+        for stream in [stdout, stderr] {
+            let line_tx = line_tx.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    if line_tx.send(line).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        Self {
+            lines,
+            read: Vec::new(),
+        }
+    }
+
+    /// Reads lines until one holds `text`. Fails when the command prints no
+    /// such line within `bound`, or ends before.
+    fn wait_for(&mut self, text: &str, bound: Duration) {
+        let deadline = std::time::Instant::now() + bound;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let Ok(line) = self.lines.recv_timeout(left) else {
+                panic!(
+                    "peppy printed no line with `{text}`; it printed:\n{}",
+                    self.read.join("\n")
+                );
+            };
+            let found = line.contains(text);
+            self.read.push(line);
+            if found {
+                return;
+            }
+        }
+    }
+
+    /// Every line the command printed, once it closed its output.
+    fn all(mut self) -> String {
+        self.read.extend(self.lines.iter());
+        self.read.join("\n")
+    }
 }
 
 /// A launch log of `daemon` that holds `text`.
@@ -219,6 +277,64 @@ fn a_cli_process_that_is_gone_gets_its_stack_goal_cancelled_and_another_one_goes
         printed.contains("Repository refresh complete"),
         "the refresh completes: {printed}"
     );
+
+    let (_home, _printed) = daemon.stop(DAEMON_EXIT);
+}
+
+/// A Ctrl-C of `peppy stack launch` sends the daemon a cancel. The command
+/// says so, follows the launch to the end the daemon gives it, says that
+/// the launch was cancelled by its caller, and exits with code 130. The
+/// cancel clears the stack. The test sends SIGINT once the command follows
+/// the goal, which it shows by a line of the goal's feedback, and once the
+/// launch starts its instance, which never signals ready.
+#[test]
+fn a_ctrl_c_cancels_the_launch_and_the_command_exits_with_130() {
+    let scratch = tempfile::tempdir().expect("temp scratch dir");
+    // The test opens no pipe, so the index of this repository stays a file.
+    let (repository, _index) = piped_repository(scratch.path());
+    let daemon = boot(&repository);
+    let (_nodes, launcher) = write_the_waiting_launch(&daemon);
+
+    let mut launch = spawn_peppy(
+        &daemon,
+        &["stack", "launch", &launcher.display().to_string()],
+    );
+    let mut printed = PrintedLines::of(&mut launch);
+    printed.wait_for("Validating dependencies", STEP_BOUND);
+    poll_for(STEP_BOUND, "the launch to start its instance", || {
+        lists_the_instance(&daemon).then_some(())
+    });
+
+    rustix::process::kill_process(
+        rustix::process::Pid::from_child(&launch),
+        rustix::process::Signal::INT,
+    )
+    .expect("press Ctrl-C");
+    printed.wait_for(
+        "Cancelling the launch; press Ctrl-C again to stop waiting for its end",
+        STEP_BOUND,
+    );
+    let status = super::common::wait_for_exit(&mut launch, STEP_BOUND);
+    let printed = printed.all();
+
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "the command exits with 130: {printed}"
+    );
+    assert!(
+        printed.contains("Launch was cancelled by its caller."),
+        "the command says how the launch ended: {printed}"
+    );
+    poll_for(
+        STEP_BOUND,
+        "the cancel of the launch to clear the stack",
+        || (!lists_the_instance(&daemon)).then_some(()),
+    );
+    let log = poll_for(STEP_BOUND, "the launch log to say why it ended", || {
+        launch_log_holding(&daemon, "cancelled: cancelled by its caller")
+    });
+    assert!(log.exists());
 
     let (_home, _printed) = daemon.stop(DAEMON_EXIT);
 }

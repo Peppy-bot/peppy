@@ -4,21 +4,26 @@
 //! Ctrl-C, and how the goal ended.
 //!
 //! The watchdog sends no cancel: a budget that runs out ends the command, and
-//! the goal goes on on the daemon. A Ctrl-C sends the daemon a cancel; the
-//! command then follows the goal to the end the daemon gives it, says how it
-//! ended, and exits with code 130. A second Ctrl-C stops the wait at once.
+//! its process exits. The daemon then finds that the sender of the goal is
+//! gone and cancels the goal, with the reason "its sender is gone". A Ctrl-C
+//! sends the daemon a cancel; the command then follows the goal to the end
+//! the daemon gives it, under the max budget alone, says how it ended, and
+//! exits with code 130. A second Ctrl-C stops the wait at once, also while
+//! the cancel is on its way to the daemon.
 
-use peppylib::messaging::{ActionGoalHandle, GoalAnswer, GoalOutcome};
-use peppylib::{ActionMessenger, MessengerHandle};
+use peppylib::messaging::{ActionGoalHandle, ActionResultReply, GoalAnswer, GoalOutcome};
+use peppylib::{ActionMessenger, Message, MessengerHandle, PeppyError};
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use super::node::TimeoutConfig;
 use crate::commands::SCROLLING_OUTPUT_LINES;
-use crate::error::{Error, Result};
+use crate::error::{Error, INTERRUPTED_EXIT_CODE, Result};
 use crate::terminal::ScrollingOutput;
 
 use std::future::Future;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// How long the daemon has to answer a cancel request.
@@ -46,25 +51,127 @@ pub(crate) trait ActionResultLike: Sized {
 
 /// The Ctrl-C presses a command reads while it follows a goal.
 pub(crate) trait Interrupts {
-    /// Resolves at the next press.
+    /// Resolves at the next press. A press that comes while no call waits
+    /// is kept for the next call.
     fn next(&mut self) -> impl Future<Output = ()>;
 }
 
-/// The Ctrl-C presses of the process. The first wait installs the handler of
-/// SIGINT, so the default action of the signal, which ends the process,
-/// holds until the command follows a goal.
-pub(crate) struct CtrlC;
+/// The Ctrl-C presses of the process for one follow of a goal, from
+/// [`CtrlC::listen`] until the value is dropped.
+///
+/// The first follow of the process starts the one listener of SIGINT that
+/// the process keeps from then on, on a thread of its own. A press goes to
+/// the follow that holds a [`CtrlC`], which keeps the press until the
+/// follow reads it: no press is lost while the follow sends a cancel or
+/// reads the end of its goal. A press while no follow holds a [`CtrlC`],
+/// between two goals of one command or after the last one, ends the process
+/// with code 130.
+pub(crate) struct CtrlC {
+    presses: mpsc::UnboundedReceiver<()>,
+    /// The sender that [`FOLLOW`] holds while this follow reads the presses.
+    own: mpsc::UnboundedSender<()>,
+}
+
+/// The sender of the presses to the follow that reads them at this moment,
+/// if a follow does.
+static FOLLOW: Mutex<Option<mpsc::UnboundedSender<()>>> = Mutex::new(None);
+
+/// Set once the first follow started the listener of SIGINT.
+static SIGINT_LISTENER: OnceLock<()> = OnceLock::new();
+
+impl CtrlC {
+    /// Starts to read the presses of the process for one follow.
+    pub(crate) fn listen() -> Self {
+        let (own, presses) = mpsc::unbounded_channel();
+        *follow_slot() = Some(own.clone());
+        SIGINT_LISTENER.get_or_init(start_sigint_listener);
+        Self { presses, own }
+    }
+}
 
 impl Interrupts for CtrlC {
     async fn next(&mut self) {
-        if let Err(error) = tokio::signal::ctrl_c().await {
-            warn!("Ctrl-C cannot be read: {error}");
-            std::future::pending::<()>().await;
+        self.presses
+            .recv()
+            .await
+            .expect("a CtrlC holds a sender of its own presses");
+    }
+}
+
+impl Drop for CtrlC {
+    fn drop(&mut self) {
+        let mut follow = follow_slot();
+        if follow
+            .as_ref()
+            .is_some_and(|press| press.same_channel(&self.own))
+        {
+            *follow = None;
         }
     }
 }
 
-/// What the command calls the goal it follows, and the goal's log file on
+/// The follow slot. A panic while it is held leaves nothing half written,
+/// so a poisoned lock is read as it is.
+fn follow_slot() -> std::sync::MutexGuard<'static, Option<mpsc::UnboundedSender<()>>> {
+    FOLLOW
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Starts the thread that reads each SIGINT of the process and hands it on
+/// ([`route_press`]). The default action of SIGINT, which ends the process,
+/// holds until this runs. The listener is registered before this returns,
+/// and it runs on a runtime of its own: it outlives the runtime of each
+/// command step, which [`crate::commands::block_on`] can make and drop.
+fn start_sigint_listener() {
+    if let Err(error) = spawn_sigint_thread() {
+        warn!("Ctrl-C cannot be read: {error}");
+    }
+}
+
+/// Registers the listener of SIGINT on a runtime of its own, and drives it
+/// on a thread of its own for the rest of the process.
+fn spawn_sigint_thread() -> std::io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()?;
+    let mut sigint = {
+        let _runtime_context = runtime.enter();
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?
+    };
+    std::thread::Builder::new()
+        .name("peppy-sigint".to_owned())
+        .spawn(move || {
+            runtime.block_on(async move {
+                while sigint.recv().await.is_some() {
+                    if route_press() == PressRoute::EndsTheProcess {
+                        std::process::exit(INTERRUPTED_EXIT_CODE);
+                    }
+                }
+            });
+        })?;
+    Ok(())
+}
+
+/// Where a press of Ctrl-C goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PressRoute {
+    /// To the follow that reads the presses at this moment.
+    ToTheFollow,
+    /// No follow reads them: the press ends the process.
+    EndsTheProcess,
+}
+
+/// Hands a press to the follow that reads the presses at this moment, if a
+/// follow does.
+fn route_press() -> PressRoute {
+    match follow_slot().as_ref() {
+        Some(press) if press.send(()).is_ok() => PressRoute::ToTheFollow,
+        _ => PressRoute::EndsTheProcess,
+    }
+}
+
+/// What a command calls the goal it follows, and the goal's log file on
 /// the daemon's machine, which every failure names.
 pub(crate) struct FollowedGoal<'a> {
     /// The goal at the start of a sentence: "Node add", "Repository refresh".
@@ -78,6 +185,72 @@ impl FollowedGoal<'_> {
         self.log_path
             .map(|path| format!(" Log file: {}", path.display()))
             .unwrap_or_default()
+    }
+
+    /// The line a command writes when a Ctrl-C sends the daemon a cancel.
+    pub(crate) fn announce_cancel(&self) {
+        warn!(
+            "Cancelling the {}; press Ctrl-C again to stop waiting for its end",
+            self.doing.to_lowercase()
+        );
+    }
+
+    /// The end of a command whose operator pressed Ctrl-C a second time.
+    pub(crate) fn stopped_waiting(&self) -> Error {
+        Error::Interrupted(format!(
+            "Stopped waiting: the daemon goes on with the cancel of the {}.{}",
+            self.doing.to_lowercase(),
+            self.log_tail()
+        ))
+    }
+
+    /// The end of a command that fell behind the output of its goal by more
+    /// than `bound` unread messages: the handle of the goal cancelled it.
+    pub(crate) fn fell_behind(&self, bound: usize) -> Error {
+        Error::ExecutionFailed(format!(
+            "The command fell behind the output of the {} by more than {bound} unread messages \
+             and cancelled it.{}",
+            self.doing.to_lowercase(),
+            self.log_tail()
+        ))
+    }
+}
+
+/// `error` as the end of a follow that sent the daemon a cancel at a
+/// Ctrl-C when `cancel_sent`: the command then ends with code 130, whichever
+/// way the follow ended.
+pub(crate) fn end_of_follow(cancel_sent: bool, error: Error) -> Error {
+    if !cancel_sent {
+        return error;
+    }
+    match error {
+        Error::Interrupted(_) => error,
+        other => Error::Interrupted(other.to_string()),
+    }
+}
+
+/// What came first after a Ctrl-C started a cancel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CancelRace {
+    /// The cancel request ended: the daemon answered it, or it failed.
+    Ended,
+    /// A second Ctrl-C: the command stops waiting.
+    StoppedWaiting,
+}
+
+/// Runs `cancel`, the request that sends the daemon a cancel of the goal,
+/// on a task of its own, and waits for it against the next press of
+/// `interrupts`: a second Ctrl-C stops the wait at once, also while the
+/// request is on its way, and the request goes on.
+pub(crate) async fn cancel_unless_stopped(
+    cancel: impl Future<Output = ()> + Send + 'static,
+    interrupts: &mut impl Interrupts,
+) -> CancelRace {
+    let request = tokio::spawn(cancel);
+    tokio::select! {
+        biased;
+        _ = request => CancelRace::Ended,
+        () = interrupts.next() => CancelRace::StoppedWaiting,
     }
 }
 
@@ -131,7 +304,7 @@ where
             doing,
             log_path: Some(goal_response.log_path()),
         },
-        &mut CtrlC,
+        &mut CtrlC::listen(),
     )
     .await?;
 
@@ -162,20 +335,23 @@ pub(crate) fn deadline_after(
 /// Drives an accepted action goal to its end: drains feedback into the
 /// scrolling output until the daemon closes the feedback stream (which it
 /// does when it ends the goal), honoring the idle/max timeouts, then fetches
-/// the goal's end once. The result service rendezvous server-side, so the
-/// single request resolves as soon as the goal has ended instead of needing
-/// a poll loop.
+/// the goal's end. The result service rendezvous server-side, so one request
+/// resolves as soon as the goal has ended instead of needing a poll loop.
 ///
 /// - `on_feedback` is called with each raw feedback payload.
 /// - `decode_result` decodes the result of a completed goal, returning `Err`
 ///   on failure.
 /// - A failed goal ends the command with its failure kind, its message and
 ///   the goal's log file; a cancelled goal with its reason.
+/// - A command that falls behind the output of the goal loses the stream:
+///   the handle of the goal cancels it, and the command ends with an error
+///   that says so.
 /// - The first press `interrupts` gives sends the daemon a cancel, and the
-///   command follows the goal to its end, says how it ended, and ends with
-///   [`Error::Interrupted`]. A second press stops the wait at once.
+///   command follows the goal to its end under the max budget alone, says
+///   how it ended, and ends with [`Error::Interrupted`]. A second press
+///   stops the wait at once.
 ///
-/// On timeout or error, the scrolling output is cleared before returning.
+/// The scrolling output is cleared before returning.
 #[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 pub(crate) async fn poll_action_to_completion<R>(
     messenger: &MessengerHandle,
@@ -187,71 +363,22 @@ pub(crate) async fn poll_action_to_completion<R>(
     goal: &FollowedGoal<'_>,
     interrupts: &mut impl Interrupts,
 ) -> Result<R> {
-    let idle_timeout = Duration::from_secs(timeouts.idle_secs);
-    let absolute_deadline = deadline_after(
-        tokio::time::Instant::now(),
-        Duration::from_secs(timeouts.max_secs),
-    );
-    let mut last_activity = tokio::time::Instant::now();
-    let mut cancel_sent = false;
-
-    // Drain feedback until the daemon closes the stream as it ends the goal.
-    // The idle / max-timeout budgets bound a goal that goes silent or runs
-    // away; they send no cancel.
-    loop {
-        check_timeouts(
-            tokio::time::Instant::now(),
-            last_activity,
-            idle_timeout,
-            absolute_deadline,
-            timeouts,
-        )
-        .inspect_err(|_| scrolling_output.clear())?;
-
-        let next = tokio::select! {
-            biased;
-            () = interrupts.next() => {
-                if cancel_sent {
-                    scrolling_output.clear();
-                    return Err(Error::Interrupted(format!(
-                        "Stopped waiting: the daemon goes on with the cancel of the {}.{}",
-                        goal.doing.to_lowercase(),
-                        goal.log_tail()
-                    )));
-                }
-                cancel_sent = true;
-                send_cancel(messenger, action_handle, goal).await;
-                continue;
-            }
-            next = tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()) => next,
-        };
-        match next {
-            Ok(Ok(msg)) => {
-                last_activity = tokio::time::Instant::now();
-                on_feedback(msg.payload_bytes().as_ref(), scrolling_output);
-            }
-            Ok(Err(_)) => break, // end-of-stream: the daemon ended the goal
-            Err(_) => {}         // drain slice elapsed; re-check timeouts and keep draining
-        }
-    }
-
-    // The goal has ended; fetch its (server-buffered) end once. Give the
-    // request the remaining max budget so it resolves promptly.
-    let result_timeout = absolute_deadline
-        .saturating_duration_since(tokio::time::Instant::now())
-        .max(Duration::from_secs(1));
-    let reply = ActionMessenger::request_result(messenger, action_handle, result_timeout)
-        .await
-        .inspect_err(|_| scrolling_output.clear())
-        .map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "Failed to get how the {} ended: {e}.{}",
-                goal.doing.to_lowercase(),
-                goal.log_tail()
-            ))
-        })?;
+    let followed = follow_goal(
+        messenger,
+        action_handle,
+        timeouts,
+        scrolling_output,
+        &mut on_feedback,
+        goal,
+        interrupts,
+    )
+    .await;
     scrolling_output.clear();
-    let ended = goal_end(goal, reply.outcome, decode_result);
+    let Followed {
+        outcome,
+        cancel_sent,
+    } = followed?;
+    let ended = goal_end(goal, outcome, decode_result);
     if !cancel_sent {
         return ended;
     }
@@ -268,23 +395,166 @@ pub(crate) async fn poll_action_to_completion<R>(
     Err(Error::Interrupted(how))
 }
 
-/// Sends the daemon a cancel of the goal `action_handle` follows, after a
-/// line that says so; a cancel that does not reach the daemon is a warning.
-async fn send_cancel(
+/// A goal followed to its end, and whether the operator's Ctrl-C sent the
+/// daemon a cancel on the way.
+struct Followed {
+    outcome: GoalOutcome,
+    cancel_sent: bool,
+}
+
+/// Follows the goal of `action_handle` to its end, which it returns (see
+/// [`poll_action_to_completion`]). Every error after a Ctrl-C is an
+/// [`Error::Interrupted`].
+async fn follow_goal(
+    messenger: &MessengerHandle,
+    action_handle: &mut ActionGoalHandle,
+    timeouts: &TimeoutConfig,
+    scrolling_output: &mut ScrollingOutput,
+    on_feedback: &mut impl FnMut(&[u8], &mut ScrollingOutput),
+    goal: &FollowedGoal<'_>,
+    interrupts: &mut impl Interrupts,
+) -> Result<Followed> {
+    let idle_timeout = Duration::from_secs(timeouts.idle_secs);
+    let absolute_deadline = deadline_after(
+        tokio::time::Instant::now(),
+        Duration::from_secs(timeouts.max_secs),
+    );
+    let mut last_activity = tokio::time::Instant::now();
+    let mut feedback_open = true;
+    let mut cancel_sent = false;
+
+    loop {
+        // After a Ctrl-C the daemon rolls the work back, which can be silent
+        // for long: the goal is followed to its end under the max budget
+        // alone.
+        let now = tokio::time::Instant::now();
+        let within_budgets = if cancel_sent {
+            check_max_timeout(now, absolute_deadline, timeouts)
+        } else {
+            check_timeouts(
+                now,
+                last_activity,
+                idle_timeout,
+                absolute_deadline,
+                timeouts,
+            )
+        };
+        within_budgets.map_err(|error| end_of_follow(cancel_sent, error))?;
+
+        let event = tokio::select! {
+            biased;
+            () = interrupts.next() => {
+                if cancel_sent {
+                    return Err(goal.stopped_waiting());
+                }
+                cancel_sent = true;
+                scrolling_output.clear();
+                goal.announce_cancel();
+                let cancel = cancel_request(messenger, action_handle, goal);
+                if cancel_unless_stopped(cancel, interrupts).await == CancelRace::StoppedWaiting {
+                    return Err(goal.stopped_waiting());
+                }
+                continue;
+            }
+            event = next_goal_event(messenger, action_handle, &mut feedback_open, absolute_deadline) => event,
+        };
+        match event {
+            GoalEvent::Feedback(message) => {
+                last_activity = tokio::time::Instant::now();
+                on_feedback(message.payload_bytes().as_ref(), scrolling_output);
+            }
+            GoalEvent::Quiet => {}
+            GoalEvent::FeedbackEnded => last_activity = tokio::time::Instant::now(),
+            GoalEvent::FellBehind { bound } => {
+                return Err(end_of_follow(cancel_sent, goal.fell_behind(bound)));
+            }
+            GoalEvent::Ended(Ok(reply)) => {
+                return Ok(Followed {
+                    outcome: reply.outcome,
+                    cancel_sent,
+                });
+            }
+            GoalEvent::Ended(Err(error)) => {
+                let error = Error::ExecutionFailed(format!(
+                    "Failed to get how the {} ended: {error}.{}",
+                    goal.doing.to_lowercase(),
+                    goal.log_tail()
+                ));
+                return Err(end_of_follow(cancel_sent, error));
+            }
+        }
+    }
+}
+
+/// One event of a followed goal.
+enum GoalEvent {
+    /// A feedback message.
+    Feedback(Message),
+    /// A drain slice passed with no message.
+    Quiet,
+    /// The daemon closed the feedback, which it does when it ends the goal.
+    FeedbackEnded,
+    /// The command fell behind the feedback by more than `bound` unread
+    /// messages, and the handle of the goal cancelled it.
+    FellBehind { bound: usize },
+    /// The reply to the request for the end of the goal.
+    Ended(std::result::Result<ActionResultReply, PeppyError>),
+}
+
+/// The next event of the goal of `action_handle`: a feedback message, a
+/// drain slice with none, the end of the feedback, or, once the feedback
+/// ended, the reply to the request for the end of the goal, which has the
+/// rest of the max budget. Cancel safe: a dropped call leaves `feedback_open`
+/// as it was, and the next call asks again.
+async fn next_goal_event(
+    messenger: &MessengerHandle,
+    action_handle: &mut ActionGoalHandle,
+    feedback_open: &mut bool,
+    absolute_deadline: tokio::time::Instant,
+) -> GoalEvent {
+    if *feedback_open {
+        return match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback())
+            .await
+        {
+            Err(_) => GoalEvent::Quiet,
+            Ok(Ok(message)) => GoalEvent::Feedback(message),
+            Ok(Err(PeppyError::ActionFeedbackOverflow { bound, .. })) => {
+                GoalEvent::FellBehind { bound }
+            }
+            // The end of the stream: the daemon ended the goal.
+            Ok(Err(_)) => {
+                *feedback_open = false;
+                GoalEvent::FeedbackEnded
+            }
+        };
+    }
+    let result_timeout = absolute_deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .max(Duration::from_secs(1));
+    GoalEvent::Ended(
+        ActionMessenger::request_result(messenger, action_handle, result_timeout).await,
+    )
+}
+
+/// The request that sends the daemon a cancel of the goal `action_handle`
+/// follows, which borrows nothing; a cancel that does not reach the daemon
+/// is a warning.
+fn cancel_request(
     messenger: &MessengerHandle,
     action_handle: &ActionGoalHandle,
     goal: &FollowedGoal<'_>,
-) {
-    warn!(
-        "Cancelling the {}; press Ctrl-C again to stop waiting for its end",
-        goal.doing.to_lowercase()
-    );
-    if let Err(error) = ActionMessenger::cancel_goal(messenger, action_handle, CANCEL_TIMEOUT).await
-    {
-        warn!(
-            "The cancel of the {} did not reach the daemon: {error}",
-            goal.doing.to_lowercase()
-        );
+) -> impl Future<Output = ()> + Send + 'static {
+    let messenger = messenger.clone();
+    let sender = action_handle.sender().clone();
+    let goal_id = action_handle.goal_id().to_owned();
+    let doing = goal.doing.to_lowercase();
+    async move {
+        let sent =
+            ActionMessenger::cancel_with_sender(&messenger, &sender, &goal_id, CANCEL_TIMEOUT)
+                .await;
+        if let Err(error) = sent {
+            warn!("The cancel of the {doing} did not reach the daemon: {error}");
+        }
     }
 }
 
@@ -387,28 +657,42 @@ fn check_timeouts(
     absolute_deadline: tokio::time::Instant,
     timeouts: &TimeoutConfig,
 ) -> Result<()> {
-    let raise = |flag: &str| {
-        if timeouts.flags {
-            format!(" Use {flag} <seconds> to increase.")
-        } else {
-            String::new()
-        }
-    };
-    if now >= absolute_deadline {
-        return Err(Error::ExecutionFailed(format!(
-            "Timeout: max timeout of {}s exceeded.{}",
-            timeouts.max_secs,
-            raise("--max-timeout")
-        )));
-    }
+    check_max_timeout(now, absolute_deadline, timeouts)?;
     if now.duration_since(last_activity) >= idle_timeout {
         return Err(Error::ExecutionFailed(format!(
             "Timeout: no output received for {}s.{}",
             timeouts.idle_secs,
-            raise("--idle-timeout")
+            raise_hint(timeouts, "--idle-timeout")
         )));
     }
     Ok(())
+}
+
+/// Decides whether an action poll loop has exceeded its absolute-max budget,
+/// as [`check_timeouts`] does.
+fn check_max_timeout(
+    now: tokio::time::Instant,
+    absolute_deadline: tokio::time::Instant,
+    timeouts: &TimeoutConfig,
+) -> Result<()> {
+    if now >= absolute_deadline {
+        return Err(Error::ExecutionFailed(format!(
+            "Timeout: max timeout of {}s exceeded.{}",
+            timeouts.max_secs,
+            raise_hint(timeouts, "--max-timeout")
+        )));
+    }
+    Ok(())
+}
+
+/// " Use {flag} <seconds> to increase.", for a command whose budgets have
+/// flags.
+fn raise_hint(timeouts: &TimeoutConfig, flag: &str) -> String {
+    if timeouts.flags {
+        format!(" Use {flag} <seconds> to increase.")
+    } else {
+        String::new()
+    }
 }
 
 #[cfg(test)]
@@ -533,30 +817,20 @@ mod tests {
     }
 }
 
-/// The end of a goal as the command line says it, and the Ctrl-C path, on
-/// a daemon's goal engine over the in-process mock messaging. The presses
-/// come from the test, at fixed points.
+/// What the tests of a follow share: the presses of Ctrl-C that a test
+/// gives, and a daemon's goal engine over the in-process mock messaging.
 #[cfg(test)]
-mod ctrl_c {
-    use super::*;
-    use config::failure_kind::PeppyFailureKind;
-    use core_node_api::encoding::{
-        NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult,
-    };
+pub(crate) mod test_support {
+    use super::Interrupts;
     use core_node_api::names::CORE_NODE_TAG;
-    use peppylib::messaging::{
-        CancelCause, ConcurrentAction, Failure, GoalContext, PendingGoal, SenderTarget,
-    };
-    use peppylib::types::Payload;
+    use peppylib::MessengerHandle;
+    use peppylib::messaging::{ConcurrentAction, PendingGoal, SenderTarget};
     use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
     use std::sync::Arc;
     use tokio::sync::{Mutex, mpsc};
 
-    const CORE_NODE: &str = "cn-ctrl-c";
-    const LOG_PATH: &str = "/logs/add/source_20260101_000000_000.log";
-
     /// Ctrl-C presses that the test gives, one at a time.
-    struct Presses(mpsc::UnboundedReceiver<()>);
+    pub(crate) struct Presses(mpsc::UnboundedReceiver<()>);
 
     impl Interrupts for Presses {
         async fn next(&mut self) {
@@ -567,7 +841,7 @@ mod ctrl_c {
     }
 
     /// `count` presses, given before the command follows its goal.
-    fn presses(count: usize) -> Presses {
+    pub(crate) fn presses(count: usize) -> Presses {
         let (press, presses) = mpsc::unbounded_channel();
         for _ in 0..count {
             press.send(()).expect("the command reads the press");
@@ -575,9 +849,12 @@ mod ctrl_c {
         Presses(presses)
     }
 
-    /// A daemon that exposes `node_add` on a mock messenger, and the
-    /// messenger a command uses to reach it.
-    async fn daemon() -> (MessengerHandle, ConcurrentAction) {
+    /// A daemon of `core_node` that exposes `action` on a mock messenger,
+    /// and the messenger a command uses to reach it.
+    pub(crate) async fn daemon_exposing(
+        core_node: &str,
+        action: &str,
+    ) -> (MessengerHandle, ConcurrentAction) {
         let mut messenger = Messenger::new(MessengerAdapter::Mock(MockAdapter::default()));
         messenger
             .start_session()
@@ -586,24 +863,51 @@ mod ctrl_c {
         let messenger = MessengerHandle::from_shared(Arc::new(Mutex::new(messenger)));
         let engine = ConcurrentAction::expose(
             &messenger,
-            CORE_NODE,
+            core_node,
             "daemon",
-            SenderTarget::node(CORE_NODE, CORE_NODE_TAG).expect("a core node identity"),
-            core_node_api::ActionId::NodeAdd.name(),
+            SenderTarget::node(core_node, CORE_NODE_TAG).expect("a core node identity"),
+            action,
             true,
         )
         .await
-        .expect("the daemon exposes node_add");
+        .expect("the daemon exposes its action");
         (messenger, engine)
     }
 
     /// The daemon's next pending goal.
-    async fn next_goal(engine: &mut ConcurrentAction) -> PendingGoal {
+    pub(crate) async fn next_goal(engine: &mut ConcurrentAction) -> PendingGoal {
         engine
             .recv_next_goal()
             .await
             .expect("the goal service runs")
             .expect("the goal arrives")
+    }
+}
+
+/// The end of a goal as the command line says it, and the Ctrl-C path, on
+/// a daemon's goal engine over the in-process mock messaging. The presses
+/// come from the test, at fixed points.
+#[cfg(test)]
+mod ctrl_c {
+    use super::test_support::{Presses, daemon_exposing, next_goal, presses};
+    use super::*;
+    use config::failure_kind::PeppyFailureKind;
+    use core_node_api::encoding::{
+        NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult,
+    };
+    use core_node_api::names::CORE_NODE_TAG;
+    use peppylib::messaging::{
+        CancelCause, ConcurrentAction, Failure, FeedbackBound, GoalContext, SenderTarget,
+    };
+    use peppylib::types::Payload;
+
+    const CORE_NODE: &str = "cn-ctrl-c";
+    const LOG_PATH: &str = "/logs/add/source_20260101_000000_000.log";
+
+    /// A daemon that exposes `node_add` on a mock messenger, and the
+    /// messenger a command uses to reach it.
+    async fn daemon() -> (MessengerHandle, ConcurrentAction) {
+        daemon_exposing(CORE_NODE, core_node_api::ActionId::NodeAdd.name()).await
     }
 
     /// The daemon accepts its next goal with the add log [`LOG_PATH`].
@@ -624,6 +928,26 @@ mod ctrl_c {
         })
     }
 
+    /// Sends a `node_add` goal from the command, whose handle keeps one
+    /// unread feedback message.
+    async fn send_node_add_keeping_one_message(messenger: &MessengerHandle) -> ActionGoalHandle {
+        ActionMessenger::send_goal(
+            messenger,
+            CORE_NODE,
+            "peppy-cli-test",
+            SenderTarget::node(CORE_NODE, CORE_NODE_TAG).expect("a core node identity"),
+            core_node_api::ActionId::NodeAdd.name(),
+            None,
+            NodeAddGoal::new("/tmp/source", "hash", 60)
+                .encode()
+                .expect("the goal encodes"),
+            FeedbackBound::new(std::num::NonZeroUsize::MIN),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("the command sends the goal")
+    }
+
     /// Sends a `node_add` goal from the command.
     async fn send_node_add(messenger: &MessengerHandle) -> ActionGoalHandle {
         peppylib::core_node::transport::send_goal(
@@ -638,10 +962,28 @@ mod ctrl_c {
         .expect("the command sends the goal")
     }
 
+    /// The budgets of a command that waits an hour for anything.
+    const HOUR_LONG: TimeoutConfig = TimeoutConfig {
+        idle_secs: 3600,
+        max_secs: 3600,
+        flags: true,
+    };
+
     /// Follows `handle` as `node add` does, with `presses`.
     async fn follow(
         messenger: &MessengerHandle,
         handle: &mut ActionGoalHandle,
+        presses: &mut Presses,
+    ) -> Result<NodeAddResult> {
+        follow_under(messenger, handle, &HOUR_LONG, presses).await
+    }
+
+    /// Follows `handle` as `node add` does, under `timeouts`, with
+    /// `presses`.
+    async fn follow_under(
+        messenger: &MessengerHandle,
+        handle: &mut ActionGoalHandle,
+        timeouts: &TimeoutConfig,
         presses: &mut Presses,
     ) -> Result<NodeAddResult> {
         let goal = FollowedGoal {
@@ -651,11 +993,7 @@ mod ctrl_c {
         poll_action_to_completion(
             messenger,
             handle,
-            &TimeoutConfig {
-                idle_secs: 3600,
-                max_secs: 3600,
-                flags: true,
-            },
+            timeouts,
             &mut ScrollingOutput::new(SCROLLING_OUTPUT_LINES),
             |_, _| {},
             |payload| NodeAddResult::decode(payload).map_err(|error| error.to_string()),
@@ -723,10 +1061,12 @@ mod ctrl_c {
         );
     }
 
-    /// A second Ctrl-C stops the wait at once: the daemon goes on with the
-    /// cancel that the first one sent.
+    /// A second Ctrl-C stops the wait at once, also while the cancel that
+    /// the first one sent is on its way to the daemon: here the second press
+    /// is there before the daemon answers the cancel. The daemon goes on
+    /// with the cancel.
     #[tokio::test]
-    async fn a_second_ctrl_c_stops_the_wait() {
+    async fn a_second_ctrl_c_stops_the_wait_while_the_cancel_is_on_its_way() {
         let (messenger, engine) = daemon().await;
         let accepted = accept_next(engine);
         let mut handle = send_node_add(&messenger).await;
@@ -744,7 +1084,118 @@ mod ctrl_c {
                  Log file: {LOG_PATH}"
             )
         );
-        assert!(context.is_cancelled(), "the first press sent the cancel");
+        tokio::time::timeout(Duration::from_secs(30), context.cancel_signal())
+            .await
+            .expect("the cancel that the first press sent reaches the daemon");
+        assert_eq!(context.cancel_cause(), Some(CancelCause::Caller));
+    }
+
+    /// After a Ctrl-C the daemon rolls the work back, which can be silent
+    /// for longer than the idle budget: the command follows the goal to its
+    /// end under the max budget alone, says how it ended, and exits with
+    /// code 130. The daemon is silent for three idle budgets on the paused
+    /// clock.
+    #[tokio::test(start_paused = true)]
+    async fn after_a_ctrl_c_a_silent_rollback_is_followed_to_its_end() {
+        let (messenger, engine) = daemon().await;
+        let accepted = accept_next(engine);
+        let mut handle = send_node_add(&messenger).await;
+        let (context, _engine) = accepted.await.expect("the daemon does not panic");
+        let timeouts = TimeoutConfig {
+            idle_secs: 5,
+            max_secs: 3600,
+            flags: true,
+        };
+
+        let mut presses = presses(1);
+        let (ended, ()) = tokio::join!(
+            follow_under(&messenger, &mut handle, &timeouts, &mut presses),
+            async {
+                context.cancel_signal().await;
+                tokio::time::sleep(Duration::from_secs(3 * timeouts.idle_secs)).await;
+                context
+                    .complete_cancelled(CancelCause::Caller.reason(), Payload::new())
+                    .await
+                    .expect("the daemon ends the goal cancelled");
+            }
+        );
+
+        let error = ended.expect_err("the command ends with the cancel");
+        assert_eq!(error.exit_code(), 130);
+        assert_eq!(
+            error.to_string(),
+            format!("Node add was cancelled by its caller. Log file: {LOG_PATH}")
+        );
+    }
+
+    /// After a Ctrl-C the max budget still bounds the wait, and the command
+    /// that it ends exits with code 130, as every command that a Ctrl-C
+    /// cancelled does.
+    #[tokio::test(start_paused = true)]
+    async fn after_a_ctrl_c_the_max_budget_ends_the_wait_with_130() {
+        let (messenger, engine) = daemon().await;
+        let accepted = accept_next(engine);
+        let mut handle = send_node_add(&messenger).await;
+        let (context, _engine) = accepted.await.expect("the daemon does not panic");
+        let timeouts = TimeoutConfig {
+            idle_secs: 5,
+            max_secs: 60,
+            flags: true,
+        };
+
+        let error = follow_under(&messenger, &mut handle, &timeouts, &mut presses(1))
+            .await
+            .expect_err("the max budget ends the wait");
+
+        assert!(context.is_cancelled(), "the press sent the cancel");
+        assert_eq!(error.exit_code(), 130);
+        assert_eq!(
+            error.to_string(),
+            "Timeout: max timeout of 60s exceeded. Use --max-timeout <seconds> to increase."
+        );
+    }
+
+    /// A command that falls behind the output of its goal by more than the
+    /// bound of its feedback loses the stream: its handle cancels the goal,
+    /// and the command says that it fell behind and cancelled the goal, with
+    /// exit code 1. The goal here keeps one unread message; the daemon sends
+    /// two before the command reads one, and the test waits for the cancel
+    /// that the overflow sends.
+    #[tokio::test]
+    async fn a_command_that_falls_behind_the_output_says_it_cancelled_the_goal() {
+        let (messenger, engine) = daemon().await;
+        let accepted = accept_next(engine);
+        let mut handle = send_node_add_keeping_one_message(&messenger).await;
+        let (context, _engine) = accepted.await.expect("the daemon does not panic");
+        let line = || {
+            NodeAddFeedback::stdout("Cloning https://example.com/hub.git")
+                .encode()
+                .expect("the feedback encodes")
+        };
+        context
+            .publish_feedback(line())
+            .await
+            .expect("the daemon publishes");
+        context
+            .publish_feedback(line())
+            .await
+            .expect("the daemon publishes");
+        tokio::time::timeout(Duration::from_secs(30), context.cancel_signal())
+            .await
+            .expect("the overflow cancels the goal");
+
+        let error = follow(&messenger, &mut handle, &mut presses(0))
+            .await
+            .expect_err("the command fell behind");
+
+        assert_eq!(error.exit_code(), 1);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "The command fell behind the output of the node add by more than 1 unread \
+                 messages and cancelled it. Log file: {LOG_PATH}"
+            )
+        );
     }
 
     /// A goal that fails ends the command with the kind and the message of
@@ -815,5 +1266,62 @@ mod ctrl_c {
             "Node add refused (precondition_failed): action already in progress, use `--force` \
              to force adding the node"
         );
+    }
+}
+
+/// The listener of SIGINT of the process, driven by real signals that the
+/// test sends to its own process. The test sends a press only while a
+/// follow holds a [`CtrlC`]: with no follow, a press ends the process.
+#[cfg(test)]
+mod sigint {
+    use super::*;
+    use rustix::process::{Signal, getpid, kill_process};
+
+    fn press_ctrl_c() {
+        kill_process(getpid(), Signal::INT).expect("the test sends itself SIGINT");
+    }
+
+    /// Waits for the next press `ctrl_c` reads; the bound only fails a
+    /// press that never arrives.
+    async fn next_press(ctrl_c: &mut CtrlC) {
+        tokio::time::timeout(Duration::from_secs(30), ctrl_c.next())
+            .await
+            .expect("the press reaches the follow");
+    }
+
+    /// A runtime of one command step, as [`crate::commands::block_on`]
+    /// makes it.
+    fn command_step_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Runtime::new().expect("the runtime of a command step starts")
+    }
+
+    /// Each press goes to the follow that holds a [`CtrlC`], which keeps a
+    /// press until it reads it: the second press here comes while the
+    /// follow waits for nothing, and it is not lost. Between two follows a
+    /// press ends the process. The follow of the next goal reads the presses
+    /// again, also on the runtime of another command step: the listener
+    /// outlives the runtime of the step that started it.
+    #[test]
+    fn presses_go_to_the_follow_of_the_moment_and_end_the_process_between_follows() {
+        command_step_runtime().block_on(async {
+            let mut first = CtrlC::listen();
+            press_ctrl_c();
+            next_press(&mut first).await;
+            press_ctrl_c();
+            next_press(&mut first).await;
+        });
+
+        assert_eq!(
+            route_press(),
+            PressRoute::EndsTheProcess,
+            "between two follows a press ends the process"
+        );
+
+        command_step_runtime().block_on(async {
+            let mut second = CtrlC::listen();
+            press_ctrl_c();
+            next_press(&mut second).await;
+        });
+        assert_eq!(route_press(), PressRoute::EndsTheProcess);
     }
 }

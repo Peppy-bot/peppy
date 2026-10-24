@@ -191,18 +191,22 @@ Error: Node add refused (precondition_failed): action already in progress (times
 Error: Node build failed (attempt_failed): build_cmd `uv sync` failed with status exit status: 2. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312.log
 ```
 
-The first Ctrl+C sends the daemon a cancel of the goal. The daemon stops the work at its next step: an add publishes no node, a build kills its `build_cmd` and leaves the node `Added`, and a start stops its instance as [How an instance starts](#how-an-instance-starts) describes. The command follows the goal to that end, prints how it ended, and exits with code 130:
+The first Ctrl+C sends the daemon a cancel of the goal. The daemon stops the work at its next step: an add publishes no node, a build kills its `build_cmd` and leaves the node `Added`, and a start stops its instance as [How an instance starts](#how-an-instance-starts) describes. The command follows the goal to that end under `--max-timeout` alone, prints how it ended, and exits with code 130:
 
 ```
 Cancelling the node build; press Ctrl-C again to stop waiting for its end
 Error: Node build was cancelled by its caller. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312.log
 ```
 
-A goal that ended before the cancel reached it keeps its end, and the command says so: `Node build completed before the cancel took effect.` It also exits with code 130. A second Ctrl+C stops the wait at once, and the daemon goes on with the cancel. A command whose process goes away, for example when its terminal closes, cancels its goal too: the daemon sees that the sender of the goal is gone, and cancels the goal at once.
+A goal that ended before the cancel reached it keeps its end, and the command says so: `Node build completed before the cancel took effect.` A goal that failed for a cause of its own, for example a build that failed before the cancel reached it, ends failed with its kind. Whichever way the goal ended, a command that sent a cancel exits with code 130. A second Ctrl+C stops the wait at once, also while the cancel is on its way to the daemon, and the daemon goes on with the cancel. A command whose process goes away, for example when its terminal closes, cancels its goal too: the daemon sees that the sender of the goal is gone, and cancels the goal at once.
+
+`peppy node add --run` follows three goals, one after the other: the add, the build and the start. Between two of them, a Ctrl+C ends the command at once with code 130.
 
 `--force` on `peppy node add` or `peppy node build` cancels the add or the build of the node that runs. That goal ends `Node add was superseded by a forced node add.` or `Node build was superseded by a forced node build.`, and the forced one starts once it ended.
 
-`--idle-timeout` and `--max-timeout` bound the wait of the command, not the work: a command whose budget runs out stops waiting, sends no cancel, and the daemon goes on with the goal.
+`--idle-timeout` and `--max-timeout` bound the wait of the command. A command whose budget runs out stops waiting and exits with code 1. It sends no cancel, but its process ends, so the daemon cancels the goal, as for any command whose process goes away.
+
+The command keeps up to 65536 lines of the goal's output that it did not show yet. A command that falls further behind cancels the goal, says `The command fell behind the output of the node build by more than 65536 unread messages and cancelled it.`, and exits with code 1.
 
 ## Checking node status
 

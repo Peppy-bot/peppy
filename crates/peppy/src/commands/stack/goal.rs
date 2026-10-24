@@ -2,6 +2,10 @@
 //! the shared goal path, rendering its feedback, holding it to the
 //! operator's budgets, cancelling it at a Ctrl-C, and reporting how it ended
 //! and the log files it wrote.
+//!
+//! The watchdog sends no cancel: a budget that runs out ends the command,
+//! and its process exits. The daemon then finds that the sender of the goal
+//! is gone and cancels the goal, with the reason "its sender is gone".
 
 use std::path::Path;
 use std::time::Duration;
@@ -12,13 +16,15 @@ use core_node_api::encoding::{
     NodeRunLogEntry, StackBudgets,
 };
 use stack_goal::{
-    DAEMON_RESPONSE_GRACE, DaemonRoute, RunningStackGoal, SendError, StackGoal, StackGoalEnd,
-    StackGoalEvent, StackGoalOutcome,
+    DAEMON_RESPONSE_GRACE, DaemonRoute, FollowError, RunningStackGoal, SendError, StackGoal,
+    StackGoalEnd, StackGoalEvent, StackGoalOutcome,
 };
 use tokio::time::Instant;
 use tracing::{info, warn};
 
-use crate::commands::action_poll::{CtrlC, Interrupts};
+use crate::commands::action_poll::{
+    CancelRace, CtrlC, FollowedGoal, Interrupts, cancel_unless_stopped, end_of_follow,
+};
 use crate::commands::{SCROLLING_OUTPUT_LINES, caller_instance_id, failure_text};
 use crate::context::DaemonConnection;
 use crate::error::{Error, Result};
@@ -186,7 +192,8 @@ pub(super) async fn drive_stack_goal<G: StackGoal>(
     );
 
     let mut output = GoalOutput::default();
-    let followed = follow_under_watchdog(&mut running, budgets, &mut output, &mut CtrlC).await;
+    let followed =
+        follow_under_watchdog(&mut running, budgets, &mut output, &mut CtrlC::listen()).await;
     output.clear();
     let Followed { end, cancel_sent } = followed?;
     display_node_log_files(&end.node_logs);
@@ -240,8 +247,9 @@ struct Followed {
 /// the goal outlasts it. The watchdog sends no cancel.
 ///
 /// The first press `interrupts` gives sends the daemon a cancel, and the goal
-/// is followed to the end the daemon gives it; a second press stops the wait
-/// at once, with [`Error::Interrupted`].
+/// is followed to the end the daemon gives it, under the ceiling alone; a
+/// second press stops the wait at once, also while the cancel is on its way.
+/// Every error after a Ctrl-C is an [`Error::Interrupted`].
 async fn follow_under_watchdog(
     running: &mut RunningStackGoal,
     budgets: &StackBudgets,
@@ -253,7 +261,14 @@ async fn follow_under_watchdog(
         .and_then(|max_timeout| Instant::now().checked_add(max_timeout));
     let mut cancel_sent = false;
     loop {
-        let silent_at = Instant::now().checked_add(silence_window);
+        // After a Ctrl-C the daemon rolls the change back, which can be
+        // silent for long: the goal is followed to its end under the ceiling
+        // alone.
+        let silent_at = if cancel_sent {
+            None
+        } else {
+            Instant::now().checked_add(silence_window)
+        };
         let wake_at = [silent_at, ceiling].into_iter().flatten().min();
         let watched = async {
             match wake_at {
@@ -264,39 +279,63 @@ async fn follow_under_watchdog(
         let event = tokio::select! {
             biased;
             () = interrupts.next() => {
+                output.clear();
+                let followed = followed_goal(running);
                 if cancel_sent {
-                    output.clear();
-                    return Err(Error::Interrupted(format!(
-                        "Stopped waiting: the daemon goes on with the cancel of the {}. Log file: {}",
-                        running.operation().to_lowercase(),
-                        running.log_path().display()
-                    )));
+                    return Err(followed.stopped_waiting());
                 }
                 cancel_sent = true;
-                output.clear();
-                warn!(
-                    "Cancelling the {}; press Ctrl-C again to stop waiting for its end",
-                    running.operation().to_lowercase()
-                );
-                if let Err(error) = running.cancel().await {
-                    warn!("{error}");
+                followed.announce_cancel();
+                let cancel = running.cancel();
+                let cancel = async move {
+                    if let Err(error) = cancel.await {
+                        warn!("{error}");
+                    }
+                };
+                if cancel_unless_stopped(cancel, interrupts).await == CancelRace::StoppedWaiting {
+                    return Err(followed.stopped_waiting());
                 }
                 continue;
             }
             event = watched => event,
         };
-        let Ok(event) = event else {
-            return Err(watchdog_error(
-                running,
-                silence_window,
-                output.step,
-                ceiling.is_some_and(|ceiling| Instant::now() >= ceiling),
-            ));
+        let event = match event {
+            Ok(Ok(event)) => event,
+            Ok(Err(error)) => {
+                let error = follow_error(&followed_goal(running), error);
+                return Err(end_of_follow(cancel_sent, error));
+            }
+            Err(_silence_or_ceiling) => {
+                let error = watchdog_error(
+                    running,
+                    silence_window,
+                    output.step,
+                    ceiling.is_some_and(|ceiling| Instant::now() >= ceiling),
+                );
+                return Err(end_of_follow(cancel_sent, error));
+            }
         };
-        match event.map_err(|error| Error::ExecutionFailed(error.to_string()))? {
+        match event {
             StackGoalEvent::Output(line) => output.show(&line),
             StackGoalEvent::Ended(end) => return Ok(Followed { end, cancel_sent }),
         }
+    }
+}
+
+/// The goal `running` follows, as the shared follow path names it.
+fn followed_goal(running: &RunningStackGoal) -> FollowedGoal<'_> {
+    FollowedGoal {
+        doing: running.operation(),
+        log_path: Some(running.log_path()),
+    }
+}
+
+/// The error of the stack goal `goal` that gave no end: a command that fell
+/// behind the output of the goal says that it cancelled the goal.
+fn follow_error(goal: &FollowedGoal<'_>, error: FollowError) -> Error {
+    match error {
+        FollowError::FellBehind { bound, .. } => goal.fell_behind(bound),
+        other => Error::ExecutionFailed(other.to_string()),
     }
 }
 
@@ -458,6 +497,49 @@ mod tests {
         assert!(end_of(StackGoalOutcome::Completed(Default::default()), false).is_ok());
     }
 
+    /// A command that fell behind the output of its stack goal says that it
+    /// cancelled the goal, and exits with code 1; after a Ctrl-C, a goal
+    /// with no end exits with code 130, as every command that a Ctrl-C
+    /// cancelled does.
+    #[test]
+    fn a_command_that_fell_behind_says_it_cancelled_the_goal() {
+        let goal = FollowedGoal {
+            doing: "Launch",
+            log_path: Some(Path::new(LOG_PATH)),
+        };
+
+        let fell_behind = follow_error(
+            &goal,
+            FollowError::FellBehind {
+                operation: "Launch",
+                bound: 65_536,
+            },
+        );
+        assert_eq!(fell_behind.exit_code(), 1);
+        assert_eq!(
+            fell_behind.to_string(),
+            format!(
+                "The command fell behind the output of the launch by more than 65536 unread \
+                 messages and cancelled it. Log file: {LOG_PATH}"
+            )
+        );
+
+        let gone = end_of_follow(
+            true,
+            follow_error(
+                &goal,
+                FollowError::DaemonGone {
+                    operation: "Launch",
+                },
+            ),
+        );
+        assert_eq!(gone.exit_code(), 130);
+        assert_eq!(
+            gone.to_string(),
+            "Launch ended without a result: its daemon is gone"
+        );
+    }
+
     /// A change of step ends the scrolling output of the step before it; the
     /// add, build and run steps write into one, the launcher step does not.
     #[test]
@@ -475,5 +557,163 @@ mod tests {
             assert_eq!(output.scrolling.is_some(), has_scrolling_output, "{step:?}");
             assert_eq!(output.step, Some(step));
         }
+    }
+}
+
+/// The follow of a stack goal at a Ctrl-C, on a daemon's goal engine over
+/// the in-process mock messaging. The presses come from the test, at fixed
+/// points.
+#[cfg(test)]
+mod ctrl_c {
+    use super::*;
+    use crate::commands::action_poll::test_support::{daemon_exposing, next_goal, presses};
+    use core_node_api::ActionGoal;
+    use core_node_api::encoding::{LaunchGoalResponse, StackJoinGoal};
+    use peppylib::messaging::{CancelCause, ConcurrentAction, GoalContext};
+    use peppylib::types::Payload;
+
+    const CORE_NODE: &str = "cn-stack-ctrl-c";
+    const LOG_PATH: &str = "/logs/stack/join_20260101_000000_000.log";
+
+    /// Phase budgets of one second, so the silence window of the watchdog
+    /// is 61 s.
+    fn budgets() -> StackBudgets {
+        StackBudgets::new(1, 1, 1, None)
+    }
+
+    /// A join sent to a daemon that accepts it with [`LOG_PATH`]: the
+    /// command's running goal, the daemon's context of it, and the daemon's
+    /// engine, which holds the end of a goal for `retention`.
+    async fn running_join(
+        retention: Duration,
+    ) -> (RunningStackGoal, GoalContext, ConcurrentAction) {
+        let (messenger, engine) = daemon_exposing(CORE_NODE, StackJoinGoal::ID.name()).await;
+        let mut engine = engine.with_result_retention_grace(retention);
+        let goal = StackJoinGoal::new(
+            "so101_sim:bravo".parse().expect("a copy reference"),
+            budgets(),
+        );
+        let route = DaemonRoute {
+            messenger: &messenger,
+            caller_core_node: CORE_NODE,
+            caller_instance_id: "peppy-cli-test",
+            daemon_core_node: CORE_NODE,
+        };
+        let (running, context) = tokio::join!(stack_goal::send(route, &goal), async {
+            next_goal(&mut engine)
+                .await
+                .accept(
+                    LaunchGoalResponse::new(LOG_PATH)
+                        .encode()
+                        .expect("the goal response encodes"),
+                )
+                .await
+                .expect("the daemon accepts the join")
+        });
+        (
+            running.expect("the daemon admits the join"),
+            context,
+            engine,
+        )
+    }
+
+    /// Follows the goal of `running` as the command does, under
+    /// [`budgets`], with `count` presses given before the follow.
+    async fn follow_with_presses(running: &mut RunningStackGoal, count: usize) -> Result<Followed> {
+        follow_under_watchdog(
+            running,
+            &budgets(),
+            &mut GoalOutput::default(),
+            &mut presses(count),
+        )
+        .await
+    }
+
+    /// The daemon's end of a goal that its caller cancelled.
+    async fn end_cancelled(context: &GoalContext) {
+        context.cancel_signal().await;
+        assert_eq!(context.cancel_cause(), Some(CancelCause::Caller));
+        context
+            .complete_cancelled(CancelCause::Caller.reason(), Payload::new())
+            .await
+            .expect("the daemon ends the goal cancelled");
+    }
+
+    /// The end of the command for a follow that gave `followed`.
+    fn command_end(followed: Result<Followed>) -> Error {
+        let Followed { end, cancel_sent } = match followed {
+            Ok(followed) => followed,
+            Err(error) => return error,
+        };
+        report_end("Join", Path::new(LOG_PATH), end.outcome, cancel_sent)
+            .expect_err("the Ctrl-C ends the command")
+    }
+
+    /// A second Ctrl-C stops the wait at once, also while the cancel that
+    /// the first one sent is on its way to the daemon: here the second press
+    /// is there before the daemon answers the cancel. The daemon goes on
+    /// with the cancel.
+    #[tokio::test]
+    async fn a_second_ctrl_c_stops_the_wait_while_the_cancel_is_on_its_way() {
+        let (mut running, context, _engine) = running_join(Duration::from_secs(30)).await;
+
+        let followed = follow_with_presses(&mut running, 2).await;
+
+        let error = command_end(followed);
+        assert_eq!(error.exit_code(), 130);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Stopped waiting: the daemon goes on with the cancel of the join. Log file: \
+                 {LOG_PATH}"
+            )
+        );
+        tokio::time::timeout(Duration::from_secs(30), context.cancel_signal())
+            .await
+            .expect("the cancel that the first press sent reaches the daemon");
+    }
+
+    /// After a Ctrl-C the daemon rolls the change back, which can be silent
+    /// for longer than the silence window of the watchdog: the command
+    /// follows the goal to its end, says how it ended, and exits with code
+    /// 130. The daemon is silent for two silence windows on the paused
+    /// clock.
+    #[tokio::test(start_paused = true)]
+    async fn after_a_ctrl_c_a_silent_rollback_is_followed_to_its_end() {
+        let (mut running, context, _engine) = running_join(Duration::from_secs(30)).await;
+        let silence = stack_goal::silence_window(&budgets());
+
+        let (followed, ()) = tokio::join!(follow_with_presses(&mut running, 1), async {
+            context.cancel_signal().await;
+            tokio::time::sleep(silence * 2).await;
+            end_cancelled(&context).await;
+        });
+
+        let error = command_end(followed);
+        assert_eq!(error.exit_code(), 130);
+        assert_eq!(
+            error.to_string(),
+            format!("Join was cancelled by its caller. Log file: {LOG_PATH}")
+        );
+    }
+
+    /// A goal that gives no end after a Ctrl-C ends the command with code
+    /// 130 too: here the daemon holds the end of the cancelled goal for no
+    /// time, so the end expired before the command asks for it.
+    #[tokio::test]
+    async fn after_a_ctrl_c_a_goal_with_no_end_exits_with_130() {
+        let (mut running, context, _engine) = running_join(Duration::ZERO).await;
+
+        let (followed, ()) = tokio::join!(
+            follow_with_presses(&mut running, 1),
+            end_cancelled(&context)
+        );
+
+        let error = command_end(followed);
+        assert_eq!(error.exit_code(), 130);
+        assert_eq!(
+            error.to_string(),
+            "Join result expired before it could be fetched"
+        );
     }
 }

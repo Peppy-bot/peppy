@@ -4,9 +4,10 @@
 //! order, then the end with the node logs; a refusal with the daemon's
 //! failure kind and reason; a caller that drops `next()` while it waits and
 //! loses nothing; a goal handed to a task that follows it to its end; a
-//! cancel that reaches the daemon; a caller that goes away; and a daemon that
-//! goes away. Every step waits on the mock's action, never on the clock: a
-//! deadline only bounds the failure path.
+//! cancel that reaches the daemon; a caller that falls behind the output; a
+//! caller that goes away; and a daemon that goes away. Every step waits on
+//! the mock's action, never on the clock: a deadline only bounds the failure
+//! path.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -443,6 +444,56 @@ async fn a_daemon_that_goes_away_ends_the_goal_without_a_result() {
         "Join ended without a result: its daemon is gone"
     );
     drop(context);
+}
+
+/// A caller that falls behind the output of the goal by more than the
+/// bound of its feedback buffer loses the stream: its handle cancels the
+/// goal, and the next event says that the caller fell behind and cancelled
+/// it. The daemon publishes until the cancel reaches it, so the test waits
+/// on that event and never on the clock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caller_that_falls_behind_the_output_cancels_the_goal_and_says_so() {
+    let (mesh, mut provider) = mesh().await;
+    let (mut running, context) = running_join(&mesh, &mut provider).await;
+    let bound = peppylib::core_node::transport::DAEMON_GOAL_FEEDBACK_BOUND.get();
+    let line = output(
+        LaunchFeedbackStep::BuildingNode,
+        "Compiling robot_initializer",
+    );
+
+    let mut published = 0;
+    while !context.is_cancelled() {
+        assert!(
+            published <= 4 * bound,
+            "the handle cancels the goal once more than {bound} messages wait unread"
+        );
+        publish(&context, &line).await;
+        published += 1;
+    }
+    assert_eq!(context.cancel_cause(), Some(CancelCause::Caller));
+
+    let error = next_event(&mut running)
+        .await
+        .expect_err("the caller fell behind the output");
+    assert!(
+        matches!(
+            error,
+            FollowError::FellBehind { operation: "Join", bound: fell_behind }
+                if fell_behind == bound
+        ),
+        "{error}"
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "the caller fell behind the output of the join by more than {bound} unread \
+             messages, so it cancelled the join"
+        )
+    );
+    assert!(matches!(
+        next_event(&mut running).await,
+        Err(FollowError::Ended { operation: "Join" })
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

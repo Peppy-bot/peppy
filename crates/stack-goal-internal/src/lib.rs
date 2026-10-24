@@ -22,8 +22,9 @@
 //!    [`LaunchResult`], failed with a failure kind and a message, or
 //!    cancelled with the reason of the cancel, and the log file of each node
 //!    phase the goal ran. A goal with no end gives a [`FollowError`]: the
-//!    daemon is gone, the daemon dropped the goal, or its end expired or did
-//!    not arrive.
+//!    daemon is gone, the daemon dropped the goal, its end expired or did
+//!    not arrive, or the caller fell behind its output, which cancels it
+//!    ([`FollowError::FellBehind`]).
 //! 3. A caller applies its own silence window by selecting on
 //!    [`RunningStackGoal::next`], which is cancel safe. The goal goes on when
 //!    the caller stops waiting: a caller that stops waiting hands the goal to
