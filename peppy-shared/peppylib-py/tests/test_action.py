@@ -506,9 +506,9 @@ async def test_failed_goal_gives_its_kind_and_message_and_no_result():
 
 @pytest.mark.asyncio
 async def test_cancelled_goal_gives_its_reason_and_result():
-    """A cancel request reaches the worker with the cause "caller"; the
-    worker ends the goal cancelled for a reason, and the client reads the
-    reason with the result."""
+    """A cancel request reaches the worker with the cause "caller" and the
+    reason of that cause; the worker ends the goal cancelled for a reason of
+    its own, and the client reads the reason with the result."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
@@ -520,8 +520,10 @@ async def test_cancelled_goal_gives_its_reason_and_result():
             assert pending is not None
             ctx = await pending.accept(GOAL_RESPONSE_PAYLOAD)
             assert ctx.cancel_cause is None
+            assert ctx.cancel_reason is None
             await ctx.cancel_signal()
             assert ctx.cancel_cause == "caller"
+            assert ctx.cancel_reason == "cancelled by its caller"
             await ctx.complete_cancelled("stopped by the operator", b"partial")
 
         server_task = asyncio.create_task(server())
@@ -544,7 +546,7 @@ async def test_the_goal_of_a_sender_that_is_gone_receives_its_cancel_signal():
     """A provider cancels the goal of a sender that is gone: once the client
     releases its goal handle and its session, the goal receives its cancel
     signal with the cause "sender_gone", after the sender grace of the action
-    (zero here). Python mirror of
+    (zero here), and the reason of that cause. Python mirror of
     `the_goal_of_a_sender_that_is_gone_receives_its_cancel_signal` in
     peppy-shared/peppylib-rs/src/messaging/actions.rs."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
@@ -560,8 +562,9 @@ async def test_the_goal_of_a_sender_that_is_gone_receives_its_cancel_signal():
             ctx = await pending.accept(GOAL_RESPONSE_PAYLOAD)
             await ctx.cancel_signal()
             cause = ctx.cancel_cause
-            await ctx.complete_cancelled("its sender is gone", b"")
-            return cause
+            reason = ctx.cancel_reason
+            await ctx.complete_cancelled(reason, b"")
+            return cause, reason
 
         server_task = asyncio.create_task(server())
 
@@ -572,8 +575,9 @@ async def test_the_goal_of_a_sender_that_is_gone_receives_its_cancel_signal():
         del goal, client_handle
         gc.collect()
 
-        cause = await asyncio.wait_for(server_task, timeout=30.0)
+        cause, reason = await asyncio.wait_for(server_task, timeout=30.0)
         assert cause == "sender_gone"
+        assert reason == "its sender is gone"
 
 
 @pytest.mark.asyncio
@@ -634,7 +638,7 @@ async def test_feedback_overflow_cancels_the_goal_and_raises():
                 await ctx.publish_feedback(f"feedback-{index}".encode())
             await ctx.cancel_signal()
             assert ctx.cancel_cause == "caller"
-            await ctx.complete_cancelled("cancelled by its caller", b"")
+            await ctx.complete_cancelled(ctx.cancel_reason, b"")
 
         server_task = asyncio.create_task(server())
 

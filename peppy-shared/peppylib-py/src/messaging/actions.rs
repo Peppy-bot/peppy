@@ -822,6 +822,14 @@ impl PyGoalContext {
         })
     }
 
+    /// The reason that the cause of the cancel signal gives, for
+    /// `complete_cancelled`: `"cancelled by its caller"` or `"its sender is
+    /// gone"`; `None` before the goal received its cancel signal.
+    #[getter]
+    fn cancel_reason(&self) -> Option<&'static str> {
+        self.inner.cancel_cause().map(CancelCause::reason)
+    }
+
     /// End the goal with the status completed and its result: a success.
     /// Idempotent: the first terminal call wins.
     fn complete<'py>(&self, py: Python<'py>, result: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
