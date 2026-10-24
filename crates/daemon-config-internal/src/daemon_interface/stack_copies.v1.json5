@@ -6,8 +6,8 @@
 {
   peppy_schema: "contract/v1",
   manifest: { name: "stack_copies", tag: "v1" },
-  // The kind of the daemon beside the kinds of peppy. Its meaning is the
-  // meaning that the daemon gives it.
+  // The kind of the daemon beside the kinds of peppy, which join and
+  // remove give. Its meaning is the meaning that the daemon gives it.
   failure_kinds: {
     busy: "Other work runs on the daemon; the same request can succeed once that work ends",
   },
@@ -137,6 +137,7 @@
             line: "string",
           },
         },
+        failure_kinds: ["busy"],
       },
       {
         // Stops and removes a copy, as `peppy stack remove NAME` does.
@@ -163,6 +164,7 @@
             line: "string",
           },
         },
+        failure_kinds: ["busy"],
       },
     ],
   },

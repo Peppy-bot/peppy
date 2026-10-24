@@ -2,7 +2,7 @@
 //! and the `Failure` struct that each action and service module declares.
 //!
 //! A member gives a kind from a closed set: the kinds of peppy and the kinds
-//! that its contract declares. The enum holds that set, so generated
+//! of its contract that it lists. The enum holds that set, so generated
 //! provider code can give no other kind, and generated client code parses
 //! each failure from the wire into it.
 
@@ -79,8 +79,8 @@ pub(super) fn build_failure_items(
     };
 
     quote! {
-        /// A failure kind of this member: a kind of peppy, or a kind that
-        /// its contract declares.
+        /// A failure kind of this member: a kind of peppy, or a kind of its
+        /// contract that it lists.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         #[allow(dead_code)]
         pub enum FailureKind {
@@ -93,7 +93,7 @@ pub(super) fn build_failure_items(
         #[allow(dead_code)]
         impl FailureKind {
             /// Every kind of this member: the kinds of peppy, then the
-            /// kinds of its contract.
+            /// kinds of its contract that it lists.
             pub const ALL: [Self; #kind_count] = [#(Self::#variants),*];
 
             /// The name of the kind on the wire.
@@ -174,7 +174,7 @@ mod tests {
     use config::failure_kind::{ContractFailureKinds, FailureKindName};
 
     fn contract_kinds(kinds: &[(&str, &str)]) -> MemberFailureKinds {
-        MemberFailureKinds::of_contract(
+        MemberFailureKinds::of_member(
             ContractFailureKinds::new(kinds.iter().map(|(name, meaning)| {
                 (FailureKindName::parse(name).unwrap(), meaning.to_string())
             }))

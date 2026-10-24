@@ -242,16 +242,6 @@ pub enum Error {
         instance_id: Option<String>,
         action_name: String,
     },
-    /// The provider refused the goal: a failure kind and a message.
-    #[error(
-        "action '{action_name}'{instance_suffix} refused the goal: {failure}",
-        instance_suffix = InstanceSuffix(.instance_id.as_deref())
-    )]
-    ActionGoalRefused {
-        instance_id: Option<String>,
-        action_name: String,
-        failure: pmi::Failure,
-    },
     /// The goal ended with the status failed: a failure kind and a message,
     /// and no result.
     #[error(
@@ -491,12 +481,14 @@ pub enum Error {
 
 impl Error {
     /// The failure that a provider gave, when this error carries one: the
-    /// error reply of a service, or a refused or failed goal.
+    /// error reply of a service, or a failed goal. A refused goal is no
+    /// error: its refusal is the answer of its goal reply
+    /// ([`crate::messaging::ActionGoalReply::refusal`]).
     pub fn failure(&self) -> Option<&pmi::Failure> {
         match self {
-            Self::ServiceFailed { failure, .. }
-            | Self::ActionGoalRefused { failure, .. }
-            | Self::ActionGoalFailed { failure, .. } => Some(failure),
+            Self::ServiceFailed { failure, .. } | Self::ActionGoalFailed { failure, .. } => {
+                Some(failure)
+            }
             _ => None,
         }
     }

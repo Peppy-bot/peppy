@@ -63,8 +63,9 @@ pub mod consts {
 // -- failure_kind --
 pub mod failure_kind {
     pub use crate::internal::failure_kind::{
-        ContractFailureKinds, FailureKindName, InvalidContractFailureKinds, InvalidFailureKindName,
-        MemberFailureKinds, PeppyFailureKind,
+        ContractAction, ContractFailureKinds, ContractKinds, ContractMembers, ContractService,
+        FailureKindName, InvalidContractFailureKinds, InvalidFailureKindName, InvalidMemberKinds,
+        MemberFailureKinds, MemberSection, PeppyFailureKind,
     };
 }
 

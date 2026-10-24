@@ -11,6 +11,7 @@ use crate::helpers::{
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
+use config::failure_kind::MemberSection;
 use config::node::{ConsumedAction, NativeExposedAction, NativeExposedService};
 use generator::{ConsumedActionMessage, ContractOrigin, LanguageGenerator};
 use std::{fs, time::Duration};
@@ -1336,6 +1337,7 @@ async fn actions_communication_via_contract_slot(
                         "v1",
                         "arm",
                         ARM_CONTRACT_FAILURE_KINDS,
+                        &[(MemberSection::Action, "move_arm")],
                     ),
                 )
                 .unwrap();
@@ -1466,7 +1468,10 @@ if __name__ == "__main__":
                         link_id: "arm_impl".to_string(),
                         contract_name: ARM_CONTRACT_NAME.to_string(),
                         contract_tag: "v1".to_string(),
-                        failure_kinds: failure_kinds(ARM_CONTRACT_FAILURE_KINDS),
+                        failure_kinds: failure_kinds(
+                            ARM_CONTRACT_FAILURE_KINDS,
+                            &[(MemberSection::Action, "move_arm")],
+                        ),
                     }),
                 )
                 .unwrap();

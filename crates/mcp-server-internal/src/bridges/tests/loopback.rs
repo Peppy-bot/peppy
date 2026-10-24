@@ -28,7 +28,8 @@ use tokio_util::sync::CancellationToken;
 
 /// The contract behind the endpoint: the gripper action of the bridge
 /// tests, with a result that says where the gripper is, the service that
-/// checks a width, and the kind the contract declares of its own.
+/// checks a width, and the kind the contract declares of its own, which
+/// both list.
 const CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
     manifest: { name: "limb_motion", tag: "v1" },
@@ -40,6 +41,7 @@ const CONTRACT: &str = r#"{
             {
                 name: "check_width",
                 response_message_format: { width: "f64" },
+                failure_kinds: ["unreachable"],
             },
         ],
         actions: [
@@ -53,6 +55,7 @@ const CONTRACT: &str = r#"{
                 result_service: {
                     response_message_format: { width: "f64" },
                 },
+                failure_kinds: ["unreachable"],
             },
         ],
     },

@@ -19,6 +19,7 @@
 //! the contract of the slot, a refusal, a failed goal and a goal cancelled
 //! for a reason; the node reads each as the typed `Failure` of its member.
 
+use config::failure_kind::MemberSection;
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
     NativeExposedService, TopicRetention,
@@ -405,7 +406,10 @@ fn generated_mocks_and_fixtures_drive_a_node_end_to_end() {
                         "v1",
                         "lens",
                         Cardinality::One,
-                        crate::helpers::failure_kinds(LENS_FAILURE_KINDS),
+                        crate::helpers::failure_kinds(
+                            LENS_FAILURE_KINDS,
+                            &[(MemberSection::Service, "check_lens")],
+                        ),
                     ),
                 )
                 .unwrap();

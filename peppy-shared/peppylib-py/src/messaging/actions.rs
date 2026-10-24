@@ -424,8 +424,10 @@ impl PyActionMessenger {
     #[staticmethod]
     ///
     /// The handle keeps up to `feedback_bound` unread feedback messages
-    /// (`None` takes peppylib's default); past it, it cancels the goal and
-    /// `on_next_feedback` raises `peppylib.FeedbackOverflowError`.
+    /// (`None` takes peppylib's default). A caller that reads the feedback
+    /// and falls behind by more cancels the goal, and `on_next_feedback`
+    /// raises `peppylib.FeedbackOverflowError`; a caller that never reads
+    /// the feedback keeps its goal.
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, target=None, user_payload=vec![], feedback_bound=None, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
@@ -891,25 +893,8 @@ impl PyGoalContext {
 }
 
 // ---------------------------------------------------------------------------
-// Wire-format helpers for goal payload envelopes
+// Goal ids
 // ---------------------------------------------------------------------------
-
-/// Wrap a user goal payload with a length-prefixed `goal_id` for transport.
-/// Mirrors `peppylib::messaging::wrap_goal_payload` so Python codegen can
-/// produce the same wire format as Rust codegen.
-#[pyfunction]
-fn wrap_goal_payload(goal_id: String, user_payload: Vec<u8>) -> PyResult<Vec<u8>> {
-    let payload =
-        peppylib::messaging::wrap_goal_payload(&goal_id, &user_payload).map_err(to_py_err)?;
-    Ok(payload.as_ref().to_vec())
-}
-
-/// Unwrap an action goal envelope; returns `(goal_id, user_payload_bytes)`.
-#[pyfunction]
-fn unwrap_goal_payload(wire: Vec<u8>) -> PyResult<(String, Vec<u8>)> {
-    let (goal_id, body) = peppylib::messaging::unwrap_goal_payload(&wire).map_err(to_py_err)?;
-    Ok((goal_id.to_string(), body.to_vec()))
-}
 
 /// Generate a unique `goal_id` for use with `ActionMessenger.send_goal` and
 /// per-goal feedback scoping. Mirrors `peppylib::messaging::generate_goal_id`.
@@ -935,8 +920,6 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     actions_module.add_class::<PyConcurrentAction>()?;
     actions_module.add_class::<PyPendingGoal>()?;
     actions_module.add_class::<PyGoalContext>()?;
-    actions_module.add_function(wrap_pyfunction!(wrap_goal_payload, &actions_module)?)?;
-    actions_module.add_function(wrap_pyfunction!(unwrap_goal_payload, &actions_module)?)?;
     actions_module.add_function(wrap_pyfunction!(generate_goal_id, &actions_module)?)?;
     parent_module.add_submodule(&actions_module)?;
     Ok(())

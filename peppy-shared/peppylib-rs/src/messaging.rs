@@ -20,7 +20,7 @@ mod topics;
 // `actions` and its unit tests, so they stay `pub(crate)`.
 pub use actions::{
     ActionCreation, ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle,
-    ActionGoalReply, ActionMessenger, ActionResultReply, CancelCause, CancelState,
+    ActionGoalReply, ActionMessenger, ActionResultReply, CancelCause, CancelOnDrop, CancelState,
     ConcurrentAction, DEFAULT_FEEDBACK_BOUND, DeclaredFeedback, EmptyPayloadError, GoalAnswer,
     GoalContext, GoalOutcome, NonEmptyPayload, PendingGoal, ResultStatus, SenderGrace,
     decode_cancel_ack, encode_cancel_ack, generate_goal_id, unwrap_goal_payload,

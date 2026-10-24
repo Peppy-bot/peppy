@@ -8,6 +8,7 @@ use crate::error::Result;
 use crate::generator::types::{
     ContractOrigin, DocLanguage, member_failure_kinds, non_empty_message_format,
 };
+use config::failure_kind::MemberSection;
 use config::node::{Cardinality, ConsumedService, MessageFormat, NativeExposedService};
 
 /// Returns the Python expression for the `SenderTarget` to splice into a
@@ -173,7 +174,11 @@ pub fn build_exposed_service(
     // Service name constant
     builder.line(&format!("SERVICE_NAME = \"{}\"", service.name));
     builder.blank_line();
-    emit_failure_items(&mut builder, &member_failure_kinds(origin), "SERVICE_NAME");
+    emit_failure_items(
+        &mut builder,
+        &member_failure_kinds(origin, MemberSection::Service, &service.name),
+        "SERVICE_NAME",
+    );
 
     // _deserialize_request helper (when request format exists)
     if let Some((fmt, info)) = request_format.zip(request_schema_info) {
@@ -330,7 +335,7 @@ pub fn build_consumed_service(
     builder.blank_line();
     emit_failure_items(
         &mut builder,
-        &dependency.member_failure_kinds(),
+        &dependency.member_failure_kinds(MemberSection::Service, &service.name),
         "SERVICE_NAME",
     );
 

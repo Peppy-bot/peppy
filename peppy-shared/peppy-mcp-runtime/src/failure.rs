@@ -2,7 +2,7 @@
 //! refused goal, of a failed goal, or of the error reply of a service.
 //!
 //! The kind comes from the closed set of the member: a kind of peppy, or a
-//! kind that the contract of the member declares. The bridge checks it
+//! kind of its contract that the member lists. The bridge checks it
 //! before it hands the failure to the runtime, so a [`ProviderFailure`]
 //! always carries a kind that the member declares.
 //!

@@ -618,12 +618,11 @@ async def test_feedback_is_kept_in_full_up_to_the_bound():
 
 
 @pytest.mark.asyncio
-async def test_feedback_overflow_cancels_the_goal_and_raises():
-    """A caller that falls behind by more unread messages than its bound
-    cancels the goal, and reads the loss as FeedbackOverflowError. The
-    server publishes more messages than the bound and ends the goal only on
-    its cancel signal, so the goal ends only through the cancel of the
-    overflow."""
+async def test_a_caller_that_reads_no_feedback_keeps_its_goal_past_its_bound():
+    """A caller that never reads the feedback of its goal keeps the goal when
+    the feedback goes past its bound: only a caller that reads the feedback
+    follows it, and cancels the goal when it falls behind. The server publishes more messages than the bound,
+    then completes the goal, and the caller reads the completed result."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
         client_handle = await MessengerHandle.from_host_port(router.host, router.port)
@@ -636,21 +635,17 @@ async def test_feedback_overflow_cancels_the_goal_and_raises():
             ctx = await pending.accept(GOAL_RESPONSE_PAYLOAD)
             for index in range(20):
                 await ctx.publish_feedback(f"feedback-{index}".encode())
-            await ctx.cancel_signal()
-            assert ctx.cancel_cause == "caller"
-            await ctx.complete_cancelled(ctx.cancel_reason, b"")
+            await ctx.complete(b"done")
+            return ctx.cancel_cause
 
         server_task = asyncio.create_task(server())
 
         goal = await _send_test_goal(client_handle, feedback_bound=5)
         result = await ActionMessenger.request_result(client_handle, goal, 30.0)
-        assert result.status == RESULT_STATUS_CANCELLED
-        assert result.cancel_reason == "cancelled by its caller"
+        assert result.status == RESULT_STATUS_COMPLETED
+        assert result.body == b"done"
 
-        with pytest.raises(FeedbackOverflowError):
-            await asyncio.wait_for(goal.on_next_feedback(), timeout=10.0)
-
-        await asyncio.wait_for(server_task, timeout=2.0)
+        assert await asyncio.wait_for(server_task, timeout=2.0) is None
 
 
 @pytest.mark.asyncio
@@ -670,3 +665,9 @@ async def test_failure_error_carries_the_kind_and_the_message():
     error = FailureError("unreachable", "no plan to the target")
     assert isinstance(error, RuntimeError)
     assert error.args == ("unreachable", "no plan to the target")
+
+
+def test_a_feedback_overflow_is_a_runtime_error():
+    """FeedbackOverflowError is a RuntimeError, so a bare drain loop that
+    catches RuntimeError ends on it as on a clean close."""
+    assert issubclass(FeedbackOverflowError, RuntimeError)

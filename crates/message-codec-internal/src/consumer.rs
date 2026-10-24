@@ -9,8 +9,8 @@
 use crate::{ConversionError, MessageCodec};
 use config::failure_kind::MemberFailureKinds;
 use peppylib::messaging::{
-    ActionGoalHandle, ActionMessenger, CancelState, Failure, FeedbackBound, GoalAnswer,
-    ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, decode_cancel_ack,
+    ActionGoalHandle, ActionMessenger, CancelOnDrop, CancelState, Failure, FeedbackBound,
+    GoalAnswer, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, decode_cancel_ack,
 };
 use peppylib::runtime::BoundSetSubscription;
 use peppylib::{Message, MessengerHandle, Payload, PeppyError};
@@ -23,10 +23,10 @@ pub enum ConsumerError {
     Messaging(#[from] PeppyError),
     #[error(transparent)]
     Conversion(#[from] ConversionError),
-    /// The provider gave a failure kind that neither peppy nor the contract
-    /// of the member declares.
+    /// The provider gave a failure kind that is neither a kind of peppy nor
+    /// a kind of its contract that the member lists.
     #[error(
-        "the provider of `{member}` gave the failure kind `{kind}`, which neither peppy nor the contract of the member declares"
+        "the provider of `{member}` gave the failure kind `{kind}`, which is neither a kind of peppy nor a kind of its contract that the member lists"
     )]
     UndeclaredFailureKind { member: String, kind: String },
 }
@@ -204,8 +204,10 @@ impl ActionClient {
     /// Sends `goal` to `producer`, waiting at most `deadline` for the
     /// producer's admission reply. The handle reports whether the goal was
     /// accepted and drives its feedback, result and cancellation. The
-    /// handle keeps up to `feedback_bound` unread feedback messages; past
-    /// it, it cancels the goal and reports the loss.
+    /// handle keeps up to `feedback_bound` unread feedback messages. A
+    /// caller that reads the feedback and falls behind by more loses the
+    /// stream: the handle cancels the goal, and the next read reports the
+    /// loss. A caller that never reads the feedback keeps its goal.
     #[allow(clippy::too_many_arguments)]
     pub async fn fire_goal(
         &self,
@@ -325,6 +327,13 @@ impl GoalHandle {
             Ended::Abandoned => GoalOutcome::Abandoned,
             Ended::Expired => GoalOutcome::Expired,
         })
+    }
+
+    /// A guard that cancels the goal when it is dropped armed: its caller
+    /// stops following the goal before the goal ended (see
+    /// [`CancelOnDrop`]).
+    pub fn cancel_on_drop(&self, why: &'static str) -> CancelOnDrop {
+        self.inner.cancel_on_drop(why)
     }
 
     /// Asks the producer to cancel the goal, waiting at most `deadline` for

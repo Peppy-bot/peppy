@@ -2,7 +2,7 @@
 //! and the `Failure` exception that each action and service module declares.
 //!
 //! A member gives a kind from a closed set: the kinds of peppy and the kinds
-//! that its contract declares. `FailureKind` holds that set, and `Failure`
+//! of its contract that it lists. `FailureKind` holds that set, and `Failure`
 //! takes no other kind: its constructor raises `ValueError` for any other,
 //! before anything reaches the wire, and the generated clients parse each
 //! failure from the wire through it.
@@ -30,7 +30,7 @@ pub(super) fn emit_failure_items(
     builder.add_import("import peppylib");
     builder.block("class FailureKind(str, Enum):", |builder| {
         builder.docstring(
-            "A failure kind of this member: a kind of peppy, or a kind that its contract declares.",
+            "A failure kind of this member: a kind of peppy, or a kind of its contract that it lists.",
         );
         builder.blank_line();
         for (name, meaning) in kinds.iter() {
@@ -133,7 +133,7 @@ mod tests {
             "No plan to the \"target\"".to_string(),
         )])
         .unwrap();
-        let rendered = render(&MemberFailureKinds::of_contract(contract));
+        let rendered = render(&MemberFailureKinds::of_member(contract));
         let rejected = rendered.find("REJECTED =").unwrap();
         let unreachable = rendered.find("UNREACHABLE =").unwrap();
         assert!(rejected < unreachable, "{rendered}");

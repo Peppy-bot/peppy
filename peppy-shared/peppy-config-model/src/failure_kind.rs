@@ -2,13 +2,21 @@
 //! reply of a service.
 //!
 //! A member gives a kind from a closed set: the kinds that peppy holds
-//! ([`PeppyFailureKind`]), which every provider can give, and the kinds that
-//! the contract of the member declares in its `failure_kinds` block
-//! ([`ContractFailureKinds`]). A member that no contract declares gives the
-//! kinds of peppy only. [`MemberFailureKinds`] is that closed set.
+//! ([`PeppyFailureKind`]), which every provider can give, and the kinds of
+//! its contract that the member lists. A contract declares its kinds, each
+//! with its meaning, in its `failure_kinds` block ([`ContractFailureKinds`]),
+//! and each of its services and actions lists in a `failure_kinds` list of
+//! its own the kinds of that block it gives ([`ContractKinds`]). A member
+//! that lists none, or that no contract declares, gives the kinds of peppy
+//! only. [`MemberFailureKinds`] is the closed set of one member.
 
+use crate::internal::node::{
+    ActionTopicEndpoint, GoalServiceEndpoint, MessageFormat, NativeExposedAction,
+    NativeExposedService, ResultServiceEndpoint,
+};
 use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// The name of a failure kind: 1 to [`FailureKindName::MAX_LEN`] bytes, made
@@ -199,25 +207,283 @@ impl<'de> Deserialize<'de> for ContractFailureKinds {
     }
 }
 
+/// Which section of a contract a member sits in. A service and an action
+/// of one contract can share a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MemberSection {
+    Service,
+    Action,
+}
+
+impl fmt::Display for MemberSection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Service => "service",
+            Self::Action => "action",
+        })
+    }
+}
+
+/// The failure kinds of a contract: its `failure_kinds` block, and the kinds
+/// of the block that each of its services and actions lists. Each kind that
+/// a member lists is declared, and each declared kind is listed by a member.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContractKinds {
+    declared: ContractFailureKinds,
+    members: BTreeMap<(MemberSection, String), ContractFailureKinds>,
+}
+
+/// Why the `failure_kinds` lists of the members of a contract do not fit
+/// its `failure_kinds` block.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidMemberKinds {
+    #[error(
+        "{section} `{member}` lists failure kind `{kind}`, which the `failure_kinds` block of the contract does not declare: declare it there, or remove it from the list; a kind of peppy is never listed"
+    )]
+    Undeclared {
+        section: MemberSection,
+        member: String,
+        kind: String,
+    },
+    #[error("{section} `{member}` lists failure kind `{kind}` twice")]
+    Repeated {
+        section: MemberSection,
+        member: String,
+        kind: String,
+    },
+    #[error(
+        "failure kind `{0}` of the `failure_kinds` block is listed by no service or action: list it on each member that gives it, or remove it"
+    )]
+    Unlisted(String),
+}
+
+impl ContractKinds {
+    /// The kinds of a contract that declares `declared` and whose members
+    /// list `members`: each its section, its name and the kinds it lists.
+    pub fn new(
+        declared: ContractFailureKinds,
+        members: impl IntoIterator<Item = (MemberSection, String, Vec<FailureKindName>)>,
+    ) -> Result<Self, InvalidMemberKinds> {
+        let mut listed = BTreeMap::new();
+        for (section, member, kinds) in members {
+            let mut given: IndexMap<FailureKindName, String> = IndexMap::new();
+            for kind in kinds {
+                let Some((_, meaning)) = declared.iter().find(|(name, _)| **name == kind) else {
+                    return Err(InvalidMemberKinds::Undeclared {
+                        section,
+                        member,
+                        kind: kind.to_string(),
+                    });
+                };
+                let meaning = meaning.to_owned();
+                if given.insert(kind.clone(), meaning).is_some() {
+                    return Err(InvalidMemberKinds::Repeated {
+                        section,
+                        member,
+                        kind: kind.to_string(),
+                    });
+                }
+            }
+            if !given.is_empty() {
+                listed.insert((section, member), in_declared_order(&declared, given));
+            }
+        }
+        if let Some((unlisted, _)) = declared.iter().find(|(name, _)| {
+            !listed
+                .values()
+                .any(|kinds: &ContractFailureKinds| kinds.contains(name.as_str()))
+        }) {
+            return Err(InvalidMemberKinds::Unlisted(unlisted.to_string()));
+        }
+        Ok(Self {
+            declared,
+            members: listed,
+        })
+    }
+
+    /// The `failure_kinds` block of the contract.
+    pub fn declared(&self) -> &ContractFailureKinds {
+        &self.declared
+    }
+
+    /// The kinds that the member `name` of `section` gives: the kinds of
+    /// peppy, and the kinds of the contract that it lists.
+    pub fn of(&self, section: MemberSection, name: &str) -> MemberFailureKinds {
+        self.members
+            .get(&(section, name.to_owned()))
+            .cloned()
+            .map(MemberFailureKinds::of_member)
+            .unwrap_or_default()
+    }
+
+    /// The names of the kinds of the contract that the member `name` of
+    /// `section` lists, in the order of the block.
+    pub fn listed(&self, section: MemberSection, name: &str) -> Vec<FailureKindName> {
+        self.members
+            .get(&(section, name.to_owned()))
+            .map(|kinds| kinds.iter().map(|(kind, _)| kind.clone()).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// A service of a contract document: the shape of a native service, and
+/// the kinds of the contract that it gives.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ContractService {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_message_format: Option<MessageFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_message_format: Option<MessageFormat>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_kinds: Vec<FailureKindName>,
+}
+
+/// An action of a contract document: the shape of a native action, and the
+/// kinds of the contract that it gives.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ContractAction {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_service: Option<GoalServiceEndpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_topic: Option<ActionTopicEndpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_service: Option<ResultServiceEndpoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_kinds: Vec<FailureKindName>,
+}
+
+/// The services and actions of a contract, each with the shape of a native
+/// member, and the kinds of the contract that each gives.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ContractMembers {
+    pub services: Vec<NativeExposedService>,
+    pub actions: Vec<NativeExposedAction>,
+    pub failure_kinds: ContractKinds,
+}
+
+impl ContractMembers {
+    /// The members of a contract document that declares `declared` in its
+    /// `failure_kinds` block and lists `services` and `actions`.
+    pub fn new(
+        declared: ContractFailureKinds,
+        services: Vec<ContractService>,
+        actions: Vec<ContractAction>,
+    ) -> Result<Self, InvalidMemberKinds> {
+        let mut listed = Vec::with_capacity(services.len() + actions.len());
+        let services = services
+            .into_iter()
+            .map(|service| {
+                let ContractService {
+                    name,
+                    request_message_format,
+                    response_message_format,
+                    failure_kinds,
+                } = service;
+                listed.push((MemberSection::Service, name.clone(), failure_kinds));
+                NativeExposedService {
+                    name,
+                    request_message_format,
+                    response_message_format,
+                }
+            })
+            .collect();
+        let actions = actions
+            .into_iter()
+            .map(|action| {
+                let ContractAction {
+                    name,
+                    goal_service,
+                    feedback_topic,
+                    result_service,
+                    failure_kinds,
+                } = action;
+                listed.push((MemberSection::Action, name.clone(), failure_kinds));
+                NativeExposedAction {
+                    name,
+                    goal_service,
+                    feedback_topic,
+                    result_service,
+                }
+            })
+            .collect();
+        Ok(Self {
+            services,
+            actions,
+            failure_kinds: ContractKinds::new(declared, listed)?,
+        })
+    }
+
+    /// The services of the document, each with the kinds it lists.
+    pub fn documented_services(&self) -> Vec<ContractService> {
+        self.services
+            .iter()
+            .map(|service| ContractService {
+                name: service.name.clone(),
+                request_message_format: service.request_message_format.clone(),
+                response_message_format: service.response_message_format.clone(),
+                failure_kinds: self
+                    .failure_kinds
+                    .listed(MemberSection::Service, &service.name),
+            })
+            .collect()
+    }
+
+    /// The actions of the document, each with the kinds it lists.
+    pub fn documented_actions(&self) -> Vec<ContractAction> {
+        self.actions
+            .iter()
+            .map(|action| ContractAction {
+                name: action.name.clone(),
+                goal_service: action.goal_service.clone(),
+                feedback_topic: action.feedback_topic.clone(),
+                result_service: action.result_service.clone(),
+                failure_kinds: self
+                    .failure_kinds
+                    .listed(MemberSection::Action, &action.name),
+            })
+            .collect()
+    }
+}
+
+/// `given`, a subset of `declared`, in the order of `declared`.
+fn in_declared_order(
+    declared: &ContractFailureKinds,
+    given: IndexMap<FailureKindName, String>,
+) -> ContractFailureKinds {
+    ContractFailureKinds(
+        declared
+            .iter()
+            .filter(|(name, _)| given.contains_key(*name))
+            .map(|(name, meaning)| (name.clone(), meaning.to_owned()))
+            .collect(),
+    )
+}
+
 /// The closed set of failure kinds that one member can give: the kinds of
-/// peppy and the kinds of the member's contract.
+/// peppy and the kinds of its contract that the member lists.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MemberFailureKinds {
     contract: ContractFailureKinds,
 }
 
 impl MemberFailureKinds {
-    /// The kinds of a member of a contract that declares `contract`.
-    pub fn of_contract(contract: ContractFailureKinds) -> Self {
+    /// The kinds of a member that gives `contract`, kinds of its contract,
+    /// beside the kinds of peppy.
+    pub fn of_member(contract: ContractFailureKinds) -> Self {
         Self { contract }
     }
 
-    /// The kinds of a member that no contract declares: the kinds of peppy.
+    /// The kinds of a member that gives no kind of a contract: the kinds of
+    /// peppy.
     pub fn peppy_only() -> Self {
         Self::default()
     }
 
-    /// The kinds that the member's contract declares.
+    /// The kinds of its contract that the member gives.
     pub fn contract_kinds(&self) -> &ContractFailureKinds {
         &self.contract
     }
@@ -325,7 +591,7 @@ mod tests {
         let contract =
             ContractFailureKinds::new([(name("unreachable"), "No plan to the target".to_owned())])
                 .unwrap();
-        let member = MemberFailureKinds::of_contract(contract);
+        let member = MemberFailureKinds::of_member(contract);
         assert!(member.allows("unreachable"));
         assert!(member.allows("rejected"));
         assert!(!member.allows("leader_streaming"));
@@ -339,7 +605,7 @@ mod tests {
     fn a_member_lists_the_kinds_of_peppy_before_the_kinds_of_its_contract() {
         let contract =
             ContractFailureKinds::new([(name("not_found"), "Nothing matches".to_owned())]).unwrap();
-        let member = MemberFailureKinds::of_contract(contract);
+        let member = MemberFailureKinds::of_member(contract);
         let names: Vec<&str> = member.iter().map(|(name, _)| name).collect();
         assert_eq!(
             names,
@@ -351,6 +617,136 @@ mod tests {
                 "rejected",
                 "not_found"
             ]
+        );
+    }
+
+    /// The block of a contract with `unreachable` and `leader_streaming`.
+    fn motion_block() -> ContractFailureKinds {
+        ContractFailureKinds::new([
+            (name("unreachable"), "No plan to the target".to_owned()),
+            (
+                name("leader_streaming"),
+                "A leader streams the limb".to_owned(),
+            ),
+        ])
+        .unwrap()
+    }
+
+    fn listing(
+        section: MemberSection,
+        member: &str,
+        kinds: &[&str],
+    ) -> (MemberSection, String, Vec<FailureKindName>) {
+        (
+            section,
+            member.to_owned(),
+            kinds.iter().map(|kind| name(kind)).collect(),
+        )
+    }
+
+    /// Each member gives the kinds of peppy and the kinds it lists, in the
+    /// order of the block; a member that lists none gives the kinds of peppy
+    /// only, and a service and an action of one name are two members.
+    #[test]
+    fn each_member_gives_the_kinds_it_lists_in_the_order_of_the_block() {
+        let kinds = ContractKinds::new(
+            motion_block(),
+            [
+                listing(
+                    MemberSection::Action,
+                    "move_arm",
+                    &["leader_streaming", "unreachable"],
+                ),
+                listing(MemberSection::Action, "move_gripper", &["leader_streaming"]),
+                listing(MemberSection::Service, "move_gripper", &[]),
+            ],
+        )
+        .unwrap();
+
+        let move_arm = kinds.of(MemberSection::Action, "move_arm");
+        let contract_kinds: Vec<&str> = move_arm
+            .contract_kinds()
+            .iter()
+            .map(|(kind, _)| kind.as_str())
+            .collect();
+        assert_eq!(contract_kinds, ["unreachable", "leader_streaming"]);
+        assert_eq!(
+            kinds.listed(MemberSection::Action, "move_arm"),
+            [name("unreachable"), name("leader_streaming")]
+        );
+
+        let gripper = kinds.of(MemberSection::Action, "move_gripper");
+        assert!(gripper.allows("leader_streaming"));
+        assert!(!gripper.allows("unreachable"));
+        assert!(gripper.allows("rejected"));
+
+        assert_eq!(
+            kinds.of(MemberSection::Service, "move_gripper"),
+            MemberFailureKinds::peppy_only()
+        );
+        assert_eq!(
+            kinds.of(MemberSection::Action, "stop"),
+            MemberFailureKinds::peppy_only()
+        );
+    }
+
+    #[test]
+    fn a_member_cannot_list_a_kind_that_the_block_does_not_declare() {
+        for undeclared in ["not_found", "timeout"] {
+            let err = ContractKinds::new(
+                motion_block(),
+                [
+                    listing(
+                        MemberSection::Action,
+                        "move_arm",
+                        &["unreachable", "leader_streaming"],
+                    ),
+                    listing(MemberSection::Service, "check_arm_move", &[undeclared]),
+                ],
+            )
+            .unwrap_err();
+            assert_eq!(
+                err,
+                InvalidMemberKinds::Undeclared {
+                    section: MemberSection::Service,
+                    member: "check_arm_move".to_owned(),
+                    kind: undeclared.to_owned(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_member_lists_a_kind_once() {
+        let err = ContractKinds::new(
+            motion_block(),
+            [listing(
+                MemberSection::Action,
+                "move_arm",
+                &["unreachable", "leader_streaming", "unreachable"],
+            )],
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            InvalidMemberKinds::Repeated {
+                section: MemberSection::Action,
+                member: "move_arm".to_owned(),
+                kind: "unreachable".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn each_declared_kind_is_listed_by_a_member() {
+        let err = ContractKinds::new(
+            motion_block(),
+            [listing(MemberSection::Action, "move_arm", &["unreachable"])],
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            InvalidMemberKinds::Unlisted("leader_streaming".to_owned())
         );
     }
 }

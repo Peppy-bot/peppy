@@ -16,6 +16,7 @@ use pmi::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex as TokioMutex, Notify};
 // tokio's clock so the retention/eviction timeouts run on virtual time under
@@ -26,8 +27,9 @@ use tracing::warn;
 
 pub struct ActionMessenger;
 
-/// How many unread feedback messages an action client keeps by default
-/// before it cancels the goal (see [`ActionMessenger::send_goal`]).
+/// How many unread feedback messages an action client keeps by default. A
+/// client that reads the feedback and falls behind by more cancels the goal
+/// (see [`ActionMessenger::send_goal`]).
 pub const DEFAULT_FEEDBACK_BOUND: FeedbackBound =
     FeedbackBound::new(std::num::NonZeroUsize::new(1024).expect("1024 is not zero"));
 
@@ -701,16 +703,19 @@ impl Drop for ProducerGoneWatch {
 }
 
 pub struct ActionGoalHandle {
+    messenger: MessengerHandle,
     sender: ActionWireSender,
     goal_id: String,
     goal_reply: ActionGoalReply,
     feedback: Subscription,
     feedback_bound: FeedbackBound,
     feedback_overflow: FeedbackOverflow,
+    /// Cancels the goal once its feedback overflows, from the first read of
+    /// the feedback on (see [`ActionGoalHandle::follow_feedback`]). `None`
+    /// before that read, and for a refused goal, which has nothing to
+    /// cancel.
+    overflow_cancel: Option<OverflowCancel>,
     producer_gone: ProducerGoneWatch,
-    /// Cancels the goal when its feedback overflows. Aborted with the
-    /// handle; `None` for a refused goal, which has nothing to cancel.
-    _overflow_cancel: Option<OverflowCancel>,
 }
 
 impl std::fmt::Debug for ActionGoalHandle {
@@ -722,24 +727,40 @@ impl std::fmt::Debug for ActionGoalHandle {
     }
 }
 
+/// Whether a goal request that failed with `err` may have started a goal on
+/// its provider: the provider acknowledged the request and gave no answer
+/// in time. A request that reached no provider (`ServiceUnreachable`), or
+/// that the session could not send, started none.
+fn request_may_have_started_a_goal(err: &Error) -> bool {
+    matches!(err, Error::ServiceTimeout { .. })
+}
+
 /// How long a cancel that the client sends on its own (after a feedback
 /// overflow, or for a goal whose answer it never read) waits for the
 /// provider's answer.
 const OWN_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Sends the provider a cancel of `goal_id` from a task of its own, and logs
-/// a cancel that fails. `why` names the cause in that log.
-async fn send_own_cancel(
+/// a cancel that fails. `why` names the cause in that log. Sends nothing
+/// outside a runtime, which has no task to send it from.
+fn spawn_own_cancel(
     messenger: MessengerHandle,
     sender: ActionWireSender,
     goal_id: String,
     why: &'static str,
 ) {
-    if let Err(err) =
-        ActionMessenger::cancel_with_sender(&messenger, &sender, &goal_id, OWN_CANCEL_TIMEOUT).await
-    {
-        warn!(%err, %goal_id, why, "the cancel of a goal failed");
+    if tokio::runtime::Handle::try_current().is_err() {
+        warn!(%goal_id, why, "the cancel of a goal was not sent: no runtime runs");
+        return;
     }
+    spawn(async move {
+        if let Err(err) =
+            ActionMessenger::cancel_with_sender(&messenger, &sender, &goal_id, OWN_CANCEL_TIMEOUT)
+                .await
+        {
+            warn!(%err, %goal_id, why, "the cancel of a goal failed");
+        }
+    });
 }
 
 /// The task that cancels a goal once its feedback overflows. Dropping the
@@ -761,7 +782,12 @@ impl OverflowCancel {
         let raised = overflow.clone();
         let task = spawn(async move {
             raised.raised().await;
-            send_own_cancel(messenger, sender, goal_id, "its feedback overflowed").await;
+            spawn_own_cancel(
+                messenger,
+                sender,
+                goal_id,
+                "its caller fell behind its feedback",
+            );
         });
         Self { task, overflow }
     }
@@ -771,6 +797,39 @@ impl Drop for OverflowCancel {
     fn drop(&mut self) {
         if !self.overflow.is_raised() {
             self.task.abort();
+        }
+    }
+}
+
+/// A cancel of a goal that goes out when this guard is dropped armed, from
+/// a task of its own: its caller stops following the goal before the goal
+/// ended, also when the caller's future is dropped. [`Self::disarm`] keeps
+/// the cancel from going out, once the caller read the end of the goal or
+/// sent a cancel of its own.
+pub struct CancelOnDrop {
+    messenger: MessengerHandle,
+    sender: ActionWireSender,
+    goal_id: String,
+    why: &'static str,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    /// Keeps the cancel from going out.
+    pub fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            spawn_own_cancel(
+                self.messenger.clone(),
+                self.sender.clone(),
+                std::mem::take(&mut self.goal_id),
+                self.why,
+            );
         }
     }
 }
@@ -815,7 +874,8 @@ impl ActionGoalHandle {
     ///
     /// Returns `Err(Error::ActionFeedbackOverflow)` once this caller fell
     /// behind by more unread messages than its bound: the buffer dropped
-    /// the unread messages, and the handle cancelled the goal.
+    /// the unread messages, and the handle cancelled the goal (see
+    /// [`Self::follow_feedback`]).
     ///
     /// Returns `Err(Error::ActionFeedbackProducerGone)` when the producer
     /// instance this goal is pinned to disappears without publishing the
@@ -824,6 +884,7 @@ impl ActionGoalHandle {
     /// out) is always drained before the producer-gone error surfaces, so
     /// a graceful close keeps reporting `ActionFeedbackChannelClosed`.
     pub async fn on_next_feedback(&mut self) -> Result<Message> {
+        self.follow_feedback();
         if self.feedback_overflow.is_raised() {
             return Err(self.overflow_error());
         }
@@ -847,6 +908,7 @@ impl ActionGoalHandle {
 
     /// Non-blocking variant of [`Self::on_next_feedback`].
     pub fn try_next_feedback(&mut self) -> Result<Option<Message>> {
+        self.follow_feedback();
         if self.feedback_overflow.is_raised() {
             return Err(self.overflow_error());
         }
@@ -860,6 +922,40 @@ impl ActionGoalHandle {
             Err(crate::types::TryRecvError::Disconnected) => {
                 Err(Error::ActionFeedbackChannelClosed)
             }
+        }
+    }
+
+    /// The caller reads the feedback, so it follows the goal: from now on
+    /// the handle cancels the goal once the feedback overflows, at once,
+    /// also when the caller is not reading at that moment. A caller that
+    /// never reads the feedback keeps its goal: its buffer stops at its
+    /// bound, and the result comes as usual. Outside a runtime, which has
+    /// no task to watch the overflow from, the handle cancels nothing.
+    fn follow_feedback(&mut self) {
+        if self.overflow_cancel.is_some()
+            || !self.goal_reply.is_accepted()
+            || tokio::runtime::Handle::try_current().is_err()
+        {
+            return;
+        }
+        self.overflow_cancel = Some(OverflowCancel::spawn(
+            self.messenger.clone(),
+            self.sender.clone(),
+            self.goal_id.clone(),
+            self.feedback_overflow.clone(),
+        ));
+    }
+
+    /// A guard that cancels this goal when it is dropped armed (see
+    /// [`CancelOnDrop`]). `why` names the cause in the log of a cancel that
+    /// fails.
+    pub fn cancel_on_drop(&self, why: &'static str) -> CancelOnDrop {
+        CancelOnDrop {
+            messenger: self.messenger.clone(),
+            sender: self.sender.clone(),
+            goal_id: self.goal_id.clone(),
+            why,
+            armed: true,
         }
     }
 
@@ -994,9 +1090,11 @@ impl ActionMessenger {
     /// [`ActionGoalHandle::on_next_feedback`] takes it: every message, up to
     /// `feedback_bound` unread ones. The buffer never makes the session
     /// wait, so feedback left unread never holds up the goal's result or any
-    /// other message to this session. A caller that falls behind by more
-    /// than its bound loses the stream: the handle cancels the goal and
-    /// reports [`Error::ActionFeedbackOverflow`].
+    /// other message to this session. A caller that reads the feedback and
+    /// falls behind by more than its bound loses the stream: the handle
+    /// cancels the goal, and the next read reports
+    /// [`Error::ActionFeedbackOverflow`]. A caller that never reads the
+    /// feedback keeps its goal.
     ///
     /// The goal carries the presence generation of this messenger as the
     /// sender `(as_core_node, as_instance_id)`: the provider cancels the
@@ -1095,14 +1193,16 @@ impl ActionMessenger {
             budget_left_after_discovery(goal_timeout, started_at, &resolved, to_action_name)?;
         // A goal whose answer this caller never reads may still run on the
         // provider, and no handle could cancel it: the caller sends the
-        // cancel itself before it reports the error.
+        // cancel itself before it reports the error. A goal request that
+        // reached no provider started no goal, and gets no cancel (see
+        // [`request_may_have_started_a_goal`]).
         let cancel_unread_goal = || {
-            spawn(send_own_cancel(
+            spawn_own_cancel(
                 messenger.clone(),
                 sender.clone(),
                 goal_id.clone(),
                 "its caller did not read the answer of the goal",
-            ))
+            )
         };
         let goal_response = match messenger
             .poll_service(
@@ -1115,7 +1215,9 @@ impl ActionMessenger {
         {
             Ok(response) => response,
             Err(err) => {
-                cancel_unread_goal();
+                if request_may_have_started_a_goal(&err) {
+                    cancel_unread_goal();
+                }
                 return Err(err);
             }
         };
@@ -1135,24 +1237,16 @@ impl ActionMessenger {
             instance_id: goal_response.instance_id().to_string(),
             core_node: goal_response.core_node().to_string(),
         };
-        let overflow_cancel = goal_reply.is_accepted().then(|| {
-            OverflowCancel::spawn(
-                messenger.clone(),
-                sender.clone(),
-                goal_id.clone(),
-                feedback_overflow.clone(),
-            )
-        });
-
         Ok(ActionGoalHandle {
+            messenger: messenger.clone(),
             sender,
             goal_id,
             goal_reply,
             feedback: Subscription::new(feedback_subscription),
             feedback_bound,
             feedback_overflow,
+            overflow_cancel: None,
             producer_gone,
-            _overflow_cancel: overflow_cancel,
         })
     }
 
@@ -1449,7 +1543,7 @@ impl CancelCause {
 struct GoalSlot {
     cancel: CancellationToken,
     /// The cause of the first cancel signal; later ones keep it.
-    cancel_cause: Arc<StdMutex<Option<CancelCause>>>,
+    cancel_cause: Arc<OnceLock<CancelCause>>,
     state: Arc<TokioMutex<GoalState>>,
     /// Fast `is-terminal?` probe and the race guard that makes the first of
     /// `complete` / `fail` / `complete_cancelled` / abandon win.
@@ -1460,7 +1554,7 @@ impl GoalSlot {
     fn new() -> Self {
         Self {
             cancel: CancellationToken::new(),
-            cancel_cause: Arc::new(StdMutex::new(None)),
+            cancel_cause: Arc::new(OnceLock::new()),
             state: Arc::new(TokioMutex::new(GoalState::Pending {
                 waiters: Vec::new(),
             })),
@@ -1475,12 +1569,12 @@ impl GoalSlot {
     /// Delivers the cancel signal for `cause`, unless the goal already
     /// received one.
     fn signal_cancel(&self, cause: CancelCause) {
-        self.cancel_cause.lock().unwrap().get_or_insert(cause);
+        let _ = self.cancel_cause.set(cause);
         self.cancel.cancel();
     }
 
     fn cancel_cause(&self) -> Option<CancelCause> {
-        *self.cancel_cause.lock().unwrap()
+        self.cancel_cause.get().copied()
     }
 }
 
@@ -3315,6 +3409,26 @@ mod engine_tests {
             .is_ok()
     }
 
+    /// Only a goal request that its provider acknowledged and did not
+    /// answer in time may have started a goal: the caller cancels the goal
+    /// of that request alone.
+    #[test]
+    fn only_a_request_that_timed_out_may_have_started_a_goal() {
+        let service = || ("goal_service".to_owned(), Some("producer".to_owned()));
+        let (service_name, instance_id) = service();
+        assert!(request_may_have_started_a_goal(&Error::ServiceTimeout {
+            instance_id,
+            service_name,
+        }));
+        let (service_name, instance_id) = service();
+        assert!(!request_may_have_started_a_goal(
+            &Error::ServiceUnreachable {
+                instance_id,
+                service_name,
+            }
+        ));
+    }
+
     fn unreachable_failure() -> Failure {
         Failure::new(
             config::failure_kind::FailureKindName::parse("unreachable").unwrap(),
@@ -3494,18 +3608,18 @@ mod engine_tests {
         assert_eq!(context.cancel_cause(), Some(CancelCause::Caller));
     }
 
-    /// A caller that drops its handle on the overflow error still cancels
-    /// the goal.
-    #[tokio::test(start_paused = true)]
-    async fn a_handle_dropped_on_its_overflow_still_cancels_the_goal() {
-        let session = mock_session().await;
-        let mut action = expose_on(&process_on(&session)).await;
-        let caller = process_on(&session);
+    /// Sends a goal as `CALLER` from `caller`, whose handle keeps one
+    /// unread feedback message, while `action` accepts it, and publishes two
+    /// feedback messages: the feedback of the handle overflows.
+    async fn accept_and_overflow_one_message(
+        caller: &MessengerHandle,
+        action: &mut ConcurrentAction,
+    ) -> (ActionGoalHandle, GoalContext) {
         let one_message = FeedbackBound::new(std::num::NonZeroUsize::new(1).unwrap());
         let producer = ProducerRef::new(CORE, PRODUCER);
         let (goal, context) = tokio::join!(
             ActionMessenger::send_goal(
-                &caller,
+                caller,
                 CORE,
                 CALLER,
                 target(),
@@ -3526,7 +3640,6 @@ mod engine_tests {
                     .unwrap()
             }
         );
-        let mut goal = goal.unwrap();
         for message in [b"first".as_slice(), b"second"] {
             context
                 .publish_feedback(
@@ -3535,6 +3648,18 @@ mod engine_tests {
                 .await
                 .unwrap();
         }
+        (goal.unwrap(), context)
+    }
+
+    /// A caller that drops its handle on the overflow error still cancels
+    /// the goal.
+    #[tokio::test(start_paused = true)]
+    async fn a_handle_dropped_on_its_overflow_still_cancels_the_goal() {
+        let session = mock_session().await;
+        let mut action = expose_on(&process_on(&session)).await;
+        let caller = process_on(&session);
+        let (mut goal, context) = accept_and_overflow_one_message(&caller, &mut action).await;
+
         assert!(matches!(
             goal.try_next_feedback(),
             Err(Error::ActionFeedbackOverflow { bound: 1, .. })
@@ -3543,6 +3668,32 @@ mod engine_tests {
 
         assert!(cancelled_within(&context, Duration::from_secs(5)).await);
         assert_eq!(context.cancel_cause(), Some(CancelCause::Caller));
+    }
+
+    /// A caller that never reads the feedback of its goal keeps the goal
+    /// when the feedback overflows, and reads its result.
+    #[tokio::test(start_paused = true)]
+    async fn a_caller_that_reads_no_feedback_keeps_its_goal_past_the_bound() {
+        let session = mock_session().await;
+        let mut action = expose_on(&process_on(&session)).await;
+        let caller = process_on(&session);
+        let (goal, context) = accept_and_overflow_one_message(&caller, &mut action).await;
+
+        assert!(
+            !cancelled_within(&context, Duration::from_secs(60)).await,
+            "an overflow that no read finds cancels nothing"
+        );
+        context
+            .complete(Payload::from_static(b"done"))
+            .await
+            .unwrap();
+        let reply = ActionMessenger::request_result(&caller, &goal, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(
+            reply.outcome,
+            GoalOutcome::Completed(Payload::from_static(b"done"))
+        );
     }
 
     #[tokio::test(start_paused = true)]

@@ -25,7 +25,7 @@ use crate::helpers::{
     test_wait_context, wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
-use config::failure_kind::MemberFailureKinds;
+use config::failure_kind::MemberSection;
 use config::node::{MessageFormat, TopicRetention};
 use config::runtime::BoundProducers;
 use daemon_config::contract::PeppyContractParser;
@@ -96,7 +96,7 @@ fn fixture_contract() -> String {
                     response_message_format: {EVERYTHING_FORMAT},
                 }},
                 {{ name: "ping" }},
-                {{ name: "busy" }},
+                {{ name: "busy", failure_kinds: ["busy"] }},
             ],
             actions: [
                 {{
@@ -104,6 +104,7 @@ fn fixture_contract() -> String {
                     goal_service: {{ request_message_format: {GOAL_FORMAT} }},
                     feedback_topic: {{ message_format: {FEEDBACK_FORMAT} }},
                     result_service: {{ response_message_format: {RESULT_FORMAT} }},
+                    failure_kinds: ["no_steps", "unlucky"],
                 }},
             ],
         }},
@@ -377,7 +378,7 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
         contract_tag: CONTRACT_TAG.to_string(),
         failure_kinds: contract.failure_kinds.clone(),
     };
-    let member_kinds = MemberFailureKinds::of_contract(contract.failure_kinds.clone());
+    let member_kinds = |section, name| contract.failure_kinds.of(section, name);
     let user_node = generate_node_project::<generator::RustGenerator>(
         &temp_dir,
         STUB_NODE_CONFIG,
@@ -417,7 +418,7 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     let echo = ServiceClient::new(
         Some(everything.clone()),
         Some(everything.clone()),
-        member_kinds.clone(),
+        member_kinds(MemberSection::Service, "echo_everything"),
     );
     let full: Value = serde_json::from_str(EVERYTHING_FULL).expect("fixture json");
     let minimal: Value = serde_json::from_str(EVERYTHING_MINIMAL).expect("fixture json");
@@ -425,7 +426,7 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     assert_echo_round_trips(&echo, &messenger, &identity, &everything, &minimal).await;
 
     // A member without formats carries nothing either way.
-    let ping = ServiceClient::new(None, None, member_kinds.clone());
+    let ping = ServiceClient::new(None, None, member_kinds(MemberSection::Service, "ping"));
     let answer = bounded(
         "ping answers",
         ping.call(
@@ -443,7 +444,7 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
 
     // An error reply of the generated provider reaches the runtime with its
     // kind and message.
-    let busy = ServiceClient::new(None, None, member_kinds.clone());
+    let busy = ServiceClient::new(None, None, member_kinds(MemberSection::Service, "busy"));
     let error = bounded(
         "busy answers",
         busy.call(
@@ -506,7 +507,7 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
         Some(codec("count_goal", GOAL_FORMAT)),
         Some(codec("count_feedback", FEEDBACK_FORMAT)),
         Some(codec("count_result", RESULT_FORMAT)),
-        member_kinds,
+        member_kinds(MemberSection::Action, "count"),
     );
     let fire = |goal: Value| {
         let count = count.clone();

@@ -11,6 +11,7 @@ use crate::generator::naming::cancel_reason_parameter;
 use crate::generator::types::{
     ConsumedActionMessage, ContractOrigin, member_failure_kinds, non_empty_message_format,
 };
+use config::failure_kind::MemberSection;
 use config::node::{ConsumedAction, NativeExposedAction};
 
 // ---------------------------------------------------------------------------
@@ -50,7 +51,11 @@ pub fn build_exposed_action(
 
     builder.line(&format!("ACTION_NAME = \"{}\"", action.name));
     builder.blank_line();
-    emit_failure_items(&mut builder, &member_failure_kinds(origin), "ACTION_NAME");
+    emit_failure_items(
+        &mut builder,
+        &member_failure_kinds(origin, MemberSection::Action, &action.name),
+        "ACTION_NAME",
+    );
 
     let goal_request_format = action
         .goal_service
@@ -522,7 +527,7 @@ pub fn build_consumed_action(
     builder.blank_line();
     emit_failure_items(
         &mut builder,
-        &dependency.member_failure_kinds(),
+        &dependency.member_failure_kinds(MemberSection::Action, &action.name),
         "TARGET_ACTION_NAME",
     );
 
@@ -666,10 +671,11 @@ class ResultStatus(IntEnum):
                         "handle retains the target: feedback, result, and cancel stay pinned",
                         "to it. The handle keeps every feedback message until it is read, up to",
                         "`feedback_bound` unread messages (None takes the default of peppylib,",
-                        "1024); a caller that falls behind by more cancels the goal and reads",
-                        "peppylib.FeedbackOverflowError. `refusal` holds the failure of a",
-                        "refused goal; a kind that this member does not declare raises",
-                        "ValueError.",
+                        "1024); a caller that reads the feedback and falls behind by more",
+                        "cancels the goal, and its next read raises",
+                        "peppylib.FeedbackOverflowError. A caller that never reads the feedback",
+                        "keeps its goal. `refusal` holds the failure of a refused goal; a kind",
+                        "that this member does not declare raises ValueError.",
                     ]
                     .into_iter()
                     .chain(dependency.target_selection_doc().iter().copied()),

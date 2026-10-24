@@ -25,7 +25,7 @@ use crate::schema::{
     MaxSerializedSize, empty_object_schema, integer_bounds, max_serialized_json_bytes,
     message_format_to_json_schema, without_root_member,
 };
-use peppy_config_model::failure_kind::{ContractFailureKinds, MemberFailureKinds};
+use peppy_config_model::failure_kind::{ContractKinds, MemberFailureKinds, MemberSection};
 use peppy_config_model::fingerprint::ManifestFingerprint;
 use peppy_config_model::node::{
     MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, SchemaType,
@@ -37,13 +37,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 /// The members a contract or a daemon interface declares, in the contract
-/// format, and the failure kinds it declares for them.
+/// format, and the failure kinds it declares and that each of them gives.
 #[derive(Debug, Clone, Copy)]
 pub struct DeclaredMembers<'a> {
     pub topics: &'a [NativeEmittedTopic],
     pub services: &'a [NativeExposedService],
     pub actions: &'a [NativeExposedAction],
-    pub failure_kinds: &'a ContractFailureKinds,
+    pub failure_kinds: &'a ContractKinds,
 }
 
 /// One contract as resolved for validation: its identity, the fingerprint of
@@ -111,11 +111,11 @@ pub struct BoundMember<M> {
 }
 
 impl<M: Clone> BoundMember<M> {
-    fn new(source: &MemberSource, member: &M, members: &DeclaredMembers<'_>) -> Self {
+    fn new(source: &MemberSource, member: &M, failure_kinds: MemberFailureKinds) -> Self {
         Self {
             source: source.clone(),
             member: member.clone(),
-            failure_kinds: MemberFailureKinds::of_contract(members.failure_kinds.clone()),
+            failure_kinds,
         }
     }
 }
@@ -295,7 +295,11 @@ pub fn build_exposure_bundle(
                 pictures.push(picture_entry(picture, &entry, &routing));
             }
             resources.push(entry);
-            resource_members.push(BoundMember::new(&source, declared, &members));
+            resource_members.push(BoundMember::new(
+                &source,
+                declared,
+                MemberFailureKinds::peppy_only(),
+            ));
         }
 
         for service in &target.services {
@@ -315,7 +319,10 @@ pub fn build_exposure_bundle(
                 continue;
             };
             tools.push(entry);
-            tool_members.push(BoundMember::new(&source, declared, &members));
+            let failure_kinds = members
+                .failure_kinds
+                .of(MemberSection::Service, &declared.name);
+            tool_members.push(BoundMember::new(&source, declared, failure_kinds));
         }
 
         for action in &target.actions {
@@ -340,7 +347,10 @@ pub fn build_exposure_bundle(
                 continue;
             };
             tasks.push(entry);
-            task_members.push(BoundMember::new(&source, declared, &members));
+            let failure_kinds = members
+                .failure_kinds
+                .of(MemberSection::Action, &declared.name);
+            task_members.push(BoundMember::new(&source, declared, failure_kinds));
         }
         match source {
             MemberSource::Slot(slot) => pins.push((slot, argument.map(ToString::to_string))),

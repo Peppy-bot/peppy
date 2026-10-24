@@ -37,10 +37,6 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
               },
               response_message_format: {
                 enabled: "bool",
-                error_msg: {
-                  $type: "string",
-                  $optional: true
-                },
               },
             },
             {
@@ -81,10 +77,6 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
               },
               response_message_format: {
                 enabled: "bool",
-                error_msg: {
-                  $type: "string",
-                  $optional: true
-                },
               },
             },
             {
@@ -134,10 +126,7 @@ async def handle_requests(node_runner: NodeRunner):
             f"enable_camera request from {request.instance_id}: "
             f"enable = {request.data.enable}"
         )
-        return enable_camera.Response(
-            enabled=request.data.enable,
-            error_msg="ok",
-        )
+        return enable_camera.Response(enabled=request.data.enable)
 
     await enable_camera.handle_next_request(node_runner, handler)
 
@@ -171,10 +160,7 @@ fn main() -> Result<()> {
                         "enable_camera request from {}: enable = {}",
                         request.instance_id, request.data.enable
                     );
-                    Ok(enable_camera::Response::new(
-                        request.data.enable,
-                        Some("ok".to_owned()),
-                    ))
+                    Ok(enable_camera::Response::new(request.data.enable))
                 },
             )
             .await
@@ -271,7 +257,7 @@ A producer exposes its service exactly once and serves any consumer that calls i
 
 A service answers each request with its response, or with an error reply: a **failure kind** and a message. The response is a success. So no response reports a failure in a field of its own, such as `success: false` and an error text; a field that gives the answer of a check, such as whether a pose is reachable, is data and stays in the response.
 
-A service gives a kind from a closed set: the kinds of peppy, and the kinds that the contract of the service declares in its [`failure_kinds` block](/advanced_guides/contract_implementation/#failure-kinds). A native service gives the kinds of peppy only (`attempt_failed`, `timeout`, `precondition_failed`, `resource_unavailable`, `rejected`; see [How a goal ends](/advanced_guides/actions/#how-a-goal-ends)). The generated module of each service declares them as a `FailureKind` enum and a `Failure` type (`kind`, `message`), and the generated handler can give no other kind: in Rust a kind the service does not declare is not a variant of the enum, so the node does not compile; in Python `Failure` raises `ValueError` for it.
+A service gives a kind from a closed set: the kinds of peppy, and the kinds of its contract that the service lists (see [failure kinds](/advanced_guides/contract_implementation/#failure-kinds)). A native service gives the kinds of peppy only (`attempt_failed`, `timeout`, `precondition_failed`, `resource_unavailable`, `rejected`; see [How a goal ends](/advanced_guides/actions/#how-a-goal-ends)). The generated module of each service declares them as a `FailureKind` enum and a `Failure` type (`kind`, `message`), and the generated handler can give no other kind: in Rust a kind the service does not declare is not a variant of the enum, so the node does not compile; in Python `Failure` raises `ValueError` for it.
 
 <Tabs>
   <TabItem label="Python">
@@ -282,7 +268,7 @@ def handler(request):
         raise enable_camera.Failure(
             enable_camera.FailureKind.RESOURCE_UNAVAILABLE, "the camera is unplugged"
         )
-    return enable_camera.Response(enabled=request.data.enable, error_msg=None)
+    return enable_camera.Response(enabled=request.data.enable)
 ```
 
     The handler can also raise or return any other `peppylib.FailureError`, such as the `Failure` of another service. It gives an error reply of its kind when this service declares that kind, and else an error reply of the kind `attempt_failed`, whose message keeps the message of the failure. A handler that raises any other exception gives an error reply of the kind `attempt_failed`, with the text of the exception. `Failure` raises `TypeError` for a message that is not a `str`, so a handler that gives `Failure(kind, error)` with an exception `error` gives an error reply of the kind `attempt_failed`: write `Failure(kind, str(error))`.
@@ -296,7 +282,7 @@ def handler(request):
             "the camera is unplugged",
         ));
     }
-    Ok(enable_camera::Response::new(request.data.enable, None))
+    Ok(enable_camera::Response::new(request.data.enable))
 }
 ```
   </TabItem>
@@ -412,10 +398,9 @@ async def call_service(node_runner: NodeRunner):
         5.0,  # timeout (seconds)
     )
 
-    error_msg = response.data.error_msg if response.data.error_msg is not None else "<none>"
     print(
         f"enable_camera result: instance={response.instance_id} "
-        f"enabled={response.data.enabled} error={error_msg}"
+        f"enabled={response.data.enabled}"
     )
 
 
@@ -454,10 +439,8 @@ fn main() -> Result<()> {
         .await?;
 
         println!(
-            "enable_camera result: instance={} enabled={} error={}",
-            response.instance_id,
-            response.data.enabled,
-            response.data.error_msg.as_deref().unwrap_or("<none>"),
+            "enable_camera result: instance={} enabled={}",
+            response.instance_id, response.data.enabled,
         );
 
         Ok(())

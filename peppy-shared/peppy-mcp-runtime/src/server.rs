@@ -3,7 +3,7 @@
 //! [`ExposureSet`] serving several of them side by side over Streamable
 //! HTTP under MCP `2026-07-28`.
 
-use crate::call_record::{CallRecord, ClientIdentity, Recording};
+use crate::call_record::{CallRecord, ClientIdentity, DroppedCall, Recording};
 use crate::clock::Clock;
 use crate::error::{BuildError, PublishError, ToolCallError};
 use crate::failure::{CallFailure, FailureOutcome};
@@ -774,16 +774,18 @@ impl ExposureServer {
         Ok((uri, resource))
     }
 
-    /// The recording of a call of `tool` by `client`: an entry of the call
+    /// The recording of a call of `tool` by `client`, which is `dropped`
+    /// when its recording is dropped before it ends: an entry of the call
     /// record when the bundle keeps one, nothing otherwise.
     fn record_call(
         &self,
         client: Option<ClientIdentity>,
         tool: &str,
         arguments: &JsonObject,
+        dropped: DroppedCall,
     ) -> Recording {
         match &self.state.record {
-            Some(record) => record.start(client, tool, arguments),
+            Some(record) => record.start(client, tool, arguments, dropped),
             None => Recording::unkept(),
         }
     }
@@ -821,7 +823,9 @@ impl ExposureServer {
         };
         // The record keeps the calls that change something.
         let mut recording = match tool.entry.operation {
-            ServiceOperation::Mutating => self.record_call(client, name, &arguments),
+            ServiceOperation::Mutating => {
+                self.record_call(client, name, &arguments, DroppedCall::Call)
+            }
             ServiceOperation::ReadOnly => Recording::unkept(),
         };
         let call = self.prepared_call(
@@ -885,7 +889,12 @@ impl ExposureServer {
         arguments: JsonObject,
         client: Option<ClientIdentity>,
     ) -> Result<CreateTaskResult, McpError> {
-        let mut recording = self.record_call(client, &task.entry.name, &arguments);
+        let mut recording = self.record_call(
+            client,
+            &task.entry.name,
+            &arguments,
+            DroppedCall::TaskBeforeItsGoal,
+        );
         let call = self.prepared_call(
             &task.entry.name,
             &task.validator,
@@ -937,7 +946,8 @@ impl ExposureServer {
         closed: CancellationToken,
         progress: impl FeedbackSink,
     ) -> Result<CallToolResult, McpError> {
-        let mut recording = self.record_call(client, &task.entry.name, &arguments);
+        let mut recording =
+            self.record_call(client, &task.entry.name, &arguments, DroppedCall::Call);
         if task.entry.confirmation_required {
             let refusal = confirmation_needs_the_tasks_extension(&task.entry.name);
             recording.refused(refusal.message.to_string());
@@ -1033,9 +1043,10 @@ fn tool_answer(entry: &ToolEntry, value: Value) -> Result<CallToolResult, String
 /// fails the task once the goal goes a whole window without a sign of
 /// progress, long before that; the TTL ends, with the manager's generic
 /// expiry, only a task whose goal keeps making progress for a whole day.
-/// The goal gets no cancel at the TTL: the task's entry in the call record
-/// says so. The one wait before the goal, the confirmation, is refused
-/// together with a progress bound.
+/// The manager drops the operation at the TTL, and the bridge whose future
+/// is dropped cancels its goal (see [`TaskHandler`]): the task's entry in
+/// the call record says so. The one wait before the goal, the
+/// confirmation, is refused together with a progress bound.
 fn task_ttl_ms(bound: GoalBound) -> u64 {
     match bound {
         GoalBound::WholeGoal { deadline_ms } => deadline_ms.get().saturating_add(TASK_TTL_GRACE_MS),
@@ -1045,7 +1056,8 @@ fn task_ttl_ms(bound: GoalBound) -> u64 {
 
 /// Runs a goal's operation under the goal's bound. A whole-goal deadline is
 /// enforced here, and the error is the failure message of an overrun: the
-/// operation is dropped, and the goal gets no cancel. A progress-bound goal
+/// operation is dropped, and its bridge cancels the goal (see
+/// [`TaskHandler`]). A progress-bound goal
 /// runs to its end: its bridge, the one layer that sees every sign of
 /// progress, bounds the time between two of them, and a timeout here would
 /// cut a goal that still makes progress. Its total time is bounded outside:
@@ -1345,6 +1357,7 @@ async fn drive_task(
     let action_context = ActionContext {
         surface: ActionSurface::Task(context.clone()),
     };
+    recording.goal_started();
     let outcome = task.handler.start(call, action_context).await;
     recording.ended_by(&outcome);
     let exit = match outcome {
@@ -4832,7 +4845,7 @@ mod tests {
             .with_tool("front_camera.set_brightness", |_call: ToolCall| async {
                 Err(ToolCallError::Error(
                     "the provider of `set_brightness` gave the failure kind `melted`, which \
-                     neither peppy nor the contract of the member declares"
+                     is neither a kind of peppy nor a kind of its contract that the member lists"
                         .to_string(),
                 ))
             })
@@ -5201,8 +5214,11 @@ mod tests {
         assert_eq!(calls[0]["message"], CANCELLED_BEFORE_THE_GOAL);
     }
 
+    /// The manager drops the operation of a task whose TTL passed, its
+    /// bridge with it: the entry says that the endpoint cancelled the goal,
+    /// which the dropped bridge does, and the client asked for no cancel.
     #[tokio::test]
-    async fn a_task_that_expires_is_recorded_as_failed_and_its_goal_gets_no_cancel() {
+    async fn a_task_that_expires_is_recorded_as_failed_and_its_bridge_is_dropped() {
         let (contexts, mut running) = mpsc::unbounded_channel();
         let (builder, _) = record_builder();
         let server = builder
@@ -5226,7 +5242,12 @@ mod tests {
             .expect("builds");
         let task = task_named(&server, "recorder.resume_session");
         let arguments = JsonObject::new();
-        let recording = server.record_call(None, &task.entry.name, &arguments);
+        let recording = server.record_call(
+            None,
+            &task.entry.name,
+            &arguments,
+            DroppedCall::TaskBeforeItsGoal,
+        );
         let call = ToolCall {
             input: Value::Object(arguments),
             recipient: Recipient::BoundProducer,
@@ -5256,11 +5277,11 @@ mod tests {
         assert_eq!(entry["failure_kind"], Value::Null, "{entry}");
         assert_eq!(
             entry["message"],
-            "the task expired before its goal ended; the endpoint did not cancel the goal"
+            "the task expired before its goal ended; the endpoint cancelled the goal"
         );
         assert!(
             !context.is_cancel_requested(),
-            "the expiry asks the goal for no cancel"
+            "the expiry is no cancel of the client: the dropped bridge cancels its goal"
         );
     }
 }

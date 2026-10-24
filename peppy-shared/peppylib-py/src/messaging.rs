@@ -113,9 +113,9 @@ pub(crate) fn failure_of_py_err(err: PyErr) -> Failure {
 /// a pairing, observer or consumer slot, or a producer outside the slot's bound
 /// set), so they map to `ValueError`, the same type `peer()` and
 /// `observation_slot()` raise for the same kind of input. A failure a
-/// provider gave (an error reply, a refused or a failed goal) is a
-/// `FailureError` that carries its kind and message, and a feedback overflow
-/// is a `FeedbackOverflowError`.
+/// provider gave (an error reply, or a failed goal) is a `FailureError` that
+/// carries its kind and message, and a feedback overflow is a
+/// `FeedbackOverflowError`.
 pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
     if let Some(failure) = err.failure() {
         return FailureError::new_err((failure.kind().to_string(), failure.message().to_string()));

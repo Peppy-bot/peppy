@@ -3,6 +3,7 @@
 use config::consts::{
     NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
 };
+use config::failure_kind::MemberSection;
 use config::node::{MessageFormat, PeppygenLanguage};
 use daemon_config::consts::{PEPPYLIB_OUTPUT_PATH, PeppyDirs};
 use generator::{NodeTree, generate_peppygen_lib};
@@ -79,36 +80,51 @@ pub fn contract_dep(
     contract_tag: &str,
     link_id: &str,
 ) -> generator::DependencyContext {
-    contract_dep_with_kinds(contract_name, contract_tag, link_id, &[])
+    contract_dep_with_kinds(contract_name, contract_tag, link_id, &[], &[])
 }
 
 /// [`contract_dep`] for a contract whose `failure_kinds` block declares
-/// `kinds`, each a name and its meaning.
+/// `kinds`, each a name and its meaning, which `members` each list.
 pub fn contract_dep_with_kinds(
     contract_name: &str,
     contract_tag: &str,
     link_id: &str,
     kinds: &[(&str, &str)],
+    members: &[(MemberSection, &str)],
 ) -> generator::DependencyContext {
     generator::DependencyContext::contract(
         contract_name,
         contract_tag,
         link_id,
         config::node::Cardinality::One,
-        failure_kinds(kinds),
+        failure_kinds(kinds, members),
     )
 }
 
-/// A `failure_kinds` block that declares `kinds`, each a name and its
-/// meaning, in that order.
-pub fn failure_kinds(kinds: &[(&str, &str)]) -> config::failure_kind::ContractFailureKinds {
-    config::failure_kind::ContractFailureKinds::new(kinds.iter().map(|(name, meaning)| {
-        (
-            config::failure_kind::FailureKindName::parse(name).expect("a valid failure kind name"),
-            meaning.to_string(),
-        )
-    }))
-    .expect("a valid failure_kinds block")
+/// The kinds of a contract whose `failure_kinds` block declares `kinds`,
+/// each a name and its meaning, in that order, and whose `members` each list
+/// all of them.
+pub fn failure_kinds(
+    kinds: &[(&str, &str)],
+    members: &[(MemberSection, &str)],
+) -> config::failure_kind::ContractKinds {
+    let name = |name: &str| {
+        config::failure_kind::FailureKindName::parse(name).expect("a valid failure kind name")
+    };
+    let declared = config::failure_kind::ContractFailureKinds::new(
+        kinds
+            .iter()
+            .map(|(kind, meaning)| (name(kind), meaning.to_string())),
+    )
+    .expect("a valid failure_kinds block");
+    let listed: Vec<_> = kinds.iter().map(|(kind, _)| name(kind)).collect();
+    config::failure_kind::ContractKinds::new(
+        declared,
+        members
+            .iter()
+            .map(|(section, member)| (*section, member.to_string(), listed.clone())),
+    )
+    .expect("each member lists declared kinds")
 }
 
 pub const TEST_NODE_TAG: &str = "v1";

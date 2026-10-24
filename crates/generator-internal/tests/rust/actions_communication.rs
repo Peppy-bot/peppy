@@ -11,6 +11,7 @@ use crate::helpers::{
     wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
+use config::failure_kind::MemberSection;
 use config::node::{ConsumedAction, NativeExposedAction, Refines};
 use generator::{ConsumedActionMessage, ContractOrigin, LanguageGenerator};
 use peppylib::messaging::SenderTarget;
@@ -1025,14 +1026,13 @@ fn main() -> Result<()> {
     );
 }
 
-/// A generated client that falls behind its feedback by more unread
-/// messages than its bound cancels the goal itself, and reads the loss as
-/// `Error::ActionFeedbackOverflow`. The consumer passes a bound of 10 and
-/// never reads; the exposer publishes 50 messages, then ends the goal only
-/// on its cancel signal, with the reason of its cause. So the goal ends
-/// only through the cancel of the overflow. Runs the peer topology only.
+/// A generated client that never reads the feedback of its goal keeps the
+/// goal when the feedback goes past its bound: the consumer passes a bound
+/// of 10 and reads no feedback; the exposer publishes 50 messages, then
+/// completes the goal, unless it receives a cancel first. The consumer
+/// reads the completed result. Runs the peer topology only.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn actions_feedback_overflow_cancels_the_goal_and_errors() {
+async fn actions_feedback_past_the_bound_of_a_caller_that_reads_none_keeps_the_goal() {
     let consumer_main = r#"
 use peppygen::consumed_actions::brain::move_arm as brain_move_arm;
 use peppygen::NodeBuilder;
@@ -1041,7 +1041,7 @@ use std::time::Duration;
 
 async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
     let bound = peppygen::FeedbackBound::new(std::num::NonZeroUsize::new(10).unwrap());
-    let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
+    let action_handle = brain_move_arm::ActionHandle::fire_goal(
         &node_runner,
         brain_move_arm::bound_producer(&node_runner),
         Duration::from_secs(5),
@@ -1051,16 +1051,8 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
 
     let result = action_handle.get_result(Duration::from_secs(30)).await?;
     match result.outcome {
-        brain_move_arm::ResultOutcome::Cancelled { reason, .. } => {
-            println!("goal ended cancelled reason={reason}")
-        }
-        other => panic!("expected Cancelled outcome, got {other:?}"),
-    }
-    match action_handle.on_next_feedback_message().await {
-        Err(peppygen::Error::ActionFeedbackOverflow { bound, .. }) => {
-            println!("feedback overflow bound={bound}")
-        }
-        other => panic!("expected ActionFeedbackOverflow, got {other:?}"),
+        brain_move_arm::ResultOutcome::Completed(_) => println!("goal completed"),
+        other => panic!("expected Completed outcome, got {other:?}"),
     }
     Ok(())
 }
@@ -1089,12 +1081,11 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
             for i in 0..50 {
                 ctx.publish_feedback([i, i, i]).await.expect("publish feedback");
             }
-            ctx.cancel_signal().await;
-            let cause = ctx.cancel_cause().expect("the goal is cancelled");
-            println!("server observed cancel cause={cause:?}");
-            ctx.complete_cancelled(cause.reason(), false, None, [0, 0, 0])
-                .await
-                .expect("complete cancelled");
+            if let Some(cause) = ctx.cancel_cause() {
+                println!("server observed cancel cause={cause:?}");
+            }
+            ctx.complete(true, None, [0, 0, 0]).await.expect("complete");
+            println!("server completed the goal");
         }
     });
     Ok(())
@@ -1118,13 +1109,13 @@ fn main() -> Result<()> {
     )
     .await;
     assert!(
-        exposer_stdout.contains("server observed cancel cause=Caller"),
-        "the overflow did not cancel the goal.\nstdout:\n{exposer_stdout}"
+        exposer_stdout.contains("server completed the goal")
+            && !exposer_stdout.contains("server observed cancel"),
+        "the exposer did not complete the goal untouched.\nstdout:\n{exposer_stdout}"
     );
     assert!(
-        consumer_stdout.contains("goal ended cancelled reason=cancelled by its caller")
-            && consumer_stdout.contains("feedback overflow bound=10"),
-        "consumer did not read the overflow.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
+        consumer_stdout.contains("goal completed"),
+        "the consumer did not read the completed result.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
     );
 }
 
@@ -1851,6 +1842,7 @@ async fn actions_communication_via_contract_slot(
                         "v1",
                         "arm",
                         ARM_CONTRACT_FAILURE_KINDS,
+                        &[(MemberSection::Action, "move_arm")],
                     ),
                 )
                 .unwrap();
@@ -2010,7 +2002,10 @@ fn main() -> Result<()> {
                         link_id: "arm_impl".to_string(),
                         contract_name: ARM_CONTRACT_NAME.to_string(),
                         contract_tag: "v1".to_string(),
-                        failure_kinds: failure_kinds(ARM_CONTRACT_FAILURE_KINDS),
+                        failure_kinds: failure_kinds(
+                            ARM_CONTRACT_FAILURE_KINDS,
+                            &[(MemberSection::Action, "move_arm")],
+                        ),
                     }),
                 )
                 .unwrap();

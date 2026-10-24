@@ -199,6 +199,12 @@ impl ActionContext {
 /// describing the non-completed terminal state. Any
 /// `Fn(ToolCall, ActionContext) -> impl Future` with those shapes implements
 /// it.
+///
+/// The runtime drops the future of a bridge whose goal outlasts its
+/// whole-goal deadline or the TTL of its task, and the futures of every
+/// bridge when the endpoint stops. A bridge whose future is dropped before
+/// its goal ended stops following the goal and sends its provider a
+/// cancel, so no goal runs on with no one following it.
 pub trait TaskHandler: Send + Sync + 'static {
     fn start(
         &self,

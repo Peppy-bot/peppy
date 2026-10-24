@@ -507,11 +507,12 @@ async fn a_daemon_that_goes_away_ends_the_goal_without_a_result() {
     drop(context);
 }
 
-/// A caller that falls behind the output of the goal by more than the
-/// bound of its feedback buffer loses the stream: its handle cancels the
-/// goal, and the next event says that the caller fell behind and cancelled
-/// it. The daemon publishes until the cancel reaches it, so the test waits
-/// on that event and never on the clock.
+/// A caller that reads the output of the goal and falls behind it by more
+/// than the bound of its feedback buffer loses the stream: its handle
+/// cancels the goal, and the next event says that the caller fell behind
+/// and cancelled it. The caller reads the first line, then the daemon
+/// publishes until the cancel reaches it, so the test waits on that event
+/// and never on the clock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_caller_that_falls_behind_the_output_cancels_the_goal_and_says_so() {
     let (mesh, mut provider) = mesh().await;
@@ -521,6 +522,12 @@ async fn a_caller_that_falls_behind_the_output_cancels_the_goal_and_says_so() {
         LaunchFeedbackStep::BuildingNode,
         "Compiling robot_initializer",
     );
+
+    publish(&context, &line).await;
+    let first = next_event(&mut running)
+        .await
+        .expect("the caller follows the output of the goal");
+    assert_eq!(first, StackGoalEvent::Output(line.clone()));
 
     let mut published = 0;
     while !context.is_cancelled() {

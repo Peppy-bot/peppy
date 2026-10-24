@@ -154,7 +154,7 @@ class Request:
 SERVICE_NAME = "enable_camera"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -285,7 +285,7 @@ class Request:
 SERVICE_NAME = "set_mode"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -411,7 +411,7 @@ class Request:
 SERVICE_NAME = "get_system_status"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -517,7 +517,7 @@ class Request:
 SERVICE_NAME = "ping"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -644,7 +644,7 @@ class Request:
 SERVICE_NAME = "enable_camera"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -782,7 +782,7 @@ def _move_arm_feedback_message_capnp() -> types.ModuleType:
 ACTION_NAME = "move_arm"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -1032,7 +1032,7 @@ import peppylib
 ACTION_NAME = "home_all"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -1247,7 +1247,7 @@ def _track_target_feedback_message_capnp() -> types.ModuleType:
 ACTION_NAME = "track_target"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -1459,7 +1459,7 @@ import peppylib
 ACTION_NAME = "nudge"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -1687,7 +1687,7 @@ def _camera_feed_v1_move_arm_feedback_message_capnp() -> types.ModuleType:
 ACTION_NAME = "move_arm"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -2033,7 +2033,7 @@ SERVICE_NAME = "enable_camera"
 LINK_ID = "uvc_camera"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -2262,7 +2262,7 @@ SERVICE_NAME = "enable_camera"
 LINK_ID = "spare_camera"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -2505,7 +2505,7 @@ SERVICE_NAME = "enable_camera"
 LINK_ID = "camera_bank"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -2759,7 +2759,7 @@ SERVICE_NAME = "enable_camera"
 LINK_ID = "camera_pool"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -2927,7 +2927,7 @@ TARGET_ACTION_NAME = "move_arm"
 LINK_ID = "left_arm"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -3070,10 +3070,11 @@ class ActionHandle:
         handle retains the target: feedback, result, and cancel stay pinned
         to it. The handle keeps every feedback message until it is read, up to
         `feedback_bound` unread messages (None takes the default of peppylib,
-        1024); a caller that falls behind by more cancels the goal and reads
-        peppylib.FeedbackOverflowError. `refusal` holds the failure of a
-        refused goal; a kind that this member does not declare raises
-        ValueError.
+        1024); a caller that reads the feedback and falls behind by more
+        cancels the goal, and its next read raises
+        peppylib.FeedbackOverflowError. A caller that never reads the feedback
+        keeps its goal. `refusal` holds the failure of a refused goal; a kind
+        that this member does not declare raises ValueError.
         This slot declares cardinality `one`: `target` is its sole bound
         producer, returned by `bound_producer()`; the explicit parameter
         keeps call sites uniform across cardinalities.
@@ -7041,7 +7042,7 @@ SERVICE_NAME = "ping"
 LINK_ID = "bare_link"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -7147,7 +7148,7 @@ TARGET_ACTION_NAME = "home_all"
 LINK_ID = "bare_link"
 
 class FailureKind(str, Enum):
-    """A failure kind of this member: a kind of peppy, or a kind that its contract declares."""
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
     ATTEMPT_FAILED = "attempt_failed"
     "The attempt gave no result"
@@ -7246,10 +7247,11 @@ class ActionHandle:
         handle retains the target: feedback, result, and cancel stay pinned
         to it. The handle keeps every feedback message until it is read, up to
         `feedback_bound` unread messages (None takes the default of peppylib,
-        1024); a caller that falls behind by more cancels the goal and reads
-        peppylib.FeedbackOverflowError. `refusal` holds the failure of a
-        refused goal; a kind that this member does not declare raises
-        ValueError.
+        1024); a caller that reads the feedback and falls behind by more
+        cancels the goal, and its next read raises
+        peppylib.FeedbackOverflowError. A caller that never reads the feedback
+        keeps its goal. `refusal` holds the failure of a refused goal; a kind
+        that this member does not declare raises ValueError.
         This slot declares cardinality `one`: `target` is its sole bound
         producer, returned by `bound_producer()`; the explicit parameter
         keeps call sites uniform across cardinalities.

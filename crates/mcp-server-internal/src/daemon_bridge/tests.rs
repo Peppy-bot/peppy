@@ -922,11 +922,11 @@ async fn a_cancelled_join_reaches_the_daemon_and_ends_cancelled() {
     join_succeeds(&bridge, &mut daemon, "charlie").await;
 }
 
-/// A call whose handler the runtime drops (a whole-goal deadline) leaves
-/// the join to the bridge, which follows it and holds the lock until it
-/// ends.
+/// A call whose handler the runtime drops (a whole-goal deadline, the TTL
+/// of its task) sends the daemon a cancel of the join. The bridge follows
+/// the join to the end the daemon gives it, and holds the lock until then.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_dropped_call_leaves_the_join_running_under_the_lock() {
+async fn a_dropped_call_cancels_the_join_and_holds_the_lock_until_its_end() {
     let (mesh, mut daemon) = mesh().await;
     let bridge = mesh.bridge(simulation_scope());
     let surface = Arc::new(ScriptedSurface::new());
@@ -942,9 +942,8 @@ async fn a_dropped_call_leaves_the_join_running_under_the_lock() {
     );
     publish(&context, &join_progress()[0]).await;
     assert!(!idle_now(&bridge), "the join holds the lock");
-    complete(&context).await;
+    end_cancelled(&context).await;
     idle(&bridge).await;
-    assert!(!context.is_cancelled(), "a dropped call sends no cancel");
     join_succeeds(&bridge, &mut daemon, "charlie").await;
 }
 
@@ -1018,10 +1017,10 @@ async fn a_daemon_that_goes_away_fails_the_join_and_frees_the_lock() {
 
 /// The silence of the daemon, on a bridge whose clock the test moves: each
 /// line of progress starts a new window; one whole window without a line
-/// fails the call, and the bridge sends no cancel and goes on following the
+/// fails the call, and the bridge sends the daemon a cancel and follows the
 /// join, under its lock, to its end.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_silent_daemon_fails_the_call_after_one_window_and_the_join_goes_on() {
+async fn a_silent_daemon_fails_the_call_after_one_window_and_the_join_is_cancelled() {
     let (mesh, mut daemon) = mesh().await;
     let bridge = mesh.bridge(simulation_scope());
     let surface = Arc::new(ScriptedSurface::new());
@@ -1047,11 +1046,7 @@ async fn a_silent_daemon_fails_the_call_after_one_window_and_the_join_goes_on() 
     paused.advance(WINDOW).await;
     assert_eq!(
         paused.ended().await,
-        errored("the daemon sent nothing for 660 s; the addition of bravo can still be running")
-    );
-    assert!(
-        !context.is_cancelled(),
-        "the bridge sends the daemon no cancel"
+        errored("the daemon sent nothing for 660 s; the endpoint cancelled the addition of bravo")
     );
     let other = ScriptedSurface::new();
     assert_eq!(
@@ -1059,7 +1054,7 @@ async fn a_silent_daemon_fails_the_call_after_one_window_and_the_join_goes_on() 
         refused(DaemonFailureKind::Busy, STACK_BUSY_REASON),
         "the join goes on under the lock"
     );
-    complete(&context).await;
+    end_cancelled(&context).await;
     idle(&bridge).await;
     drop(paused);
     join_succeeds(&bridge, &mut daemon, "charlie").await;

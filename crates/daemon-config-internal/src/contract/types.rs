@@ -1,5 +1,7 @@
 use config::{
-    failure_kind::ContractFailureKinds,
+    failure_kind::{
+        ContractAction, ContractFailureKinds, ContractKinds, ContractMembers, ContractService,
+    },
     node::{NativeEmittedTopic, NativeExposedAction, NativeExposedService},
     runtime::Name,
     schema::PeppySchema,
@@ -25,17 +27,108 @@ where
 /// `manifest.implements` and list every member as an explicit contract-backed
 /// entry in their `interfaces` section.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "ContractDocument", into = "ContractDocument")]
 pub struct PeppyContract {
-    #[serde(deserialize_with = "deserialize_contract_v1_schema")]
     pub peppy_schema: PeppySchema,
     pub manifest: Manifest,
-    /// The failure kinds of the contract's own, each with its meaning: a
-    /// member of the contract gives one of these kinds, or a kind of peppy,
-    /// when it refuses or fails a goal or gives an error reply.
-    #[serde(default, skip_serializing_if = "ContractFailureKinds::is_empty")]
-    pub failure_kinds: ContractFailureKinds,
+    /// The failure kinds of the contract's own: its `failure_kinds` block,
+    /// each kind with its meaning, and the kinds of the block that each of
+    /// its services and actions lists in a `failure_kinds` list of its own.
+    /// A member gives the kinds it lists, or a kind of peppy, when it
+    /// refuses or fails a goal or gives an error reply.
+    pub failure_kinds: ContractKinds,
     pub interfaces: Interfaces,
+}
+
+/// A contract document as it is written: the `failure_kinds` list of each
+/// service and action sits on the member.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContractDocument {
+    #[serde(deserialize_with = "deserialize_contract_v1_schema")]
+    peppy_schema: PeppySchema,
+    manifest: Manifest,
+    #[serde(default, skip_serializing_if = "ContractFailureKinds::is_empty")]
+    failure_kinds: ContractFailureKinds,
+    interfaces: DocumentInterfaces,
+}
+
+/// The `interfaces` of a contract document. Each section is a flat list of
+/// items; there is no `emits`/`consumes` split because a contract describes
+/// the provider side only. Members carry their shape inline: a contract
+/// member is the source of shape, so the contract-backed `{link_id, name}`
+/// entry form node manifests use cannot appear here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DocumentInterfaces {
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_topics"
+    )]
+    topics: Vec<NativeEmittedTopic>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_services"
+    )]
+    services: Vec<ContractService>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_actions"
+    )]
+    actions: Vec<ContractAction>,
+}
+
+impl TryFrom<ContractDocument> for PeppyContract {
+    type Error = config::failure_kind::InvalidMemberKinds;
+
+    fn try_from(document: ContractDocument) -> Result<Self, Self::Error> {
+        let ContractDocument {
+            peppy_schema,
+            manifest,
+            failure_kinds,
+            interfaces,
+        } = document;
+        let members = ContractMembers::new(failure_kinds, interfaces.services, interfaces.actions)?;
+        Ok(Self {
+            peppy_schema,
+            manifest,
+            failure_kinds: members.failure_kinds,
+            interfaces: Interfaces {
+                topics: interfaces.topics,
+                services: members.services,
+                actions: members.actions,
+            },
+        })
+    }
+}
+
+impl From<PeppyContract> for ContractDocument {
+    fn from(contract: PeppyContract) -> Self {
+        let PeppyContract {
+            peppy_schema,
+            manifest,
+            failure_kinds,
+            interfaces,
+        } = contract;
+        let members = ContractMembers {
+            services: interfaces.services,
+            actions: interfaces.actions,
+            failure_kinds,
+        };
+        Self {
+            peppy_schema,
+            manifest,
+            failure_kinds: members.failure_kinds.declared().clone(),
+            interfaces: DocumentInterfaces {
+                topics: interfaces.topics,
+                services: members.documented_services(),
+                actions: members.documented_actions(),
+            },
+        }
+    }
 }
 
 /// Identity of a contract document. Contracts do not have build/runtime
@@ -64,31 +157,13 @@ where
     Ok(tag)
 }
 
-/// The body of a contract document. Each section is a flat list of items;
-/// there is no `emits`/`consumes` split because a contract describes the
-/// provider side only. Members use the native (inline-shape) item types
-/// directly: a contract member is the source of shape, so the contract-backed
-/// `{link_id, name}` entry form node manifests use cannot appear here.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+/// The members of a contract, each with the shape of a native member. The
+/// kinds of the contract that each service and action gives are in
+/// [`PeppyContract::failure_kinds`].
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Interfaces {
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_topics"
-    )]
     pub topics: Vec<NativeEmittedTopic>,
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_services"
-    )]
     pub services: Vec<NativeExposedService>,
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_actions"
-    )]
     pub actions: Vec<NativeExposedAction>,
 }
 
@@ -102,21 +177,21 @@ where
     Ok(items)
 }
 
-fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<NativeExposedService>, D::Error>
+fn deserialize_services<'de, D>(deserializer: D) -> Result<Vec<ContractService>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let items = Vec::<NativeExposedService>::deserialize(deserializer)?;
+    let items = Vec::<ContractService>::deserialize(deserializer)?;
     validate_named_items(items.iter().map(|s| s.name.as_str()), "service")
         .map_err(de::Error::custom)?;
     Ok(items)
 }
 
-fn deserialize_actions<'de, D>(deserializer: D) -> Result<Vec<NativeExposedAction>, D::Error>
+fn deserialize_actions<'de, D>(deserializer: D) -> Result<Vec<ContractAction>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let items = Vec::<NativeExposedAction>::deserialize(deserializer)?;
+    let items = Vec::<ContractAction>::deserialize(deserializer)?;
     validate_named_items(items.iter().map(|a| a.name.as_str()), "action")
         .map_err(de::Error::custom)?;
     Ok(items)
@@ -146,7 +221,7 @@ pub(crate) fn validate_named_items<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::failure_kind::FailureKindName;
+    use config::failure_kind::{FailureKindName, MemberFailureKinds, MemberSection};
     use config::node::{
         ArrayKind, MessageFormat, QoSProfile, SchemaType, TopicRetention, TypeToken,
     };
@@ -369,20 +444,32 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reads_the_failure_kinds_of_the_contract_in_their_order() {
-        let json5 = r#"{
+    /// A contract whose block declares `unreachable` and `leader_streaming`,
+    /// with the JSON5 items `services` and `actions`.
+    fn motion_contract(services: &str, actions: &str) -> String {
+        format!(
+            r#"{{
             peppy_schema: "contract/v1",
-            manifest: { name: "limb_motion", tag: "v1" },
-            failure_kinds: {
+            manifest: {{ name: "limb_motion", tag: "v1" }},
+            failure_kinds: {{
                 unreachable: "No plan to the target",
                 leader_streaming: "A leader streams a limb of the goal",
-            },
-            interfaces: {}
-        }"#;
-        let contract: PeppyContract = serde_json5::from_str(json5).expect("valid contract");
+            }},
+            interfaces: {{ services: [{services}], actions: [{actions}] }}
+        }}"#
+        )
+    }
+
+    #[test]
+    fn reads_the_failure_kinds_of_the_contract_in_their_order() {
+        let json5 = motion_contract(
+            "",
+            r#"{ name: "move_arm", failure_kinds: ["leader_streaming", "unreachable"] }"#,
+        );
+        let contract: PeppyContract = serde_json5::from_str(&json5).expect("valid contract");
         let kinds: Vec<(&str, &str)> = contract
             .failure_kinds
+            .declared()
             .iter()
             .map(|(name, meaning)| (name.as_str(), meaning))
             .collect();
@@ -395,6 +482,66 @@ mod tests {
         );
     }
 
+    /// Each member gives the kinds it lists: a service and an action of one
+    /// name are two members, and a member that lists none gives the kinds
+    /// of peppy only.
+    #[test]
+    fn each_member_gives_the_kinds_of_the_contract_that_it_lists() {
+        let json5 = motion_contract(
+            r#"{ name: "check_arm_move", failure_kinds: ["leader_streaming"] },
+               { name: "stop" }"#,
+            r#"{ name: "move_arm", failure_kinds: ["unreachable", "leader_streaming"] },
+               { name: "check_arm_move" }"#,
+        );
+        let contract: PeppyContract = serde_json5::from_str(&json5).expect("valid contract");
+        let kinds = &contract.failure_kinds;
+
+        let move_arm = kinds.of(MemberSection::Action, "move_arm");
+        assert!(move_arm.allows("unreachable") && move_arm.allows("leader_streaming"));
+        let check = kinds.of(MemberSection::Service, "check_arm_move");
+        assert!(check.allows("leader_streaming") && !check.allows("unreachable"));
+        assert_eq!(
+            kinds.of(MemberSection::Action, "check_arm_move"),
+            MemberFailureKinds::peppy_only()
+        );
+        assert_eq!(
+            kinds.of(MemberSection::Service, "stop"),
+            MemberFailureKinds::peppy_only()
+        );
+        assert_eq!(contract.interfaces.services.len(), 2);
+        assert_eq!(contract.interfaces.actions.len(), 2);
+    }
+
+    #[test]
+    fn rejects_a_listed_kind_that_the_block_does_not_declare() {
+        let json5 = motion_contract(
+            "",
+            r#"{ name: "move_arm", failure_kinds: ["unreachable", "leader_streaming", "not_found"] }"#,
+        );
+        let err = serde_json5::from_str::<PeppyContract>(&json5)
+            .expect_err("a member lists declared kinds only");
+        assert!(
+            err.to_string()
+                .contains("action `move_arm` lists failure kind `not_found`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_declared_kind_that_no_member_lists() {
+        let json5 = motion_contract(
+            "",
+            r#"{ name: "move_arm", failure_kinds: ["unreachable"] }"#,
+        );
+        let err = serde_json5::from_str::<PeppyContract>(&json5)
+            .expect_err("each declared kind is listed");
+        assert!(
+            err.to_string()
+                .contains("failure kind `leader_streaming` of the `failure_kinds` block is listed by no service or action"),
+            "{err}"
+        );
+    }
+
     #[test]
     fn a_contract_without_failure_kinds_declares_none() {
         let json5 = r#"{
@@ -403,7 +550,7 @@ mod tests {
             interfaces: {}
         }"#;
         let contract: PeppyContract = serde_json5::from_str(json5).expect("valid contract");
-        assert!(contract.failure_kinds.is_empty());
+        assert!(contract.failure_kinds.declared().is_empty());
     }
 
     #[test]
@@ -584,10 +731,18 @@ mod tests {
                 tag: "v123".to_string(),
                 labels: Some(vec!["vendor".to_string(), "sensor".to_string()]),
             },
-            failure_kinds: ContractFailureKinds::new([(
-                FailureKindName::parse("lens_covered").unwrap(),
-                "The lens is covered".to_string(),
-            )])
+            failure_kinds: ContractKinds::new(
+                ContractFailureKinds::new([(
+                    FailureKindName::parse("lens_covered").unwrap(),
+                    "The lens is covered".to_string(),
+                )])
+                .unwrap(),
+                [(
+                    MemberSection::Service,
+                    "capture".to_owned(),
+                    vec![FailureKindName::parse("lens_covered").unwrap()],
+                )],
+            )
             .unwrap(),
             interfaces: Interfaces {
                 topics: vec![NativeEmittedTopic {
@@ -600,7 +755,11 @@ mod tests {
                             .collect(),
                     )),
                 }],
-                services: vec![],
+                services: vec![NativeExposedService {
+                    name: "capture".to_string(),
+                    request_message_format: None,
+                    response_message_format: None,
+                }],
                 actions: vec![],
             },
         };

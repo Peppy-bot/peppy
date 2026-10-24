@@ -753,6 +753,7 @@ mod implements_tests {
 
     use super::*;
     use crate::services::repo::cache::test_support::{init_repo_with_file, peppy_dirs_with_cache};
+    use config::failure_kind::MemberSection;
     use config::node::{Interfaces, Manifest};
     use generator::InterfaceVariant;
     use std::fs;
@@ -1033,7 +1034,7 @@ mod implements_tests {
 
     /// Services and actions resolve through the same entry-driven path with
     /// origins stamped, including the contract-declared action shape and the
-    /// failure kinds of the contract.
+    /// failure kinds that each member of the contract lists.
     #[test]
     fn resolves_service_and_action_members_with_origin() {
         const ARM_BODY: &str = r#"{
@@ -1042,7 +1043,7 @@ mod implements_tests {
             failure_kinds: { leader_streaming: "A leader streams a limb of the goal" },
             interfaces: {
                 services: [ { name: "control" } ],
-                actions: [ { name: "move_arm" } ]
+                actions: [ { name: "move_arm", failure_kinds: ["leader_streaming"] } ]
             }
         }"#;
         let tmp = TempDir::new().unwrap();
@@ -1071,7 +1072,12 @@ mod implements_tests {
                     assert_eq!(service.name, "control");
                     assert_eq!(o.contract_name, "arm");
                     assert_eq!(o.contract_tag, "v1");
-                    assert!(o.failure_kinds.contains("leader_streaming"));
+                    assert!(
+                        !o.failure_kinds
+                            .of(MemberSection::Service, "control")
+                            .allows("leader_streaming"),
+                        "a member that lists no kind gives the kinds of peppy"
+                    );
                     saw_service = true;
                 }
                 InterfaceVariant::ExposedAction {
@@ -1081,7 +1087,11 @@ mod implements_tests {
                     assert_eq!(action.name, "move_arm");
                     assert_eq!(o.contract_name, "arm");
                     assert_eq!(o.contract_tag, "v1");
-                    assert!(o.failure_kinds.contains("leader_streaming"));
+                    assert!(
+                        o.failure_kinds
+                            .of(MemberSection::Action, "move_arm")
+                            .allows("leader_streaming")
+                    );
                     saw_action = true;
                 }
                 other => panic!("unexpected resolved variant: {other:?}"),
@@ -1779,7 +1789,8 @@ mod implements_tests {
                     },
                     result_service: {
                         response_message_format: { success: "bool" }
-                    }
+                    },
+                    failure_kinds: ["unreachable"]
                 },
                 {
                     name: "wave",
@@ -1843,12 +1854,18 @@ mod implements_tests {
                     .expect("a contract slot must resolve to a contract-origin dependency");
                 assert_eq!(origin.contract_name, "arm_actions");
                 assert_eq!(origin.contract_tag, "v1");
-                let kinds = dependency.member_failure_kinds();
+                let kinds = dependency.member_failure_kinds(MemberSection::Action, "move_arm");
                 assert!(
                     kinds.allows("unreachable"),
-                    "the consumed member takes the failure kinds of its contract"
+                    "the consumed member takes the failure kinds of its contract that it lists"
                 );
                 assert!(kinds.allows("rejected"), "and the kinds of peppy");
+                assert!(
+                    !dependency
+                        .member_failure_kinds(MemberSection::Action, "wave")
+                        .allows("unreachable"),
+                    "a member that lists no kind gives the kinds of peppy only"
+                );
             }
             other => panic!("expected ConsumedAction variant, got {other:?}"),
         }
@@ -2137,7 +2154,7 @@ mod implements_tests {
                     "node-dep consumption must be node-addressed"
                 );
                 assert_eq!(
-                    dependency.member_failure_kinds(),
+                    dependency.member_failure_kinds(MemberSection::Service, "hybrid"),
                     config::failure_kind::MemberFailureKinds::peppy_only(),
                     "a native member gives the kinds of peppy only"
                 );

@@ -267,8 +267,8 @@ pub async fn declare_publisher(
 ExposedService :: enable_camera
 ================================================================
 const SERVICE_NAME: &str = "enable_camera";
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -286,7 +286,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -528,8 +528,8 @@ where
 ExposedService :: set_mode
 ================================================================
 const SERVICE_NAME: &str = "set_mode";
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -547,7 +547,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -748,8 +748,8 @@ where
 ExposedService :: get_system_status
 ================================================================
 const SERVICE_NAME: &str = "get_system_status";
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -767,7 +767,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -960,8 +960,8 @@ where
 ExposedService :: ping
 ================================================================
 const SERVICE_NAME: &str = "ping";
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -979,7 +979,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -1137,8 +1137,8 @@ where
 ExposedService :: feed/enable_camera
 ================================================================
 const SERVICE_NAME: &str = "enable_camera";
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -1158,7 +1158,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 6] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -1422,8 +1422,8 @@ pub struct GoalRequestData {
     pub arm_id: u16,
     pub desired_position: [i32; 3],
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -1441,7 +1441,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -1841,8 +1841,8 @@ pub struct GoalRequest {
     pub instance_id: String,
     pub core_node: String,
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -1860,7 +1860,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -2098,8 +2098,8 @@ pub struct GoalRequest {
     pub instance_id: String,
     pub core_node: String,
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -2117,7 +2117,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -2386,8 +2386,8 @@ pub struct GoalRequest {
     pub instance_id: String,
     pub core_node: String,
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -2405,7 +2405,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -2660,8 +2660,8 @@ pub struct GoalRequestData {
     pub arm_id: u16,
     pub desired_position: [i32; 3],
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -2681,7 +2681,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 6] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -3229,8 +3229,8 @@ pub fn bound_producer(
 ) -> &peppylib::messaging::ProducerRef {
     node_runner.processor().sole_bound_producer("camera_one")
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -3248,7 +3248,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -3640,8 +3640,8 @@ pub fn bound_producer(
 ) -> Option<&peppylib::messaging::ProducerRef> {
     node_runner.processor().optional_bound_producer("camera_zero_or_one")
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -3659,7 +3659,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -4075,8 +4075,8 @@ pub fn bound_members(
 ) -> peppylib::messaging::NonEmptyMembers {
     node_runner.processor().non_empty_bound_members("camera_one_or_more")
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -4094,7 +4094,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -4355,8 +4355,8 @@ pub fn bound_members(
 ) -> peppylib::messaging::NonEmptyMembers {
     node_runner.processor().non_empty_bound_members("camera_one_or_more")
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -4374,7 +4374,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -4510,8 +4510,10 @@ impl ActionHandle {
     ///
     /// The handle keeps every feedback message until it is read, up to
     /// `feedback_bound` unread messages (`DEFAULT_FEEDBACK_BOUND` holds
-    /// 1024). A caller that falls behind by more cancels the goal, and
-    /// reads `Error::ActionFeedbackOverflow`.
+    /// 1024). A caller that reads the feedback and falls behind by more
+    /// cancels the goal, and its next read gives
+    /// `Error::ActionFeedbackOverflow`. A caller that never reads the
+    /// feedback keeps its goal.
     ///
     /// This slot declares cardinality `one_or_more`: `target` is a
     /// caller-selected member of the never-empty `bound_producers()`
@@ -4995,8 +4997,8 @@ pub fn bound_members(
 ) -> Vec<peppylib::messaging::BoundMember> {
     node_runner.processor().bound_members("camera_zero_or_more")
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -5014,7 +5016,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -5415,8 +5417,8 @@ pub fn bound_producer(
 ) -> &peppylib::messaging::ProducerRef {
     node_runner.processor().sole_bound_producer("left_arm")
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -5438,7 +5440,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 7] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -5578,8 +5580,10 @@ impl ActionHandle {
     ///
     /// The handle keeps every feedback message until it is read, up to
     /// `feedback_bound` unread messages (`DEFAULT_FEEDBACK_BOUND` holds
-    /// 1024). A caller that falls behind by more cancels the goal, and
-    /// reads `Error::ActionFeedbackOverflow`.
+    /// 1024). A caller that reads the feedback and falls behind by more
+    /// cancels the goal, and its next read gives
+    /// `Error::ActionFeedbackOverflow`. A caller that never reads the
+    /// feedback keeps its goal.
     ///
     /// This slot declares cardinality `one`: `target` is its sole bound
     /// producer, returned by `bound_producer()`; the explicit parameter
@@ -13541,8 +13545,8 @@ pub async fn declare_publisher(
 ExposedService :: rich_service
 ================================================================
 const SERVICE_NAME: &str = "rich_service";
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -13560,7 +13564,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -14341,8 +14345,8 @@ pub struct RichActionFeedbackPointsItem {
     pub x: f32,
     pub tag: String,
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -14360,7 +14364,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -15200,8 +15204,8 @@ pub fn bound_producer(
 ) -> &peppylib::messaging::ProducerRef {
     node_runner.processor().sole_bound_producer("rich_link")
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -15219,7 +15223,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -15995,8 +15999,8 @@ pub fn bound_producer(
 ) -> &peppylib::messaging::ProducerRef {
     node_runner.processor().sole_bound_producer("rich_link")
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -16014,7 +16018,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -16157,8 +16161,10 @@ impl ActionHandle {
     ///
     /// The handle keeps every feedback message until it is read, up to
     /// `feedback_bound` unread messages (`DEFAULT_FEEDBACK_BOUND` holds
-    /// 1024). A caller that falls behind by more cancels the goal, and
-    /// reads `Error::ActionFeedbackOverflow`.
+    /// 1024). A caller that reads the feedback and falls behind by more
+    /// cancels the goal, and its next read gives
+    /// `Error::ActionFeedbackOverflow`. A caller that never reads the
+    /// feedback keeps its goal.
     ///
     /// This slot declares cardinality `one`: `target` is its sole bound
     /// producer, returned by `bound_producer()`; the explicit parameter
@@ -20483,8 +20489,8 @@ pub fn bound_producer(
 ) -> &peppylib::messaging::ProducerRef {
     node_runner.processor().sole_bound_producer("bare_link")
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -20502,7 +20508,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -20648,8 +20654,8 @@ pub fn bound_producer(
 ) -> &peppylib::messaging::ProducerRef {
     node_runner.processor().sole_bound_producer("bare_link")
 }
-/// A failure kind of this member: a kind of peppy, or a kind that
-/// its contract declares.
+/// A failure kind of this member: a kind of peppy, or a kind of its
+/// contract that it lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum FailureKind {
@@ -20667,7 +20673,7 @@ pub enum FailureKind {
 #[allow(dead_code)]
 impl FailureKind {
     /// Every kind of this member: the kinds of peppy, then the
-    /// kinds of its contract.
+    /// kinds of its contract that it lists.
     pub const ALL: [Self; 5] = [
         Self::AttemptFailed,
         Self::Timeout,
@@ -20768,8 +20774,10 @@ impl ActionHandle {
     ///
     /// The handle keeps every feedback message until it is read, up to
     /// `feedback_bound` unread messages (`DEFAULT_FEEDBACK_BOUND` holds
-    /// 1024). A caller that falls behind by more cancels the goal, and
-    /// reads `Error::ActionFeedbackOverflow`.
+    /// 1024). A caller that reads the feedback and falls behind by more
+    /// cancels the goal, and its next read gives
+    /// `Error::ActionFeedbackOverflow`. A caller that never reads the
+    /// feedback keeps its goal.
     ///
     /// This slot declares cardinality `one`: `target` is its sole bound
     /// producer, returned by `bound_producer()`; the explicit parameter

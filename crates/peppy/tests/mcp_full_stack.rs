@@ -122,6 +122,7 @@ const CAMERA_CONTRACT: &str = r#"{
                     width: "u16",
                     height: "u16",
                 },
+                failure_kinds: ["shutter_closed"],
             },
         ],
         actions: [

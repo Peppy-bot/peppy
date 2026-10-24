@@ -5,11 +5,14 @@
 //! A task of the bridge owns the change ([`start_change`]): it holds the
 //! bridge's lock when the change takes it, reads the stack and refuses or
 //! sends the goal, then follows the goal until the daemon's work ends. The
-//! call's handler only waits on that task ([`wait_for_change`]), so the
-//! change goes on, and the lock stays held, when the handler stops waiting
-//! or the runtime drops it at a whole-goal deadline of the document. The
-//! task releases the lock before it reports the end of the change, so a
-//! call that hears of the end finds the lock free.
+//! call's handler only waits on that task ([`wait_for_change`]). When the
+//! handler stops waiting before the end (a progress window of silence) or
+//! the runtime drops it (a whole-goal deadline of the document, the TTL of
+//! its task, the stop of the endpoint), the task sends the daemon a cancel,
+//! unless the client's cancel went out already, and follows the change to
+//! the end the daemon gives it, with the lock held. The task releases the
+//! lock before it reports the end of the change, so a call that hears of
+//! the end finds the lock free.
 //!
 //! The call ends:
 //!
@@ -31,8 +34,8 @@
 //!   daemon is gone, and when the daemon gives a failure kind that the
 //!   daemon does not give;
 //! - failed after one progress window of silence: "the daemon sent nothing
-//!   for 660 s; the addition of bravo can still be running". The bridge sends
-//!   no cancel and goes on following the change.
+//!   for 660 s; the endpoint cancelled the addition of bravo". The bridge
+//!   sends the daemon a cancel and follows the change to its end.
 
 use crate::bridges::{Silence, TaskSurface};
 use crate::daemon_bridge::OwnDaemon;
@@ -136,10 +139,11 @@ impl Change {
         }
     }
 
-    /// The end of a call the daemon sent nothing to for `window`.
+    /// The end of a call the daemon sent nothing to for `window`. The
+    /// task of the change then cancels it (see [`follow_change`]).
     fn silent(&self, window: Duration) -> ActionExit {
         ActionExit::Error(format!(
-            "the daemon sent nothing for {} s; {} can still be running",
+            "the daemon sent nothing for {} s; the endpoint cancelled {}",
             seconds(window),
             self.subject()
         ))
@@ -272,8 +276,9 @@ async fn admit_goal<G: StackGoal>(
 /// while it reads them. A cancel the call asks for (`cancel`) reaches the
 /// daemon, and the change is followed to the end the daemon gives it. The
 /// lock goes before the last event, so a call that hears of the end finds
-/// the lock free. Once the call stops reading, the change is followed to its
-/// end all the same, and its end is logged.
+/// the lock free. Once the call stops reading before the end, the daemon
+/// gets a cancel, unless the call's cancel went out already, and the
+/// change is followed to its end all the same, and its end is logged.
 async fn follow_change(
     mut running: RunningStackGoal,
     lock: Option<OwnedMutexGuard<()>>,
@@ -287,13 +292,16 @@ async fn follow_change(
             biased;
             () = cancel.cancelled(), if !cancel_sent => {
                 cancel_sent = true;
-                if let Err(error) = running.cancel().await {
-                    tracing::warn!(%error, "{} was not cancelled", change.subject());
-                }
+                cancel_change(&running, change).await;
                 continue;
             }
             event = running.next() => ChangeEvent::from(event),
-            () = events.closed() => break,
+            () = events.closed() => {
+                if !cancel_sent {
+                    cancel_change(&running, change).await;
+                }
+                break;
+            }
         };
         if let ChangeEvent::Progress(_) = event {
             if events.send(event).is_err() {
@@ -310,6 +318,14 @@ async fn follow_change(
     let end = ChangeEvent::from(running.follow_to_end().await.map(StackGoalEvent::Ended));
     drop(lock);
     log_unwatched_end(change, &end);
+}
+
+/// Sends the daemon the cancel of `change`, and logs a cancel that does not
+/// reach it.
+async fn cancel_change(running: &RunningStackGoal, change: &Change) {
+    if let Err(error) = running.cancel().await {
+        tracing::warn!(%error, "{} was not cancelled", change.subject());
+    }
 }
 
 /// Logs the end of a change that no call waits for any more.
@@ -472,14 +488,14 @@ mod tests {
         assert_eq!(
             addition().silent(window),
             ActionExit::Error(
-                "the daemon sent nothing for 660 s; the addition of bravo can still be running"
+                "the daemon sent nothing for 660 s; the endpoint cancelled the addition of bravo"
                     .to_owned()
             )
         );
         assert_eq!(
             removal().silent(window),
             ActionExit::Error(
-                "the daemon sent nothing for 660 s; the removal of bravo can still be running"
+                "the daemon sent nothing for 660 s; the endpoint cancelled the removal of bravo"
                     .to_owned()
             )
         );

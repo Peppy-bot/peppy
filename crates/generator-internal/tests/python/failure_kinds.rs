@@ -18,6 +18,7 @@ use crate::helpers::{
     EXPOSED_ACTION_EXAMPLE, failure_kinds, generate_test_peppygen_lib, run_python_check,
 };
 use config::consts::NODE_CONFIG_FILE;
+use config::failure_kind::MemberSection;
 use config::node::{
     Cardinality, ConsumedService, MessageFormat, NativeExposedAction, NativeExposedService,
     PeppygenLanguage,
@@ -356,10 +357,16 @@ fn arm_impl_origin() -> ContractOrigin {
         link_id: "arm_impl".to_string(),
         contract_name: "arm_actions".to_string(),
         contract_tag: "v1".to_string(),
-        failure_kinds: failure_kinds(&[
-            ("arm_reserved", "The arm of the goal is reserved"),
-            ("unreachable", "No plan to the target"),
-        ]),
+        failure_kinds: failure_kinds(
+            &[
+                ("arm_reserved", "The arm of the goal is reserved"),
+                ("unreachable", "No plan to the target"),
+            ],
+            &[
+                (MemberSection::Action, "move_arm"),
+                (MemberSection::Action, "park_arm"),
+            ],
+        ),
     }
 }
 
@@ -408,7 +415,10 @@ fn python_members_give_and_take_their_declared_kinds_only() {
                 "v1",
                 "lens",
                 Cardinality::One,
-                failure_kinds(&[("lens_covered", "Something covers the lens")]),
+                failure_kinds(
+                    &[("lens_covered", "Something covers the lens")],
+                    &[(MemberSection::Service, "check_lens")],
+                ),
             ),
         ),
     ];

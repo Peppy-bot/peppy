@@ -301,11 +301,11 @@ from peppygen.consumed_actions.brain import plan_motion
 pending = await h.mocks.deps.brain.plan_motion.next_goal(10.0)
 assert pending.request.arm_id == 7
 
-active = await pending.accept(plan_motion.GoalResponseData(accepted=True))
+active = await pending.accept(plan_motion.GoalResponseData(planner="rrt"))
 # or: await pending.refuse(plan_motion.FailureKind.REJECTED, "busy")
 
 await active.publish_feedback(plan_motion.FeedbackMessage(progress=0.5))
-await active.complete(plan_motion.ResultResponseData(success=True))
+await active.complete(plan_motion.ResultResponseData(waypoint_count=12))
 # or: await active.fail(plan_motion.FailureKind.ATTEMPT_FAILED, "no plan")
 ```
   </TabItem>
@@ -322,11 +322,13 @@ let pending = mocks
     .await?;
 assert_eq!(pending.request.arm_id, 7);
 
-let active = pending.accept(plan_motion::GoalResponseData::new(true)).await?;
+let active = pending
+    .accept(plan_motion::GoalResponseData::new("rrt".to_owned()))
+    .await?;
 // or: pending.refuse(plan_motion::FailureKind::Rejected, "busy").await?;
 
 active.publish_feedback(&plan_motion::FeedbackMessage { progress: 0.5 }).await?;
-active.complete(&plan_motion::ResultResponseData::new(true)).await?;
+active.complete(&plan_motion::ResultResponseData::new(12)).await?;
 // or: active.fail(plan_motion::FailureKind::AttemptFailed, "no plan").await?;
 ```
   </TabItem>
@@ -534,7 +536,7 @@ feedback = await goal.on_next_feedback()
 assert feedback.progress > 0.0
 result = await goal.get_result(10.0)
 assert result.status == move_arm.ResultStatus.COMPLETED
-assert result.data.success
+assert result.data.distance_mm == 120
 ```
   </TabItem>
   <TabItem label="Rust">
@@ -555,7 +557,7 @@ assert!(feedback.progress > 0.0);
 let result = goal.get_result(Duration::from_secs(10)).await?;
 assert!(matches!(
     result.outcome,
-    move_arm::ResultOutcome::Completed(move_arm::ResultData { success: true })
+    move_arm::ResultOutcome::Completed(move_arm::ResultData { distance_mm: 120 })
 ));
 ```
   </TabItem>
@@ -571,7 +573,7 @@ Every mock owns one messaging session, so `stop()` is a whole-producer loss: eve
   <TabItem label="Python">
 ```python
 pending = await h.mocks.deps.brain.plan_motion.next_goal(10.0)
-active = await pending.accept(plan_motion.GoalResponseData(accepted=True))
+active = await pending.accept(plan_motion.GoalResponseData(planner="rrt"))
 
 # The producer dies with the goal still active. The node's
 # on_next_feedback_message raises ConnectionError: not a clean
@@ -592,7 +594,9 @@ let pending = mocks
     .plan_motion
     .next_goal(Duration::from_secs(10))
     .await?;
-let _active = pending.accept(plan_motion::GoalResponseData::new(true)).await?;
+let _active = pending
+    .accept(plan_motion::GoalResponseData::new("rrt".to_owned()))
+    .await?;
 
 // The producer dies with the goal still active. The node's
 // on_next_feedback_message returns

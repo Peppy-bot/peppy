@@ -23,8 +23,8 @@ use peppy_mcp_runtime::{
 use peppylib::PeppyError;
 use peppylib::config::{QoSProfile, TopicRetention};
 use peppylib::messaging::{
-    CancelState, DEFAULT_FEEDBACK_BOUND, Failure, FeedbackBound, MessengerHandle, ProducerRef,
-    SenderTarget,
+    CancelOnDrop, CancelState, DEFAULT_FEEDBACK_BOUND, Failure, FeedbackBound, MessengerHandle,
+    ProducerRef, SenderTarget,
 };
 use peppylib::runtime::NodeRunner;
 use serde_json::Value;
@@ -561,18 +561,22 @@ pub(crate) async fn run_task(
 /// provider ended it with (see [`terminal_state`]). A goal that the
 /// provider refuses or fails carries its failure kind and message.
 ///
-/// The server's node is the sender of the goal: the provider ends the goal
-/// when the server stops. The bridge sends a cancel only for the client's
-/// cancel: `tasks/cancel` on a task, or the close of the call the goal runs
-/// in. A deadline, a progress window that goes by in silence, and a task's
-/// connection that closes send no cancel.
+/// The server's node is the sender of the goal, and the server outlives
+/// every call: so the bridge sends the provider a cancel whenever it stops
+/// following the goal before the goal ended, and at most one cancel. The
+/// client cancels the goal with `tasks/cancel` on a task, or by closing the
+/// call the goal runs in. A deadline, a progress window that goes by in
+/// silence, the TTL of a task and the stop of the endpoint end the follow:
+/// the cancel then goes out as the follow ends, also when the runtime drops
+/// the bridge's future (see [`FollowedGoal`]). A task's connection that
+/// closes ends nothing.
 ///
 /// The bridge reads the next feedback message of the goal once the client
 /// took the one before (see [`TaskSurface::report_feedback`]). The goal's
 /// handle keeps up to `task.feedback_bound` unread feedback messages. A
 /// client that falls further behind loses the stream: the handle cancels
-/// the goal, the bridge follows it to its end so that the cancel goes out,
-/// and the call fails with the loss (see [`feedback_overflowed`]).
+/// the goal, the bridge follows it to its end, and the call fails with the
+/// loss (see [`feedback_overflowed`]).
 ///
 /// The tool's bound decides how long the bridge follows the goal:
 ///
@@ -580,17 +584,17 @@ pub(crate) async fn run_task(
 ///   is fired, never restarted: a provider that keeps sending feedback, or
 ///   a cancel that takes its own time, cannot push the bridge past the
 ///   deadline the tool advertises. At the deadline the bridge stops
-///   following the goal and sends no cancel.
+///   following the goal.
 /// - A progress window bounds the silence, not the work: the goal may run
 ///   as long as it keeps showing signs of progress, and goes at most one
 ///   window without one (see [`follow_progress`]).
 ///
 /// Under either bound, the admission of the goal is the first wait, and it
 /// is bounded too: by the whole deadline, or by one window. When it runs
-/// out, the goal fails with the admission error and no cancel is sent: the
-/// bridge has no handle on a goal the provider has not admitted yet. A
-/// provider that admits the goal after that runs it with no one following
-/// it, until it ends or the provider cancels it for a reason of its own.
+/// out, the goal fails with the admission error. The bridge has no handle
+/// on a goal whose admission it did not read: peppylib cancels the goal of
+/// a request that its provider acknowledged and did not answer in time,
+/// and a request that reached no provider started no goal.
 pub(crate) async fn drive_goal(
     task: &PreparedTask,
     messenger: &MessengerHandle,
@@ -607,7 +611,7 @@ pub(crate) async fn drive_goal(
         GoalFollow::WholeGoal { deadline, .. } => deadline,
         GoalFollow::Progress { window } => window,
     };
-    let mut handle = task
+    let handle = task
         .client
         .fire_goal(
             messenger,
@@ -623,6 +627,7 @@ pub(crate) async fn drive_goal(
     if let Some(refusal) = handle.refusal() {
         return Err(ActionExit::Refused(provider_failure(refusal)));
     }
+    let mut goal = FollowedGoal::new(handle, messenger);
 
     match task.follow {
         GoalFollow::WholeGoal {
@@ -631,17 +636,70 @@ pub(crate) async fn drive_goal(
         } => {
             let remaining = || deadline.saturating_sub(started.elapsed());
             let outcome = if reports_feedback {
-                settle_after_feedback(&mut handle, messenger, surface, &remaining).await
+                settle_after_feedback(&mut goal, surface, &remaining).await
             } else {
-                settle_on_result(&handle, messenger, surface, &remaining)
+                settle_on_result(&mut goal, surface, &remaining)
                     .await
                     .map_err(failed)
             }?;
             terminal_state(outcome)
         }
-        GoalFollow::Progress { window } => {
-            follow_progress(&mut handle, messenger, surface, window).await
+        GoalFollow::Progress { window } => follow_progress(&mut goal, surface, window).await,
+    }
+}
+
+/// A goal the bridge follows, which sends its provider one cancel at most.
+/// The cancel goes out when the bridge sends it for its client, when a read
+/// of the goal's feedback finds that the bridge fell behind, or when the
+/// follow ends before the bridge read the end of the goal: the guard of the
+/// goal sends it from a task of its own as it is dropped, so no goal runs
+/// on with no one following it.
+struct FollowedGoal<'m> {
+    handle: GoalHandle,
+    messenger: &'m MessengerHandle,
+    stop_cancel: CancelOnDrop,
+}
+
+impl<'m> FollowedGoal<'m> {
+    fn new(handle: GoalHandle, messenger: &'m MessengerHandle) -> Self {
+        let stop_cancel = handle.cancel_on_drop("the endpoint stopped following the goal");
+        Self {
+            handle,
+            messenger,
+            stop_cancel,
         }
+    }
+
+    fn goal_id(&self) -> &str {
+        self.handle.goal_id()
+    }
+
+    /// The next step of the goal's feedback stream (see
+    /// [`next_feedback_step`]). The handle cancels a goal whose feedback
+    /// overflowed itself.
+    async fn next_feedback_step(&mut self) -> FeedbackStep {
+        let step = next_feedback_step(&mut self.handle).await;
+        if let FeedbackStep::Overflowed { .. } = step {
+            self.stop_cancel.disarm();
+        }
+        step
+    }
+
+    /// Requests the goal's end, waiting at most `deadline`. The end read,
+    /// the goal needs no cancel.
+    async fn result(&mut self, deadline: Duration) -> Result<GoalOutcome, ConsumerError> {
+        let outcome = self.handle.result(self.messenger, deadline).await;
+        if outcome.is_ok() {
+            self.stop_cancel.disarm();
+        }
+        outcome
+    }
+
+    /// Sends the provider the cancel of the bridge's client, waiting at
+    /// most `deadline` for its answer. It is the one cancel of the goal.
+    async fn cancel(&mut self, deadline: Duration) -> Result<CancelState, ConsumerError> {
+        self.stop_cancel.disarm();
+        self.handle.cancel(self.messenger, deadline).await
     }
 }
 
@@ -718,20 +776,18 @@ async fn next_feedback_step(handle: &mut GoalHandle) -> FeedbackStep {
 }
 
 /// Follows a goal whose feedback overflowed `bound` to its end, within
-/// `deadline`, and fails it with the loss. The handle cancelled the goal
-/// itself; holding the handle until the provider ends the goal lets that
-/// cancel go out. How the goal ended does not change the failure: the
-/// client lost feedback it was owed.
+/// `deadline`, and fails it with the loss. The handle cancelled the goal.
+/// How the goal ended does not change the failure: the client lost feedback
+/// it was owed.
 async fn end_overflowed_goal(
-    handle: &GoalHandle,
-    messenger: &MessengerHandle,
+    goal: &mut FollowedGoal<'_>,
     bound: usize,
     deadline: Duration,
 ) -> ActionExit {
-    if let Err(error) = handle.result(messenger, deadline).await {
+    if let Err(error) = goal.result(deadline).await {
         tracing::warn!(
             %error,
-            goal_id = handle.goal_id(),
+            goal_id = goal.goal_id(),
             "the end of a goal whose feedback overflowed is unknown; the provider may still run it"
         );
     }
@@ -745,8 +801,7 @@ async fn end_overflowed_goal(
 /// disappears), then the result reply decides the outcome. A stream that
 /// overflows fails the goal (see [`end_overflowed_goal`]).
 async fn settle_after_feedback(
-    handle: &mut GoalHandle,
-    messenger: &MessengerHandle,
+    goal: &mut FollowedGoal<'_>,
     surface: &impl TaskSurface,
     remaining: &impl Fn() -> Duration,
 ) -> Result<GoalOutcome, ActionExit> {
@@ -760,14 +815,14 @@ async fn settle_after_feedback(
         if cancel_pending {
             cancel_pending = false;
             cancel_forwarded = true;
-            let _ = handle.cancel(messenger, remaining()).await;
+            let _ = goal.cancel(remaining()).await;
         }
         tokio::select! {
             _ = &mut expiry => break,
             _ = surface.cancel_requested(), if !cancel_forwarded => {
                 cancel_pending = true;
             }
-            step = next_feedback_step(handle) => match step {
+            step = goal.next_feedback_step() => match step {
                 FeedbackStep::Message(message) => tokio::select! {
                     () = surface.report_feedback(message) => {}
                     _ = &mut expiry => break,
@@ -775,12 +830,12 @@ async fn settle_after_feedback(
                 FeedbackStep::Skipped => {}
                 FeedbackStep::Ended => break,
                 FeedbackStep::Overflowed { bound } => {
-                    return Err(end_overflowed_goal(handle, messenger, bound, remaining()).await);
+                    return Err(end_overflowed_goal(goal, bound, remaining()).await);
                 }
             }
         }
     }
-    handle.result(messenger, remaining()).await.map_err(failed)
+    goal.result(remaining()).await.map_err(failed)
 }
 
 /// Settles a goal on a feedback-less action under a whole-goal deadline:
@@ -789,19 +844,30 @@ async fn settle_after_feedback(
 /// reply decides the outcome. The request stays parked while a cancel is
 /// forwarded; the provider settling the goal cancelled is what answers it.
 async fn settle_on_result(
-    handle: &GoalHandle,
-    messenger: &MessengerHandle,
+    goal: &mut FollowedGoal<'_>,
     surface: &impl TaskSurface,
     remaining: &impl Fn() -> Duration,
 ) -> Result<GoalOutcome, ConsumerError> {
+    let FollowedGoal {
+        handle,
+        messenger,
+        stop_cancel,
+    } = goal;
+    let (handle, messenger) = (&*handle, *messenger);
     let result = handle.result(messenger, remaining());
     tokio::pin!(result);
     let mut cancel_forwarded = false;
     loop {
         tokio::select! {
-            outcome = &mut result => return outcome,
+            outcome = &mut result => {
+                if outcome.is_ok() {
+                    stop_cancel.disarm();
+                }
+                return outcome;
+            }
             _ = surface.cancel_requested(), if !cancel_forwarded => {
                 cancel_forwarded = true;
+                stop_cancel.disarm();
                 let _ = handle.cancel(messenger, remaining()).await;
             }
         }
@@ -841,14 +907,14 @@ impl Silence {
     }
 }
 
-/// The failure of a goal that went `window` without a sign of progress. The
-/// bridge sends no cancel for a silence: a goal that has no cancel of the
-/// client can still be running, and a goal that has one did not answer it.
+/// The failure of a goal that went `window` without a sign of progress. A
+/// goal with no cancel of the client gets the bridge's cancel as the
+/// follow ends (see [`FollowedGoal`]); a goal with one did not answer it.
 fn went_silent(window: Duration, cancel_sent: bool) -> ActionExit {
     let what = if cancel_sent {
         "a cancel was sent and the provider did not answer it"
     } else {
-        "the endpoint sent no cancel, and the goal can still be running"
+        "the endpoint stopped following the goal and cancelled it"
     };
     ActionExit::Error(format!(
         "no progress within {} ms; {what}",
@@ -897,12 +963,11 @@ fn after_cancel(
 /// and reads its reply (see [`after_cancel`]). The round trip is bounded by
 /// one window.
 async fn cancel_goal(
-    handle: &GoalHandle,
-    messenger: &MessengerHandle,
+    goal: &mut FollowedGoal<'_>,
     window: Duration,
 ) -> Result<AfterCancel, ActionExit> {
-    let reply = handle.cancel(messenger, window).await;
-    after_cancel(reply, handle.goal_id())
+    let reply = goal.cancel(window).await;
+    after_cancel(reply, goal.goal_id())
 }
 
 /// Follows a goal bounded by its progress, `window` at a time. The signs of
@@ -918,30 +983,30 @@ async fn cancel_goal(
 /// all the same (see [`next_turn`]).
 ///
 /// When a window goes by without a sign of progress, the follow ends with
-/// a failure that says so (see [`went_silent`]), and the bridge sends no
-/// cancel: the goal runs on until its provider ends it. The bridge sends
-/// the provider one cancel at most, for its client, and keeps following
-/// the goal under the same rule to learn how it ended. The cancel round
-/// trip is bounded by one window while the silence keeps running: a cancel
-/// acknowledgement is no progress of the goal. The reply to the cancel is
-/// read (see [`after_cancel`]): a goal that had already ended has its
-/// result read at once, since the end of its stream is the one sign that
-/// did not come through. A stream that overflows fails the goal (see
-/// [`end_overflowed_goal`]), the end of the goal read within one window.
+/// a failure that says so (see [`went_silent`]), and the provider gets the
+/// bridge's cancel as the follow ends. The bridge sends the provider one
+/// cancel at most: when its client cancels, the bridge sends it and keeps
+/// following the goal under the same rule to learn how it ended. The
+/// cancel round trip is bounded by one window while the silence keeps
+/// running: a cancel acknowledgement is no progress of the goal. The reply
+/// to the cancel is read (see [`after_cancel`]): a goal that had already
+/// ended has its result read at once, since the end of its stream is the
+/// one sign that did not come through. A stream that overflows fails the
+/// goal (see [`end_overflowed_goal`]), the end of the goal read within one
+/// window.
 async fn follow_progress(
-    handle: &mut GoalHandle,
-    messenger: &MessengerHandle,
+    goal: &mut FollowedGoal<'_>,
     surface: &impl TaskSurface,
     window: Duration,
 ) -> Result<Value, ActionExit> {
     let mut silence = Silence::new(window);
     let mut cancel_sent = false;
     loop {
-        let feedback = next_feedback_step(handle);
+        let feedback = goal.next_feedback_step();
         match next_turn(&mut silence, surface, !cancel_sent, feedback).await {
             Turn::CancelRequested => {
                 cancel_sent = true;
-                match cancel_goal(handle, messenger, window).await? {
+                match cancel_goal(goal, window).await? {
                     AfterCancel::KeepFollowing => {}
                     AfterCancel::ReadTheResult => break,
                 }
@@ -953,12 +1018,12 @@ async fn follow_progress(
             Turn::Feedback(FeedbackStep::Skipped) => silence.restart(),
             Turn::Feedback(FeedbackStep::Ended) => break,
             Turn::Feedback(FeedbackStep::Overflowed { bound }) => {
-                return Err(end_overflowed_goal(handle, messenger, bound, window).await);
+                return Err(end_overflowed_goal(goal, bound, window).await);
             }
             Turn::Silence => return Err(went_silent(window, cancel_sent)),
         }
     }
-    let outcome = handle.result(messenger, window).await.map_err(failed)?;
+    let outcome = goal.result(window).await.map_err(failed)?;
     terminal_state(outcome)
 }
 

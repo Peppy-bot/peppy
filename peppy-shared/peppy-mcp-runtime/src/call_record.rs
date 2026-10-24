@@ -25,14 +25,35 @@ use std::time::{Duration, UNIX_EPOCH};
 /// arguments are kept as their size alone.
 const ARGUMENTS_KEPT_BYTES: u64 = 1024;
 
-/// What a recording that is dropped while its call runs says. The task
-/// manager drops the operation of a task, and the recording with it, when
-/// the TTL of the task passes. That is no cancel: the endpoint stops
-/// following the goal and the goal runs on. The manager also drops the
-/// operations of its tasks when the endpoint stops, after which no client
-/// reads the record.
-const EXPIRED_BEFORE_ITS_END: &str =
-    "the task expired before its goal ended; the endpoint did not cancel the goal";
+/// What a call is when its recording is dropped while it runs, which
+/// decides what its entry says. The task manager drops the operation of a
+/// task, and the recording with it, when the TTL of the task passes. The
+/// runtime drops the handler of a call, and the operations of every task,
+/// only when the endpoint stops, after which no client reads the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DroppedCall {
+    /// A call: of a service tool, or of an action that runs inside it.
+    Call,
+    /// A task whose goal did not start: it waited for its confirmation.
+    TaskBeforeItsGoal,
+    /// A task whose goal runs. The bridge whose future is dropped stops
+    /// following the goal and cancels it (see
+    /// [`TaskHandler`](crate::TaskHandler)).
+    TaskWithItsGoal,
+}
+
+impl DroppedCall {
+    /// What the entry of a call dropped while it runs says.
+    fn message(self) -> &'static str {
+        match self {
+            Self::Call => "the endpoint stopped before the call ended",
+            Self::TaskBeforeItsGoal => "the task expired before its goal started",
+            Self::TaskWithItsGoal => {
+                "the task expired before its goal ended; the endpoint cancelled the goal"
+            }
+        }
+    }
+}
 
 /// How a recorded call stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -179,13 +200,15 @@ impl CallRecord {
             .with_raw_output_schema(Arc::new(output))
     }
 
-    /// Records the start of a call and hands back what ends it. The oldest
+    /// Records the start of a call, which is `dropped` when its recording
+    /// is dropped before it ends, and hands back what ends it. The oldest
     /// entry past `keep` is dropped.
     pub(crate) fn start(
         &self,
         client: Option<ClientIdentity>,
         tool: &str,
         arguments: &JsonObject,
+        dropped: DroppedCall,
     ) -> Recording {
         let now = self.clock.now_nanos();
         let arguments_bytes = serialized_len(arguments);
@@ -212,6 +235,7 @@ impl CallRecord {
             kept: Some(Kept {
                 call,
                 clock: self.clock.clone(),
+                dropped,
             }),
         }
     }
@@ -233,7 +257,7 @@ impl CallRecord {
 /// A call from its start to its end: the entry it writes when the endpoint
 /// records it, nothing otherwise. The first end recorded stands; a
 /// recording dropped before one ends its call as failed, in the words of
-/// [`EXPIRED_BEFORE_ITS_END`].
+/// its [`DroppedCall`].
 pub(crate) struct Recording {
     kept: Option<Kept>,
 }
@@ -241,6 +265,7 @@ pub(crate) struct Recording {
 struct Kept {
     call: Arc<Mutex<RecordedCall>>,
     clock: Clock,
+    dropped: DroppedCall,
 }
 
 /// How a call ended, as its entry keeps it.
@@ -271,6 +296,14 @@ impl Recording {
     /// The call never reached the provider.
     pub(crate) fn refused(&mut self, message: String) {
         self.end(End::worded(Outcome::Refused, message));
+    }
+
+    /// The goal of the task starts: a recording dropped from now on says
+    /// that the endpoint cancelled the goal.
+    pub(crate) fn goal_started(&mut self) {
+        if let Some(kept) = &mut self.kept {
+            kept.dropped = DroppedCall::TaskWithItsGoal;
+        }
     }
 
     /// The call did not reach an end that the provider gave.
@@ -335,7 +368,9 @@ impl Recording {
 
 impl Drop for Recording {
     fn drop(&mut self) {
-        self.failed(EXPIRED_BEFORE_ITS_END.to_string());
+        if let Some(dropped) = self.kept.as_ref().map(|kept| kept.dropped) {
+            self.failed(dropped.message().to_string());
+        }
     }
 }
 
@@ -373,11 +408,17 @@ mod tests {
             client("alice"),
             "robot.move_arm",
             &object(json!({ "arm_name": "left_arm" })),
+            DroppedCall::Call,
         );
         nanos.store(1_400 * MS, Ordering::SeqCst);
         first.completed();
         nanos.store(2_000 * MS, Ordering::SeqCst);
-        let mut second = record.start(None, "robot.stop", &object(json!({ "reason": "" })));
+        let mut second = record.start(
+            None,
+            "robot.stop",
+            &object(json!({ "reason": "" })),
+            DroppedCall::Call,
+        );
 
         let answer = record.answer();
         let calls = answer["calls"].as_array().expect("calls");
@@ -427,7 +468,12 @@ mod tests {
         let (record, _) = record(2);
         for index in 0..3 {
             record
-                .start(None, &format!("tool_{index}"), &object(json!({})))
+                .start(
+                    None,
+                    &format!("tool_{index}"),
+                    &object(json!({})),
+                    DroppedCall::Call,
+                )
                 .refused("refused".into());
         }
         let answer = record.answer();
@@ -443,7 +489,7 @@ mod tests {
 
         let large = object(json!({ "text": "x".repeat(2000) }));
         record
-            .start(None, "tool_3", &large)
+            .start(None, "tool_3", &large, DroppedCall::Call)
             .failed("deadline".into());
         let answer = record.answer();
         assert_eq!(answer["calls"][0]["arguments"], Value::Null);
@@ -452,17 +498,35 @@ mod tests {
         assert_eq!(answer["calls"][0]["message"], "deadline");
     }
 
+    /// A recording dropped while its call runs ends the call failed, in the
+    /// words of what the call was: a call, a task that waited for its
+    /// confirmation, or a task whose goal ran.
     #[test]
-    fn a_recording_dropped_while_running_ends_failed_saying_the_goal_was_not_cancelled() {
-        let (record, _) = record(2);
-        let recording = record.start(None, "tool", &object(json!({})));
-        drop(recording);
-        let answer = record.answer();
-        assert_eq!(answer["calls"][0]["outcome"], "failed");
-        assert_eq!(answer["calls"][0]["failure_kind"], Value::Null);
+    fn a_recording_dropped_while_running_ends_failed_saying_what_was_dropped() {
+        let dropped_message = |dropped: DroppedCall, goal_started: bool| {
+            let (record, _) = record(2);
+            let mut recording = record.start(None, "tool", &object(json!({})), dropped);
+            if goal_started {
+                recording.goal_started();
+            }
+            drop(recording);
+            let answer = record.answer();
+            assert_eq!(answer["calls"][0]["outcome"], "failed");
+            assert_eq!(answer["calls"][0]["failure_kind"], Value::Null);
+            answer["calls"][0]["message"].clone()
+        };
+
         assert_eq!(
-            answer["calls"][0]["message"],
-            "the task expired before its goal ended; the endpoint did not cancel the goal"
+            dropped_message(DroppedCall::Call, false),
+            "the endpoint stopped before the call ended"
+        );
+        assert_eq!(
+            dropped_message(DroppedCall::TaskBeforeItsGoal, false),
+            "the task expired before its goal started"
+        );
+        assert_eq!(
+            dropped_message(DroppedCall::TaskBeforeItsGoal, true),
+            "the task expired before its goal ended; the endpoint cancelled the goal"
         );
     }
 
@@ -470,7 +534,12 @@ mod tests {
     fn entry_of(exit: Result<Value, ActionExit>) -> Value {
         let (record, _) = record(1);
         record
-            .start(None, "robot.move_arm", &object(json!({})))
+            .start(
+                None,
+                "robot.move_arm",
+                &object(json!({})),
+                DroppedCall::Call,
+            )
             .ended_by(&exit);
         record.answer()["calls"][0].clone()
     }

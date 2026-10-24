@@ -1622,14 +1622,18 @@ mod unread_feedback {
         );
     }
 
-    /// A caller that falls behind by more unread messages than its bound
-    /// loses the stream: its next read is the overflow error, and it cancels
-    /// the goal, which the provider sees as a cancel of its caller.
+    /// A caller that reads its feedback and falls behind by more unread
+    /// messages than its bound loses the stream: the handle cancels the
+    /// goal, which the provider sees as a cancel of its caller, and the read
+    /// is the overflow error. Over the mock adapter a publish reaches the
+    /// caller's buffer before it returns, so the flood has overflowed the
+    /// buffer before the first read, which cancels the goal at once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_caller_that_falls_behind_its_bound_cancels_the_goal_and_learns_of_the_loss() {
         const BOUND: usize = 16;
         let (client, _messenger) = get_client_server().await;
         let handle = client.caller_handle;
+        let (flooded_tx, flooded) = tokio::sync::oneshot::channel();
         let mut engine = ConcurrentAction::expose(
             &handle,
             CORE,
@@ -1657,6 +1661,7 @@ mod unread_feedback {
                     .await
                     .expect("the feedback is published");
             }
+            flooded_tx.send(()).expect("the test waits for the flood");
             goal.cancel_signal().await;
             let cause = goal.cancel_cause();
             goal.complete_cancelled("cancelled by its caller", Payload::new())
@@ -1666,11 +1671,10 @@ mod unread_feedback {
         });
 
         let mut goal = send_flood_goal(&handle, bound(BOUND)).await;
-        let (cause, _engine) = tokio::time::timeout(HANG_GUARD, provider)
+        tokio::time::timeout(HANG_GUARD, flooded)
             .await
-            .expect("the overflow must cancel the goal")
-            .expect("the provider task ends");
-        assert_eq!(cause, Some(peppylib::messaging::CancelCause::Caller));
+            .expect("the provider must not wait for the reader")
+            .expect("the provider reports the flood");
         match goal.on_next_feedback().await {
             Err(PeppyError::ActionFeedbackOverflow {
                 instance_id,
@@ -1683,6 +1687,11 @@ mod unread_feedback {
             }
             other => panic!("expected the overflow error, got {other:?}"),
         }
+        let (cause, _engine) = tokio::time::timeout(HANG_GUARD, provider)
+            .await
+            .expect("the read must cancel the goal")
+            .expect("the provider task ends");
+        assert_eq!(cause, Some(peppylib::messaging::CancelCause::Caller));
         assert!(matches!(
             goal.try_next_feedback(),
             Err(PeppyError::ActionFeedbackOverflow { .. })

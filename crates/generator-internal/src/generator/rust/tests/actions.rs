@@ -801,13 +801,23 @@ fn consumed_action_via_contract_origin_targets_contract() {
     );
 }
 
-/// The `failure_kinds` block of the contract a consumed action comes from,
-/// for the tests that check the kinds of a contract member.
-fn reach_failure_kinds() -> config::failure_kind::ContractFailureKinds {
-    config::failure_kind::ContractFailureKinds::new([(
-        config::failure_kind::FailureKindName::parse("unreachable").unwrap(),
-        "No plan to the target".to_string(),
-    )])
+/// The kinds of the contract a consumed action comes from, for the tests
+/// that check the kinds of a contract member: its `move_arm` lists
+/// `unreachable`.
+fn reach_failure_kinds() -> config::failure_kind::ContractKinds {
+    let unreachable = config::failure_kind::FailureKindName::parse("unreachable").unwrap();
+    config::failure_kind::ContractKinds::new(
+        config::failure_kind::ContractFailureKinds::new([(
+            unreachable.clone(),
+            "No plan to the target".to_string(),
+        )])
+        .unwrap(),
+        [(
+            config::failure_kind::MemberSection::Action,
+            "move_arm".to_owned(),
+            vec![unreachable],
+        )],
+    )
     .unwrap()
 }
 

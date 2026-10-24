@@ -77,16 +77,16 @@ fn the_stack_copies_members_are_the_members_of_its_document() {
 }
 
 /// `stack_copies:v1` declares each kind of the daemon that is not a kind of
-/// peppy, with the meaning the daemon gives it, so its members can give
-/// every kind of the daemon and no other.
+/// peppy, with the meaning the daemon gives it, so `join` and `remove` can
+/// give every kind of the daemon and no other.
 #[test]
 fn stack_copies_declares_the_kinds_of_the_daemon_beyond_peppy() {
-    use config::failure_kind::{MemberFailureKinds, PeppyFailureKind};
+    use config::failure_kind::{MemberFailureKinds, MemberSection, PeppyFailureKind};
     use core_node_api::DaemonFailureKind;
 
-    let declared: Vec<(&str, &str)> = DaemonInterface::StackCopies
-        .document()
-        .failure_kinds
+    let kinds = &DaemonInterface::StackCopies.document().failure_kinds;
+    let declared: Vec<(&str, &str)> = kinds
+        .declared()
         .iter()
         .map(|(name, meaning)| (name.as_str(), meaning))
         .collect();
@@ -98,15 +98,18 @@ fn stack_copies_declares_the_kinds_of_the_daemon_beyond_peppy() {
     assert_eq!(declared, daemon_own);
     assert_eq!(declared, [("busy", DaemonFailureKind::Busy.meaning())]);
 
-    let members = MemberFailureKinds::of_contract(
-        DaemonInterface::StackCopies
-            .document()
-            .failure_kinds
-            .clone(),
-    );
+    // `join` and `remove` give every kind of the daemon; `list` gives the
+    // kinds of peppy only.
+    let join = kinds.of(MemberSection::Action, "join");
+    let remove = kinds.of(MemberSection::Action, "remove");
     for kind in DaemonFailureKind::ALL {
-        assert!(members.allows(kind.name()), "{kind}");
+        assert!(join.allows(kind.name()), "{kind}");
+        assert!(remove.allows(kind.name()), "{kind}");
     }
+    assert_eq!(
+        kinds.of(MemberSection::Service, "list"),
+        MemberFailureKinds::peppy_only()
+    );
 
     // The catalog binds `stack.join` and `stack.remove` of the design's
     // exposure to these kinds.
@@ -119,10 +122,7 @@ fn stack_copies_declares_the_kinds_of_the_daemon_beyond_peppy() {
         .tasks()
         .map(|(entry, bound)| (entry.name.as_str(), &bound.failure_kinds))
         .collect();
-    assert_eq!(
-        bound,
-        [("stack.join", &members), ("stack.remove", &members)]
-    );
+    assert_eq!(bound, [("stack.join", &join), ("stack.remove", &remove)]);
 }
 
 #[test]

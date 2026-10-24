@@ -119,9 +119,9 @@ fn result_codec() -> MessageCodec {
 const UNREACHABLE: &str = "unreachable";
 
 /// The kinds the gripper's member can give: the kinds of peppy, and
-/// [`UNREACHABLE`] that its contract declares.
+/// [`UNREACHABLE`], a kind of its contract that it lists.
 fn gripper_failure_kinds() -> MemberFailureKinds {
-    MemberFailureKinds::of_contract(
+    MemberFailureKinds::of_member(
         ContractFailureKinds::new([(kind(UNREACHABLE), "No plan to the width".to_owned())])
             .expect("a valid failure_kinds block"),
     )
@@ -434,14 +434,14 @@ impl ProgressGoal {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_whole_goal_deadline_is_not_pushed_back_by_feedback() {
+async fn a_whole_goal_deadline_is_not_pushed_back_by_feedback_and_cancels_the_goal() {
     let (mesh, mut provider) = mesh(true).await;
     let surface = Arc::new(ScriptedSurface::new());
     let whole_goal = GoalFollow::WholeGoal {
         deadline: WINDOW,
         reports_feedback: true,
     };
-    let bridge = drive_paused(
+    let mut bridge = drive_paused(
         &mesh,
         task_with_feedback(&mesh, whole_goal),
         Arc::clone(&surface),
@@ -456,15 +456,37 @@ async fn a_whole_goal_deadline_is_not_pushed_back_by_feedback() {
         bridge.advance(WITHIN_THE_WINDOW).await;
     }
 
-    let outcome = bridge.outcome().await;
+    let outcome = bridge.ended().await;
     assert!(
         matches!(outcome, Err(ActionExit::Error(_))),
         "the deadline fails the goal: {outcome:?}"
     );
-    assert!(
-        !context.is_cancelled(),
-        "a whole-goal deadline sends the provider no cancel"
-    );
+    // The bridge stopped following the goal, so the provider gets a cancel.
+    cancel_seen(&context).await;
+}
+
+/// The runtime drops the future of a bridge whose goal outlasts its
+/// whole-goal deadline or the TTL of its task: the provider then gets a
+/// cancel, so the goal does not run on with no one following it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bridge_dropped_while_it_follows_its_goal_cancels_the_goal() {
+    let (mesh, mut provider) = mesh(true).await;
+    let task = prepared_task(&mesh, Some(percent_codec()));
+    let surface = ScriptedSurface::new();
+    let mut bridge = Box::pin(drive(&mesh, &task, &surface));
+
+    let context = tokio::select! {
+        outcome = &mut bridge => panic!("the goal runs until the bridge is dropped: {outcome:?}"),
+        context = async {
+            let context = accepted_goal(&mut provider).await;
+            surface.followed().await;
+            context
+        } => context,
+    };
+    assert!(!context.is_cancelled(), "the bridge follows the goal");
+    drop(bridge);
+
+    cancel_seen(&context).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -544,29 +566,21 @@ async fn a_goal_that_keeps_reporting_progress_runs_past_one_window() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_goal_silent_for_one_window_fails_the_call_and_gets_no_cancel() {
+async fn a_goal_silent_for_one_window_fails_the_call_and_gets_a_cancel() {
     let (mesh, mut provider) = mesh(true).await;
-    let goal = ProgressGoal::reporting(&mesh, &mut provider).await;
+    let mut goal = ProgressGoal::reporting(&mesh, &mut provider).await;
 
     goal.bridge.advance(WINDOW).await;
 
     assert_eq!(
-        goal.bridge.outcome().await,
+        goal.bridge.ended().await,
         Err(ActionExit::Error(
-            "no progress within 60000 ms; the endpoint sent no cancel, and the goal can still \
-             be running"
+            "no progress within 60000 ms; the endpoint stopped following the goal and \
+             cancelled it"
                 .to_owned()
         ))
     );
-    assert!(
-        !goal.context.is_cancelled(),
-        "a silence sends the provider no cancel"
-    );
-    // The goal runs on, and its provider ends it when it is done.
-    goal.context
-        .complete(reached_width())
-        .await
-        .expect("the provider completes the goal");
+    cancel_seen(&goal.context).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -710,8 +724,8 @@ async fn a_failed_goal_ends_with_the_providers_failure_kind_and_message() {
 /// with a kind that the gripper's member does not declare.
 fn undeclared_kind() -> Result<Value, ActionExit> {
     Err(ActionExit::Error(format!(
-        "the provider of `{MEMBER}` gave the failure kind `melted`, which neither peppy nor \
-         the contract of the member declares"
+        "the provider of `{MEMBER}` gave the failure kind `melted`, which is neither a kind of \
+         peppy nor a kind of its contract that the member lists"
     )))
 }
 
@@ -931,8 +945,8 @@ async fn an_error_reply_gives_the_providers_failure_kind_and_an_undeclared_kind_
         (
             Failure::new(kind("melted"), "the jaws melted"),
             ToolCallError::Error(format!(
-                "the provider of `{SERVICE}` gave the failure kind `melted`, which neither \
-                 peppy nor the contract of the member declares"
+                "the provider of `{SERVICE}` gave the failure kind `melted`, which is neither \
+                 a kind of peppy nor a kind of its contract that the member lists"
             )),
         ),
     ] {

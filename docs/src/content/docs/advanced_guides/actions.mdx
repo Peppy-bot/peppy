@@ -48,7 +48,7 @@ The server answers each goal with its acceptance or its refusal. An accepted goa
 | `abandoned` | The worker drops the goal without an end, or the producer is gone | Nothing |
 | `expired` | The goal ended, and the producer no longer keeps its result | Nothing |
 
-A refusal and a failed goal give a **failure kind** and a message for a person. The kind says why, so that the client can try again, plan again or call a person. A member gives a kind from a closed set: the kinds of peppy, and the kinds that the contract of the member declares in its [`failure_kinds` block](/advanced_guides/contract_implementation/#failure-kinds). A native action, which no contract declares, gives the kinds of peppy only:
+A refusal and a failed goal give a **failure kind** and a message for a person. The kind says why, so that the client can try again, plan again or call a person. A member gives a kind from a closed set: the kinds of peppy, and the kinds of its contract that the member lists (see [failure kinds](/advanced_guides/contract_implementation/#failure-kinds)). A native action, which no contract declares, gives the kinds of peppy only:
 
 | `failure_kind` | Meaning |
 | --- | --- |
@@ -104,11 +104,6 @@ Each action can define a `goal_service`, a `feedback_topic`, and a `result_servi
               },
               result_service: {
                 response_message_format: {
-                  success: "bool",
-                  error_msg: {
-                    $type: "string",
-                    $optional: true
-                  },
                   final_position: {
                     $type: "array",
                     $items: "i32",
@@ -162,11 +157,6 @@ Each action can define a `goal_service`, a `feedback_topic`, and a `result_servi
               },
               result_service: {
                 response_message_format: {
-                  success: "bool",
-                  error_msg: {
-                    $type: "string",
-                    $optional: true
-                  },
                   final_position: {
                     $type: "array",
                     $items: "i32",
@@ -217,7 +207,7 @@ async def drive(ctx):
     await ctx.publish_feedback([7, 31, 43])
     # Deliver the result for this specific goal; the client's
     # get_result(handle) is routed back here by goal_id.
-    await ctx.complete(True, None, [98, 4, 26])
+    await ctx.complete([98, 4, 26])
 
 
 async def run_action(node_runner):
@@ -286,7 +276,7 @@ fn main() -> Result<()> {
                     ctx.publish_feedback([7, 31, 43]).await.ok();
                     // Deliver the result for this specific goal; the client's
                     // get_result(handle) is routed back here by goal_id.
-                    ctx.complete(true, None, [98, 4, 26]).await.ok();
+                    ctx.complete([98, 4, 26]).await.ok();
                 });
             }
         });
@@ -338,7 +328,7 @@ busy: set[int] = set()
 
 async def drive(ctx):
     arm_id = ctx.request().data.arm_id
-    await ctx.complete(True, None, [98, 4, 26])
+    await ctx.complete([98, 4, 26])
     # Release the arm so future goals for it are accepted again.
     busy.discard(arm_id)
 
@@ -390,7 +380,7 @@ while let Ok(Some(ctx)) = action
     let busy = Arc::clone(&busy);
     tokio::spawn(async move {
         let arm_id = ctx.request().data.arm_id;
-        ctx.complete(true, None, [98, 4, 26]).await.ok();
+        ctx.complete([98, 4, 26]).await.ok();
         // Release the arm so future goals for it are accepted again.
         busy.lock().unwrap().remove(&arm_id);
     });
@@ -411,7 +401,7 @@ async def drive(ctx):
     if plan is None:
         await ctx.fail(move_arm.FailureKind.ATTEMPT_FAILED, "no plan to the target")
         return
-    await ctx.complete(True, None, plan.final_position)
+    await ctx.complete(plan.final_position)
 ```
   </TabItem>
   <TabItem label="Rust">
@@ -423,7 +413,7 @@ tokio::spawn(async move {
             .ok();
         return;
     };
-    ctx.complete(true, None, plan.final_position).await.ok();
+    ctx.complete(plan.final_position).await.ok();
 });
 ```
   </TabItem>
@@ -456,7 +446,7 @@ async def drive(ctx):
         outcome = work_task.result()
         for position in outcome.steps:
             await ctx.publish_feedback(position)
-        await ctx.complete(True, None, outcome.final_position)
+        await ctx.complete(outcome.final_position)
 ```
   </TabItem>
   <TabItem label="Rust">
@@ -467,7 +457,7 @@ tokio::spawn(async move {
             for position in outcome.steps {
                 ctx.publish_feedback(position).await.ok();
             }
-            ctx.complete(true, None, outcome.final_position).await.ok();
+            ctx.complete(outcome.final_position).await.ok();
         }
         _ = ctx.cancel_signal() => {
             // This goal received its cancel signal; wind down and report it.
@@ -712,7 +702,7 @@ loop {
 
 Feedback the handle has not read yet waits in the handle's buffer. The buffer keeps **every** message until the handle reads it, up to the feedback bound that you pass to `fire_goal`: a number of unread messages, `DEFAULT_FEEDBACK_BOUND` (1024) in Rust, or `feedback_bound=None` for the same default in Python. The end of the stream is always kept. Receiving never waits for the handle: feedback read late, or never, does not hold up `get_result` or any other message to the node.
 
-A handle that falls behind by more unread messages than its bound **overflows**: the buffer drops the unread messages and takes no message after them, and the handle cancels the goal itself. The next read gives the loss as an error, `ActionFeedbackOverflow` (`peppylib.FeedbackOverflowError` in Python), so a client never misses a feedback message without notice. Set a bound that holds every message your client can fall behind by, or read the feedback as it arrives.
+A handle that falls behind by more unread messages than its bound **overflows**: the buffer drops the unread messages and takes no message after them. A handle that reads the feedback follows the goal, so from its first read on the overflow cancels the goal at once, and the next read gives the loss as an error, `ActionFeedbackOverflow` (`peppylib.FeedbackOverflowError` in Python): a client never misses a feedback message without notice. A handle that never reads the feedback keeps its goal: its buffer stops at the bound, and `get_result` gives the outcome as usual. Set a bound that holds every message your client can fall behind by, or read the feedback as it arrives.
 
 Each goal has its own feedback stream, addressed by `goal_id`, so feedback for one goal never reaches another handle, even when several goals run concurrently on the same server. Three terminal errors end the drain loop:
 

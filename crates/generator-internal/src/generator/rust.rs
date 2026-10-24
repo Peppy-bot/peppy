@@ -27,6 +27,7 @@ use crate::error::{Error, Result};
 use crate::generator::naming::{
     resolve_schema_file_stem, sanitize_component, sanitize_node_display_name, to_camel_case,
 };
+use config::failure_kind::MemberSection;
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
     NativeExposedAction, NativeExposedService, TopicRetention,
@@ -345,8 +346,10 @@ impl RustGenerator {
             ///
             /// The handle keeps every feedback message until it is read, up to
             /// `feedback_bound` unread messages (`DEFAULT_FEEDBACK_BOUND` holds
-            /// 1024). A caller that falls behind by more cancels the goal, and
-            /// reads `Error::ActionFeedbackOverflow`.
+            /// 1024). A caller that reads the feedback and falls behind by more
+            /// cancels the goal, and its next read gives
+            /// `Error::ActionFeedbackOverflow`. A caller that never reads the
+            /// feedback keeps its goal.
             ///
             #(#target_selection_doc)*
             pub async fn fire_goal(
@@ -983,7 +986,7 @@ impl LanguageGenerator for RustGenerator {
         let mut service_tokens = vec![
             service_name_const,
             build_failure_items(
-                &member_failure_kinds(origin),
+                &member_failure_kinds(origin, MemberSection::Service, &service.name),
                 &quote!(SERVICE_NAME),
                 FailingMember::Service,
             ),
@@ -1027,7 +1030,7 @@ impl LanguageGenerator for RustGenerator {
         let mut helper_tokens: Vec<TokenStream> = Vec::new();
         // Free items (the failure kinds and the GoalDecision enum).
         let mut extra_items: Vec<TokenStream> = vec![build_failure_items(
-            &member_failure_kinds(origin),
+            &member_failure_kinds(origin, MemberSection::Action, &action.name),
             &quote!(ACTION_NAME),
             FailingMember::Action,
         )];
@@ -1534,7 +1537,7 @@ impl LanguageGenerator for RustGenerator {
             constants_tokens,
             bound_producer_accessor_fn,
             build_failure_items(
-                &dependency.member_failure_kinds(),
+                &dependency.member_failure_kinds(MemberSection::Service, &service.name),
                 &quote!(SERVICE_NAME),
                 FailingMember::Service,
             ),
@@ -1739,7 +1742,7 @@ impl LanguageGenerator for RustGenerator {
             constants_tokens,
             bound_producer_accessor_fn,
             build_failure_items(
-                &dependency.member_failure_kinds(),
+                &dependency.member_failure_kinds(MemberSection::Action, &action.name),
                 &quote!(TARGET_ACTION_NAME),
                 FailingMember::Action,
             ),
