@@ -360,10 +360,11 @@ reservation is machine-wide while it lasts. A reserved daemon refuses local
 too, naming the launch and coordinator holding it, and `peppy stack list` shows a `Reserved for launch ...` line
 naming the exact reset command that clears it.
 
-A reservation is a lease on the coordinator's presence in the federation: a
-coordinator that disappears frees the machines it held rather than leaving them
-wedged. A coordinator's own next launch also takes over its own stale
-reservation, so a lost release never blocks the machine that made it.
+A reservation lasts while its coordinator is present in the federation, and
+ends when its coordinator is gone: a coordinator that disappears frees the
+machines it held rather than leaving them wedged. A coordinator's own next
+launch also takes over its own stale reservation, so a lost release never
+blocks the machine that made it.
 
 A participant restarts its own instances under their [restart
 policy](/guides/launch_files/#restart-policy) while the coordinator is

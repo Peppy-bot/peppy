@@ -462,8 +462,9 @@ pub(in crate::services::stack) enum SliceBegin {
 /// This is the first destructive step of a federated launch on any machine, and
 /// it happens only once every participant is reserved. A refusal here is
 /// returned rather than retried: the reservation makes it nearly impossible
-/// (this coordinator holds each machine), so a refusal means the peer's lease
-/// lapsed or the network dropped, and continuing would build half a topology.
+/// (this coordinator holds each machine), so a refusal means the peer's
+/// reservation ended or the network dropped, and continuing would build half a
+/// topology.
 ///
 /// A participant that had to create one of those sources says so, and the line
 /// is relayed here attributed to its machine: an auto-created bind source is
