@@ -22,6 +22,12 @@
 # after attempt 1 or 2 of the run, and a re-run by hand is also an attempt. So
 # each RunsOn label of the workflows adds spot=false from attempt 3, and AWS
 # cannot interrupt a job that RunsOn does not run again.
+#
+# Both runners ask for spot with the capacity-optimized allocation strategy:
+# in each request, AWS picks the spot pool with the most free capacity, which
+# is the pool that it is least likely to interrupt, and not the cheapest pool.
+# An interrupted job loses its work and waits for the end of the run before
+# RunsOn runs it again, which costs more than a pool at a higher spot price.
 runners:
   # The org runner, copied verbatim.
   peppy-ci-ubuntu-24.04-x86_64:
@@ -30,7 +36,7 @@ runners:
     volume: 100gb:gp3
     family: ["c5", "m6i", "c6i", "m4", "m5", "c7i", "m7i"]
     image: peppy-ubuntu24            # custom Peppy AMI (org config)
-    spot: price-capacity-optimized
+    spot: capacity-optimized
     tags:
       - Environment:shared
       - Stack:github-action-runners
@@ -54,7 +60,7 @@ runners:
     family: ["c8g", "c7g", "m8g", "m7g"]
     image: peppy-ubuntu24-aarch64    # custom Peppy AMI (org config)
     volume: 150gb:gp3:500mbs:6000iops
-    spot: price-capacity-optimized
+    spot: capacity-optimized
     tags:
       - Environment:shared
       - Stack:github-action-runners
