@@ -715,8 +715,10 @@ mod tests {
         let coordinator_alone = BTreeSet::from(["cn-robot".to_string()]);
         let both = BTreeSet::from(["cn-robot".to_string(), "cn-cloud".to_string()]);
 
-        let refusal =
-            check_hosts_live(&alpha, &slots(), &placements, &coordinator_alone).unwrap_err();
+        let refusal = check_hosts_live(&alpha, &slots(), &placements, &coordinator_alone)
+            .unwrap_err()
+            .failure()
+            .clone();
         assert_eq!(
             refusal.kind().as_str(),
             PeppyFailureKind::ResourceUnavailable.name()
@@ -743,8 +745,8 @@ mod tests {
                            or join an option whose fragments do not add to that slot";
 
         let refusal_of = |graph| {
-            let failure =
-                check_grown_slots_running("cn-robot", graph, &slots, &on_robot).unwrap_err();
+            let stop = check_grown_slots_running("cn-robot", graph, &slots, &on_robot).unwrap_err();
+            let failure = stop.failure();
             (
                 failure.kind().as_str().to_string(),
                 failure.message().to_string(),

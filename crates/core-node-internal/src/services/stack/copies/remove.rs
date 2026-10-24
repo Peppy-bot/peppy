@@ -30,6 +30,7 @@ use super::{
     plan::{planned_from, selected_instances},
     stack_list_on,
 };
+use crate::services::action_loop::WorkStop;
 use crate::services::node::{named_instances, stop_named_instance};
 use crate::services::response::rephrased;
 use config::runtime::{CopyName, Name};
@@ -56,9 +57,9 @@ pub fn copy_removal_budget(shutdown_grace_secs: u64, instances: usize) -> Durati
 /// machine that is off the federation stay for that machine's `stack
 /// reset`, and the copy leaves the record too.
 ///
-/// A cancel stops the removal before its next stop, as a stop that fails
-/// does: the copy stays in the record, and `stack remove` stops what is
-/// left of it.
+/// A cancel stops the removal before its first change to a machine and
+/// before its next stop, as a stop that fails does: the copy stays in the
+/// record, and `stack remove` stops what is left of it.
 pub(in crate::services::stack) async fn remove(
     goal: StackRemoveGoal,
     ctx: StackChangeContext,
@@ -115,9 +116,7 @@ async fn remove_inner(
             &copies,
         );
         if !consumers.is_empty() {
-            return Err(precondition_failed(
-                consumers.refusal(name, &removed_domains),
-            ));
+            return Err(precondition_failed(consumers.refusal(name, &removed_domains)).into());
         }
     }
     let ValidatedPlan {
@@ -158,6 +157,9 @@ async fn remove_inner(
         .partition(|slot| states.stops_on(slot.host(&active.placements)));
     let shrunk_sets = whole_sets(&reachable_slots, &bindings, &observations);
     let touched = removal_deployments(active, &copy, &states, &repointed, &reachable_slots);
+    // A cancel before the reservations stops the removal while it has cost
+    // nothing.
+    ctx.stop_if_cancelled()?;
     let change = preflight_change(
         ctx,
         &active.launch_id,
@@ -167,6 +169,9 @@ async fn remove_inner(
     )
     .await?;
     let outcome = async {
+        // The last check before the first step that changes a machine: a
+        // removal with no stop to make reads the cancel here too.
+        ctx.stop_if_cancelled()?;
         report_machines_left(ctx, active, &copy, &states).await;
         stop_copy(
             ctx,
@@ -210,7 +215,7 @@ async fn remove_inner(
         for instance in &removed {
             active.resolved_clocks.remove(instance);
         }
-        Ok::<_, Failure>(())
+        Ok::<_, WorkStop>(())
     }
     .await;
     change.reserved.release().await;
@@ -492,7 +497,7 @@ impl<'a> StopWalk<'a> {
         self.failed.contains_key(machine)
     }
 
-    fn record(&mut self, machine: &'a str, outcome: ChangeResult<()>) {
+    fn record(&mut self, machine: &'a str, outcome: Result<(), Failure>) {
         if let Err(error) = outcome {
             self.failed.insert(machine, error);
         }
@@ -508,7 +513,7 @@ impl<'a> StopWalk<'a> {
             .map(Failure::message)
             .collect::<Vec<_>>()
             .join("; ");
-        Err(rephrased(first, message))
+        Err(rephrased(first, message).into())
     }
 }
 
@@ -627,7 +632,7 @@ async fn stop_remote_instance(
     instance: &Name,
     machine: &str,
     shutdown_grace_secs: u64,
-) -> ChangeResult<()> {
+) -> Result<(), Failure> {
     publish_stdout(
         ctx,
         format!("Stopping instance `{instance}` of copy `{copy}` on `{machine}`"),
@@ -1059,7 +1064,7 @@ mod tests {
             [0, 1, 3, 4],
             "the second stop on cn-gpu-box is skipped"
         );
-        let failure = walk.finish().unwrap_err();
+        let failure = walk.finish().unwrap_err().failure().clone();
         assert_eq!(
             failure.message(),
             "`cn-gpu-box` refused; cannot reach `cn-jetson`"

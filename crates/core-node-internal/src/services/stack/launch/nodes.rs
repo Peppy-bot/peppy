@@ -9,8 +9,8 @@ use super::orchestrate::{add_node_directly, build_node_directly};
 use super::{
     HostedNode, NodeKey, PhaseChange, PhaseGoal, PlannedDeployment, UnresolvedAdd, federated,
 };
+use crate::services::action_loop::WorkStop;
 use crate::services::node::pins::encode_pins;
-use crate::services::response::rephrased;
 use crate::services::stack::action::StackChangeContext;
 use crate::services::stack::{ChangeResult, attempt_failed};
 use config::runtime::CoreNodeName;
@@ -20,7 +20,6 @@ use core_node_api::encoding::{
 use daemon_config::repository::DeploymentRoot;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use peppylib::messaging::Failure;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::PathBuf;
@@ -149,21 +148,20 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
     )
     .await;
 
-    let mut failure: Option<Failure> = None;
+    let mut stops = Vec::new();
     for group in groups {
         add_log_paths.extend(group.add_logs);
         build_log_paths.extend(group.build_logs);
         unresolved.extend(group.unresolved);
-        // Report the FIRST failure but keep collecting every group's logs: a
-        // launch that failed on one machine still produced logs on the others,
-        // and those are usually what explains it.
-        if let Some(reason) = group.failure {
-            failure.get_or_insert(reason);
-        }
+        // Report one stop but keep collecting every group's logs: a launch
+        // that failed on one machine still produced logs on the others, and
+        // those are usually what explains it.
+        stops.extend(group.failure);
     }
 
-    match failure {
-        Some(reason) => Err(reason),
+    // The first failure of a machine's own, else the first stop at a cancel.
+    match WorkStop::of_parts(stops) {
+        Some(stop) => Err(stop),
         None => Ok(()),
     }
 }
@@ -242,21 +240,18 @@ impl<'a> GroupNode<'a> {
     }
 }
 
-/// The failure of `step` ("add" or "build") of the node `label`, of the
-/// kind of `failure`. A joinable node's failure says what it was built for
-/// and names the flag that skips it.
-fn node_failure(step: &str, label: &str, purpose: Option<&str>, failure: &Failure) -> Failure {
-    let reason = failure.message();
-    rephrased(
-        failure,
-        match purpose {
-            None => format!("failed to {step} node {label}: {reason}"),
-            Some(purpose) => format!(
-                "failed to {step} node {label} {purpose}: {reason}; `--no-prebuild` skips the \
+/// The stop of `step` ("add" or "build") of the node `label`, of the cause
+/// and of the kind of `stop`. A joinable node's failure says what it was
+/// built for and names the flag that skips it.
+fn node_failure(step: &str, label: &str, purpose: Option<&str>, stop: &WorkStop) -> WorkStop {
+    let reason = stop.failure().message();
+    stop.rephrased(match purpose {
+        None => format!("failed to {step} node {label}: {reason}"),
+        Some(purpose) => format!(
+            "failed to {step} node {label} {purpose}: {reason}; `--no-prebuild` skips the \
                  nodes built for stack joins"
-            ),
-        },
-    )
+        ),
+    })
 }
 
 /// What one machine's add-and-build group produced.
@@ -265,7 +260,7 @@ struct GroupOutcome {
     add_logs: Vec<NodeAddLogEntry>,
     build_logs: Vec<NodeBuildLogEntry>,
     unresolved: Vec<UnresolvedAdd>,
-    failure: Option<Failure>,
+    failure: Option<WorkStop>,
 }
 
 async fn add_and_build_group(
@@ -404,9 +399,10 @@ async fn build_locally(
 ///
 /// After a build fails, no other build starts, and the builds already running
 /// finish: what they build is in the artifact cache for the next launch. The
-/// failure recorded is the one of the first node of `nodes` that failed, and
-/// the build logs are recorded in that order too, whichever build ended
-/// first.
+/// stop recorded is the failure of the first node of `nodes` that failed for
+/// a cause of its own, else the first that a cancel stopped (see
+/// [`WorkStop::of_parts`]), and the build logs are recorded in the order of
+/// `nodes` too, whichever build ended first.
 async fn build_added_nodes<F, Fut>(
     nodes: &[AddedNode],
     core_node: &str,
@@ -436,12 +432,12 @@ async fn build_added_nodes<F, Fut>(
     }
 
     ended.sort_by_key(|ended_build| ended_build.position);
+    let mut stops = Vec::new();
     for ended_build in ended {
         outcome.build_logs.extend(ended_build.log);
-        if let Some(reason) = ended_build.failure {
-            outcome.failure.get_or_insert(reason);
-        }
+        stops.extend(ended_build.failure);
     }
+    outcome.failure = WorkStop::of_parts(stops);
 }
 
 /// What one build of [`build_added_nodes`] ended with.
@@ -449,7 +445,7 @@ struct EndedBuild {
     /// The node's position in the add order.
     position: usize,
     log: Option<NodeBuildLogEntry>,
-    failure: Option<Failure>,
+    failure: Option<WorkStop>,
 }
 
 async fn build_one<F, Fut>(
@@ -532,19 +528,16 @@ async fn add_and_build_remotely(
                         config_sha256: item.config_sha256.clone(),
                     });
                 }
-                run.outcome.map_err(|failure| failure.failure().clone())
+                run.outcome.map_err(RemoteGoalFailure::into_stop)
             }
-            Err(failure) => Err(failure),
+            Err(failure) => Err(WorkStop::Failed(failure)),
         }
-        .map_err(|failure| {
-            rephrased(
-                &failure,
-                format!(
-                    "failed to add node {}: {}",
-                    item.node_name,
-                    failure.message()
-                ),
-            )
+        .map_err(|stop| {
+            stop.rephrased(format!(
+                "failed to add node {}: {}",
+                item.node_name,
+                stop.failure().message()
+            ))
         })?;
 
     if is_built_in(item) {
@@ -572,19 +565,16 @@ async fn add_and_build_remotely(
                 failed: run.outcome.is_err(),
                 core_node: core_node.to_string(),
             });
-            run.outcome.map_err(|failure| failure.failure().clone())
+            run.outcome.map_err(RemoteGoalFailure::into_stop)
         }
-        Err(failure) => Err(failure),
+        Err(failure) => Err(WorkStop::Failed(failure)),
     }
-    .map_err(|failure| {
-        rephrased(
-            &failure,
-            format!(
-                "failed to build node {}: {}",
-                item.node_name,
-                failure.message()
-            ),
-        )
+    .map_err(|stop| {
+        stop.rephrased(format!(
+            "failed to build node {}: {}",
+            item.node_name,
+            stop.failure().message()
+        ))
     })
 }
 
@@ -608,12 +598,20 @@ mod tests {
 
     /// A build that failed with `reason`.
     fn failed(reason: &str) -> BuildResult {
-        Err(attempt_failed(reason))
+        Err(attempt_failed(reason).into())
+    }
+
+    /// A build that a cancel of the change stopped.
+    fn cancelled() -> BuildResult {
+        Err(super::super::phases::phase_cancelled())
     }
 
     /// The message of the failure `outcome` records.
     fn failure_message(outcome: &GroupOutcome) -> Option<&str> {
-        outcome.failure.as_ref().map(Failure::message)
+        outcome
+            .failure
+            .as_ref()
+            .map(|stop| stop.failure().message())
     }
 
     /// The ends of the [`HeldBuilds`] by node name: [`finish`] ends one.
@@ -847,17 +845,73 @@ mod tests {
             "add",
             "waldo:v1",
             None,
-            &crate::services::stack::rejected("no such node"),
+            &crate::services::stack::rejected("no such node").into(),
         );
         assert_eq!(
-            refusal.message(),
+            refusal.failure().message(),
             "failed to add node waldo:v1: no such node",
             "a node the change runs names no flag"
         );
         assert_eq!(
-            refusal.kind().as_str(),
+            refusal.failure().kind().as_str(),
             "rejected",
             "the failure keeps the kind of the add's own"
+        );
+    }
+
+    /// A build that fails for a cause of its own is the stop of the group,
+    /// also when a cancel stops a build of a node before it: the group
+    /// failed, and its goal ends failed with the kind of the build.
+    #[tokio::test]
+    async fn a_build_that_fails_on_its_own_wins_over_a_build_that_a_cancel_stopped() {
+        let nodes = [added("waldo"), added("backbone")];
+        let (builds, mut started, mut enders) = HeldBuilds::new(&["waldo", "backbone"]);
+        let mut outcome = GroupOutcome::default();
+
+        let run = build_added_nodes(
+            &nodes,
+            "here",
+            2,
+            |node| builds.build(node.node_name.clone()),
+            &mut outcome,
+        );
+        let drive = async {
+            assert_eq!(started.recv().await.unwrap(), "waldo");
+            assert_eq!(started.recv().await.unwrap(), "backbone");
+            finish(&mut enders, "backbone", failed("cargo failed"));
+            tokio::task::yield_now().await;
+            finish(&mut enders, "waldo", cancelled());
+        };
+        tokio::join!(run, drive);
+
+        assert_eq!(
+            outcome.failure,
+            Some(WorkStop::Failed(attempt_failed(
+                "failed to build node backbone:v1: cargo failed"
+            )))
+        );
+    }
+
+    /// A group whose builds a cancel stopped reports the stop of the first
+    /// of them, which ends its goal cancelled.
+    #[tokio::test]
+    async fn builds_that_a_cancel_stopped_give_a_cancelled_stop() {
+        let nodes = [added("waldo")];
+        let mut outcome = GroupOutcome::default();
+
+        build_added_nodes(
+            &nodes,
+            "here",
+            2,
+            |_| async { (cancelled(), None) },
+            &mut outcome,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome.failure, Some(WorkStop::Cancelled(_))),
+            "the cancel stopped the group: {:?}",
+            outcome.failure
         );
     }
 

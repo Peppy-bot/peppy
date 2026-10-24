@@ -186,7 +186,8 @@ impl ActiveLaunch {
         if self.copies.contains_key(name) {
             return Err(super::precondition_failed(format!(
                 "copy `{name}` already exists; choose another name"
-            )));
+            ))
+            .into());
         }
         Ok(())
     }
@@ -198,6 +199,7 @@ pub(super) fn active_launch(ctx: &StackChangeContext) -> ChangeResult<ActiveLaun
             "this daemon has no active launcher; run peppy stack launch LAUNCHER on the \
              coordinator first",
         )
+        .into()
     })
 }
 

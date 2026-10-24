@@ -4,6 +4,7 @@
 
 use super::run::{NodeRunActionContext, Respawn, assemble_runtime_config, run_node_respawn};
 use super::stack_log::{StackLog, StackLogEvent};
+use crate::services::action_loop::WorkStop;
 use crate::services::federation::RestartAdmission;
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
@@ -33,26 +34,40 @@ pub(crate) enum RunOutcome {
     /// publisher awaiting its own restart, or a new instance's pairing
     /// delivery after its commit, which leaves the process running.
     StartFailed(String),
-    /// Cancelled, the slot vanished, or a respawn panicked past its commit,
-    /// whose exit takes the next attempt: nothing to record; the text is the
-    /// run's failure for a caller that waits on it.
+    /// A cancel of the start gave it up before its commit: nothing to
+    /// record; the text is the run's failure for a caller that waits on it.
+    Cancelled(String),
+    /// The slot vanished, or a respawn panicked past its commit, whose exit
+    /// takes the next attempt: nothing to record; the text is the run's
+    /// failure for a caller that waits on it.
     Gone(String),
 }
 
 impl RunOutcome {
     /// The outcome as the result of a `node_run` goal: the result of a
-    /// process that reached `running`, or the failure of the start. A
-    /// refused start gives the failure of its refusal, a start that failed
-    /// is `attempt_failed`, and a start whose slot is gone is
-    /// `resource_unavailable`.
-    pub(crate) fn into_result(self) -> Result<NodeRunResult, Failure> {
+    /// process that reached `running`, or the stop of the start. A refused
+    /// start gives the failure of its refusal, a start that failed is
+    /// `attempt_failed`, a start whose slot is gone is
+    /// `resource_unavailable`, and a start that a cancel gave up is
+    /// [`WorkStop::Cancelled`].
+    pub(crate) fn into_result(self) -> Result<NodeRunResult, WorkStop> {
         match self {
             Self::Running { pid, endpoints } => {
                 Ok(NodeRunResult::started(pid).with_endpoints(endpoints))
             }
-            Self::Refused(failure) => Err(failure),
-            Self::StartFailed(msg) => Err(Failure::new(PeppyFailureKind::AttemptFailed, msg)),
-            Self::Gone(msg) => Err(Failure::new(PeppyFailureKind::ResourceUnavailable, msg)),
+            Self::Refused(failure) => Err(WorkStop::Failed(failure)),
+            Self::StartFailed(msg) => Err(WorkStop::Failed(Failure::new(
+                PeppyFailureKind::AttemptFailed,
+                msg,
+            ))),
+            Self::Cancelled(msg) => Err(WorkStop::Cancelled(Failure::new(
+                PeppyFailureKind::AttemptFailed,
+                msg,
+            ))),
+            Self::Gone(msg) => Err(WorkStop::Failed(Failure::new(
+                PeppyFailureKind::ResourceUnavailable,
+                msg,
+            ))),
         }
     }
 }
@@ -143,8 +158,8 @@ async fn restart_task(
 
     match outcome {
         // Nothing to schedule: a running instance restarts from its next
-        // exit, and a cancelled or vanished slot has no restart.
-        RunOutcome::Running { .. } | RunOutcome::Gone(_) => {}
+        // exit, and a cancelled start or a vanished slot has no restart.
+        RunOutcome::Running { .. } | RunOutcome::Cancelled(_) | RunOutcome::Gone(_) => {}
         RunOutcome::StartFailed(reason) => {
             // The run log holds the whole failure, a stderr tail included.
             let reason = reason.lines().next().unwrap_or_default().to_owned();

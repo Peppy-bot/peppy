@@ -40,6 +40,7 @@ pub(super) async fn node_info_on(
             &e,
             format!("cannot inspect {} on `{host}`: {e}", node.label()),
         )
+        .into()
     })
 }
 
@@ -52,7 +53,7 @@ async fn graph_on(
     }
     let response = stack_list_on(ctx, host).await?;
     serde_json::from_str(&response.graph_json)
-        .map_err(|e| attempt_failed(format!("invalid stack report from `{host}`: {e}")))
+        .map_err(|e| attempt_failed(format!("invalid stack report from `{host}`: {e}")).into())
 }
 
 /// What a join checks against the machines it touches.
@@ -133,7 +134,7 @@ pub(super) async fn check_live_stack(
                 return Err(precondition_failed(format!(
                     "{}:{} on `{host}` has instances outside this launcher; joining would replace their node. Choose an empty machine or remove that node first",
                     item.node_name, item.node_tag
-                )));
+                )).into());
             }
             let response = node_info_on(ctx, host, &item.key()).await?;
             if !matches!(response, core_node_api::encoding::NodeInfoResponse::Found(info) if info.config_integrity == item.config_sha256)
@@ -141,7 +142,7 @@ pub(super) async fn check_live_stack(
                 return Err(precondition_failed(format!(
                     "{}:{} on `{host}` changed since launch; launch the stack again before joining another copy",
                     item.node_name, item.node_tag
-                )));
+                )).into());
             }
             reusable.insert(HostedNode {
                 node: item.key(),
@@ -176,7 +177,8 @@ fn check_instance_names_free(
             return Err(precondition_failed(format!(
                 "instance `{}` already exists on `{host}`; choose another name for the copy",
                 instance.instance_id
-            )));
+            ))
+            .into());
         }
     }
     Ok(())
@@ -212,7 +214,8 @@ pub(super) fn check_grown_slots_running(
                      is running, or join an option whose fragments do not add to that slot",
                     slot.field(),
                     slot.instance_id
-                )));
+                ))
+                .into());
             }
             _ => {
                 return Err(resource_unavailable(format!(
@@ -221,7 +224,8 @@ pub(super) fn check_grown_slots_running(
                      not add to that slot",
                     slot.field(),
                     slot.instance_id
-                )));
+                ))
+                .into());
             }
         }
     }
@@ -253,7 +257,7 @@ fn check_required_instances_present(
             return Err(resource_unavailable(format!(
                 "required instance `{}` is missing from `{host}`; restore its copy or launch the stack again before adding this one",
                 instance.instance_id
-            )));
+            )).into());
         }
     }
     Ok(())
@@ -272,7 +276,7 @@ pub(super) async fn live_machines(
     }
     federated::live_core_nodes(ctx)
         .await
-        .map_err(resource_unavailable)
+        .map_err(|reason| resource_unavailable(reason).into())
 }
 
 /// Whether `slot`'s instance runs on one of the `live` machines, which
@@ -307,7 +311,8 @@ pub(super) fn check_hosts_live(
          fragments do not add to that slot",
         slot.field(),
         slot.instance_id
-    )))
+    ))
+    .into())
 }
 
 /// Tells the operator which sets a removal left untouched because the machine
@@ -355,7 +360,10 @@ mod tests {
         let graph = graph_holding(&[("alpha_arm_inst", InstanceState::Failed)]);
 
         let taken = HashSet::from(["alpha_arm_inst".to_owned()]);
-        let refusal = check_instance_names_free("cn-robot", &graph, &taken).unwrap_err();
+        let refusal = check_instance_names_free("cn-robot", &graph, &taken)
+            .unwrap_err()
+            .failure()
+            .clone();
         assert_eq!(
             refusal.message(),
             "instance `alpha_arm_inst` already exists on `cn-robot`; choose another name for the \
@@ -395,7 +403,9 @@ mod tests {
             &placements,
             &required,
         )
-        .unwrap_err();
+        .unwrap_err()
+        .failure()
+        .clone();
         assert_eq!(
             error.message(),
             "required instance `arm_inst` is missing from `cn-robot`; restore its copy or launch \

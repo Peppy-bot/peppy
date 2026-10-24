@@ -28,6 +28,7 @@ use super::{
     plan::{ResolvedJoin, join_dependencies, selected_instances},
     remove::stop_copy_on_live_machines,
 };
+use crate::services::action_loop::WorkStop;
 use crate::services::node::common::panic_message;
 use crate::services::response::rephrased;
 use core_node_api::encoding::{
@@ -159,6 +160,9 @@ async fn join_inner(
         required_ids.contains(instance.instance_id.as_str())
             || holds_any(&grown_slots, &instance.instance_id)
     });
+    // A cancel before the reservations stops the join while it has cost
+    // nothing.
+    ctx.stop_if_cancelled()?;
     let change =
         preflight_change(ctx, &active.launch_id, &touched, &placements, Some(&live)).await?;
     let participants = change.reserved.core_nodes();
@@ -199,6 +203,9 @@ async fn join_inner(
             },
         )
         .await?;
+        // The last check before the first step that changes a machine: a
+        // cancel here still leaves every stack as it was.
+        ctx.stop_if_cancelled()?;
         prepare_local_container_mounts(
             ctx,
             hosts_container_nodes(delta.values(), &placements, &ctx.bound_core_node),
@@ -315,24 +322,25 @@ async fn join_inner(
             &copy,
         )
         .await
-        .map_err(attempt_failed)
+        .map_err(|reason| attempt_failed(reason).into())
     };
     let outcome: ChangeResult<()> = AssertUnwindSafe(operation)
         .catch_unwind()
         .await
         .unwrap_or_else(|panic| {
-            Err(attempt_failed(format!(
-                "join failed: {}",
-                panic_message(&*panic)
-            )))
+            Err(attempt_failed(format!("join failed: {}", panic_message(&*panic))).into())
         });
     let outcome = match (outcome, scope) {
         (Err(error), Some(scope)) => {
             match rollback_join(ctx, &scope, stage, logs, previous, active).await {
                 Ok(()) => Err(error),
                 Err(cleanup) => {
-                    let message = format!("{}; {}", error.message(), cleanup.message());
-                    Err(rephrased(&error, message))
+                    let message = format!(
+                        "{}; {}",
+                        error.failure().message(),
+                        cleanup.failure().message()
+                    );
+                    Err(error.rephrased(message))
                 }
             }
         }
@@ -413,18 +421,15 @@ async fn rollback_join(
             .await;
             federated::clear_participant_slices(ctx, &scope.fresh_hosts).await;
         }
-        Ok::<_, peppylib::messaging::Failure>(())
+        Ok::<_, WorkStop>(())
     }
     .await;
     cleanup.map_err(|error| {
-        rephrased(
-            &error,
-            format!(
-                "cleanup failed: {}. The copy remains listed; retry peppy stack remove {}",
-                error.message(),
-                scope.name
-            ),
-        )
+        error.rephrased(format!(
+            "cleanup failed: {}. The copy remains listed; retry peppy stack remove {}",
+            error.failure().message(),
+            scope.name
+        ))
     })?;
     *active = previous;
     Ok(())
@@ -500,8 +505,8 @@ async fn remove_node(
     let Err(error) = response else {
         return Ok(());
     };
-    match error.failure() {
-        Some(refusal) => Err(rephrased(
+    let failure = match error.failure() {
+        Some(refusal) => rephrased(
             refusal,
             format!(
                 "`{}` refused to remove {}: {}",
@@ -509,16 +514,17 @@ async fn remove_node(
                 hosted.node.label(),
                 refusal.message()
             ),
-        )),
-        None => Err(peer_failure(
+        ),
+        None => peer_failure(
             &error,
             format!(
                 "cannot remove {} from `{}`: {error}",
                 hosted.node.label(),
                 hosted.core_node
             ),
-        )),
-    }
+        ),
+    };
+    Err(failure.into())
 }
 
 #[cfg(test)]

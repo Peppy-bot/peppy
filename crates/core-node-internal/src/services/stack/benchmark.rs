@@ -19,8 +19,8 @@
 
 use crate::Result;
 use crate::services::action_loop::{
-    GoalEnding, GoalHandler, accept_goal, invalid_payload, refuse_goal, run_action_loop,
-    under_goal_cancel,
+    GoalEnding, GoalHandler, accept_goal, invalid_payload, own_cancel_reason, refuse_goal,
+    run_action_loop, under_goal_cancel,
 };
 use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
@@ -42,8 +42,7 @@ use latency_report::stats::summarize;
 use node_stack::NodeStack;
 use peppylib::clock::wall_now_ns;
 use peppylib::messaging::{
-    CancelCause, ConcurrentAction, Failure, NODE_HEALTH_SERVICE, PendingGoal, SenderTarget,
-    ServiceTarget,
+    ConcurrentAction, Failure, NODE_HEALTH_SERVICE, PendingGoal, SenderTarget, ServiceTarget,
 };
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult, ServiceMessenger, TopicMessenger};
@@ -201,13 +200,7 @@ impl GoalHandler for StackBenchmarkGoalHandler {
 
             let ending = match measured {
                 Some(result) => GoalEnding::of(Ok(result.encode()), None),
-                None => GoalEnding::Cancelled(
-                    goal_ctx
-                        .cancel_cause()
-                        .unwrap_or(CancelCause::Caller)
-                        .reason()
-                        .to_owned(),
-                ),
+                None => GoalEnding::Cancelled(own_cancel_reason(&goal_ctx)),
             };
             slot.release_then_end(&goal_ctx, ending).await;
         });

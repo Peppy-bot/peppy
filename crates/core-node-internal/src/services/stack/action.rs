@@ -9,7 +9,7 @@ use super::launch::feedback::publish_node_logs;
 use super::launch::process_launch;
 use crate::Result;
 use crate::services::action_loop::{
-    GoalEnding, GoalHandler, accept_goal, cancel_reason, invalid_payload, refuse_goal,
+    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, invalid_payload, refuse_goal,
     run_action_loop, under_goal_cancel,
 };
 use crate::services::node::common::{encode_response_or_err, panic_message};
@@ -380,9 +380,7 @@ impl StackChangeContext {
     /// rollback, and its goal then ends cancelled.
     pub(super) fn stop_if_cancelled(&self) -> super::ChangeResult<()> {
         if self.cancellation.is_cancelled() {
-            return Err(super::attempt_failed(
-                super::launch::phases::PHASE_CANCELLED,
-            ));
+            return Err(super::launch::phases::phase_cancelled());
         }
         Ok(())
     }
@@ -570,7 +568,7 @@ async fn handle_stack_request(
         let log = ctx.log.clone();
         let publisher = ctx.feedback_publisher.clone();
         let work = finish_on_reset(goal.process(ctx), &reset, drain_budget, || {
-            ChangeEnd::without_node_logs(Err(Failure::new(
+            ChangeEnd::stopped(WorkStop::Cancelled(Failure::new(
                 PeppyFailureKind::AttemptFailed,
                 "stack operation cancelled by stack reset",
             )))
@@ -585,10 +583,7 @@ async fn handle_stack_request(
                     panic_message(&*panic_payload)
                 );
                 tracing::error!("{}", msg);
-                ChangeEnd::without_node_logs(Err(Failure::new(
-                    PeppyFailureKind::AttemptFailed,
-                    msg,
-                )))
+                ChangeEnd::stopped(Failure::new(PeppyFailureKind::AttemptFailed, msg))
             }
         };
         drop(_mutation);
@@ -599,8 +594,8 @@ async fn handle_stack_request(
 }
 
 /// How the goal of a stack change that ended with `end` ends: completed
-/// with its result, failed, or, when a cancel brought its failure about,
-/// cancelled with the reason of the cancel (`cancel_reason`). The node logs
+/// with its result, failed, or, when a cancel stopped the change, cancelled
+/// with the reason of the cancel (`cancel_reason`). The node logs
 /// of the change reach its caller first, as the last feedback of the goal,
 /// and the log records how a failed or cancelled change ended.
 async fn stack_goal_ending(

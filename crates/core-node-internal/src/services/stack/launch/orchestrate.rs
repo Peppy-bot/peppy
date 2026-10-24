@@ -1,6 +1,7 @@
 use super::feedback::{publish_error, publish_stdout, spawn_feedback_forwarder};
 use super::phases::{DrainOnCancel, run_phase};
 use super::{NodeKey, PlannedDeployment};
+use crate::services::action_loop::WorkStop;
 use crate::services::node::{
     NodeAddActionContext, NodeBuildActionContext, NodeRunActionContext, create_add_log,
     dispatch_node_add, run_node_build_for_entity, run_node_run,
@@ -10,8 +11,8 @@ use crate::services::stack::{ChangeResult, attempt_failed, rejected};
 use core_node_api::encoding::{
     LaunchFeedbackStep, NodeAddGoal, NodeAddResult, NodeRunGoal, NodeRunResult,
 };
+use futures::FutureExt;
 use node_stack::{ActionLog, Announcer};
-use peppylib::messaging::Failure;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,7 +26,7 @@ pub(in crate::services::stack) async fn add_node_directly(
 ) -> (ChangeResult<NodeAddResult>, Option<PathBuf>) {
     let log = match create_add_log(&ctx.peppy_dirs, &ctx.node_stack, &node_add_goal) {
         Ok(log) => log,
-        Err(e) => return (Err(attempt_failed(e)), None),
+        Err(e) => return (Err(attempt_failed(e).into()), None),
     };
 
     let activity_notify = Arc::new(Notify::new());
@@ -53,11 +54,14 @@ pub(in crate::services::stack) async fn add_node_directly(
     // this future) carry a pointer to it rather than its state. See
     // `run_phase_with_timeouts`.
     let result = run_phase(
-        Box::pin(dispatch_node_add(
-            node_add_goal,
-            action_context,
-            Announcer::new(log, feedback_tx),
-        )),
+        Box::pin(
+            dispatch_node_add(
+                node_add_goal,
+                action_context,
+                Announcer::new(log, feedback_tx),
+            )
+            .map(|added| added.map_err(WorkStop::Failed)),
+        ),
         activity_notify,
         ctx.idle_timeouts.add,
         ctx.change_deadline,
@@ -93,7 +97,7 @@ pub(in crate::services::stack) async fn build_node_directly(
         Some(launch_id),
     ) {
         Ok(log) => log,
-        Err(e) => return (Err(attempt_failed(e)), None),
+        Err(e) => return (Err(attempt_failed(e).into()), None),
     };
     let log_path = log.path();
 
@@ -190,7 +194,7 @@ pub(in crate::services::stack) async fn start_node_directly(
         match crate::services::node::assemble_runtime_config(&node_run_goal, &action_context).await
         {
             Ok(config) => config,
-            Err(reason) => return (Err(rejected(reason)), Some(log_path)),
+            Err(reason) => return (Err(rejected(reason).into()), Some(log_path)),
         };
 
     let result = run_phase(
@@ -221,21 +225,22 @@ pub(in crate::services::stack) async fn start_node_directly(
 }
 
 /// Launch failure path: tear down whatever partial stack got started and clear
-/// it, then return the failure reason. A launch replaces the previous stack by
-/// tearing it down at the clear step, so on failure there is nothing to roll
-/// back to; the honest end state is an empty stack rather than orphaned
+/// it, then return the stop. A launch replaces the previous stack by tearing
+/// it down at the clear step, so on a failure or a cancel there is nothing to
+/// roll back to; the honest end state is an empty stack rather than orphaned
 /// half-started instances.
 pub(in crate::services::stack) async fn fail_and_clear_stack(
     ctx: &StackChangeContext,
-    failure: Failure,
+    stop: WorkStop,
     participants: &[String],
-) -> Failure {
-    publish_error(
-        ctx,
-        format!("{} failed: {}", ctx.action, failure.message()),
-        LaunchFeedbackStep::LauncherStep,
-    )
-    .await;
+) -> WorkStop {
+    let line = match &stop {
+        WorkStop::Failed(failure) => format!("{} failed: {}", ctx.action, failure.message()),
+        WorkStop::Cancelled(failure) => {
+            format!("{} stopped at a cancel: {}", ctx.action, failure.message())
+        }
+    };
+    publish_error(ctx, line, LaunchFeedbackStep::LauncherStep).await;
 
     teardown_and_reset_stack(ctx).await;
     // Every machine this launch touched gets the same treatment, and is named
@@ -244,7 +249,7 @@ pub(in crate::services::stack) async fn fail_and_clear_stack(
     // never typed the name of.
     super::federated::clear_participant_slices(ctx, participants).await;
 
-    failure
+    stop
 }
 
 /// The bound producers of every consumer instance's slots, keyed by

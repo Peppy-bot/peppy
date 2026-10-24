@@ -5,7 +5,7 @@ use super::feedback::publish_stdout;
 use super::orchestrate::start_node_directly;
 use super::watchers::LifecycleWatchers;
 use super::{NodeKey, PhaseChange, PhaseGoal, PlannedDeployment, federated};
-use crate::services::response::rephrased;
+use crate::services::action_loop::WorkStop;
 use crate::services::stack::action::StackChangeContext;
 use crate::services::stack::{ChangeResult, attempt_failed};
 use core_node_api::encoding::{
@@ -323,13 +323,13 @@ pub(in crate::services::stack) async fn start_node_instances(
 
             let result = match outcome {
                 Ok(result) => result,
-                Err(failure) => {
+                Err(stop) => {
                     let message = format!(
                         "failed to start node {} instance {instance_id} on `{core_node}`: {}",
                         key.label(),
-                        failure.message()
+                        stop.failure().message()
                     );
-                    return Err(rephrased(&failure, message));
+                    return Err(stop.rephrased(message));
                 }
             };
             // The daemon hosting the instance expanded the URLs against its
@@ -412,9 +412,9 @@ async fn start_remotely(
                 failed: run.outcome.is_err(),
                 core_node: core_node.to_owned(),
             });
-            run.outcome.map_err(|failure| failure.failure().clone())
+            run.outcome.map_err(federated::RemoteGoalFailure::into_stop)
         }
-        Err(failure) => Err(failure),
+        Err(failure) => Err(WorkStop::Failed(failure)),
     }
 }
 

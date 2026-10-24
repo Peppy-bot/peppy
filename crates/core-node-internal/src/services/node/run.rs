@@ -1,5 +1,5 @@
 use super::super::action_loop::{
-    GoalEnding, GoalHandler, accept_goal, cancel_reason, invalid_payload, refuse_goal,
+    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, invalid_payload, refuse_goal,
     run_action_loop, under_goal_cancel,
 };
 use super::endpoints::{HostAddressSource, expand_announcements, host_addresses};
@@ -577,7 +577,7 @@ pub(crate) async fn assemble_runtime_config(
 }
 
 /// Starts a new instance through [`run_node`] and answers its outcome: the
-/// `NodeRunResult` of an instance that reached `running`, or the failure of
+/// `NodeRunResult` of an instance that reached `running`, or the stop of
 /// the start ([`RunOutcome::into_result`]).
 ///
 /// The caller is responsible for creating the log file and feedback channel.
@@ -601,7 +601,7 @@ pub(crate) async fn run_node_run(
     log: ActionLog,
     sender_instance_id: String,
     cancel_token: CancellationToken,
-) -> std::result::Result<NodeRunResult, Failure> {
+) -> std::result::Result<NodeRunResult, WorkStop> {
     let process_context = ProcessNodeRunContext {
         action: action_context,
         announcer: Announcer::new(log, feedback_tx),
@@ -903,10 +903,10 @@ async fn handle_goal_request(
             &reset,
             crate::services::node::gate::reset_drain_budget(reset_grace),
             || {
-                Err(Failure::new(
+                Err(WorkStop::Cancelled(Failure::new(
                     PeppyFailureKind::AttemptFailed,
                     "node run cancelled by stack reset",
-                ))
+                )))
             },
         );
         tokio::pin!(work);
@@ -1695,7 +1695,7 @@ async fn process_node_run(
         let msg = "cancelled before node process spawn".to_string();
         ctx.announcer.log().error(&msg);
         feedback.close(instance_id_str, false).await;
-        return RunOutcome::Gone(msg);
+        return RunOutcome::Cancelled(msg);
     }
 
     let (child, started_ctx) =
@@ -2521,7 +2521,7 @@ struct StartAbandon<'a> {
 
 impl StartAbandon<'_> {
     /// Ends a failed or cancelled start once its process was spawned, and answers
-    /// the run: a cancelled start is `Gone`, a failed one `StartFailed`. Before
+    /// the run: a cancelled start is `Cancelled`, a failed one `StartFailed`. Before
     /// the ready signal, or once the leader exited, the process group is
     /// SIGKILLed at once, a container's in-VM group included, so nothing of the
     /// start runs while the pairs reserved for it are dissolved. After the ready
@@ -2575,7 +2575,7 @@ impl StartAbandon<'_> {
         self.ctx.announcer.log().error(&msg);
         self.feedback.close(self.instance_id.as_str(), false).await;
         if cancelled {
-            RunOutcome::Gone(msg)
+            RunOutcome::Cancelled(msg)
         } else {
             RunOutcome::StartFailed(msg)
         }

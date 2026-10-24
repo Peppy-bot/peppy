@@ -40,6 +40,7 @@ use peppylib::{ActionMessenger, PeppyError};
 
 use super::super::feedback::{publish_relayed, publish_stdout, publish_warning};
 use super::super::watchers::{LifecycleWatchers, set_local_watchers};
+use crate::services::action_loop::WorkStop;
 use crate::services::response::{failure, rephrased};
 use crate::services::stack::action::StackChangeContext;
 use crate::services::stack::{peer_failure, stack_list_on};
@@ -189,16 +190,27 @@ pub(in crate::services::stack) enum RemoteGoalFailure {
     /// The peer answered: the goal failed there, or ended cancelled, with
     /// this failure.
     Reported(Failure),
-    /// This coordinator's budget ended first, the peer went silent, or the
-    /// stack change was cancelled. The peer was told to cancel the goal, and
+    /// This coordinator's budget ended first or the peer went silent, which
+    /// fails the stack change, or the stack change was cancelled, which
+    /// stops it at the cancel. The peer was told to cancel the goal, and
     /// what it holds for the node is known only by asking it.
-    Unresolved(Failure),
+    Unresolved(WorkStop),
 }
 
 impl RemoteGoalFailure {
     pub(in crate::services::stack) fn failure(&self) -> &Failure {
         match self {
-            Self::Reported(failure) | Self::Unresolved(failure) => failure,
+            Self::Reported(failure) => failure,
+            Self::Unresolved(stop) => stop.failure(),
+        }
+    }
+
+    /// The stop of the stack change: a failure that the peer reported fails
+    /// it, and an unresolved goal stops it as its cause says.
+    pub(in crate::services::stack) fn into_stop(self) -> WorkStop {
+        match self {
+            Self::Reported(failure) => WorkStop::Failed(failure),
+            Self::Unresolved(stop) => stop,
         }
     }
 }
@@ -224,10 +236,10 @@ fn ended_without_result<G: RemoteGoal>(core_node: &str, error: PeppyError) -> Re
             PeppyFailureKind::AttemptFailed,
             format!("`{core_node}` ended the {label} cancelled: {reason}"),
         )),
-        other => RemoteGoalFailure::Unresolved(peer_failure(
+        other => RemoteGoalFailure::Unresolved(WorkStop::Failed(peer_failure(
             &other,
             format!("`{core_node}` {label}: {other}"),
-        )),
+        ))),
     }
 }
 
@@ -291,28 +303,28 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
         loop {
             let now = tokio::time::Instant::now();
             if ctx.cancellation.is_cancelled() {
-                return Err(RemoteGoalFailure::Unresolved(failure(
+                return Err(RemoteGoalFailure::Unresolved(WorkStop::Cancelled(failure(
                     PeppyFailureKind::AttemptFailed,
                     format!(
                         "the {} was cancelled while `{core_node}` was running {label}",
                         ctx.action.label()
                     ),
-                )));
+                ))));
             }
             if ctx.change_deadline.is_some_and(|deadline| now >= deadline) {
-                return Err(RemoteGoalFailure::Unresolved(failure(
+                return Err(RemoteGoalFailure::Unresolved(WorkStop::Failed(failure(
                     PeppyFailureKind::Timeout,
                     format!("max timeout exceeded while `{core_node}` was running {label}"),
-                )));
+                ))));
             }
             if now.duration_since(last_activity) >= idle_timeout {
-                return Err(RemoteGoalFailure::Unresolved(failure(
+                return Err(RemoteGoalFailure::Unresolved(WorkStop::Failed(failure(
                     PeppyFailureKind::Timeout,
                     format!(
                         "`{core_node}` produced no {label} output for {}s",
                         idle_timeout.as_secs()
                     ),
-                )));
+                ))));
             }
 
             // Wait exactly until the nearer of the two budgets would be blown,

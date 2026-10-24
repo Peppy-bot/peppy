@@ -253,9 +253,9 @@ async fn reserve_participants(
         refusals.join("\n  ")
     );
     if a_peer_is_unavailable {
-        return Err(resource_unavailable(message));
+        return Err(resource_unavailable(message).into());
     }
-    Err(precondition_failed(message))
+    Err(precondition_failed(message).into())
 }
 
 /// A mixed-version federation is refused before any stack is touched.

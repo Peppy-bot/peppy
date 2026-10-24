@@ -2,7 +2,7 @@ mod staged;
 
 use self::staged::{StagedJob, run_staged_job};
 use super::super::action_loop::{
-    GoalEnding, GoalHandler, STACK_RESET_REASON, accept_goal, invalid_payload, refuse_goal,
+    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, invalid_payload, refuse_goal,
     run_action_loop, under_goal_cancel,
 };
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
@@ -1246,18 +1246,15 @@ async fn handle_goal_request(
                 NodeAddFeedback::from_stream(line.stream, &line.line).encode()
             });
 
-        // A cancel drops the add at its next step: a stack reset, the goal's
-        // caller or its gone sender, or a forced node add that supersedes it.
-        // The goal then ends cancelled, with the reason of the cancel.
+        // A cancel drops the add at its next step: the goal's caller or its
+        // gone sender, a stack reset, or a forced node add that supersedes
+        // it. The goal then ends cancelled, with the reason of the cancel.
         let work = async {
             tokio::select! {
                 biased;
                 _ = cancel_token_clone.cancelled() => {
-                    let reason = match goal_ctx.cancel_cause() {
-                        _ if reset_token.is_cancelled() => STACK_RESET_REASON.to_owned(),
-                        Some(cause) => cause.reason().to_owned(),
-                        None => "superseded by a forced node add".to_owned(),
-                    };
+                    let reason = cancel_reason(&goal_ctx, &reset_token)
+                        .unwrap_or_else(|| "superseded by a forced node add".to_owned());
                     log_for_cancel.error(&format!("node add {reason}"));
                     Err(reason)
                 }
@@ -1274,7 +1271,10 @@ async fn handle_goal_request(
                 // end-of-stream sentinel never races ahead of the last
                 // feedback line.
                 let _ = consumer_handle.await;
-                GoalEnding::of(result.map(|added| added.encode()), None)
+                GoalEnding::of(
+                    result.map(|added| added.encode()).map_err(WorkStop::Failed),
+                    None,
+                )
             }
             Err(reason) => {
                 // A blocking step of the dropped add (a clone or a download)

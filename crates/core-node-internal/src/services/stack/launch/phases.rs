@@ -1,3 +1,4 @@
+use crate::services::action_loop::WorkStop;
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::encoding::LaunchFeedbackStep;
 use node_stack::ActionLog;
@@ -194,12 +195,22 @@ where
 /// reset, the goal's caller, or the engine when the goal's sender is gone.
 pub(in crate::services::stack) const PHASE_CANCELLED: &str = "the stack operation was cancelled";
 
+/// The stop of a stack change that a cancel stopped at a step: an
+/// `attempt_failed` that says so, which ends the change as a failure of the
+/// step does, with the same rollback, and ends its goal cancelled.
+pub(in crate::services::stack) fn phase_cancelled() -> WorkStop {
+    WorkStop::Cancelled(Failure::new(
+        PeppyFailureKind::AttemptFailed,
+        PHASE_CANCELLED,
+    ))
+}
+
 /// Runs a phase future under idle + (optional) deadline bounds and, on
 /// timeout or on `cancel`, writes the reason to `log` and builds a
-/// caller-specified failure result. `build_failure` receives the failure
-/// whose message was logged: `timeout` for an idle or max timeout, and
-/// `attempt_failed` for a cancel, which ends the change as a failure of the
-/// phase does.
+/// caller-specified failure result. `build_failure` receives the stop
+/// whose message was logged: a `timeout` failure for an idle or max
+/// timeout, and [`phase_cancelled`] for a cancel, which ends the change as
+/// a failure of the phase does.
 ///
 /// `cancel_and_drain` controls what happens to the phase future on timeout
 /// and on a cancel; see [`run_phase_with_timeouts`] for the per-phase
@@ -213,7 +224,7 @@ pub(super) async fn run_phase<F, T>(
     cancel: &CancellationToken,
     log: &ActionLog,
     step: LaunchFeedbackStep,
-    build_failure: impl FnOnce(Failure) -> T,
+    build_failure: impl FnOnce(WorkStop) -> T,
     cancel_and_drain: Option<DrainOnCancel>,
 ) -> T
 where
@@ -235,7 +246,7 @@ where
                 let _ = tokio::time::timeout(drain.budget, phase.as_mut()).await;
             }
             log.error(PHASE_CANCELLED);
-            return build_failure(Failure::new(PeppyFailureKind::AttemptFailed, PHASE_CANCELLED));
+            return build_failure(phase_cancelled());
         }
         outcome = phase.as_mut() => outcome,
     };
@@ -251,12 +262,18 @@ where
                 reason = format!("{reason}; {}", slow_connection_hint(flag));
             }
             log.error(&reason);
-            build_failure(Failure::new(PeppyFailureKind::Timeout, reason))
+            build_failure(WorkStop::Failed(Failure::new(
+                PeppyFailureKind::Timeout,
+                reason,
+            )))
         }
         PhaseOutcome::MaxTimeout => {
             let reason = "timeout: max timeout exceeded".to_string();
             log.error(&reason);
-            build_failure(Failure::new(PeppyFailureKind::Timeout, reason))
+            build_failure(WorkStop::Failed(Failure::new(
+                PeppyFailureKind::Timeout,
+                reason,
+            )))
         }
     }
 }
@@ -290,6 +307,17 @@ mod tests {
             }
             _ = std::future::pending::<()>() => unreachable!("phase should never complete on its own in these tests"),
         }
+    }
+
+    /// How a test reads the stop a phase gives: its cause, its kind and its
+    /// message.
+    fn described(stop: WorkStop) -> String {
+        let cause = match &stop {
+            WorkStop::Failed(_) => "failed",
+            WorkStop::Cancelled(_) => "cancelled",
+        };
+        let failure = stop.failure();
+        format!("{cause} ({}): {}", failure.kind(), failure.message())
     }
 
     /// A drain with the fixed cooperative budget.
@@ -515,7 +543,7 @@ mod tests {
             &reset,
             &log,
             LaunchFeedbackStep::RunningNode,
-            |failure| format!("failed ({}): {}", failure.kind(), failure.message()),
+            described,
             Some(DrainOnCancel {
                 token,
                 budget: cleanup + Duration::from_secs(1),
@@ -525,7 +553,7 @@ mod tests {
 
         assert_eq!(
             failure,
-            "failed (attempt_failed): the stack operation was cancelled"
+            "cancelled (attempt_failed): the stack operation was cancelled"
         );
         assert!(
             cleanup_ran.load(Ordering::SeqCst),
@@ -662,7 +690,7 @@ mod tests {
             &CancellationToken::new(),
             &log,
             LaunchFeedbackStep::AddingNode,
-            |failure| format!("failed ({}): {}", failure.kind(), failure.message()),
+            described,
             None,
         )
         .await;
@@ -698,7 +726,7 @@ mod tests {
             &CancellationToken::new(),
             &log,
             LaunchFeedbackStep::BuildingNode,
-            |failure| format!("failed ({}): {}", failure.kind(), failure.message()),
+            described,
             None,
         )
         .await;

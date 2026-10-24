@@ -20,6 +20,7 @@ pub use reset::stack_reset_timeout;
 pub(crate) use reset::{clear_stack_slice, listen_for_stack_reset};
 pub(crate) use state::ActiveLaunch;
 
+use crate::services::action_loop::WorkStop;
 use crate::services::response::failure;
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::encoding::{LaunchResult, NodeLogs};
@@ -30,9 +31,10 @@ use std::time::Duration;
 /// inspection, or a clock membership update.
 const STACK_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What a stack change reports when it refuses or fails: the failure kind
-/// and the operator's whole account of it.
-type ChangeResult<T> = std::result::Result<T, Failure>;
+/// What a stack change reports when it refuses, fails or stops at a
+/// cancel: the cause, the failure kind and the operator's whole account of
+/// it.
+type ChangeResult<T> = std::result::Result<T, WorkStop>;
 
 /// What a stack change ended with: its result or its failure, and the log
 /// file of each node phase it ran, which its goal reports whichever way it
@@ -49,6 +51,11 @@ impl ChangeEnd {
             node_logs: NodeLogs::default(),
             outcome,
         }
+    }
+
+    /// The end of a change that stopped with `stop` before any node phase.
+    pub(super) fn stopped(stop: impl Into<WorkStop>) -> Self {
+        Self::without_node_logs(Err(stop.into()))
     }
 }
 
@@ -96,7 +103,7 @@ async fn stack_list_on(
         STACK_QUERY_TIMEOUT,
     )
     .await
-    .map_err(|error| peer_failure(&error, format!("cannot inspect `{host}`: {error}")))
+    .map_err(|error| peer_failure(&error, format!("cannot inspect `{host}`: {error}")).into())
 }
 
 /// Whether the stack runs anything beyond its root entity, which is always
