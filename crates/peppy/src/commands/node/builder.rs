@@ -7,7 +7,7 @@ use tracing::info;
 
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
-use crate::commands::{GOAL_TIMEOUT, caller_instance_id};
+use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use peppylib::core_node::transport::send_goal;
@@ -98,7 +98,7 @@ pub(crate) async fn build_node_on(
         &goal,
         messenger,
         bound_core_node,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         Some(target_core_node),
         GOAL_TIMEOUT,
     )

@@ -25,7 +25,7 @@ use tracing::{info, warn};
 use crate::commands::action_poll::{
     CancelRace, CtrlC, FollowedGoal, Interrupts, cancel_unless_stopped, end_of_follow,
 };
-use crate::commands::{SCROLLING_OUTPUT_LINES, caller_instance_id, failure_text};
+use crate::commands::{CALLER_INSTANCE_ID, SCROLLING_OUTPUT_LINES, failure_text};
 use crate::context::DaemonConnection;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
@@ -163,7 +163,7 @@ fn daemon_route<'a>(conn: &'a DaemonConnection<'_>) -> DaemonRoute<'a> {
     DaemonRoute {
         messenger: conn.messenger,
         caller_core_node: &conn.core_node_name,
-        caller_instance_id: caller_instance_id(),
+        caller_instance_id: CALLER_INSTANCE_ID,
         daemon_core_node: &conn.target_core_node,
     }
 }
@@ -248,7 +248,8 @@ struct Followed {
 ///
 /// The first press `interrupts` gives sends the daemon a cancel, and the goal
 /// is followed to the end the daemon gives it, under the ceiling alone; a
-/// second press stops the wait at once, also while the cancel is on its way.
+/// second press stops the wait for the end, once the cancel reached the
+/// daemon (see [`cancel_unless_stopped`]).
 /// Every error after a Ctrl-C is an [`Error::Interrupted`].
 async fn follow_under_watchdog(
     running: &mut RunningStackGoal,
@@ -649,16 +650,21 @@ mod ctrl_c {
             .expect_err("the Ctrl-C ends the command")
     }
 
-    /// A second Ctrl-C stops the wait at once, also while the cancel that
-    /// the first one sent is on its way to the daemon: here the second press
-    /// is there before the daemon answers the cancel. The daemon goes on
-    /// with the cancel.
+    /// A second Ctrl-C stops the wait for the end of the change, also while
+    /// the cancel that the first one sent is on its way to the daemon: here
+    /// the second press is there before the daemon answers the cancel. The
+    /// command ends once the cancel reached the daemon, which goes on with
+    /// it.
     #[tokio::test]
-    async fn a_second_ctrl_c_stops_the_wait_while_the_cancel_is_on_its_way() {
+    async fn a_second_ctrl_c_stops_the_wait_once_the_cancel_reached_the_daemon() {
         let (mut running, context, _engine) = running_join(Duration::from_secs(30)).await;
 
         let followed = follow_with_presses(&mut running, 2).await;
 
+        assert!(
+            context.is_cancelled(),
+            "the cancel reached the daemon before the command ended"
+        );
         let error = command_end(followed);
         assert_eq!(error.exit_code(), 130);
         assert_eq!(
@@ -668,9 +674,6 @@ mod ctrl_c {
                  {LOG_PATH}"
             )
         );
-        tokio::time::timeout(Duration::from_secs(30), context.cancel_signal())
-            .await
-            .expect("the cancel that the first press sent reaches the daemon");
     }
 
     /// After a Ctrl-C the daemon rolls the change back, which can be silent

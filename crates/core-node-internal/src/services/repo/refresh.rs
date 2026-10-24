@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::services::action_loop::{
-    GoalEnding, GoalHandler, accept_goal, invalid_payload, own_cancel_reason, refuse_goal,
-    run_action_loop,
+    GoalEnding, GoalHandler, accept_goal, expose_daemon_action, invalid_payload, own_cancel_reason,
+    refuse_goal, run_action_loop,
 };
 use crate::services::node::cache as node_cache;
 use crate::services::node::common::encode_response_or_err;
@@ -26,11 +26,9 @@ use core_node_api::encoding::{
     GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, ReadRef, RepoItemKind, RepoRefreshFeedback,
     RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource, RepoSourceKind,
 };
-use core_node_api::names;
 use daemon_config::consts::{PeppyDirs, peppy_build};
 use daemon_config::repository::GitCommit;
-use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{ConcurrentAction, Failure, PendingGoal};
+use peppylib::messaging::{Failure, PendingGoal};
 use peppylib::runtime::CancellationToken;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
@@ -49,13 +47,12 @@ pub async fn listen_for_repo_refresh(
     node_name: &str,
     peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ConcurrentAction::expose(
+    let action = expose_daemon_action(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ActionId::RepoRefresh.name(),
-        true,
+        node_name,
+        ActionId::RepoRefresh,
     )
     .await?;
 

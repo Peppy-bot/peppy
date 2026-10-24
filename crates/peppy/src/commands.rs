@@ -29,15 +29,11 @@ use crate::{
     error::{Error, Result},
 };
 
-/// The instance id this process of the command line sends its requests and
-/// goals as: `peppy-cli-` and a random suffix drawn once per process. Two
-/// processes are two senders, so the daemon ends the goals of a process that
+/// The instance id the command line sends its requests and goals as. Each
+/// process advertises a presence of its own generation with it, so two
+/// processes are two senders: the daemon ends the goals of a process that
 /// stops, and of no other.
-pub(crate) fn caller_instance_id() -> &'static str {
-    static CALLER_INSTANCE_ID: std::sync::LazyLock<String> =
-        std::sync::LazyLock::new(|| format!("peppy-cli-{:08x}", rand::random::<u32>()));
-    &CALLER_INSTANCE_ID
-}
+pub(crate) const CALLER_INSTANCE_ID: &str = "peppy-cli";
 
 /// The error of a request to the daemon that did not give its response,
 /// `doing` naming the request ("Failed to add repository"): the daemon's
@@ -389,24 +385,6 @@ pub(crate) fn serialized_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The caller id is `peppy-cli-` and 8 hexadecimal digits, drawn once:
-    /// every goal of one process is sent by one sender.
-    #[test]
-    fn the_caller_id_is_drawn_once_per_process() {
-        let id = caller_instance_id();
-        let suffix = id
-            .strip_prefix("peppy-cli-")
-            .unwrap_or_else(|| panic!("{id} starts with peppy-cli-"));
-        assert_eq!(suffix.len(), 8, "{id}");
-        assert!(
-            suffix
-                .chars()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
-            "{id}"
-        );
-        assert_eq!(caller_instance_id(), id);
-    }
 
     /// A refusal of the daemon reads with its kind, `busy` as each kind of
     /// peppy does.

@@ -19,8 +19,8 @@
 
 use crate::Result;
 use crate::services::action_loop::{
-    GoalEnding, GoalHandler, accept_goal, invalid_payload, own_cancel_reason, refuse_goal,
-    run_action_loop, under_goal_cancel,
+    GoalEnding, GoalHandler, accept_goal, expose_daemon_action, invalid_payload, own_cancel_reason,
+    refuse_goal, run_action_loop, under_goal_cancel,
 };
 use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
@@ -35,15 +35,12 @@ use core_node_api::encoding::{
     InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
     StackBenchmarkGoalResponse, StackBenchmarkResult,
 };
-use core_node_api::names;
 use core_node_api::{ActionId, ServiceId};
 use daemon_config::consts::PeppyDirs;
 use latency_report::stats::summarize;
 use node_stack::NodeStack;
 use peppylib::clock::wall_now_ns;
-use peppylib::messaging::{
-    ConcurrentAction, Failure, NODE_HEALTH_SERVICE, PendingGoal, SenderTarget, ServiceTarget,
-};
+use peppylib::messaging::{Failure, NODE_HEALTH_SERVICE, PendingGoal, SenderTarget, ServiceTarget};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult, ServiceMessenger, TopicMessenger};
 use std::collections::HashMap;
@@ -82,13 +79,12 @@ pub(crate) async fn listen_for_stack_benchmark(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ConcurrentAction::expose(
+    let action = expose_daemon_action(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ActionId::StackBenchmark.name(),
-        true,
+        node_name,
+        ActionId::StackBenchmark,
     )
     .await?;
 

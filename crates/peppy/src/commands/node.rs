@@ -71,7 +71,7 @@ async fn fetch_tracked_instances(
         &core_node_api::encoding::NodeInfoRequest::new(node_name, node_tag),
         conn.messenger,
         &conn.core_node_name,
-        super::caller_instance_id(),
+        super::CALLER_INSTANCE_ID,
         &conn.target_core_node,
         timeout,
     )

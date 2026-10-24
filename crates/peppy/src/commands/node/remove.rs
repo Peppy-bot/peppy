@@ -6,7 +6,7 @@ use core_node_api::InstanceState;
 use core_node_api::encoding::NodeRemoveRequest;
 use tracing::info;
 
-use crate::commands::caller_instance_id;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -80,7 +80,7 @@ async fn remove_node_async(
         &remove_request,
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         &conn.target_core_node,
         remove_request_timeout(conn.shutdown_grace_secs),
     )

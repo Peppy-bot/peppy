@@ -37,7 +37,7 @@ use crate::commands::colors::{
     MEASURE_SERVICE_COLOR, NODE_COLOR, paint,
 };
 use crate::commands::table::{render_table, wrap};
-use crate::commands::{GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES, caller_instance_id};
+use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
@@ -87,7 +87,7 @@ async fn benchmark_async(
         &goal,
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         Some(&conn.target_core_node),
         GOAL_TIMEOUT,
     )

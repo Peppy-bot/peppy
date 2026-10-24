@@ -6,7 +6,7 @@ use core_node_api::encoding::NodeSyncRequest;
 use tracing::info;
 
 use super::source::resolve_node_root_dir;
-use crate::commands::caller_instance_id;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::Result;
 
@@ -63,7 +63,7 @@ async fn sync_resolved_node(
         &request,
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         &conn.target_core_node,
         REQUEST_TIMEOUT,
     )

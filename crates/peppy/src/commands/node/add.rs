@@ -16,7 +16,7 @@ use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 use super::run::validate_and_run_instance;
 use super::source::parse_node_source;
-use crate::commands::{GOAL_TIMEOUT, caller_instance_id};
+use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::{AppContext, DaemonConnection};
 use crate::error::{Error, Result};
 
@@ -202,7 +202,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         &add_goal,
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         Some(&conn.target_core_node),
         GOAL_TIMEOUT,
     )

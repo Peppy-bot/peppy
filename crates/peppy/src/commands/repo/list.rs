@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use core_node_api::encoding::{RepoListNodeEntry, RepoListRepoEntry, RepoListRequest};
 
-use crate::commands::caller_instance_id;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::commands::colors::{ORANGE, RED, paint};
 use crate::commands::repo::REQUEST_TIMEOUT;
 use crate::context::AppContext;
@@ -21,7 +21,7 @@ async fn list_repos_async(ctx: &Arc<AppContext>) -> Result<()> {
         &RepoListRequest,
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         &conn.target_core_node,
         REQUEST_TIMEOUT,
     )

@@ -2,8 +2,8 @@ mod staged;
 
 use self::staged::{StagedJob, run_staged_job};
 use super::super::action_loop::{
-    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, invalid_payload, refuse_goal,
-    run_action_loop, under_goal_cancel,
+    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, expose_daemon_action,
+    invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
 };
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::{COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
@@ -29,14 +29,13 @@ use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
-use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
 use node_stack::build_io::format_bytes;
 use node_stack::{ActionLog, Announcer, InstanceState, NodeStack, NodeStackError, WorkingDirGuard};
 use peppylib::MessengerHandle;
-use peppylib::messaging::{ConcurrentAction, Failure, PendingGoal};
+use peppylib::messaging::{Failure, PendingGoal};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::panic::AssertUnwindSafe;
@@ -49,7 +48,6 @@ use tracing::debug;
 use ureq::Error as HttpError;
 
 use super::{FeedbackLine, interface_step_sink};
-use peppylib::messaging::SenderTarget;
 
 #[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
 pub async fn listen_for_node_add(
@@ -62,13 +60,12 @@ pub async fn listen_for_node_add(
     relationships: super::RelationshipCoordinators,
     slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ConcurrentAction::expose(
+    let action = expose_daemon_action(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ActionId::NodeAdd.name(),
-        true,
+        node_name,
+        ActionId::NodeAdd,
     )
     .await?;
 

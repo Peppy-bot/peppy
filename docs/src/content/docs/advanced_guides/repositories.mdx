@@ -270,7 +270,7 @@ With `--strict`, the same report fails the command: `peppy repo refresh --strict
 
 Only a refresh that could not run at all fails: a `repositories.json5` that does not parse or that lists the same `id` twice, or caches that cannot be written. Nothing was read in that case, so there is nothing to contain. The command then prints the failure kind and the reason, `Repository refresh failed (attempt_failed): …`, and exits with code 1.
 
-A Ctrl+C sends the daemon a cancel of the refresh. The read of each repository that runs ends first, no other read starts, and the refresh publishes nothing, as a refresh that fails: the caches keep what they held. The command prints `Repository refresh was cancelled by its caller.` and exits with code 130. A second Ctrl+C stops the wait at once.
+A Ctrl+C sends the daemon a cancel of the refresh. The read of each repository that runs ends first, no other read starts, and the refresh publishes nothing, as a refresh that fails: the caches keep what they held. The command prints `Repository refresh was cancelled by its caller.` and exits with code 130. A second Ctrl+C stops the wait for the end once the cancel reached the daemon, and a third one ends the command at once.
 
 Two read failures are reported, and the distinction matters because they send you to different places:
 

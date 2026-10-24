@@ -3,7 +3,7 @@ use std::sync::Arc;
 use core_node_api::encoding::{GitRepoRef, RepoExcludeRequest, RepoSource};
 use tracing::{info, warn};
 
-use crate::commands::caller_instance_id;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::commands::repo::add::parse_repo_source;
 use crate::commands::repo::{REQUEST_TIMEOUT, repo_source_label};
 use crate::context::AppContext;
@@ -36,7 +36,7 @@ async fn exclude_repo_async(
         &request,
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         &conn.target_core_node,
         REQUEST_TIMEOUT,
     )

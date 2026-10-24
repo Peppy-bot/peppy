@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::commands::caller_instance_id;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -36,7 +36,7 @@ pub async fn node_info_rendered(
         &NodeInfoRequest::new(node_name, node_tag),
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         &conn.target_core_node,
         REQUEST_TIMEOUT,
     )

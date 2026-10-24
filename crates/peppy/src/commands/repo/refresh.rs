@@ -7,7 +7,7 @@ use tracing::{info, warn};
 use super::identity_label;
 use crate::commands::action_poll::{CtrlC, FollowedGoal, poll_action_to_completion};
 use crate::commands::node::TimeoutConfig;
-use crate::commands::{GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES, caller_instance_id};
+use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
@@ -27,7 +27,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
         &RepoRefreshGoal,
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         Some(&conn.target_core_node),
         GOAL_TIMEOUT,
     )

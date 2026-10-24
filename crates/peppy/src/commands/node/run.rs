@@ -24,7 +24,7 @@ use std::time::Duration;
 use tokio::time::{Instant, sleep};
 use tracing::info;
 
-use crate::commands::{GOAL_TIMEOUT, caller_instance_id};
+use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -134,7 +134,7 @@ async fn wait_for_build_to_finish(
             &NodeInfoRequest::new(node_name.to_string(), tag.to_string()),
             messenger,
             core_node_name,
-            caller_instance_id(),
+            CALLER_INSTANCE_ID,
             core_node_name,
             NODE_INFO_PREFLIGHT_TIMEOUT,
         )
@@ -536,7 +536,7 @@ async fn search_federation(
             &ClockListRequest::new(),
             messenger,
             caller_core_node,
-            caller_instance_id(),
+            CALLER_INSTANCE_ID,
             &claim.core_node,
             NODE_INFO_PREFLIGHT_TIMEOUT,
         )
@@ -641,7 +641,7 @@ async fn validate_links_against_stack(
         &StackListRequest::new(),
         messenger,
         core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         core_node_name,
         NODE_INFO_PREFLIGHT_TIMEOUT,
     )
@@ -682,7 +682,7 @@ async fn validate_links_against_stack(
             &NodeInfoRequest::new(node.name.clone(), node.tag.clone()),
             messenger,
             core_node_name,
-            caller_instance_id(),
+            CALLER_INSTANCE_ID,
             core_node_name,
             NODE_INFO_PREFLIGHT_TIMEOUT,
         )
@@ -786,7 +786,7 @@ async fn validate_links_against_stack(
             &NodeInfoRequest::new(target_name.to_owned(), target_tag.to_owned()),
             messenger,
             core_node_name,
-            caller_instance_id(),
+            CALLER_INSTANCE_ID,
             core_node_name,
             NODE_INFO_PREFLIGHT_TIMEOUT,
         )
@@ -1093,7 +1093,7 @@ pub async fn run_instance_async(
         &start_goal,
         messenger_handle,
         core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         Some(core_node_name),
         GOAL_TIMEOUT,
     )
@@ -1174,7 +1174,7 @@ async fn run_node_async(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<
             &NodeInfoRequest::new(node_name.clone(), tag.clone()),
             conn.messenger,
             &conn.core_node_name,
-            caller_instance_id(),
+            CALLER_INSTANCE_ID,
             &conn.core_node_name,
             NODE_INFO_PREFLIGHT_TIMEOUT,
         )

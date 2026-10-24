@@ -66,12 +66,13 @@ when turbo or shared-host load makes absolute latency swing run-to-run. With no
 interface edges in the running stack it prints
 `No interface edges found in the running stack; nothing to benchmark.`, and a
 second benchmark started while one is in flight is refused, with the failure
-kind `precondition_failed`.
+kind `busy`.
 
 A Ctrl+C sends the daemon a cancel: the measurement in progress stops, no other
 one starts, and the command prints `Benchmark was cancelled by its caller.` and
 exits with code 130. A benchmark changes nothing on the stack, so the next one
-runs at once. A second Ctrl+C stops the wait without the end of the benchmark.
+runs at once. A second Ctrl+C stops the wait for the end of the benchmark once
+the cancel reached the daemon, and a third one ends the command at once.
 
 ## Reading the tables
 

@@ -18,21 +18,60 @@
 //! the client drains feedback to end-of-stream, then fetches the buffered
 //! ending once.
 //!
-//! The daemon's goals keep the default sender grace of zero: the engine
-//! cancels the goals of a sender that is gone at once, with the cause
+//! Each action of the daemon keeps the goals of a sender that is gone for
+//! [`DAEMON_SENDER_GRACE`]. Once the grace passes and the sender did not
+//! come back, the engine cancels them with the cause
 //! [`peppylib::messaging::CancelCause::SenderGone`], and the work ends them
 //! as it ends a cancel of their caller.
 
 use config::failure_kind::PeppyFailureKind;
-use peppylib::PeppyResult;
-use peppylib::messaging::{CancelCause, ConcurrentAction, Failure, GoalContext, PendingGoal};
+use core_node_api::{ActionId, names};
+use peppylib::messaging::{
+    CancelCause, ConcurrentAction, Failure, GoalContext, PendingGoal, SenderTarget,
+};
 use peppylib::types::Payload;
+use peppylib::{MessengerHandle, PeppyResult};
 use std::future::Future;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 /// The reason of a goal that a stack reset ended.
 pub(crate) const STACK_RESET_REASON: &str = "cancelled by a stack reset";
+
+/// How long each action of the daemon keeps the goals of a sender that is
+/// gone. The presence token of a sender that still runs disappears while
+/// its router is down: the router watchdog of the daemon restarts a wedged
+/// router, and the session of the sender reconnects to the new one. The
+/// grace outlasts the longest outage that one restart of the watchdog
+/// heals (the daemon asserts it), so a launch, a build or the goal of a
+/// participant daemon goes on through a router restart or a short loss of
+/// the link between two machines. A command line process that is gone gets
+/// its goal cancelled once the grace passes.
+pub const DAEMON_SENDER_GRACE: Duration = Duration::from_secs(60);
+
+/// Exposes the built-in action `id` of the daemon on `messenger`, with
+/// feedback and with the sender grace of the daemon
+/// ([`DAEMON_SENDER_GRACE`]).
+pub(crate) async fn expose_daemon_action(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    instance_id: &str,
+    node_name: &str,
+    id: ActionId,
+) -> crate::Result<ConcurrentAction> {
+    let action = ConcurrentAction::expose(
+        messenger,
+        core_node_name,
+        instance_id,
+        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
+        id.name(),
+        true,
+    )
+    .await?;
+    action.set_sender_grace(DAEMON_SENDER_GRACE);
+    Ok(action)
+}
 
 /// Handles a single received goal for a built-in single-goal action.
 ///
@@ -374,6 +413,25 @@ mod tests {
             messenger,
             engine,
         )
+    }
+
+    /// Each action of the daemon keeps the goals of a sender that is gone
+    /// for the sender grace of the daemon.
+    #[tokio::test]
+    async fn a_daemon_action_has_the_sender_grace_of_the_daemon() {
+        let messenger = crate::services::tests::started_mock_messenger().await;
+
+        let action = expose_daemon_action(
+            &messenger,
+            CORE_NODE,
+            "core_root",
+            CORE_NODE,
+            ActionId::NodeBuild,
+        )
+        .await
+        .expect("the daemon exposes its action");
+
+        assert_eq!(action.sender_grace().get(), DAEMON_SENDER_GRACE);
     }
 
     /// Every goal of the daemon reads why it was cancelled by one rule: the

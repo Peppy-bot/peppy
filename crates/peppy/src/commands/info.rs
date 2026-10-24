@@ -4,7 +4,7 @@ use std::time::Duration;
 use core_node_api::encoding::InfoRequest;
 use daemon_config::consts::PEPPY_VERSION;
 
-use super::{Command, caller_instance_id};
+use super::{CALLER_INSTANCE_ID, Command};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use peppylib::core_node::transport::poll;
@@ -58,7 +58,7 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
         &request,
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         &conn.target_core_node,
         REQUEST_TIMEOUT,
     )

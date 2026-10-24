@@ -43,7 +43,7 @@ use peppylib::core_node::transport::poll;
 use auth::{FederationIdentity, PlatformApi, http::HttpClient, profile, storage};
 
 use super::Command;
-use crate::commands::caller_instance_id;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::error::Error;
 use crate::{context::AppContext, error::Result};
 use daemon::control::{self as daemon_control, PokeOutcome};
@@ -343,7 +343,7 @@ fn daemon_has_user_nodes(ctx: &Arc<AppContext>) -> bool {
             &StackListRequest::new(),
             conn.messenger,
             &conn.core_node_name,
-            caller_instance_id(),
+            CALLER_INSTANCE_ID,
             &conn.core_node_name,
             STACK_PROBE_TIMEOUT,
         )

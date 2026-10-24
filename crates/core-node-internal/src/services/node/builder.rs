@@ -1,6 +1,6 @@
 use super::super::action_loop::{
-    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, invalid_payload, refuse_goal,
-    run_action_loop, under_goal_cancel,
+    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, expose_daemon_action,
+    invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
 };
 use super::FeedbackLine;
 use super::gate::{COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
@@ -11,13 +11,11 @@ use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
 };
-use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
 use node_stack::{ActionLog, Announcer, BuildContext, NodeStack};
 use peppylib::MessengerHandle;
-use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{ConcurrentAction, Failure, PendingGoal};
+use peppylib::messaging::{Failure, PendingGoal};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -34,13 +32,12 @@ pub async fn listen_for_node_build(
     peppy_dirs: PeppyDirs,
     slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ConcurrentAction::expose(
+    let action = expose_daemon_action(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ActionId::NodeBuild.name(),
-        true,
+        node_name,
+        ActionId::NodeBuild,
     )
     .await?;
 

@@ -7,7 +7,7 @@ use core_node_api::encoding::NodeInitRequest;
 use tracing::info;
 
 use super::types::NodeName;
-use crate::commands::caller_instance_id;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::Result;
 use peppylib::core_node::transport::poll;
@@ -81,7 +81,7 @@ impl NodeInitBuilder {
             &request,
             conn.messenger,
             &conn.core_node_name,
-            caller_instance_id(),
+            CALLER_INSTANCE_ID,
             &conn.target_core_node,
             self.timeout,
         )

@@ -227,9 +227,10 @@ impl PipedIndex {
 }
 
 /// Each `peppy` process is a sender of its own. A process that is gone
-/// gets its stack goal cancelled, "its sender is gone", and the launch
-/// clears the stack as a failed launch does. The goal of another `peppy`
-/// process, a refresh that waits on its read, goes on to its end.
+/// gets its stack goal cancelled once the sender grace of the daemon
+/// passes, "its sender is gone", and the launch clears the stack as a
+/// failed launch does. The goal of another `peppy` process, a refresh that
+/// waits on its read, goes on to its end.
 #[test]
 fn a_cli_process_that_is_gone_gets_its_stack_goal_cancelled_and_another_one_goes_on() {
     let scratch = tempfile::tempdir().expect("temp scratch dir");
@@ -257,7 +258,7 @@ fn a_cli_process_that_is_gone_gets_its_stack_goal_cancelled_and_another_one_goes
     launch.kill().expect("kill the launch process");
     let _ = launch.wait();
     poll_for(
-        STEP_BOUND,
+        core_node::DAEMON_SENDER_GRACE + STEP_BOUND,
         "the cancel of the launch to clear the stack",
         || (!lists_the_instance(&daemon)).then_some(()),
     );

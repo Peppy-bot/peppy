@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
-use crate::commands::caller_instance_id;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use core_node_api::names::CORE_NODE_TAG;
@@ -51,7 +51,7 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
         &stop_request,
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         SenderTarget::node(&conn.target_core_node, CORE_NODE_TAG)
             .map_err(|e| Error::ExecutionFailed(format!("Failed to build sender target: {e}")))?,
         &conn.target_core_node,

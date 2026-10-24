@@ -3,7 +3,7 @@ use std::sync::Arc;
 use core_node_api::encoding::RepoRemoveRequest;
 use tracing::{info, warn};
 
-use crate::commands::caller_instance_id;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::commands::repo::REQUEST_TIMEOUT;
 use crate::context::AppContext;
 use crate::error::Result;
@@ -23,7 +23,7 @@ async fn remove_repo_async(ctx: &Arc<AppContext>, id: u64) -> Result<()> {
         &request,
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         &conn.target_core_node,
         REQUEST_TIMEOUT,
     )

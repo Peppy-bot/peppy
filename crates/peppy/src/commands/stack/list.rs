@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::commands::{DomainLabels, caller_instance_id};
+use crate::commands::{CALLER_INSTANCE_ID, DomainLabels};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use core_node_api::encoding::{CopyAction, CopyChange, LaunchIdentity, StackListRequest};
@@ -130,7 +130,7 @@ async fn collect_sections(ctx: &Arc<AppContext>) -> Result<Vec<StackSection>> {
                 &StackListRequest::new(),
                 messenger,
                 caller_core_node,
-                caller_instance_id(),
+                CALLER_INSTANCE_ID,
                 &core_node,
                 REQUEST_TIMEOUT,
             )

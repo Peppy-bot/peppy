@@ -14,7 +14,7 @@ use core_node_api::encoding::{LaunchIdentity, StackListRequest, StackResetReques
 use futures::future::join_all;
 use tracing::info;
 
-use crate::commands::caller_instance_id;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use peppylib::CoreNodePresenceMessenger;
@@ -36,7 +36,7 @@ async fn reset_async(ctx: &Arc<AppContext>, federated: bool) -> Result<()> {
         &StackListRequest::new(),
         conn.messenger,
         &conn.core_node_name,
-        caller_instance_id(),
+        CALLER_INSTANCE_ID,
         &conn.target_core_node,
         REQUEST_TIMEOUT,
     )
@@ -86,7 +86,7 @@ async fn reset_async(ctx: &Arc<AppContext>, federated: bool) -> Result<()> {
                 &StackListRequest::new(),
                 messenger,
                 caller,
-                caller_instance_id(),
+                CALLER_INSTANCE_ID,
                 core_node,
                 REQUEST_TIMEOUT,
             )
@@ -101,7 +101,7 @@ async fn reset_async(ctx: &Arc<AppContext>, federated: bool) -> Result<()> {
                 &StackResetRequest::new(),
                 messenger,
                 caller,
-                caller_instance_id(),
+                CALLER_INSTANCE_ID,
                 core_node,
                 timeout,
             )
@@ -183,7 +183,7 @@ async fn federation_holdings(
                 &StackListRequest::new(),
                 messenger,
                 caller,
-                caller_instance_id(),
+                CALLER_INSTANCE_ID,
                 &core_node,
                 REQUEST_TIMEOUT,
             )

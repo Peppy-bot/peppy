@@ -1,6 +1,6 @@
 use super::super::action_loop::{
-    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, invalid_payload, refuse_goal,
-    run_action_loop, under_goal_cancel,
+    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, expose_daemon_action,
+    invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
 };
 use super::endpoints::{HostAddressSource, expand_announcements, host_addresses};
 use super::gate::ConcurrencyGate;
@@ -25,7 +25,6 @@ use core_node_api::InstanceState;
 use core_node_api::encoding::{
     InstanceEnd, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult,
 };
-use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::VacantReason;
 use daemon_config::peppy_config::PeppyConfig;
@@ -39,8 +38,8 @@ use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, ConcurrentAction, Failure, NODE_ENDPOINTS_SERVICE,
-    NODE_HEALTH_SERVICE, NODE_READY_SERVICE, PendingGoal, ServiceTarget,
+    ActionFeedbackPublisher, Failure, NODE_ENDPOINTS_SERVICE, NODE_HEALTH_SERVICE,
+    NODE_READY_SERVICE, PendingGoal, ServiceTarget,
 };
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, ServiceMessenger};
@@ -325,13 +324,12 @@ pub async fn listen_for_node_run(
     node_stack: Arc<NodeStack>,
     config: NodeRunServiceConfig,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ConcurrentAction::expose(
+    let action = expose_daemon_action(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ActionId::NodeRun.name(),
-        true,
+        node_name,
+        ActionId::NodeRun,
     )
     .await?;
 

@@ -8,8 +8,9 @@
 //! gone and cancels the goal, with the reason "its sender is gone". A Ctrl-C
 //! sends the daemon a cancel; the command then follows the goal to the end
 //! the daemon gives it, under the max budget alone, says how it ended, and
-//! exits with code 130. A second Ctrl-C stops the wait at once, also while
-//! the cancel is on its way to the daemon.
+//! exits with code 130. A second Ctrl-C stops the wait for the end of the
+//! goal: the command waits only for the cancel to reach the daemon, and a
+//! third Ctrl-C ends the process at once.
 
 use peppylib::messaging::{ActionGoalHandle, ActionResultReply, GoalAnswer, GoalOutcome};
 use peppylib::{ActionMessenger, Message, MessengerHandle, PeppyError};
@@ -54,6 +55,10 @@ pub(crate) trait Interrupts {
     /// Resolves at the next press. A press that comes while no call waits
     /// is kept for the next call.
     fn next(&mut self) -> impl Future<Output = ()>;
+
+    /// Stops reading the presses: each press from then on ends the
+    /// process.
+    fn release(&mut self);
 }
 
 /// The Ctrl-C presses of the process for one follow of a goal, from
@@ -96,10 +101,8 @@ impl Interrupts for CtrlC {
             .await
             .expect("a CtrlC holds a sender of its own presses");
     }
-}
 
-impl Drop for CtrlC {
-    fn drop(&mut self) {
+    fn release(&mut self) {
         let mut follow = follow_slot();
         if follow
             .as_ref()
@@ -107,6 +110,12 @@ impl Drop for CtrlC {
         {
             *follow = None;
         }
+    }
+}
+
+impl Drop for CtrlC {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 
@@ -234,23 +243,32 @@ pub(crate) fn end_of_follow(cancel_sent: bool, error: Error) -> Error {
 pub(crate) enum CancelRace {
     /// The cancel request ended: the daemon answered it, or it failed.
     Ended,
-    /// A second Ctrl-C: the command stops waiting.
+    /// A second Ctrl-C came while the request was on its way: the command
+    /// stops waiting for the end of the goal, and the request ended.
     StoppedWaiting,
 }
 
 /// Runs `cancel`, the request that sends the daemon a cancel of the goal,
 /// on a task of its own, and waits for it against the next press of
-/// `interrupts`: a second Ctrl-C stops the wait at once, also while the
-/// request is on its way, and the request goes on.
+/// `interrupts`. A second Ctrl-C while the request is on its way stops the
+/// wait for the end of the goal, but not the request: the runtime of the
+/// command step, and then the process, end once the command returns, and
+/// would take the request with them. So the command waits for the request
+/// to end ([`CANCEL_TIMEOUT`] at most) and stops reading the presses: a
+/// third Ctrl-C ends the process at once.
 pub(crate) async fn cancel_unless_stopped(
     cancel: impl Future<Output = ()> + Send + 'static,
     interrupts: &mut impl Interrupts,
 ) -> CancelRace {
-    let request = tokio::spawn(cancel);
+    let mut request = tokio::spawn(cancel);
     tokio::select! {
         biased;
-        _ = request => CancelRace::Ended,
-        () = interrupts.next() => CancelRace::StoppedWaiting,
+        _ = &mut request => CancelRace::Ended,
+        () = interrupts.next() => {
+            interrupts.release();
+            let _ = request.await;
+            CancelRace::StoppedWaiting
+        }
     }
 }
 
@@ -349,7 +367,8 @@ pub(crate) fn deadline_after(
 /// - The first press `interrupts` gives sends the daemon a cancel, and the
 ///   command follows the goal to its end under the max budget alone, says
 ///   how it ended, and ends with [`Error::Interrupted`]. A second press
-///   stops the wait at once.
+///   stops the wait for the end, once the cancel reached the daemon (see
+///   [`cancel_unless_stopped`]).
 ///
 /// The scrolling output is cleared before returning.
 #[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
@@ -838,6 +857,10 @@ pub(crate) mod test_support {
                 std::future::pending::<()>().await;
             }
         }
+
+        fn release(&mut self) {
+            self.0.close();
+        }
     }
 
     /// `count` presses, given before the command follows its goal.
@@ -1061,12 +1084,13 @@ mod ctrl_c {
         );
     }
 
-    /// A second Ctrl-C stops the wait at once, also while the cancel that
-    /// the first one sent is on its way to the daemon: here the second press
-    /// is there before the daemon answers the cancel. The daemon goes on
-    /// with the cancel.
+    /// A second Ctrl-C stops the wait for the end of the goal, also while
+    /// the cancel that the first one sent is on its way to the daemon: here
+    /// the second press is there before the daemon answers the cancel. The
+    /// command ends once the cancel reached the daemon, which goes on with
+    /// it.
     #[tokio::test]
-    async fn a_second_ctrl_c_stops_the_wait_while_the_cancel_is_on_its_way() {
+    async fn a_second_ctrl_c_stops_the_wait_once_the_cancel_reached_the_daemon() {
         let (messenger, engine) = daemon().await;
         let accepted = accept_next(engine);
         let mut handle = send_node_add(&messenger).await;
@@ -1076,6 +1100,11 @@ mod ctrl_c {
             .await
             .expect_err("the second press stops the wait");
 
+        assert_eq!(
+            context.cancel_cause(),
+            Some(CancelCause::Caller),
+            "the cancel reached the daemon before the command ended"
+        );
         assert_eq!(error.exit_code(), 130);
         assert_eq!(
             error.to_string(),
@@ -1084,10 +1113,6 @@ mod ctrl_c {
                  Log file: {LOG_PATH}"
             )
         );
-        tokio::time::timeout(Duration::from_secs(30), context.cancel_signal())
-            .await
-            .expect("the cancel that the first press sent reaches the daemon");
-        assert_eq!(context.cancel_cause(), Some(CancelCause::Caller));
     }
 
     /// After a Ctrl-C the daemon rolls the work back, which can be silent
@@ -1159,8 +1184,8 @@ mod ctrl_c {
     /// bound of its feedback loses the stream: its handle cancels the goal,
     /// and the command says that it fell behind and cancelled the goal, with
     /// exit code 1. The goal here keeps one unread message; the daemon sends
-    /// two before the command reads one, and the test waits for the cancel
-    /// that the overflow sends.
+    /// two before the command reads one, so the first read of the command
+    /// finds the loss and its handle cancels the goal.
     #[tokio::test]
     async fn a_command_that_falls_behind_the_output_says_it_cancelled_the_goal() {
         let (messenger, engine) = daemon().await;
@@ -1180,13 +1205,13 @@ mod ctrl_c {
             .publish_feedback(line())
             .await
             .expect("the daemon publishes");
-        tokio::time::timeout(Duration::from_secs(30), context.cancel_signal())
-            .await
-            .expect("the overflow cancels the goal");
 
         let error = follow(&messenger, &mut handle, &mut presses(0))
             .await
             .expect_err("the command fell behind");
+        tokio::time::timeout(Duration::from_secs(30), context.cancel_signal())
+            .await
+            .expect("the overflow cancels the goal");
 
         assert_eq!(error.exit_code(), 1);
         assert_eq!(
@@ -1270,12 +1295,51 @@ mod ctrl_c {
 }
 
 /// The listener of SIGINT of the process, driven by real signals that the
-/// test sends to its own process. The test sends a press only while a
-/// follow holds a [`CtrlC`]: with no follow, a press ends the process.
+/// test sends to its own process, which runs that test alone. The test
+/// sends a press only while a follow holds a [`CtrlC`]: with no follow, a
+/// press ends the process.
 #[cfg(test)]
 mod sigint {
     use super::*;
     use rustix::process::{Signal, getpid, kill_process};
+
+    /// Set in the process of its own that a test of this module runs in.
+    const ALONE: &str = "PEPPY_SIGINT_TEST_ALONE";
+
+    /// Runs the test `name` of this module again in a process of its own,
+    /// and fails when it fails there. The presses of the test go to the one
+    /// follow slot of its process: another test of the binary that holds or
+    /// drops a [`CtrlC`] at the same time would take a press, or turn it
+    /// into the end of the whole binary. Returns `false` in that process,
+    /// where the test runs.
+    fn ran_in_a_process_of_its_own(name: &str) -> bool {
+        if std::env::var_os(ALONE).is_some() {
+            return false;
+        }
+        let module = module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_crate, module)| module);
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("the path of the test binary"),
+        )
+        .args(["--exact", &format!("{module}::{name}"), "--test-threads=1"])
+        .env(ALONE, "1")
+        .output()
+        .expect("the test binary runs");
+        assert!(
+            output.status.success(),
+            "the test failed in its own process: {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("1 passed"),
+            "the process of its own ran no test named {name}:\n{stdout}"
+        );
+        true
+    }
 
     fn press_ctrl_c() {
         kill_process(getpid(), Signal::INT).expect("the test sends itself SIGINT");
@@ -1303,6 +1367,11 @@ mod sigint {
     /// outlives the runtime of the step that started it.
     #[test]
     fn presses_go_to_the_follow_of_the_moment_and_end_the_process_between_follows() {
+        if ran_in_a_process_of_its_own(
+            "presses_go_to_the_follow_of_the_moment_and_end_the_process_between_follows",
+        ) {
+            return;
+        }
         command_step_runtime().block_on(async {
             let mut first = CtrlC::listen();
             press_ctrl_c();
