@@ -4,6 +4,7 @@ use common::{
     TestPackagesCache, create_node_dir, poll_core_node, read_json5_array,
     start_core_node_with_mock_messenger, write_repositories_json5,
 };
+use config::failure_kind::PeppyFailureKind;
 use core_node::{
     contracts_repo_cache_path, launchers_repo_cache_path, nodes_repo_cache_path,
     pairings_repo_cache_path, repositories_list_path,
@@ -20,9 +21,7 @@ async fn remove_fs_repo_succeeds() {
         &format!(r#"[{{ "id": 1, "type": "fs", "path": "{repo_path}" }}]"#),
     );
 
-    let resp = poll_core_node(&started, &RepoRemoveRequest::new(1)).await;
-    assert!(resp.success, "repo_remove should succeed");
-    assert!(resp.error_message.is_empty());
+    poll_core_node(&started, &RepoRemoveRequest::new(1)).await;
 
     // Verify the entry was removed from repositories.json5
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
@@ -69,12 +68,7 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
         .write(&started.peppy_dirs);
 
     // Remove the git repo by its id (2)
-    let resp = poll_core_node(&started, &RepoRemoveRequest::new(2)).await;
-    assert!(
-        resp.success,
-        "repo_remove should succeed, got error: {}",
-        resp.error_message
-    );
+    poll_core_node(&started, &RepoRemoveRequest::new(2)).await;
 
     // Verify the git entry was removed from repositories.json5
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
@@ -111,12 +105,12 @@ async fn remove_nonexistent_id_fails() {
         r#"[{ "id": 1, "type": "fs", "path": "/tmp/existing-repo" }]"#,
     );
 
-    let resp = poll_core_node(&started, &RepoRemoveRequest::new(999)).await;
-    assert!(!resp.success, "repo_remove should fail for unknown id");
+    let failure = common::poll_core_node_failure(&started, &RepoRemoveRequest::new(999)).await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::Rejected);
     assert!(
-        resp.error_message.contains("not found"),
+        failure.message().contains("not found"),
         "error should mention 'not found', got: {}",
-        resp.error_message
+        failure.message()
     );
 
     // Verify the original repos file is unchanged
@@ -130,12 +124,12 @@ async fn remove_from_empty_repos_fails() {
 
     write_repositories_json5(&started, "[]");
 
-    let resp = poll_core_node(&started, &RepoRemoveRequest::new(1)).await;
-    assert!(!resp.success, "repo_remove should fail on empty list");
+    let failure = common::poll_core_node_failure(&started, &RepoRemoveRequest::new(1)).await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::Rejected);
     assert!(
-        resp.error_message.contains("not found"),
+        failure.message().contains("not found"),
         "error should mention 'not found', got: {}",
-        resp.error_message
+        failure.message()
     );
 }
 
@@ -152,15 +146,12 @@ async fn remove_fails_when_duplicate_ids_in_file() {
         ]"#,
     );
 
-    let resp = poll_core_node(&started, &RepoRemoveRequest::new(1)).await;
+    let failure = common::poll_core_node_failure(&started, &RepoRemoveRequest::new(1)).await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::AttemptFailed);
     assert!(
-        !resp.success,
-        "repo_remove should fail when duplicate ids exist"
-    );
-    assert!(
-        resp.error_message.contains("duplicate repository id"),
+        failure.message().contains("duplicate repository id"),
         "error should mention duplicate id, got: {}",
-        resp.error_message
+        failure.message()
     );
 }
 
@@ -179,12 +170,7 @@ async fn remove_verifies_id_on_manually_added_entry() {
     );
 
     // Remove the middle entry by its specific id
-    let resp = poll_core_node(&started, &RepoRemoveRequest::new(20)).await;
-    assert!(
-        resp.success,
-        "repo_remove should succeed, got error: {}",
-        resp.error_message
-    );
+    poll_core_node(&started, &RepoRemoveRequest::new(20)).await;
 
     // Verify the correct entry was removed and ids are preserved
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));

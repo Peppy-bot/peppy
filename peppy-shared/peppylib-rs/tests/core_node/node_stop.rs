@@ -73,14 +73,16 @@ async fn node_stop_discovery_scopes_to_scope_core_node_not_bound() {
         decoy_server,
         BOUND_CORE,
         BOUND_DAEMON_INSTANCE,
-        NodeStopResponse::failure("listener on the bound core node answered"),
+        // The decoy answers a stop that differs from the scope core node's,
+        // so the answer names the listener that gave it.
+        NodeStopResponse::forced(),
     )
     .await;
     spawn_node_stop_stub_listener(
         remote_server,
         SCOPE_CORE,
         "remote_daemon",
-        NodeStopResponse::success(),
+        NodeStopResponse::graceful(),
     )
     .await;
 
@@ -99,10 +101,10 @@ async fn node_stop_discovery_scopes_to_scope_core_node_not_bound() {
     .await
     .expect("poll_node_stop should reach the scope core node's listener");
 
-    assert!(
-        response.success,
-        "expected the scope core node's listener to answer, got: {:?}",
-        response.error_message,
+    assert_eq!(
+        response,
+        NodeStopResponse::graceful(),
+        "expected the scope core node's listener to answer"
     );
 }
 
@@ -120,7 +122,7 @@ async fn node_stop_does_not_fall_back_to_bound_core_node() {
         server,
         BOUND_CORE,
         BOUND_DAEMON_INSTANCE,
-        NodeStopResponse::success(),
+        NodeStopResponse::graceful(),
     )
     .await;
 

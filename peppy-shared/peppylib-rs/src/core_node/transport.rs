@@ -16,21 +16,22 @@
 
 use std::time::Duration;
 
-use config::node::QoSProfile;
 use core_node_api::Payload;
 use core_node_api::encoding::*;
 use core_node_api::names;
 use core_node_api::{ActionGoal, ServiceId, ServiceRequest};
 
 use crate::error::Result;
-use crate::messaging::{ActionGoalHandle, FeedbackBuffer, SenderTarget, ServiceTarget};
+use crate::messaging::{ActionGoalHandle, FeedbackBound, SenderTarget, ServiceTarget};
 use crate::{ActionMessenger, MessengerHandle, ServiceMessenger};
 
-/// How a caller of a daemon action holds the goal's feedback. That feedback
-/// carries the lines of the work the daemon runs (builds, fetches, launches),
-/// which the caller prints or relays one by one, so the caller keeps every
-/// line until it reads it.
-pub const DAEMON_GOAL_FEEDBACK: FeedbackBuffer = FeedbackBuffer::KeepAll;
+/// How many unread feedback messages a caller of a daemon action keeps. That
+/// feedback carries the lines of the work the daemon runs (builds, fetches,
+/// launches), which the caller prints or relays one by one: a build can
+/// print lines faster than a slow terminal shows them, so the bound is far
+/// above the default of [`crate::messaging::DEFAULT_FEEDBACK_BOUND`].
+pub const DAEMON_GOAL_FEEDBACK_BOUND: FeedbackBound =
+    FeedbackBound::new(std::num::NonZeroUsize::new(65_536).expect("65536 is not zero"));
 
 /// Routing parameters for a single service poll. Bundled into a struct so
 /// [`poll_core_node_service`] doesn't need a `clippy::too_many_arguments`
@@ -133,8 +134,7 @@ pub async fn send_goal<G: ActionGoal>(
         G::ID.name(),
         None,
         goal_payload,
-        QoSProfile::default(),
-        DAEMON_GOAL_FEEDBACK,
+        DAEMON_GOAL_FEEDBACK_BOUND,
         goal_timeout,
     )
     .await

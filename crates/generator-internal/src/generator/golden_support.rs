@@ -11,6 +11,7 @@ use super::types::{
     ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact, LanguageGenerator,
     PeerContext,
 };
+use config::failure_kind::{ContractFailureKinds, ContractKinds, FailureKindName, MemberSection};
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, MessageFormat, NativeEmittedTopic,
     NativeExposedAction, NativeExposedService,
@@ -213,7 +214,56 @@ pub(crate) fn contract_origin(link_id: &str) -> ContractOrigin {
         link_id: link_id.to_string(),
         contract_name: "camera_feed".to_string(),
         contract_tag: "v1".to_string(),
+        failure_kinds: failure_kinds(
+            &[("lens_covered", "The lens of the camera is covered")],
+            &[
+                (MemberSection::Service, "enable_camera"),
+                (MemberSection::Action, "move_arm"),
+            ],
+        ),
     }
+}
+
+/// The kinds of a contract whose `failure_kinds` block declares `kinds`,
+/// each a name and its meaning, in that order, and whose `members` each list
+/// all of them.
+pub(crate) fn failure_kinds(
+    kinds: &[(&str, &str)],
+    members: &[(MemberSection, &str)],
+) -> ContractKinds {
+    let name = |name: &str| FailureKindName::parse(name).expect("a valid failure kind name");
+    let declared = ContractFailureKinds::new(
+        kinds
+            .iter()
+            .map(|(kind, meaning)| (name(kind), meaning.to_string())),
+    )
+    .expect("a valid failure_kinds block");
+    let listed: Vec<FailureKindName> = kinds.iter().map(|(kind, _)| name(kind)).collect();
+    ContractKinds::new(
+        declared,
+        members
+            .iter()
+            .map(|(section, member)| (*section, member.to_string(), listed.clone())),
+    )
+    .expect("each member lists declared kinds")
+}
+
+/// The `arm_control` contract the contract-routed dependency of both goldens
+/// consumes.
+pub(crate) fn arm_control_dependency() -> DependencyContext {
+    DependencyContext::contract(
+        "arm_control",
+        "v1",
+        "left_arm",
+        Cardinality::One,
+        failure_kinds(
+            &[
+                ("unreachable", "No plan to the target"),
+                ("leader_streaming", "A leader streams a limb of the goal"),
+            ],
+            &[(MemberSection::Action, "move_arm")],
+        ),
+    )
 }
 
 pub(crate) fn peer(link_id: &str, cardinality: Cardinality) -> PeerContext {

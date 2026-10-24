@@ -2,27 +2,32 @@
 //! passes through, and the context the change it asked for runs under.
 
 use super::ActiveLaunch;
+use super::ChangeEnd;
 use super::copies::join::join;
 use super::copies::remove::remove;
+use super::launch::feedback::publish_node_logs;
 use super::launch::process_launch;
 use crate::Result;
-use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use crate::services::action_loop::{
+    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, expose_daemon_action,
+    invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
+};
 use crate::services::node::common::{encode_response_or_err, panic_message};
 use crate::services::node::gate::{
     Admission, ConcurrencyGate, finish_on_reset, reset_drain_budget,
 };
 use crate::services::node::{DaemonDefaults, HealthMonitorPolicy, RelationshipCoordinators};
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::ActionId;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     CopyAction, CopyChange, DEFAULT_IDLE_TIMEOUT_SECS, LaunchGoal, LaunchGoalResponse,
-    LaunchResult, StackBudgets, StackBuildGoal, StackJoinGoal, StackRemoveGoal,
+    StackBudgets, StackBuildGoal, StackJoinGoal, StackRemoveGoal,
 };
-use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
 use node_stack::{ActionLog, NodeStack};
-use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{ActionFeedbackPublisher, ConcurrentAction, PendingGoal};
+use peppylib::messaging::{ActionFeedbackPublisher, Failure, PendingGoal};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
 use std::panic::AssertUnwindSafe;
@@ -154,7 +159,7 @@ impl StackRequest {
         }
     }
 
-    fn process(self, ctx: StackChangeContext) -> futures::future::BoxFuture<'static, LaunchResult> {
+    fn process(self, ctx: StackChangeContext) -> futures::future::BoxFuture<'static, ChangeEnd> {
         match self {
             Self::Launch(goal) => process_launch(goal, ctx).boxed(),
             Self::Build(goal) => process_launch(goal.into_launch(), ctx).boxed(),
@@ -243,15 +248,8 @@ pub(crate) async fn listen_for_stack_action(
             reason,
         }
     })?;
-    let action = ConcurrentAction::expose(
-        messenger,
-        core_node_name,
-        instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        action_id.name(),
-        true,
-    )
-    .await?;
+    let action =
+        expose_daemon_action(messenger, core_node_name, instance_id, node_name, action_id).await?;
 
     let StackChangeDefaults {
         timeouts,
@@ -318,17 +316,10 @@ impl GoalHandler for StackActionHandler {
     }
 }
 
-fn encode_rejected(action: StackAction, reason: impl Into<String>) -> PeppyResult<Payload> {
-    encode_response_or_err(
-        action.id().name(),
-        LaunchGoalResponse::rejected(reason).encode(),
-    )
-}
-
 fn encode_accepted(action: StackAction, log_path: &Path) -> PeppyResult<Payload> {
     encode_response_or_err(
         action.id().name(),
-        LaunchGoalResponse::accepted(log_path).encode(),
+        LaunchGoalResponse::new(log_path).encode(),
     )
 }
 
@@ -337,6 +328,9 @@ fn encode_accepted(action: StackAction, log_path: &Path) -> PeppyResult<Payload>
 pub(super) struct StackChangeContext {
     /// Which action the change answers, so its feedback names itself.
     pub(super) action: StackAction,
+    /// Cancelled by a stack reset, by the goal's caller, and by the engine
+    /// when the goal's sender is gone. Each phase stops at it as it stops at
+    /// a failure of its own, with the same rollback.
     pub(super) cancellation: CancellationToken,
     pub(super) messenger: MessengerHandle,
     pub(super) bound_core_node: String,
@@ -372,6 +366,18 @@ pub(super) struct StackChangeContext {
     pub(super) peppy_version: String,
 }
 
+impl StackChangeContext {
+    /// Stops the change at the step it reached when a cancel arrived: the
+    /// cancel ends the change as a failure of that step does, with the same
+    /// rollback, and its goal then ends cancelled.
+    pub(super) fn stop_if_cancelled(&self) -> super::ChangeResult<()> {
+        if self.cancellation.is_cancelled() {
+            return Err(super::launch::phases::phase_cancelled());
+        }
+        Ok(())
+    }
+}
+
 async fn handle_stack_request(
     pending: PendingGoal,
     action_context: StackActionContext,
@@ -384,11 +390,7 @@ async fn handle_stack_request(
     let goal = match StackRequest::decode(action, pending.request_bytes()) {
         Ok(g) => g,
         Err(e) => {
-            reject_goal(
-                pending,
-                encode_rejected(action, format!("invalid payload: {e}")),
-            )
-            .await;
+            refuse_goal(pending, invalid_payload(e)).await;
             return;
         }
     };
@@ -396,15 +398,15 @@ async fn handle_stack_request(
     let mutation = match action_context.slice_ownership.try_begin_change() {
         Ok(mutation) => mutation,
         Err(refusal) => {
-            reject_goal(pending, encode_rejected(action, refusal)).await;
+            refuse_goal(pending, refusal).await;
             return;
         }
     };
     if let Some((launch_id, coordinator)) = action_context.slice_ownership.held_reservation() {
-        reject_goal(
+        refuse_goal(
             pending,
-            encode_rejected(
-                action,
+            Failure::new(
+                DaemonFailureKind::Busy,
                 format!(
                     "this daemon is reserved for launch `{launch_id}` by `{coordinator}`; wait \
                      for that operation to finish, or clear the reservation with `peppy stack \
@@ -425,9 +427,9 @@ async fn handle_stack_request(
         // A stack action never forces, so nothing is ever superseded here.
         Admission::Admitted { generation, .. } => generation,
         Admission::AlreadyRunning { .. } => {
-            reject_goal(
+            refuse_goal(
                 pending,
-                encode_rejected(action, "action already in progress"),
+                Failure::new(DaemonFailureKind::Busy, "action already in progress"),
             )
             .await;
             return;
@@ -456,7 +458,11 @@ async fn handle_stack_request(
         Err(error_msg) => {
             debug!("{error_msg}");
             gate.clear_running();
-            reject_goal(pending, encode_rejected(action, &error_msg)).await;
+            refuse_goal(
+                pending,
+                Failure::new(PeppyFailureKind::AttemptFailed, error_msg),
+            )
+            .await;
             return;
         }
     };
@@ -484,13 +490,16 @@ async fn handle_stack_request(
     let feedback_publisher = goal_ctx
         .feedback_publisher()
         .expect("every stack action declares a feedback topic");
-    let log_for_task = log.clone();
     let gate_for_task = gate.clone();
-    let cancellation = action_context.slice_ownership.stack.cancellation();
+    // A stack reset cancels `reset`; the goal's caller, or the engine when
+    // the goal's sender is gone, cancels the change's own token, which
+    // descends from it.
+    let reset = action_context.slice_ownership.stack.cancellation();
+    let cancellation = reset.child_token();
     tokio::spawn(async move {
         let _mutation = mutation;
-        // Frees the gate slot on every exit: explicitly before completion on the
-        // normal path (via `release_then_complete` below), or on unwind for a
+        // Frees the gate slot on every exit: explicitly before the end on the
+        // normal path (via `release_then_end` below), or on unwind for a
         // panic. A no-op if a later goal already took over.
         let slot = gate_for_task.into_slot_guard(generation);
         let StackActionContext {
@@ -531,22 +540,27 @@ async fn handle_stack_request(
             slice_ownership,
             peppy_version,
         };
-        // Catch panics so a panic inside the change still completes the goal
-        // with a failure result, rather than leaving the client to wait out the
-        // SDK's retention window for a result that never arrives. Releasing the
+        // Catch panics so a panic inside the change still ends the goal
+        // failed, rather than leaving the client to wait out the SDK's
+        // retention window for an ending that never arrives. Releasing the
         // gate on panic is handled by `slot` above. Mirrors the panic handling
         // in `run_node_run` / `run_node_add` / `run_node_build`.
         // A change starts instances, and a reset that cancels one of their
-        // starts waits for its cooperative stop.
+        // starts waits for its cooperative stop; a cancel of the goal does
+        // not drop the change, which ends through the rollback of the step
+        // it stopped at.
         let drain_budget = reset_drain_budget(ctx.node_stack.shutdown_grace());
-        let work = finish_on_reset(goal.process(ctx), &cancellation, drain_budget, || {
-            LaunchResult::failure(
-                log_for_task.path(),
+        let log = ctx.log.clone();
+        let publisher = ctx.feedback_publisher.clone();
+        let work = finish_on_reset(goal.process(ctx), &reset, drain_budget, || {
+            ChangeEnd::stopped(WorkStop::Cancelled(Failure::new(
+                PeppyFailureKind::AttemptFailed,
                 "stack operation cancelled by stack reset",
-            )
+            )))
         });
-        let result = match AssertUnwindSafe(work).catch_unwind().await {
-            Ok(result) => result,
+        let work = under_goal_cancel(&goal_ctx, &cancellation, work);
+        let end = match AssertUnwindSafe(work).catch_unwind().await {
+            Ok(end) => end,
             Err(panic_payload) => {
                 let msg = format!(
                     "stack {} task panicked: {}",
@@ -554,12 +568,37 @@ async fn handle_stack_request(
                     panic_message(&*panic_payload)
                 );
                 tracing::error!("{}", msg);
-                LaunchResult::failure(log_for_task.path(), msg)
+                ChangeEnd::stopped(Failure::new(PeppyFailureKind::AttemptFailed, msg))
             }
         };
         drop(_mutation);
-        if let Ok(payload) = result.encode() {
-            slot.release_then_complete(&goal_ctx, payload).await;
-        }
+        let ending =
+            stack_goal_ending(end, &log, &publisher, cancel_reason(&goal_ctx, &reset)).await;
+        slot.release_then_end(&goal_ctx, ending).await;
     });
+}
+
+/// How the goal of a stack change that ended with `end` ends: completed
+/// with its result, failed, or, when a cancel stopped the change, cancelled
+/// with the reason of the cancel (`cancel_reason`). The node logs
+/// of the change reach its caller first, as the last feedback of the goal,
+/// and the log records how a failed or cancelled change ended.
+async fn stack_goal_ending(
+    end: ChangeEnd,
+    log: &ActionLog,
+    publisher: &ActionFeedbackPublisher,
+    cancel_reason: Option<String>,
+) -> GoalEnding {
+    publish_node_logs(publisher, end.node_logs).await;
+    let ending = GoalEnding::of(end.outcome.map(|result| result.encode()), cancel_reason);
+    match &ending {
+        GoalEnding::Completed(_) => {}
+        GoalEnding::Failed(failure) => log.error(&format!(
+            "failed ({}): {}",
+            failure.kind(),
+            failure.message()
+        )),
+        GoalEnding::Cancelled(reason) => log.error(&format!("cancelled: {reason}")),
+    }
+    ending
 }

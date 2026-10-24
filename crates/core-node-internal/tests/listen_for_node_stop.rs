@@ -2,19 +2,20 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node,
-    answer_readiness, build_staged_node, create_test_node_with_name,
+    answer_readiness, assert_failure, build_staged_node, create_test_node_with_name, error_reply,
     install_kill_on_shutdown_listener, is_process_running, poll_until, send_node_add_and_wait,
     send_node_add_then_build, send_node_run_and_wait, spawn_real_stuck_instance,
     start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
     wait_for_forked_grandchildren, wait_until_grandchildren_exit, wait_until_process_exits,
     write_peppy_json5,
 };
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
 use core_node::force_kill_deadline;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use peppylib::core_node::transport::poll_node_stop;
-use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::messaging::{Failure, MessengerHandle, ServiceMessenger};
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -58,11 +59,7 @@ async fn listen_for_node_stop_success() {
     .await
     .expect("node_add should complete");
 
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
+    add_response.completed();
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
@@ -146,12 +143,6 @@ async fn listen_for_node_stop_success() {
     .await
     .expect("node_stop request should complete");
 
-    assert!(response.success, "node_stop should succeed");
-    assert!(
-        response.error_message.is_none(),
-        "success response should not include error_message, got: {:?}",
-        response.error_message
-    );
     // The node honored the cooperative shutdown, so it must NOT be reported as
     // force-killed.
     assert!(
@@ -229,11 +220,7 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
     )
     .await
     .expect("node_add should complete");
-    assert!(
-        add_response.success,
-        "node_add should succeed, got error: {:?}",
-        add_response.error_message
-    );
+    add_response.completed();
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -301,7 +288,6 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
     .await
     .expect("node_stop request should complete");
 
-    assert!(response.success, "node_stop should succeed");
     assert!(
         !response.force_killed,
         "a node that exits cooperatively after the grace window but within the \
@@ -331,7 +317,7 @@ async fn node_stop_of_the_core_nodes_instance_is_refused() {
         .map(|instance| instance.instance_id.clone())
         .expect("the stack lists the core node's own instance");
 
-    let response = poll_node_stop(
+    let error = poll_node_stop(
         &NodeStopRequest::new(&root_id),
         &started.caller_handle,
         &started.core_node_name,
@@ -341,12 +327,14 @@ async fn node_stop_of_the_core_nodes_instance_is_refused() {
         Duration::from_secs(5),
     )
     .await
-    .expect("node_stop request should complete");
-    assert!(!response.success);
-    assert_eq!(
-        response.error_message.as_deref(),
-        Some("Cannot stop the core node")
+    .expect_err("the daemon refuses the stop");
+    let failure = error_reply(&error);
+    assert_failure(
+        &failure,
+        PeppyFailureKind::Rejected,
+        "Cannot stop the core node",
     );
+    assert_eq!(failure.message(), "Cannot stop the core node");
     assert!(
         started
             .node_stack
@@ -362,7 +350,7 @@ async fn listen_for_node_stop_fails_when_instance_id_not_found() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    let response = poll_node_stop(
+    let error = poll_node_stop(
         &NodeStopRequest::new(MISSING_INSTANCE_ID),
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -372,23 +360,15 @@ async fn listen_for_node_stop_fails_when_instance_id_not_found() {
         Duration::from_secs(5),
     )
     .await
-    .expect("node_stop request should complete");
+    .expect_err("node_stop should fail");
 
-    assert!(!response.success, "node_stop should fail");
-    let error_message = response
-        .error_message
-        .as_ref()
-        .expect("node_stop failure should include error_message");
-    assert!(
-        error_message.contains("not found in node stack"),
-        "error should mention missing instance, got: {}",
-        error_message
+    let failure = error_reply(&error);
+    assert_failure(
+        &failure,
+        PeppyFailureKind::Rejected,
+        "not found in node stack",
     );
-    assert!(
-        error_message.contains(MISSING_INSTANCE_ID),
-        "error should include missing instance id, got: {}",
-        error_message
-    );
+    assert_failure(&failure, PeppyFailureKind::Rejected, MISSING_INSTANCE_ID);
 }
 
 /// `node_stop` must behave like the daemon's SIGINT teardown: a node that
@@ -452,17 +432,8 @@ async fn node_stop_force_kills_whole_process_group() {
     .await
     .expect("node_stop request should complete");
 
-    // A stuck node is force-killed and its stop is reported as a success.
-    assert!(
-        response.success,
-        "node_stop must force-kill a stuck node and succeed, got error: {:?}",
-        response.error_message
-    );
-    assert!(
-        response.error_message.is_none(),
-        "success response should not include error_message, got: {:?}",
-        response.error_message
-    );
+    // A stuck node is force-killed, and its stop is a success: the
+    // `expect` above gives the error reply of a failed stop.
     // The user must be told this was a force-kill, not a graceful exit.
     assert!(
         response.force_killed,
@@ -548,13 +519,9 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
     )
     .await
     .expect("node_run action should complete");
-    assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
     let pid = start_response
-        .result
+        .end
+        .completed()
         .pid
         .expect("node_run should return a pid");
     assert!(
@@ -579,11 +546,6 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
     .await
     .expect("node_stop request should complete");
 
-    assert!(
-        response.success,
-        "node_stop should succeed, got error: {:?}",
-        response.error_message
-    );
     // The whole point: a real NodeBuilder node must honor the cooperative
     // shutdown within the grace period and never be reported as force-killed.
     assert!(
@@ -654,11 +616,10 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
                 .handle_requests(move |_context| {
                     foreign_hits.fetch_add(1, Ordering::SeqCst);
                     async move {
-                        NodeStopResponse::failure(
+                        Err(Failure::new(
+                            PeppyFailureKind::Rejected,
                             "foreign core node must never answer a scoped node_stop",
-                        )
-                        .encode()
-                        .map_err(Into::into)
+                        ))
                     }
                 })
                 .await
@@ -679,7 +640,9 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
         AbortOnDrop(peppylib::runtime::spawn(async move {
             endpoint
                 .handle_requests(|_context| async move {
-                    NodeStopResponse::success().encode().map_err(Into::into)
+                    Ok(NodeStopResponse::graceful()
+                        .encode()
+                        .expect("a node_stop response encodes"))
                 })
                 .await
         }))
@@ -708,7 +671,7 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
     // Each iteration runs a fresh discover-then-pin sequence; without the
     // bound-core-node scope the foreign listener could win any of them.
     for i in 0..10 {
-        let response = poll_node_stop(
+        poll_node_stop(
             &NodeStopRequest::new(TARGET_INSTANCE_ID),
             &caller_handle,
             LOCAL_CORE_NODE,
@@ -718,13 +681,9 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
             Duration::from_secs(5),
         )
         .await
-        .expect("scoped node_stop request should complete");
-
-        assert!(
-            response.success,
-            "scoped node_stop #{i} was answered by the foreign core node: {:?}",
-            response.error_message
-        );
+        .unwrap_or_else(|error| {
+            panic!("scoped node_stop #{i} was answered by the foreign core node: {error}")
+        });
     }
 
     assert_eq!(
@@ -796,13 +755,9 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
     )
     .await
     .expect("node_run action should complete");
-    assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
     let pid = start_response
-        .result
+        .end
+        .completed()
         .pid
         .expect("should have a PID on success");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -814,7 +769,7 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
     let _kill_on_shutdown =
         install_kill_on_shutdown_listener(&started, TARGET_NODE_NAME, &instance_id, pid).await;
 
-    let response = poll_node_stop(
+    poll_node_stop(
         &NodeStopRequest::new(TARGET_INSTANCE_ID),
         &started.caller_handle,
         &started.core_node_name,
@@ -825,11 +780,6 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
     )
     .await
     .expect("node_stop request should complete");
-    assert!(
-        response.success,
-        "node_stop should succeed, got error: {:?}",
-        response.error_message
-    );
 
     wait_until_process_exits(
         pid,

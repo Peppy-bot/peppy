@@ -3,14 +3,15 @@ use crate::helpers::{
     JOINTS_CONTRACT_ACTION, JOINTS_CONTRACT_NAME, JOINTS_REFINEMENT, PYTHON_STUB_EXECUTION,
     SHUTDOWN_SENDER_INSTANCE_ID, STUB_PYTHON_NODE_CONFIG, TEST_CORE_NODE,
     assert_exited_successfully, bind_slot, consumed_move_arm_action_messages,
-    contract_consumer_stub_node_config, contract_dep, generate_node_project,
-    init_python_project_venv, init_python_user_node, native_dep, python_consumer_stub_node_config,
-    save_runtime_config, shut_down_test_node, spawn_python_run, test_contract_target,
-    test_node_runtime_config, test_wait_context, try_send_shutdown,
+    contract_consumer_stub_node_config, contract_dep, contract_dep_with_kinds, failure_kinds,
+    generate_node_project, init_python_project_venv, init_python_user_node, native_dep,
+    python_consumer_stub_node_config, save_runtime_config, shut_down_test_node, spawn_python_run,
+    test_contract_target, test_node_runtime_config, test_wait_context, try_send_shutdown,
     wait_for_action_reachable_via_target_or_exit, wait_for_action_service_reachable_or_exit,
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
+use config::failure_kind::MemberSection;
 use config::node::{ConsumedAction, NativeExposedAction, NativeExposedService};
 use generator::{ConsumedActionMessage, ContractOrigin, LanguageGenerator};
 use std::{fs, time::Duration};
@@ -207,27 +208,29 @@ async fn run_move_arm_flow(
 async fn actions_communication(#[case] topology: crate::helpers::LocalNodesTopology) {
     let consumer_main = r#"
 import asyncio
-from peppygen import NodeBuilder, QoSProfile
+from peppygen import NodeBuilder
 from peppygen.exposed_services import move_arm_flow_done
 from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
 async def run_consumer(node_runner):
     arm = brain_move_arm.bound_producer(node_runner)
 
-    # A goal for the reserved arm is rejected through the framework
-    # admission ack; no declared response payload rides along.
+    # A goal for the reserved arm is refused through the framework
+    # admission ack, with a kind of peppy (a native action declares no kind
+    # of its own); no declared response payload rides along.
     reserved = brain_move_arm.GoalRequest(arm_id=99, desired_position=[0, 0, 0])
-    rejected = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, arm, reserved, 5.0, QoSProfile.SensorData
+    refused = await brain_move_arm.ActionHandle.fire_goal(
+        node_runner, arm, reserved, 5.0
     )
+    assert refused.refusal.kind is brain_move_arm.FailureKind.PRECONDITION_FAILED
     print(
-        f"rejected goal accepted={rejected.accepted} reason={rejected.reason} data_present={rejected.data is not None}",
+        f"refused goal accepted={refused.accepted} refusal={refused.refusal} data_present={refused.data is not None}",
         flush=True,
     )
 
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, arm, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0
     )
     print(f"goal accepted={goal.accepted} data_accepted={goal.data.accepted}", flush=True)
 
@@ -266,7 +269,9 @@ async def run_exposer(node_runner):
             flush=True,
         )
         if request.data.arm_id == 99:
-            return move_arm.GoalDecision.reject("arm 99 is reserved")
+            return move_arm.GoalDecision.refuse(
+                move_arm.FailureKind.PRECONDITION_FAILED, "arm 99 is reserved"
+            )
         return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
 
     while True:
@@ -305,7 +310,7 @@ if __name__ == "__main__":
     .await;
     assert!(
         consumer_stdout
-            .contains("rejected goal accepted=False reason=arm 99 is reserved data_present=False")
+            .contains("refused goal accepted=False refusal=precondition_failed: arm 99 is reserved data_present=False")
             && consumer_stdout.contains("goal accepted=True data_accepted=True")
             && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
             && consumer_stdout
@@ -333,7 +338,7 @@ if __name__ == "__main__":
 async fn actions_communication_cancel_goal(#[case] topology: crate::helpers::LocalNodesTopology) {
     let consumer_main = r#"
 import asyncio
-from peppygen import NodeBuilder, QoSProfile
+from peppygen import NodeBuilder
 from peppygen.exposed_services import move_arm_cancel_flow_done
 from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
@@ -341,7 +346,7 @@ async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, arm, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -384,7 +389,7 @@ async def run_exposer(node_runner):
         # Wait for a cancel for this goal, then report the cancelled result.
         await ctx.cancel_signal()
         print("server observed cancel for goal", flush=True)
-        await ctx.complete_cancelled(False, "goal cancelled by server", [0, 0, 0])
+        await ctx.complete_cancelled("goal cancelled by server", False, "goal cancelled by server", [0, 0, 0])
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     return [asyncio.create_task(run_exposer(node_runner))]
@@ -426,7 +431,7 @@ if __name__ == "__main__":
 
 /// Verifies that an **async goal decider** works end-to-end through the
 /// Python codegen: `handle_goal_next_request` awaits the handler when it
-/// returns an awaitable, so a server can `await` inside its accept/reject
+/// returns an awaitable, so a server can `await` inside its accept or refuse
 /// decision. After accepting, the worker publishes feedback through the
 /// `GoalContext` and completes the goal.
 #[rstest::rstest]
@@ -438,7 +443,7 @@ async fn actions_communication_async_goal_decider(
 ) {
     let consumer_main = r#"
 import asyncio
-from peppygen import NodeBuilder, QoSProfile
+from peppygen import NodeBuilder
 from peppygen.exposed_services import move_arm_in_handler_flow_done
 from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
@@ -446,7 +451,7 @@ async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, arm, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -572,7 +577,7 @@ async fn actions_communication_cancel_accept_closes_feedback_stream(
 ) {
     let consumer_main = r#"
 import asyncio
-from peppygen import NodeBuilder, QoSProfile
+from peppygen import NodeBuilder
 from peppygen.exposed_services import move_arm_cancel_accept_flow_done
 from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
@@ -580,7 +585,7 @@ async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, arm, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -631,7 +636,7 @@ async def run_exposer(node_runner):
 
         # Honor the cancel: completing-cancelled closes the feedback stream.
         await ctx.cancel_signal()
-        await ctx.complete_cancelled(False, "cancelled", [0, 0, 0])
+        await ctx.complete_cancelled("cancelled", False, "cancelled", [0, 0, 0])
         print("server observed cancel: completing cancelled closes the feedback stream", flush=True)
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
@@ -715,7 +720,7 @@ async fn actions_communication_cancel_reject_keeps_feedback_open(
 ) {
     let consumer_main = r#"
 import asyncio
-from peppygen import NodeBuilder, QoSProfile
+from peppygen import NodeBuilder
 from peppygen.exposed_services import move_arm_cancel_reject_flow_done
 from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
@@ -723,7 +728,7 @@ async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, arm, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -880,7 +885,7 @@ async fn actions_communication_drain_loop_until_end_signal(
 ) {
     let consumer_main = r#"
 import asyncio
-from peppygen import NodeBuilder, QoSProfile
+from peppygen import NodeBuilder
 from peppygen.exposed_services import move_arm_drain_loop_flow_done
 from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
@@ -888,7 +893,7 @@ async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, arm, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0
     )
     print(f"goal accepted={goal.data.accepted}", flush=True)
 
@@ -1060,14 +1065,14 @@ async fn actions_communication_producer_killed_yields_connection_error_and_aband
     let consumer_main = r#"
 import asyncio
 import time
-from peppygen import NodeBuilder, QoSProfile
+from peppygen import NodeBuilder
 from peppygen.consumed_actions.brain import move_arm as brain_move_arm
 
 async def run_consumer(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     arm = brain_move_arm.bound_producer(node_runner)
     goal = await brain_move_arm.ActionHandle.fire_goal(
-        node_runner, arm, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0
     )
     print(f"goal accepted={goal.data.accepted} t={time.monotonic():.3f}", flush=True)
 
@@ -1270,6 +1275,12 @@ const EXPOSED_ACTION_CONTRACT_FLOW_DONE_SERVICE_EXAMPLE: &str = r#"
   name: "move_arm_contract_flow_done"
 }
 "#;
+/// The `failure_kinds` block of the `arm_actions` contract: both sides of the
+/// contract-slot test generate from it.
+const ARM_CONTRACT_FAILURE_KINDS: &[(&str, &str)] = &[
+    ("arm_reserved", "The arm of the goal is reserved"),
+    ("unreachable", "No plan to the target"),
+];
 const CONSUMED_ACTION_CONTRACT_EXAMPLE: &str = r#"
 {
   link_id: "arm",
@@ -1321,7 +1332,13 @@ async fn actions_communication_via_contract_slot(
                 .add_consumed_action(
                     &consumed_action,
                     &action_messages,
-                    &contract_dep(ARM_CONTRACT_NAME, "v1", "arm"),
+                    &contract_dep_with_kinds(
+                        ARM_CONTRACT_NAME,
+                        "v1",
+                        "arm",
+                        ARM_CONTRACT_FAILURE_KINDS,
+                        &[(MemberSection::Action, "move_arm")],
+                    ),
                 )
                 .unwrap();
             generator
@@ -1349,24 +1366,30 @@ async fn actions_communication_via_contract_slot(
     init_python_user_node(&user_node_consumer);
     let consumer_main = r#"
 import asyncio
-from peppygen import NodeBuilder, QoSProfile
+from peppygen import NodeBuilder
 from peppygen.exposed_services import move_arm_contract_flow_done
 from peppygen.consumed_actions.arm import move_arm as arm_move_arm
 
 async def run_consumer(node_runner):
     arm = arm_move_arm.bound_producer(node_runner)
 
-    # Framework rejection rides the admission ack, contract addressing or not.
+    # A refusal with a kind of the contract rides the admission ack and
+    # reaches the consumer as its typed `Failure`.
     reserved = arm_move_arm.GoalRequest(arm_id=99, desired_position=[0, 0, 0])
-    rejected = await arm_move_arm.ActionHandle.fire_goal(
-        node_runner, arm, reserved, 5.0, QoSProfile.SensorData
+    refused = await arm_move_arm.ActionHandle.fire_goal(
+        node_runner, arm, reserved, 5.0
     )
-    print(f"rejected goal accepted={rejected.accepted} reason={rejected.reason}", flush=True)
+    assert refused.refusal.kind is arm_move_arm.FailureKind.ARM_RESERVED
+    print(
+        f"refused goal accepted={refused.accepted} kind={refused.refusal.kind.value} "
+        f"message={refused.refusal.message} data_present={refused.data is not None}",
+        flush=True,
+    )
 
     # Accepted goal: feedback, then a completed result.
     request = arm_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
     goal = await arm_move_arm.ActionHandle.fire_goal(
-        node_runner, arm, request, 5.0, QoSProfile.SensorData
+        node_runner, arm, request, 5.0
     )
     print(f"goal accepted={goal.accepted} data_accepted={goal.data.accepted}", flush=True)
 
@@ -1384,7 +1407,7 @@ async def run_consumer(node_runner):
     # contract-addressed endpoints.
     cancel_request = arm_move_arm.GoalRequest(arm_id=8, desired_position=[1, 2, 3])
     cancel_goal = await arm_move_arm.ActionHandle.fire_goal(
-        node_runner, arm, cancel_request, 5.0, QoSProfile.SensorData
+        node_runner, arm, cancel_request, 5.0
     )
     cancel_response = await cancel_goal.cancel_goal(5.0)
     print(
@@ -1395,7 +1418,21 @@ async def run_consumer(node_runner):
     result = await cancel_goal.get_result(5.0)
     assert result.status == arm_move_arm.ResultStatus.CANCELLED, f"unexpected status {result.status}"
     print(
-        f"cancelled result success={result.data.success} error={result.data.error_msg}",
+        f"cancelled result reason={result.cancel_reason} success={result.data.success} error={result.data.error_msg}",
+        flush=True,
+    )
+
+    # Third goal: the provider fails it with a kind of the contract, and no
+    # result.
+    failed_request = arm_move_arm.GoalRequest(arm_id=9, desired_position=[500, 500, 500])
+    failed_goal = await arm_move_arm.ActionHandle.fire_goal(
+        node_runner, arm, failed_request, 5.0
+    )
+    result = await failed_goal.get_result(5.0)
+    assert result.status == arm_move_arm.ResultStatus.FAILED, f"unexpected status {result.status}"
+    assert result.failure.kind is arm_move_arm.FailureKind.UNREACHABLE
+    print(
+        f"failed result kind={result.failure.kind.value} message={result.failure.message} data_present={result.data is not None}",
         flush=True,
     )
 
@@ -1431,6 +1468,10 @@ if __name__ == "__main__":
                         link_id: "arm_impl".to_string(),
                         contract_name: ARM_CONTRACT_NAME.to_string(),
                         contract_tag: "v1".to_string(),
+                        failure_kinds: failure_kinds(
+                            ARM_CONTRACT_FAILURE_KINDS,
+                            &[(MemberSection::Action, "move_arm")],
+                        ),
                     }),
                 )
                 .unwrap();
@@ -1462,7 +1503,9 @@ async def run_exposer(node_runner):
             flush=True,
         )
         if request.data.arm_id == 99:
-            return move_arm.GoalDecision.reject("arm 99 is reserved")
+            return move_arm.GoalDecision.refuse(
+                move_arm.FailureKind.ARM_RESERVED, "arm 99 is reserved"
+            )
         return move_arm.GoalDecision.accept(move_arm.GoalResponse(True))
 
     while True:
@@ -1470,10 +1513,14 @@ async def run_exposer(node_runner):
         if ctx is None:
             break
         if ctx.request().data.arm_id == 8:
-            # Wait for the cancel, then report the cancelled result.
+            # Wait for the cancel, then end the goal cancelled with the
+            # reason of its cause.
             await ctx.cancel_signal()
-            print("server observed cancel for goal", flush=True)
-            await ctx.complete_cancelled(False, "goal cancelled by server", [0, 0, 0])
+            print(f"server observed cancel for goal cause={ctx.cancel_cause()}", flush=True)
+            await ctx.complete_cancelled(ctx.cancel_reason(), False, "goal cancelled by server", [0, 0, 0])
+        elif ctx.request().data.arm_id == 9:
+            await ctx.fail(move_arm.FailureKind.UNREACHABLE, "no plan to [500, 500, 500]")
+            print("server failed goal", flush=True)
         else:
             feedback_message = [7, 31, 43]
             await ctx.publish_feedback(feedback_message)
@@ -1570,13 +1617,18 @@ if __name__ == "__main__":
     let (consumer_stdout, consumer_stderr) =
         assert_exited_successfully("consumer process", &consumer_output);
     assert!(
-        consumer_stdout.contains("rejected goal accepted=False reason=arm 99 is reserved")
-            && consumer_stdout.contains("goal accepted=True data_accepted=True")
+        consumer_stdout.contains(
+            "refused goal accepted=False kind=arm_reserved message=arm 99 is reserved data_present=False"
+        ) && consumer_stdout.contains("goal accepted=True data_accepted=True")
             && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
             && consumer_stdout.contains("result success=True final_position=[98, 4, 26]")
             && consumer_stdout.contains("cancel signalled=True")
-            && consumer_stdout
-                .contains("cancelled result success=False error=goal cancelled by server"),
+            && consumer_stdout.contains(
+                "cancelled result reason=cancelled by its caller success=False error=goal cancelled by server"
+            )
+            && consumer_stdout.contains(
+                "failed result kind=unreachable message=no plan to [500, 500, 500] data_present=False"
+            ),
         "consumer did not complete the contract-addressed action lifecycle.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr
@@ -1590,7 +1642,8 @@ if __name__ == "__main__":
             && exposer_stdout.contains("server emitted feedback message [7, 31, 43]")
             && exposer_stdout.contains("server completed goal")
             && exposer_stdout.contains("server received goal arm_id=8 desired=[1, 2, 3]")
-            && exposer_stdout.contains("server observed cancel for goal"),
+            && exposer_stdout.contains("server observed cancel for goal cause=caller")
+            && exposer_stdout.contains("server failed goal"),
         "exposer did not process the contract-addressed action endpoints as expected.\nstdout:\n{}\nstderr:\n{}",
         exposer_stdout,
         exposer_stderr
@@ -1674,7 +1727,7 @@ async fn actions_refined_producer_interoperates_with_generic_consumer() {
     init_python_user_node(&user_node_consumer);
     let consumer_main = r#"
 import asyncio
-from peppygen import NodeBuilder, QoSProfile
+from peppygen import NodeBuilder
 from peppygen.exposed_services import joints_flow_done
 from peppygen.consumed_actions.arm import move_arm_joints as joints
 
@@ -1682,7 +1735,7 @@ async def fire(node_runner, arm, arm_id, joint_positions):
     # The consumer's generated request carries the contract's generic list;
     # the length is whatever the caller passes.
     request = joints.GoalRequest(arm_id=arm_id, joint_positions=joint_positions)
-    return await joints.ActionHandle.fire_goal(node_runner, arm, request, 5.0, QoSProfile.SensorData)
+    return await joints.ActionHandle.fire_goal(node_runner, arm, request, 5.0)
 
 async def run_consumer(node_runner):
     arm = joints.bound_producer(node_runner)
@@ -1697,7 +1750,10 @@ async def run_consumer(node_runner):
     # Two joints: the contract admits it, the producer's pinned shape does
     # not, and the answer is a rejection carrying the decode error.
     rejected = await fire(node_runner, arm, 2, [0.1, 0.2])
-    print(f"goal 2 accepted={rejected.accepted} reason={rejected.reason}", flush=True)
+    print(
+        f"goal 2 accepted={rejected.accepted} kind={rejected.refusal.kind.value} message={rejected.refusal.message}",
+        flush=True,
+    )
 
     # The producer kept serving after the rejection.
     goal = await fire(node_runner, arm, 3, [0.4, 0.5, 0.6])
@@ -1742,6 +1798,7 @@ if __name__ == "__main__":
                         link_id: "arm_impl".to_string(),
                         contract_name: JOINTS_CONTRACT_NAME.to_string(),
                         contract_tag: "v1".to_string(),
+                        failure_kinds: Default::default(),
                     }),
                 )
                 .unwrap();
@@ -1872,7 +1929,7 @@ if __name__ == "__main__":
     for needle in [
         "goal 1 accepted=True",
         "result 1 success=True final=[1.0, 2.0, 3.0]",
-        "goal 2 accepted=False reason=goal request does not decode: ",
+        "goal 2 accepted=False kind=rejected message=goal request does not decode: ",
         "invalid fixed list length for field 'joint_positions': expected 3, got 2",
         "goal 3 accepted=True",
         "result 3 success=True",

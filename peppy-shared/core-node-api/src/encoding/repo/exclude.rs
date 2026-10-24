@@ -65,42 +65,27 @@ impl RepoExcludeRequest {
     }
 }
 
+/// The response of a configuration edit that landed. A failed edit is an
+/// error reply, with a failure kind and a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoExcludeResponse {
-    pub success: bool,
-    pub error_message: String,
-    /// Problems from the re-index that follows the change. `success`
-    /// covers the configuration edit alone; this reports whether the
-    /// re-read that made it take effect worked. Empty when it did.
+    /// Problems from the re-index that follows the change: whether the
+    /// re-read that made the edit take effect worked. Empty when it did.
     pub refresh_report: String,
 }
 
 impl RepoExcludeResponse {
-    pub fn success() -> Self {
-        Self {
-            success: true,
-            error_message: String::new(),
-            refresh_report: String::new(),
-        }
+    /// The edit landed and the re-index that follows it worked.
+    pub fn refreshed() -> Self {
+        Self::with_refresh_report("")
     }
 
-    /// The configuration edit landed but the re-index that follows it
-    /// reported problems. Kept separate from [`Self::failure`] so a user
-    /// on the recovery path can tell "your change did not apply" from
-    /// "your change applied, and here is what is still wrong".
-    pub fn success_with_refresh_report(report: impl Into<String>) -> Self {
+    /// The edit landed but the re-index that follows it reported problems,
+    /// so a user on the recovery path can tell "your change applied, and
+    /// here is what is still wrong" from an error reply.
+    pub fn with_refresh_report(report: impl Into<String>) -> Self {
         Self {
-            success: true,
-            error_message: String::new(),
             refresh_report: report.into(),
-        }
-    }
-
-    pub fn failure(message: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            error_message: message.into(),
-            refresh_report: String::new(),
         }
     }
 
@@ -108,8 +93,6 @@ impl RepoExcludeResponse {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<repo_capnp::repo_exclude_response::Builder>();
-            response.set_success(self.success);
-            response.set_error_message(&self.error_message);
             response.set_refresh_report(&self.refresh_report);
         }
         encode_message(&builder)
@@ -119,8 +102,6 @@ impl RepoExcludeResponse {
         let reader = decode_message(data)?;
         let response = reader.get_root::<repo_capnp::repo_exclude_response::Reader>()?;
         Ok(Self {
-            success: response.get_success(),
-            error_message: response.get_error_message()?.to_str()?.to_owned(),
             refresh_report: response.get_refresh_report()?.to_str()?.to_owned(),
         })
     }
@@ -198,38 +179,23 @@ mod tests {
     }
 
     #[test]
-    fn exclude_response_success_round_trips() {
-        let response = RepoExcludeResponse::success();
+    fn exclude_response_refreshed_round_trips() {
+        let response = RepoExcludeResponse::refreshed();
         let payload = response.encode().expect("encode");
         let decoded = RepoExcludeResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
-        assert!(decoded.success);
-        assert!(decoded.error_message.is_empty());
         assert!(decoded.refresh_report.is_empty());
     }
 
     #[test]
-    fn exclude_response_success_with_refresh_report_round_trips() {
-        // The edit landed and the re-index complained: both halves have to
+    fn exclude_response_with_refresh_report_round_trips() {
+        // The edit landed and the re-index complained: the report has to
         // survive the wire, or the recovery path reads as a clean success.
-        let response =
-            RepoExcludeResponse::success_with_refresh_report("repo 3 conflict: robot:v1 twice");
+        let response = RepoExcludeResponse::with_refresh_report("repo 3 conflict: robot:v1 twice");
         let payload = response.encode().expect("encode");
         let decoded = RepoExcludeResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
-        assert!(decoded.success);
-        assert!(decoded.error_message.is_empty());
         assert_eq!(decoded.refresh_report, "repo 3 conflict: robot:v1 twice");
-    }
-
-    #[test]
-    fn exclude_response_failure_round_trips() {
-        let response = RepoExcludeResponse::failure("not found");
-        let payload = response.encode().expect("encode");
-        let decoded = RepoExcludeResponse::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, response);
-        assert!(!decoded.success);
-        assert_eq!(decoded.error_message, "not found");
     }
 
     #[test]

@@ -63,6 +63,7 @@ fn contract_origin(link_id: &str, name: &str, tag: &str) -> Option<ContractOrigi
         link_id: link_id.to_string(),
         contract_name: name.to_string(),
         contract_tag: tag.to_string(),
+        failure_kinds: Default::default(),
     })
 }
 

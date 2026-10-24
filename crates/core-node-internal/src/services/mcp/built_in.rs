@@ -10,11 +10,13 @@
 
 use super::materialize_exposure_deployment;
 use crate::services::node::{NodeAddActionContext, pins, record_add_failure};
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::mcp_deployment::{RUN_COMMAND, SPEC_ENV_VAR};
 use daemon_config::repository::{DeploymentPins, DeploymentRoot, PinKind};
 use node_stack::{Announcer, BuiltInLaunch};
+use peppylib::messaging::Failure;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -126,33 +128,57 @@ pub(crate) async fn run_built_in_add(
     goal: NodeAddGoal,
     action_context: NodeAddActionContext,
     announcer: Announcer,
-) -> NodeAddResult {
+) -> Result<NodeAddResult, Failure> {
     let NodeSource::Exposures { pins_json5 } = &goal.source else {
-        return record_add_failure(
+        return Err(record_add_failure(
             &announcer,
-            "internal error: run_built_in_add called with another source".to_owned(),
-        );
+            Failure::new(
+                PeppyFailureKind::AttemptFailed,
+                "internal error: run_built_in_add called with another source".to_owned(),
+            ),
+        ));
     };
     let exposure_pins = match pins::decode_pins(pins_json5) {
         Ok(pins) => pins,
-        Err(e) => return record_add_failure(&announcer, format!("the goal's exposure pins: {e}")),
+        Err(e) => {
+            return Err(record_add_failure(
+                &announcer,
+                Failure::new(
+                    PeppyFailureKind::Rejected,
+                    format!("the goal's exposure pins: {e}"),
+                ),
+            ));
+        }
     };
     let closure = match pins::decode_pins(&goal.pins_json5) {
         Ok(closure) => closure,
-        Err(e) => return record_add_failure(&announcer, e),
+        Err(e) => {
+            return Err(record_add_failure(
+                &announcer,
+                Failure::new(PeppyFailureKind::Rejected, e),
+            ));
+        }
     };
     if let Some(stray) = closure.iter().find(|pin| pin.kind != PinKind::Contract) {
-        return record_add_failure(
+        return Err(record_add_failure(
             &announcer,
-            format!(
-                "the closure of a built-in MCP deployment carries only contracts, got {}",
-                stray.label()
+            Failure::new(
+                PeppyFailureKind::Rejected,
+                format!(
+                    "the closure of a built-in MCP deployment carries only contracts, got {}",
+                    stray.label()
+                ),
             ),
-        );
+        ));
     }
     let pins = match DeploymentPins::new(DeploymentRoot::Exposures(exposure_pins), closure) {
         Ok(pins) => pins,
-        Err(e) => return record_add_failure(&announcer, e),
+        Err(e) => {
+            return Err(record_add_failure(
+                &announcer,
+                Failure::new(PeppyFailureKind::Rejected, e),
+            ));
+        }
     };
 
     announcer.line(format!(
@@ -171,16 +197,32 @@ pub(crate) async fn run_built_in_add(
         .await
         {
             Ok(Ok(resolved)) => resolved,
-            Ok(Err(e)) => return record_add_failure(&announcer, e),
+            Ok(Err(e)) => {
+                return Err(record_add_failure(
+                    &announcer,
+                    Failure::new(PeppyFailureKind::AttemptFailed, e),
+                ));
+            }
             Err(e) => {
-                return record_add_failure(&announcer, format!("materialization task failed: {e}"));
+                return Err(record_add_failure(
+                    &announcer,
+                    Failure::new(
+                        PeppyFailureKind::AttemptFailed,
+                        format!("materialization task failed: {e}"),
+                    ),
+                ));
             }
         }
     };
 
     let executable = match resolve_peppy_executable(&peppy_dirs) {
         Ok(executable) => executable,
-        Err(e) => return record_add_failure(&announcer, e),
+        Err(e) => {
+            return Err(record_add_failure(
+                &announcer,
+                Failure::new(PeppyFailureKind::AttemptFailed, e),
+            ));
+        }
     };
     if let Some(warning) = executable.warning() {
         tracing::warn!("{warning}");
@@ -190,29 +232,44 @@ pub(crate) async fn run_built_in_add(
     let plan = resolved.plan;
     let dir = peppy_dirs.built_in_nodes_dir().join(plan.name.as_str());
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        return record_add_failure(&announcer, format!("cannot create {}: {e}", dir.display()));
+        return Err(record_add_failure(
+            &announcer,
+            Failure::new(
+                PeppyFailureKind::AttemptFailed,
+                format!("cannot create {}: {e}", dir.display()),
+            ),
+        ));
     }
     let manifest_path = dir.join(MANIFEST_FILE);
     let manifest = match json5_pretty::to_string_pretty(&plan.config) {
         Ok(text) => text,
         Err(e) => {
-            return record_add_failure(
+            return Err(record_add_failure(
                 &announcer,
-                format!("cannot serialize the synthesized manifest: {e}"),
-            );
+                Failure::new(
+                    PeppyFailureKind::AttemptFailed,
+                    format!("cannot serialize the synthesized manifest: {e}"),
+                ),
+            ));
         }
     };
     if let Err(e) = daemon_config::atomic_write::publish_atomic(&manifest_path, |tmp| {
         std::fs::write(tmp, &manifest)
     }) {
-        return record_add_failure(
+        return Err(record_add_failure(
             &announcer,
-            format!("cannot write {}: {e}", manifest_path.display()),
-        );
+            Failure::new(
+                PeppyFailureKind::AttemptFailed,
+                format!("cannot write {}: {e}", manifest_path.display()),
+            ),
+        ));
     }
     let spec_path = dir.join(SPEC_FILE);
     if let Err(e) = resolved.spec.write(&spec_path) {
-        return record_add_failure(&announcer, e);
+        return Err(record_add_failure(
+            &announcer,
+            Failure::new(PeppyFailureKind::AttemptFailed, e),
+        ));
     }
 
     // The paths the server serves, one per exposure, named in the add log so
@@ -230,16 +287,19 @@ pub(crate) async fn run_built_in_add(
         .node_stack
         .push_built_in(plan.config, &manifest_path, launch)
     {
-        return record_add_failure(
+        return Err(record_add_failure(
             &announcer,
-            format!("cannot register `{name}:{tag}` in the node stack: {e}"),
-        );
+            Failure::new(
+                PeppyFailureKind::AttemptFailed,
+                format!("cannot register `{name}:{tag}` in the node stack: {e}"),
+            ),
+        ));
     }
     announcer.line(format!(
         "Registered `{name}:{tag}`, serving {}",
         http_paths.join(", ")
     ));
-    NodeAddResult::success(announcer.log().path(), name, tag)
+    Ok(NodeAddResult::new(name, tag))
 }
 
 #[cfg(test)]

@@ -1,9 +1,10 @@
-use super::common::setup;
+use super::common::{assert_daemon_failure, setup};
 use peppy::context::AppContext;
 use peppy::test_support::LogCapture;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::failure_kind::PeppyFailureKind;
 use config::node::Toolchain;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName};
@@ -204,11 +205,8 @@ fn node_init_refuses_an_existing_node_directory() {
         "Node directory already exists: {}",
         existing_node_dir.display()
     );
-    let err_msg = err.to_string();
-    assert!(
-        err_msg.contains(&expected),
-        "the error should carry the refusal of the daemon. Got: {err_msg}"
-    );
+    // The error carries the error reply of the daemon, with its kind.
+    assert_daemon_failure(&err, PeppyFailureKind::PreconditionFailed, &expected);
     let logs = log_capture.logs();
     assert!(
         !logs.contains("Successfully created node"),

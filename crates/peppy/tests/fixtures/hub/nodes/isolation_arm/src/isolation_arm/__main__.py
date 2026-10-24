@@ -106,7 +106,7 @@ async def drive(ctx, releases: Releases, me: str) -> None:
         print(f"{LOG} goal {token} completed by {me}", flush=True)
     else:
         releases.take(token)
-        await ctx.complete_cancelled(token)
+        await ctx.complete_cancelled("cancelled by its caller", token)
         print(f"{LOG} goal {token} cancelled by {me}", flush=True)
 
 

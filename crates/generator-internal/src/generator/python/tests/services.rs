@@ -162,7 +162,7 @@ fn expose_service() {
             "\"enable_camera\"",
             "async def handle_next_request(",
             "node_runner: peppylib.NodeRunner",
-            "handler: Callable[[Request], Response]",
+            "handler: Callable[[Request], Response | Failure]",
             ") -> None:",
         ],
     );
@@ -186,13 +186,35 @@ fn expose_service() {
     assert_contains_all(
         &rendered,
         &[
-            "async def _handle_request_payload(payload: bytes, handler: Callable[[Request], Response], core_node: str, instance_id: str) -> bytes:",
+            "async def _handle_request_payload(payload: bytes, handler: Callable[[Request], Response | Failure], core_node: str, instance_id: str) -> bytes:",
             "request_data = _deserialize_request(payload)",
+            "raise Failure(FailureKind.REJECTED, f\"request does not decode: {error}\") from None",
             "request = Request(instance_id=instance_id, core_node=core_node, data=request_data)",
             "response = handler(request)",
             "if hasattr(response, \"__await__\"):",
             "response = await response",
+            "except peppylib.FailureError as error:",
+            "raise Failure(*error.args) from error",
+            "if isinstance(response, peppylib.FailureError):",
+            "raise Failure(*response.args) from None",
             "return capnp_msg.to_bytes()",
+        ],
+    );
+    // Every failure of the handler, raised or returned, is parsed again as a
+    // failure of this member: none reaches the wire as it is.
+    assert_rendered!(
+        !rendered.contains("except Failure:") && !rendered.contains("raise response\n"),
+        &rendered,
+        "expected no failure of the handler to reach the wire without a new parse"
+    );
+
+    // A native service gives the kinds of peppy only.
+    assert_contains_all(
+        &rendered,
+        &[
+            "class FailureKind(str, Enum):",
+            "class Failure(peppylib.FailureError):",
+            "is not a failure kind of {SERVICE_NAME}",
         ],
     );
 
@@ -242,7 +264,7 @@ fn expose_service_without_request_body() {
     assert_contains_all(
         &rendered,
         &[
-            "async def _handle_request_payload(handler: Callable[[Request], Response], core_node: str, instance_id: str) -> bytes:",
+            "async def _handle_request_payload(handler: Callable[[Request], Response | Failure], core_node: str, instance_id: str) -> bytes:",
             "request = Request(instance_id=instance_id, core_node=core_node)",
         ],
     );
@@ -252,7 +274,7 @@ fn expose_service_without_request_body() {
         &rendered,
         &[
             "async def handle_next_request(",
-            "handler: Callable[[Request], Response]",
+            "handler: Callable[[Request], Response | Failure]",
             ") -> None:",
         ],
     );
@@ -445,7 +467,16 @@ fn consumed_service() {
         &rendered,
         &[
             "peppylib.ServiceMessenger.poll(",
-            "SERVICE_NAME,\n        target,\n        request_payload,",
+            "SERVICE_NAME,\n            target,\n            request_payload,",
+        ],
+    );
+
+    // An error reply raises the member's typed `Failure`.
+    assert_contains_all(
+        &rendered,
+        &[
+            "except peppylib.FailureError as error:",
+            "raise Failure(*error.args) from None",
         ],
     );
 

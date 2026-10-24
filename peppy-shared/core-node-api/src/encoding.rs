@@ -23,7 +23,7 @@ pub use datastore::{
     DatastoreStoreResponse,
 };
 pub use federation::{
-    FederationVerdict, InstanceEnd, PairCommitRequest, ParticipantInstancesRemoveRequest,
+    FederationAck, InstanceEnd, PairCommitRequest, ParticipantInstancesRemoveRequest,
     ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantReserveResponse,
     ParticipantSetsUpdateRequest, ParticipantSliceBeginRequest, ParticipantSliceBeginResponse,
     RelationshipEvent, RelationshipNotification, RelationshipNotificationAck, RemovedInstances,
@@ -46,7 +46,7 @@ pub use node::{
 pub use repo::{
     GitRepoRef, GitRepoRefError, PEPPY_RELEASE_REF, PEPPY_RELEASE_TAG_PREFIX, PeppyBuild, ReadRef,
     RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoItemKind,
-    RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailure, RepoListRepoFailureKind,
+    RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailedRead, RepoListRepoReadFailure,
     RepoListRequest, RepoListResponse, RepoRefreshFeedback, RepoRefreshGoal,
     RepoRefreshGoalResponse, RepoRefreshResult, RepoRemoveRequest, RepoRemoveResponse, RepoSource,
     RepoSourceKind,
@@ -60,8 +60,8 @@ pub use stack::budgets::{DEFAULT_IDLE_TIMEOUT_SECS, StackBudgets};
 pub use stack::join::{ArgumentOverride, ArgumentOverrideError, StackJoinGoal};
 pub use stack::launch::{
     InstanceEndpoints, LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalError,
-    LaunchGoalResponse, LaunchResult, LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry,
-    NodeRunLogEntry, PlacementSpec, StackBuildGoal,
+    LaunchGoalResponse, LaunchOutput, LaunchResult, LauncherOrigin, NodeAddLogEntry,
+    NodeBuildLogEntry, NodeLogs, NodeRunLogEntry, PlacementSpec, StackBuildGoal,
 };
 pub use stack::list::{
     CopyAction, CopyChange, CopyInfo, LaunchIdentity, SetMember, StackListRequest,

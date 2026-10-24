@@ -122,7 +122,7 @@ Each record belongs to a resource. Every record of one daemon has the same resou
 | `peppy.core_node.name` | The core node name of the daemon |
 | `peppy.version` | The version of peppy |
 
-A line belongs to a node when its log does: every line of a build log and of a run log, each line of the stack log about an instance, and the lines of an add log once the daemon knows the node. An add from a directory, from a repository entry or from a launcher knows its node from the first line, and the add log of a node with dependencies belongs to that node, including the lines about its dependencies. An add from a git or HTTP URL learns its node when it has read the node's config: the steps before that carry `service.name` `peppy` and the path the log file had at the time.
+A line belongs to a node when its log does: every line of a build log and of a run log, each line of the stack log about an instance, and the lines of an add log once the daemon knows the node. An add from a directory, from a repository entry or from a launcher knows its node from the first line, and the add log of a node with dependencies belongs to that node, including the lines about its dependencies. An add from a git or HTTP URL learns its node when it has read the node's config: the steps before that carry `service.name` `peppy`.
 
 | Record field | Value |
 |---|---|

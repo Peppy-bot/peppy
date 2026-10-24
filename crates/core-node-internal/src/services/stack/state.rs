@@ -184,7 +184,10 @@ impl ActiveLaunch {
 
     pub(super) fn check_name(&self, name: &CopyName) -> ChangeResult<()> {
         if self.copies.contains_key(name) {
-            return Err(format!("copy `{name}` already exists; choose another name"));
+            return Err(super::precondition_failed(format!(
+                "copy `{name}` already exists; choose another name"
+            ))
+            .into());
         }
         Ok(())
     }
@@ -192,7 +195,11 @@ impl ActiveLaunch {
 
 pub(super) fn active_launch(ctx: &StackChangeContext) -> ChangeResult<ActiveLaunch> {
     ctx.slice_ownership.active.lock().clone().ok_or_else(|| {
-        "this daemon has no active launcher; run peppy stack launch LAUNCHER on the coordinator first".to_owned()
+        super::precondition_failed(
+            "this daemon has no active launcher; run peppy stack launch LAUNCHER on the \
+             coordinator first",
+        )
+        .into()
     })
 }
 

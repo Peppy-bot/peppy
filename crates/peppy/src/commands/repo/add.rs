@@ -50,7 +50,7 @@ async fn add_repo_async(
         top,
         id,
     };
-    let response = poll(
+    poll(
         &request,
         conn.messenger,
         &conn.core_node_name,
@@ -59,17 +59,10 @@ async fn add_repo_async(
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to add repository: {}", e)))?;
+    .map_err(|e| crate::commands::request_error("Failed to add repository", e))?;
 
-    if response.success {
-        info!("Repository '{label}' added successfully");
-        Ok(())
-    } else {
-        Err(Error::ExecutionFailed(format!(
-            "Failed to add repository: {}",
-            response.error_message
-        )))
-    }
+    info!("Repository '{label}' added successfully");
+    Ok(())
 }
 
 /// Parse a user-supplied source string into a [`RepoSource`].

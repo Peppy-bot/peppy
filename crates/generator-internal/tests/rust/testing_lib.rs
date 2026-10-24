@@ -14,8 +14,12 @@
 //! test reads them back off the domain's stream and never ticks. A fourth
 //! leaves an emitted topic unread while the node publishes more than its
 //! queue holds: the harness's session still receives the node's next
-//! message, and the unread queue keeps the newest messages.
+//! message, and the unread queue keeps the newest messages. A fifth drives
+//! every way a call fails through the mocks: an error reply with a kind of
+//! the contract of the slot, a refusal, a failed goal and a goal cancelled
+//! for a reason; the node reads each as the typed `Failure` of its member.
 
+use config::failure_kind::MemberSection;
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
     NativeExposedService, TopicRetention,
@@ -41,6 +45,9 @@ const NODE_CONFIG: &str = r#"{
       nodes: [
         { name: "uvc_camera", tag: "v1", link_id: "camera" },
         { name: "brain", tag: "v1", link_id: "brain" }
+      ],
+      contracts: [
+        { name: "lens_contract", tag: "v1", link_id: "lens" }
       ],
       pairings: [
         { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
@@ -79,6 +86,11 @@ const CONSUMED_FRAME_FORMAT: &str = r#"{ width: "u32" }"#;
 const CONSUMED_ENABLE_SERVICE: &str = r#"{ link_id: "camera", name: "enable_camera" }"#;
 const ENABLE_REQUEST_FORMAT: &str = r#"{ enable: "bool" }"#;
 const ENABLE_RESPONSE_FORMAT: &str = r#"{ enabled: "bool" }"#;
+
+const CONSUMED_LENS_SERVICE: &str = r#"{ link_id: "lens", name: "check_lens" }"#;
+const LENS_RESPONSE_FORMAT: &str = r#"{ clear: "bool" }"#;
+/// The `failure_kinds` block of `lens_contract`.
+const LENS_FAILURE_KINDS: &[(&str, &str)] = &[("lens_covered", "Something covers the lens")];
 
 const CONSUMED_PLAN_ACTION: &str = r#"{ link_id: "brain", name: "plan_motion" }"#;
 const PLAN_GOAL_FORMAT: &str = r#"{ arm_id: "u16" }"#;
@@ -120,14 +132,26 @@ pub async fn setup(
         peppygen::paired_topics::arm::joint_commands::declare_publisher(&node_runner).await?;
     let limb_commands =
         peppygen::paired_topics::limbs::joint_commands::declare_publisher(&node_runner).await?;
-    // The node's own exposed service, answered concurrently with the frame loop.
+    // The node's own exposed service, answered concurrently with the frame
+    // loop. A value of zero gets an error reply with a kind of peppy.
     let ping_runner = Arc::clone(&node_runner);
     tokio::spawn(async move {
-        let _ = peppygen::exposed_services::ping::handle_next_request(
-            &ping_runner,
-            |request| Ok(peppygen::exposed_services::ping::Response::new(request.data.value * 2)),
-        )
-        .await;
+        use peppygen::exposed_services::ping;
+        loop {
+            let answered = ping::handle_next_request(&ping_runner, |request| {
+                if request.data.value == 0 {
+                    return Err(ping::Failure::new(
+                        ping::FailureKind::PreconditionFailed,
+                        "nothing to double",
+                    ));
+                }
+                Ok(ping::Response::new(request.data.value * 2))
+            })
+            .await;
+            if answered.is_err() {
+                break;
+            }
+        }
     });
     let mut frames =
         peppygen::consumed_topics::camera::video_stream::subscribe(&node_runner).await?;
@@ -152,7 +176,7 @@ pub async fn setup(
             peppygen::consumed_actions::brain::plan_motion::GoalRequest {
                 arm_id: frame.width as u16,
             },
-            peppygen::QoSProfile::Reliable,
+            peppygen::DEFAULT_FEEDBACK_BOUND,
         )
         .await?;
         assert!(goal.accepted, "mock should accept the goal");
@@ -191,6 +215,59 @@ pub async fn setup(
                 )
                 .await?;
         }
+    }
+    Ok(())
+}
+
+/// Failures entry point: per frame, makes the one call the frame's width
+/// names, and reports how it failed on the status topic. Width 1 polls the
+/// `lens` service; any other width fires a `plan_motion` goal.
+pub async fn setup_failures(
+    _parameters: peppygen::Parameters,
+    node_runner: Arc<peppygen::NodeRunner>,
+) -> peppygen::Result<()> {
+    use peppygen::consumed_actions::brain::plan_motion;
+    use peppygen::consumed_services::lens::check_lens;
+    let status =
+        peppygen::emitted_topics::status::declare_publisher(&node_runner).await?;
+    let mut frames =
+        peppygen::consumed_topics::camera::video_stream::subscribe(&node_runner).await?;
+    while let Some((_producer, frame)) = frames.next().await? {
+        let outcome = match frame.width {
+            1 => {
+                let lens = check_lens::bound_producer(&node_runner);
+                let error = check_lens::poll(&node_runner, lens, Duration::from_secs(10))
+                    .await
+                    .expect_err("the mock gives an error reply");
+                let failure = check_lens::Failure::of(&error)
+                    .expect("the error reply has a kind of the contract");
+                format!("service {failure}")
+            }
+            width => {
+                let brain = plan_motion::bound_producer(&node_runner);
+                let goal = plan_motion::ActionHandle::fire_goal(
+                    &node_runner,
+                    brain,
+                    Duration::from_secs(10),
+                    plan_motion::GoalRequest { arm_id: width as u16 },
+                    peppygen::DEFAULT_FEEDBACK_BOUND,
+                )
+                .await?;
+                match &goal.refusal {
+                    Some(refusal) => format!("refused {refusal}"),
+                    None => match goal.get_result(Duration::from_secs(10)).await?.outcome {
+                        plan_motion::ResultOutcome::Failed(failure) => format!("failed {failure}"),
+                        plan_motion::ResultOutcome::Cancelled { reason, data } => {
+                            format!("cancelled reason={reason} ok={}", data.success)
+                        }
+                        other => format!("unexpected outcome: {other:?}"),
+                    },
+                }
+            }
+        };
+        status
+            .publish(peppygen::emitted_topics::status::build_message(outcome)?)
+            .await?;
     }
     Ok(())
 }
@@ -317,6 +394,26 @@ fn generated_mocks_and_fixtures_drive_a_node_end_to_end() {
                 .add_consumed_service(&enable, &enable_request, &enable_response, &camera_dep)
                 .unwrap();
 
+            let lens: ConsumedService = serde_json5::from_str(CONSUMED_LENS_SERVICE).unwrap();
+            let lens_response: MessageFormat = serde_json5::from_str(LENS_RESPONSE_FORMAT).unwrap();
+            generator
+                .add_consumed_service(
+                    &lens,
+                    &MessageFormat::default(),
+                    &lens_response,
+                    &DependencyContext::contract(
+                        "lens_contract",
+                        "v1",
+                        "lens",
+                        Cardinality::One,
+                        crate::helpers::failure_kinds(
+                            LENS_FAILURE_KINDS,
+                            &[(MemberSection::Service, "check_lens")],
+                        ),
+                    ),
+                )
+                .unwrap();
+
             let plan: ConsumedAction = serde_json5::from_str(CONSUMED_PLAN_ACTION).unwrap();
             let plan_messages = ConsumedActionMessage {
                 goal_request: Some(serde_json5::from_str(PLAN_GOAL_FORMAT).unwrap()),
@@ -387,6 +484,7 @@ use peppygen::fixtures::harness::{{Config, Harness, PeerMemberSpec}};
 use peppygen::mock::deps::brain::plan_motion as mock_plan;
 use peppygen::mock::deps::camera::enable_camera as mock_enable;
 use peppygen::mock::deps::camera::video_stream as mock_frames;
+use peppygen::mock::deps::lens::check_lens as mock_lens;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mocks_and_fixtures_drive_the_node_end_to_end() {{
@@ -495,6 +593,22 @@ async fn mocks_and_fixtures_drive_the_node_end_to_end() {{
     .expect("fixtures poll of the node's service should succeed");
     assert_eq!(pong.doubled, 42);
 
+    // Its error reply reaches the fixture with its kind.
+    let error = peppygen::fixtures::exposed_services::ping::poll(
+        &harness,
+        &peppygen::fixtures::exposed_services::ping::RequestData {{ value: 0 }},
+        Duration::from_secs(10),
+    )
+    .await
+    .expect_err("the node gives an error reply for zero");
+    let failure = peppygen::fixtures::exposed_services::ping::Failure::of(&error)
+        .expect("the error reply has a kind of the member");
+    assert_eq!(
+        failure.kind,
+        peppygen::fixtures::exposed_services::ping::FailureKind::PreconditionFailed
+    );
+    assert_eq!(failure.message, "nothing to double");
+
     // ---- Frame 2: deterministic producer loss mid-goal. ----
     mocks
         .deps
@@ -537,6 +651,103 @@ async fn mocks_and_fixtures_drive_the_node_end_to_end() {{
         .expect("status should decode")
         .expect("status subscription should be open");
     assert_eq!(status.outcome, "producer-gone");
+
+    harness.shutdown().await.expect("clean shutdown");
+}}
+
+// Every way a call fails reaches the node as the typed `Failure` of its
+// member: an error reply with a kind of the contract of the slot, a refusal,
+// a failed goal with no result, and a goal cancelled for a reason.
+async fn publish_frame(mocks: &peppygen::fixtures::harness::Mocks, width: u32) {{
+    mocks
+        .deps
+        .camera
+        .video_stream
+        .publish(&mock_frames::Message {{ width }})
+        .await
+        .expect("the frame should deliver")
+}}
+
+async fn next_status(harness: &mut Harness) -> String {{
+    tokio::time::timeout(Duration::from_secs(10), harness.emitted.status.next())
+        .await
+        .expect("the node should report the call")
+        .expect("status should decode")
+        .expect("status subscription should be open")
+        .outcome
+}}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failures_reach_the_node_typed() {{
+    let (mut harness, mut mocks) =
+        Harness::start_with(Config::default(), {crate_name}::setup_failures)
+            .await
+            .expect("harness should start");
+
+    publish_frame(&mocks, 1).await;
+    let responder = mocks
+        .deps
+        .lens
+        .check_lens
+        .next_request(Duration::from_secs(10))
+        .await
+        .expect("the node should poll the lens");
+    responder
+        .respond_failure(mock_lens::FailureKind::LensCovered, "tape on the lens")
+        .await
+        .expect("the error reply should send");
+    assert_eq!(next_status(&mut harness).await, "service lens_covered: tape on the lens");
+
+    publish_frame(&mocks, 2).await;
+    let pending = mocks
+        .deps
+        .brain
+        .plan_motion
+        .next_goal(Duration::from_secs(10))
+        .await
+        .expect("the node should fire a goal");
+    pending
+        .refuse(mock_plan::FailureKind::ResourceUnavailable, "the arm is gone")
+        .await
+        .expect("the refusal should send");
+    assert_eq!(next_status(&mut harness).await, "refused resource_unavailable: the arm is gone");
+
+    publish_frame(&mocks, 3).await;
+    let active = mocks
+        .deps
+        .brain
+        .plan_motion
+        .next_goal(Duration::from_secs(10))
+        .await
+        .expect("the node should fire a goal")
+        .accept(mock_plan::GoalResponseData::new(true))
+        .await
+        .expect("accept should succeed");
+    active
+        .fail(mock_plan::FailureKind::AttemptFailed, "the plan diverged")
+        .await
+        .expect("fail should succeed");
+    assert_eq!(next_status(&mut harness).await, "failed attempt_failed: the plan diverged");
+
+    publish_frame(&mocks, 4).await;
+    let active = mocks
+        .deps
+        .brain
+        .plan_motion
+        .next_goal(Duration::from_secs(10))
+        .await
+        .expect("the node should fire a goal")
+        .accept(mock_plan::GoalResponseData::new(true))
+        .await
+        .expect("accept should succeed");
+    active
+        .complete_cancelled("stopped by the operator", &mock_plan::ResultResponseData::new(false))
+        .await
+        .expect("complete_cancelled should succeed");
+    assert_eq!(
+        next_status(&mut harness).await,
+        "cancelled reason=stopped by the operator ok=false"
+    );
 
     harness.shutdown().await.expect("clean shutdown");
 }}

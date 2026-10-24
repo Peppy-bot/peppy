@@ -1,13 +1,14 @@
 #![allow(dead_code)] // Each test binary uses only a subset of these shared helpers.
 
 use super::{
-    AbortOnDrop, NodeRunTestTimeouts, StartedCoreNode, TEST_NODE_TAG, answer_health_probes,
-    answer_ready_probe, default_instance_plan, node_run_goal, poll_until_explained,
-    send_node_run_goal_and_wait, settle,
+    AbortOnDrop, GoalEnd, NodeRunTestTimeouts, StartedCoreNode, TEST_NODE_TAG,
+    answer_health_probes, answer_ready_probe, default_instance_plan, node_run_goal,
+    poll_until_explained, send_node_run_goal_and_wait, settle,
 };
 use config::node::RestartRequest;
 use config::runtime::{Name, NodeInstancePlan};
 use core_node_api::InstanceState;
+use core_node_api::encoding::NodeRunResult;
 use std::time::Duration;
 
 /// The goal and result bounds of a lifecycle test's `node_run`.
@@ -30,14 +31,14 @@ pub async fn mocks(started: &StartedCoreNode, name: &str, instance_id: &str) -> 
     (ready, health)
 }
 
-/// Runs the instance `plan` names of `name` with `restart`, returning the
-/// result; a success carries the pid.
+/// Runs the instance `plan` names of `name` with `restart`, returning how
+/// the run ended; a completed run carries the pid.
 pub async fn run_plan(
     started: &StartedCoreNode,
     name: &str,
     plan: NodeInstancePlan,
     restart: RestartRequest,
-) -> Result<core_node_api::encoding::NodeRunResult, String> {
+) -> Result<GoalEnd<NodeRunResult>, String> {
     run_plan_with_env(started, name, plan, restart, Vec::new()).await
 }
 
@@ -48,7 +49,7 @@ pub async fn run_plan_with_env(
     plan: NodeInstancePlan,
     restart: RestartRequest,
     env_vars: Vec<(String, String)>,
-) -> Result<core_node_api::encoding::NodeRunResult, String> {
+) -> Result<GoalEnd<NodeRunResult>, String> {
     send_node_run_goal_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -58,7 +59,7 @@ pub async fn run_plan_with_env(
         &TIMEOUTS,
     )
     .await
-    .map(|response| response.result)
+    .map(|response| response.end)
 }
 
 /// Runs `instance_id` of `name` and returns its pid.
@@ -71,12 +72,10 @@ pub async fn run(
     let result = run_plan(started, name, default_instance_plan(instance_id), restart)
         .await
         .expect("node_run completes");
-    assert!(
-        result.success,
-        "node_run failed: {:?}",
-        result.error_message
-    );
-    result.pid.expect("a started instance has a pid")
+    result
+        .completed()
+        .pid
+        .expect("a started instance has a pid")
 }
 
 /// `instance_id` as a [`Name`].

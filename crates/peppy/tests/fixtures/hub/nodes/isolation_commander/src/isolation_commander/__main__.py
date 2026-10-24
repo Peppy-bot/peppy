@@ -12,7 +12,7 @@ another copy's arm would appear here by name.
 import asyncio
 from dataclasses import dataclass
 
-from peppygen import NodeBuilder, NodeRunner, QoSProfile
+from peppygen import NodeBuilder, NodeRunner
 from peppygen.consumed_actions.arm import move
 from peppygen.consumed_services.arm import echo, release
 from peppygen.consumed_topics.arm import heartbeat
@@ -68,10 +68,9 @@ async def fire(
         arm,
         move.GoalRequest(token=token, hold_ms=hold_ms, gated=gated),
         REQUEST_TIMEOUT_S,
-        QoSProfile.SensorData,
     )
     if not handle.accepted:
-        raise RuntimeError(f"goal {token} rejected by {arm.instance_id}: {handle.reason}")
+        raise RuntimeError(f"goal {token} refused by {arm.instance_id}: {handle.refusal}")
     feedback = await handle.on_next_feedback_message()
     print(
         f"{LOG} feedback token={feedback.token} from {arm.instance_id}",

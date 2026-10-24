@@ -528,6 +528,14 @@ def __init__(self, core) -> None:
     })
 }
 
+/// Re-exports the `FailureKind` and `Failure` of the production module
+/// `alias` under the member's `camel` prefix, beside its message types.
+fn emit_failure_aliases(builder: &mut PythonCodeBuilder, camel: &str, alias: &str) {
+    builder.line(&format!("{camel}FailureKind = {alias}.FailureKind"));
+    builder.line(&format!("{camel}Failure = {alias}.Failure"));
+    builder.blank_line();
+}
+
 fn render_dep_service(
     generator: &mut PythonGenerator,
     builder: &mut PythonCodeBuilder,
@@ -551,6 +559,7 @@ fn render_dep_service(
         crate::generator::naming::consumed_service_response_schema_key(producer_name, service_name);
     let deserialize_fn = format!("_deserialize_{attr}_request");
     let serialize_fn = format!("_serialize_{attr}_response");
+    emit_failure_aliases(builder, &camel, &alias);
 
     if let Some(format) = &spec.request {
         emit_value_deserializer(
@@ -609,10 +618,20 @@ def __init__(self, inner) -> None:
         );
         builder.blank_line();
         builder.block(
-            "async def respond_error(self, reason: str) -> None:",
+            &format!(
+                "async def respond_failure(self, kind: {alias}.FailureKind, message: str) -> None:"
+            ),
             |builder| {
-                builder.docstring("Fails the parked request with a handler-error reason.");
-                builder.line("await self._inner.respond_error(reason)");
+                builder.multiline_docstring(
+                    "Answers the parked request with an error reply.",
+                    [
+                        "A failure kind that this member declares and a message: raises",
+                        "ValueError for any other kind.",
+                    ],
+                );
+                builder.line(&format!("failure = {alias}.Failure(kind, message)"));
+                builder
+                    .line("await self._inner.respond_failure(failure.kind.value, failure.message)");
             },
         );
     });
@@ -763,6 +782,7 @@ fn render_dep_action(
     let serialize_response_fn = format!("_serialize_{attr}_goal_response");
     let serialize_feedback_fn = format!("_serialize_{attr}_feedback");
     let serialize_result_fn = format!("_serialize_{attr}_result");
+    emit_failure_aliases(builder, &camel, &alias);
 
     if let Some(format) = &spec.messages.goal_request {
         emit_value_deserializer(
@@ -857,33 +877,67 @@ def __init__(self, context) -> None:
             builder.blank_line();
         }
         builder.block("async def cancel_signal(self) -> None:", |builder| {
-            builder.docstring("Resolves when the node requests cancellation of this goal.");
+            builder.docstring(
+                "Waits for the cancel signal of this goal: a cancel request of the node, or the end of the node.",
+            );
             builder.line("await self._context.cancel_signal()");
         });
         builder.blank_line();
         builder.block("def is_cancelled(self) -> bool:", |builder| {
-            builder.docstring("Whether cancellation has been requested for this goal.");
+            builder.docstring("Whether this goal received its cancel signal.");
             builder.line("return self._context.is_cancelled()");
         });
         builder.blank_line();
-        for (method, doc) in [
-            ("complete", "Completes the goal successfully."),
-            ("complete_cancelled", "Completes the goal as cancelled."),
-        ] {
-            builder.block(
-                &format!("async def {method}(self{complete_arg}) -> None:"),
-                |builder| {
-                    builder.docstring(doc);
-                    builder.line(&format!("await self._context.{method}({complete_payload})"));
-                },
+        builder.add_import("from typing import Literal");
+        builder.block(
+            "def cancel_cause(self) -> Literal[\"caller\", \"sender_gone\"] | None:",
+            |builder| {
+                builder.docstring("Why this goal received its cancel signal; None before it did.");
+                builder.line("return self._context.cancel_cause");
+            },
+        );
+        builder.blank_line();
+        builder.block("def cancel_reason(self) -> str | None:", |builder| {
+            builder.docstring(
+                "The reason that the cause of the cancel signal gives, for complete_cancelled; None before the goal received its cancel signal.",
             );
-            builder.blank_line();
-        }
+            builder.line("return self._context.cancel_reason");
+        });
+        builder.blank_line();
+        builder.block(
+            &format!("async def complete(self{complete_arg}) -> None:"),
+            |builder| {
+                builder.docstring("Ends the goal with the status completed: a success.");
+                builder.line(&format!("await self._context.complete({complete_payload})"));
+            },
+        );
+        builder.blank_line();
+        builder.block(
+            &format!("async def fail(self, kind: {alias}.FailureKind, message: str) -> None:"),
+            |builder| {
+                builder.docstring(
+                    "Ends the goal with the status failed: a failure kind that this member declares, a message, and no result.",
+                );
+                builder.line(&format!("failure = {alias}.Failure(kind, message)"));
+                builder.line("await self._context.fail(failure.kind.value, failure.message)");
+            },
+        );
+        builder.blank_line();
+        builder.block(
+            &format!("async def complete_cancelled(self, reason: str{complete_arg}) -> None:"),
+            |builder| {
+                builder.docstring("Ends the goal with the status cancelled, for `reason`.");
+                builder.line(&format!(
+                    "await self._context.complete_cancelled(reason, {complete_payload})"
+                ));
+            },
+        );
+        builder.blank_line();
     });
     builder.blank_line();
 
     builder.block(&format!("class {camel}PendingGoal:"), |builder| {
-        builder.docstring("A goal received by the mock, awaiting accept/reject.");
+        builder.docstring("A goal received by the mock, awaiting accept/refuse.");
         builder.blank_line();
         if spec.messages.goal_request.is_some() {
             builder.py(r#"
@@ -906,26 +960,13 @@ def goal_id(self) -> str:
     return self._pending.goal_id
 "#);
         builder.blank_line();
-        let (accept_param, accept_payload, reject_param, reject_payload) = if spec
-            .messages
-            .goal_response
-            .is_some()
-        {
+        let (accept_param, accept_payload) = if spec.messages.goal_response.is_some() {
             (
                 format!(", response: {alias}.GoalResponseData"),
                 format!("{serialize_response_fn}(response)"),
-                format!(
-                    ", reason: Optional[str] = None, response: Optional[{alias}.GoalResponseData] = None"
-                ),
-                format!("{serialize_response_fn}(response) if response is not None else b\"\""),
             )
         } else {
-            (
-                String::new(),
-                "b\"\"".to_string(),
-                ", reason: Optional[str] = None".to_string(),
-                "b\"\"".to_string(),
-            )
+            (String::new(), "b\"\"".to_string())
         };
         builder.block(
             &format!("async def accept(self{accept_param}) -> {camel}ActiveGoal:"),
@@ -941,12 +982,14 @@ def goal_id(self) -> str:
         );
         builder.blank_line();
         builder.block(
-            &format!("async def reject(self{reject_param}) -> None:"),
+            &format!("async def refuse(self, kind: {alias}.FailureKind, message: str) -> None:"),
             |builder| {
-                builder.docstring("Rejects the goal with an optional human-readable reason.");
-                builder.line(&format!(
-                    "await self._pending.reject(reason, {reject_payload})"
-                ));
+                builder.multiline_docstring(
+                    "Refuses the goal with a failure kind that this member declares and a message.",
+                    ["Raises ValueError for any other kind. A refusal carries no goal response."],
+                );
+                builder.line(&format!("failure = {alias}.Failure(kind, message)"));
+                builder.line("await self._pending.refuse(failure.kind.value, failure.message)");
             },
         );
     });

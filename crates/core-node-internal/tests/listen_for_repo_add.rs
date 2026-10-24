@@ -4,6 +4,7 @@ use common::{
     StartedCoreNode, poll_core_node, read_json5_array, start_core_node_with_mock_messenger,
     write_repositories_json5,
 };
+use config::failure_kind::PeppyFailureKind;
 use core_node::repositories_list_path;
 use core_node_api::encoding::{GitRepoRef, RepoAddRequest};
 
@@ -32,13 +33,11 @@ fn assert_last_got_next_id(repos: &[serde_json::Value]) {
 async fn listen_for_repo_add_second_git_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
     .await;
-    assert!(resp.success, "repo_add should succeed");
-    assert!(resp.error_message.is_empty());
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
@@ -53,7 +52,7 @@ async fn listen_for_repo_add_second_git_succeed() {
 async fn listen_for_repo_add_git_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_git(
             "https://github.com/example/repo.git",
@@ -61,7 +60,6 @@ async fn listen_for_repo_add_git_succeed() {
         ),
     )
     .await;
-    assert!(resp.success, "repo_add should succeed");
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
@@ -76,8 +74,7 @@ async fn listen_for_repo_add_git_succeed() {
 async fn listen_for_repo_add_fs_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = poll_core_node(&started, &RepoAddRequest::new_fs("/tmp/my-local-repo")).await;
-    assert!(resp.success, "repo_add should succeed");
+    poll_core_node(&started, &RepoAddRequest::new_fs("/tmp/my-local-repo")).await;
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
@@ -95,16 +92,15 @@ async fn listen_for_repo_add_duplicate_fails() {
         RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead);
 
     // First add should succeed
-    let resp = poll_core_node(&started, &request).await;
-    assert!(resp.success);
+    poll_core_node(&started, &request).await;
 
     // Second add of the same URL should fail
-    let resp = poll_core_node(&started, &request).await;
-    assert!(!resp.success, "duplicate add should fail");
+    let failure = common::poll_core_node_failure(&started, &request).await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
     assert!(
-        resp.error_message.contains("already exists"),
+        failure.message().contains("already exists"),
         "error should mention 'already exists', got: {}",
-        resp.error_message
+        failure.message()
     );
 }
 
@@ -121,19 +117,16 @@ async fn listen_for_repo_add_fails_when_duplicate_ids_in_file() {
         ]"#,
     );
 
-    let resp = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started,
         &RepoAddRequest::new_git("https://example.com/new.git", GitRepoRef::RemoteHead),
     )
     .await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::AttemptFailed);
     assert!(
-        !resp.success,
-        "repo_add should fail when duplicate ids exist"
-    );
-    assert!(
-        resp.error_message.contains("duplicate repository id"),
+        failure.message().contains("duplicate repository id"),
         "error should mention duplicate id, got: {}",
-        resp.error_message
+        failure.message()
     );
 }
 
@@ -147,12 +140,11 @@ async fn listen_for_repo_add_assigns_id_after_manual_entry() {
         r#"[{ "id": 42, "type": "fs", "path": "/manual-repo" }]"#,
     );
 
-    let resp = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
     .await;
-    assert!(resp.success, "repo_add should succeed");
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
@@ -185,13 +177,12 @@ async fn listen_for_repo_add_top_assigns_min_minus_one() {
         ]"#,
     );
 
-    let resp = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead)
             .with_top(true),
     )
     .await;
-    assert!(resp.success, "repo_add with top should succeed");
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
@@ -214,13 +205,12 @@ async fn listen_for_repo_add_top_sorts_first() {
         ]"#,
     );
 
-    let resp = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead)
             .with_top(true),
     )
     .await;
-    assert!(resp.success);
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
@@ -243,12 +233,11 @@ async fn listen_for_repo_add_on_empty_uses_default_floor(#[case] top: bool) {
     let started = start_core_node_with_mock_messenger().await;
     write_repositories_json5(&started, "[]");
 
-    let resp = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead).with_top(top),
     )
     .await;
-    assert!(resp.success);
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
@@ -265,17 +254,17 @@ async fn listen_for_repo_add_top_fails_when_min_is_zero() {
 
     write_repositories_json5(&started, r#"[{ "id": 0, "type": "fs", "path": "/a" }]"#);
 
-    let resp = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started,
         &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
             .with_top(true),
     )
     .await;
-    assert!(!resp.success, "top=true on min=0 must fail");
+    common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
     assert!(
-        resp.error_message.contains("underflow"),
+        failure.message().contains("underflow"),
         "error should mention underflow, got: {}",
-        resp.error_message
+        failure.message()
     );
 }
 
@@ -285,21 +274,19 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
 
     write_repositories_json5(&started, r#"[{ "id": 1000, "type": "fs", "path": "/a" }]"#);
 
-    let resp1 = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/first.git", GitRepoRef::RemoteHead)
             .with_top(true),
     )
     .await;
-    assert!(resp1.success);
 
-    let resp2 = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/second.git", GitRepoRef::RemoteHead)
             .with_top(true),
     )
     .await;
-    assert!(resp2.success);
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
@@ -328,13 +315,12 @@ async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
 
     write_repositories_json5(&started, r#"[{ "id": 1000, "type": "fs", "path": "/a" }]"#);
 
-    let resp = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_git("https://example.com/x.git", GitRepoRef::RemoteHead)
             .with_top(false),
     )
     .await;
-    assert!(resp.success);
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
@@ -352,7 +338,7 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
     // rejection.
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp_main = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_git(
             "https://github.com/example/repo.git",
@@ -360,9 +346,8 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
         ),
     )
     .await;
-    assert!(resp_main.success, "first add should succeed");
 
-    let resp_dev = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_git(
             "https://github.com/example/repo.git",
@@ -370,11 +355,6 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
         ),
     )
     .await;
-    assert!(
-        resp_dev.success,
-        "second add with different ref should succeed, got error: {}",
-        resp_dev.error_message
-    );
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
@@ -399,12 +379,11 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
 async fn listen_for_repo_add_explicit_id_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = poll_core_node(
+    poll_core_node(
         &started,
         &RepoAddRequest::new_fs("/tmp/private-hub").with_id(2000),
     )
     .await;
-    assert!(resp.success, "repo_add with explicit id should succeed");
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
 
@@ -426,16 +405,16 @@ async fn listen_for_repo_add_explicit_id_collision_fails() {
 
     // 1000 is the id of the first bundled default; claiming it would merge
     // the new repository's entries under that default's owner.
-    let resp = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started,
         &RepoAddRequest::new_fs("/tmp/private-hub").with_id(1000),
     )
     .await;
-    assert!(!resp.success, "add pinning a taken id should fail");
+    common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
     assert!(
-        resp.error_message.contains("id 1000 is already in use"),
+        failure.message().contains("id 1000 is already in use"),
         "error should name the taken id, got: {}",
-        resp.error_message
+        failure.message()
     );
 
     let repos = read_json5_array(&repositories_list_path(&started.peppy_dirs));
@@ -449,19 +428,20 @@ async fn listen_for_repo_add_explicit_id_collision_fails() {
 async fn listen_for_repo_add_explicit_id_with_top_fails() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let resp = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started,
         &RepoAddRequest::new_fs("/tmp/private-hub")
             .with_id(2000)
             .with_top(true),
     )
     .await;
-    assert!(!resp.success, "id + top should fail");
+    common::assert_failure_kind(&failure, PeppyFailureKind::Rejected);
     assert!(
-        resp.error_message
+        failure
+            .message()
             .contains("cannot combine an explicit id with top priority"),
         "error should explain the conflict, got: {}",
-        resp.error_message
+        failure.message()
     );
 }
 
@@ -484,17 +464,18 @@ async fn listen_for_repo_add_explicit_id_out_of_range_fails() {
     let started = start_core_node_with_mock_messenger().await;
 
     for id in [u64::MAX, u64::from(u32::MAX)] {
-        let resp = poll_core_node(
+        let failure = common::poll_core_node_failure(
             &started,
             &RepoAddRequest::new_fs("/tmp/far-hub").with_id(id),
         )
         .await;
-        assert!(!resp.success, "add pinning id {id} should fail");
+        common::assert_failure_kind(&failure, PeppyFailureKind::Rejected);
         assert!(
-            resp.error_message
+            failure
+                .message()
                 .contains(&format!("repository id {id} is out of range")),
             "error should name the id {id}, got: {}",
-            resp.error_message
+            failure.message()
         );
         assert_repos_file_lacks_path(&started, "/tmp/far-hub");
     }
@@ -516,20 +497,18 @@ async fn listen_for_repo_add_derived_id_out_of_range_fails() {
             &format!(r#"[{{ "id": {existing_id}, "type": "fs", "path": "/a" }}]"#),
         );
 
-        let resp = poll_core_node(
+        let failure = common::poll_core_node_failure(
             &started,
             &RepoAddRequest::new_fs("/tmp/far-hub").with_top(top),
         )
         .await;
+        common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
         assert!(
-            !resp.success,
-            "add next to id {existing_id} (top={top}) should fail"
-        );
-        assert!(
-            resp.error_message
+            failure
+                .message()
                 .contains(&format!("assigned id {} is out of range", u32::MAX)),
             "error should name the derived id, got: {}",
-            resp.error_message
+            failure.message()
         );
         assert_repos_file_lacks_path(&started, "/tmp/far-hub");
     }

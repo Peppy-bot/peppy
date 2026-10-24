@@ -24,11 +24,13 @@ use self::watchers::{LifecycleWatchers, lifecycle_watchers};
 use super::action::{StackAction, StackChangeContext};
 use super::container_mounts::{LocalMounts, hosts_container_nodes, prepare_local_container_mounts};
 use super::state::{ActiveLaunch, StackCopy};
+use super::{ChangeEnd, attempt_failed, precondition_failed, rejected};
+use crate::services::action_loop::WorkStop;
 use config::runtime::{CopyName, CoreNodeName};
 use core_node_api::encoding::LaunchIdentity;
 use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, LaunchGoal, LaunchResult, NodeAddLogEntry,
-    NodeBuildLogEntry, NodeRunLogEntry,
+    NodeBuildLogEntry, NodeLogs, NodeRunLogEntry,
 };
 use daemon_config::launcher::{
     ClockIncarnations, CopyMembership, Deployment, JoinableNodes, Placements, ScopeCheck,
@@ -246,7 +248,11 @@ impl PlannedDeployment {
 /// 8. Start instances in dependency order
 ///
 /// A build ends after step 6: every node is built and no instance starts.
-pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) -> LaunchResult {
+///
+/// A cancel of the change stops it at the step it reached, as a failure of
+/// that step does: before step 5 nothing has changed, from step 5 on the
+/// stack is torn down and cleared on every machine.
+pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) -> ChangeEnd {
     let builds_only = ctx.action == StackAction::Build;
     // Step 1: Parse the launcher and bind its core node links to machines.
     let ParsedLaunch {
@@ -259,7 +265,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             },
     } = match parse_launcher_config(&ctx, &goal).await {
         Ok(result) => result,
-        Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
+        Err(reason) => return ChangeEnd::stopped(rejected(reason)),
     };
 
     let copies = composed.copies().to_vec();
@@ -274,9 +280,12 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // node pins the whole launch runs. Resolution touches no other machine
     // and tears nothing down, so refusing here is free, and the
     // reservations below need the pins to carry.
+    if let Err(cancelled) = ctx.stop_if_cancelled() {
+        return ChangeEnd::stopped(cancelled);
+    }
     let mut planned = match resolve_deployments(&ctx, flat.deployments.clone(), &placements).await {
         Ok(result) => result,
-        Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
+        Err(reason) => return ChangeEnd::stopped(rejected(reason)),
     };
 
     // Step 2a: The resolution knows which targets are daemon targets, so
@@ -292,7 +301,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         Ok(joinable) => joinable,
         Err(reason) => {
             publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return LaunchResult::failure(ctx.log.path(), reason);
+            return ChangeEnd::stopped(rejected(reason));
         }
     };
 
@@ -304,7 +313,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         Ok(resolved) => resolved,
         Err(reason) => {
             publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return LaunchResult::failure(ctx.log.path(), reason);
+            return ChangeEnd::stopped(rejected(reason));
         }
     };
 
@@ -319,7 +328,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
                 LaunchFeedbackStep::LauncherStep,
             )
             .await;
-            return LaunchResult::success(ctx.log.path());
+            return ChangeEnd::without_node_logs(Ok(LaunchResult::default()));
         }
         ctx.slice_ownership
             .record_slice(LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node));
@@ -340,7 +349,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             LaunchFeedbackStep::LauncherStep,
         )
         .await;
-        return LaunchResult::success(ctx.log.path());
+        return ChangeEnd::without_node_logs(Ok(LaunchResult::default()));
     }
 
     // Step 3: Validate dependencies and compute one global topological order,
@@ -363,14 +372,14 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     .await
     {
         Ok(result) => result,
-        Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
+        Err(reason) => return ChangeEnd::stopped(rejected(reason)),
     };
 
     // Step 3b: Pin the contract and pairing documents every manifest in the
     // launch names. Still before any reservation, so a document this
     // machine cannot pin refuses the launch while it has cost nothing.
     if let Err(reason) = resolve::mint_doc_pins(&ctx, &mut planned, &placements).await {
-        return LaunchResult::failure(ctx.log.path(), reason);
+        return ChangeEnd::stopped(rejected(reason));
     }
 
     // Step 3c: The joinable nodes, resolved for this machine with their doc
@@ -380,11 +389,14 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         match resolve_joinable_nodes(&ctx, joinable, &planned, placements.coordinator_name()).await
         {
             Ok(builds) => builds,
-            Err(reason) => return LaunchResult::failure(ctx.log.path(), reason),
+            Err(reason) => return ChangeEnd::stopped(rejected(reason)),
         }
     } else {
         Vec::new()
     };
+    if let Err(cancelled) = ctx.stop_if_cancelled() {
+        return ChangeEnd::stopped(cancelled);
+    }
 
     // Step 4: The clock the launch runs on, and the federated preflight:
     // reachability, reservations carrying each participant's pins, and the
@@ -393,9 +405,14 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // this one, its stack.
     let change = match preflight_change(&ctx, &goal.launch_id, &planned, &placements, None).await {
         Ok(change) => change,
-        Err(reason) => {
-            publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return LaunchResult::failure(ctx.log.path(), reason);
+        Err(stop) => {
+            publish_error(
+                &ctx,
+                stop.failure().message().to_owned(),
+                LaunchFeedbackStep::LauncherStep,
+            )
+            .await;
+            return ChangeEnd::stopped(stop);
         }
     };
     if !builds_only {
@@ -405,11 +422,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         Ok(watchers) => watchers,
         Err(reason) => {
             publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return release_and_fail(
-                change.reserved,
-                LaunchResult::failure(ctx.log.path(), reason),
-            )
-            .await;
+            return ChangeEnd::stopped(release_and_fail(change.reserved, rejected(reason)).await);
         }
     };
 
@@ -426,7 +439,14 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     if !refusals.is_empty() {
         let msg = daemon_config::format_bulleted(&refusals);
         publish_error(&ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return release_and_fail(change.reserved, LaunchResult::failure(ctx.log.path(), msg)).await;
+        return ChangeEnd::stopped(
+            release_and_fail(change.reserved, precondition_failed(msg)).await,
+        );
+    }
+    // The last step before the commit point: a cancel here still leaves every
+    // stack as it was.
+    if let Err(cancelled) = ctx.stop_if_cancelled() {
+        return ChangeEnd::stopped(release_and_fail(change.reserved, cancelled).await);
     }
 
     // Step 5: The commit point. Every participant is reserved and the whole
@@ -456,16 +476,12 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     {
         publish_error(
             &ctx,
-            refusal.reason.clone(),
+            refusal.failure.message().to_owned(),
             LaunchFeedbackStep::LauncherStep,
         )
         .await;
         federated::clear_participant_slices(&ctx, &refusal.holders_among(&participants)).await;
-        return release_and_fail(
-            change.reserved,
-            LaunchResult::failure(ctx.log.path(), refusal.reason),
-        )
-        .await;
+        return ChangeEnd::stopped(release_and_fail(change.reserved, refusal.failure).await);
     }
     teardown_and_reset_stack(&ctx).await;
 
@@ -553,7 +569,9 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
                 .unwrap_or_default(),
             LocalMounts::WholeStack,
         )
-        .await?;
+        .await
+        .map_err(attempt_failed)?;
+        ctx.stop_if_cancelled()?;
 
         // Step 8: Start instances in dependency order.
         start_node_instances(
@@ -576,12 +594,17 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     }
     .await;
 
-    if let Err(reason) = outcome {
-        let reason = fail_and_clear_stack(&ctx, reason, &participants).await;
-        let launch_result = LaunchResult::failure(ctx.log.path(), reason)
-            .with_node_logs(add_log_paths, build_log_paths, run_log_paths)
-            .with_instance_endpoints(instance_endpoints);
-        return release_and_fail(change.reserved, launch_result).await;
+    let node_logs = NodeLogs {
+        node_add_logs: add_log_paths,
+        node_build_logs: build_log_paths,
+        node_run_logs: run_log_paths,
+    };
+    if let Err(stop) = outcome {
+        let stop = fail_and_clear_stack(&ctx, stop, &participants).await;
+        return ChangeEnd {
+            node_logs,
+            outcome: Err(release_and_fail(change.reserved, stop).await),
+        };
     }
 
     // The launcher record is what `stack join` and `stack remove` act on;
@@ -597,21 +620,23 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // stays: the reservation guards the launch, the slice describes its result,
     // and rediscovery needs the latter long after the former is gone.
     change.reserved.release().await;
-    LaunchResult::success(ctx.log.path())
-        .with_node_logs(add_log_paths, build_log_paths, run_log_paths)
-        .with_instance_endpoints(instance_endpoints)
+    ChangeEnd {
+        node_logs,
+        outcome: Ok(LaunchResult::new(instance_endpoints)),
+    }
 }
 
-/// Releases every participant and returns the failure.
+/// Releases every participant and returns the stop.
 ///
-/// Every failure path funnels through here so a launch can never end while
-/// still holding a machine. Whether the participants' stacks were also cleared
-/// is a separate question the caller answers, because it depends on whether
-/// anything had been dispatched to them yet.
+/// Every failure path, and every stop at a cancel, funnels through here so a
+/// launch can never end while still holding a machine. Whether the
+/// participants' stacks were also cleared is a separate question the caller
+/// answers, because it depends on whether anything had been dispatched to
+/// them yet.
 async fn release_and_fail(
     reserved: federated::ReservedParticipants,
-    launch_result: LaunchResult,
-) -> LaunchResult {
+    stop: impl Into<WorkStop>,
+) -> WorkStop {
     reserved.release().await;
-    launch_result
+    stop.into()
 }

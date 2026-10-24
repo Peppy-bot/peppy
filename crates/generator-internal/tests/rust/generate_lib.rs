@@ -696,6 +696,7 @@ fn generate_peppygen_rust_lib_renders_optional_accessor_for_a_zero_or_one_contra
             "v1",
             LINK_ID,
             config::node::Cardinality::ZeroOrOne,
+            Default::default(),
         ),
     })];
 

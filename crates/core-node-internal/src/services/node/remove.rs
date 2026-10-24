@@ -1,18 +1,21 @@
 use crate::Result;
-use crate::services::response::into_service_response;
+use crate::services::response::{failure, into_service_answer};
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use core_node_api::names;
 use node_stack::{
-    EntityHandle, KeptRelations, NodeEntity, NodeStack, ProcessClaim, SlotLeft, SlotRemoval,
+    EntityHandle, KeptRelations, NodeEntity, NodeStack, NodeStackError, ProcessClaim, SlotLeft,
+    SlotRemoval,
 };
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
-    SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, ServiceTarget,
+    Failure, SHUTDOWN_SERVICE, ServiceAnswer, ServiceMessenger, ServiceRequestContext,
+    ServiceTarget,
 };
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult};
+use peppylib::{MessengerHandle, PeppyError};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -70,12 +73,10 @@ async fn handle_node_remove_request(
     node_stack: Arc<NodeStack>,
     relationships: RelationshipCoordinators,
     ownership: Arc<crate::services::federation::SliceOwnership>,
-) -> PeppyResult<Payload> {
-    let request = NodeRemoveRequest::decode(context.message().payload_bytes().as_ref())?;
-    let _admission = match ownership.admit_node_goal(&request) {
-        Ok(admission) => admission,
-        Err(reason) => return encode_remove_outcome(&context, Err(reason.into())),
-    };
+) -> ServiceAnswer {
+    let request = NodeRemoveRequest::decode(context.message().payload_bytes().as_ref())
+        .map_err(|error| failure(PeppyFailureKind::Rejected, error))?;
+    let _admission = ownership.admit_node_goal(&request)?;
     // An instance whose restart falls due during this removal is not started
     // again before the removal claims its slot; a removal that fails releases
     // its hold, and the policies apply once the notes of its shutdown
@@ -93,48 +94,55 @@ async fn handle_node_remove_request(
         ),
         &ownership.stack.cancellation(),
         crate::services::node::gate::reset_drain_budget(node_stack.shutdown_grace()),
-        || Err("node remove cancelled by stack reset".into()),
+        || {
+            Err(RemoveFailure::new(
+                PeppyFailureKind::PreconditionFailed,
+                "node remove cancelled by stack reset",
+            ))
+        },
     )
     .await;
-    encode_remove_outcome(&context, outcome)
+    let force_killed = outcome.map_err(RemoveFailure::into_failure)?;
+    into_service_answer(
+        NodeRemoveResponse::new(force_killed)
+            .encode()
+            .map_err(Into::into),
+    )
 }
 
-/// Why a node remove failed, with the instances its force phase killed before
-/// the failure, which the response carries so the CLI warns for each.
+/// Why a node remove failed: its failure kind, its message, and the
+/// instances its force phase killed before the failure, which the error
+/// reply names so the CLI user learns of each.
 struct RemoveFailure {
+    kind: PeppyFailureKind,
     message: String,
     force_killed: Vec<String>,
 }
 
-impl From<String> for RemoveFailure {
-    fn from(message: String) -> Self {
+impl RemoveFailure {
+    fn new(kind: PeppyFailureKind, message: impl Into<String>) -> Self {
         Self {
-            message,
+            kind,
+            message: message.into(),
             force_killed: Vec::new(),
         }
     }
-}
 
-impl From<&str> for RemoveFailure {
-    fn from(message: &str) -> Self {
-        message.to_owned().into()
+    /// The error reply of the failure; its message names each instance the
+    /// force phase killed.
+    fn into_failure(self) -> Failure {
+        if self.force_killed.is_empty() {
+            return failure(self.kind, self.message);
+        }
+        failure(
+            self.kind,
+            format!(
+                "{}; the removal force-killed {}, which did not exit within the shutdown grace",
+                self.message,
+                self.force_killed.join(", ")
+            ),
+        )
     }
-}
-
-/// Encodes the outcome of a node remove as its response: a success or a
-/// failure, each carrying the instances the force phase killed.
-fn encode_remove_outcome(
-    context: &ServiceRequestContext,
-    outcome: std::result::Result<Vec<String>, RemoveFailure>,
-) -> PeppyResult<Payload> {
-    let response = match outcome {
-        Ok(force_killed) => NodeRemoveResponse::success().with_force_killed(force_killed),
-        Err(RemoveFailure {
-            message,
-            force_killed,
-        }) => NodeRemoveResponse::failure(message).with_force_killed(force_killed),
-    };
-    into_service_response(context, response.encode().map_err(Into::into))
 }
 
 async fn handle_node_remove_request_inner(
@@ -162,7 +170,10 @@ async fn handle_node_remove_request_inner(
         )
     };
     if request.node_name == root_node_name && request.tag == root_node_tag {
-        return Err("Cannot remove the core node from the node stack".into());
+        return Err(RemoveFailure::new(
+            PeppyFailureKind::Rejected,
+            "Cannot remove the core node from the node stack",
+        ));
     }
 
     let matching_entity = node_stack.snapshot().into_iter().find(|handle| {
@@ -171,11 +182,13 @@ async fn handle_node_remove_request_inner(
             && guard.config().manifest.tag == request.tag
     });
     let Some(matching_entity) = matching_entity else {
-        return Err(format!(
-            "Node '{}:{}' not found in node stack",
-            request.node_name, request.tag
-        )
-        .into());
+        return Err(RemoveFailure::new(
+            PeppyFailureKind::Rejected,
+            format!(
+                "Node '{}:{}' not found in node stack",
+                request.node_name, request.tag
+            ),
+        ));
     };
 
     // `targets` are the `Running` instances: each gets a reachability probe, a
@@ -245,12 +258,14 @@ async fn handle_node_remove_request_inner(
         let reachable = match reachable {
             Ok(r) => r,
             Err(e) => {
-                return Err(format!(
-                    "Failed to check shutdown service for instance '{}': {}",
-                    target.instance_id.as_str(),
-                    e
-                )
-                .into());
+                return Err(RemoveFailure::new(
+                    PeppyFailureKind::AttemptFailed,
+                    format!(
+                        "Failed to check shutdown service for instance '{}': {}",
+                        target.instance_id.as_str(),
+                        e
+                    ),
+                ));
             }
         };
         if reachable {
@@ -268,14 +283,16 @@ async fn handle_node_remove_request_inner(
     if !request.stop_instances
         && let Some(example) = targets.iter().chain(&targets_without_process).next()
     {
-        return Err(format!(
-            "Node '{}:{}' has tracked instances (e.g. '{}'); {} clears them before removing",
-            request.node_name,
-            request.tag,
-            example.instance_id.as_str(),
-            removal_command(&request.node_name, &request.tag, core_node_name),
-        )
-        .into());
+        return Err(RemoveFailure::new(
+            PeppyFailureKind::PreconditionFailed,
+            format!(
+                "Node '{}:{}' has tracked instances (e.g. '{}'); {} clears them before removing",
+                request.node_name,
+                request.tag,
+                example.instance_id.as_str(),
+                removal_command(&request.node_name, &request.tag, core_node_name),
+            ),
+        ));
     }
 
     // We proceed despite unreachable instances, which get no shutdown
@@ -346,12 +363,14 @@ async fn handle_node_remove_request_inner(
             tokio::time::sleep(deadline).await;
             drop(standing);
         });
-        return Err(format!(
-            "Failed to stop node instance '{}': {}",
-            target.instance_id.as_str(),
-            e
-        )
-        .into());
+        return Err(RemoveFailure::new(
+            PeppyFailureKind::AttemptFailed,
+            format!(
+                "Failed to stop node instance '{}': {}",
+                target.instance_id.as_str(),
+                e
+            ),
+        ));
     }
 
     // Each slot still running the process this removal stops is claimed, so
@@ -458,7 +477,16 @@ async fn handle_node_remove_request_inner(
             );
         }
         Err(e) => {
+            // An instance that started while the remove stopped the others
+            // keeps the node in the stack.
+            let kind = match e {
+                NodeStackError::CannotRemoveNodeWithInstances { .. } => {
+                    PeppyFailureKind::PreconditionFailed
+                }
+                _ => PeppyFailureKind::AttemptFailed,
+            };
             return Err(RemoveFailure {
+                kind,
                 message: format!(
                     "Failed to remove node config '{}:{}': {}{}",
                     request.node_name,

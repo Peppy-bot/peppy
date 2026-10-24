@@ -2,16 +2,16 @@ mod templates;
 
 use self::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
-use crate::services::response::into_service_response;
+use crate::services::response::{failure, into_service_answer};
+use config::failure_kind::PeppyFailureKind;
 use config::node::Toolchain;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeInitRequest, NodeInitResponse};
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::ServiceRequestContext;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::messaging::{Failure, ServiceAnswer, ServiceRequestContext};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -44,21 +44,12 @@ pub async fn listen_for_node_init(
 async fn handle_node_init_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
-) -> PeppyResult<Payload> {
-    into_service_response(
-        &context,
-        handle_node_init_request_inner(&context, &peppy_dirs),
-    )
-}
-
-fn handle_node_init_request_inner(
-    context: &ServiceRequestContext,
-    peppy_dirs: &PeppyDirs,
-) -> Result<Payload> {
+) -> ServiceAnswer {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload_bytes();
 
-    let request = NodeInitRequest::decode(payload.as_ref())?;
+    let request = NodeInitRequest::decode(payload.as_ref())
+        .map_err(|error| failure(PeppyFailureKind::Rejected, error))?;
 
     debug!(
         "Received `node_init` request from {sender_instance_id}, node_root_dir={}, node_name={}",
@@ -66,41 +57,41 @@ fn handle_node_init_request_inner(
         request.node_name
     );
 
-    let response = match scaffold_node(&request, peppy_dirs) {
-        Ok(()) => NodeInitResponse::success(),
-        Err(message) => NodeInitResponse::failure(message),
-    };
-    response.encode().map_err(Into::into)
+    scaffold_node(&request, &peppy_dirs)?;
+    into_service_answer(NodeInitResponse::new().encode().map_err(Into::into))
 }
 
 /// Creates the node directory at `node_root_dir/node_name` and writes the
 /// toolchain's configuration, the peppygen library and a `.gitignore` into
-/// it. Stops at the first step that fails and returns the message the
-/// caller sees.
+/// it. Stops at the first step that fails and returns the failure the
+/// caller sees: `precondition_failed` when the directory already exists,
+/// `attempt_failed` for a step that fails.
 fn scaffold_node(
     request: &NodeInitRequest,
     peppy_dirs: &PeppyDirs,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), Failure> {
     let node_dir = request.node_root_dir.join(&request.node_name);
     if node_dir.exists() {
-        return Err(format!(
-            "Node directory already exists: {}",
-            node_dir.display()
+        return Err(failure(
+            PeppyFailureKind::PreconditionFailed,
+            format!("Node directory already exists: {}", node_dir.display()),
         ));
     }
+    let attempt_failed = |message: String| failure(PeppyFailureKind::AttemptFailed, message);
     std::fs::create_dir_all(&node_dir)
-        .map_err(|e| format!("Failed to create node directory: {e}"))?;
+        .map_err(|e| attempt_failed(format!("Failed to create node directory: {e}")))?;
 
     // Create language-specific configuration (must be done before peppygen generation
     // since generate_peppygen_lib requires peppy.json5 to exist)
     match request.toolchain {
         Toolchain::Cargo => {
             apply_rust_templates(&request.node_name, &node_dir, request.with_container)
-                .map_err(|e| format!("Failed to create Rust configuration: {e}"))?;
+                .map_err(|e| attempt_failed(format!("Failed to create Rust configuration: {e}")))?;
         }
         Toolchain::Uv => {
-            apply_python_templates(&request.node_name, &node_dir, request.with_container)
-                .map_err(|e| format!("Failed to create Python configuration: {e}"))?;
+            apply_python_templates(&request.node_name, &node_dir, request.with_container).map_err(
+                |e| attempt_failed(format!("Failed to create Python configuration: {e}")),
+            )?;
         }
     }
 
@@ -114,10 +105,10 @@ fn scaffold_node(
         None,
         generator::NodeTree::Source,
     )
-    .map_err(|e| format!("Failed to generate peppygen: {e}"))?;
+    .map_err(|e| attempt_failed(format!("Failed to generate peppygen: {e}")))?;
 
     create_gitignore(&node_dir, request.toolchain)
-        .map_err(|e| format!("Failed to create .gitignore: {e}"))
+        .map_err(|e| attempt_failed(format!("Failed to create .gitignore: {e}")))
 }
 
 fn create_gitignore(node_dir: &std::path::Path, build_system: Toolchain) -> std::io::Result<()> {

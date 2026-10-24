@@ -233,7 +233,9 @@ from peppygen.consumed_services.camera import enable_camera
 request, responder = await h.mocks.deps.camera.enable_camera.next_request(10.0)
 assert request.enable
 await responder.respond(enable_camera.ResponseData(enabled=True))
-# or: await responder.respond_error("hardware fault")
+# or: await responder.respond_failure(
+#     enable_camera.FailureKind.RESOURCE_UNAVAILABLE, "hardware fault"
+# )
 ```
   </TabItem>
   <TabItem label="Rust">
@@ -249,7 +251,9 @@ let (request, responder) = mocks
     .await?;
 assert!(request.enable);
 responder.respond(enable_camera::ResponseData::new(true)).await?;
-// or: responder.respond_error("hardware fault").await?;
+// or: responder
+//     .respond_failure(enable_camera::FailureKind::ResourceUnavailable, "hardware fault")
+//     .await?;
 ```
   </TabItem>
 </Tabs>
@@ -281,6 +285,8 @@ assert_eq!(requests.len(), 1);
   </TabItem>
 </Tabs>
 
+`respond_failure` answers with an [error reply](/advanced_guides/services/#error-replies): a failure kind of the service (a kind of peppy, or a kind of the contract of the slot) and a message. The node's generated `poll` reads it as the typed `Failure` of the service, so the test drives the node's failure branches with the kinds a real producer gives.
+
 `captured()` decodes every request received so far, scripted and manual alike, in arrival order, so both modes leave a complete audit trail. A mock torn down with parked requests, or with scripted responses the node never consumed, reports them loudly at teardown, so a call the test forgot to answer cannot pass silently.
 
 ### Consumed actions
@@ -295,11 +301,12 @@ from peppygen.consumed_actions.brain import plan_motion
 pending = await h.mocks.deps.brain.plan_motion.next_goal(10.0)
 assert pending.request.arm_id == 7
 
-active = await pending.accept(plan_motion.GoalResponseData(accepted=True))
-# or: await pending.reject("busy", plan_motion.GoalResponseData(accepted=False))
+active = await pending.accept(plan_motion.GoalResponseData(planner="rrt"))
+# or: await pending.refuse(plan_motion.FailureKind.REJECTED, "busy")
 
 await active.publish_feedback(plan_motion.FeedbackMessage(progress=0.5))
-await active.complete(plan_motion.ResultResponseData(success=True))
+await active.complete(plan_motion.ResultResponseData(waypoint_count=12))
+# or: await active.fail(plan_motion.FailureKind.ATTEMPT_FAILED, "no plan")
 ```
   </TabItem>
   <TabItem label="Rust">
@@ -315,16 +322,19 @@ let pending = mocks
     .await?;
 assert_eq!(pending.request.arm_id, 7);
 
-let active = pending.accept(plan_motion::GoalResponseData::new(true)).await?;
-// or: pending.reject(Some("busy"), None).await?;
+let active = pending
+    .accept(plan_motion::GoalResponseData::new("rrt".to_owned()))
+    .await?;
+// or: pending.refuse(plan_motion::FailureKind::Rejected, "busy").await?;
 
 active.publish_feedback(&plan_motion::FeedbackMessage { progress: 0.5 }).await?;
-active.complete(&plan_motion::ResultResponseData::new(true)).await?;
+active.complete(&plan_motion::ResultResponseData::new(12)).await?;
+// or: active.fail(plan_motion::FailureKind::AttemptFailed, "no plan").await?;
 ```
   </TabItem>
 </Tabs>
 
-`next_goal` parks until the node fires a goal (bounded by the timeout) and returns it with the decoded `request`. `accept` returns the active goal handle; from there `publish_feedback` streams typed feedback, and `complete` / `complete_cancelled` terminate it. To test your node's cancellation path, await `cancel_signal()` on the active goal (it resolves when the node requests cancellation), then answer with `complete_cancelled`. `is_cancelled()` polls the same state non-blocking.
+`next_goal` parks until the node fires a goal (bounded by the timeout) and returns it with the decoded `request`. `refuse(kind, message)` refuses it with a [failure kind](/advanced_guides/actions/#how-a-goal-ends) of the action; `accept` returns the active goal handle. From there `publish_feedback` streams typed feedback, and `complete`, `fail(kind, message)` and `complete_cancelled(reason, ...)` end the goal. The node's generated client reads a refusal and a failure as the typed `Failure` of the action, and a cancelled goal with its reason. To test your node's cancellation path, await `cancel_signal()` on the active goal (it resolves when the node requests cancellation, or when the node is gone), read why with `cancel_cause()` (in Python, `cancel_reason()` gives the reason of that cause in words), then answer with `complete_cancelled`. `is_cancelled()` polls the same state non-blocking.
 
 ### Pairing peers
 
@@ -509,7 +519,7 @@ assert_eq!(response.doubled, 42);
   </TabItem>
 </Tabs>
 
-`poll` sends one request and awaits the node's typed response; `timeout` bounds the reachability gate and the poll individually.
+`poll` sends one request and awaits the node's typed response; `timeout` bounds the reachability gate and the poll individually. An error reply of the node is the `Failure` of the service: in Rust `ping::Failure::of(&error)` reads it from the error of `poll`, in Python `poll` raises it.
 
 ### Exposed actions
 
@@ -519,17 +529,14 @@ The node's exposed actions get the same treatment from the fixture session: `sen
   <TabItem label="Python">
 ```python
 from peppygen.fixtures.exposed_actions import move_arm
-import peppylib
 
-goal = await move_arm.send_goal(
-    h, move_arm.GoalRequestData(arm_id=7), peppylib.QoSProfile.Reliable, 10.0
-)
+goal = await move_arm.send_goal(h, move_arm.GoalRequestData(arm_id=7), 10.0)
 assert goal.accepted
 feedback = await goal.on_next_feedback()
 assert feedback.progress > 0.0
 result = await goal.get_result(10.0)
 assert result.status == move_arm.ResultStatus.COMPLETED
-assert result.data.success
+assert result.data.distance_mm == 120
 ```
   </TabItem>
   <TabItem label="Rust">
@@ -540,7 +547,7 @@ use std::time::Duration;
 let mut goal = move_arm::send_goal(
     &harness,
     &move_arm::GoalRequestData { arm_id: 7 },
-    peppygen::QoSProfile::Reliable,
+    peppygen::DEFAULT_FEEDBACK_BOUND,
     Duration::from_secs(10),
 )
 .await?;
@@ -550,13 +557,13 @@ assert!(feedback.progress > 0.0);
 let result = goal.get_result(Duration::from_secs(10)).await?;
 assert!(matches!(
     result.outcome,
-    move_arm::ResultOutcome::Completed(move_arm::ResultData { success: true })
+    move_arm::ResultOutcome::Completed(move_arm::ResultData { distance_mm: 120 })
 ));
 ```
   </TabItem>
 </Tabs>
 
-The goal handle carries the decoded admission reply (`accepted`, the optional rejection `reason`, and the typed goal-response `data`), streams typed feedback with `on_next_feedback`, and finishes with `get_result`, whose outcome is one of completed, cancelled, abandoned, or expired, with the typed result payload on the first two. `cancel_goal(timeout)` requests cancellation, exercising the `cancel_signal` path in your node's goal handler.
+The goal handle carries the decoded admission reply (`accepted`, the `refusal` of a refused goal as the typed `Failure` of the action, and the typed goal-response `data`), streams typed feedback with `on_next_feedback`, and finishes with `get_result`, whose outcome is one of completed, failed, cancelled, abandoned, or expired: the typed result payload on completed and cancelled, the `Failure` on failed, and the reason on cancelled. `cancel_goal(timeout)` requests cancellation, exercising the `cancel_signal` path in your node's goal handler.
 
 ## Producer loss, deterministically
 
@@ -566,7 +573,7 @@ Every mock owns one messaging session, so `stop()` is a whole-producer loss: eve
   <TabItem label="Python">
 ```python
 pending = await h.mocks.deps.brain.plan_motion.next_goal(10.0)
-active = await pending.accept(plan_motion.GoalResponseData(accepted=True))
+active = await pending.accept(plan_motion.GoalResponseData(planner="rrt"))
 
 # The producer dies with the goal still active. The node's
 # on_next_feedback_message raises ConnectionError: not a clean
@@ -587,7 +594,9 @@ let pending = mocks
     .plan_motion
     .next_goal(Duration::from_secs(10))
     .await?;
-let _active = pending.accept(plan_motion::GoalResponseData::new(true)).await?;
+let _active = pending
+    .accept(plan_motion::GoalResponseData::new("rrt".to_owned()))
+    .await?;
 
 // The producer dies with the goal still active. The node's
 // on_next_feedback_message returns

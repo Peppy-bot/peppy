@@ -33,8 +33,9 @@ pub(crate) const FILE_NAME: &str = "repo_status.json5";
 pub(crate) struct RepoStatusFailure {
     /// `"unreachable"` or `"conflict"`. Text on disk so the file stays
     /// readable and an unknown value from a future peppy degrades to a
-    /// label rather than a parse error.
-    pub kind: String,
+    /// label rather than a parse error. The key on disk is `kind`.
+    #[serde(rename = "kind")]
+    pub read_failure: String,
     pub message: String,
     pub unix_secs: u64,
 }
@@ -142,7 +143,7 @@ mod tests {
 
         let mut failed = status(1001);
         failed.last_failure = Some(RepoStatusFailure {
-            kind: "conflict".to_owned(),
+            read_failure: "conflict".to_owned(),
             message: "two node manifests claim `a:v1`".to_owned(),
             unix_secs: 1_753_986_400,
         });
@@ -151,6 +152,59 @@ mod tests {
         write(&peppy_dirs, &written).unwrap();
 
         assert_eq!(read(&peppy_dirs), written);
+    }
+
+    /// The failure of a status line is under the key `kind` on disk: a
+    /// status file with it parses, so the start of the daemon reads the ref
+    /// of each repository and finds the release repositories that it must
+    /// read again.
+    #[test]
+    fn a_status_file_with_the_kind_key_parses() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        std::fs::create_dir_all(peppy_dirs.cache_dir()).unwrap();
+        std::fs::write(
+            repo_status_path(&peppy_dirs),
+            r#"[
+              {
+                id: 1000,
+                identity: "https://example.com/1000.git",
+                source_type: "git",
+                last_read_unix_secs: 1753900000,
+                read_ref: "refs/tags/peppy-release/v0.34.3",
+                last_failure: {
+                  kind: "unreachable",
+                  message: "network is unreachable",
+                  unix_secs: 1753986400,
+                },
+              },
+            ]"#,
+        )
+        .unwrap();
+
+        let statuses = read(&peppy_dirs);
+
+        assert_eq!(statuses.len(), 1, "the status file parses");
+        assert_eq!(
+            statuses[0].read_ref,
+            Some(ReadRef::from_git_name("refs/tags/peppy-release/v0.34.3"))
+        );
+        assert_eq!(
+            statuses[0].last_failure,
+            Some(RepoStatusFailure {
+                read_failure: "unreachable".to_owned(),
+                message: "network is unreachable".to_owned(),
+                unix_secs: 1_753_986_400,
+            })
+        );
+        let written = std::fs::read_to_string(repo_status_path(&peppy_dirs)).unwrap();
+        write(&peppy_dirs, &statuses).unwrap();
+        let rewritten = std::fs::read_to_string(repo_status_path(&peppy_dirs)).unwrap();
+        assert!(written.contains("kind:"));
+        assert!(
+            rewritten.contains("kind:") && !rewritten.contains("read_failure"),
+            "the status file keeps the key `kind`: {rewritten}"
+        );
     }
 
     #[test]
@@ -178,7 +232,7 @@ mod tests {
         let mut s = status(1000);
         assert!(!s.is_retained());
         s.last_failure = Some(RepoStatusFailure {
-            kind: "unreachable".to_owned(),
+            read_failure: "unreachable".to_owned(),
             message: "network is unreachable".to_owned(),
             unix_secs: 1_753_986_400,
         });

@@ -1,14 +1,15 @@
 use crate::Result;
 use crate::services::node::{ObservationCoordinator, teardown_all_instances};
-use crate::services::response::into_service_response;
+use crate::services::response::into_service_answer;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{StackResetRequest, StackResetResponse};
 use core_node_api::names;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
+use peppylib::messaging::ServiceAnswer;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -105,9 +106,8 @@ async fn handle_stack_reset_request(
     node_stack: Arc<NodeStack>,
     observation: Arc<ObservationCoordinator>,
     ownership: Arc<crate::services::federation::SliceOwnership>,
-) -> PeppyResult<Payload> {
-    into_service_response(
-        &context,
+) -> ServiceAnswer {
+    into_service_answer(
         handle_stack_reset_request_inner(
             &context,
             &messenger,
@@ -149,5 +149,5 @@ async fn handle_stack_reset_request_inner(
     // reservation held over this machine, so a reset is a complete escape
     // hatch rather than one that leaves the daemon refusing future launches.
     ownership.clear();
-    StackResetResponse::success().encode().map_err(Into::into)
+    StackResetResponse::new().encode().map_err(Into::into)
 }

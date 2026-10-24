@@ -13,6 +13,8 @@ mod consumed_services_dedup;
 mod consumed_topics_dedup;
 #[path = "python/consumed_topics_distinct_formats.rs"]
 mod consumed_topics_distinct_formats;
+#[path = "python/failure_kinds.rs"]
+mod failure_kinds;
 #[path = "python/generate_lib.rs"]
 mod generate_lib;
 #[path = "python/pairing_lib.rs"]

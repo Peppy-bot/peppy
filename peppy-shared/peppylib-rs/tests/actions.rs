@@ -6,14 +6,23 @@ use common::test_node_target;
 use config::node::{QoSProfile, TopicRetention};
 use peppylib::PeppyError;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, CancelState, ConcurrentAction,
-    EmptyPayloadError, FeedbackBuffer, MessengerHandle, NonEmptyPayload, ProducerRef, ResultStatus,
-    SenderTarget, decode_cancel_ack, encode_cancel_ack, wrap_goal_ack, wrap_result_outcome,
+    ActionFeedbackPublisher, ActionGoalHandle, ActionGoalReply, ActionMessenger, CancelState,
+    ConcurrentAction, DEFAULT_FEEDBACK_BOUND, EmptyPayloadError, GoalAnswer, GoalOutcome,
+    MessengerHandle, NonEmptyPayload, ProducerRef, SenderTarget, decode_cancel_ack,
+    encode_cancel_ack, wrap_goal_accepted, wrap_result_outcome,
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// The goal response of an accepted goal. Panics on a refusal.
+fn accepted_response(reply: &ActionGoalReply) -> Payload {
+    match &reply.answer {
+        GoalAnswer::Accepted(response) => response.clone(),
+        GoalAnswer::Refused(failure) => panic!("expected an accepted goal, got {failure}"),
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn action_messenger_communication() {
@@ -78,7 +87,7 @@ async fn action_messenger_communication() {
                     }
                     // Raw goal-service handler: frame the reply with the
                     // engine's admission ack itself.
-                    wrap_goal_ack(true, None, resp.as_ref())
+                    Ok(wrap_goal_accepted(resp.as_ref()))
                 }
             })
             .await
@@ -99,7 +108,7 @@ async fn action_messenger_communication() {
             .result_service
             .handle_next_request(|_req| {
                 let r = res;
-                async move { Ok(wrap_result_outcome(ResultStatus::Completed, r.as_ref())) }
+                async move { Ok(wrap_result_outcome(&GoalOutcome::Completed(r))) }
             })
             .await
             .expect("result handler should succeed");
@@ -113,16 +122,16 @@ async fn action_messenger_communication() {
         action_name,
         Some(&ProducerRef::new(core_node, instance_id)),
         goal_payload,
-        QoSProfile::Reliable,
-        FeedbackBuffer::KeepLatest,
+        DEFAULT_FEEDBACK_BOUND,
         Duration::from_secs(2),
     )
     .await
     .expect("send_goal should succeed");
 
-    assert!(goal_handle.goal_reply().accepted);
-    assert_eq!(goal_handle.goal_reply().reason, None);
-    assert_eq!(goal_handle.goal_reply().body, goal_response_payload);
+    assert_eq!(
+        accepted_response(goal_handle.goal_reply()),
+        goal_response_payload
+    );
 
     // Client: receive feedback
     let feedback = tokio::time::timeout(Duration::from_secs(2), goal_handle.on_next_feedback())
@@ -138,8 +147,7 @@ async fn action_messenger_communication() {
             .await
             .expect("request_result should succeed");
 
-    assert_eq!(result.status, ResultStatus::Completed);
-    assert_eq!(result.body, result_payload);
+    assert_eq!(result.outcome, GoalOutcome::Completed(result_payload));
 
     server.await.expect("server task should not panic");
 }
@@ -204,7 +212,7 @@ async fn setup_goal_handshake(
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
                         let _ = tx.send(declared.publisher);
                     }
-                    wrap_goal_ack(true, None, b"accepted")
+                    Ok(wrap_goal_accepted(b"accepted"))
                 }
             })
             .await
@@ -223,8 +231,7 @@ async fn setup_goal_handshake(
         action_name,
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"goal data"),
-        QoSProfile::Reliable,
-        FeedbackBuffer::KeepLatest,
+        DEFAULT_FEEDBACK_BOUND,
         Duration::from_secs(2),
     )
     .await
@@ -433,8 +440,7 @@ impl ConcurrentActionFixture {
             Self::ACTION_NAME,
             Some(&ProducerRef::new(Self::CORE_NODE, Self::EXPOSER)),
             Payload::from_static(payload),
-            QoSProfile::Reliable,
-            FeedbackBuffer::KeepLatest,
+            DEFAULT_FEEDBACK_BOUND,
             Duration::from_secs(2),
         )
         .await
@@ -498,14 +504,18 @@ async fn concurrent_action_two_goals_independent() {
         ActionMessenger::request_result(&fixture.client_handle, &goal_a, Duration::from_secs(2))
             .await
             .expect("result A");
-    assert_eq!(res_a.status, ResultStatus::Completed);
-    assert_eq!(res_a.body.as_ref(), b"result:A");
+    assert_eq!(
+        res_a.outcome,
+        GoalOutcome::Completed(Payload::from_static(b"result:A"))
+    );
     let res_b =
         ActionMessenger::request_result(&fixture.client_handle, &goal_b, Duration::from_secs(2))
             .await
             .expect("result B");
-    assert_eq!(res_b.status, ResultStatus::Completed);
-    assert_eq!(res_b.body.as_ref(), b"result:B");
+    assert_eq!(
+        res_b.outcome,
+        GoalOutcome::Completed(Payload::from_static(b"result:B"))
+    );
 
     server.abort();
     drop(fixture.server_handle);
@@ -530,7 +540,8 @@ async fn concurrent_action_cancel_targets_one_goal() {
                     _ = ctx.cancel_signal() => {
                         let mut result = b"cancelled:".to_vec();
                         result.extend_from_slice(&request);
-                        let _ = ctx.complete_cancelled(Payload::from(result)).await;
+                        let reason = ctx.cancel_cause().expect("a cancelled goal has its cause").reason();
+                        let _ = ctx.complete_cancelled(reason, Payload::from(result)).await;
                     }
                     _ = tokio::time::sleep(Duration::from_millis(400)) => {
                         let mut result = b"done:".to_vec();
@@ -562,36 +573,41 @@ async fn concurrent_action_cancel_targets_one_goal() {
         ActionMessenger::request_result(&fixture.client_handle, &goal_a, Duration::from_secs(2))
             .await
             .expect("result A");
-    assert_eq!(res_a.status, ResultStatus::Cancelled);
-    assert_eq!(res_a.body.as_ref(), b"cancelled:A");
+    assert_eq!(
+        res_a.outcome,
+        GoalOutcome::Cancelled {
+            reason: "cancelled by its caller".to_string(),
+            result: Payload::from_static(b"cancelled:A"),
+        }
+    );
     let res_b =
         ActionMessenger::request_result(&fixture.client_handle, &goal_b, Duration::from_secs(3))
             .await
             .expect("result B");
-    assert_eq!(res_b.status, ResultStatus::Completed);
-    assert_eq!(res_b.body.as_ref(), b"done:B");
+    assert_eq!(
+        res_b.outcome,
+        GoalOutcome::Completed(Payload::from_static(b"done:B"))
+    );
 
     server.abort();
     drop(fixture.server_handle);
 }
 
-/// A rejected goal is answered (the client still gets its goal response) without
-/// creating a `GoalContext`, and the server goes on to accept a later goal. This
-/// is the engine primitive the generated `handle_goal_next_request` relies on to
-/// skip rejections internally.
+/// A refused goal is answered with its failure kind and message, and no goal
+/// response, without creating a `GoalContext`, and the server goes on to
+/// accept a later goal. This is the engine primitive the generated
+/// `handle_goal_next_request` relies on to skip refusals internally.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_action_reject_then_accept() {
+async fn concurrent_action_refuse_then_accept() {
     let (fixture, mut action) = ConcurrentActionFixture::start(true).await;
 
-    // Reject goals whose payload is "reject"; accept the rest and echo the
-    // request into the result. The loop keeps serving after a rejection.
+    // Refuse goals whose payload is "refuse"; accept the rest and echo the
+    // request into the result. The loop keeps serving after a refusal.
     let server = tokio::spawn(async move {
         while let Ok(Some(pending)) = action.recv_next_goal().await {
             let request = pending.request_bytes().to_vec();
-            if request == b"reject" {
-                let _ = pending
-                    .reject(Some("resource is busy"), Payload::from_static(b"rejected"))
-                    .await;
+            if request == b"refuse" {
+                let _ = pending.refuse(busy_refusal()).await;
                 continue;
             }
             let Ok(ctx) = pending.accept(Payload::from_static(b"accepted")).await else {
@@ -603,34 +619,42 @@ async fn concurrent_action_reject_then_accept() {
         }
     });
 
-    // First goal is rejected: the client still gets the goal reply, with the
-    // admission flag and reason decoded from the framework ack.
+    // First goal is refused: the client gets the refusal, with its kind and
+    // message decoded from the framework ack.
     let goal_a = fixture
-        .send_goal(b"reject")
+        .send_goal(b"refuse")
         .await
-        .expect("send rejected goal");
-    assert!(!goal_a.goal_reply().accepted);
+        .expect("send refused goal");
     assert_eq!(
-        goal_a.goal_reply().reason.as_deref(),
-        Some("resource is busy")
+        goal_a.goal_reply().answer,
+        GoalAnswer::Refused(busy_refusal())
     );
-    assert_eq!(goal_a.goal_reply().body.as_ref(), b"rejected");
 
-    // After the rejection the server keeps serving, so the next goal is
+    // After the refusal the server keeps serving, so the next goal is
     // accepted and its result is routed back by goal_id.
     let goal_b = fixture.send_goal(b"B").await.expect("send accepted goal");
-    assert!(goal_b.goal_reply().accepted);
-    assert_eq!(goal_b.goal_reply().reason, None);
-    assert_eq!(goal_b.goal_reply().body.as_ref(), b"accepted");
+    assert_eq!(
+        goal_b.goal_reply().answer,
+        GoalAnswer::Accepted(Payload::from_static(b"accepted"))
+    );
     let res_b =
         ActionMessenger::request_result(&fixture.client_handle, &goal_b, Duration::from_secs(2))
             .await
             .expect("result B");
-    assert_eq!(res_b.status, ResultStatus::Completed);
-    assert_eq!(res_b.body.as_ref(), b"result:B");
+    assert_eq!(
+        res_b.outcome,
+        GoalOutcome::Completed(Payload::from_static(b"result:B"))
+    );
 
     server.abort();
     drop(fixture.server_handle);
+}
+
+fn busy_refusal() -> peppylib::messaging::Failure {
+    peppylib::messaging::Failure::new(
+        config::failure_kind::PeppyFailureKind::PreconditionFailed,
+        "resource is busy",
+    )
 }
 
 /// Dropping a `GoalContext` without completing the goal (the worker returned
@@ -672,11 +696,7 @@ async fn concurrent_action_abandoned_goal_yields_typed_abandoned() {
         ActionMessenger::request_result(&fixture.client_handle, &goal, Duration::from_secs(2))
             .await
             .expect("abandoned goal must resolve to a typed outcome, not error");
-    assert_eq!(result.status, ResultStatus::Abandoned);
-    assert!(
-        result.body.as_ref().is_empty(),
-        "abandoned outcome carries no result body"
-    );
+    assert_eq!(result.outcome, GoalOutcome::Abandoned);
 
     server.abort();
     drop(fixture.server_handle);
@@ -773,8 +793,7 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
         action_name,
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"X"),
-        QoSProfile::Reliable,
-        FeedbackBuffer::KeepLatest,
+        DEFAULT_FEEDBACK_BOUND,
         Duration::from_secs(2),
     )
     .await
@@ -827,11 +846,7 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
     let result = ActionMessenger::request_result(&client_handle, &goal, Duration::from_secs(2))
         .await
         .expect("dead producer must resolve to a typed outcome, not error");
-    assert_eq!(result.status, ResultStatus::Abandoned);
-    assert!(
-        result.body.as_ref().is_empty(),
-        "abandoned outcome carries no result body"
-    );
+    assert_eq!(result.outcome, GoalOutcome::Abandoned);
     assert_eq!(result.instance_id, instance_id);
 
     // The sender-only path (what the Python binding drives) has no goal
@@ -845,7 +860,7 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
     )
     .await
     .expect("sender-only path must also resolve to a typed outcome");
-    assert_eq!(result.status, ResultStatus::Abandoned);
+    assert_eq!(result.outcome, GoalOutcome::Abandoned);
 
     drop(ctx);
     server.abort();
@@ -883,8 +898,10 @@ async fn concurrent_action_result_parks_until_complete() {
         ActionMessenger::request_result(&fixture.client_handle, &goal, Duration::from_secs(3))
             .await
             .expect("a prompt poll on a live goal must resolve, not error");
-    assert_eq!(res.status, ResultStatus::Completed);
-    assert_eq!(res.body.as_ref(), b"result:A");
+    assert_eq!(
+        res.outcome,
+        GoalOutcome::Completed(Payload::from_static(b"result:A"))
+    );
 
     server.abort();
     drop(fixture.server_handle);
@@ -924,8 +941,10 @@ async fn concurrent_action_multiple_polls_one_goal_all_resolve() {
         r2.expect("poll 2 resolves"),
         r3.expect("poll 3 resolves"),
     ] {
-        assert_eq!(res.status, ResultStatus::Completed);
-        assert_eq!(res.body.as_ref(), b"result:A");
+        assert_eq!(
+            res.outcome,
+            GoalOutcome::Completed(Payload::from_static(b"result:A"))
+        );
     }
 
     server.abort();
@@ -965,14 +984,18 @@ async fn concurrent_action_completed_result_expires_after_grace() {
         ActionMessenger::request_result(&fixture.client_handle, &goal_fast, Duration::from_secs(2))
             .await
             .expect("result A within grace");
-    assert_eq!(res.status, ResultStatus::Completed);
-    assert_eq!(res.body.as_ref(), b"result:A");
+    assert_eq!(
+        res.outcome,
+        GoalOutcome::Completed(Payload::from_static(b"result:A"))
+    );
     let res_again =
         ActionMessenger::request_result(&fixture.client_handle, &goal_fast, Duration::from_secs(2))
             .await
             .expect("second result A within grace");
-    assert_eq!(res_again.status, ResultStatus::Completed);
-    assert_eq!(res_again.body.as_ref(), b"result:A");
+    assert_eq!(
+        res_again.outcome,
+        GoalOutcome::Completed(Payload::from_static(b"result:A"))
+    );
 
     // Never fetched in time: once the grace window elapses the sweeper evicts
     // the slot and a late poll resolves to a typed `Expired` outcome. Poll until
@@ -989,14 +1012,14 @@ async fn concurrent_action_completed_result_expires_after_grace() {
         )
         .await
         .expect("a late poll must resolve to a typed outcome, not error");
-        if reply.status == ResultStatus::Expired {
+        if reply.outcome == GoalOutcome::Expired {
             expired = Some(reply);
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let expired = expired.expect("slot should be evicted to Expired within 10x the grace window");
-    assert_eq!(expired.status, ResultStatus::Expired);
+    assert_eq!(expired.outcome, GoalOutcome::Expired);
 
     server.abort();
     drop(fixture.server_handle);
@@ -1026,7 +1049,10 @@ async fn concurrent_action_cancel_after_terminal_is_already_terminal() {
         ActionMessenger::request_result(&fixture.client_handle, &goal, Duration::from_secs(2))
             .await
             .expect("result");
-    assert_eq!(res.status, ResultStatus::Completed);
+    assert_eq!(
+        res.outcome,
+        GoalOutcome::Completed(Payload::from_static(b"done"))
+    );
 
     // Now cancel the already-finished goal: typed AlreadyTerminal, not an error.
     let ack = ActionMessenger::cancel_goal(&fixture.client_handle, &goal, Duration::from_secs(2))
@@ -1116,7 +1142,7 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
                             .await
                             .expect("declare_from_wire");
                         kept.lock().unwrap().replace(declared.publisher);
-                        wrap_goal_ack(true, None, response.as_ref())
+                        Ok(wrap_goal_accepted(response.as_ref()))
                     }
                 })
                 .await
@@ -1140,14 +1166,13 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
         action_name,
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"native_goal"),
-        QoSProfile::Reliable,
-        FeedbackBuffer::KeepLatest,
+        DEFAULT_FEEDBACK_BOUND,
         Duration::from_secs(2),
     )
     .await
     .expect("native send_goal");
     assert_eq!(
-        native_goal.goal_reply().body,
+        accepted_response(native_goal.goal_reply()),
         native_response,
         "native send_goal must hit the native goal handler",
     );
@@ -1160,14 +1185,13 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
         action_name,
         Some(&ProducerRef::new(core_node, instance_id)),
         Payload::from_static(b"contract_goal"),
-        QoSProfile::Reliable,
-        FeedbackBuffer::KeepLatest,
+        DEFAULT_FEEDBACK_BOUND,
         Duration::from_secs(2),
     )
     .await
     .expect("contract send_goal");
     assert_eq!(
-        contract_goal.goal_reply().body,
+        accepted_response(contract_goal.goal_reply()),
         contract_response,
         "contract send_goal must hit the contract goal handler",
     );
@@ -1250,10 +1274,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
                     if let Ok(Some((_ctx, responder))) = res {
                         goal_count.fetch_add(1, Ordering::SeqCst);
                         responder
-                            .respond(
-                                wrap_goal_ack(true, None, spec.inst.as_bytes())
-                                    .expect("wrap goal ack"),
-                            )
+                            .respond(wrap_goal_accepted(spec.inst.as_bytes()))
                             .await
                             .expect("goal respond");
                     }
@@ -1319,8 +1340,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
         action_name,
         None,
         Payload::from_static(b"go"),
-        QoSProfile::Reliable,
-        FeedbackBuffer::KeepLatest,
+        DEFAULT_FEEDBACK_BOUND,
         Duration::from_secs(5),
     )
     .await
@@ -1354,7 +1374,8 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
 }
 
 /// A caller that leaves its goal's feedback unread: the provider publishes
-/// more feedback than the caller's buffer holds, then completes the goal.
+/// more feedback than the fixed buffers of a subscriber hold, then completes
+/// the goal. The caller keeps every message until it reads it.
 mod unread_feedback {
     use super::*;
     use common::{get_client_server, wait_for_topic_subscriber};
@@ -1363,19 +1384,19 @@ mod unread_feedback {
         FLOOD_RESULT, Flood, FloodedAction, HANG_GUARD, read_to_the_end, start_flooding_provider,
     };
     use peppylib::messaging::{
-        ServiceMessenger, ServiceTarget, SessionScope, TopicBuffer, TopicMessenger,
+        FeedbackBound, ServiceMessenger, ServiceTarget, SessionScope, TopicBuffer, TopicMessenger,
     };
     use peppylib::testing::EphemeralRouter;
+    use std::num::NonZeroUsize;
 
-    /// The feedback buffer of every session a router test opens: small, so
-    /// that the flood overflows it many times.
+    /// The subscriber buffer of every session a router test opens: small, so
+    /// that the flood is many times larger than it.
     const ROUTER_BUFFER: usize = 8;
     /// Feedback a router test's provider publishes.
     const ROUTER_FLOOD: usize = ROUTER_BUFFER + 100;
-    /// The mock adapter's buffer size (`SubscriberBufferSizes::default()`).
-    const MOCK_BUFFER: usize = 128;
-    /// Feedback a mock test's provider publishes.
-    const MOCK_FLOOD: usize = 200;
+    /// Feedback a mock test's provider publishes: more than the largest
+    /// subscriber buffer of a session (1024 messages).
+    const MOCK_FLOOD: usize = 3000;
     const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
     const CORE: &str = "feedback_core";
@@ -1385,6 +1406,10 @@ mod unread_feedback {
     const ACTION: &str = "flood";
     const TOPIC: &str = "provider_news";
     const SERVICE: &str = "provider_echo";
+
+    fn bound(unread_messages: usize) -> FeedbackBound {
+        FeedbackBound::new(NonZeroUsize::new(unread_messages).expect("a bound above zero"))
+    }
 
     #[derive(Clone, Copy)]
     enum Topology {
@@ -1417,7 +1442,10 @@ mod unread_feedback {
         start_flooding_provider(provider, action, feedback_count).await
     }
 
-    async fn send_flood_goal(caller: &MessengerHandle, buffer: FeedbackBuffer) -> ActionGoalHandle {
+    async fn send_flood_goal(
+        caller: &MessengerHandle,
+        feedback_bound: FeedbackBound,
+    ) -> ActionGoalHandle {
         ActionMessenger::send_goal(
             caller,
             CORE,
@@ -1426,8 +1454,7 @@ mod unread_feedback {
             ACTION,
             Some(&ProducerRef::new(CORE, PROVIDER)),
             Payload::from_static(b"go"),
-            QoSProfile::Standard,
-            buffer,
+            feedback_bound,
             REPLY_TIMEOUT,
         )
         .await
@@ -1442,8 +1469,10 @@ mod unread_feedback {
         .await
         .expect("the result request must not hang")
         .expect("the result must arrive while the feedback stays unread");
-        assert_eq!(reply.status, ResultStatus::Completed);
-        assert_eq!(reply.body.as_ref(), FLOOD_RESULT);
+        assert_eq!(
+            reply.outcome,
+            GoalOutcome::Completed(Payload::from_static(FLOOD_RESULT))
+        );
     }
 
     async fn caller_gets_the_result_with_feedback_unread(topology: Topology) {
@@ -1452,7 +1481,7 @@ mod unread_feedback {
         let caller = session(&router, topology).await;
         let _flood = flood(&provider, ROUTER_FLOOD).await;
 
-        let goal = send_flood_goal(&caller, FeedbackBuffer::KeepLatest).await;
+        let goal = send_flood_goal(&caller, DEFAULT_FEEDBACK_BOUND).await;
         result_without_reading_feedback(&caller, &goal).await;
     }
 
@@ -1511,7 +1540,7 @@ mod unread_feedback {
         .expect("the provider declares its publisher");
         wait_for_topic_subscriber(&provider, CORE, PROVIDER, test_node_target(NODE), TOPIC).await;
 
-        let goal = send_flood_goal(&caller, FeedbackBuffer::KeepLatest).await;
+        let goal = send_flood_goal(&caller, DEFAULT_FEEDBACK_BOUND).await;
         result_without_reading_feedback(&caller, &goal).await;
 
         publisher
@@ -1555,75 +1584,138 @@ mod unread_feedback {
         other_messages_flow_with_feedback_unread(Topology::Peer).await;
     }
 
-    /// A keep-latest reader that starts after the flood still gets an ordered
-    /// stream that ends with the newest feedback and then the end of the
-    /// stream. Which older messages it skipped depends on when they arrived
-    /// over the network; the mock tests below pin the exact counts.
+    /// A reader that starts after the flood gets every message, in order,
+    /// though the flood is many times the subscriber buffer of its session.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_late_keep_latest_reader_gets_the_newest_feedback_and_the_end() {
+    async fn a_late_reader_gets_every_feedback_message_through_the_router() {
         let router = EphemeralRouter::start().await.expect("the router starts");
         let provider = session(&router, Topology::Router).await;
         let caller = session(&router, Topology::Router).await;
         let _flood = flood(&provider, ROUTER_FLOOD).await;
 
-        let mut goal = send_flood_goal(&caller, FeedbackBuffer::KeepLatest).await;
-        result_without_reading_feedback(&caller, &goal).await;
-
-        let indexes = read_to_the_end(&mut goal).await;
-        assert!(
-            indexes.windows(2).all(|pair| pair[0] < pair[1]),
-            "the feedback keeps its order: {indexes:?}"
-        );
-        assert_eq!(indexes.last(), Some(&(ROUTER_FLOOD - 1)));
-    }
-
-    /// A keep-all reader that starts after the flood gets every message.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_late_keep_all_reader_gets_every_feedback_message() {
-        let router = EphemeralRouter::start().await.expect("the router starts");
-        let provider = session(&router, Topology::Router).await;
-        let caller = session(&router, Topology::Router).await;
-        let _flood = flood(&provider, ROUTER_FLOOD).await;
-
-        let mut goal = send_flood_goal(&caller, FeedbackBuffer::KeepAll).await;
+        let mut goal = send_flood_goal(&caller, DEFAULT_FEEDBACK_BOUND).await;
         result_without_reading_feedback(&caller, &goal).await;
 
         let indexes = read_to_the_end(&mut goal).await;
         assert_eq!(indexes, (0..ROUTER_FLOOD).collect::<Vec<_>>());
     }
 
-    /// Floods a goal over the mock adapter, where a publish reaches the
-    /// caller's buffer before it returns, and returns the feedback a reader
-    /// finds once the goal is over: exact counts, whatever the timing.
-    async fn feedback_a_late_mock_reader_finds(buffer: FeedbackBuffer) -> Vec<usize> {
+    /// Over the mock adapter a publish reaches the caller's buffer before it
+    /// returns, so the counts are exact whatever the timing: a goal that
+    /// sends more feedback than any subscriber buffer holds still reaches a
+    /// late reader whole, in order.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_late_reader_gets_every_feedback_message_past_the_largest_subscriber_buffer() {
         let (client, _messenger) = get_client_server().await;
         let handle = client.caller_handle;
         let mut flood = flood(&handle, MOCK_FLOOD).await;
 
-        let mut goal = send_flood_goal(&handle, buffer).await;
+        let mut goal = send_flood_goal(&handle, bound(MOCK_FLOOD)).await;
         tokio::time::timeout(HANG_GUARD, &mut flood.flooded)
             .await
             .expect("the provider must not wait for the reader")
             .expect("the provider reports the flood");
         result_without_reading_feedback(&handle, &goal).await;
-        read_to_the_end(&mut goal).await
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_keep_latest_goal_keeps_the_newest_feedback_up_to_its_buffer() {
-        // The end of the stream takes the slot of the oldest message left.
-        let newest = MOCK_FLOOD - MOCK_BUFFER + 1..MOCK_FLOOD;
         assert_eq!(
-            feedback_a_late_mock_reader_finds(FeedbackBuffer::KeepLatest).await,
-            newest.collect::<Vec<_>>()
+            read_to_the_end(&mut goal).await,
+            (0..MOCK_FLOOD).collect::<Vec<_>>()
         );
     }
 
+    /// A caller that reads its feedback and falls behind by more unread
+    /// messages than its bound loses the stream: the handle cancels the
+    /// goal, which the provider sees as a cancel of its caller, and the read
+    /// is the overflow error. Over the mock adapter a publish reaches the
+    /// caller's buffer before it returns, so the flood has overflowed the
+    /// buffer before the first read, which cancels the goal at once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_keep_all_goal_keeps_every_feedback_message() {
+    async fn a_caller_that_falls_behind_its_bound_cancels_the_goal_and_learns_of_the_loss() {
+        const BOUND: usize = 16;
+        let (client, _messenger) = get_client_server().await;
+        let handle = client.caller_handle;
+        let (flooded_tx, flooded) = tokio::sync::oneshot::channel();
+        let mut engine = ConcurrentAction::expose(
+            &handle,
+            CORE,
+            PROVIDER,
+            test_node_target(NODE),
+            ACTION,
+            true,
+        )
+        .await
+        .expect("the action is exposed");
+        let provider = tokio::spawn(async move {
+            let goal = engine
+                .recv_next_goal()
+                .await
+                .expect("the goal is received")
+                .expect("a goal arrives")
+                .accept(Payload::from_static(b"accepted"))
+                .await
+                .expect("the goal is accepted");
+            for index in 0..=BOUND {
+                let payload =
+                    NonEmptyPayload::try_new(Payload::from(index.to_string().into_bytes()))
+                        .expect("the feedback is not empty");
+                goal.publish_feedback(payload)
+                    .await
+                    .expect("the feedback is published");
+            }
+            flooded_tx.send(()).expect("the test waits for the flood");
+            goal.cancel_signal().await;
+            let cause = goal.cancel_cause();
+            goal.complete_cancelled("cancelled by its caller", Payload::new())
+                .await
+                .expect("the goal ends");
+            (cause, engine)
+        });
+
+        let mut goal = send_flood_goal(&handle, bound(BOUND)).await;
+        tokio::time::timeout(HANG_GUARD, flooded)
+            .await
+            .expect("the provider must not wait for the reader")
+            .expect("the provider reports the flood");
+        match goal.on_next_feedback().await {
+            Err(PeppyError::ActionFeedbackOverflow {
+                instance_id,
+                action_name,
+                bound,
+            }) => {
+                assert_eq!(instance_id.as_deref(), Some(PROVIDER));
+                assert_eq!(action_name, ACTION);
+                assert_eq!(bound, BOUND);
+            }
+            other => panic!("expected the overflow error, got {other:?}"),
+        }
+        let (cause, _engine) = tokio::time::timeout(HANG_GUARD, provider)
+            .await
+            .expect("the read must cancel the goal")
+            .expect("the provider task ends");
+        assert_eq!(cause, Some(peppylib::messaging::CancelCause::Caller));
+        assert!(matches!(
+            goal.try_next_feedback(),
+            Err(PeppyError::ActionFeedbackOverflow { .. })
+        ));
+    }
+
+    /// A caller exactly at its bound keeps every message: only a message past
+    /// the bound overflows the stream.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_caller_exactly_at_its_bound_keeps_every_message() {
+        const BOUND: usize = 16;
+        let (client, _messenger) = get_client_server().await;
+        let handle = client.caller_handle;
+        let mut flood = flood(&handle, BOUND).await;
+
+        let mut goal = send_flood_goal(&handle, bound(BOUND)).await;
+        tokio::time::timeout(HANG_GUARD, &mut flood.flooded)
+            .await
+            .expect("the provider must not wait for the reader")
+            .expect("the provider reports the flood");
+        result_without_reading_feedback(&handle, &goal).await;
         assert_eq!(
-            feedback_a_late_mock_reader_finds(FeedbackBuffer::KeepAll).await,
-            (0..MOCK_FLOOD).collect::<Vec<_>>()
+            read_to_the_end(&mut goal).await,
+            (0..BOUND).collect::<Vec<_>>()
         );
     }
 }

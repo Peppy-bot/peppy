@@ -6,6 +6,11 @@
 {
   peppy_schema: "contract/v1",
   manifest: { name: "stack_copies", tag: "v1" },
+  // The kind of the daemon beside the kinds of peppy, which join and
+  // remove give. Its meaning is the meaning that the daemon gives it.
+  failure_kinds: {
+    busy: "Other work runs on the daemon; the same request can succeed once that work ends",
+  },
   interfaces: {
     services: [
       {
@@ -94,10 +99,16 @@
         // rest of the copy's selection. Refused when the option is not in
         // the scope, when a feature is not a feature of the option or is
         // named twice, when a copy on the stack has the name, when the stack
-        // holds max_copies copies of the scope's options, when a machine is
-        // not live, and while another stack change or node operation runs on
-        // the daemon. A failed join is undone. A cancel stops the wait and
-        // not the join.
+        // holds max_copies copies of the scope's options, and, with the
+        // failure kind busy, while another stack change or node operation
+        // runs on the daemon. A join that ran and failed
+        // gives its failure kind and a message that names the log files,
+        // and is undone: resource_unavailable when a machine is not live,
+        // timeout when a phase went quiet past its budget, attempt_failed
+        // when an add, a build or a start failed. A completed join gives no
+        // result: the copy is on the stack. A cancel stops the join and
+        // undoes it as a failure at the same step does, and the goal ends
+        // cancelled.
         name: "join",
         goal_service: {
           request_message_format: {
@@ -126,20 +137,18 @@
             line: "string",
           },
         },
-        result_service: {
-          response_message_format: {
-            // False when the join ran and failed; message says why and
-            // names the log files.
-            success: "bool",
-            message: "string",
-          },
-        },
+        failure_kinds: ["busy"],
       },
       {
         // Stops and removes a copy, as `peppy stack remove NAME` does.
-        // Refused when no copy of a scoped option has the name, and while
-        // another stack change or node operation runs on the daemon. A
-        // cancel stops the wait and not the removal.
+        // Refused when no copy of a scoped option has the name, and, with
+        // the failure kind busy, while another stack change or node
+        // operation runs on the daemon. A removal that ran and
+        // failed gives its failure kind and a message that names the log
+        // file; the copy stays listed, and a removal again stops what is
+        // left of it. A completed removal gives no result: the copy is off
+        // the stack. A cancel stops the removal before its next stop, and
+        // the goal ends cancelled.
         name: "remove",
         goal_service: {
           request_message_format: {
@@ -155,12 +164,7 @@
             line: "string",
           },
         },
-        result_service: {
-          response_message_format: {
-            success: "bool",
-            message: "string",
-          },
-        },
+        failure_kinds: ["busy"],
       },
     ],
   },

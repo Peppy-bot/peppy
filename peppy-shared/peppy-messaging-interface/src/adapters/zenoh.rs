@@ -31,10 +31,11 @@ use crate::error::{Error, Result};
 use crate::router_id::RouterId;
 use crate::subscription_buffer::{Buffering, queue_capacity, subscription_channel};
 use crate::types::{
-    ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer, IncomingRequest,
-    LivelinessEvent, LivelinessToken, LivelinessWatch, Payload, PresenceScope, PublisherQoS,
-    ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
-    SubscriberQoS, TopicBuffer, TopicMessage, ZenohResponseToken, service_query_lifetime,
+    ClientPresence, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer, IncomingRequest,
+    LivelinessEvent, LivelinessProbe, LivelinessToken, LivelinessWatch, Payload, PresenceScope,
+    PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable, ServiceReply,
+    SubscriberBufferSizes, SubscriberQoS, TopicBuffer, TopicMessage, ZenohResponseToken,
+    service_query_lifetime,
 };
 use crate::wire::zenoh_format::{ServiceReplyAttachment, TopicAttachment, ZenohWireFormat};
 use crate::wire::{
@@ -959,7 +960,6 @@ impl MessengerBackend for ZenohAdapter {
         &self,
         sender: &ActionWireSender,
         goal_id: &str,
-        qos: SubscriberQoS,
         buffer: FeedbackBuffer,
     ) -> Result<Subscription> {
         // Action feedback shares the wildcard-link_id keyexpr shape with
@@ -969,7 +969,9 @@ impl MessengerBackend for ZenohAdapter {
         // there are no secondaries to drop; pass `false`.
         self.subscribe_keyexpr(
             ZenohWireFormat::action_feedback_subscribe(sender, goal_id),
-            qos,
+            // A feedback buffer takes its own bound, so the QoS tier, which
+            // only sizes a topic's queue, plays no part.
+            SubscriberQoS::Standard,
             Buffering::Feedback(buffer),
             false,
             TopicRetention::LiveOnly,
@@ -996,26 +998,28 @@ impl MessengerBackend for ZenohAdapter {
         &self,
         sender: &ActionWireSender,
         timeout: std::time::Duration,
-    ) -> Result<ActionLivelinessProbe> {
-        let session = self.open_session()?;
-        let keyexpr = ZenohWireFormat::action_liveliness_watch(sender);
-        // The callback closure owns `tx`; zenoh drops it when the query
-        // finalizes (at the latest after `timeout`), so the probe's
-        // `resolve` observes `Disconnected` exactly when the query
-        // completed with no matching token. Only issuance is awaited here.
-        let (tx, rx) = flume::bounded::<()>(1);
-        session
-            .liveliness()
-            .get(&keyexpr)
-            .timeout(timeout)
-            .callback(move |reply| {
-                if reply.result().is_ok() {
-                    let _ = tx.try_send(());
-                }
-            })
+    ) -> Result<LivelinessProbe> {
+        self.probe_liveliness(ZenohWireFormat::action_liveliness_watch(sender), timeout)
             .await
-            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
-        Ok(ActionLivelinessProbe::new(rx))
+    }
+
+    async fn declare_client_presence(&self, client: &ClientPresence) -> Result<LivelinessToken> {
+        self.declare_liveliness_token(ZenohWireFormat::client_presence_token(client))
+            .await
+    }
+
+    async fn watch_client_presence(&self, client: &ClientPresence) -> Result<LivelinessWatch> {
+        self.watch_liveliness(ZenohWireFormat::client_presence_token(client), |_| Some(()))
+            .await
+    }
+
+    async fn probe_client_presence(
+        &self,
+        client: &ClientPresence,
+        timeout: std::time::Duration,
+    ) -> Result<LivelinessProbe> {
+        self.probe_liveliness(ZenohWireFormat::client_presence_token(client), timeout)
+            .await
     }
 
     async fn declare_core_node_presence(
@@ -1247,13 +1251,40 @@ impl ZenohAdapter {
     /// non-blocking (clones the session handle); the wait itself happens in
     /// [`SubscriberMatchWait::resolve`], so callers sharing the adapter behind
     /// a lock can release it before waiting out the timeout (mirrors
-    /// [`ActionLivelinessProbe`]).
+    /// [`LivelinessProbe`]).
     fn subscriber_match_wait(&self, keyexpr: String) -> Result<SubscriberMatchWait> {
         let session = self.open_session()?;
         Ok(SubscriberMatchWait {
             session: Arc::clone(session),
             keyexpr,
         })
+    }
+
+    /// Shared body of the liveliness probes: is a token that matches
+    /// `keyexpr` present? Only the issuance of the query is awaited.
+    async fn probe_liveliness(
+        &self,
+        keyexpr: String,
+        timeout: std::time::Duration,
+    ) -> Result<LivelinessProbe> {
+        let session = self.open_session()?;
+        // The callback closure owns `tx`; zenoh drops it when the query
+        // finalizes (at the latest after `timeout`), so the probe's
+        // `resolve` observes `Disconnected` exactly when the query
+        // completed with no matching token. Only issuance is awaited here.
+        let (tx, rx) = flume::bounded::<()>(1);
+        session
+            .liveliness()
+            .get(&keyexpr)
+            .timeout(timeout)
+            .callback(move |reply| {
+                if reply.result().is_ok() {
+                    let _ = tx.try_send(());
+                }
+            })
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+        Ok(LivelinessProbe::new(rx))
     }
 
     /// Shared body of the liveliness declaration methods: token keyexprs
@@ -1601,7 +1632,7 @@ enum PublishRoute {
 /// [`resolve`](Self::resolve) runs detached from the adapter and callers can
 /// release any shared adapter lock before waiting out the timeout, the same
 /// issue-then-resolve split as
-/// [`ActionLivelinessProbe`](crate::types::ActionLivelinessProbe).
+/// [`LivelinessProbe`](crate::types::LivelinessProbe).
 pub struct SubscriberMatchWait {
     session: Arc<zenoh::Session>,
     keyexpr: String,

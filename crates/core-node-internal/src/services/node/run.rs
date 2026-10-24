@@ -1,5 +1,6 @@
 use super::super::action_loop::{
-    GoalHandler, accept_goal, reject_goal, run_action_loop, under_goal_cancel,
+    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, expose_daemon_action,
+    invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
 };
 use super::endpoints::{HostAddressSource, expand_announcements, host_addresses};
 use super::gate::ConcurrencyGate;
@@ -11,18 +12,19 @@ use super::supervisor::{RestartTarget, RunOutcome, log_next_attempt, spawn_next_
 use super::{FeedbackLine, RelationshipCoordinators};
 use crate::Result;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
+use config::failure_kind::PeppyFailureKind;
 use config::node::SetupTimeout;
 use config::peppy_config::SubscriberBufferConfig;
 use config::runtime::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, apply_parameter_defaults, resolve_argument_path};
 use core_node_api::ActionId;
+use core_node_api::DaemonFailureKind;
 use core_node_api::ExitCause;
 use core_node_api::InstanceState;
 use core_node_api::encoding::{
     InstanceEnd, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult,
 };
-use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::VacantReason;
 use daemon_config::peppy_config::PeppyConfig;
@@ -36,11 +38,11 @@ use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, ConcurrentAction, NODE_ENDPOINTS_SERVICE, NODE_HEALTH_SERVICE,
+    ActionFeedbackPublisher, Failure, NODE_ENDPOINTS_SERVICE, NODE_HEALTH_SERVICE,
     NODE_READY_SERVICE, PendingGoal, ServiceTarget,
 };
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, PeppyError, ServiceMessenger};
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::num::NonZeroU32;
@@ -322,13 +324,12 @@ pub async fn listen_for_node_run(
     node_stack: Arc<NodeStack>,
     config: NodeRunServiceConfig,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ConcurrentAction::expose(
+    let action = expose_daemon_action(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ActionId::NodeRun.name(),
-        true,
+        node_name,
+        ActionId::NodeRun,
     )
     .await?;
 
@@ -574,8 +575,9 @@ pub(crate) async fn assemble_runtime_config(
     .map_err(|e| format!("failed to assemble runtime config: {e}"))
 }
 
-/// Starts a new instance through [`run_node`] and answers its outcome as a
-/// `NodeRunResult`.
+/// Starts a new instance through [`run_node`] and answers its outcome: the
+/// `NodeRunResult` of an instance that reached `running`, or the stop of
+/// the start ([`RunOutcome::into_result`]).
 ///
 /// The caller is responsible for creating the log file and feedback channel.
 ///
@@ -598,7 +600,7 @@ pub(crate) async fn run_node_run(
     log: ActionLog,
     sender_instance_id: String,
     cancel_token: CancellationToken,
-) -> NodeRunResult {
+) -> std::result::Result<NodeRunResult, WorkStop> {
     let process_context = ProcessNodeRunContext {
         action: action_context,
         announcer: Announcer::new(log, feedback_tx),
@@ -612,14 +614,7 @@ pub(crate) async fn run_node_run(
         None,
     )
     .await;
-    match outcome {
-        RunOutcome::Running { pid, endpoints } => {
-            NodeRunResult::success(pid).with_endpoints(endpoints)
-        }
-        RunOutcome::Gone(msg) | RunOutcome::Refused(msg) | RunOutcome::StartFailed(msg) => {
-            NodeRunResult::failure(msg)
-        }
-    }
+    outcome.into_result()
 }
 
 /// Starts the next process of a `restarting` instance from what its slot
@@ -755,11 +750,7 @@ async fn handle_goal_request(
     let goal = match NodeRunGoal::decode(pending.request_bytes()) {
         Ok(goal) => goal,
         Err(e) => {
-            reject_goal(
-                pending,
-                encode_rejected_start_goal(format!("invalid payload: {e}")),
-            )
-            .await;
+            refuse_goal(pending, invalid_payload(e)).await;
             return;
         }
     };
@@ -769,8 +760,8 @@ async fn handle_goal_request(
     // race a locally-typed `peppy node run`.
     let admission = match action_context.slice_ownership.admit_node_goal(&goal) {
         Ok(admission) => admission,
-        Err(reason) => {
-            reject_goal(pending, encode_rejected_start_goal(reason)).await;
+        Err(refusal) => {
+            refuse_goal(pending, refusal).await;
             return;
         }
     };
@@ -779,11 +770,12 @@ async fn handle_goal_request(
         // `node_run` never forces, so nothing is ever superseded here.
         super::gate::Admission::Admitted { generation, .. } => generation,
         super::gate::Admission::AlreadyRunning { remaining_secs } => {
-            reject_goal(
+            refuse_goal(
                 pending,
-                encode_rejected_start_goal(format!(
-                    "action already in progress (times out in {remaining_secs}s)"
-                )),
+                Failure::new(
+                    DaemonFailureKind::Busy,
+                    format!("action already in progress (times out in {remaining_secs}s)"),
+                ),
             )
             .await;
             return;
@@ -800,7 +792,7 @@ async fn handle_goal_request(
         Ok(config) => config,
         Err(error_msg) => {
             gate.clear_running();
-            reject_goal(pending, encode_rejected_start_goal(error_msg)).await;
+            refuse_goal(pending, Failure::new(PeppyFailureKind::Rejected, error_msg)).await;
             return;
         }
     };
@@ -823,7 +815,11 @@ async fn handle_goal_request(
         &goal.tag,
     ) {
         gate.clear_running();
-        reject_goal(pending, encode_rejected_start_goal(refusal)).await;
+        refuse_goal(
+            pending,
+            Failure::new(PeppyFailureKind::PreconditionFailed, refusal),
+        )
+        .await;
         return;
     }
 
@@ -839,7 +835,11 @@ async fn handle_goal_request(
         Err(error_msg) => {
             debug!("{}", error_msg);
             gate.clear_running();
-            reject_goal(pending, encode_rejected_start_goal(error_msg)).await;
+            refuse_goal(
+                pending,
+                Failure::new(PeppyFailureKind::AttemptFailed, error_msg),
+            )
+            .await;
             return;
         }
     };
@@ -852,7 +852,7 @@ async fn handle_goal_request(
         pending,
         super::encode_response_or_err(
             "node_run_goal",
-            NodeRunGoalResponse::accepted(&log_path).encode(),
+            NodeRunGoalResponse::new(&log_path).encode(),
         ),
     )
     .await
@@ -871,8 +871,8 @@ async fn handle_goal_request(
     let cancellation = reset.child_token();
     let reset_grace = action_context.node_stack.shutdown_grace();
     tokio::spawn(async move {
-        // Frees the gate slot on every exit: explicitly before completion on the
-        // normal path (via `release_then_complete` below), or on unwind for a
+        // Frees the gate slot on every exit: explicitly before the end on the
+        // normal path (via `release_then_end` below), or on unwind for a
         // panic. A no-op if a later goal already took over.
         let slot = gate_for_task.into_slot_guard(generation);
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
@@ -897,7 +897,12 @@ async fn handle_goal_request(
             work,
             &reset,
             crate::services::node::gate::reset_drain_budget(reset_grace),
-            || NodeRunResult::failure("node run cancelled by stack reset"),
+            || {
+                Err(WorkStop::Cancelled(Failure::new(
+                    PeppyFailureKind::AttemptFailed,
+                    "node run cancelled by stack reset",
+                )))
+            },
         );
         tokio::pin!(work);
 
@@ -915,16 +920,20 @@ async fn handle_goal_request(
 
         // `run_node_run` returns only after its internal feedback flush, so any
         // lines still buffered here are the final ones and no more will arrive.
-        // Drain them before `complete` emits the end-of-stream sentinel so the
+        // Drain them before the end emits the end-of-stream sentinel so the
         // sentinel never races ahead of the last feedback line.
         while let Ok(line) = feedback_rx.try_recv() {
             publish_node_run_feedback(&feedback_publisher, line).await;
         }
 
+        // A start that a cancel gave up ends cancelled, with the reason of
+        // the cancel: the goal's caller or its gone sender, or a stack reset.
+        let ending = GoalEnding::of(
+            result.map(|started| started.encode()),
+            cancel_reason(&goal_ctx, &reset),
+        );
         drop(admission);
-        if let Ok(payload) = result.encode() {
-            slot.release_then_complete(&goal_ctx, payload).await;
-        }
+        slot.release_then_end(&goal_ctx, ending).await;
     });
 }
 
@@ -937,13 +946,6 @@ async fn publish_node_run_feedback(publisher: &ActionFeedbackPublisher, line: Fe
     if let Ok(payload) = NodeRunFeedback::from_stream(line.stream, &line.line).encode() {
         let _ = publisher.publish(payload).await;
     }
-}
-
-fn encode_rejected_start_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
-    super::encode_response_or_err(
-        "node_run_goal",
-        NodeRunGoalResponse::rejected(reason).encode(),
-    )
 }
 
 /// Closes the add-to-start window.
@@ -1190,7 +1192,7 @@ async fn process_node_run(
         Ok(vars) => vars,
         Err(e) => {
             let msg = e.to_string();
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
     };
 
@@ -1210,7 +1212,7 @@ async fn process_node_run(
                  Run `peppy stack list` to see the nodes in the stack, or `peppy node add <dir>` \
                  to add it from its directory."
             );
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
     };
 
@@ -1223,7 +1225,7 @@ async fn process_node_run(
     if let Some(msg) =
         id_held_by_another_node(&ctx.action.node_stack, &instance_id, &node_name, &tag)
     {
-        return refuse(&ctx, msg);
+        return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
     }
 
     // A simulated domain is identified by its name and the machine hosting its
@@ -1239,7 +1241,7 @@ async fn process_node_run(
                  start its publisher on `{}`",
                 domain.name, domain.core_node, ctx.action.core_node_name, domain.core_node,
             );
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
         if let Some(owner) = ctx.action.node_stack.clock_domain_publisher(&domain.name)
             && owner != instance_id
@@ -1258,7 +1260,7 @@ async fn process_node_run(
                 core_node = ctx.action.core_node_name,
                 stop = core_node_api::stop_command(owner.as_str(), &ctx.action.core_node_name),
             );
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
         }
     }
 
@@ -1275,7 +1277,7 @@ async fn process_node_run(
                  on `{}`; `peppy clock list` shows each domain and the machine hosting it",
                 domain.core_node, publisher.core_node,
             );
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
         if domain.core_node.as_str() == ctx.action.core_node_name {
             let supplier = local_publisher_of(&ctx.action.node_stack, domain);
@@ -1301,7 +1303,7 @@ async fn process_node_run(
                          `{publisher}` is running",
                         publisher = publisher.instance_id
                     );
-                    return refuse(&ctx, msg);
+                    return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
                 }
                 DomainGate::Gone => {
                     let msg = if respawning {
@@ -1317,7 +1319,7 @@ async fn process_node_run(
                             ctx.action.core_node_name, domain.name,
                         )
                     };
-                    return refuse(&ctx, msg);
+                    return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
                 }
                 DomainGate::SuppliedBy(owner) => {
                     let msg = format!(
@@ -1327,7 +1329,7 @@ async fn process_node_run(
                         owner.as_str(),
                         publisher.instance_id,
                     );
-                    return refuse(&ctx, msg);
+                    return refuse(&ctx, PeppyFailureKind::Rejected, msg);
                 }
             }
         }
@@ -1341,7 +1343,7 @@ async fn process_node_run(
                 node_name, tag, node_name, tag
             );
             drop(guard);
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
         }
         guard.config().clone()
     };
@@ -1349,7 +1351,7 @@ async fn process_node_run(
     if let Err(msg) =
         refuse_stale_manifest(&node_name, &tag, manifest_sha256.as_deref(), &node_config)
     {
-        return refuse(&ctx, msg);
+        return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
     }
 
     // The policy of a new instance, resolved here for every path that starts
@@ -1394,7 +1396,7 @@ async fn process_node_run(
     {
         Ok(reasons) => reasons,
         Err(msg) => {
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
     };
 
@@ -1445,7 +1447,7 @@ async fn process_node_run(
         ) {
             Ok(p) => p,
             Err(msg) => {
-                return refuse(&ctx, msg);
+                return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
             }
         }
     };
@@ -1485,7 +1487,7 @@ async fn process_node_run(
     );
     if !missing.is_empty() {
         let msg = format!("Missing required parameters: {}", missing.join(", "));
-        return refuse(&ctx, msg);
+        return refuse(&ctx, PeppyFailureKind::Rejected, msg);
     }
 
     let is_container = node_config.execution.container.is_some();
@@ -1507,7 +1509,7 @@ async fn process_node_run(
     {
         Ok(paths) => paths,
         Err(msg) => {
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::Rejected, msg);
         }
     };
 
@@ -1567,7 +1569,9 @@ async fn process_node_run(
         });
         let apptainer = match setup {
             ApptainerSetup::Ready(apptainer) => apptainer,
-            ApptainerSetup::Refused(msg) => return refuse(&ctx, msg),
+            ApptainerSetup::Refused(msg) => {
+                return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
+            }
             // A failed start, as one of the run itself: a restart's next
             // attempt initializes Apptainer again.
             ApptainerSetup::InitFailed(msg) => {
@@ -1623,7 +1627,7 @@ async fn process_node_run(
         Ok(json) => json,
         Err(e) => {
             let msg = format!("Failed to serialize runtime config: {}", e);
-            return refuse(&ctx, msg);
+            return refuse(&ctx, PeppyFailureKind::AttemptFailed, msg);
         }
     };
 
@@ -1686,7 +1690,7 @@ async fn process_node_run(
         let msg = "cancelled before node process spawn".to_string();
         ctx.announcer.log().error(&msg);
         feedback.close(instance_id_str, false).await;
-        return RunOutcome::Gone(msg);
+        return RunOutcome::Cancelled(msg);
     }
 
     let (child, started_ctx) =
@@ -2485,10 +2489,10 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
     });
 }
 
-/// Writes a refusal of the run to its run log and answers it.
-fn refuse(ctx: &ProcessNodeRunContext, msg: String) -> RunOutcome {
+/// Writes a refusal of the run to its run log and answers it with `kind`.
+fn refuse(ctx: &ProcessNodeRunContext, kind: PeppyFailureKind, msg: String) -> RunOutcome {
     ctx.announcer.log().error(&msg);
-    RunOutcome::Refused(msg)
+    RunOutcome::Refused(Failure::new(kind, msg))
 }
 
 /// How far a start got before the daemon gave it up.
@@ -2512,7 +2516,7 @@ struct StartAbandon<'a> {
 
 impl StartAbandon<'_> {
     /// Ends a failed or cancelled start once its process was spawned, and answers
-    /// the run: a cancelled start is `Gone`, a failed one `StartFailed`. Before
+    /// the run: a cancelled start is `Cancelled`, a failed one `StartFailed`. Before
     /// the ready signal, or once the leader exited, the process group is
     /// SIGKILLed at once, a container's in-VM group included, so nothing of the
     /// start runs while the pairs reserved for it are dissolved. After the ready
@@ -2566,7 +2570,7 @@ impl StartAbandon<'_> {
         self.ctx.announcer.log().error(&msg);
         self.feedback.close(self.instance_id.as_str(), false).await;
         if cancelled {
-            RunOutcome::Gone(msg)
+            RunOutcome::Cancelled(msg)
         } else {
             RunOutcome::StartFailed(msg)
         }

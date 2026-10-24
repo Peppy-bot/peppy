@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
-use core_node_api::encoding::{
-    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
-};
+use core_node_api::encoding::{RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshResult};
+use peppylib::messaging::GoalAnswer;
 use tracing::{info, warn};
 
 use super::identity_label;
-use crate::commands::action_poll::poll_action_to_completion;
+use crate::commands::action_poll::{CtrlC, FollowedGoal, poll_action_to_completion};
 use crate::commands::node::TimeoutConfig;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
@@ -35,16 +34,10 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to send repo refresh goal: {}", e)))?;
 
-    let goal_response_payload = action_handle.goal_reply().body.clone();
-    let goal_response = RepoRefreshGoalResponse::decode(&goal_response_payload)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
-
-    if !goal_response.accepted {
-        return Err(Error::ExecutionFailed(format!(
-            "Repo refresh rejected: {}",
-            goal_response
-                .rejection_reason
-                .unwrap_or_else(|| "unknown reason".to_string())
+    if let GoalAnswer::Refused(refusal) = &action_handle.goal_reply().answer {
+        return Err(Error::ExecutionFailed(crate::commands::reply_failure_text(
+            "Repository refresh refused",
+            refusal,
         )));
     }
 
@@ -53,6 +46,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
     let timeouts = TimeoutConfig {
         idle_secs: IDLE_TIMEOUT_SECS,
         max_secs: MAX_TIMEOUT_SECS,
+        flags: false,
     };
     let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
 
@@ -70,19 +64,15 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
             RepoRefreshResult::decode(payload)
                 .map_err(|err| format!("Failed to decode repo refresh result: {err}"))
         },
+        &FollowedGoal {
+            doing: "Repository refresh",
+            log_path: None,
+        },
+        &mut CtrlC::listen(),
     )
     .await?;
 
     scrolling_output.clear();
-
-    if !result.success {
-        return Err(Error::ExecutionFailed(format!(
-            "Repository refresh failed: {}",
-            result
-                .error_message
-                .unwrap_or_else(|| "unknown error".to_string())
-        )));
-    }
 
     info!(
         "Repository refresh complete. {} node(s), {} launcher(s), {} contract(s), {} pairing(s), {} MCP exposure(s) found.",
@@ -93,7 +83,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
         result.total_mcp_exposures_found
     );
 
-    if result.failure_report.is_empty() {
+    if result.read_failure_report.is_empty() {
         return Ok(());
     }
     // With `--strict`, the report is the error: a CI job or a release
@@ -102,7 +92,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
     if strict {
         return Err(Error::ExecutionFailed(format!(
             "{}\nThe refresh ran with --strict, so a repository that could not be read fails it.",
-            result.failure_report
+            result.read_failure_report
         )));
     }
     // Otherwise a repository that could not be read is not a failed
@@ -110,7 +100,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
     // the entries it last published. Naming it and naming the retry is the
     // whole response, and it is what lets an install finish on a hub that
     // was briefly unreachable rather than stopping there.
-    warn!("{}", result.failure_report);
+    warn!("{}", result.read_failure_report);
     warn!("Run `peppy repo refresh` again to pick those repositories up.");
     Ok(())
 }

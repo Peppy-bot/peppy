@@ -186,6 +186,7 @@ fn emitted_topic_via_contract_origin_targets_contract() {
         link_id: "depth_cam".to_string(),
         contract_name: "depth_camera".to_string(),
         contract_tag: "v1".to_string(),
+        failure_kinds: Default::default(),
     };
 
     let mut generator = RustGenerator::new();

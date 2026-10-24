@@ -17,8 +17,8 @@ use crate::{Payload, Result};
 
 use crate::encoding::{
     ObservationTarget, ObservationTargets, capnp_list_len, decode_message, encode_message,
-    optional_text, read_cardinality, read_core_node_name, read_name, read_name_list,
-    read_optional_copy, read_text_list, required_text, required_text_list, write_text_list,
+    read_cardinality, read_core_node_name, read_name, read_name_list, read_optional_copy,
+    read_text_list, required_text, required_text_list, write_text_list,
 };
 
 /// Reserves one participant for one launch, carrying the pins for every
@@ -86,10 +86,10 @@ impl ParticipantReserveRequest {
     }
 }
 
+/// The reply of a participant that took the reservation. A participant that
+/// refuses gives an error reply, with a failure kind and a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParticipantReserveResponse {
-    pub accepted: bool,
-    pub rejection_reason: Option<String>,
     /// The participant's peppy version, so a mixed-version federation is
     /// refused before any stack is touched. Same string the info service
     /// reports: one source of truth for "what version is that daemon".
@@ -100,23 +100,10 @@ pub struct ParticipantReserveResponse {
 }
 
 impl ParticipantReserveResponse {
-    pub fn accepted(peppy_version: impl Into<String>, root_instance_id: impl Into<String>) -> Self {
+    pub fn new(peppy_version: impl Into<String>, root_instance_id: impl Into<String>) -> Self {
         Self {
-            accepted: true,
-            rejection_reason: None,
             peppy_version: peppy_version.into(),
             root_instance_id: root_instance_id.into(),
-        }
-    }
-
-    /// A refusal still reports the version, so a coordinator can tell "busy"
-    /// apart from "too old" without a second round trip.
-    pub fn rejected(reason: impl Into<String>, peppy_version: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            rejection_reason: Some(reason.into()),
-            peppy_version: peppy_version.into(),
-            root_instance_id: String::new(),
         }
     }
 
@@ -125,8 +112,6 @@ impl ParticipantReserveResponse {
         {
             let mut response =
                 builder.init_root::<federation_capnp::participant_reserve_response::Builder>();
-            response.set_accepted(self.accepted);
-            response.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
             response.set_peppy_version(&self.peppy_version);
             response.set_root_instance_id(&self.root_instance_id);
         }
@@ -139,8 +124,6 @@ impl ParticipantReserveResponse {
             reader.get_root::<federation_capnp::participant_reserve_response::Reader>()?;
 
         Ok(Self {
-            accepted: response.get_accepted(),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
             peppy_version: response.get_peppy_version()?.to_str()?.to_owned(),
             root_instance_id: response.get_root_instance_id()?.to_str()?.to_owned(),
         })
@@ -250,33 +233,22 @@ impl ParticipantSliceBeginRequest {
     }
 }
 
-/// The reply to `participant_slice_begin`: the verdict, plus the bind sources
-/// the participant had to create to honour it.
+/// The reply of a participant that began its slice: the bind sources it had
+/// to create to honour it. A participant that refuses gives an error reply,
+/// with a failure kind and a message.
 ///
 /// [`Self::auto_created_mount_sources`] is what the coordinator turns back into
 /// the warning an operator would have seen had the instance run on their own
 /// machine; see the schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParticipantSliceBeginResponse {
-    pub ok: bool,
-    pub rejection_reason: Option<String>,
     pub auto_created_mount_sources: Vec<String>,
 }
 
 impl ParticipantSliceBeginResponse {
-    pub fn ok(auto_created_mount_sources: Vec<String>) -> Self {
+    pub fn new(auto_created_mount_sources: Vec<String>) -> Self {
         Self {
-            ok: true,
-            rejection_reason: None,
             auto_created_mount_sources,
-        }
-    }
-
-    pub fn refused(reason: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            rejection_reason: Some(reason.into()),
-            auto_created_mount_sources: Vec::new(),
         }
     }
 
@@ -285,8 +257,6 @@ impl ParticipantSliceBeginResponse {
         {
             let mut response =
                 builder.init_root::<federation_capnp::participant_slice_begin_response::Builder>();
-            response.set_ok(self.ok);
-            response.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
             let count = capnp_list_len(
                 self.auto_created_mount_sources.len(),
                 "ParticipantSliceBeginResponse.auto_created_mount_sources",
@@ -304,8 +274,6 @@ impl ParticipantSliceBeginResponse {
         let response =
             reader.get_root::<federation_capnp::participant_slice_begin_response::Reader>()?;
         Ok(Self {
-            ok: response.get_ok(),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
             auto_created_mount_sources: required_text_list(
                 read_text_list(response.get_auto_created_mount_sources()?)?,
                 "auto_created_mount_sources",
@@ -510,61 +478,30 @@ fn read_slot_set(wire: federation_capnp::slot_set::Reader<'_>) -> Result<SlotSet
     })
 }
 
-/// The reply to every federation exchange whose answer is "did you do it, and
-/// if not, why": `pair_commit`, `participant_release`,
-/// `participant_instances_remove` and `participant_sets_update`. One codec for
-/// all of them, because they differ only in which verb the verdict reports and
-/// that verb is already the service name.
-///
-/// The reason of a refusal is load-bearing; see the schema.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FederationVerdict {
-    Done,
-    Refused(String),
-    /// A `pair_commit` the receiver could not pin: its slot is starting a
-    /// restart or has no process, or its own node did not take the delivery;
-    /// the pair may be asked for again later.
-    Undelivered(String),
-}
+/// The reply of a federation exchange that the receiver did: `pair_commit`,
+/// `participant_release`, `participant_instances_remove` and
+/// `participant_sets_update`. Carries no fields: delivery of the reply is the
+/// acknowledgement. A receiver that does not do it gives an error reply, with
+/// a failure kind and a message; see the schema for what each kind tells the
+/// sender.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FederationAck;
 
-impl FederationVerdict {
-    /// The verdict as a result: a refusal carries the participant's reason.
-    pub fn into_result(self) -> std::result::Result<(), String> {
-        match self {
-            Self::Done => Ok(()),
-            Self::Refused(reason) | Self::Undelivered(reason) => Err(reason),
-        }
+impl FederationAck {
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        {
-            let mut verdict = builder.init_root::<federation_capnp::federation_verdict::Builder>();
-            match self {
-                Self::Done => verdict.set_ok(true),
-                Self::Refused(reason) => verdict.set_rejection_reason(reason),
-                Self::Undelivered(reason) => {
-                    verdict.set_rejection_reason(reason);
-                    verdict.set_undelivered(true);
-                }
-            }
-        }
+        builder.init_root::<federation_capnp::federation_ack::Builder>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let verdict = reader.get_root::<federation_capnp::federation_verdict::Reader>()?;
-        if verdict.get_ok() {
-            return Ok(Self::Done);
-        }
-        let reason = optional_text(verdict.get_rejection_reason()?.to_str()?)
-            .unwrap_or_else(|| "no reason given".to_owned());
-        Ok(if verdict.get_undelivered() {
-            Self::Undelivered(reason)
-        } else {
-            Self::Refused(reason)
-        })
+        reader.get_root::<federation_capnp::federation_ack::Reader>()?;
+        Ok(Self)
     }
 }
 
@@ -913,8 +850,8 @@ impl crate::encoding::Wire for PairCommitRequest {
     type Root = crate::federation_capnp::pair_commit_request::Owned;
 }
 
-impl crate::encoding::Wire for FederationVerdict {
-    type Root = crate::federation_capnp::federation_verdict::Owned;
+impl crate::encoding::Wire for FederationAck {
+    type Root = crate::federation_capnp::federation_ack::Owned;
 }
 
 impl crate::encoding::Wire for RelationshipNotification {
@@ -1122,30 +1059,13 @@ mod tests {
     }
 
     #[test]
-    fn reserve_response_round_trips_acceptance() {
-        let response =
-            ParticipantReserveResponse::accepted("v0.20.0-3-g8c7cbaa7", "core_node_gen_1");
+    fn reserve_response_round_trips() {
+        let response = ParticipantReserveResponse::new("v0.20.0-3-g8c7cbaa7", "core_node_gen_1");
         let payload = response.encode().expect("encode");
         let decoded = ParticipantReserveResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
-        assert!(decoded.accepted);
+        assert_eq!(decoded.peppy_version, "v0.20.0-3-g8c7cbaa7");
         assert_eq!(decoded.root_instance_id, "core_node_gen_1");
-    }
-
-    /// A refusal still reports the version so "busy" and "too old" are
-    /// distinguishable without a second round trip.
-    #[test]
-    fn reserve_response_round_trips_refusal_with_version() {
-        let response = ParticipantReserveResponse::rejected(
-            "already reserved for launch `launch-other`",
-            "v0.19.0",
-        );
-        let payload = response.encode().expect("encode");
-        let decoded = ParticipantReserveResponse::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, response);
-        assert!(!decoded.accepted);
-        assert_eq!(decoded.peppy_version, "v0.19.0");
-        assert!(decoded.root_instance_id.is_empty());
     }
 
     #[test]
@@ -1203,11 +1123,10 @@ mod tests {
     }
 
     #[test]
-    fn slice_begin_response_round_trips_both_outcomes() {
+    fn slice_begin_response_round_trips() {
         for response in [
-            ParticipantSliceBeginResponse::ok(vec!["/tmp/video_reconstruction".to_owned()]),
-            ParticipantSliceBeginResponse::ok(Vec::new()),
-            ParticipantSliceBeginResponse::refused("reserved for launch `launch-other`"),
+            ParticipantSliceBeginResponse::new(vec!["/tmp/video_reconstruction".to_owned()]),
+            ParticipantSliceBeginResponse::new(Vec::new()),
         ] {
             let payload = response.encode().expect("encode");
             assert_eq!(
@@ -1218,18 +1137,12 @@ mod tests {
     }
 
     #[test]
-    fn verdict_round_trips_every_outcome() {
-        for verdict in [
-            FederationVerdict::Done,
-            FederationVerdict::Refused("reserved for launch `launch-other`".to_owned()),
-            FederationVerdict::Undelivered("`arm_inst` did not answer".to_owned()),
-        ] {
-            let payload = verdict.encode().expect("encode");
-            assert_eq!(
-                FederationVerdict::decode(payload.as_ref()).expect("decode"),
-                verdict
-            );
-        }
+    fn ack_round_trips() {
+        let payload = FederationAck::new().encode().expect("encode");
+        assert_eq!(
+            FederationAck::decode(payload.as_ref()).expect("decode"),
+            FederationAck
+        );
     }
 
     /// The destructive step must never act on a defaulted launch id: that is
@@ -1510,7 +1423,7 @@ mod tests {
         assert!(ParticipantReserveRequest::decode(b"not capnp").is_err());
         assert!(ParticipantReserveResponse::decode(b"not capnp").is_err());
         assert!(ParticipantReleaseRequest::decode(b"not capnp").is_err());
-        assert!(FederationVerdict::decode(b"not capnp").is_err());
+        assert!(FederationAck::decode(b"not capnp").is_err());
         assert!(RelationshipNotification::decode(b"not capnp").is_err());
         assert!(RelationshipNotificationAck::decode(b"not capnp").is_err());
     }

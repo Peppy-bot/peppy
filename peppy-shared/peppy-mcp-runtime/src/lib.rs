@@ -10,9 +10,12 @@
 //! notifications, tool-input validation against the bundle's derived
 //! schemas, action-backed tools run as MCP tasks (SEP-2663) for clients
 //! that declare the extension and inside the call for clients that do not,
-//! with confirmation, cooperative cancellation, and whole-goal deadlines
-//! (a progress-bound goal is bounded by its bridge, and its task by a TTL
-//! of one day), and the mapping from bridge failures to MCP errors.
+//! with confirmation, cooperative cancellation through `tasks/cancel`, and
+//! whole-goal deadlines (a progress-bound goal is bounded by its bridge,
+//! and its task by a TTL of one day), and the mapping from bridge failures
+//! to MCP errors: the failure kind and the message a provider gives (see
+//! [`ProviderFailure`]) reach the client in the tool error of the call and
+//! in the error of a failed task.
 //!
 //! Entry points:
 //!
@@ -47,6 +50,7 @@ pub mod bridge;
 mod call_record;
 pub mod clock;
 pub mod error;
+mod failure;
 pub mod fleet;
 pub mod representation;
 pub mod server;
@@ -55,6 +59,7 @@ pub mod tasks;
 
 pub use clock::Clock;
 pub use error::{BuildError, PublishError, ToolCallError};
+pub use failure::ProviderFailure;
 pub use fleet::{FleetMember, FleetSource, MemberAddress};
 pub use peppy_mcp_catalog as catalog;
 pub use server::{

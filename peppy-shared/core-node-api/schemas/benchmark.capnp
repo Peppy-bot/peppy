@@ -13,11 +13,9 @@ struct StackBenchmarkGoal {
     perSampleTimeoutMs @2 :UInt64;
 }
 
+# The goal response of an accepted benchmark. The daemon refuses a goal in
+# the goal envelope, with a failure kind and a message.
 struct StackBenchmarkGoalResponse {
-    # Whether the benchmark goal was accepted.
-    accepted @0 :Bool;
-    # Rejection reason if not accepted (empty if accepted).
-    rejectionReason @1 :Text;
 }
 
 enum BenchmarkFeedbackStep {
@@ -96,11 +94,11 @@ struct InterfaceLatency {
     viaContract @15 :Text;
 }
 
+# The result of a completed benchmark. A failed measurement of one
+# interface is a row. A failed benchmark gives a failure kind and a
+# message, and no result; a cancelled benchmark gives its reason, and no
+# result.
 struct StackBenchmarkResult {
-    # Whether the benchmark completed (per-interface failures are encoded as rows).
-    success @0 :Bool;
-    # Error message if the benchmark itself failed (empty on success).
-    errorMessage @1 :Text;
     # One row per measured interface.
-    rows @2 :List(InterfaceLatency);
+    rows @0 :List(InterfaceLatency);
 }

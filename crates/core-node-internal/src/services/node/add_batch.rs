@@ -25,10 +25,13 @@ use super::FeedbackLine;
 use super::add::{NodeAddActionContext, record_add_failure, run_node_add};
 use super::pins::{self, MaterializedPin};
 use crate::services::repo::cache as repo_cache;
+use crate::services::response::rephrased;
+use config::failure_kind::PeppyFailureKind;
 use config::node::NodeConfig;
 use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource};
 use daemon_config::repository::PinKind;
 use node_stack::{ActionLog, Announcer, VirtualDeptree, WorkingDirGuard};
+use peppylib::messaging::Failure;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,8 +44,11 @@ pub(crate) async fn run_pinned_add(
     goal: NodeAddGoal,
     action_context: NodeAddActionContext,
     announcer: Announcer,
-) -> NodeAddResult {
+) -> Result<NodeAddResult, Failure> {
     let peppy_dirs = action_context.peppy_dirs.clone();
+    let fail = |kind: PeppyFailureKind, message: String| {
+        Err(record_add_failure(&announcer, Failure::new(kind, message)))
+    };
     let on_feedback: super::cache::MaterializeFeedback =
         Arc::new(super::step_sink(announcer.clone()));
 
@@ -56,7 +62,10 @@ pub(crate) async fn run_pinned_add(
     let entries = match repo_cache::load_node_cache(&peppy_dirs) {
         Ok(loaded) => Arc::new(loaded),
         Err(e) => {
-            return record_add_failure(&announcer, format!("Failed to read nodes cache: {}", e));
+            return fail(
+                PeppyFailureKind::AttemptFailed,
+                format!("Failed to read nodes cache: {}", e),
+            );
         }
     };
 
@@ -66,21 +75,21 @@ pub(crate) async fn run_pinned_add(
             {
                 Ok(pin) => pin,
                 Err(e) => {
-                    return record_add_failure(
-                        &announcer,
+                    return fail(
+                        PeppyFailureKind::Rejected,
                         format!("the goal's root pin is not decodable: {e}"),
                     );
                 }
             };
             if root.kind != PinKind::Node {
-                return record_add_failure(
-                    &announcer,
+                return fail(
+                    PeppyFailureKind::Rejected,
                     format!("the goal's root pin is {}, not a node", root.label()),
                 );
             }
             let closure = match pins::decode_pins(&goal.pins_json5) {
                 Ok(closure) => closure,
-                Err(e) => return record_add_failure(&announcer, e),
+                Err(e) => return fail(PeppyFailureKind::Rejected, e),
             };
             // Re-encoded from the decoded pins rather than sliced out of the
             // raw input by position: the split is stated over the values that
@@ -92,7 +101,7 @@ pub(crate) async fn run_pinned_add(
                 .partition(|pin| pin.kind == PinKind::Node);
             let doc_pins_json5 = match pins::encode_pins(&doc_pins) {
                 Ok(encoded) => encoded,
-                Err(e) => return record_add_failure(&announcer, e),
+                Err(e) => return fail(PeppyFailureKind::AttemptFailed, e),
             };
 
             announcer.line(format!(
@@ -111,15 +120,15 @@ pub(crate) async fn run_pinned_add(
             .await
             {
                 Ok(nodes) => nodes,
-                Err(e) => return record_add_failure(&announcer, e),
+                Err(e) => return fail(PeppyFailureKind::AttemptFailed, e),
             };
             (nodes, doc_pins_json5)
         }
         NodeSource::ResolveRef { name, tag } => {
             announcer.line(format!("Resolving {}:{} from repo cache", name, tag));
             if entries.is_empty() {
-                return record_add_failure(
-                    &announcer,
+                return fail(
+                    PeppyFailureKind::PreconditionFailed,
                     format!(
                         "nodes.json5 not found or empty at {}; run `peppy repo refresh` to \
                          populate it",
@@ -137,7 +146,7 @@ pub(crate) async fn run_pinned_add(
             .await
             {
                 Ok(closure) => closure,
-                Err(e) => return record_add_failure(&announcer, e),
+                Err(failure) => return Err(record_add_failure(&announcer, failure)),
             };
             let minted = pins::doc_pins_for_manifest_sets_async(
                 &peppy_dirs,
@@ -148,11 +157,11 @@ pub(crate) async fn run_pinned_add(
             .and_then(|mut sets| sets.remove(0));
             let doc_pins = match minted {
                 Ok(doc_pins) => doc_pins,
-                Err(e) => return record_add_failure(&announcer, e),
+                Err(e) => return fail(PeppyFailureKind::AttemptFailed, e),
             };
             let doc_pins_json5 = match pins::encode_pins(&doc_pins) {
                 Ok(encoded) => encoded,
-                Err(e) => return record_add_failure(&announcer, e),
+                Err(e) => return fail(PeppyFailureKind::AttemptFailed, e),
             };
             (closure.nodes, doc_pins_json5)
         }
@@ -160,8 +169,8 @@ pub(crate) async fn run_pinned_add(
         | NodeSource::Git { .. }
         | NodeSource::Http { .. }
         | NodeSource::Exposures { .. } => {
-            return record_add_failure(
-                &announcer,
+            return fail(
+                PeppyFailureKind::AttemptFailed,
                 "internal error: run_pinned_add called with a non-pinned source".to_owned(),
             );
         }
@@ -183,7 +192,10 @@ async fn execute_pinned_batch(
     goal: NodeAddGoal,
     action_context: NodeAddActionContext,
     announcer: Announcer,
-) -> NodeAddResult {
+) -> Result<NodeAddResult, Failure> {
+    let fail = |kind: PeppyFailureKind, message: String| {
+        Err(record_add_failure(&announcer, Failure::new(kind, message)))
+    };
     let root_label = {
         let root = nodes.first().filter(|node| node.is_root);
         match root {
@@ -192,8 +204,8 @@ async fn execute_pinned_batch(
                 root.pin.tag.as_str().to_owned(),
             ),
             None => {
-                return record_add_failure(
-                    &announcer,
+                return fail(
+                    PeppyFailureKind::AttemptFailed,
                     "internal error: a pinned batch arrived without its root".to_owned(),
                 );
             }
@@ -204,7 +216,10 @@ async fn execute_pinned_batch(
         action_context.node_stack.find(name, tag).is_some()
     });
     if !gaps.is_empty() {
-        return record_add_failure(&announcer, daemon_config::format_bulleted(&gaps));
+        return fail(
+            PeppyFailureKind::Rejected,
+            daemon_config::format_bulleted(&gaps),
+        );
     }
 
     let tree_input: Vec<(PathBuf, NodeConfig)> = nodes
@@ -214,7 +229,10 @@ async fn execute_pinned_batch(
     let tree = match VirtualDeptree::build(tree_input) {
         Ok(t) => t,
         Err(e) => {
-            return record_add_failure(&announcer, format!("Dependency resolution failed: {}", e));
+            return fail(
+                PeppyFailureKind::Rejected,
+                format!("Dependency resolution failed: {}", e),
+            );
         }
     };
 
@@ -243,12 +261,11 @@ async fn execute_pinned_batch(
 
     let mut rollback = RollbackGuard::new(Arc::clone(&action_context.node_stack));
 
-    let mut last_sub_log_path: Option<PathBuf> = None;
     for info in tree.topological_order() {
         let key = info.key();
         let Some(node) = node_lookup.get(&key) else {
-            return record_add_failure(
-                &announcer,
+            return fail(
+                PeppyFailureKind::AttemptFailed,
                 format!(
                     "internal error: topological order produced a node not in the batch ({}:{})",
                     key.0, key.1
@@ -302,35 +319,18 @@ async fn execute_pinned_batch(
                 }
             });
 
-        let sub_result = match run_single_batched_add(
-            node,
-            &doc_pins_json5,
-            &goal,
-            &action_context,
-            announcer.feedback_tx(),
-        )
-        .await
+        if let Err(failure) =
+            run_single_batched_add(node, &doc_pins_json5, &goal, &action_context, &announcer).await
         {
-            Ok(r) => r,
-            Err(msg) => {
-                return record_add_failure(
-                    &announcer,
-                    format!("Failed to add {}:{}: {}", node.pin.name, node.pin.tag, msg),
-                );
-            }
-        };
-
-        if !sub_result.success {
-            let msg = sub_result
-                .error_message
-                .unwrap_or_else(|| "unknown node-add failure".to_owned());
-            return record_add_failure(
-                &announcer,
-                format!("Failed to add {}:{}: {}", node.pin.name, node.pin.tag, msg),
+            let message = format!(
+                "Failed to add {}:{}: {}",
+                node.pin.name,
+                node.pin.tag,
+                failure.message()
             );
+            return Err(record_add_failure(&announcer, rephrased(&failure, message)));
         }
 
-        last_sub_log_path = Some(sub_result.log_path.clone());
         rollback.added.push(RollbackEntry {
             name: node.pin.name.as_str().to_owned(),
             tag: node.pin.tag.as_str().to_owned(),
@@ -347,8 +347,7 @@ async fn execute_pinned_batch(
 
     announcer.line(format!("Batch add complete: {added} node(s) added"));
 
-    let effective_log = last_sub_log_path.unwrap_or_else(|| announcer.log().path());
-    NodeAddResult::success(effective_log, root_label.0, root_label.1)
+    Ok(NodeAddResult::new(root_label.0, root_label.1))
 }
 
 /// Dependencies the batch can neither add nor find: named by a materialized
@@ -422,8 +421,8 @@ fn stack_holds_identical(node_stack: &node_stack::NodeStack, node: &Materialized
 }
 
 /// Run a single node-add step inside the batch. Each sub-add gets its
-/// own log file; the returned `NodeAddResult.log_path` is propagated up
-/// so the user can still find the most recent log. The batch's doc pins
+/// own log file, which the batch's log names, so the user finds the log of
+/// each node from the log the goal response names. The batch's doc pins
 /// ride on every sub-goal, so each node's contract and pairing documents
 /// resolve to the launch's bytes rather than this machine's cache picks.
 async fn run_single_batched_add(
@@ -431,8 +430,8 @@ async fn run_single_batched_add(
     doc_pins_json5: &[String],
     batch_goal: &NodeAddGoal,
     action_context: &NodeAddActionContext,
-    batch_feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
-) -> Result<NodeAddResult, String> {
+    batch_announcer: &Announcer,
+) -> Result<NodeAddResult, Failure> {
     let mut sub_goal = NodeAddGoal::new(
         node.root_dir.clone(),
         STACK_LAUNCH_GIT_HASH,
@@ -456,12 +455,18 @@ async fn run_single_batched_add(
         Some((name, tag)),
         batch_goal.launch_id.as_deref(),
     )
-    .map_err(|e| format!("Failed to create sub-add log: {}", e))?;
+    .map_err(|e| {
+        Failure::new(
+            PeppyFailureKind::AttemptFailed,
+            format!("Failed to create sub-add log: {}", e),
+        )
+    })?;
+    batch_announcer.line(format!("{name}:{tag} logs to {}", log.path().display()));
 
     // Mirror sub-add feedback onto the batch feedback channel so users see a
     // single stream of progress for the whole batch.
     let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-    let batch_fb = batch_feedback_tx.clone();
+    let batch_fb = batch_announcer.feedback_tx().clone();
     let forwarder = tokio::spawn(async move {
         while let Some(line) = sub_rx.recv().await {
             let _ = batch_fb.send(line);
@@ -471,7 +476,7 @@ async fn run_single_batched_add(
     let action_context = action_context.clone();
     let result = run_node_add(sub_goal, action_context, Announcer::new(log, sub_tx)).await;
     let _ = forwarder.await;
-    Ok(result)
+    result
 }
 
 /// Snapshot of a stack entity captured before the batch replaced it, so

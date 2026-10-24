@@ -769,8 +769,9 @@ class MockPendingGoal:
         self._live.append(weakref.ref(context))
         return context
 
-    async def reject(self, reason: str | None, response: bytes) -> None:
-        await self._pending.reject(reason, response)
+    async def refuse(self, kind: str, message: str) -> None:
+        """Refuse the goal with the failure kind ``kind`` and ``message``."""
+        await self._pending.refuse(kind, message)
 
 
 class MockActionServerCore:
@@ -994,7 +995,9 @@ class MockClock:
                 request = ClockRequest.decode(bytes(context.payload))
             except ValueError as error:
                 await _send_clock_reply(
-                    responder.respond_error(f"invalid clock request: {error}")
+                    responder.respond_failure(
+                        "rejected", f"invalid clock request: {error}"
+                    )
                 )
                 continue
             # Stamp t2 last: the response encode + send happens after this

@@ -358,7 +358,11 @@ every reservation just taken is released and no stack anywhere is torn down. A
 reservation is machine-wide while it lasts. A reserved daemon refuses local
 `peppy node add`, `peppy node run`, `peppy node remove`, and `peppy node stop`
 too, naming the launch and coordinator holding it, and `peppy stack list` shows a `Reserved for launch ...` line
-naming the exact reset command that clears it.
+naming the exact reset command that clears it. These refusals, and the
+refusal of a reservation while other work holds the stack of the machine,
+have the failure kind `busy`: the same command can succeed once that launch
+or that work ends. A launch fails with `busy` too when each machine that
+refuses its reservation refuses it as `busy`.
 
 A reservation lasts while its coordinator is present in the federation, and
 ends when its coordinator is gone: a coordinator that disappears frees the

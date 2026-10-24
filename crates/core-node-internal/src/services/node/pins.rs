@@ -229,7 +229,8 @@ pub(crate) async fn resolve_pinned_closure(
     root_name: &str,
     root_tag: &str,
     on_feedback: node_cache::MaterializeFeedback,
-) -> std::result::Result<PinnedClosure, String> {
+) -> std::result::Result<PinnedClosure, peppylib::messaging::Failure> {
+    use config::failure_kind::PeppyFailureKind;
     let mut nodes: Vec<MaterializedPin> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut missing: Vec<(String, String)> = Vec::new();
@@ -274,7 +275,9 @@ pub(crate) async fn resolve_pinned_closure(
             break;
         };
 
-        let (root_dir, config) = result?;
+        let (root_dir, config) = result.map_err(|reason| {
+            peppylib::messaging::Failure::new(PeppyFailureKind::AttemptFailed, reason)
+        })?;
 
         if let Some(deps) = config.manifest.depends_on.as_ref() {
             for dep in &deps.nodes {
@@ -312,8 +315,13 @@ pub(crate) async fn resolve_pinned_closure(
             repo_cache::excluded_repositories_hint(peppy_dirs)
         ));
     }
+    // A name the caches do not hold, or hold twice, is a goal this machine
+    // cannot resolve.
     if !problems.is_empty() {
-        return Err(daemon_config::format_bulleted(&problems));
+        return Err(peppylib::messaging::Failure::new(
+            PeppyFailureKind::Rejected,
+            daemon_config::format_bulleted(&problems),
+        ));
     }
 
     nodes.sort_by_key(|node| !node.is_root);

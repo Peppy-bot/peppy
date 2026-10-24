@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use config::consts::NODE_CONFIG_FILE;
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::NodeStage;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
@@ -21,7 +22,7 @@ use peppylib::messaging::CoreNodePresenceMessenger;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 use super::common::{
-    build_count, build_logs_for, built_artifacts_for, counting_build_cmd,
+    assert_daemon_failure, build_count, build_logs_for, built_artifacts_for, counting_build_cmd,
     emulate_cooperative_shutdown, emulate_node_services, emulate_pairing_node_services,
     emulate_startup_services, install_node_manifest, launcher_args, node_add_command,
     read_daemon_git_hash, register_repo_caches, serve_app_context, stack_graph, test_node_target,
@@ -588,6 +589,7 @@ async fn stack_launch_fails_when_the_build_idle_timeout_is_hit() {
         err_msg.contains("timeout") && err_msg.contains("build"),
         "error message should mention 'timeout' and 'build' on build idle failure. Got: {err_msg}",
     );
+    assert_daemon_failure(&err_msg, PeppyFailureKind::Timeout, "build");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -626,6 +628,7 @@ async fn stack_launch_fails_when_the_run_idle_timeout_is_hit() {
         err_msg.contains("timeout") && err_msg.contains("run"),
         "error message should mention 'timeout' and 'run' on run idle failure. Got: {err_msg}",
     );
+    assert_daemon_failure(&err_msg, PeppyFailureKind::Timeout, "run");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -666,6 +669,7 @@ async fn stack_launch_fails_when_the_max_timeout_is_hit() {
         err_msg.contains("timeout") && err_msg.contains("max"),
         "error message should mention 'timeout' and 'max' on max launch failure. Got: {err_msg}",
     );
+    assert_daemon_failure(&err_msg, PeppyFailureKind::Timeout, "max");
 }
 
 /// The launcher's `links` entry reaches the consumer's runtime config as a
@@ -1041,6 +1045,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
         msg.contains("main") && msg.contains("cardinality") && msg.contains("one"),
         "error should name the slot and the cardinality rule: {msg}"
     );
+    assert_daemon_failure(&msg, PeppyFailureKind::Rejected, "cardinality");
 }
 
 /// Stack-wide `instance_id` uniqueness (spec rule 7): two instances
@@ -1127,6 +1132,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
         err_msg.contains(camera_name) && err_msg.contains(lidar_name),
         "error should name both colliding nodes. Got:\n{err_msg}"
     );
+    assert_daemon_failure(&err_msg, PeppyFailureKind::Rejected, "shared_inst");
 
     // No spawn side-effect: neither node should appear in the stack.
     let messenger_handle = ctx
@@ -1455,6 +1461,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
         err_msg.contains(link_id),
         "error should name the consumer's slot `{link_id}`. Got:\n{err_msg}"
     );
+    assert_daemon_failure(&err_msg, PeppyFailureKind::Rejected, "manifest.implements");
     assert!(
         err_msg.contains(producer_instance_id),
         "error should name the target producer instance. Got:\n{err_msg}"
@@ -1585,6 +1592,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
         err_msg.contains(&format!("{contract_name}:{consumer_wants_tag}")),
         "error should name the requested contract `{contract_name}:{consumer_wants_tag}`. Got:\n{err_msg}"
     );
+    assert_daemon_failure(&err_msg, PeppyFailureKind::Rejected, "manifest.implements");
 }
 
 /// Bidirectional contract communication under explicit links: two
@@ -2065,6 +2073,11 @@ async fn stack_launch_rejects_unbound_slot() {
             && err_msg.contains("leaves slot `main_cam`")
             && err_msg.contains("unfulfilled"),
         "error should name the owning instance and the unfulfilled slot. Got:\n{err_msg}"
+    );
+    assert_daemon_failure(
+        &err_msg,
+        PeppyFailureKind::Rejected,
+        "leaves slot `main_cam`",
     );
     assert!(
         err_msg.contains("--link main_cam@"),
@@ -2657,6 +2670,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
             && msg.contains(r#"`cardinality: "zero_or_one"`"#),
         "the failure should name the uncovered slot, the pairing key and the manifest key: {msg}"
     );
+    assert_daemon_failure(&msg, PeppyFailureKind::Rejected, "controller");
     assert!(
         msg.contains("if it is meant to run empty, declare"),
         "the vacancy must be offered only behind the manifest change, never as a standalone \
@@ -3226,6 +3240,7 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
         !msg.contains("does not exist in the stack"),
         "the absent node itself is admitted; only the slot coverage is refused: {msg}"
     );
+    assert_daemon_failure(&msg, PeppyFailureKind::Rejected, link_id);
 }
 
 /// A composed launch, end to end: the launcher declares a `backend` axis
@@ -4413,9 +4428,10 @@ async fn stack_build_replaces_the_running_stack() {
     let refusal = join_copy(&launch.ctx)
         .expect_err("the build replaced the launch it found")
         .to_string();
-    assert!(
-        refusal.contains("no active launcher"),
-        "the launcher the build replaced is gone: {refusal}"
+    assert_daemon_failure(
+        &refusal,
+        PeppyFailureKind::PreconditionFailed,
+        "no active launcher",
     );
 }
 
@@ -4454,9 +4470,10 @@ async fn stack_join_and_remove_after_a_build_are_refused() {
     let refusal = join_copy(&launch.ctx)
         .expect_err("a join needs a launched stack")
         .to_string();
-    assert!(
-        refusal.contains("no active launcher; run peppy stack launch LAUNCHER"),
-        "the refusal names the command to run: {refusal}"
+    assert_daemon_failure(
+        &refusal,
+        PeppyFailureKind::PreconditionFailed,
+        "no active launcher; run peppy stack launch LAUNCHER",
     );
 
     let refusal = StackCommand {
@@ -4467,9 +4484,10 @@ async fn stack_join_and_remove_after_a_build_are_refused() {
     .execute(&launch.ctx)
     .expect_err("a removal needs a launched stack")
     .to_string();
-    assert!(
-        refusal.contains("no active launcher"),
-        "the refusal names what is missing: {refusal}"
+    assert_daemon_failure(
+        &refusal,
+        PeppyFailureKind::PreconditionFailed,
+        "no active launcher",
     );
 }
 
@@ -4506,10 +4524,7 @@ async fn stack_build_failure_clears_the_stack() {
     .expect_err("a build whose build_cmd fails must fail")
     .to_string();
 
-    assert!(
-        refusal.contains("Build failed"),
-        "the failure names the operation: {refusal}"
-    );
+    assert_daemon_failure(&refusal, PeppyFailureKind::AttemptFailed, "Build failed");
     assert!(
         refusal.contains("failed to build node failing_build_node:v1"),
         "the failure names the node: {refusal}"
@@ -4664,9 +4679,10 @@ async fn stack_build_of_a_launcher_that_deploys_nothing_builds_nothing() {
     let refusal = join_copy(&launch.ctx)
         .expect_err("a build records no launcher")
         .to_string();
-    assert!(
-        refusal.contains("no active launcher"),
-        "the join is refused: {refusal}"
+    assert_daemon_failure(
+        &refusal,
+        PeppyFailureKind::PreconditionFailed,
+        "no active launcher",
     );
 }
 

@@ -1,9 +1,11 @@
 mod common;
 
 use common::test_node_target;
+use config::failure_kind::FailureKindName;
+use peppylib::PeppyError;
 use peppylib::messaging::{
-    MessengerHandle, ProducerRef, SenderTarget, ServiceEndpoint, ServiceMessenger, ServiceTarget,
-    SessionScope,
+    Failure, MessengerHandle, ProducerRef, SenderTarget, ServiceEndpoint, ServiceMessenger,
+    ServiceTarget, SessionScope,
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
@@ -67,6 +69,73 @@ async fn assert_one_service_round_trip(server: &MessengerHandle, client: &Messen
     assert_eq!(response.payload(), &response_payload);
     assert_eq!(response.instance_id(), instance_id);
     assert_eq!(response.core_node(), core_node);
+}
+
+/// A handler that answers with a failure gives its caller an error reply:
+/// the failure kind and message reach the caller as `ServiceFailed`, and the
+/// next request is served as usual.
+#[tokio::test]
+async fn a_failure_answer_reaches_the_caller_with_its_kind_and_message() {
+    let (client, _messenger) = common::get_client_server().await;
+    let handle = client.caller_handle;
+    let (core_node, instance_id, service_name) = ("test_core", "test_instance", "find_cup");
+    let expected = Failure::new(
+        FailureKindName::parse("not_found").expect("a valid kind name"),
+        "no red cup on the table",
+    );
+    let mut service = ServiceMessenger::listen(
+        &handle,
+        core_node,
+        instance_id,
+        test_node_target("test_node"),
+        service_name,
+    )
+    .await
+    .expect("listen should succeed");
+    let answer = expected.clone();
+    let handler = tokio::spawn(async move {
+        service
+            .handle_next_request(|_request| async move { Err(answer) })
+            .await
+            .expect("the endpoint answers its first request");
+        service
+            .handle_next_request(|request| async move { Ok(request.message().payload()) })
+            .await
+            .expect("the endpoint answers its second request");
+    });
+    let producer = ProducerRef::new(core_node, instance_id);
+    let call = |request: &'static [u8]| {
+        ServiceMessenger::poll(
+            &handle,
+            core_node,
+            "caller",
+            test_node_target("test_node"),
+            service_name,
+            ServiceTarget::Producer(&producer),
+            Payload::from_static(request),
+            Duration::from_secs(2),
+        )
+    };
+
+    let error = call(b"first")
+        .await
+        .expect_err("the handler failed the request");
+    assert_eq!(error.failure(), Some(&expected));
+    match error {
+        PeppyError::ServiceFailed {
+            instance_id: failed_instance,
+            service_name: failed_service,
+            failure,
+        } => {
+            assert_eq!(failed_instance.as_deref(), Some(instance_id));
+            assert_eq!(failed_service, service_name);
+            assert_eq!(failure, expected);
+        }
+        other => panic!("expected the failure reply, got {other:?}"),
+    }
+    let reply = call(b"second").await.expect("the next request is served");
+    assert_eq!(reply.payload_bytes().as_ref(), b"second");
+    handler.await.expect("handler task should not panic");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

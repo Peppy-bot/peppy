@@ -45,9 +45,13 @@ pub(in crate::services::stack) use dispatch::{
 };
 
 use crate::services::stack::action::StackChangeContext;
+use crate::services::stack::{
+    ChangeResult, busy, precondition_failed, rejected, resource_unavailable,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantReserveResponse,
 };
@@ -161,6 +165,9 @@ fn reject_unreachable_core_nodes(
 /// All-or-nothing: on any refusal the reservations already obtained are
 /// released before the error returns, so a failed preflight leaves no machine
 /// held. Only after a full set of acks does anything get torn down anywhere.
+/// The failure is `resource_unavailable` when a peer did not answer, `busy`
+/// when each refusal is a peer that other work holds, and
+/// `precondition_failed` for any other refusal.
 async fn reserve_participants(
     messenger: &MessengerHandle,
     coordinator: &str,
@@ -168,7 +175,7 @@ async fn reserve_participants(
     launch_id: &str,
     peers: BTreeMap<String, Vec<String>>,
     own_version: &str,
-) -> std::result::Result<Vec<ParticipantSlice>, String> {
+) -> ChangeResult<Vec<ParticipantSlice>> {
     let acks = join_all(peers.into_iter().map(|(core_node, pins)| {
         let request =
             ParticipantReserveRequest::new(launch_id, coordinator).with_deployment_pins(pins);
@@ -181,8 +188,7 @@ async fn reserve_participants(
                 &core_node,
                 PREFLIGHT_TIMEOUT,
             )
-            .await
-            .map_err(|e| format!("`{core_node}` did not answer the reservation: {e}"));
+            .await;
             (core_node, outcome)
         }
     }))
@@ -191,10 +197,15 @@ async fn reserve_participants(
     let mut slices: Vec<ParticipantSlice> = Vec::new();
     let mut to_release: Vec<String> = Vec::new();
     let mut refusals: Vec<String> = Vec::new();
+    // A peer that did not answer makes the machines of the launch unavailable;
+    // a peer that other work holds is busy; a peer that refused for another
+    // reason, or runs another version, is a precondition.
+    let mut a_peer_is_unavailable = false;
+    let mut every_refusal_is_busy = true;
 
     for (core_node, outcome) in acks {
         match outcome {
-            Ok(response) if response.accepted => {
+            Ok(response) => {
                 to_release.push(core_node.clone());
                 // The reservation is already recorded above, so a version
                 // refusal here still releases it.
@@ -205,25 +216,32 @@ async fn reserve_participants(
                             root_instance_id: response.root_instance_id,
                         });
                     }
-                    Err(reason) => refusals.push(reason),
+                    Err(reason) => {
+                        every_refusal_is_busy = false;
+                        refusals.push(reason);
+                    }
                 }
             }
-            // An answered refusal reserved nothing, so the peer owes no
-            // release.
-            Ok(response) => refusals.push(format!(
-                "`{core_node}` refused: {}",
-                response
-                    .rejection_reason
-                    .unwrap_or_else(|| "no reason given".to_owned())
-            )),
-            // An unanswered reservation is not a refusal: the request may have
-            // landed and reserved the peer with only the ack lost, so it is
-            // released with the ones that acked. Releasing a peer that never
-            // reserved succeeds as a no-op.
-            Err(reason) => {
-                to_release.push(core_node.clone());
-                refusals.push(reason);
-            }
+            Err(error) => match error.failure() {
+                // An answered refusal reserved nothing, so the peer owes no
+                // release.
+                Some(refusal) => {
+                    every_refusal_is_busy &= DaemonFailureKind::parse(refusal.kind().as_str())
+                        == Some(DaemonFailureKind::Busy);
+                    refusals.push(format!("`{core_node}` refused: {}", refusal.message()));
+                }
+                // An unanswered reservation is not a refusal: the request may
+                // have landed and reserved the peer with only the ack lost, so
+                // it is released with the ones that acked. Releasing a peer
+                // that never reserved succeeds as a no-op.
+                None => {
+                    to_release.push(core_node.clone());
+                    a_peer_is_unavailable = true;
+                    refusals.push(format!(
+                        "`{core_node}` did not answer the reservation: {error}"
+                    ));
+                }
+            },
         }
     }
 
@@ -243,10 +261,17 @@ async fn reserve_participants(
     )
     .await;
 
-    Err(format!(
+    let message = format!(
         "federated launch preflight failed; no stack was touched:\n  {}",
         refusals.join("\n  ")
-    ))
+    );
+    if a_peer_is_unavailable {
+        return Err(resource_unavailable(message).into());
+    }
+    if every_refusal_is_busy {
+        return Err(busy(message).into());
+    }
+    Err(precondition_failed(message).into())
 }
 
 /// A mixed-version federation is refused before any stack is touched.
@@ -360,20 +385,23 @@ async fn release_participants(
             RELEASE_TIMEOUT,
         )
         .await;
-        match result.map(|verdict| verdict.into_result()) {
-            Ok(Ok(())) => {}
+        match result {
+            Ok(_) => {}
             // A refusal is not a transport failure: the participant is holding
             // a reservation for a DIFFERENT launch, so this one never owned it
             // and its end with this coordinator will not clear it either. Worth its own
             // line, because it means two coordinators overlapped.
-            Ok(Err(reason)) => {
-                tracing::warn!("`{core_node}` refused to release launch `{launch_id}`: {reason}")
-            }
-            Err(e) => tracing::warn!(
-                "could not release `{core_node}` from launch `{launch_id}` ({e}); its \
-                 reservation drops on its own when this coordinator reserves it for its \
-                 next launch or leaves the federation"
-            ),
+            Err(e) => match e.failure() {
+                Some(refusal) => tracing::warn!(
+                    "`{core_node}` refused to release launch `{launch_id}`: {}",
+                    refusal.message()
+                ),
+                None => tracing::warn!(
+                    "could not release `{core_node}` from launch `{launch_id}` ({e}); its \
+                     reservation drops on its own when this coordinator reserves it for its \
+                     next launch or leaves the federation"
+                ),
+            },
         }
     }))
     .await;
@@ -392,7 +420,7 @@ pub(in crate::services::stack) async fn preflight(
     planned: &[super::PlannedDeployment],
     placements: &Placements,
     live: Option<&BTreeSet<String>>,
-) -> std::result::Result<ReservedParticipants, String> {
+) -> ChangeResult<ReservedParticipants> {
     if !placements.is_federated() {
         return Ok(ReservedParticipants::new(ctx, launch_id, Vec::new()));
     }
@@ -402,7 +430,8 @@ pub(in crate::services::stack) async fn preflight(
             .iter()
             .map(|item| (&item.deployment, &item.root, item.closure_pins.as_slice())),
         placements,
-    )?;
+    )
+    .map_err(rejected)?;
 
     // A wired core node is validated by live zenoh presence, not the platform
     // HTTP roster: what a launch needs is to be able to talk to the machine
@@ -410,9 +439,10 @@ pub(in crate::services::stack) async fn preflight(
     // asked the federation hands its answer in.
     let live = match live {
         Some(live) => live.clone(),
-        None => live_core_nodes(ctx).await?,
+        None => live_core_nodes(ctx).await.map_err(resource_unavailable)?,
     };
-    reject_unreachable_core_nodes(&peers.keys().cloned().collect(), &live)?;
+    reject_unreachable_core_nodes(&peers.keys().cloned().collect(), &live)
+        .map_err(resource_unavailable)?;
 
     let participants = reserve_participants(
         &ctx.messenger,
@@ -601,7 +631,7 @@ mod tests {
 
     #[test]
     fn a_version_mismatch_is_refused_and_names_both_versions() {
-        let response = ParticipantReserveResponse::accepted("v0.19.0", "gen_1");
+        let response = ParticipantReserveResponse::new("v0.19.0", "gen_1");
         let error =
             check_version("cn-atlas", &response, "v0.20.0").expect_err("skew must be refused");
         assert!(error.contains("v0.19.0"), "got: {error}");
@@ -611,7 +641,7 @@ mod tests {
 
     #[test]
     fn a_matching_version_passes() {
-        let response = ParticipantReserveResponse::accepted("v0.20.0", "gen_1");
+        let response = ParticipantReserveResponse::new("v0.20.0", "gen_1");
         assert!(check_version("cn-atlas", &response, "v0.20.0").is_ok());
     }
 

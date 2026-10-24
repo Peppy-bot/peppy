@@ -3,19 +3,21 @@ mod common;
 mod copies;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, FeedbackDrainOutcome, drain_feedback, fetch_result,
-    send_daemon_goal, start_core_node_with_default_setup_timeout,
+    AbortOnDrop, CALLER_INSTANCE_ID, FeedbackDrainOutcome, GoalEnd, assert_failure, drain_feedback,
+    fetch_end, goal_answer, send_daemon_goal, start_core_node_with_default_setup_timeout,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::failure_kind::PeppyFailureKind;
 use config::node::NodeConfigParser;
 use config::runtime::Name;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
-    LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult, LauncherOrigin, StackBudgets,
+    LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchOutput, LaunchResult, LauncherOrigin,
+    NodeLogs, StackBudgets,
 };
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
-use peppylib::ActionMessenger;
-use peppylib::messaging::MessengerHandle;
+use peppylib::messaging::{ActionGoalHandle, Failure, MessengerHandle};
 use std::fs;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -83,7 +85,7 @@ async fn seed_running_node(
     )
     .await
     .expect("seed node_add should complete");
-    assert!(add.success, "seed node_add failed: {:?}", add.error_message);
+    add.completed();
 
     build_staged_node(started, name, tag).await;
 
@@ -338,13 +340,152 @@ fn push_unbuilt_node_onto_stack(
     node_dir
 }
 
+/// How a stack goal that a test sends ends: the launch log that its goal
+/// response names, how the goal ended, and the node logs that its last
+/// feedback gave.
+#[derive(Debug)]
+struct StackGoalEnd {
+    log_path: PathBuf,
+    end: GoalEnd<LaunchResult>,
+    node_logs: NodeLogs,
+}
+
+impl StackGoalEnd {
+    /// Asserts that the stack goal completed.
+    #[track_caller]
+    fn assert_completed(&self) {
+        assert!(
+            self.end.is_completed(),
+            "the stack goal should complete: {:?}",
+            self.end
+        );
+    }
+
+    /// The failure of a stack goal that failed after its acceptance. Panics
+    /// with the ending of any other goal.
+    #[track_caller]
+    fn failure(&self) -> &Failure {
+        self.end.failed()
+    }
+
+    /// Asserts that the stack goal failed after its acceptance, with `kind`
+    /// and a message that contains `text`.
+    #[track_caller]
+    fn assert_failed(&self, kind: impl Into<DaemonFailureKind>, text: &str) {
+        assert_failure(self.failure(), kind, text);
+    }
+}
+
+/// Sends the stack goal `goal`, gives each output line of its feedback to
+/// `on_output` as it arrives, and returns how the goal ended. An error names
+/// a goal that the daemon refused, or that did not end within
+/// `result_timeout`.
+async fn run_stack_goal(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    goal: &impl core_node_api::ActionGoal,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    on_output: &mut (dyn FnMut(LaunchOutput) + Send),
+) -> Result<StackGoalEnd, String> {
+    let mut action_handle = send_daemon_goal(messenger, core_node_name, goal, goal_timeout)
+        .await
+        .map_err(|e| format!("Failed to send the stack goal: {e}"))?;
+    let goal_response =
+        goal_answer(&action_handle, LaunchGoalResponse::decode, "goal response")?
+            .map_err(|refusal| format!("the daemon refused the stack goal: {refusal}"))?;
+
+    let absolute_deadline = tokio::time::Instant::now() + result_timeout;
+
+    // Drain feedback until the server closes the stream on the end of the
+    // goal, then fetch how the goal ended once.
+    let mut node_logs = NodeLogs::default();
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| LaunchFeedback::decode(payload).expect("failed to decode LaunchFeedback"),
+        |feedback| {
+            match feedback {
+                LaunchFeedback::Output(output) => on_output(output),
+                LaunchFeedback::NodeLogs(logs) => node_logs = logs,
+            }
+            ControlFlow::Continue(())
+        },
+        absolute_deadline,
+    )
+    .await;
+    if matches!(drained, FeedbackDrainOutcome::TimedOut) {
+        return Err("Timeout waiting for the end of the stack goal".to_string());
+    }
+
+    let fetch_timeout = absolute_deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .max(Duration::from_secs(1));
+    let end = fetch_end(
+        messenger,
+        &action_handle,
+        fetch_timeout,
+        LaunchResult::decode,
+        "launch result",
+    )
+    .await?;
+    Ok(StackGoalEnd {
+        log_path: goal_response.log_path,
+        end,
+        node_logs,
+    })
+}
+
+/// Sends the stack goal `goal` and returns its live handle. Panics when the
+/// daemon refuses the goal.
+async fn send_accepted_stack_goal(
+    started: &StartedCoreNode,
+    goal: &impl core_node_api::ActionGoal,
+) -> ActionGoalHandle {
+    let handle = send_daemon_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        goal,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect("send the stack goal");
+    goal_answer(&handle, LaunchGoalResponse::decode, "goal response")
+        .expect("decode the goal answer")
+        .unwrap_or_else(|refusal| panic!("the daemon refused the stack goal: {refusal}"));
+    handle
+}
+
+/// Cancels the stack goal of `handle` as its client does, runs
+/// `after_cancel` once the daemon answered the cancel, and returns how the
+/// goal ended. Panics when the goal does not end within the result budget.
+async fn cancel_and_follow_to_end(
+    started: &StartedCoreNode,
+    mut handle: ActionGoalHandle,
+    after_cancel: impl std::future::Future<Output = ()>,
+) -> GoalEnd<LaunchResult> {
+    peppylib::ActionMessenger::cancel_goal(&started.caller_handle, &handle, GOAL_TIMEOUT)
+        .await
+        .expect("the daemon answers the cancel");
+    after_cancel.await;
+    common::wait_until_action_completes(&mut handle, RESULT_TIMEOUT).await;
+    fetch_end(
+        &started.caller_handle,
+        &handle,
+        GOAL_TIMEOUT,
+        LaunchResult::decode,
+        "launch result",
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"))
+}
+
 async fn send_node_launch_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,
     peppy_launch_file_path: &Path,
     goal_timeout: Duration,
     result_timeout: Duration,
-) -> Result<(LaunchGoalResponse, LaunchResult), String> {
+) -> Result<StackGoalEnd, String> {
     send_launch_origin_and_wait(
         messenger,
         core_node_name,
@@ -363,7 +504,7 @@ async fn send_node_launch_and_wait_with_env(
     goal_timeout: Duration,
     result_timeout: Duration,
     env_vars: Vec<(String, String)>,
-) -> Result<(LaunchGoalResponse, LaunchResult), String> {
+) -> Result<StackGoalEnd, String> {
     send_launch_origin_and_wait(
         messenger,
         core_node_name,
@@ -382,7 +523,7 @@ async fn send_launch_origin_and_wait(
     goal_timeout: Duration,
     result_timeout: Duration,
     env_vars: Vec<(String, String)>,
-) -> Result<(LaunchGoalResponse, LaunchResult), String> {
+) -> Result<StackGoalEnd, String> {
     send_launch_origin_and_wait_observing(
         messenger,
         core_node_name,
@@ -395,9 +536,9 @@ async fn send_launch_origin_and_wait(
     .await
 }
 
-/// [`send_launch_origin_and_wait`] with every decoded feedback line handed
-/// to `on_feedback` as it arrives, for tests that assert on what the launch
-/// reported and not only on its result.
+/// [`send_launch_origin_and_wait`] with every output line of the feedback
+/// handed to `on_output` as it arrives, for tests that assert on what the
+/// launch reported and not only on how it ended.
 async fn send_launch_origin_and_wait_observing(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -405,56 +546,22 @@ async fn send_launch_origin_and_wait_observing(
     goal_timeout: Duration,
     result_timeout: Duration,
     env_vars: Vec<(String, String)>,
-    on_feedback: &mut (dyn FnMut(LaunchFeedback) + Send),
-) -> Result<(LaunchGoalResponse, LaunchResult), String> {
+    on_output: &mut (dyn FnMut(LaunchOutput) + Send),
+) -> Result<StackGoalEnd, String> {
     let goal = LaunchGoal::new(
         launcher_origin,
         TEST_LAUNCH_ID,
         StackBudgets::new(300, 300, 300, Some(3600)).with_env_vars(env_vars),
     );
-    let mut action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
-        .await
-        .map_err(|e| format!("Failed to send launch goal: {e}"))?;
-
-    let goal_response = LaunchGoalResponse::decode(&action_handle.goal_reply().body)
-        .map_err(|e| format!("Failed to decode goal response: {e}"))?;
-
-    if !goal_response.accepted {
-        return Err(goal_response
-            .rejection_reason
-            .unwrap_or_else(|| "launch goal rejected".to_string()));
-    }
-
-    let absolute_deadline = tokio::time::Instant::now() + result_timeout;
-
-    // Drain feedback until the server closes the stream on completion, then
-    // fetch the buffered result once.
-    let drained = drain_feedback(
-        &mut action_handle,
-        |payload| LaunchFeedback::decode(payload).expect("failed to decode LaunchFeedback"),
-        |feedback| {
-            on_feedback(feedback);
-            ControlFlow::Continue(())
-        },
-        absolute_deadline,
-    )
-    .await;
-    if matches!(drained, FeedbackDrainOutcome::TimedOut) {
-        return Err("Timeout waiting for launch result".to_string());
-    }
-
-    let fetch_timeout = absolute_deadline
-        .saturating_duration_since(tokio::time::Instant::now())
-        .max(Duration::from_secs(1));
-    let result = fetch_result(
+    run_stack_goal(
         messenger,
-        &action_handle,
-        fetch_timeout,
-        LaunchResult::decode,
-        "launch result",
+        core_node_name,
+        &goal,
+        goal_timeout,
+        result_timeout,
+        on_output,
     )
-    .await?;
-    Ok((goal_response, result))
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -501,7 +608,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         responders.extend(answer_readiness(&started_core_node, node, instance_id).await);
     }
 
-    let (_goal_response, result) = send_node_launch_and_wait(
+    let result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -511,11 +618,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     .await
     .expect("launch should complete");
 
-    assert!(
-        result.success,
-        "launch should succeed, got error: {:?}",
-        result.error_message
-    );
+    result.assert_completed();
 
     assert!(node_stack.contains(FAKE_UVC_CAMERA, NODE_TAG));
     assert!(node_stack.contains(FAKE_ROBOT_BRAIN, NODE_TAG));
@@ -600,7 +703,7 @@ async fn listen_for_launch_configuration_succeed() {
         .fs_entry(ROBOT_NODE_NAME, NODE_TAG, &robot_brain_path)
         .write(&peppy_dirs);
 
-    let (_goal_response, result) = send_node_launch_and_wait(
+    let result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -610,11 +713,7 @@ async fn listen_for_launch_configuration_succeed() {
     .await
     .expect("launch should complete");
 
-    assert!(
-        result.success,
-        "launch should succeed, got error: {:?}",
-        result.error_message
-    );
+    result.assert_completed();
 
     assert!(node_stack.contains(UVC_NODE_NAME, NODE_TAG));
     assert!(node_stack.contains(ROBOT_NODE_NAME, NODE_TAG));
@@ -640,26 +739,29 @@ async fn listen_for_launch_configuration_succeed() {
 
     // Each deployed node should have an add log entry with a valid path and not marked as failed.
     assert_eq!(
-        result.node_add_logs.len(),
+        result.node_logs.node_add_logs.len(),
         2,
         "should have 2 add log entries (uvc_camera and robot_brain)"
     );
     assert!(
         result
+            .node_logs
             .node_add_logs
             .iter()
             .all(|e| !e.log_path.as_os_str().is_empty()),
         "all add log paths should be non-empty, got: {:?}",
         result
+            .node_logs
             .node_add_logs
             .iter()
             .map(|e| &e.log_path)
             .collect::<Vec<_>>()
     );
     assert!(
-        result.node_add_logs.iter().all(|e| !e.failed),
+        result.node_logs.node_add_logs.iter().all(|e| !e.failed),
         "no add log entry should be marked failed, got: {:?}",
         result
+            .node_logs
             .node_add_logs
             .iter()
             .filter(|e| e.failed)
@@ -667,9 +769,14 @@ async fn listen_for_launch_configuration_succeed() {
             .collect::<Vec<_>>()
     );
     assert!(
-        result.node_add_logs.iter().all(|e| e.log_path.exists()),
+        result
+            .node_logs
+            .node_add_logs
+            .iter()
+            .all(|e| e.log_path.exists()),
         "all add log files should exist on disk, missing: {:?}",
         result
+            .node_logs
             .node_add_logs
             .iter()
             .filter(|e| !e.log_path.exists())
@@ -679,26 +786,29 @@ async fn listen_for_launch_configuration_succeed() {
 
     // Each deployed node should have a build log entry with a valid path and not marked as failed.
     assert_eq!(
-        result.node_build_logs.len(),
+        result.node_logs.node_build_logs.len(),
         2,
         "should have 2 build log entries (uvc_camera and robot_brain)"
     );
     assert!(
         result
+            .node_logs
             .node_build_logs
             .iter()
             .all(|e| !e.log_path.as_os_str().is_empty()),
         "all build log paths should be non-empty, got: {:?}",
         result
+            .node_logs
             .node_build_logs
             .iter()
             .map(|e| &e.log_path)
             .collect::<Vec<_>>()
     );
     assert!(
-        result.node_build_logs.iter().all(|e| !e.failed),
+        result.node_logs.node_build_logs.iter().all(|e| !e.failed),
         "no build log entry should be marked failed, got: {:?}",
         result
+            .node_logs
             .node_build_logs
             .iter()
             .filter(|e| e.failed)
@@ -706,9 +816,14 @@ async fn listen_for_launch_configuration_succeed() {
             .collect::<Vec<_>>()
     );
     assert!(
-        result.node_build_logs.iter().all(|e| e.log_path.exists()),
+        result
+            .node_logs
+            .node_build_logs
+            .iter()
+            .all(|e| e.log_path.exists()),
         "all build log files should exist on disk, missing: {:?}",
         result
+            .node_logs
             .node_build_logs
             .iter()
             .filter(|e| !e.log_path.exists())
@@ -718,26 +833,29 @@ async fn listen_for_launch_configuration_succeed() {
 
     // Each started instance should have a start log entry with a valid path and not marked as failed.
     assert_eq!(
-        result.node_run_logs.len(),
+        result.node_logs.node_run_logs.len(),
         3,
         "should have 3 start log entries (camera_front, camera_rear, main_robot_brain)"
     );
     assert!(
         result
+            .node_logs
             .node_run_logs
             .iter()
             .all(|e| !e.log_path.as_os_str().is_empty()),
         "all start log paths should be non-empty, got: {:?}",
         result
+            .node_logs
             .node_run_logs
             .iter()
             .map(|e| &e.log_path)
             .collect::<Vec<_>>()
     );
     assert!(
-        result.node_run_logs.iter().all(|e| !e.failed),
+        result.node_logs.node_run_logs.iter().all(|e| !e.failed),
         "no start log entry should be marked failed, got: {:?}",
         result
+            .node_logs
             .node_run_logs
             .iter()
             .filter(|e| e.failed)
@@ -750,11 +868,24 @@ async fn listen_for_launch_configuration_succeed() {
     // core node.
     let expected_core_node = &started_core_node.core_node_name;
     let all_core_nodes: Vec<&str> = result
+        .node_logs
         .node_add_logs
         .iter()
         .map(|e| e.core_node.as_str())
-        .chain(result.node_build_logs.iter().map(|e| e.core_node.as_str()))
-        .chain(result.node_run_logs.iter().map(|e| e.core_node.as_str()))
+        .chain(
+            result
+                .node_logs
+                .node_build_logs
+                .iter()
+                .map(|e| e.core_node.as_str()),
+        )
+        .chain(
+            result
+                .node_logs
+                .node_run_logs
+                .iter()
+                .map(|e| e.core_node.as_str()),
+        )
         .collect();
     assert!(
         all_core_nodes
@@ -818,7 +949,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
     );
     fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
 
-    let (_goal_response, result) = send_node_launch_and_wait(
+    let result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -828,11 +959,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
     .await
     .expect("launch should complete");
 
-    assert!(
-        result.success,
-        "launch should succeed, got error: {:?}",
-        result.error_message
-    );
+    result.assert_completed();
 
     assert!(
         node_stack.contains(BRAIN_NODE, NODE_TAG),
@@ -873,7 +1000,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
     // resolved and nothing reads `nodes.json5`.
     fs::write(&launch_file_path, bad_launcher_json5).expect("failed to write launch file");
 
-    let (_goal_response, result) = send_node_launch_and_wait(
+    let result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -883,7 +1010,7 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
     .await
     .expect("launch should return a result");
 
-    assert!(!result.success, "launch should fail for invalid json5");
+    result.assert_failed(PeppyFailureKind::Rejected, "Invalid launcher config");
     assert!(
         node_stack.contains(EXISTING_NODE, NODE_TAG),
         "stack should not be mutated on invalid json5"
@@ -905,7 +1032,7 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
     let bad_launch_file = nodes_dir.path().join("not_a_file_dir");
     fs::create_dir_all(&bad_launch_file).expect("failed to create directory");
 
-    let (_goal_response, result) = send_node_launch_and_wait(
+    let result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &bad_launch_file,
@@ -915,9 +1042,9 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
     .await
     .expect("launch should return a result");
 
-    assert!(
-        !result.success,
-        "launch should fail when the launch path points at a directory"
+    result.assert_failed(
+        PeppyFailureKind::Rejected,
+        "launch file path must be a file",
     );
     assert!(
         node_stack.contains(EXISTING_NODE, NODE_TAG),
@@ -954,26 +1081,23 @@ async fn a_launcher_whose_options_fail_to_load_reports_why_in_the_feedback() {
     .expect("failed to write launch file");
 
     let mut feedback_lines: Vec<String> = Vec::new();
-    let (_goal_response, result) = send_launch_origin_and_wait_observing(
+    let result = send_launch_origin_and_wait_observing(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         LauncherOrigin::Fs(launch_file_path),
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
         vec![],
-        &mut |feedback| feedback_lines.push(feedback.line),
+        &mut |output| feedback_lines.push(output.line),
     )
     .await
     .expect("launch should return a result");
 
-    assert!(
-        !result.success,
-        "launch should fail when the launcher's options fail to load"
+    result.assert_failed(
+        PeppyFailureKind::Rejected,
+        "axis `robot` is declared by both the launcher and inline option `robot.real`",
     );
-    let error_message = result
-        .error_message
-        .clone()
-        .expect("a failed launch names its reason");
+    let error_message = result.failure().message().to_string();
     assert!(
         feedback_lines
             .iter()
@@ -1017,7 +1141,7 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
         .fs_entry(EXISTING_NODE, NODE_TAG, &existing_path)
         .write(&started_core_node.peppy_dirs);
 
-    let (_goal_response, result) = send_node_launch_and_wait(
+    let result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -1027,10 +1151,11 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
     .await
     .expect("launch should return a result");
 
-    assert!(
-        !result.success,
-        "launch should fail when a required deployment is missing"
+    result.assert_failed(
+        PeppyFailureKind::Rejected,
+        "Dependencies missing from nodes cache",
     );
+    result.assert_failed(PeppyFailureKind::Rejected, "missing_node:v1");
     assert!(
         node_stack.contains(EXISTING_NODE, NODE_TAG),
         "stack should not apply a partial plan"
@@ -1080,7 +1205,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
         .fs_entry(ROBOT_NODE_NAME, NODE_TAG, &brain_path)
         .write(&started_core_node.peppy_dirs);
 
-    let (_goal_response, result) = send_node_launch_and_wait(
+    let result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -1090,9 +1215,9 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     .await
     .expect("launch should return a result");
 
-    assert!(
-        !result.success,
-        "launch should fail due to dependency mismatch"
+    result.assert_failed(
+        PeppyFailureKind::Rejected,
+        "expects Topic `camera_stream` from `uvc_camera`:v1, but it is not exposed",
     );
     assert!(
         node_stack.contains("existing_node", NODE_TAG),
@@ -1129,7 +1254,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
         .fs_entry("node_b", NODE_TAG, &node_b_path)
         .write(&started_core_node.peppy_dirs);
 
-    let (_goal_a, result_a) = send_node_launch_and_wait(
+    let result_a = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path_a,
@@ -1138,7 +1263,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     )
     .await
     .expect("first launch should complete");
-    assert!(result_a.success, "first launch should succeed");
+    result_a.assert_completed();
     assert!(node_stack.contains("node_a", NODE_TAG));
 
     // Capture the launch-started process so we can prove the relaunch tears it
@@ -1157,7 +1282,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
         "node_a process {pid_a} should be running after the first launch"
     );
 
-    let (_goal_b, result_b) = send_node_launch_and_wait(
+    let result_b = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path_b,
@@ -1166,7 +1291,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     )
     .await
     .expect("second launch should complete");
-    assert!(result_b.success, "second launch should succeed");
+    result_b.assert_completed();
 
     assert!(
         !node_stack.contains("node_a", NODE_TAG),
@@ -1265,20 +1390,20 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         "node_b process {node_b_pid} should be running while the launch waits on health"
     );
 
-    let (_goal_response, result) = launch_task
+    let result = launch_task
         .await
         .expect("launch task panicked")
         .expect("launch should complete");
 
-    assert!(
-        !result.success,
-        "launch should fail because the node never becomes healthy"
+    // The node never becomes healthy, so its start fails, naming the
+    // default setup budget and the key.
+    result.assert_failed(
+        PeppyFailureKind::AttemptFailed,
+        "the setup did not end within 2 s, the default setup budget",
     );
-    let reason = result.error_message.clone().unwrap_or_default();
-    assert!(
-        reason.contains("the setup did not end within 2 s, the default setup budget")
-            && reason.contains("`execution.setup_timeout_secs`"),
-        "the failure names the default setup budget and the key: {reason}"
+    result.assert_failed(
+        PeppyFailureKind::AttemptFailed,
+        "`execution.setup_timeout_secs`",
     );
 
     // A failed launch leaves a clean empty stack.
@@ -1308,6 +1433,76 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         node_b_pid,
         Duration::from_secs(15),
         &format!("partial new instance {node_b_pid} should be terminated, not orphaned"),
+    )
+    .await;
+}
+
+/// A launch accepts a cancel from its client. The start in progress stops,
+/// the launch clears the stack as a launch whose start fails clears it, and
+/// the goal ends cancelled with the reason of the cancel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_launch_clears_the_stack_and_ends_cancelled() {
+    const NODE_TAG: &str = "v1";
+
+    // A setup budget that the test does not reach: only the cancel ends the
+    // start.
+    let started = start_core_node_with_default_setup_timeout(config::node::SetupTimeout::MAX).await;
+    let node_stack = started.node_stack.clone();
+    let nodes_dir = tempdir().expect("failed to create nodes dir");
+    let node_path = write_node_config(
+        nodes_dir.path(),
+        "waiting_node",
+        NODE_TAG,
+        &["sleep", "300"],
+    );
+    // The instance answers ready and never answers its health check, so its
+    // setup waits. Its shutdown request ends it at once.
+    let _ready = answer_ready_probe(&started, "waiting_node", "waiting_inst").await;
+    let (_shutdown, _) = common::install_shutdown_listener_for_instance(
+        &started,
+        "waiting_node",
+        NODE_TAG,
+        "waiting_inst",
+    )
+    .await;
+    let launcher = nodes_dir.path().join("peppy_launcher.json5");
+    fs::write(
+        &launcher,
+        r#"{ peppy_schema: "launcher/v1", deployments: [ { source: { name: "waiting_node:v1" }, instances: [ { instance_id: "waiting_inst" } ] } ] }"#,
+    )
+    .expect("failed to write launch file");
+    TestPackagesCache::new()
+        .fs_entry("waiting_node", NODE_TAG, &node_path)
+        .write(&started.peppy_dirs);
+    let goal = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        TEST_LAUNCH_ID,
+        StackBudgets::new(300, 300, 300, Some(3600)),
+    );
+
+    let handle = send_accepted_stack_goal(&started, &goal).await;
+    let pid = poll_until(
+        RESULT_TIMEOUT,
+        "the start of waiting_inst records its process",
+        || {
+            node_stack
+                .find("waiting_node", NODE_TAG)
+                .and_then(|h| h.read().instances().first().and_then(|i| i.pid()))
+        },
+    )
+    .await;
+    let end = cancel_and_follow_to_end(&started, handle, async {}).await;
+
+    assert_eq!(end.cancel_reason(), "cancelled by its caller");
+    assert_eq!(
+        node_stack.len(),
+        1,
+        "the cancelled launch clears the stack as a failed launch does"
+    );
+    wait_until_process_exits(
+        pid,
+        Duration::from_secs(15),
+        &format!("the cancel stops the start of process {pid}"),
     )
     .await;
 }
@@ -1352,7 +1547,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
         .fs_entry("failing_node", NODE_TAG, &failing_node_path)
         .write(&started_core_node.peppy_dirs);
 
-    let (_goal_response, result) = send_node_launch_and_wait(
+    let result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -1362,18 +1557,8 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
     .await
     .expect("launch should complete");
 
-    assert!(
-        !result.success,
-        "launch should fail because build_cmd fails"
-    );
-
-    let error_message = result
-        .error_message
-        .expect("error_message should be set on build_cmd failure");
-    assert!(
-        error_message.contains("failing_node:v1"),
-        "error message should contain the node name:tag, got: {error_message}"
-    );
+    // The build_cmd fails, and the failure names the node.
+    result.assert_failed(PeppyFailureKind::AttemptFailed, "failing_node:v1");
 
     // A failed launch leaves a clean empty stack. The previous
     // stack is torn down at the clear step, not rolled back.
@@ -1442,7 +1627,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
         .fs_entry(NODE_NAME, NODE_TAG, &failing_node_path)
         .write(&started_core_node.peppy_dirs);
 
-    let (_goal_response, result) = send_node_launch_and_wait(
+    let result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -1452,22 +1637,13 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     .await
     .expect("launch should complete");
 
-    assert!(
-        !result.success,
-        "launch should fail because run_cmd exits with error"
+    // The run_cmd exits with an error, and the failure names the node and
+    // the instance.
+    result.assert_failed(
+        PeppyFailureKind::AttemptFailed,
+        &format!("{NODE_NAME}:{NODE_TAG}"),
     );
-
-    let error_message = result
-        .error_message
-        .expect("error_message should be set on run_cmd failure");
-    assert!(
-        error_message.contains(&format!("{}:{}", NODE_NAME, NODE_TAG)),
-        "error message should contain the node name:tag, got: {error_message}"
-    );
-    assert!(
-        error_message.contains(INSTANCE_ID),
-        "error message should contain the instance ID, got: {error_message}"
-    );
+    result.assert_failed(PeppyFailureKind::AttemptFailed, INSTANCE_ID);
 
     // A failed launch leaves a clean empty stack. The previous
     // stack is torn down at the clear step, not rolled back.
@@ -1495,55 +1671,58 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
 
     // The node was successfully added before the start failed, so we expect one add log entry.
     assert_eq!(
-        result.node_add_logs.len(),
+        result.node_logs.node_add_logs.len(),
         1,
         "should have 1 add log entry for the node that was added before start failed"
     );
     assert!(
-        !result.node_add_logs[0].failed,
+        !result.node_logs.node_add_logs[0].failed,
         "add log entry should not be marked failed (add succeeded)"
     );
     assert_eq!(
-        result.node_add_logs[0].node_label,
+        result.node_logs.node_add_logs[0].node_label,
         format!("{}:{}", NODE_NAME, NODE_TAG)
     );
 
     // The node was successfully built before the start failed, so we expect one build log entry.
     assert_eq!(
-        result.node_build_logs.len(),
+        result.node_logs.node_build_logs.len(),
         1,
         "should have 1 build log entry for the node that was built before start failed"
     );
     assert!(
-        !result.node_build_logs[0].failed,
+        !result.node_logs.node_build_logs[0].failed,
         "build log entry should not be marked failed (build succeeded)"
     );
     assert_eq!(
-        result.node_build_logs[0].node_label,
+        result.node_logs.node_build_logs[0].node_label,
         format!("{}:{}", NODE_NAME, NODE_TAG)
     );
 
     // The failed start should produce one start log entry marked as failed.
     assert_eq!(
-        result.node_run_logs.len(),
+        result.node_logs.node_run_logs.len(),
         1,
         "should have 1 start log entry for the failed instance"
     );
     assert!(
-        result.node_run_logs[0].failed,
+        result.node_logs.node_run_logs[0].failed,
         "start log entry should be marked failed"
     );
-    assert_eq!(result.node_run_logs[0].instance_id, INSTANCE_ID);
+    assert_eq!(result.node_logs.node_run_logs[0].instance_id, INSTANCE_ID);
     assert_eq!(
-        result.node_run_logs[0].node_label,
+        result.node_logs.node_run_logs[0].node_label,
         format!("{}:{}", NODE_NAME, NODE_TAG)
     );
     assert!(
-        !result.node_run_logs[0].log_path.as_os_str().is_empty(),
+        !result.node_logs.node_run_logs[0]
+            .log_path
+            .as_os_str()
+            .is_empty(),
         "start log path should be non-empty"
     );
     assert_eq!(
-        result.node_run_logs[0].core_node, started_core_node.core_node_name,
+        result.node_logs.node_run_logs[0].core_node, started_core_node.core_node_name,
         "a failed start's log entry still names the machine holding the file"
     );
 }
@@ -1577,7 +1756,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
         .write(&started_core_node.peppy_dirs);
 
     // `printout` does not exist in the system when this is run
-    let (_, launch_result) = send_node_launch_and_wait(
+    let launch_result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -1587,10 +1766,10 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
     .await
     .expect("launch request should complete");
 
-    assert!(
-        !launch_result.success,
-        "The launch should fail, printout does not exist: {:?}",
-        launch_result.error_message
+    // `printout` does not exist, so the start of the node fails.
+    launch_result.assert_failed(
+        PeppyFailureKind::AttemptFailed,
+        "failed to spawn `printout 60`",
     );
 
     // Create a temp bin directory with a `printout` script that sleeps
@@ -1610,7 +1789,7 @@ sleep \"${1:-60}\"
     // PATH without restarting the daemon.
     let env_vars = vec![path_env_with_dir_first(bin_dir.path())];
 
-    let (_, launch_result) = send_node_launch_and_wait_with_env(
+    let launch_result = send_node_launch_and_wait_with_env(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -1622,11 +1801,7 @@ sleep \"${1:-60}\"
     .expect("launch request should complete");
 
     // Now the launch should succeed, since `printout` is available in the PATH override
-    assert!(
-        launch_result.success,
-        "The launch should succeed, got error: {:?}",
-        launch_result.error_message
-    );
+    launch_result.assert_completed();
 }
 
 /// A launcher instance's `env_vars` reach the process the daemon spawns, and a
@@ -1671,7 +1846,7 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
 
     // The caller environment carries the same key with a different value, so a
     // matching probe can only come from the instance's own declaration.
-    let (_goal_response, result) = send_node_launch_and_wait_with_env(
+    let result = send_node_launch_and_wait_with_env(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -1682,11 +1857,7 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
     .await
     .expect("launch request should complete");
 
-    assert!(
-        result.success,
-        "launch should succeed, got error: {:?}",
-        result.error_message
-    );
+    result.assert_completed();
 
     let received = poll_until(
         Duration::from_secs(10),
@@ -1747,7 +1918,7 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
         .launcher_fs_entry(LAUNCHER_NAME, &launcher_file_path)
         .write(&peppy_dirs);
 
-    let (_goal_response, result) = send_launch_origin_and_wait(
+    let result = send_launch_origin_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         LauncherOrigin::Repository {
@@ -1760,11 +1931,7 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
     .await
     .expect("launch should complete");
 
-    assert!(
-        result.success,
-        "launch should succeed, got error: {:?}",
-        result.error_message
-    );
+    result.assert_completed();
     assert!(
         node_stack.contains(ROBOT_NODE_NAME, NODE_TAG),
         "robot_brain_repo should be in stack"
@@ -1788,7 +1955,7 @@ async fn listen_for_launch_repository_miss_returns_explicit_error() {
     )
     .expect("failed to write launchers.json5");
 
-    let (_goal_response, result) = send_launch_origin_and_wait(
+    let result = send_launch_origin_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         LauncherOrigin::Repository {
@@ -1801,16 +1968,12 @@ async fn listen_for_launch_repository_miss_returns_explicit_error() {
     .await
     .expect("launch should return a result");
 
-    assert!(!result.success, "missing repository launcher should fail");
-    let err = result.error_message.unwrap_or_default();
-    assert!(
-        err.contains("launcher `definitely_missing_launcher` not found"),
-        "expected explicit not-found error, got: {err}"
+    result.assert_failed(
+        PeppyFailureKind::Rejected,
+        "launcher `definitely_missing_launcher` not found",
     );
-    assert!(
-        err.contains("launchers.json5"),
-        "error should reference the launcher cache path, got: {err}"
-    );
+    // The failure names the launcher cache path.
+    result.assert_failed(PeppyFailureKind::Rejected, "launchers.json5");
 }
 
 /// The launcher schema knows exactly one source shape, `{ name, tag }`: a
@@ -1833,7 +1996,7 @@ async fn listen_for_launch_rejects_a_path_shaped_deployment_source() {
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
 
-    let (_goal_response, result) = send_node_launch_and_wait(
+    let result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -1843,11 +2006,10 @@ async fn listen_for_launch_rejects_a_path_shaped_deployment_source() {
     .await
     .expect("launch should return a result");
 
-    assert!(!result.success, "a path-shaped source must be rejected");
-    let err = result.error_message.unwrap_or_default();
-    assert!(
-        err.contains("local"),
-        "the error should name the offending key, got: {err}"
+    // The failure names the offending key.
+    result.assert_failed(
+        PeppyFailureKind::Rejected,
+        "deployment source `local` was removed",
     );
     assert!(
         !node_stack.contains("uvc_camera", "v1"),
@@ -1963,31 +2125,25 @@ async fn waldo_generation_launch() {
     cache.write(&peppy_dirs);
 
     let mut feedback_lines: Vec<String> = Vec::new();
-    let (_goal_response, result) = send_launch_origin_and_wait_observing(
+    let result = send_launch_origin_and_wait_observing(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         LauncherOrigin::Fs(assets.join("peppy_launcher.json5")),
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
         vec![],
-        &mut |feedback| feedback_lines.push(format!("[{:?}] {}", feedback.step, feedback.line)),
+        &mut |output| feedback_lines.push(format!("[{:?}] {}", output.step, output.line)),
     )
     .await
-    .expect("the launch completes with a result of its own");
+    .expect("the launch ends");
 
-    assert!(
-        !result.success,
-        "the fixture's build_cmd fails on purpose, so the launch fails"
+    // The fixture's build_cmd fails on purpose, so the launch fails at the
+    // build, as an ordinary build failure.
+    result.assert_failed(
+        PeppyFailureKind::AttemptFailed,
+        "failed to build node waldo:v1",
     );
-    let error_message = result
-        .error_message
-        .clone()
-        .expect("a failed launch names its reason");
-    assert!(
-        error_message.contains("failed to build node waldo:v1")
-            && error_message.contains("build_cmd"),
-        "the launch fails at the build, as an ordinary build failure: {error_message}"
-    );
+    result.assert_failed(PeppyFailureKind::AttemptFailed, "build_cmd");
 
     let feedback = feedback_lines.join("\n");
     assert!(
@@ -2030,7 +2186,7 @@ async fn waldo_generation_launch() {
 async fn launch_scripted_node(
     build_script: &str,
     run_script: &str,
-) -> (LaunchResult, Vec<log_export::LogRecord>, StartedCoreNode) {
+) -> (StackGoalEnd, Vec<log_export::LogRecord>, StartedCoreNode) {
     launch_scripted_node_above(None, build_script, run_script).await
 }
 
@@ -2040,7 +2196,7 @@ async fn launch_scripted_node_above(
     min_severity: Option<daemon_config::peppy_config::OtlpMinSeverity>,
     build_script: &str,
     run_script: &str,
-) -> (LaunchResult, Vec<log_export::LogRecord>, StartedCoreNode) {
+) -> (StackGoalEnd, Vec<log_export::LogRecord>, StartedCoreNode) {
     let (started_core_node, mut exported) =
         common::start_core_node_with_log_export(min_severity).await;
     let nodes_dir = tempdir().expect("failed to create nodes dir");
@@ -2064,7 +2220,7 @@ async fn launch_scripted_node_above(
         .fs_entry("scripted_node", "v1", &node_path)
         .write(&started_core_node.peppy_dirs);
 
-    let (_goal_response, result) = send_node_launch_and_wait(
+    let result = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &launch_file_path,
@@ -2104,7 +2260,7 @@ const PRINT_OUTPUT_AND_FAIL: &str = "printf 'the-node-%s\\n' printed-this-line; 
 /// The launch log holds `SCRIPT_OUTPUT`, which it relayed, and exports none
 /// of it; the log of kind `owner` exports it once, for the node and the launch.
 fn assert_output_is_exported_by_its_own_log(
-    result: &LaunchResult,
+    result: &StackGoalEnd,
     records: &[log_export::LogRecord],
     owner: log_export::LogKind,
 ) {
@@ -2142,7 +2298,11 @@ async fn a_launch_exports_its_own_lines_and_relays_build_output_to_its_file() {
 
     let (result, records, _core_node) =
         launch_scripted_node(PRINT_OUTPUT_AND_FAIL, "sleep 60").await;
-    assert!(!result.success, "the build fails, so the launch fails");
+    // The build fails, so the launch fails.
+    result.assert_failed(
+        PeppyFailureKind::AttemptFailed,
+        "failed to build node scripted_node:v1",
+    );
     assert_output_is_exported_by_its_own_log(&result, &records, LogKind::Build);
 
     let launch_records: Vec<&LogRecord> = records
@@ -2183,7 +2343,11 @@ async fn a_launch_exports_its_own_lines_and_relays_build_output_to_its_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_launch_relays_run_output_to_its_file() {
     let (result, records, _core_node) = launch_scripted_node("true", PRINT_OUTPUT_AND_FAIL).await;
-    assert!(!result.success, "the node exits, so the launch fails");
+    // The node exits, so the launch fails.
+    result.assert_failed(
+        PeppyFailureKind::AttemptFailed,
+        "failed to start node scripted_node:v1 instance s1",
+    );
     assert_output_is_exported_by_its_own_log(&result, &records, log_export::LogKind::Run);
     let run_record = records
         .iter()
@@ -2212,7 +2376,11 @@ async fn each_log_of_a_launch_exports_its_own_entries_once() {
         "printf 'run-%s\\n' line-one; printf 'ERROR run-%s\\n' line-two; exit 3",
     )
     .await;
-    assert!(!result.success, "the node exits, so the launch fails");
+    // The node exits, so the launch fails.
+    result.assert_failed(
+        PeppyFailureKind::AttemptFailed,
+        "failed to start node scripted_node:v1 instance s1",
+    );
 
     let mut bodies_by_file: BTreeMap<&std::path::Path, Vec<&str>> = BTreeMap::new();
     for record in &records {

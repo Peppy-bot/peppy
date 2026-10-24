@@ -18,7 +18,9 @@ use super::super::launch::{
     federated,
 };
 use super::super::state::{ActiveLaunch, StackCopy, copy_in_start_order};
-use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
+use super::super::{
+    ChangeEnd, ChangeResult, STACK_QUERY_TIMEOUT, attempt_failed, peer_failure, rejected,
+};
 use super::{
     change_active_launch,
     changed_slots::{Change, changed_slots, deliver_sets, grow_or_restore, holds_any, whole_sets},
@@ -26,30 +28,37 @@ use super::{
     plan::{ResolvedJoin, join_dependencies, selected_instances},
     remove::stop_copy_on_live_machines,
 };
+use crate::services::action_loop::WorkStop;
 use crate::services::node::common::panic_message;
+use crate::services::response::rephrased;
 use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry,
-    NodeRunLogEntry, StackJoinGoal,
+    NodeLogs, NodeRunLogEntry, StackJoinGoal,
 };
 use daemon_config::launcher::{CopyMembership, ScopeCheck};
 use futures::FutureExt;
 use std::{collections::HashMap, panic::AssertUnwindSafe};
 
 /// Adds the copy `goal` names to the running stack and records it with the
-/// launch, whatever the outcome: a failed join rolls back to the record it
-/// started from.
+/// launch, whatever the outcome: a failed join, and a join a cancel stopped,
+/// roll back to the record it started from.
 pub(in crate::services::stack) async fn join(
     goal: StackJoinGoal,
     ctx: StackChangeContext,
-) -> LaunchResult {
+) -> ChangeEnd {
     let mut logs = JoinLogs::default();
-    let result = change_active_launch(&ctx, async |active| {
+    let outcome = change_active_launch(&ctx, async |active| {
         join_inner(&goal, active, &ctx, &mut logs).boxed().await
     })
     .await;
-    result
-        .with_node_logs(logs.add, logs.build, logs.run)
-        .with_instance_endpoints(logs.endpoints)
+    ChangeEnd {
+        node_logs: NodeLogs {
+            node_add_logs: logs.add,
+            node_build_logs: logs.build,
+            node_run_logs: logs.run,
+        },
+        outcome: outcome.map(|()| LaunchResult::new(logs.endpoints)),
+    }
 }
 
 /// What the join's node phases produced: the log of every add, build and
@@ -116,23 +125,27 @@ async fn join_inner(
         copy,
         resolved,
     } = ResolvedJoin::resolve(ctx, active, goal).await?;
-    let grown_slots = changed_slots(&copy, &planned, Change::Join)?;
+    let grown_slots = changed_slots(&copy, &planned, Change::Join).map_err(rejected)?;
     let live = live_machines(ctx, &placements).await?;
     check_hosts_live(&copy.name, &grown_slots, &placements, &live)?;
     // A join follows the domains the stack already publishes: its known
     // lifetimes go in, so a copy binding to a running simulation reads the
     // clock that simulation is already supplying.
-    let (clocks, incarnations) = plan_clocks(&combined, &placements, &active.clocks)?;
+    let (clocks, incarnations) =
+        plan_clocks(&combined, &placements, &active.clocks).map_err(rejected)?;
     let copies = CopyMembership::of(active.copy_records().chain([&copy]));
-    check_planned_daemon_scopes(&active.prepared, &planned, &copies, ScopeCheck::Join)?;
+    check_planned_daemon_scopes(&active.prepared, &planned, &copies, ScopeCheck::Join)
+        .map_err(rejected)?;
     let ValidatedPlan {
         ordered,
         slot_bindings: bindings,
         pairings,
         observations,
-    } = validate_and_order_dependencies(ctx, &planned, &placements, &copies, &clocks).await?;
+    } = validate_and_order_dependencies(ctx, &planned, &placements, &copies, &clocks)
+        .await
+        .map_err(rejected)?;
     let grown_sets = whole_sets(&grown_slots, &bindings, &observations);
-    let watchers = lifecycle_watchers(&observations, &placements)?;
+    let watchers = lifecycle_watchers(&observations, &placements).map_err(rejected)?;
     // The instances supplying the clocks this join reads take part in it: a
     // copy cannot bind to a domain whose publisher is not there to supply it.
     let clock_publishers: Vec<config::runtime::Name> = clocks
@@ -147,6 +160,9 @@ async fn join_inner(
         required_ids.contains(instance.instance_id.as_str())
             || holds_any(&grown_slots, &instance.instance_id)
     });
+    // A cancel before the reservations stops the join while it has cost
+    // nothing.
+    ctx.stop_if_cancelled()?;
     let change =
         preflight_change(ctx, &active.launch_id, &touched, &placements, Some(&live)).await?;
     let participants = change.reserved.core_nodes();
@@ -187,6 +203,9 @@ async fn join_inner(
             },
         )
         .await?;
+        // The last check before the first step that changes a machine: a
+        // cancel here still leaves every stack as it was.
+        ctx.stop_if_cancelled()?;
         prepare_local_container_mounts(
             ctx,
             hosts_container_nodes(delta.values(), &placements, &ctx.bound_core_node),
@@ -201,7 +220,8 @@ async fn join_inner(
                 LocalMounts::WholeStack
             },
         )
-        .await?;
+        .await
+        .map_err(attempt_failed)?;
         let planned_nodes = delta
             .values()
             .flat_map(|item| {
@@ -242,8 +262,9 @@ async fn join_inner(
             // the slice and re-points the rest.
             scope.fresh_hosts = refusal.holders_among(&scope.fresh_hosts);
             scope.participants = refusal.holders_among(&scope.participants);
-            refusal.reason
+            refusal.failure
         })?;
+        ctx.stop_if_cancelled()?;
         active.flat = combined;
         active.planned = planned;
         active.resolved.extend(resolved);
@@ -301,16 +322,26 @@ async fn join_inner(
             &copy,
         )
         .await
+        .map_err(|reason| attempt_failed(reason).into())
     };
     let outcome: ChangeResult<()> = AssertUnwindSafe(operation)
         .catch_unwind()
         .await
-        .unwrap_or_else(|panic| Err(format!("join failed: {}", panic_message(&*panic))));
+        .unwrap_or_else(|panic| {
+            Err(attempt_failed(format!("join failed: {}", panic_message(&*panic))).into())
+        });
     let outcome = match (outcome, scope) {
         (Err(error), Some(scope)) => {
             match rollback_join(ctx, &scope, stage, logs, previous, active).await {
                 Ok(()) => Err(error),
-                Err(cleanup) => Err(format!("{error}; {cleanup}")),
+                Err(cleanup) => {
+                    let message = format!(
+                        "{}; {}",
+                        error.failure().message(),
+                        cleanup.failure().message()
+                    );
+                    Err(error.rephrased(message))
+                }
             }
         }
         (other, _) => other,
@@ -390,14 +421,15 @@ async fn rollback_join(
             .await;
             federated::clear_participant_slices(ctx, &scope.fresh_hosts).await;
         }
-        Ok::<_, String>(())
+        Ok::<_, WorkStop>(())
     }
     .await;
     cleanup.map_err(|error| {
-        format!(
-            "cleanup failed: {error}. The copy remains listed; retry peppy stack remove {}",
+        error.rephrased(format!(
+            "cleanup failed: {}. The copy remains listed; retry peppy stack remove {}",
+            error.failure().message(),
             scope.name
-        )
+        ))
     })?;
     *active = previous;
     Ok(())
@@ -455,7 +487,9 @@ async fn remove_node(
     if hosted.core_node.as_str() == ctx.bound_core_node {
         ctx.node_stack
             .remove_config(&hosted.node.name, &hosted.node.tag)
-            .map_err(|error| format!("cannot remove {}: {error}", hosted.node.label()))?;
+            .map_err(|error| {
+                attempt_failed(format!("cannot remove {}: {error}", hosted.node.label()))
+            })?;
         return Ok(());
     }
     let response = peppylib::core_node::transport::poll(
@@ -467,25 +501,30 @@ async fn remove_node(
         hosted.core_node.as_str(),
         STACK_QUERY_TIMEOUT,
     )
-    .await
-    .map_err(|error| {
-        format!(
-            "cannot remove {} from `{}`: {error}",
-            hosted.node.label(),
-            hosted.core_node
-        )
-    })?;
-    if response.success {
+    .await;
+    let Err(error) = response else {
         return Ok(());
-    }
-    Err(format!(
-        "`{}` refused to remove {}: {}",
-        hosted.core_node,
-        hosted.node.label(),
-        response
-            .error_message
-            .unwrap_or_else(|| String::from("no reason given"))
-    ))
+    };
+    let failure = match error.failure() {
+        Some(refusal) => rephrased(
+            refusal,
+            format!(
+                "`{}` refused to remove {}: {}",
+                hosted.core_node,
+                hosted.node.label(),
+                refusal.message()
+            ),
+        ),
+        None => peer_failure(
+            &error,
+            format!(
+                "cannot remove {} from `{}`: {error}",
+                hosted.node.label(),
+                hosted.core_node
+            ),
+        ),
+    };
+    Err(failure.into())
 }
 
 #[cfg(test)]

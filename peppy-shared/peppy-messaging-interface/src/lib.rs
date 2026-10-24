@@ -15,6 +15,7 @@
 mod adapters;
 mod declared;
 mod error;
+mod failure;
 mod probe;
 mod router_id;
 mod subscription_buffer;
@@ -35,6 +36,7 @@ pub use config::namespace::Namespace;
 /// here so pmi's public API is nameable through pmi alone.
 pub use config::runtime::ProducerRef;
 pub use error::Error as PeppyMessagingInterfaceError;
+pub use failure::{Failure, FailureDecodeError};
 pub use probe::{MAX_PROBE_REPLY_SIZE, build_sized_probe_request};
 /// The stable transport identity every peppy-rendered router config pins.
 /// Ungated: it is pure lexical parsing, so a caller can mint and persist one
@@ -45,11 +47,11 @@ pub use router_id::RouterId;
 // (reached only through `ResponseToken`'s methods), so naming them directly is
 // not part of the crate's public surface.
 pub use types::{
-    ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer, IncomingRequest,
-    LivelinessEvent, LivelinessToken, LivelinessWatch, Messenger, MessengerAdapter,
-    MessengerBackend, MessengerPublisher, Payload, PresenceScope, PublisherQoS, ReplyStream,
-    ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,
-    Subscription, TopicBuffer, TopicMessage,
+    ClientPresence, CoreNodePresence, CoreNodePresenceList, FeedbackBound, FeedbackBuffer,
+    FeedbackOverflow, IncomingRequest, LivelinessEvent, LivelinessProbe, LivelinessToken,
+    LivelinessWatch, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher, Payload,
+    PresenceScope, PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable, ServiceReply,
+    SubscriberBufferSizes, SubscriberQoS, Subscription, TopicBuffer, TopicMessage,
 };
 /// Channel-address template helpers (`pmi::templates`) that render the zenoh
 /// key-expression grammar with caller-supplied identity slots. Consumed by

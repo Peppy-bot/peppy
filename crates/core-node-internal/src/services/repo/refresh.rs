@@ -1,5 +1,8 @@
 use crate::Result;
-use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use crate::services::action_loop::{
+    GoalEnding, GoalHandler, accept_goal, expose_daemon_action, invalid_payload, own_cancel_reason,
+    refuse_goal, run_action_loop,
+};
 use crate::services::node::cache as node_cache;
 use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
@@ -18,15 +21,15 @@ use crate::services::repo::{
 };
 use crate::source_url::SourceUrl;
 use core_node_api::ActionId;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, ReadRef, RepoItemKind, RepoRefreshFeedback,
     RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource, RepoSourceKind,
 };
-use core_node_api::names;
 use daemon_config::consts::{PeppyDirs, peppy_build};
 use daemon_config::repository::GitCommit;
-use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{ConcurrentAction, PendingGoal};
+use peppylib::messaging::{Failure, PendingGoal};
+use peppylib::runtime::CancellationToken;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
 use serde_json::Value;
@@ -44,13 +47,12 @@ pub async fn listen_for_repo_refresh(
     node_name: &str,
     peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ConcurrentAction::expose(
+    let action = expose_daemon_action(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ActionId::RepoRefresh.name(),
-        true,
+        node_name,
+        ActionId::RepoRefresh,
     )
     .await?;
 
@@ -73,25 +75,14 @@ struct RepoRefreshGoalHandler {
 fn encode_refresh_accepted() -> PeppyResult<Payload> {
     encode_response_or_err(
         ActionId::RepoRefresh.name(),
-        RepoRefreshGoalResponse::accepted().encode(),
-    )
-}
-
-fn encode_refresh_rejected(reason: impl Into<String>) -> PeppyResult<Payload> {
-    encode_response_or_err(
-        ActionId::RepoRefresh.name(),
-        RepoRefreshGoalResponse::rejected(reason).encode(),
+        RepoRefreshGoalResponse::new().encode(),
     )
 }
 
 impl GoalHandler for RepoRefreshGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
         if let Err(e) = RepoRefreshGoal::decode(pending.request_bytes()) {
-            reject_goal(
-                pending,
-                encode_refresh_rejected(format!("invalid goal payload: {e}")),
-            )
-            .await;
+            refuse_goal(pending, invalid_payload(e)).await;
             return;
         }
 
@@ -99,9 +90,12 @@ impl GoalHandler for RepoRefreshGoalHandler {
             // `repo_refresh` never forces, so nothing is ever superseded here.
             Admission::Admitted { generation, .. } => generation,
             Admission::AlreadyRunning { .. } => {
-                reject_goal(
+                refuse_goal(
                     pending,
-                    encode_refresh_rejected("a repo refresh operation is already in progress"),
+                    Failure::new(
+                        DaemonFailureKind::Busy,
+                        "a repo refresh operation is already in progress",
+                    ),
                 )
                 .await;
                 return;
@@ -120,8 +114,8 @@ impl GoalHandler for RepoRefreshGoalHandler {
         let gate_for_task = self.gate.clone();
 
         tokio::spawn(async move {
-            // Frees the gate slot on every exit: explicitly before completion on
-            // the normal path (via `release_then_complete` below), or on unwind
+            // Frees the gate slot on every exit: explicitly before the end on
+            // the normal path (via `release_then_end` below), or on unwind
             // for a panic. A no-op if a later goal already took over.
             let slot = gate_for_task.into_slot_guard(generation);
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RepoRefreshFeedback>();
@@ -134,6 +128,11 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 }
             });
 
+            // A cancel of the goal's caller, or of its gone sender, stops the
+            // refresh between two of its steps: it reads no other repository
+            // and publishes nothing, as a refresh that fails. The refresh runs
+            // on a blocking thread, which reads the cancel of the goal
+            // itself.
             let refreshed = refresh_and_write_caches(
                 &peppy_dirs,
                 peppy_build(),
@@ -142,25 +141,27 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 move |feedback| {
                     let _ = tx.send(feedback);
                 },
+                Some(&goal_ctx.cancellation()),
             )
             .await;
 
-            let result = match refreshed {
-                Ok(refreshed) => refresh_result(&refreshed),
+            let ending = match refreshed {
+                Ok(refreshed) => GoalEnding::of(Ok(refresh_result(&refreshed).encode()), None),
+                Err(crate::Error::RefreshCancelled) => {
+                    GoalEnding::Cancelled(own_cancel_reason(&goal_ctx))
+                }
                 Err(e) => {
                     warn!("Repo refresh failed: {}", e);
-                    RepoRefreshResult::failure(e.to_string())
+                    GoalEnding::Failed(e.into_failure())
                 }
             };
 
-            // Flush all pending feedbacks before completing: the end-of-stream
-            // sentinel that `complete` emits must not race ahead of the final
+            // Flush all pending feedbacks before ending: the end-of-stream
+            // sentinel that the end emits must not race ahead of the final
             // feedback lines.
             let _ = drain.await;
 
-            if let Ok(payload) = result.encode() {
-                slot.release_then_complete(&goal_ctx, payload).await;
-            }
+            slot.release_then_end(&goal_ctx, ending).await;
         });
     }
 }
@@ -182,17 +183,11 @@ fn refresh_result(refreshed: &RefreshedRepos) -> RepoRefreshResult {
     let contracts = count_unique(&items.contracts);
     let pairings = count_unique(&items.pairings);
     let mcp_exposures = count_unique(&items.mcp_exposures);
+    let result = RepoRefreshResult::new(nodes, launchers, contracts, pairings, mcp_exposures);
     if refreshed.failures.is_empty() {
-        return RepoRefreshResult::success(nodes, launchers, contracts, pairings, mcp_exposures);
+        return result;
     }
-    RepoRefreshResult::success_with_failure_report(
-        nodes,
-        launchers,
-        contracts,
-        pairings,
-        mcp_exposures,
-        failure_report(&refreshed.failures),
-    )
+    result.with_read_failure_report(failure_report(&refreshed.failures))
 }
 
 /// One message naming every repository that failed and why, so a user
@@ -224,6 +219,7 @@ pub(crate) async fn reindex_after_change(peppy_dirs: &PeppyDirs) -> Option<Strin
         RefreshScope::Every,
         SystemTime::now(),
         |_| {},
+        None,
     )
     .await;
     match refreshed {
@@ -244,21 +240,51 @@ pub(crate) async fn reindex_after_change(peppy_dirs: &PeppyDirs) -> Option<Strin
 /// take effect, and that the ones that did not keep the entries they last
 /// published. Caches store every entry so that `repo list` can display
 /// every source and users can pick a specific `sha256`.
+///
+/// `cancel`, when there is one, stops the refresh between two of its
+/// steps: once it is cancelled before the caches are written, the refresh
+/// reads no other repository, publishes nothing, and gives
+/// [`Error::RefreshCancelled`](crate::Error::RefreshCancelled).
 pub(crate) async fn refresh_and_write_caches(
     peppy_dirs: &PeppyDirs,
     build: PeppyBuild,
     scope: RefreshScope,
     now: SystemTime,
     mut on_feedback: impl FnMut(RepoRefreshFeedback) + Send + 'static,
+    cancel: Option<&CancellationToken>,
 ) -> Result<RefreshedRepos> {
     let peppy_dirs = peppy_dirs.clone();
+    let cancel = cancel.cloned();
     tokio::task::spawn_blocking(move || {
         let _guard = crate::services::repo::refresh_lock().lock();
-        let refreshed = process_refresh(&peppy_dirs, &build, &scope, now, &mut on_feedback)?;
+        let refreshed = process_refresh(
+            &peppy_dirs,
+            &build,
+            &scope,
+            now,
+            &mut on_feedback,
+            cancel.as_ref(),
+        )?;
+        stop_if_cancelled(cancel.as_ref())?;
         write_all_caches(&peppy_dirs, &refreshed)?;
         Ok(refreshed)
     })
     .await?
+}
+
+/// Stops a refresh with [`Error::RefreshCancelled`](crate::Error::RefreshCancelled)
+/// once `cancel` is cancelled.
+fn stop_if_cancelled(cancel: Option<&CancellationToken>) -> Result<()> {
+    if is_cancelled(cancel) {
+        return Err(crate::Error::RefreshCancelled);
+    }
+    Ok(())
+}
+
+/// Whether `cancel` is cancelled. A refresh with no cancel is never
+/// cancelled.
+fn is_cancelled(cancel: Option<&CancellationToken>) -> bool {
+    cancel.is_some_and(CancellationToken::is_cancelled)
 }
 
 /// The repositories on `@{peppy-release}` that this machine last read at
@@ -363,6 +389,7 @@ pub(crate) async fn refresh_release_repositories_for_this_version(
         RefreshScope::Only(ids.clone()),
         now,
         |_| {},
+        None,
     )
     .await?;
     Ok(VersionRefresh::Refreshed {
@@ -379,12 +406,13 @@ pub(crate) struct ExcludedRepo {
     pub(crate) identity: String,
 }
 
-/// Why one repository contributed nothing new to a refresh.
+/// How the read of one repository failed, so that it contributed nothing
+/// new to a refresh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RepoFailureKind {
+pub(crate) enum RepoReadFailure {
     /// Could not be read at all: the clone failed, the configured path is
     /// gone, the configuration entry is unrecognized. Kept distinct from
-    /// [`RepoFailureKind::Conflict`] because an outage is not a content
+    /// [`RepoReadFailure::Conflict`] because an outage is not a content
     /// bug, and reporting one as the other sends the user to the wrong
     /// place entirely.
     Unreachable,
@@ -394,22 +422,22 @@ pub(crate) enum RepoFailureKind {
     Conflict,
 }
 
-impl RepoFailureKind {
+impl RepoReadFailure {
     /// Stable machine-readable value, recorded in `repo_status.json5` and
     /// put on the wire. Kept separate from [`Self::describe`] so the
     /// prose can be reworded without changing what tools match on.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            RepoFailureKind::Unreachable => "unreachable",
-            RepoFailureKind::Conflict => "conflict",
+            RepoReadFailure::Unreachable => "unreachable",
+            RepoReadFailure::Conflict => "conflict",
         }
     }
 
     /// Predicate that reads as a sentence about the repository.
     fn describe(self) -> &'static str {
         match self {
-            RepoFailureKind::Unreachable => "could not be read",
-            RepoFailureKind::Conflict => "contradicts itself",
+            RepoReadFailure::Unreachable => "could not be read",
+            RepoReadFailure::Conflict => "contradicts itself",
         }
     }
 }
@@ -421,7 +449,7 @@ pub(crate) struct RepoFailure {
     pub(crate) id: u64,
     /// Human-facing label (path for fs, `url (ref: r)` for git).
     pub(crate) label: String,
-    pub(crate) kind: RepoFailureKind,
+    pub(crate) read_failure: RepoReadFailure,
     pub(crate) detail: String,
     /// Previous entries kept in place for this repository, across all
     /// five kinds. Zero on a machine that has never read it successfully.
@@ -435,8 +463,8 @@ impl std::fmt::Display for RepoFailure {
             "repository {} ({}) {} [{}]: {}",
             self.id,
             self.label,
-            self.kind.describe(),
-            self.kind.as_str(),
+            self.read_failure.describe(),
+            self.read_failure.as_str(),
             self.detail
         )?;
         match self.retained {
@@ -631,12 +659,18 @@ impl RefreshScope {
 /// reads yield is merged in id order when every read has ended, so the
 /// priority of an entry, the discovery feedback, `failures` and `statuses`
 /// never depend on which read ends first.
+///
+/// `cancel`, when there is one, is read before the reads, before each read
+/// starts and after the reads end: once it is cancelled, a read that runs
+/// ends first, no other one starts, and the refresh gives
+/// [`Error::RefreshCancelled`](crate::Error::RefreshCancelled).
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
     build: &PeppyBuild,
     scope: &RefreshScope,
     now: SystemTime,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
+    cancel: Option<&CancellationToken>,
 ) -> Result<RefreshedRepos> {
     let (repos, exclusions) = {
         let _guard = crate::services::repo::repos_file_lock().lock();
@@ -679,13 +713,24 @@ pub(crate) fn process_refresh(
         .iter()
         .filter_map(PlannedRepo::source_to_read)
         .collect();
-    let mut reads = map_in_parallel(
+    stop_if_cancelled(cancel)?;
+    // A read that the cancel comes before does not start, and gives `None`.
+    let reads: Option<Vec<RepoRead>> = map_in_parallel(
         sources_to_read,
         MAX_PARALLEL_READS,
         on_feedback,
-        |source, on_feedback| read_repo(source, &exclusions, build, peppy_dirs, on_feedback),
+        |source, on_feedback| {
+            (!is_cancelled(cancel))
+                .then(|| read_repo(source, &exclusions, build, peppy_dirs, on_feedback))
+        },
     )
-    .into_iter();
+    .into_iter()
+    .collect();
+    let Some(reads) = reads else {
+        return Err(crate::Error::RefreshCancelled);
+    };
+    stop_if_cancelled(cancel)?;
+    let mut reads = reads.into_iter();
 
     for repo in planned {
         let (id, identity, source) = match repo {
@@ -693,7 +738,7 @@ pub(crate) fn process_refresh(
                 failures.push(RepoFailure {
                     id,
                     label,
-                    kind: RepoFailureKind::Unreachable,
+                    read_failure: RepoReadFailure::Unreachable,
                     detail,
                     retained: 0,
                 });
@@ -729,12 +774,12 @@ pub(crate) fn process_refresh(
                 });
                 items
             }
-            Err((kind, detail)) => {
+            Err((read_failure, detail)) => {
                 let retained = retained_items(&previous, &owners, id);
                 let failure = RepoFailure {
                     id,
                     label: shown_label(&source, build),
-                    kind,
+                    read_failure,
                     detail,
                     retained: retained.len(),
                 };
@@ -748,7 +793,7 @@ pub(crate) fn process_refresh(
                     last_read_unix_secs: previous_status.and_then(|s| s.last_read_unix_secs),
                     read_ref: previous_status.and_then(|s| s.read_ref.clone()),
                     last_failure: Some(RepoStatusFailure {
-                        kind: failure.kind.as_str().to_owned(),
+                        read_failure: failure.read_failure.as_str().to_owned(),
                         message: failure.detail.clone(),
                         unix_secs: stamp,
                     }),
@@ -848,7 +893,7 @@ const MAX_PARALLEL_READS: NonZeroUsize = NonZeroUsize::new(8).expect("8 is not z
 /// What reading one repository yields: the entries it publishes or why it
 /// gives none, and for a git repository the ref it was read at.
 struct RepoRead {
-    items: std::result::Result<RepoItems, (RepoFailureKind, String)>,
+    items: std::result::Result<RepoItems, (RepoReadFailure, String)>,
     read_ref: Option<ReadRef>,
 }
 
@@ -883,7 +928,7 @@ fn read_repo(
     // describe it both fall back to their previous entries; only the
     // wording differs, so an outage never reads as a content bug.
     let items = read.and_then(|items| {
-        build_cache_entries(items).map_err(|detail| (RepoFailureKind::Conflict, detail))
+        build_cache_entries(items).map_err(|detail| (RepoReadFailure::Conflict, detail))
     });
     RepoRead { items, read_ref }
 }
@@ -975,7 +1020,7 @@ fn count_unique<E: RepoCacheEntry>(entries: &[E]) -> u32 {
 }
 
 /// What one repository read yields, or why it failed.
-type ReadResult = std::result::Result<Vec<PublishedItem>, (RepoFailureKind, String)>;
+type ReadResult = std::result::Result<Vec<PublishedItem>, (RepoReadFailure, String)>;
 
 /// Reads a repository that lives on this machine, minus the subtrees this
 /// machine is configured to stay out of.
@@ -986,7 +1031,7 @@ fn read_fs_repo(
 ) -> ReadResult {
     if !root.exists() {
         return Err((
-            RepoFailureKind::Unreachable,
+            RepoReadFailure::Unreachable,
             format!("path does not exist: {}", root.display()),
         ));
     }
@@ -1017,7 +1062,7 @@ fn read_git_repo(
     peppy_dirs: &PeppyDirs,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) -> ReadResult {
-    let unreachable = |detail: String| (RepoFailureKind::Unreachable, detail);
+    let unreachable = |detail: String| (RepoReadFailure::Unreachable, detail);
 
     let tmp_dir = peppy_dirs.tmp_dir();
     std::fs::create_dir_all(&tmp_dir)
@@ -1354,6 +1399,7 @@ mod tests {
             &RefreshScope::Every,
             now,
             on_feedback,
+            None,
         )
     }
 
@@ -1441,7 +1487,7 @@ mod tests {
         assert_eq!(refreshed.failures.len(), 1, "only the broken repo failed");
         let failure = &refreshed.failures[0];
         assert_eq!(failure.id, 2);
-        assert_eq!(failure.kind, RepoFailureKind::Conflict);
+        assert_eq!(failure.read_failure, RepoReadFailure::Conflict);
         assert_eq!(failure.retained, 1, "one node kept from the last read");
         assert!(failure.detail.contains("gone:v1"), "{}", failure.detail);
         assert!(
@@ -1470,6 +1516,55 @@ mod tests {
             .expect("the re-index published the node cache");
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].node_name, "first");
+    }
+
+    /// A refresh whose cancel came before its reads reads no repository and
+    /// publishes nothing: the caches keep what they held, here none.
+    #[tokio::test]
+    async fn a_refresh_cancelled_before_its_reads_reads_nothing_and_publishes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let repo = tmp.path().join("repo");
+        write_node_json5(&repo.join("first"), "first", "v1");
+        write_repos(&peppy_dirs, &fs_repos(&[(1, &repo)]));
+        publish_repo(&repo);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let mut feedback = Vec::new();
+        let read = process_refresh(
+            &peppy_dirs,
+            &peppy_build(),
+            &RefreshScope::Every,
+            TEST_NOW,
+            &mut |line| feedback.push(line),
+            Some(&cancel),
+        );
+        assert!(
+            matches!(read, Err(crate::Error::RefreshCancelled)),
+            "the cancel stops the refresh"
+        );
+        assert!(feedback.is_empty(), "no repository is read: {feedback:?}");
+
+        let published = refresh_and_write_caches(
+            &peppy_dirs,
+            peppy_build(),
+            RefreshScope::Every,
+            TEST_NOW,
+            |_| {},
+            Some(&cancel),
+        )
+        .await;
+        assert!(
+            matches!(published, Err(crate::Error::RefreshCancelled)),
+            "the cancel stops the refresh"
+        );
+        assert!(
+            crate::services::repo::cache::load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
+                .unwrap_or_default()
+                .is_empty(),
+            "a cancelled refresh publishes no cache"
+        );
     }
 
     /// A re-index that cannot read the configuration at all reports it:
@@ -1504,14 +1599,14 @@ mod tests {
         let unreachable = RepoFailure {
             id: 1002,
             label: "https://example.com/hub.git (ref: main)".to_owned(),
-            kind: RepoFailureKind::Unreachable,
+            read_failure: RepoReadFailure::Unreachable,
             detail: "failed to connect".to_owned(),
             retained: 8,
         };
         let conflict = RepoFailure {
             id: 1000,
             label: "/home/user/workspace".to_owned(),
-            kind: RepoFailureKind::Conflict,
+            read_failure: RepoReadFailure::Conflict,
             detail: "2 node manifests claim `a:v1`".to_owned(),
             retained: 0,
         };
@@ -1570,7 +1665,7 @@ mod tests {
         );
         assert!(status.is_retained());
         let failure = status.last_failure.as_ref().expect("failure recorded");
-        assert_eq!(failure.kind, "conflict");
+        assert_eq!(failure.read_failure, "conflict");
         assert_eq!(failure.unix_secs, 99_000, "the failure itself is recent");
     }
 
@@ -1618,7 +1713,10 @@ mod tests {
             "the healthy repository updated"
         );
         assert_eq!(refreshed.failures.len(), 1);
-        assert_eq!(refreshed.failures[0].kind, RepoFailureKind::Unreachable);
+        assert_eq!(
+            refreshed.failures[0].read_failure,
+            RepoReadFailure::Unreachable
+        );
         assert_eq!(
             refreshed.failures[0].retained, 0,
             "nothing was ever read from it"
@@ -1638,7 +1736,10 @@ mod tests {
         let refreshed = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
 
         assert_eq!(refreshed.failures.len(), 1);
-        assert_eq!(refreshed.failures[0].kind, RepoFailureKind::Unreachable);
+        assert_eq!(
+            refreshed.failures[0].read_failure,
+            RepoReadFailure::Unreachable
+        );
     }
 
     /// Several failures across several repositories come back in one
@@ -1657,13 +1758,16 @@ mod tests {
 
         let refreshed = refresh_publishing(&peppy_dirs, &[], TEST_NOW, &mut |_| {}).unwrap();
 
-        let seen: Vec<(u64, RepoFailureKind)> =
-            refreshed.failures.iter().map(|f| (f.id, f.kind)).collect();
+        let seen: Vec<(u64, RepoReadFailure)> = refreshed
+            .failures
+            .iter()
+            .map(|f| (f.id, f.read_failure))
+            .collect();
         assert_eq!(
             seen,
             vec![
-                (5, RepoFailureKind::Unreachable),
-                (9, RepoFailureKind::Conflict)
+                (5, RepoReadFailure::Unreachable),
+                (9, RepoReadFailure::Conflict)
             ]
         );
 
@@ -1707,13 +1811,16 @@ mod tests {
         })
         .unwrap();
 
-        let failures: Vec<(u64, RepoFailureKind)> =
-            refreshed.failures.iter().map(|f| (f.id, f.kind)).collect();
+        let failures: Vec<(u64, RepoReadFailure)> = refreshed
+            .failures
+            .iter()
+            .map(|f| (f.id, f.read_failure))
+            .collect();
         assert_eq!(
             failures,
             vec![
-                (2, RepoFailureKind::Unreachable),
-                (4, RepoFailureKind::Unreachable)
+                (2, RepoReadFailure::Unreachable),
+                (4, RepoReadFailure::Unreachable)
             ]
         );
         let status_ids: Vec<u64> = refreshed.statuses.iter().map(|s| s.id).collect();
@@ -2621,7 +2728,7 @@ mod tests {
         assert!(refreshed.items.nodes.is_empty());
         assert_eq!(refreshed.failures.len(), 1);
         let failure = &refreshed.failures[0];
-        assert_eq!(failure.kind, RepoFailureKind::Unreachable);
+        assert_eq!(failure.read_failure, RepoReadFailure::Unreachable);
         assert!(
             failure
                 .detail
@@ -2745,7 +2852,7 @@ mod tests {
         assert!(refreshed.items.nodes.is_empty());
         assert_eq!(refreshed.failures.len(), 1);
         let failure = &refreshed.failures[0];
-        assert_eq!(failure.kind, RepoFailureKind::Unreachable);
+        assert_eq!(failure.read_failure, RepoReadFailure::Unreachable);
         assert_eq!(
             failure.detail,
             format!("{url} has no commit to read: it advertises no ref named `HEAD`")
@@ -2879,6 +2986,7 @@ mod tests {
             &RefreshScope::Every,
             TEST_NOW,
             &mut |_| {},
+            None,
         )
         .unwrap();
 
@@ -2958,6 +3066,7 @@ mod tests {
             &RefreshScope::Every,
             TEST_NOW,
             &mut |_| {},
+            None,
         )
         .unwrap();
         write_all_caches(&peppy_dirs, &read_for_the_old_version).unwrap();

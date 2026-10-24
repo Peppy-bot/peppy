@@ -4,9 +4,9 @@ mod container_e2e_tests {
     mod common;
 
     use common::{
-        NodeRunTestTimeouts, send_node_add_and_wait, send_node_build_and_wait,
-        send_node_build_and_wait_forced, send_node_run_and_wait, setup_budget,
-        start_core_node_with_real_messenger_and_timeouts, write_peppy_json5,
+        GoalEnd, NodeRunTestTimeouts, send_logged_node_build, send_node_add_and_wait,
+        send_node_build_and_wait, send_node_build_and_wait_forced, send_node_run_and_wait,
+        setup_budget, start_core_node_with_real_messenger_and_timeouts, write_peppy_json5,
     };
     use config::node::Toolchain;
     use config::runtime::Name as NodeName;
@@ -54,7 +54,8 @@ mod container_e2e_tests {
         // Step 1: Init the node with container support
         let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-        let init_response = common::poll_core_node_with_timeout(
+        // The poll panics on the error reply of a failed init.
+        common::poll_core_node_with_timeout(
             &started,
             &NodeInitRequest::new(
                 nodes_root.path(),
@@ -67,12 +68,6 @@ mod container_e2e_tests {
         )
         .await;
 
-        assert!(
-            init_response.success,
-            "node_init should succeed, got error: {}",
-            init_response.error_message
-        );
-
         let node_dir = nodes_root.path().join(node_name);
         assert!(
             node_dir.join("apptainer.def").exists(),
@@ -80,7 +75,7 @@ mod container_e2e_tests {
         );
 
         // Step 2: Add the node (builds the container image).
-        let add_response = send_node_add_and_wait(
+        send_node_add_and_wait(
             &started.caller_handle,
             &started.core_node_name,
             &node_dir,
@@ -89,16 +84,11 @@ mod container_e2e_tests {
             None,
         )
         .await
-        .expect("node_add request should complete");
-
-        assert!(
-            add_response.success,
-            "node_add should succeed, got error: {:?}",
-            add_response.error_message
-        );
+        .expect("node_add request should complete")
+        .completed();
 
         // Step 3: Build the node (builds the container image).
-        let build_response = send_node_build_and_wait(
+        send_node_build_and_wait(
             &started.caller_handle,
             &started.core_node_name,
             node_name,
@@ -109,13 +99,8 @@ mod container_e2e_tests {
             None,
         )
         .await
-        .expect("node_build request should complete");
-
-        assert!(
-            build_response.success,
-            "node_build (container build) should succeed, got error: {:?}",
-            build_response.error_message
-        );
+        .expect("node_build request should complete")
+        .completed();
 
         // Step 4: Start the container against a real messaging endpoint.
         // This mirrors real world usage and avoids mocked ready/health responders.
@@ -144,16 +129,15 @@ mod container_e2e_tests {
         .await
         .expect("node_run action should complete");
 
+        let log_path = start_response.accepted().log_path.clone();
+        let started_instance = match start_response.end {
+            GoalEnd::Completed(result) => result,
+            other => panic!("node_run should complete, got {other:?}"),
+        };
         assert!(
-            start_response.result.success,
-            "node_run should succeed, got error: {:?}",
-            start_response.result.error_message
-        );
-
-        assert!(
-            start_response.result.pid.is_some_and(|pid| pid > 0),
+            started_instance.pid.is_some_and(|pid| pid > 0),
             "node_run should return a positive PID on success, got {:?}",
-            start_response.result.pid
+            started_instance.pid
         );
 
         let instance_id = NodeName::new(instance_id).expect("valid instance id");
@@ -165,16 +149,10 @@ mod container_e2e_tests {
             "instance should be registered in the node stack"
         );
 
-        assert!(
-            start_response.goal_response.accepted,
-            "goal should be accepted"
-        );
-
-        let log_path = &start_response.goal_response.log_path;
         assert!(log_path.exists(), "log file should exist at {:?}", log_path);
 
         let log_content =
-            std::fs::read_to_string(log_path).expect("should be able to read log file");
+            std::fs::read_to_string(&log_path).expect("should be able to read log file");
         assert!(
             log_content.contains("Executing apptainer run"),
             "log file should contain apptainer run command, got:\n{}",
@@ -226,7 +204,7 @@ mod container_e2e_tests {
         )
         .expect("write apptainer.def");
 
-        let add = send_node_add_and_wait(
+        send_node_add_and_wait(
             &started.caller_handle,
             &started.core_node_name,
             source_dir.path(),
@@ -235,30 +213,19 @@ mod container_e2e_tests {
             None,
         )
         .await
-        .expect("node_add request should complete");
-        assert!(
-            add.success,
-            "node_add should succeed, got error: {:?}",
-            add.error_message
-        );
+        .expect("node_add request should complete")
+        .completed();
 
-        let build = send_node_build_and_wait(
-            &started.caller_handle,
-            &started.core_node_name,
+        let build = send_logged_node_build(
+            &started,
             NODE_NAME,
             NODE_TAG,
             Duration::from_secs(30),
             Duration::from_secs(600),
-            Vec::new(),
             None,
         )
-        .await
-        .expect("node_build request should complete");
-        assert!(
-            build.success,
-            "the container build should succeed, got error: {:?}",
-            build.error_message
-        );
+        .await;
+        build.end.completed();
 
         let log = std::fs::read_to_string(&build.log_path).expect("read the build log");
         assert!(
@@ -316,7 +283,7 @@ mod container_e2e_tests {
         )
         .expect("write apptainer.def");
 
-        let add = send_node_add_and_wait(
+        send_node_add_and_wait(
             &started.caller_handle,
             &started.core_node_name,
             source_dir.path(),
@@ -325,30 +292,19 @@ mod container_e2e_tests {
             None,
         )
         .await
-        .expect("node_add request should complete");
-        assert!(
-            add.success,
-            "node_add should succeed, got error: {:?}",
-            add.error_message
-        );
+        .expect("node_add request should complete")
+        .completed();
 
-        let build = send_node_build_and_wait(
-            &started.caller_handle,
-            &started.core_node_name,
+        let build = send_logged_node_build(
+            &started,
             NODE_NAME,
             NODE_TAG,
             Duration::from_secs(30),
             Duration::from_secs(600),
-            Vec::new(),
             None,
         )
-        .await
-        .expect("node_build request should complete");
-        assert!(
-            build.success,
-            "the container build should succeed, got error: {:?}",
-            build.error_message
-        );
+        .await;
+        build.end.completed();
 
         let log = std::fs::read_to_string(&build.log_path).expect("read the build log");
         assert!(
@@ -463,7 +419,7 @@ mod container_e2e_tests {
         name: &str,
         tag: &str,
         before: &HashSet<u32>,
-        task: &mut JoinHandle<Result<NodeBuildResult, String>>,
+        task: &mut JoinHandle<Result<GoalEnd<NodeBuildResult>, String>>,
         index: usize,
     ) -> HashSet<u32> {
         let deadline = std::time::Instant::now() + Duration::from_secs(120);
@@ -544,7 +500,7 @@ mod container_e2e_tests {
         )
         .expect("write base apptainer.def");
 
-        let base_add = send_node_add_and_wait(
+        send_node_add_and_wait(
             &started.caller_handle,
             &started.core_node_name,
             base_dir.path(),
@@ -553,12 +509,8 @@ mod container_e2e_tests {
             None,
         )
         .await
-        .expect("base node_add request should complete");
-        assert!(
-            base_add.success,
-            "base node_add should succeed, got error: {:?}",
-            base_add.error_message
-        );
+        .expect("base node_add request should complete")
+        .completed();
 
         let base_build = send_node_build_and_wait(
             &started.caller_handle,
@@ -572,12 +524,7 @@ mod container_e2e_tests {
         )
         .await
         .expect("base node_build request should complete");
-        assert!(
-            base_build.success,
-            "the base image build should succeed, got error: {:?}",
-            base_build.error_message
-        );
-        let base_sif = base_build.artifact_path;
+        let base_sif = base_build.completed().artifact_path;
 
         // A container node whose apptainer build blocks forever in `%post`,
         // leaving a uniquely-named process (`sh /PEPPY_ZOMBIE_E2E_MARKER`, so the
@@ -602,7 +549,7 @@ mod container_e2e_tests {
         .expect("write apptainer.def");
 
         // Stage the node (node_add does not build the image).
-        let add = send_node_add_and_wait(
+        send_node_add_and_wait(
             &started.caller_handle,
             &started.core_node_name,
             source_dir.path(),
@@ -611,12 +558,8 @@ mod container_e2e_tests {
             None,
         )
         .await
-        .expect("node_add request should complete");
-        assert!(
-            add.success,
-            "node_add should succeed, got error: {:?}",
-            add.error_message
-        );
+        .expect("node_add request should complete")
+        .completed();
 
         // Fire the builds. Each blocks in `%post` (so it never returns until
         // superseded) and each `--force` supersedes the prior one, which must

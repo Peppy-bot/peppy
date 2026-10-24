@@ -15,15 +15,17 @@ mod topics;
 
 // `unwrap_result_outcome` / `unwrap_goal_ack` are intentionally not
 // re-exported: unlike their public siblings (`wrap_result_outcome` /
-// `wrap_goal_ack` / `encode_cancel_ack`, which the integration tests use to
-// assert the wire codec), they are only used inside `actions` and its unit
-// tests, so they stay `pub(crate)`.
+// `wrap_goal_accepted` / `wrap_goal_refused` / `encode_cancel_ack`, which the
+// integration tests use to assert the wire codec), they are only used inside
+// `actions` and its unit tests, so they stay `pub(crate)`.
 pub use actions::{
     ActionCreation, ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle,
-    ActionGoalReply, ActionMessenger, ActionResultReply, CancelState, ConcurrentAction,
-    DeclaredFeedback, EmptyPayloadError, GoalContext, NonEmptyPayload, PendingGoal, ResultStatus,
-    decode_cancel_ack, encode_cancel_ack, generate_goal_id, unwrap_goal_payload, wrap_goal_ack,
-    wrap_goal_payload, wrap_result_outcome,
+    ActionGoalReply, ActionMessenger, ActionResultReply, CancelCause, CancelOnDrop, CancelState,
+    ConcurrentAction, DEFAULT_FEEDBACK_BOUND, DeclaredFeedback, EmptyPayloadError, GoalAnswer,
+    GoalContext, GoalOutcome, NonEmptyPayload, PendingGoal, ResultStatus, SenderGrace,
+    decode_cancel_ack, encode_cancel_ack, generate_goal_id, unwrap_goal_payload,
+    wrap_goal_accepted, wrap_goal_payload, wrap_goal_refused, wrap_goal_request,
+    wrap_result_outcome,
 };
 pub use bound_set::{BoundSetState, NonEmptyMembers, NonEmptyProducers};
 pub use non_empty::NonEmpty;
@@ -33,7 +35,8 @@ pub use observation::{
 pub use pairing::{PeerInfo, PeerMember, PeerSetState};
 pub use presence::CoreNodePresenceMessenger;
 pub use services::{
-    ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder, ServiceTarget,
+    ServiceAnswer, ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder,
+    ServiceTarget,
 };
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
@@ -60,10 +63,14 @@ pub use config::runtime::{BoundMember, CopyTag, ProducerRef};
 // peppylib's own messaging implementation; each submodule imports them directly
 // from `pmi::`.
 pub use pmi::{
-    ActionWireSender, ContractIdentifier, CoreNodePresence, FeedbackBuffer, LivelinessEvent,
-    LivelinessToken, LivelinessWatch, NodeIdentifier, PairingIdentifier, SenderTarget,
-    SenderTargetError, TopicBuffer,
+    ActionWireSender, ClientPresence, ContractIdentifier, CoreNodePresence, Failure, FeedbackBound,
+    FeedbackBuffer, LivelinessEvent, LivelinessToken, LivelinessWatch, NodeIdentifier,
+    PairingIdentifier, SenderTarget, SenderTargetError, TopicBuffer,
 };
+// The name of a failure kind, which a [`Failure`] holds. Generated code
+// builds it from the kinds its member declares, and a generated crate
+// depends on peppylib alone.
+pub use config::failure_kind::FailureKindName;
 
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
@@ -71,9 +78,8 @@ use config::node::{QoSProfile, TopicRetention};
 use pmi::{
     ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
     Namespace, PresenceScope, PublisherQoS, ReplyStream, Segment, ServiceQueryKind, ServiceReply,
-    ServiceReplyKind, ServiceWireReceiver, ServiceWireSender, SubscriberQoS,
-    Subscription as PmiSubscription, TopicWireReceiver, TopicWireSender, ZenohAdapter,
-    ZenohNetProtocol,
+    ServiceReplyKind, ServiceWireReceiver, ServiceWireSender, Subscription as PmiSubscription,
+    TopicWireReceiver, TopicWireSender, ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -128,6 +134,29 @@ pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Clone)]
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
+    client_presence: Arc<ClientPresenceTokens>,
+}
+
+/// The liveliness tokens of the identities a handle sends goals as, one per
+/// `(core_node, instance_id)`, declared at the first goal the handle sends
+/// as that identity. The provider of each goal watches the token of its
+/// sender and cancels the goals of a sender that is gone. `generation` is
+/// unique to the handle, and each goal carries it, so a process that starts
+/// again under the same identity never hides the end of the previous one.
+struct ClientPresenceTokens {
+    generation: Segment,
+    tokens: Mutex<std::collections::HashMap<(Segment, Segment), LivelinessToken>>,
+}
+
+impl ClientPresenceTokens {
+    fn new() -> Self {
+        let generation = Segment::try_from(generate_short_id("client_presence"))
+            .expect("a hex id is a valid wire segment");
+        Self {
+            generation,
+            tokens: Mutex::new(std::collections::HashMap::new()),
+        }
+    }
 }
 
 /// 16 hex chars (64 bits) of correlation entropy, salted with `domain` so
@@ -384,7 +413,7 @@ fn service_timed_out(sender: &ServiceWireSender) -> Error {
 
 /// How one service query attempt ends when it ends without an error.
 enum QueryAttempt {
-    /// The first `Response` or `HandlerError` of the attempt.
+    /// The first `Response` or `Failure` reply of the attempt.
     Terminal(ServiceReply),
     /// The query finalized with no reply and no `Ack` before it, so the
     /// target was never reached and the caller may issue the query again.
@@ -429,7 +458,7 @@ async fn receive_terminal_reply(
                     "service request acknowledged"
                 );
             }
-            ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
+            ServiceReplyKind::Response | ServiceReplyKind::Failure => {
                 return Ok(QueryAttempt::Terminal(reply));
             }
         }
@@ -442,7 +471,61 @@ impl MessengerHandle {
     /// themselves (peppy and core-node-internal both do); the [`connect`](Self::connect)
     /// builder is the normal path for opening a fresh session.
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
-        Self { messenger }
+        Self {
+            messenger,
+            client_presence: Arc::new(ClientPresenceTokens::new()),
+        }
+    }
+
+    /// The presence of this handle as the sender `(core_node, instance_id)`:
+    /// declares its liveliness token at the first call for that identity,
+    /// and holds it for the life of the handle and its clones. A goal is
+    /// sent only after this returns, so its provider can find the token.
+    pub(crate) async fn client_presence(
+        &self,
+        core_node: &str,
+        instance_id: &str,
+    ) -> Result<ClientPresence> {
+        let client = ClientPresence {
+            core_node: Segment::try_from(core_node).map_err(pmi::SenderTargetError::from)?,
+            instance_id: Segment::try_from(instance_id).map_err(pmi::SenderTargetError::from)?,
+            generation: self.client_presence.generation.clone(),
+        };
+        let identity = (client.core_node.clone(), client.instance_id.clone());
+        let mut tokens = self.client_presence.tokens.lock().await;
+        if let std::collections::hash_map::Entry::Vacant(entry) = tokens.entry(identity) {
+            let token = {
+                let messenger = self.messenger.lock().await;
+                messenger.declare_client_presence(&client).await?
+            };
+            entry.insert(token);
+        }
+        Ok(client)
+    }
+
+    pub(crate) async fn watch_client_presence(
+        &self,
+        client: &ClientPresence,
+    ) -> Result<LivelinessWatch> {
+        let messenger = self.messenger.lock().await;
+        messenger
+            .watch_client_presence(client)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
+
+    /// One-shot probe of a sender's liveliness token. The central messenger
+    /// lock is held only for query issuance.
+    pub(crate) async fn probe_client_presence(
+        &self,
+        client: &ClientPresence,
+        timeout: Duration,
+    ) -> Result<bool> {
+        let probe = {
+            let messenger = self.messenger.lock().await;
+            messenger.probe_client_presence(client, timeout).await?
+        };
+        Ok(probe.resolve().await)
     }
 
     /// Pre-bind a per-topic publisher. Locks the messenger once at
@@ -612,7 +695,7 @@ impl MessengerHandle {
 
         // Each attempt issues the query and waits for its first terminal reply.
         // The producer sends `Ack` immediately on receiving a real user request
-        // (before the handler runs) and a terminal `Response` / `HandlerError`
+        // (before the handler runs) and a terminal `Response` / `Failure`
         // once the handler returns. Probes get a single `Response` (no Ack).
         //
         // Cold-start retry (peer mode): a freshly-connected caller may not have
@@ -673,15 +756,18 @@ impl MessengerHandle {
         let kind = reply.kind();
         let message = Message::from(reply.into_message());
         match kind {
-            ServiceReplyKind::HandlerError => {
-                let reason = match std::str::from_utf8(message.payload_bytes().as_ref()) {
-                    Ok(s) => s.to_string(),
-                    Err(_) => "service returned a non-UTF8 error payload".to_string(),
-                };
-                Err(Error::ServiceError {
+            ServiceReplyKind::Failure => {
+                let failure =
+                    pmi::Failure::decode(message.payload_bytes().as_ref()).map_err(|err| {
+                        Error::InternalEncodingError {
+                            identifier: sender.to_service_name().to_string(),
+                            reason: format!("the error reply is not a failure: {err}"),
+                        }
+                    })?;
+                Err(Error::ServiceFailed {
                     instance_id: sender.target_instance_id().map(str::to_string),
                     service_name: sender.to_service_name().to_string(),
-                    reason,
+                    failure,
                 })
             }
             ServiceReplyKind::Response => Ok(message),
@@ -730,12 +816,11 @@ impl MessengerHandle {
         &self,
         sender: &ActionWireSender,
         goal_id: &str,
-        qos: SubscriberQoS,
         buffer: FeedbackBuffer,
     ) -> Result<PmiSubscription> {
         let messenger = self.messenger.lock().await;
         messenger
-            .subscribe_action_feedback(sender, goal_id, qos, buffer)
+            .subscribe_action_feedback(sender, goal_id, buffer)
             .await
             .map_err(Error::PeppyMessagingInterface)
     }

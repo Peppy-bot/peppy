@@ -13,8 +13,10 @@
 //! bytes the runtime sent, which is only possible when both sides agree on
 //! every field's layout and value. A generated publisher then drives a
 //! camera-sized frame to the runtime's subscription, and the runtime walks
-//! the `count` action through admission, feedback, completion,
-//! cancellation and rejection.
+//! the `count` action through admission, feedback, completion, cancellation
+//! with its reason, a refusal and a failure with a kind of the contract.
+//! The `busy` service answers with an error reply of a kind of the
+//! contract.
 
 use crate::helpers::{
     DEFAULT_WAIT_TIMEOUT, SHUTDOWN_SENDER_INSTANCE_ID, STUB_NODE_CONFIG, TEST_CORE_NODE,
@@ -23,6 +25,7 @@ use crate::helpers::{
     test_wait_context, wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::RUNTIME_CONFIG_VAR_NAME;
+use config::failure_kind::MemberSection;
 use config::node::{MessageFormat, TopicRetention};
 use config::runtime::BoundProducers;
 use daemon_config::contract::PeppyContractParser;
@@ -30,11 +33,14 @@ use generator::ContractOrigin;
 use mcp_test_support::register_contract_members;
 use message_codec::MessageCodec;
 use message_codec::consumer::{
-    ActionClient, ConsumerIdentity, GoalOutcome, MemberBinding, ServiceClient, TopicConsumer,
+    ActionClient, ConsumerError, ConsumerIdentity, GoalOutcome, MemberBinding, ServiceClient,
+    TopicConsumer,
 };
 use peppy_mcp_runtime::bridge::bytes_to_base64;
 use peppylib::config::QoSProfile;
-use peppylib::messaging::{BoundSetState, CancelState, ProducerRef, SenderTarget};
+use peppylib::messaging::{
+    BoundSetState, CancelState, DEFAULT_FEEDBACK_BOUND, ProducerRef, SenderTarget,
+};
 use peppylib::runtime::{CancellationToken, subscribe_bound_set_with_watch};
 use serde_json::{Value, json};
 use std::fs;
@@ -74,6 +80,11 @@ fn fixture_contract() -> String {
         r#"{{
         peppy_schema: "contract/v1",
         manifest: {{ name: "{CONTRACT_NAME}", tag: "{CONTRACT_TAG}" }},
+        failure_kinds: {{
+            no_steps: "The goal asks for no step",
+            unlucky: "The goal asks for an unlucky number of steps",
+            busy: "The provider counts and answers nothing else",
+        }},
         interfaces: {{
             topics: [
                 {{ name: "frame", message_format: {FRAME_FORMAT} }},
@@ -85,6 +96,7 @@ fn fixture_contract() -> String {
                     response_message_format: {EVERYTHING_FORMAT},
                 }},
                 {{ name: "ping" }},
+                {{ name: "busy", failure_kinds: ["busy"] }},
             ],
             actions: [
                 {{
@@ -92,6 +104,7 @@ fn fixture_contract() -> String {
                     goal_service: {{ request_message_format: {GOAL_FORMAT} }},
                     feedback_topic: {{ message_format: {FEEDBACK_FORMAT} }},
                     result_service: {{ response_message_format: {RESULT_FORMAT} }},
+                    failure_kinds: ["no_steps", "unlucky"],
                 }},
             ],
         }},
@@ -100,15 +113,18 @@ fn fixture_contract() -> String {
 }
 
 /// The generated provider. `echo_everything` moves every field of the
-/// decoded request into the response; `count` walks `steps` feedback
-/// messages to completion (noting the label, upper-cased when the goal's
-/// nested `options` ask for it), parks goals of 100000 or more steps on the
-/// cancel signal, and rejects a goal of zero steps; `frame` publishes one
-/// camera-sized rgb8 frame every 100 ms.
+/// decoded request into the response; `busy` answers every request with an
+/// error reply of the kind `busy`; `count` walks `steps` feedback messages
+/// to completion (noting the label, upper-cased when the goal's nested
+/// `options` ask for it), parks goals of 100000 or more steps on the cancel
+/// signal and ends them cancelled with the reason of its cause, refuses a
+/// goal of zero steps with the kind `no_steps`, and fails a goal of 13
+/// steps with the kind `unlucky`; `frame` publishes one camera-sized rgb8
+/// frame every 100 ms.
 const STUB_MAIN: &str = r#"
 use peppygen::emitted_topics::codec_impl::frame;
 use peppygen::exposed_actions::codec_impl::count;
-use peppygen::exposed_services::codec_impl::{echo_everything, ping};
+use peppygen::exposed_services::codec_impl::{busy, echo_everything, ping};
 use peppygen::{NodeBuilder, Result};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -193,6 +209,16 @@ fn main() -> Result<()> {
         });
         let runner = node_runner.clone();
         tokio::spawn(async move {
+            loop {
+                busy::handle_next_request(&runner, |_request| {
+                    Err(busy::Failure::new(busy::FailureKind::Busy, "the stub only counts"))
+                })
+                .await
+                .expect("handle busy");
+            }
+        });
+        let runner = node_runner.clone();
+        tokio::spawn(async move {
             let mut action = count::ActionHandle::expose(&runner)
                 .await
                 .expect("expose count");
@@ -200,13 +226,22 @@ fn main() -> Result<()> {
                 let next = action
                     .handle_goal_next_request(|request| -> Result<count::GoalDecision> {
                         if request.data.steps == 0 {
-                            return Ok(count::GoalDecision::reject("steps must be positive"));
+                            return Ok(count::GoalDecision::refuse(
+                                count::FailureKind::NoSteps,
+                                "steps must be positive",
+                            ));
                         }
                         Ok(count::GoalDecision::accept())
                     })
                     .await;
                 let Ok(Some(ctx)) = next else { break };
                 let steps = ctx.request().data.steps;
+                if steps == 13 {
+                    ctx.fail(count::FailureKind::Unlucky, "13 steps bring bad luck")
+                        .await
+                        .expect("fail");
+                    continue;
+                }
                 let label = if ctx.request().data.options.uppercase {
                     ctx.request().data.label.to_uppercase()
                 } else {
@@ -223,7 +258,8 @@ fn main() -> Result<()> {
                             _ = tokio::time::sleep(Duration::from_millis(100)) => {}
                         }
                     }
-                    ctx.complete_cancelled(u64::from(step), vec![note(step)])
+                    let reason = ctx.cancel_cause().expect("the goal is cancelled").reason();
+                    ctx.complete_cancelled(reason, u64::from(step), vec![note(step)])
                         .await
                         .expect("complete cancelled");
                 } else {
@@ -335,12 +371,14 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     // --- The generated provider.
     let temp_dir =
         TempDir::new_in(config_test_support::test_tmp_root()).expect("temp dir for the stub");
+    let contract = PeppyContractParser::from_content(&fixture_contract()).expect("contract parses");
     let origin = ContractOrigin {
         link_id: LINK_ID.to_string(),
         contract_name: CONTRACT_NAME.to_string(),
         contract_tag: CONTRACT_TAG.to_string(),
+        failure_kinds: contract.failure_kinds.clone(),
     };
-    let contract = PeppyContractParser::from_content(&fixture_contract()).expect("contract parses");
+    let member_kinds = |section, name| contract.failure_kinds.of(section, name);
     let user_node = generate_node_project::<generator::RustGenerator>(
         &temp_dir,
         STUB_NODE_CONFIG,
@@ -377,14 +415,18 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
 
     // --- Every shape, both directions, through the echo service.
     let everything = codec("echo_everything", EVERYTHING_FORMAT);
-    let echo = ServiceClient::new(Some(everything.clone()), Some(everything.clone()));
+    let echo = ServiceClient::new(
+        Some(everything.clone()),
+        Some(everything.clone()),
+        member_kinds(MemberSection::Service, "echo_everything"),
+    );
     let full: Value = serde_json::from_str(EVERYTHING_FULL).expect("fixture json");
     let minimal: Value = serde_json::from_str(EVERYTHING_MINIMAL).expect("fixture json");
     assert_echo_round_trips(&echo, &messenger, &identity, &everything, &full).await;
     assert_echo_round_trips(&echo, &messenger, &identity, &everything, &minimal).await;
 
     // A member without formats carries nothing either way.
-    let ping = ServiceClient::new(None, None);
+    let ping = ServiceClient::new(None, None, member_kinds(MemberSection::Service, "ping"));
     let answer = bounded(
         "ping answers",
         ping.call(
@@ -399,6 +441,31 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     .await
     .expect("ping succeeds");
     assert_eq!(answer, json!({}));
+
+    // An error reply of the generated provider reaches the runtime with its
+    // kind and message.
+    let busy = ServiceClient::new(None, None, member_kinds(MemberSection::Service, "busy"));
+    let error = bounded(
+        "busy answers",
+        busy.call(
+            &messenger,
+            &identity,
+            &binding("busy"),
+            &producer,
+            &json!({}),
+            CALL_DEADLINE,
+        ),
+    )
+    .await
+    .expect_err("busy gives an error reply");
+    let ConsumerError::Messaging(error) = error else {
+        panic!("the error reply is a messaging error, not {error:?}");
+    };
+    let failure = error
+        .failure()
+        .expect("the error reply carries its failure");
+    assert_eq!(failure.kind().as_str(), "busy");
+    assert_eq!(failure.message(), "the stub only counts");
 
     // --- A generated publisher to the runtime's subscription.
     let shutdown = CancellationToken::new();
@@ -434,11 +501,13 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     );
     shutdown.cancel();
 
-    // --- The action walk: completion with feedback, cancellation, rejection.
+    // --- The action walk: completion with feedback, cancellation, refusal,
+    // failure.
     let count = ActionClient::new(
         Some(codec("count_goal", GOAL_FORMAT)),
         Some(codec("count_feedback", FEEDBACK_FORMAT)),
         Some(codec("count_result", RESULT_FORMAT)),
+        member_kinds(MemberSection::Action, "count"),
     );
     let fire = |goal: Value| {
         let count = count.clone();
@@ -454,7 +523,7 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
                     &binding("count"),
                     producer,
                     &goal,
-                    QoSProfile::Standard,
+                    DEFAULT_FEEDBACK_BOUND,
                     CALL_DEADLINE,
                 ),
             )
@@ -527,12 +596,17 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
     )
     .await
     .expect("the result is requested");
-    // The provider ends the goal with the step the cancel reached, which
-    // depends on when the cancel arrived: the body names that same step
-    // twice.
-    let GoalOutcome::Cancelled(body) = outcome else {
+    // The provider ends the goal with the reason of its cause and the step
+    // the cancel reached, which depends on when the cancel arrived: the body
+    // names that same step twice.
+    let GoalOutcome::Cancelled {
+        reason,
+        result: body,
+    } = outcome
+    else {
         panic!("the goal ends cancelled, not {outcome:?}");
     };
+    assert_eq!(reason, "cancelled by its caller");
     let total = body["total"].as_str().expect("the total is a u64 decimal");
     assert_eq!(body["notes"], json!([format!("long#{total}")]));
 
@@ -542,8 +616,35 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
         "options": { "uppercase": false },
     }))
     .await;
-    assert!(!handle.accepted(), "a zero-step goal is rejected");
-    assert_eq!(handle.rejection_reason(), Some("steps must be positive"));
+    assert!(!handle.accepted(), "a zero-step goal is refused");
+    let refusal = handle.refusal().expect("the refusal carries its failure");
+    assert_eq!(refusal.kind().as_str(), "no_steps");
+    assert_eq!(refusal.message(), "steps must be positive");
+
+    // A failed goal gives its kind and message, and no result.
+    let mut handle = fire(json!({
+        "steps": 13,
+        "label": "unlucky",
+        "options": { "uppercase": false },
+    }))
+    .await;
+    assert!(handle.accepted());
+    while bounded("the feedback stream closes", handle.next_feedback())
+        .await
+        .expect("feedback decodes")
+        .is_some()
+    {}
+    let outcome = bounded(
+        "the result answers",
+        handle.result(&messenger, CALL_DEADLINE),
+    )
+    .await
+    .expect("the result is requested");
+    let GoalOutcome::Failed(failure) = outcome else {
+        panic!("the goal fails, not {outcome:?}");
+    };
+    assert_eq!(failure.kind().as_str(), "unlucky");
+    assert_eq!(failure.message(), "13 steps bring bad luck");
 
     // --- Teardown: cooperative shutdown through the framework service.
     send_shutdown(

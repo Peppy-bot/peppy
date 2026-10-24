@@ -269,6 +269,123 @@ if __name__ == "__main__":
     );
 }
 
+/// A handler gives an error reply by raising or returning a failure: the
+/// caller's `poll` raises the typed `Failure` of its own member, a
+/// `peppylib.FailureError`, with the kind and the message. The requests get,
+/// in order: a raised `Failure` of the service, a returned one, a returned
+/// `peppylib.FailureError` of a kind that the service declares, a returned
+/// one of a kind that it does not declare (`attempt_failed`, with the
+/// message of the handler), and a `Failure` whose message is not a `str`
+/// (`attempt_failed`, with the `TypeError` of its constructor). Runs the
+/// peer topology only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn services_communication_error_reply_reaches_the_caller_typed() {
+    let service = ServicePair::enable_camera();
+    let consumer_main = r#"
+import asyncio
+import peppylib
+from peppygen import NodeBuilder
+from peppygen.consumed_services.uvc_camera import enable_camera as uvc_camera_enable_camera
+
+ATTEMPTS = ("raised", "returned", "returned_foreign", "returned_undeclared", "message_not_a_str")
+
+async def poll_service(node_runner):
+    camera = uvc_camera_enable_camera.bound_producer(node_runner)
+    for attempt in ATTEMPTS:
+        request = uvc_camera_enable_camera.Request(enable=True)
+        try:
+            await uvc_camera_enable_camera.poll(node_runner, camera, request, 5.0)
+        except uvc_camera_enable_camera.Failure as failure:
+            assert isinstance(failure, peppylib.FailureError)
+            print(f"{attempt} error reply kind={failure.kind.value} message={failure.message}", flush=True)
+        else:
+            print(f"{attempt} success", flush=True)
+
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(poll_service(node_runner))]
+
+def main():
+    NodeBuilder().run(setup)
+
+if __name__ == "__main__":
+    main()
+"#;
+    let exposer_main = r#"
+import asyncio
+import peppylib
+from peppygen import NodeBuilder
+from peppygen.exposed_services import enable_camera
+
+async def handle_requests(node_runner):
+    def raising_handler(request):
+        raise enable_camera.Failure(enable_camera.FailureKind.PRECONDITION_FAILED, "the lens cap is on")
+
+    def returning_handler(request):
+        return enable_camera.Failure(enable_camera.FailureKind.PRECONDITION_FAILED, "the lens cap is on")
+
+    def returning_foreign_handler(request):
+        return peppylib.FailureError("resource_unavailable", "the camera is unplugged")
+
+    def returning_undeclared_handler(request):
+        return peppylib.FailureError("lens_covered", "tape on the lens")
+
+    def message_not_a_str_handler(request):
+        raise enable_camera.Failure(enable_camera.FailureKind.TIMEOUT, TimeoutError("the shutter is stuck"))
+
+    for handler in (
+        raising_handler,
+        returning_handler,
+        returning_foreign_handler,
+        returning_undeclared_handler,
+        message_not_a_str_handler,
+    ):
+        await enable_camera.handle_next_request(node_runner, handler)
+    print("enable_camera handlers finished", flush=True)
+
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(handle_requests(node_runner))]
+
+def main():
+    NodeBuilder().run(setup)
+
+if __name__ == "__main__":
+    main()
+"#;
+    let expected_consumer_log = "message_not_a_str error reply kind=attempt_failed message=TypeError: the message of a failure of enable_camera is a str, not TimeoutError";
+    let ConsumerExposerOutput {
+        consumer_stdout,
+        consumer_stderr,
+        exposer_stdout,
+        exposer_stderr,
+    } = run_single_exposer_service_flow(
+        crate::helpers::LocalNodesTopology::Peer,
+        service,
+        consumer_main,
+        exposer_main,
+        expected_consumer_log,
+    )
+    .await;
+    let replies: Vec<&str> = consumer_stdout
+        .lines()
+        .filter(|line| line.contains(" error reply ") || line.ends_with(" success"))
+        .collect();
+    assert_eq!(
+        replies,
+        [
+            "raised error reply kind=precondition_failed message=the lens cap is on",
+            "returned error reply kind=precondition_failed message=the lens cap is on",
+            "returned_foreign error reply kind=resource_unavailable message=the camera is unplugged",
+            "returned_undeclared error reply kind=attempt_failed message=ValueError: 'lens_covered' is not a failure kind of enable_camera (message: 'tape on the lens')",
+            expected_consumer_log,
+        ],
+        "consumer did not read each error reply typed, in order.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
+    );
+    assert!(
+        exposer_stdout.contains("enable_camera handlers finished"),
+        "exposer did not answer every request.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
+    );
+}
+
 #[rstest::rstest]
 #[case::peer(crate::helpers::LocalNodesTopology::Peer)]
 #[case::router(crate::helpers::LocalNodesTopology::Router)]

@@ -50,19 +50,19 @@ struct ParticipantReserveRequest {
     deploymentPinsJson5 @2 :List(Text);
 }
 
+# The reply of a participant that took the reservation. A participant that
+# refuses gives an error reply: `precondition_failed` when it is already
+# reserved for another launch or a launch already runs on it, `rejected`
+# for a pin that does not validate.
 struct ParticipantReserveResponse {
-    accepted @0 :Bool;
-    # Populated when `accepted` is false: already reserved for another launch,
-    # a launch already running, or a pin that does not validate.
-    rejectionReason @1 :Text;
     # The participant's peppy version, compared against the coordinator's own
     # so a mixed-version federation is refused before any stack is touched.
     # Same string the info service reports, so there is one source of truth for
     # "what version is that daemon".
-    peppyVersion @2 :Text;
+    peppyVersion @0 :Text;
     # The participant's root entity instance id, folded into the coordinator's
     # global instance-id uniqueness check.
-    rootInstanceId @3 :Text;
+    rootInstanceId @1 :Text;
 }
 
 # The whole payload of `participant_release`, which names a launch and nothing
@@ -112,18 +112,16 @@ struct InstanceWatchers {
     coreNodes @1 :List(Text);
 }
 
-# The reply to `participant_slice_begin`, which owes the coordinator more than a
-# verdict: what it created on the way.
+# The reply of a participant that began its slice: what it created on the
+# way. A participant that refuses gives an error reply, with a failure kind
+# and a message.
 struct ParticipantSliceBeginResponse {
-    ok @0 :Bool;
-    # Populated when `ok` is false, empty otherwise.
-    rejectionReason @1 :Text;
     # The entries of `mountSources` that did not exist and were created here.
     # The coordinator relays them into the launch output attributed to this
     # machine: an auto-created bind source is the only warning an operator gets
     # that a bind meant to name an existing file was a typo, and it must not go
     # silent because the machine it happened on is not the one being watched.
-    autoCreatedMountSources @2 :List(Text);
+    autoCreatedMountSources @0 :List(Text);
 }
 
 # Remove only these instances from a reserved launch's existing slice.
@@ -186,23 +184,20 @@ struct ObservedPeer {
     linkId @1 :Text;
 }
 
-# The reply to every federation exchange whose answer is "did you do it, and if
-# not, why". Shared by `pair_commit`, `participant_release`,
-# `participant_instances_remove` and `participant_sets_update`: they differ
-# only in which verb `ok` reports, and that verb is already the service name.
+# The reply of a federation exchange that the receiver did. Shared by
+# `pair_commit`, `participant_release`, `participant_instances_remove` and
+# `participant_sets_update`: delivery of the reply is the acknowledgement,
+# and the verb is the service name.
 #
-# The refusal reason is load-bearing, not decoration. A `pair_commit` refusal
-# makes the sender revert its own half, so a pair is never left established on
-# one machine and absent on the other; a `participant_release` refusal tells a
+# A receiver that does not do it gives an error reply, with a failure kind
+# and a message, and the refusal is load-bearing, not decoration. A
+# `pair_commit` refusal makes the sender revert its own half, so a pair is
+# never left established on one machine and absent on the other; its kind
+# `resource_unavailable` says the receiver's slot is starting a restart or
+# has no process to pair, or its own node did not take the delivery, so the
+# pair may be asked for again later. A `participant_release` refusal tells a
 # coordinator its reservation was taken over rather than merely absent.
-struct FederationVerdict {
-    ok @0 :Bool;
-    # Populated when `ok` is false, empty otherwise.
-    rejectionReason @1 :Text;
-    # Set only beside a `pair_commit` refusal: the receiver's slot is starting
-    # a restart or has no process to pair, or its own node did not take the
-    # delivery, so the pair may be asked for again later.
-    undelivered @2 :Bool;
+struct FederationAck {
 }
 
 # One instance, addressed by the `(coreNode, instanceId)` pair. Identical to

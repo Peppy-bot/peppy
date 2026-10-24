@@ -4,10 +4,14 @@
 
 use super::run::{NodeRunActionContext, Respawn, assemble_runtime_config, run_node_respawn};
 use super::stack_log::{StackLog, StackLogEvent};
+use crate::services::action_loop::WorkStop;
 use crate::services::federation::RestartAdmission;
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
 use core_node_api::ExitCause;
+use core_node_api::encoding::NodeRunResult;
 use node_stack::{ActionLog, Attempt, EntityHandle, NodeEntity, RespawnInputs};
+use peppylib::messaging::Failure;
 use std::num::NonZeroU32;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -23,17 +27,49 @@ pub(crate) enum RunOutcome {
         endpoints: Vec<core_node_api::InstanceEndpoint>,
     },
     /// Refused before the spawn: no process was started and none will be.
-    Refused(String),
+    Refused(Failure),
     /// The start failed: the spawn, a probe, an exit or a commit error, a
     /// panic of the run before its commit, an Apptainer that did not
     /// initialize for a container start, a respawning reader's clock
     /// publisher awaiting its own restart, or a new instance's pairing
     /// delivery after its commit, which leaves the process running.
     StartFailed(String),
-    /// Cancelled, the slot vanished, or a respawn panicked past its commit,
-    /// whose exit takes the next attempt: nothing to record; the text is the
-    /// run's failure for a caller that waits on it.
+    /// A cancel of the start gave it up before its commit: nothing to
+    /// record; the text is the run's failure for a caller that waits on it.
+    Cancelled(String),
+    /// The slot vanished, or a respawn panicked past its commit, whose exit
+    /// takes the next attempt: nothing to record; the text is the run's
+    /// failure for a caller that waits on it.
     Gone(String),
+}
+
+impl RunOutcome {
+    /// The outcome as the result of a `node_run` goal: the result of a
+    /// process that reached `running`, or the stop of the start. A refused
+    /// start gives the failure of its refusal, a start that failed is
+    /// `attempt_failed`, a start whose slot is gone is
+    /// `resource_unavailable`, and a start that a cancel gave up is
+    /// [`WorkStop::Cancelled`].
+    pub(crate) fn into_result(self) -> Result<NodeRunResult, WorkStop> {
+        match self {
+            Self::Running { pid, endpoints } => {
+                Ok(NodeRunResult::started(pid).with_endpoints(endpoints))
+            }
+            Self::Refused(failure) => Err(WorkStop::Failed(failure)),
+            Self::StartFailed(msg) => Err(WorkStop::Failed(Failure::new(
+                PeppyFailureKind::AttemptFailed,
+                msg,
+            ))),
+            Self::Cancelled(msg) => Err(WorkStop::Cancelled(Failure::new(
+                PeppyFailureKind::AttemptFailed,
+                msg,
+            ))),
+            Self::Gone(msg) => Err(WorkStop::Failed(Failure::new(
+                PeppyFailureKind::ResourceUnavailable,
+                msg,
+            ))),
+        }
+    }
 }
 
 /// The instance a restart is scheduled for, and what its respawn needs.
@@ -122,8 +158,8 @@ async fn restart_task(
 
     match outcome {
         // Nothing to schedule: a running instance restarts from its next
-        // exit, and a cancelled or vanished slot has no restart.
-        RunOutcome::Running { .. } | RunOutcome::Gone(_) => {}
+        // exit, and a cancelled start or a vanished slot has no restart.
+        RunOutcome::Running { .. } | RunOutcome::Cancelled(_) | RunOutcome::Gone(_) => {}
         RunOutcome::StartFailed(reason) => {
             // The run log holds the whole failure, a stderr tail included.
             let reason = reason.lines().next().unwrap_or_default().to_owned();
@@ -142,11 +178,11 @@ async fn restart_task(
             log_next_attempt(&target.stack_log, &next);
             spawn_next_attempt(target, next);
         }
-        RunOutcome::Refused(reason) => {
+        RunOutcome::Refused(failure) => {
             if NodeEntity::mark_restart_refused(&target.entity_handle, &target.instance_id) {
-                target
-                    .stack_log
-                    .record(&StackLogEvent::RestartRefused { reason });
+                target.stack_log.record(&StackLogEvent::RestartRefused {
+                    reason: failure.message().to_owned(),
+                });
             }
         }
     }
@@ -174,7 +210,9 @@ async fn start_next_process(
     } = inputs;
     let runtime_config = match assemble_runtime_config(&goal, &target.action).await {
         Ok(runtime_config) => runtime_config,
-        Err(reason) => return RunOutcome::Refused(reason),
+        Err(reason) => {
+            return RunOutcome::Refused(Failure::new(PeppyFailureKind::Rejected, reason));
+        }
     };
     let log = match ActionLog::for_run(
         &target.action.peppy_dirs,

@@ -64,6 +64,11 @@ const _: () = assert!(
             + HEALTH_MONITOR.timeout.as_millis()
 );
 
+// The daemon keeps the goals of a sender that is gone for longer than one
+// restart of the router watchdog leaves the sender unseen, so a sender that
+// still runs keeps its goals through the restart.
+const _: () = assert!(core_node::DAEMON_SENDER_GRACE.as_millis() > WATCHDOG_RECOVERY.as_millis());
+
 /// The backoff of an instance's restarts: one second between an exit
 /// and the next start, doubling with each exit or failed start up to a
 /// minute, and back to one second once the instance has run for two minutes

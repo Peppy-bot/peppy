@@ -720,6 +720,7 @@ fn generate_peppygen_python_lib_renders_optional_accessor_for_a_zero_or_one_cont
             "v1",
             LINK_ID,
             config::node::Cardinality::ZeroOrOne,
+            Default::default(),
         ),
     })];
 

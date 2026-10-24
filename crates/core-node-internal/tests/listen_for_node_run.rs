@@ -1,16 +1,17 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, answer_health_probes,
-    answer_readiness, answer_ready_probe, create_test_node_with_name, fast_health_monitor, never,
-    path_env_with_dir_first, poll_until, send_node_add_then_build, send_node_run_and_wait,
-    send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
-    start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
-    wait_until_action_completes, wait_until_process_exits, write_executable_script,
-    write_peppy_json5,
+    AbortOnDrop, GoalEnd, NodeRunTestResponse, NodeRunTestTimeouts, acquire_container_test_guard,
+    answer_health_probes, answer_readiness, answer_ready_probe, assert_failure,
+    create_test_node_with_name, fast_health_monitor, never, path_env_with_dir_first, poll_until,
+    send_node_add_then_build, send_node_run_and_wait, send_node_run_and_wait_with_env,
+    start_core_node_with_health_monitor, start_core_node_with_mock_messenger,
+    start_core_node_with_real_messenger, wait_until_action_completes, wait_until_process_exits,
+    write_executable_script, write_peppy_json5,
 };
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name as NodeName;
-use core_node_api::encoding::NodeRunFeedback;
+use core_node_api::encoding::{NodeRunFeedback, NodeRunResult};
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use peppylib::messaging::MessengerHandle;
 use std::sync::Arc;
@@ -22,6 +23,16 @@ fn create_node_config_dir(peppy_json5: &str) -> TempDir {
     let temp_dir = TempDir::new().expect("failed to create temp directory");
     write_peppy_json5(temp_dir.path(), peppy_json5);
     temp_dir
+}
+
+/// The result of a `node_run` that completed. Panics with the ending of any
+/// other run.
+#[track_caller]
+fn run_result(response: &NodeRunTestResponse) -> &NodeRunResult {
+    match &response.end {
+        GoalEnd::Completed(result) => result,
+        other => panic!("node_run did not complete: {other:?}"),
+    }
 }
 
 /// `path` is `instance_id`'s run log under `run_dir`: the instance's name,
@@ -83,16 +94,11 @@ async fn listen_for_node_run_success() {
     .expect("node_run action should complete");
 
     // The start should succeed because the health check was responded to
+    let result = run_result(&start_response);
     assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
-
-    assert!(
-        start_response.result.pid.is_some_and(|pid| pid > 0),
+        result.pid.is_some_and(|pid| pid > 0),
         "node_run should return a positive PID on success, got {:?}",
-        start_response.result.pid
+        result.pid
     );
 
     // Verify that the instance was added to the node stack
@@ -179,32 +185,16 @@ async fn listen_for_node_run_timeout() {
     .await
     .expect("node_run action should complete");
 
-    // The start should fail because the setup outlasts its budget
-    assert!(
-        !start_response.result.success,
-        "node_run should fail due to health check timeout"
-    );
-    assert!(
-        start_response
-            .result
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains(
-                "the setup did not end within 1 s, the setup budget `runnable_node:v1` \
-                 declares in `execution.setup_timeout_secs`"
-            )),
-        "error message should name the declared setup budget, got: {:?}",
-        start_response.result.error_message
+    // The start fails because the setup outlasts its budget
+    assert_failure(
+        start_response.end.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "the setup did not end within 1 s, the setup budget `runnable_node:v1` \
+         declares in `execution.setup_timeout_secs`",
     );
     shutdown_requested
         .await
         .expect("the daemon stops an instance that answered ready through its shutdown request");
-
-    // Verify that PID is None on failure
-    assert!(
-        start_response.result.pid.is_none(),
-        "node_run should not return a PID on failure"
-    );
 
     // Verify that the instance was NOT added to the node stack since start failed
     let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -245,25 +235,11 @@ async fn listen_for_node_run_not_found() {
     .await
     .expect("node_run action should complete");
 
-    // The start should fail because the node was not found
-    assert!(
-        !start_response.result.success,
-        "node_run should fail because node not found"
-    );
-    assert!(
-        start_response
-            .result
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains("not found in node stack")),
-        "error message should indicate node not found, got: {:?}",
-        start_response.result.error_message
-    );
-
-    // Verify that PID is None on failure
-    assert!(
-        start_response.result.pid.is_none(),
-        "node_run should not return a PID on failure"
+    // The start fails because the node was not found
+    assert_failure(
+        start_response.end.failed(),
+        PeppyFailureKind::Rejected,
+        "not found in node stack",
     );
 }
 
@@ -345,15 +321,9 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
     .await
     .expect("node_run action should complete");
 
-    assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
-
     // Verify that the PID is returned on success
     assert!(
-        start_response.result.pid.is_some(),
+        run_result(&start_response).pid.is_some(),
         "node_run should return a PID on success"
     );
 
@@ -421,31 +391,21 @@ async fn listen_for_node_run_writes_log_file() {
     .await
     .expect("node_run action should complete");
 
-    assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
-
     // Verify that the PID is returned on success
     assert!(
-        start_response.result.pid.is_some(),
+        run_result(&start_response).pid.is_some(),
         "node_run should return a PID on success"
     );
 
     // Verify the goal response contains the correct log_path
-    assert!(
-        start_response.goal_response.accepted,
-        "goal should be accepted"
-    );
+    let log_path = &start_response.accepted().log_path;
     assert_run_log_of(
-        &start_response.goal_response.log_path,
+        log_path,
         &started.peppy_dirs.logs_dir_run(),
         TARGET_INSTANCE_ID,
     );
 
     // Verify the log file exists and contains expected content
-    let log_path = &start_response.goal_response.log_path;
     assert!(log_path.exists(), "log file should exist at {:?}", log_path);
 
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
@@ -532,23 +492,12 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
     .expect("node_run action should complete");
 
     // The start should fail due to missing parameters
-    assert!(
-        !start_response.result.success,
-        "node_run should fail due to missing parameters"
+    assert_failure(
+        start_response.end.failed(),
+        PeppyFailureKind::Rejected,
+        "Missing required parameters",
     );
-
-    let error_msg = start_response
-        .result
-        .error_message
-        .as_ref()
-        .expect("error message should be present");
-
-    // Verify the error message contains "Missing required parameters"
-    assert!(
-        error_msg.contains("Missing required parameters"),
-        "error message should indicate missing parameters, got: {}",
-        error_msg
-    );
+    let error_msg = start_response.end.failure_message();
 
     // Verify ALL missing parameters are listed (not just the first one)
     assert!(
@@ -570,12 +519,6 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
         error_msg.contains("video.encoding"),
         "error message should list video.encoding, got: {}",
         error_msg
-    );
-
-    // Verify that PID is None on failure
-    assert!(
-        start_response.result.pid.is_none(),
-        "node_run should not return a PID on failure"
     );
 }
 
@@ -661,23 +604,12 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
     .expect("node_run action should complete");
 
     // The start should fail due to missing video parameters
-    assert!(
-        !start_response.result.success,
-        "node_run should fail due to missing parameters"
+    assert_failure(
+        start_response.end.failed(),
+        PeppyFailureKind::Rejected,
+        "Missing required parameters",
     );
-
-    let error_msg = start_response
-        .result
-        .error_message
-        .as_ref()
-        .expect("error message should be present");
-
-    // Verify the error message contains "Missing required parameters"
-    assert!(
-        error_msg.contains("Missing required parameters"),
-        "error message should indicate missing parameters, got: {}",
-        error_msg
-    );
+    let error_msg = start_response.end.failure_message();
 
     // Verify only the video parameters are listed as missing (device is complete)
     assert!(
@@ -699,12 +631,6 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
         error_msg.contains("video.encoding"),
         "error message should list video.encoding, got: {}",
         error_msg
-    );
-
-    // Verify that PID is None on failure
-    assert!(
-        start_response.result.pid.is_none(),
-        "node_run should not return a PID on failure"
     );
 }
 
@@ -822,11 +748,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     .await
     .expect("second node_run request should complete");
 
-    assert!(
-        second_start_response.result.success,
-        "second node_run should succeed even after first action was abandoned, got error: {:?}",
-        second_start_response.result.error_message
-    );
+    run_result(&second_start_response);
 
     // Verify both instances are registered in the node stack
     let first_instance_id = NodeName::new(FIRST_INSTANCE_ID).expect("valid instance id");
@@ -898,18 +820,11 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
     .await
     .expect("node_run request should complete");
 
-    assert!(
-        !start_response_missing.result.success,
-        "node_run should fail when printout is missing from daemon PATH"
-    );
-    assert!(
-        start_response_missing
-            .result
-            .error_message
-            .as_ref()
-            .is_some_and(|msg| msg.contains("No such file or directory")),
-        "expected a spawn failure, got: {:?}",
-        start_response_missing.result.error_message
+    // The spawn fails when printout is missing from the daemon PATH
+    assert_failure(
+        start_response_missing.end.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "No such file or directory",
     );
 
     // Create a temp bin directory with a `printout` script.
@@ -940,11 +855,8 @@ sleep \"${1:-3}\"
     .await
     .expect("node_run request should complete");
 
-    assert!(
-        start_response.result.success,
-        "node_run should succeed when caller PATH is passed, got error: {:?}",
-        start_response.result.error_message
-    );
+    // The start succeeds when the caller PATH is passed
+    run_result(&start_response);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1004,11 +916,8 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
     .await
     .expect("node_run request should complete");
 
-    assert!(
-        start_response.result.success,
-        "node_run should succeed when runtime env vars are injected, got error: {:?}",
-        start_response.result.error_message
-    );
+    // The start succeeds when the runtime env vars are injected
+    run_result(&start_response);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1106,16 +1015,11 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     .expect("node_run action should complete");
 
     // The start should succeed
+    let result = run_result(&start_response);
     assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
-
-    assert!(
-        start_response.result.pid.is_some_and(|pid| pid > 0),
+        result.pid.is_some_and(|pid| pid > 0),
         "node_run should return a positive PID on success, got {:?}",
-        start_response.result.pid
+        result.pid
     );
 
     // Verify that the instance was added to the node stack
@@ -1127,18 +1031,14 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
 
     // Verify the goal response contains a valid log_path
-    assert!(
-        start_response.goal_response.accepted,
-        "goal should be accepted"
-    );
+    let log_path = &start_response.accepted().log_path;
     assert_run_log_of(
-        &start_response.goal_response.log_path,
+        log_path,
         &started.peppy_dirs.logs_dir_run(),
         TARGET_INSTANCE_ID,
     );
 
     // Verify the log file exists and contains expected content
-    let log_path = &start_response.goal_response.log_path;
     assert!(log_path.exists(), "log file should exist at {:?}", log_path);
 
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
@@ -1274,11 +1174,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     .expect("node_run action should complete");
 
     // The start must succeed: the framework auto-creates the missing dir.
-    assert!(
-        start_response.result.success,
-        "node_run should succeed after auto-creating the bind source, got error: {:?}",
-        start_response.result.error_message
-    );
+    run_result(&start_response);
 
     // The host-side directory must now exist as a directory.
     assert!(
@@ -1288,7 +1184,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
     // The per-instance start log must contain the warning line so that an
     // unintended mkdir (e.g. a typo'd file bind) is visible to the operator.
-    let log_path = &start_response.goal_response.log_path;
+    let log_path = &start_response.accepted().log_path;
     let log_content =
         std::fs::read_to_string(log_path).expect("should be able to read instance start log");
     assert!(
@@ -1396,26 +1292,16 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     .await
     .expect("node_run action should complete");
 
-    // The start should fail because the process exits immediately
-    assert!(
-        !start_response.result.success,
-        "node_run should fail because the container process exits immediately"
-    );
-
-    // The error message should include stderr output from the container process
-    let error_msg = start_response
-        .result
-        .error_message
-        .as_ref()
-        .expect("error_message should be present");
-    assert!(
-        error_msg.contains(STDERR_MARKER),
-        "error should include stderr from the container process, got: {}",
-        error_msg
+    // The start fails because the process exits immediately, and the
+    // failure includes the stderr output of the container process
+    assert_failure(
+        start_response.end.failed(),
+        PeppyFailureKind::AttemptFailed,
+        STDERR_MARKER,
     );
 
     // Verify the log file contains the streamed output
-    let log_path = &start_response.goal_response.log_path;
+    let log_path = &start_response.accepted().log_path;
     assert!(log_path.exists(), "log file should exist at {:?}", log_path);
 
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
@@ -1486,21 +1372,13 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     .await
     .expect("node_run action should complete");
 
-    assert!(
-        !start_response.result.success,
-        "node_run should fail because the binary does not exist"
+    // The start fails because the binary does not exist
+    assert_failure(
+        start_response.end.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "Failed to start node",
     );
-
-    let error_msg = start_response
-        .result
-        .error_message
-        .as_ref()
-        .expect("error_message should be present");
-    assert!(
-        error_msg.contains("Failed to start node"),
-        "error should mention start failure, got: {}",
-        error_msg
-    );
+    let error_msg = start_response.end.failure_message();
     assert!(
         error_msg.contains("nonexistent_binary_peppy_test_xyz"),
         "error should include the command that failed, got: {}",
@@ -1508,7 +1386,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
     );
 
     // The log file should exist and contain the error, not be empty
-    let log_path = &start_response.goal_response.log_path;
+    let log_path = &start_response.accepted().log_path;
     assert!(log_path.exists(), "log file should exist at {:?}", log_path);
 
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
@@ -1589,21 +1467,14 @@ async fn listen_for_node_run_logs_why_a_node_that_exits_before_ready_never_start
     .await
     .expect("node_run action should complete");
 
-    assert!(
-        !start_response.result.success,
-        "node_run should fail because the node exits before it is ready"
-    );
-    let error_msg = start_response
-        .result
-        .error_message
-        .as_ref()
-        .expect("error_message should be present");
-    assert!(
-        error_msg.contains(EXIT_REASON),
-        "error should say the node exited during startup, got: {error_msg}"
+    // The start fails because the node exits before it is ready
+    assert_failure(
+        start_response.end.failed(),
+        PeppyFailureKind::AttemptFailed,
+        EXIT_REASON,
     );
 
-    let log_path = &start_response.goal_response.log_path;
+    let log_path = &start_response.accepted().log_path;
     let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
     assert!(
         log_content
@@ -1672,14 +1543,7 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     .await
     .expect("node_run action should complete");
 
-    assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
-
-    let pid = start_response
-        .result
+    let pid = run_result(&start_response)
         .pid
         .expect("should have a PID on success");
 
@@ -1821,14 +1685,7 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     )
     .await
     .expect("node_run action should complete");
-    assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
-
-    let pid = start_response
-        .result
+    let pid = run_result(&start_response)
         .pid
         .expect("should have a PID on success");
     let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -1967,14 +1824,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
     )
     .await
     .expect("node_run action should complete");
-    assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
-
-    let pid = start_response
-        .result
+    let pid = run_result(&start_response)
         .pid
         .expect("should have a PID on success");
     let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -2117,14 +1967,7 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     )
     .await
     .expect("node_run action should complete");
-    assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
-
-    let pid = start_response
-        .result
+    let pid = run_result(&start_response)
         .pid
         .expect("should have a PID on success");
     let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -2304,11 +2147,7 @@ async fn listen_for_node_run_reports_the_endpoints_a_node_announces() {
     .await;
 
     let start_response = run_panel_node(&started, NODE_NAME, INSTANCE_ID).await;
-    assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
+    let result = run_result(&start_response);
     let expected = vec![core_node_api::InstanceEndpoint {
         label: "panel".to_string(),
         kind: config::node::EndpointKind::Page,
@@ -2321,7 +2160,7 @@ async fn listen_for_node_run_reports_the_endpoints_a_node_announces() {
         expected[0].urls[0], "http://127.0.0.1:8765",
         "loopback first"
     );
-    assert_eq!(start_response.result.endpoints, expected);
+    assert_eq!(result.endpoints, expected);
 
     let instance = started
         .node_stack
@@ -2331,7 +2170,7 @@ async fn listen_for_node_run_reports_the_endpoints_a_node_announces() {
 }
 
 /// A node that declares `panel` but announces nothing fails to start, and
-/// the refusal names the label in the result and in the run log.
+/// the failure names the label, as does the run log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_run_fails_when_a_declared_endpoint_is_never_announced() {
     const NODE_NAME: &str = "silent_panel_node";
@@ -2342,21 +2181,14 @@ async fn listen_for_node_run_fails_when_a_declared_endpoint_is_never_announced()
         add_panel_node_with_services(&started, NODE_NAME, INSTANCE_ID, Vec::new()).await;
 
     let start_response = run_panel_node(&started, NODE_NAME, INSTANCE_ID).await;
-    assert!(
-        !start_response.result.success,
-        "a declared endpoint that is never announced fails the start"
+    // A declared endpoint that is never announced fails the start
+    assert_failure(
+        start_response.end.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "announced endpoints [] but its manifest declares [panel]",
     );
-    let error = start_response
-        .result
-        .error_message
-        .expect("the failure carries its reason");
-    assert!(
-        error.contains("announced endpoints [] but its manifest declares [panel]"),
-        "the refusal names the label: {error}"
-    );
-    assert!(start_response.result.endpoints.is_empty());
-    let run_log = std::fs::read_to_string(&start_response.goal_response.log_path)
-        .expect("the run log exists");
+    let run_log =
+        std::fs::read_to_string(&start_response.accepted().log_path).expect("the run log exists");
     assert!(
         run_log.contains("its manifest declares [panel]"),
         "the run log carries the refusal: {run_log}"
@@ -2390,16 +2222,10 @@ async fn listen_for_node_run_refuses_an_announced_label_the_manifest_does_not_de
     .await;
 
     let start_response = run_panel_node(&started, NODE_NAME, INSTANCE_ID).await;
-    assert!(!start_response.result.success);
-    let error = start_response
-        .result
-        .error_message
-        .expect("the failure carries its reason");
-    assert!(
-        error.contains(
-            "instance 'stray_panel_instance' announced endpoints [admin] but its manifest declares [panel]"
-        ),
-        "the refusal names both sets: {error}"
+    assert_failure(
+        start_response.end.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "instance 'stray_panel_instance' announced endpoints [admin] but its manifest declares [panel]",
     );
 }
 
@@ -2468,11 +2294,7 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
     )
     .await
     .expect("node_run action should complete");
-    assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
+    run_result(&start_response);
 
     std::fs::write(&exit_flag, b"").expect("failed to create the exit flag");
 
@@ -2586,19 +2408,18 @@ async fn a_start_that_fails_before_its_ready_signal_leaves_no_process_of_its_gro
         .await
         .expect("the daemon takes the cancel");
     wait_until_action_completes(&mut goal, Duration::from_secs(60)).await;
-    let result = common::fetch_result(
+    let end = common::fetch_end(
         &started.caller_handle,
         &goal,
         Duration::from_secs(5),
-        core_node_api::encoding::NodeRunResult::decode,
+        NodeRunResult::decode,
         "result",
     )
     .await
-    .expect("the start answers its result");
-    assert!(
-        !result.success,
-        "the start ends without its ready signal: {result:?}"
-    );
+    .expect("the start answers how it ended");
+    // The start ends without its ready signal: the cancel of its caller
+    // ends it.
+    assert_eq!(end.cancel_reason(), "cancelled by its caller");
 
     for process in std::iter::once(pid).chain(children) {
         wait_until_process_exits(
@@ -2636,21 +2457,21 @@ async fn wait_for_feedback_line(goal: &mut peppylib::messaging::ActionGoalHandle
     .unwrap_or_else(|_| panic!("no line with `{text}` arrived"));
 }
 
-/// Waits for the end of `goal` and answers its result.
-async fn start_result(
+/// Waits for the end of `goal` and answers how it ended.
+async fn start_end(
     started: &common::StartedCoreNode,
     goal: &mut peppylib::messaging::ActionGoalHandle,
-) -> core_node_api::encoding::NodeRunResult {
+) -> GoalEnd<NodeRunResult> {
     wait_until_action_completes(goal, Duration::from_secs(60)).await;
-    common::fetch_result(
+    common::fetch_end(
         &started.caller_handle,
         goal,
         Duration::from_secs(5),
-        core_node_api::encoding::NodeRunResult::decode,
+        NodeRunResult::decode,
         "result",
     )
     .await
-    .expect("the start answers its result")
+    .expect("the start answers how it ended")
 }
 
 /// The process whose pid [`forking_leader`] wrote into `pid_file` ends: the
@@ -2719,12 +2540,13 @@ async fn a_start_whose_leader_exits_before_its_ready_signal_leaves_no_process_of
     )
     .await
     .expect("the daemon accepts the start");
-    let result = start_result(&started, &mut goal).await;
+    let end = start_end(&started, &mut goal).await;
 
-    let error = result.error_message.unwrap_or_default();
-    assert!(
-        !result.success && error.contains("node process exited during startup (exit code 3)"),
-        "the start fails with the leader's exit: {error}"
+    // The start fails with the exit of the leader
+    assert_failure(
+        end.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "node process exited during startup (exit code 3)",
     );
     assert_forked_process_ends(&pid_file).await;
 }
@@ -2775,13 +2597,13 @@ async fn a_start_whose_leader_exits_during_its_setup_leaves_no_process_of_its_gr
     .expect("the daemon accepts the start");
     wait_for_feedback_line(&mut goal, "is ready; waiting for its setup").await;
     std::fs::write(files.path().join("forked.pid.exit"), b"").expect("tell the leader to exit");
-    let result = start_result(&started, &mut goal).await;
+    let end = start_end(&started, &mut goal).await;
 
-    let error = result.error_message.unwrap_or_default();
-    assert!(
-        !result.success
-            && error.contains("node process exited before its setup ended (exit code 3)"),
-        "the start fails with the leader's exit: {error}"
+    // The start fails with the exit of the leader
+    assert_failure(
+        end.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "node process exited before its setup ended (exit code 3)",
     );
     assert_forked_process_ends(&pid_file).await;
 }

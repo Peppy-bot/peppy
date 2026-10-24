@@ -196,14 +196,15 @@ pub enum Error {
         instance_id: Option<String>,
         service_name: String,
     },
+    /// The provider gave an error reply: a failure kind and a message.
     #[error(
-        "service '{service_name}'{instance_suffix} returned error: {reason}",
+        "service '{service_name}'{instance_suffix} failed: {failure}",
         instance_suffix = InstanceSuffix(.instance_id.as_deref())
     )]
-    ServiceError {
+    ServiceFailed {
         instance_id: Option<String>,
         service_name: String,
-        reason: String,
+        failure: pmi::Failure,
     },
     #[error(
         "action '{action_name}'{instance_suffix} has timed out waiting for result",
@@ -240,6 +241,39 @@ pub enum Error {
     ActionGoalAbandoned {
         instance_id: Option<String>,
         action_name: String,
+    },
+    /// The goal ended with the status failed: a failure kind and a message,
+    /// and no result.
+    #[error(
+        "action '{action_name}'{instance_suffix} failed the goal: {failure}",
+        instance_suffix = InstanceSuffix(.instance_id.as_deref())
+    )]
+    ActionGoalFailed {
+        instance_id: Option<String>,
+        action_name: String,
+        failure: pmi::Failure,
+    },
+    /// The goal ended with the status cancelled, for the reason its worker
+    /// gave.
+    #[error(
+        "action '{action_name}'{instance_suffix} ended the goal cancelled: {reason}",
+        instance_suffix = InstanceSuffix(.instance_id.as_deref())
+    )]
+    ActionGoalCancelled {
+        instance_id: Option<String>,
+        action_name: String,
+        reason: String,
+    },
+    /// The caller fell behind the goal's feedback by more unread messages
+    /// than its bound. The caller cancelled the goal.
+    #[error(
+        "the caller of action '{action_name}'{instance_suffix} fell behind by more than {bound} unread feedback messages, so it cancelled the goal",
+        instance_suffix = InstanceSuffix(.instance_id.as_deref())
+    )]
+    ActionFeedbackOverflow {
+        instance_id: Option<String>,
+        action_name: String,
+        bound: usize,
     },
     /// See [`Error::ActionGoalAbandoned`]: the goal did finish, but its result
     /// was retained only for a bounded window that has since elapsed.
@@ -443,6 +477,21 @@ pub enum Error {
 
     #[error("message format for `{context}` is not available in the generator")]
     MessageFormatUnavailable { context: String },
+}
+
+impl Error {
+    /// The failure that a provider gave, when this error carries one: the
+    /// error reply of a service, or a failed goal. A refused goal is no
+    /// error: its refusal is the answer of its goal reply
+    /// ([`crate::messaging::ActionGoalReply::refusal`]).
+    pub fn failure(&self) -> Option<&pmi::Failure> {
+        match self {
+            Self::ServiceFailed { failure, .. } | Self::ActionGoalFailed { failure, .. } => {
+                Some(failure)
+            }
+            _ => None,
+        }
+    }
 }
 
 struct InstanceSuffix<'a>(Option<&'a str>);

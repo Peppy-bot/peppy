@@ -9,7 +9,10 @@ use super::super::action::StackChangeContext;
 use super::super::launch::feedback::publish_warning;
 use super::super::launch::{HostedNode, NodeKey, PlannedDeployment, federated};
 use super::super::state::ActiveLaunch;
-use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
+use super::super::{
+    ChangeResult, STACK_QUERY_TIMEOUT, attempt_failed, peer_failure, precondition_failed,
+    resource_unavailable,
+};
 use super::changed_slots::ChangedSlot;
 use super::stack_list_on;
 use config::runtime::CopyName;
@@ -32,7 +35,13 @@ pub(super) async fn node_info_on(
         STACK_QUERY_TIMEOUT,
     )
     .await
-    .map_err(|e| format!("cannot inspect {} on `{host}`: {e}", node.label()))
+    .map_err(|e| {
+        peer_failure(
+            &e,
+            format!("cannot inspect {} on `{host}`: {e}", node.label()),
+        )
+        .into()
+    })
 }
 
 async fn graph_on(
@@ -44,7 +53,7 @@ async fn graph_on(
     }
     let response = stack_list_on(ctx, host).await?;
     serde_json::from_str(&response.graph_json)
-        .map_err(|e| format!("invalid stack report from `{host}`: {e}"))
+        .map_err(|e| attempt_failed(format!("invalid stack report from `{host}`: {e}")).into())
 }
 
 /// What a join checks against the machines it touches.
@@ -122,23 +131,22 @@ pub(super) async fn check_live_stack(
                         })
                 });
             if !tracked {
-                return Err(format!(
+                return Err(precondition_failed(format!(
                     "{}:{} on `{host}` has instances outside this launcher; joining would replace their node. Choose an empty machine or remove that node first",
                     item.node_name, item.node_tag
-                ));
+                )).into());
             }
             let response = node_info_on(ctx, host, &item.key()).await?;
             if !matches!(response, core_node_api::encoding::NodeInfoResponse::Found(info) if info.config_integrity == item.config_sha256)
             {
-                return Err(format!(
+                return Err(precondition_failed(format!(
                     "{}:{} on `{host}` changed since launch; launch the stack again before joining another copy",
                     item.node_name, item.node_tag
-                ));
+                )).into());
             }
             reusable.insert(HostedNode {
                 node: item.key(),
-                core_node: config::runtime::CoreNodeName::new(host)
-                    .map_err(|error| error.to_string())?,
+                core_node: config::runtime::CoreNodeName::new(host).map_err(attempt_failed)?,
             });
         }
         check_instance_names_free(host, &graph, new_ids)?;
@@ -166,10 +174,11 @@ fn check_instance_names_free(
 ) -> ChangeResult<()> {
     for instance in graph.nodes.iter().flat_map(|node| &node.instances) {
         if new_ids.contains(&instance.instance_id) {
-            return Err(format!(
+            return Err(precondition_failed(format!(
                 "instance `{}` already exists on `{host}`; choose another name for the copy",
                 instance.instance_id
-            ));
+            ))
+            .into());
         }
     }
     Ok(())
@@ -200,21 +209,23 @@ pub(super) fn check_grown_slots_running(
                 state @ (core_node_api::InstanceState::Starting
                 | core_node_api::InstanceState::Restarting),
             ) => {
-                return Err(format!(
+                return Err(precondition_failed(format!(
                     "joining grows {}, but `{}` is {state} on `{host}`; join again once it \
                      is running, or join an option whose fragments do not add to that slot",
                     slot.field(),
                     slot.instance_id
-                ));
+                ))
+                .into());
             }
             _ => {
-                return Err(format!(
+                return Err(resource_unavailable(format!(
                     "joining grows {}, but `{}` is not running on `{host}`; launch the \
                      stack again so `{host}` runs it, or join an option whose fragments do \
                      not add to that slot",
                     slot.field(),
                     slot.instance_id
-                ));
+                ))
+                .into());
             }
         }
     }
@@ -243,10 +254,10 @@ fn check_required_instances_present(
             .flat_map(|node| &node.instances)
             .any(|live| live.instance_id == instance.instance_id.as_str())
         {
-            return Err(format!(
+            return Err(resource_unavailable(format!(
                 "required instance `{}` is missing from `{host}`; restore its copy or launch the stack again before adding this one",
                 instance.instance_id
-            ));
+            )).into());
         }
     }
     Ok(())
@@ -263,7 +274,9 @@ pub(super) async fn live_machines(
     if !placements.is_federated() {
         return Ok(BTreeSet::from([ctx.bound_core_node.clone()]));
     }
-    federated::live_core_nodes(ctx).await
+    federated::live_core_nodes(ctx)
+        .await
+        .map_err(|reason| resource_unavailable(reason).into())
 }
 
 /// Whether `slot`'s instance runs on one of the `live` machines, which
@@ -283,7 +296,7 @@ pub(super) fn check_hosts_live(
     slots: &[ChangedSlot],
     placements: &Placements,
     live: &BTreeSet<String>,
-) -> Result<(), String> {
+) -> ChangeResult<()> {
     let Some(slot) = slots
         .iter()
         .find(|slot| !runs_on_live_machine(slot, placements, live))
@@ -291,7 +304,7 @@ pub(super) fn check_hosts_live(
         return Ok(());
     };
     let host = slot.host(placements);
-    Err(format!(
+    Err(resource_unavailable(format!(
         "joining `{copy}` would add members to {} on `{host}`, which is not live on the \
          federation. Bring `{host}`'s daemon back, logged into this workspace: if it still runs \
          `{}`, join again; if it does not, launch the stack again. Or join an option whose \
@@ -299,6 +312,7 @@ pub(super) fn check_hosts_live(
         slot.field(),
         slot.instance_id
     ))
+    .into())
 }
 
 /// Tells the operator which sets a removal left untouched because the machine
@@ -346,11 +360,16 @@ mod tests {
         let graph = graph_holding(&[("alpha_arm_inst", InstanceState::Failed)]);
 
         let taken = HashSet::from(["alpha_arm_inst".to_owned()]);
+        let refusal = check_instance_names_free("cn-robot", &graph, &taken)
+            .unwrap_err()
+            .failure()
+            .clone();
         assert_eq!(
-            check_instance_names_free("cn-robot", &graph, &taken).unwrap_err(),
+            refusal.message(),
             "instance `alpha_arm_inst` already exists on `cn-robot`; choose another name for the \
              copy"
         );
+        assert_eq!(refusal.kind().as_str(), "precondition_failed");
         let fresh = HashSet::from(["bravo_arm_inst".to_owned()]);
         check_instance_names_free("cn-robot", &graph, &fresh).expect("a fresh name passes");
     }
@@ -384,12 +403,15 @@ mod tests {
             &placements,
             &required,
         )
-        .unwrap_err();
+        .unwrap_err()
+        .failure()
+        .clone();
         assert_eq!(
-            error,
+            error.message(),
             "required instance `arm_inst` is missing from `cn-robot`; restore its copy or launch \
              the stack again before adding this one"
         );
+        assert_eq!(error.kind().as_str(), "resource_unavailable");
         check_required_instances_present(
             "cn-robot",
             &graph_holding(&[("arm_inst", InstanceState::Running)]),

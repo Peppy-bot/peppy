@@ -1,5 +1,8 @@
 use super::*;
 use crate::policy::{ImageCodec, OversizePolicy};
+use peppy_config_model::failure_kind::{
+    ContractAction, ContractFailureKinds, ContractMembers, ContractService,
+};
 use serde::Deserialize;
 use std::num::NonZeroU64;
 use std::path::Path;
@@ -17,13 +20,17 @@ const RECORDING_CONTRACT: &str =
 /// and members, with the fingerprint of the bytes it was parsed from.
 struct Fixture {
     sha256: ManifestFingerprint,
-    document: ContractDocument,
+    manifest: ContractManifest,
+    topics: Vec<NativeEmittedTopic>,
+    members: ContractMembers,
 }
 
 #[derive(Deserialize)]
 struct ContractDocument {
     manifest: ContractManifest,
-    interfaces: ContractMembers,
+    #[serde(default)]
+    failure_kinds: ContractFailureKinds,
+    interfaces: DocumentMembers,
 }
 
 #[derive(Deserialize)]
@@ -34,25 +41,26 @@ struct ContractManifest {
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct ContractMembers {
+struct DocumentMembers {
     topics: Vec<NativeEmittedTopic>,
-    services: Vec<NativeExposedService>,
-    actions: Vec<NativeExposedAction>,
+    services: Vec<ContractService>,
+    actions: Vec<ContractAction>,
 }
 
 impl Fixture {
     fn members(&self) -> DeclaredMembers<'_> {
         DeclaredMembers {
-            topics: &self.document.interfaces.topics,
-            services: &self.document.interfaces.services,
-            actions: &self.document.interfaces.actions,
+            topics: &self.topics,
+            services: &self.members.services,
+            actions: &self.members.actions,
+            failure_kinds: &self.members.failure_kinds,
         }
     }
 
     fn resolved(&self) -> ResolvedContract<'_> {
         ResolvedContract {
-            name: &self.document.manifest.name,
-            tag: &self.document.manifest.tag,
+            name: &self.manifest.name,
+            tag: &self.manifest.tag,
             sha256: &self.sha256,
             members: self.members(),
         }
@@ -62,8 +70,8 @@ impl Fixture {
     /// with no fingerprint.
     fn interface(&self) -> ResolvedInterface<'_> {
         ResolvedInterface {
-            name: &self.document.manifest.name,
-            tag: &self.document.manifest.tag,
+            name: &self.manifest.name,
+            tag: &self.manifest.tag,
             members: self.members(),
         }
     }
@@ -78,9 +86,17 @@ fn slot<M>(bound: &BoundMember<M>) -> &BundleContractPin {
 }
 
 fn fixture(contract_json5: &str) -> Fixture {
+    let document: ContractDocument = serde_json5::from_str(contract_json5).expect("fixture parses");
     Fixture {
         sha256: ManifestFingerprint::of_bytes(contract_json5.as_bytes()),
-        document: serde_json5::from_str(contract_json5).expect("fixture parses"),
+        manifest: document.manifest,
+        topics: document.interfaces.topics,
+        members: ContractMembers::new(
+            document.failure_kinds,
+            document.interfaces.services,
+            document.interfaces.actions,
+        )
+        .expect("each member of the fixture lists declared kinds"),
     }
 }
 
@@ -215,6 +231,55 @@ fn every_entry_is_bound_to_the_member_it_was_validated_against() {
     let (_, recording) = validated.tasks().next().expect("one task");
     assert_eq!(slot(recording).name, "episode_recording");
     assert_eq!(slot(recording).link_id, "recorder");
+}
+
+#[test]
+fn every_entry_is_bound_to_the_failure_kinds_of_its_member() {
+    // The recorder declares a kind of its own, which `record_episode`
+    // lists; the camera declares none.
+    let recording = RECORDING_CONTRACT
+        .replacen(
+            r#"manifest: { name: "episode_recording", tag: "v1" },"#,
+            r#"manifest: { name: "episode_recording", tag: "v1" },
+    failure_kinds: { disk_full: "The dataset disk is full" },"#,
+            1,
+        )
+        .replacen(
+            r#"name: "record_episode","#,
+            r#"name: "record_episode",
+                failure_kinds: ["disk_full"],"#,
+            1,
+        );
+    assert_ne!(
+        recording, RECORDING_CONTRACT,
+        "the block lands in the fixture"
+    );
+    let validated = validate(
+        &recorder_exposure(&recording, "record_episode", "deadline_ms: 60000"),
+        &[&fixture(&recording)],
+    );
+    let (_, recorder) = validated.tasks().next().expect("one task");
+    assert!(recorder.failure_kinds.allows("disk_full"));
+    assert!(
+        recorder.failure_kinds.allows("timeout"),
+        "every member can give the kinds of peppy"
+    );
+    assert!(!recorder.failure_kinds.allows("unreachable"));
+
+    let finishing = validate(
+        &recorder_exposure(&recording, "finish_session", "deadline_ms: 60000"),
+        &[&fixture(&recording)],
+    );
+    let (_, finish) = finishing.tasks().next().expect("one task");
+    assert_eq!(
+        finish.failure_kinds,
+        MemberFailureKinds::peppy_only(),
+        "a member that lists no kind of its contract gives the kinds of peppy"
+    );
+
+    let camera = validate(&camera_exposure(INFO_TOOL), &[&fixture(CAMERA_CONTRACT)]);
+    let (_, info) = camera.tools().next().expect("one tool");
+    assert_eq!(info.failure_kinds, MemberFailureKinds::peppy_only());
 }
 
 #[test]
@@ -1264,8 +1329,6 @@ const VIEW_CONTRACT: &str = r#"{
                     target: { $type: "array", $items: "f64" },
                 },
                 response_message_format: {
-                    success: "bool",
-                    message: "string",
                     encoding: "string",
                     width: "u32",
                     height: "u32",
@@ -1333,12 +1396,12 @@ fn a_pictured_service_publishes_the_schema_of_its_document_and_the_bundle_carrie
             .expect("object schema")
             .keys()
             .collect::<Vec<_>>(),
-        ["success", "message", "encoding", "width", "height"],
+        ["encoding", "width", "height"],
         "the document leaves out the member the picture carries"
     );
     assert_eq!(
         look.output_schema["required"],
-        serde_json::json!(["success", "message", "encoding", "width", "height"])
+        serde_json::json!(["encoding", "width", "height"])
     );
     assert_eq!(
         look.input_schema["properties"]
@@ -1376,7 +1439,7 @@ fn a_pictured_service_needs_its_representation_fields_in_the_response() {
         &view_exposure(
             r#"representation: {
                 image: "jpeg",
-                fields: { data: "picture", encoding: "encoding", width: "width", height: "message" },
+                fields: { data: "picture", encoding: "encoding", width: "width", height: "encoding" },
             },"#,
         ),
         &[&fixture(VIEW_CONTRACT)],
@@ -1388,7 +1451,7 @@ fn a_pictured_service_needs_its_representation_fields_in_the_response() {
         "{violations:?}"
     );
     assert!(
-        violations[1].contains("`height` names `message`")
+        violations[1].contains("`height` names `encoding`")
             && violations[1].contains("`u8`, `u16`, or `u32`"),
         "{violations:?}"
     );

@@ -8,4 +8,4 @@ from . import exposed_actions
 from . import consumed_actions
 from . import paired_topics
 
-from peppylib import QoSProfile, NodeBuilder, NodeRunner, StandaloneConfig
+from peppylib import NodeBuilder, NodeRunner, StandaloneConfig

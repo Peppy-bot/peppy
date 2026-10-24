@@ -10,6 +10,25 @@ use std::time::{Duration, Instant};
 
 pub const TEST_NODE_TAG: &str = "v1";
 
+/// Asserts that the CLI error `err` names the failure `kind` that the daemon
+/// gave, as "({kind})", and that it contains `text`.
+#[track_caller]
+pub fn assert_daemon_failure(
+    err: &impl std::fmt::Display,
+    kind: config::failure_kind::PeppyFailureKind,
+    text: &str,
+) {
+    let message = err.to_string();
+    assert!(
+        message.contains(&format!("({})", kind.name())),
+        "the error does not name the failure kind `{kind}`: {message}"
+    );
+    assert!(
+        message.contains(text),
+        "the error does not contain {text:?}: {message}"
+    );
+}
+
 /// The caller a test names itself in a request to the daemon.
 pub const CALLER_INSTANCE_ID: &str = "peppy-test";
 
@@ -162,6 +181,130 @@ pub fn wait_for_boot(daemon: &mut DaemonGuard, logs: &Arc<Mutex<String>>, ready:
         }
         snapshot.contains(ready).then_some(Boot::Ready)
     })
+}
+
+/// A daemon on its own home and zenoh port, spawned from the `peppy`
+/// binary: the `peppy` commands a test runs reach it as second processes.
+/// Linux only: the managed zenohd is what lets a second process reach the
+/// daemon.
+#[cfg(target_os = "linux")]
+pub struct ZenohDaemon {
+    pub home: tempfile::TempDir,
+    pub port: u16,
+    pub guard: DaemonGuard,
+    pub logs: Arc<Mutex<String>>,
+}
+
+#[cfg(target_os = "linux")]
+impl ZenohDaemon {
+    /// Boots a daemon whose config file holds its core node name and
+    /// `config_fields`, with `envs` added to its environment. `prepare`
+    /// writes the other files of its home before the boot. A port that
+    /// another process takes first gets a new home and port, up to
+    /// [`PORT_ATTEMPTS`] times.
+    pub fn boot(
+        core_node_name: &str,
+        config_fields: &str,
+        envs: &[(&str, &str)],
+        prepare: impl Fn(&daemon_config::consts::PeppyDirs),
+    ) -> Self {
+        for _ in 0..PORT_ATTEMPTS {
+            let home = tempfile::tempdir().expect("temp home");
+            let dirs = daemon_config::consts::PeppyDirs::new(home.path());
+            std::fs::create_dir_all(dirs.conf_dir()).expect("create the conf dir");
+            std::fs::write(
+                dirs.conf_dir().join("peppy_config.json5"),
+                format!("{{ core_node_name: \"{core_node_name}\", {config_fields} }}\n"),
+            )
+            .expect("write the config");
+            prepare(&dirs);
+
+            let port = free_port();
+            let (mut guard, logs) =
+                spawn_daemon_with_env(home.path(), MessagingEngine::Zenoh { port }, envs);
+            if let Boot::Ready = wait_for_boot(&mut guard, &logs, SERVE_INITIALIZED) {
+                return Self {
+                    home,
+                    port,
+                    guard,
+                    logs,
+                };
+            }
+        }
+        panic!("{PORT_ATTEMPTS} attempts in a row hit a port collision");
+    }
+
+    pub fn dirs(&self) -> daemon_config::consts::PeppyDirs {
+        daemon_config::consts::PeppyDirs::new(self.home.path())
+    }
+
+    /// The command `peppy` with `args` against this daemon, not started yet.
+    pub fn peppy_command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_peppy"));
+        command
+            .args(args)
+            .env(config::consts::PEPPY_HOME_ENV, self.home.path())
+            .env(
+                daemon_config::consts::PEPPY_MESSAGING_PORT_VAR_NAME,
+                self.port.to_string(),
+            )
+            .env_remove("ZENOH_CONFIG")
+            .env_remove(config::consts::PEPPY_CONFIG_ENV);
+        command
+    }
+
+    /// Runs `peppy` with `args` against this daemon. Returns whether it
+    /// succeeded and what it printed.
+    pub fn peppy_outcome(&self, args: &[&str]) -> (bool, String) {
+        let output = self.peppy_command(args).output().expect("run peppy");
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (output.status.success(), printed)
+    }
+
+    /// Runs `peppy` with `args` against this daemon, which succeeds. Returns
+    /// what it printed.
+    pub fn peppy(&self, args: &[&str]) -> String {
+        let (success, printed) = self.peppy_outcome(args);
+        assert!(
+            success,
+            "`peppy {}` failed:\n{printed}\nDaemon output:\n{}",
+            args.join(" "),
+            self.logs.lock().unwrap()
+        );
+        printed
+    }
+
+    /// Stages `manifest` as the node `name` in a new nodes directory. Returns
+    /// the nodes directory, which the caller holds for as long as the daemon
+    /// may read the node, and the node directory.
+    pub fn install_node(
+        &self,
+        name: &str,
+        manifest: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
+        let nodes = tempfile::tempdir().expect("temp nodes dir");
+        // A node directory is added by the binary that generated its code.
+        let git_hash =
+            read_daemon_git_hash(&daemon::state::DaemonState::state_file_in(self.home.path()));
+        let node_dir = install_node_manifest(nodes.path(), name, &git_hash, manifest);
+        (nodes, node_dir)
+    }
+
+    /// Stops the daemon with SIGTERM and waits for it to exit. Returns its
+    /// home and what it printed.
+    pub fn stop(mut self, exit_bound: Duration) -> (tempfile::TempDir, String) {
+        let pid = rustix::process::Pid::from_child(&self.guard.0);
+        rustix::process::kill_process(pid, rustix::process::Signal::TERM)
+            .expect("signal the daemon");
+        let status = wait_for_exit(&mut self.guard.0, exit_bound);
+        let printed = self.logs.lock().unwrap().clone();
+        assert!(status.success(), "the daemon exits cleanly:\n{printed}");
+        (self.home, printed)
+    }
 }
 
 /// Polls `probe` until it yields a value, or panics after `bound` naming `what`.

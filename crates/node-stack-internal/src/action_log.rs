@@ -53,9 +53,17 @@ pub struct ActionLog {
 
 struct Inner {
     exporter: LogExporter,
-    /// The timestamp in the name of the file, when its name holds one.
-    file_timestamp: Option<String>,
     state: Mutex<State>,
+}
+
+/// What a new log file does when a file of its name exists.
+#[derive(Debug, Clone, Copy)]
+enum ExistingFile {
+    /// The new file takes the next free name beside it: the name holds a
+    /// timestamp, and each log keeps its own file.
+    KeepBeside,
+    /// The new file replaces it: the name is fixed.
+    Replace,
 }
 
 struct State {
@@ -85,7 +93,7 @@ impl ActionLog {
         exporter: LogExporter,
     ) -> Result<Self, String> {
         let filename = LogFileName::parse(filename.to_owned())?;
-        Self::create_as(dir, filename, None, exporter, |path| {
+        Self::create_as(dir, filename, ExistingFile::Replace, exporter, |path| {
             LogIdentity::new(kind, path)
         })
     }
@@ -102,7 +110,7 @@ impl ActionLog {
         Self::create_as(
             &peppy_dirs.logs_dir_launch(),
             filename,
-            Some(timestamp),
+            ExistingFile::KeepBeside,
             exporter,
             |path| LogIdentity::new(LogKind::Launch { action }, path).with_launch(launch_id),
         )
@@ -110,7 +118,7 @@ impl ActionLog {
 
     /// The add log of a source, `{label}_{timestamp}.log`. `node` is the
     /// `(name, tag)` of the node the source names, when it names one;
-    /// [`Self::rename_for_node`] names the node once its config is read.
+    /// [`Self::name_node`] names the node once its config is read.
     pub fn for_add(
         peppy_dirs: &PeppyDirs,
         exporter: LogExporter,
@@ -141,7 +149,7 @@ impl ActionLog {
         Self::create_as(
             &peppy_dirs.logs_dir_add(),
             filename,
-            Some(timestamp),
+            ExistingFile::KeepBeside,
             exporter,
             |path| {
                 let identity = LogIdentity::new(LogKind::Add, path).with_launch(launch_id);
@@ -166,7 +174,7 @@ impl ActionLog {
         Self::create_as(
             &peppy_dirs.logs_dir_build(),
             filename,
-            Some(timestamp),
+            ExistingFile::KeepBeside,
             exporter,
             |path| {
                 LogIdentity::new(LogKind::Build, path)
@@ -193,7 +201,7 @@ impl ActionLog {
         Self::create_as(
             &peppy_dirs.logs_dir_run(),
             filename,
-            Some(timestamp),
+            ExistingFile::KeepBeside,
             exporter,
             |path| {
                 LogIdentity::new(LogKind::Run, path)
@@ -204,21 +212,20 @@ impl ActionLog {
         )
     }
 
-    /// Creates the log file, and `dir` when it is absent. A file whose name
-    /// holds a timestamp is created beside a file of the same name, under the
-    /// next free name; a file under a fixed name replaces the last one.
+    /// Creates the log file, and `dir` when it is absent. `existing` says
+    /// what the file does when a file of its name exists.
     fn create_as(
         dir: &Path,
         filename: LogFileName,
-        file_timestamp: Option<String>,
+        existing: ExistingFile,
         exporter: LogExporter,
         identify: impl FnOnce(PathBuf) -> LogIdentity,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("Failed to create logs directory: {e}"))?;
-        let (file, path) = match file_timestamp {
-            Some(_) => create_free(dir, &filename),
-            None => {
+        let (file, path) = match existing {
+            ExistingFile::KeepBeside => create_free(dir, &filename),
+            ExistingFile::Replace => {
                 let path = dir.join(filename.as_str());
                 File::create(&path).map(|file| (file, path))
             }
@@ -232,7 +239,6 @@ impl ActionLog {
         Ok(Self {
             inner: Arc::new(Inner {
                 exporter,
-                file_timestamp,
                 state: Mutex::new(state),
             }),
         })
@@ -243,11 +249,10 @@ impl ActionLog {
         self.inner.state.lock().identity.file_path.clone()
     }
 
-    /// Names the log after the node it turned out to belong to: every later
-    /// line belongs to the node, and a file whose name holds a timestamp
-    /// becomes `{name}_{tag}_{timestamp}.log` in the same directory. A file
-    /// that cannot be renamed keeps its name.
-    pub fn rename_for_node(&self, name: &str, tag: &str) {
+    /// Names the node the log turned out to belong to: every later line
+    /// belongs to the node. The file keeps its path, which the daemon gives
+    /// its client when it accepts the goal.
+    pub fn name_node(&self, name: &str, tag: &str) {
         let mut state = self.inner.state.lock();
         let names_the_node = state
             .identity
@@ -257,20 +262,7 @@ impl ActionLog {
         if names_the_node {
             return;
         }
-        let current = state.identity.file_path.clone();
-        let file_path = self
-            .inner
-            .file_timestamp
-            .as_ref()
-            .map(|timestamp| format!("{name}_{tag}_{timestamp}.log"))
-            .and_then(|filename| LogFileName::parse(filename).ok())
-            .and_then(|filename| move_to_free_name(&current, &filename).ok())
-            .unwrap_or(current);
-        let identity = LogIdentity {
-            file_path,
-            ..(*state.identity).clone()
-        };
-        state.identity = Arc::new(identity.with_node(name, tag));
+        state.identity = Arc::new((*state.identity).clone().with_node(name, tag));
     }
 
     /// Writes a line captured from a node or a build.
@@ -384,27 +376,6 @@ fn create_free(dir: &Path, filename: &LogFileName) -> std::io::Result<(File, Pat
         let path = candidates.next().expect("the names never run out");
         match File::create_new(&path) {
             Ok(file) => return Ok((file, path)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-/// Moves the file at `current` to `filename` in its directory, or to the
-/// first of `filename`'s free names: a link to the new name is made first,
-/// which fails when the name is taken, so no file is replaced.
-fn move_to_free_name(current: &Path, filename: &LogFileName) -> std::io::Result<PathBuf> {
-    let dir = current
-        .parent()
-        .ok_or_else(|| std::io::Error::other("a log file has a directory"))?;
-    let mut candidates = free_names(dir, filename);
-    loop {
-        let path = candidates.next().expect("the names never run out");
-        match std::fs::hard_link(current, &path) {
-            Ok(()) => {
-                std::fs::remove_file(current)?;
-                return Ok(path);
-            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
@@ -917,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn an_add_log_takes_the_name_of_its_node_once_the_node_is_known() {
+    fn an_add_log_names_its_node_once_the_node_is_known_and_keeps_its_file() {
         let root = tempfile::tempdir().unwrap();
         let dirs = PeppyDirs::new(root.path());
         let (exporter, mut receiver) = LogExporter::channel(None);
@@ -928,17 +899,13 @@ mod tests {
             "source_########_######_###.log"
         );
         log.note("Cloning repository");
-        log.rename_for_node("camera", "v");
+        log.name_node("camera", "v");
         log.note("Resolved dependency");
         // The same values again change nothing.
-        log.rename_for_node("camera", "v");
+        log.name_node("camera", "v");
 
-        let renamed = log.path();
-        assert_eq!(
-            file_name_pattern(&renamed),
-            "camera_v_########_######_###.log"
-        );
-        assert!(!created.exists());
+        assert_eq!(log.path(), created);
+        assert!(created.exists());
         assert_eq!(
             lines_without_time(&log),
             [
@@ -949,11 +916,11 @@ mod tests {
         let records = records(&mut receiver);
         assert_eq!(
             *records[0].identity,
-            LogIdentity::new(LogKind::Add, created)
+            LogIdentity::new(LogKind::Add, created.clone())
         );
         assert_eq!(
             *records[1].identity,
-            LogIdentity::new(LogKind::Add, renamed).with_node("camera", "v")
+            LogIdentity::new(LogKind::Add, created).with_node("camera", "v")
         );
     }
 
@@ -969,20 +936,13 @@ mod tests {
             ActionLog::for_add_at(&dirs, exporter.clone(), "source", None, None, stamp()).unwrap();
         batch.note("Adding camera:v");
         sub_add.note("Cloning repository");
-        // Both turn out to belong to the same node.
-        batch.rename_for_node("camera", "v");
-        sub_add.rename_for_node("camera", "v");
-        sub_add.rename_for_node("camera", "v");
         batch.note("Batch add complete");
 
         let add_dir = dirs.logs_dir_add();
-        assert_eq!(
-            batch.path(),
-            add_dir.join("camera_v_20260101_000000_000.log")
-        );
+        assert_eq!(batch.path(), add_dir.join("source_20260101_000000_000.log"));
         assert_eq!(
             sub_add.path(),
-            add_dir.join("camera_v_20260101_000000_000-2.log")
+            add_dir.join("source_20260101_000000_000-2.log")
         );
         assert_eq!(
             lines_without_time(&batch),
@@ -991,39 +951,6 @@ mod tests {
         assert_eq!(
             lines_without_time(&sub_add),
             ["[stdout] Cloning repository"]
-        );
-        let mut names: Vec<String> = std::fs::read_dir(&add_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        assert_eq!(
-            names,
-            [
-                "camera_v_20260101_000000_000-2.log",
-                "camera_v_20260101_000000_000.log",
-            ]
-        );
-    }
-
-    #[test]
-    fn a_rename_to_a_name_that_is_no_file_name_keeps_the_file_and_names_the_node() {
-        let root = tempfile::tempdir().unwrap();
-        let dirs = PeppyDirs::new(root.path());
-        let (exporter, mut receiver) = LogExporter::channel(None);
-        let log = ActionLog::for_add(&dirs, exporter, "source", None, None).unwrap();
-        let created = log.path();
-
-        log.rename_for_node("camera", "v1/../../etc");
-        log.note("Resolved dependency");
-
-        assert_eq!(log.path(), created);
-        assert!(created.exists());
-        let record = &records(&mut receiver)[0];
-        assert_eq!(record.identity.file_path, created);
-        assert_eq!(
-            record.identity.node.as_ref().map(|node| node.tag.as_str()),
-            Some("v1/../../etc")
         );
     }
 

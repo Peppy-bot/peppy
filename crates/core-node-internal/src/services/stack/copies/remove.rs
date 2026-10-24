@@ -16,7 +16,10 @@ use super::super::launch::preflight::preflight_change;
 use super::super::launch::watchers::{LifecycleWatchers, lifecycle_watchers, watchers_replacing};
 use super::super::launch::{PlannedDeployment, federated};
 use super::super::state::{ActiveLaunch, StackCopy};
-use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
+use super::super::{
+    ChangeEnd, ChangeResult, STACK_QUERY_TIMEOUT, attempt_failed, peer_failure,
+    precondition_failed, rejected,
+};
 use super::changed_slots::{
     Change, ChangedSlot, UNDELIVERED_REMEDY, changed_slots, check_not_emptied, deliver_sets,
     holds_any, whole_sets,
@@ -27,14 +30,17 @@ use super::{
     plan::{planned_from, selected_instances},
     stack_list_on,
 };
+use crate::services::action_loop::WorkStop;
 use crate::services::node::{named_instances, stop_named_instance};
+use crate::services::response::rephrased;
 use config::runtime::{CopyName, Name};
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, ParticipantInstancesRemoveRequest, StackListResponse,
     StackRemoveGoal,
 };
-use daemon_config::launcher::{CopyMembership, DeploymentInstance, Placements};
+use daemon_config::launcher::{CompositionError, CopyMembership, DeploymentInstance, Placements};
 use peppylib::core_node::transport::poll;
+use peppylib::messaging::Failure;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Duration;
 
@@ -50,14 +56,19 @@ pub fn copy_removal_budget(shutdown_grace_secs: u64, instances: usize) -> Durati
 /// it, whether or not the time source could be told. The instances on a
 /// machine that is off the federation stay for that machine's `stack
 /// reset`, and the copy leaves the record too.
+///
+/// A cancel stops the removal before its first change to a machine and
+/// before its next stop, as a stop that fails does: the copy stays in the
+/// record, and `stack remove` stops what is left of it.
 pub(in crate::services::stack) async fn remove(
     goal: StackRemoveGoal,
     ctx: StackChangeContext,
-) -> LaunchResult {
-    change_active_launch(&ctx, async |active| {
+) -> ChangeEnd {
+    let outcome = change_active_launch(&ctx, async |active| {
         remove_inner(&goal.name, active, &ctx).await
     })
-    .await
+    .await;
+    ChangeEnd::without_node_logs(outcome.map(|()| LaunchResult::default()))
 }
 
 async fn remove_inner(
@@ -66,7 +77,9 @@ async fn remove_inner(
     ctx: &StackChangeContext,
 ) -> ChangeResult<()> {
     let copy = active.copies.get(name).cloned().ok_or_else(|| {
-        format!("copy `{name}` is absent; peppy stack list shows the copies on the stack")
+        rejected(format!(
+            "copy `{name}` is absent; peppy stack list shows the copies on the stack"
+        ))
     })?;
     let staying: Vec<_> = active
         .copy_records()
@@ -76,9 +89,10 @@ async fn remove_inner(
     let remaining = active
         .prepared
         .remove(&active.flat, &copy.record, &active.selection, &staying)
-        .map_err(|e| e.to_string())?;
-    let shrunk_slots = changed_slots(&copy.record, &active.planned, Change::Removal)?;
-    check_not_emptied(&copy.record, &shrunk_slots, &remaining)?;
+        .map_err(composition_failure)?;
+    let shrunk_slots =
+        changed_slots(&copy.record, &active.planned, Change::Removal).map_err(rejected)?;
+    check_not_emptied(&copy.record, &shrunk_slots, &remaining).map_err(precondition_failed)?;
     let removed: HashSet<_> = copy.record.instance_ids().map(Name::as_str).collect();
     let remaining_planned = planned_from(&remaining, active.resolved.iter());
     let copies = CopyMembership::of(&staying);
@@ -102,7 +116,7 @@ async fn remove_inner(
             &copies,
         );
         if !consumers.is_empty() {
-            return Err(consumers.refusal(name, &removed_domains));
+            return Err(precondition_failed(consumers.refusal(name, &removed_domains)).into());
         }
     }
     let ValidatedPlan {
@@ -116,8 +130,9 @@ async fn remove_inner(
         &copies,
         &active.resolved_clocks,
     )
-    .await?;
-    let watchers = lifecycle_watchers(&observations, &active.placements)?;
+    .await
+    .map_err(rejected)?;
+    let watchers = lifecycle_watchers(&observations, &active.placements).map_err(rejected)?;
     let repointed = watchers_replacing(&active.watchers, &watchers);
     let live = live_machines(ctx, &active.placements).await?;
     // The machines the removal acts on: the copy's own, those of the sources
@@ -142,6 +157,9 @@ async fn remove_inner(
         .partition(|slot| states.stops_on(slot.host(&active.placements)));
     let shrunk_sets = whole_sets(&reachable_slots, &bindings, &observations);
     let touched = removal_deployments(active, &copy, &states, &repointed, &reachable_slots);
+    // A cancel before the reservations stops the removal while it has cost
+    // nothing.
+    ctx.stop_if_cancelled()?;
     let change = preflight_change(
         ctx,
         &active.launch_id,
@@ -151,8 +169,19 @@ async fn remove_inner(
     )
     .await?;
     let outcome = async {
+        // The last check before the first step that changes a machine: a
+        // removal with no stop to make reads the cancel here too.
+        ctx.stop_if_cancelled()?;
         report_machines_left(ctx, active, &copy, &states).await;
-        stop_copy(ctx, &active.launch_id, &copy, &active.placements, &states).await?;
+        stop_copy(
+            ctx,
+            &active.launch_id,
+            &copy,
+            &active.placements,
+            &states,
+            StopsOnCancel::End,
+        )
+        .await?;
         active.copies.remove(name);
         active.flat = remaining;
         active.planned = remaining_planned;
@@ -186,7 +215,7 @@ async fn remove_inner(
         for instance in &removed {
             active.resolved_clocks.remove(instance);
         }
-        Ok::<_, String>(())
+        Ok::<_, WorkStop>(())
     }
     .await;
     change.reserved.release().await;
@@ -307,7 +336,12 @@ impl MachineState {
             return Ok(Self::Cleared);
         }
         let graph: core_node_api::SerializedNodeGraph = serde_json::from_str(&listed.graph_json)
-            .map_err(|e| format!("invalid stack report from `{}`: {e}", listed.core_node))?;
+            .map_err(|e| {
+                attempt_failed(format!(
+                    "invalid stack report from `{}`: {e}",
+                    listed.core_node
+                ))
+            })?;
         Ok(Self::Holding {
             shutdown_grace_secs: listed.shutdown_grace_secs,
             held: graph
@@ -450,10 +484,11 @@ fn stops<'a>(
 
 /// The progress of a removal's stops: a stop that fails records one error
 /// for its machine, and the later stops on that machine are skipped; the
-/// other machines still stop. The errors come back together.
+/// other machines still stop. The errors come back together, with the kind
+/// of the first.
 #[derive(Debug, Default)]
 struct StopWalk<'a> {
-    failed: BTreeMap<&'a str, String>,
+    failed: BTreeMap<&'a str, Failure>,
 }
 
 impl<'a> StopWalk<'a> {
@@ -462,18 +497,35 @@ impl<'a> StopWalk<'a> {
         self.failed.contains_key(machine)
     }
 
-    fn record(&mut self, machine: &'a str, outcome: ChangeResult<()>) {
+    fn record(&mut self, machine: &'a str, outcome: Result<(), Failure>) {
         if let Err(error) = outcome {
             self.failed.insert(machine, error);
         }
     }
 
     fn finish(self) -> ChangeResult<()> {
-        if self.failed.is_empty() {
+        let failures: Vec<Failure> = self.failed.into_values().collect();
+        let Some(first) = failures.first() else {
             return Ok(());
-        }
-        Err(self.failed.into_values().collect::<Vec<_>>().join("; "))
+        };
+        let message = failures
+            .iter()
+            .map(Failure::message)
+            .collect::<Vec<_>>()
+            .join("; ");
+        Err(rephrased(first, message).into())
     }
+}
+
+/// What a cancel of the stack goal does to the stops of a copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StopsOnCancel {
+    /// A removal ends at the cancel, before its next stop: the copy stays,
+    /// as a removal whose stop fails leaves it.
+    End,
+    /// The undo of a join stops every instance: a cancel is one of the
+    /// failures that start the undo.
+    Continue,
 }
 
 /// Stops the copy's instances, the last started first, one at a time across
@@ -483,18 +535,23 @@ impl<'a> StopWalk<'a> {
 /// it holds stops through one request within that machine's bound on a stop,
 /// after a line. An instance on a machine that is not live, or that
 /// holds no slice of this launch, is not stopped. A stop that fails skips
-/// the later stops on its machine, and the others still run.
+/// the later stops on its machine, and the others still run. `on_cancel`
+/// says whether a cancel of the goal ends the stops before the next one.
 pub(super) async fn stop_copy(
     ctx: &StackChangeContext,
     launch_id: &str,
     copy: &StackCopy,
     placements: &Placements,
     states: &MachineStates,
+    on_cancel: StopsOnCancel,
 ) -> ChangeResult<()> {
     let coordinator = ctx.bound_core_node.as_str();
     let planned = stops(copy, placements, states, coordinator);
     let mut walk = StopWalk::default();
     for stop in &planned {
+        if on_cancel == StopsOnCancel::End {
+            ctx.stop_if_cancelled()?;
+        }
         let machine = stop.machine(coordinator);
         if walk.skips(machine) {
             continue;
@@ -526,7 +583,7 @@ pub(super) async fn stop_copy(
 }
 
 /// [`stop_copy`] on the machines `live` holds, read again: what a join's
-/// rollback stops.
+/// rollback stops, every instance of it, a cancel of the goal or not.
 pub(super) async fn stop_copy_on_live_machines(
     ctx: &StackChangeContext,
     launch_id: &str,
@@ -535,7 +592,15 @@ pub(super) async fn stop_copy_on_live_machines(
     live: &BTreeSet<String>,
 ) -> ChangeResult<()> {
     let states = MachineStates::read(ctx, launch_id, copy_machines(copy, placements), live).await?;
-    stop_copy(ctx, launch_id, copy, placements, &states).await
+    stop_copy(
+        ctx,
+        launch_id,
+        copy,
+        placements,
+        &states,
+        StopsOnCancel::Continue,
+    )
+    .await
 }
 
 async fn stop_local_instance(ctx: &StackChangeContext, copy: &CopyName, instance: &Name) {
@@ -567,7 +632,7 @@ async fn stop_remote_instance(
     instance: &Name,
     machine: &str,
     shutdown_grace_secs: u64,
-) -> ChangeResult<()> {
+) -> Result<(), Failure> {
     publish_stdout(
         ctx,
         format!("Stopping instance `{instance}` of copy `{copy}` on `{machine}`"),
@@ -575,8 +640,12 @@ async fn stop_remote_instance(
     )
     .await;
     let instance_ids = core_node_api::encoding::RemovedInstances::try_from(vec![instance.clone()])
-        .map_err(|error| format!("cannot remove `{instance}` on `{machine}`: {error}"))?;
-    poll(
+        .map_err(|error| {
+            attempt_failed(format!(
+                "cannot remove `{instance}` on `{machine}`: {error}"
+            ))
+        })?;
+    let removed = poll(
         &ParticipantInstancesRemoveRequest {
             launch_id: launch_id.to_owned(),
             instance_ids,
@@ -587,13 +656,23 @@ async fn stop_remote_instance(
         machine,
         copy_removal_budget(shutdown_grace_secs, 1).saturating_add(STACK_QUERY_TIMEOUT),
     )
-    .await
-    .map_err(|e| format!("cannot remove `{instance}` on `{machine}`: {e}"))
-    .and_then(|verdict| {
-        verdict
-            .into_result()
-            .map_err(|reason| format!("`{machine}` refused to remove `{instance}`: {reason}"))
-    })
+    .await;
+    match removed {
+        Ok(_) => Ok(()),
+        Err(error) => match error.failure() {
+            Some(refusal) => Err(rephrased(
+                refusal,
+                format!(
+                    "`{machine}` refused to remove `{instance}`: {}",
+                    refusal.message()
+                ),
+            )),
+            None => Err(peer_failure(
+                &error,
+                format!("cannot remove `{instance}` on `{machine}`: {error}"),
+            )),
+        },
+    }
 }
 
 /// Says what the removal leaves on each machine of the copy where nothing
@@ -659,6 +738,16 @@ fn offline_warning(active: &ActiveLaunch, copy: &StackCopy, machine: &str) -> St
         copy.record.name,
         daemon_config::format_quoted_list(&staying)
     )
+}
+
+/// The failure of a removal that the launcher's composition refuses: the
+/// last copy of a `one_or_more` axis is a copy the stack needs, and any
+/// other refusal says that the removal does not fit the launcher.
+fn composition_failure(error: CompositionError) -> Failure {
+    match error {
+        CompositionError::CopyAxisEmptied { .. } => precondition_failed(error),
+        other => rejected(other),
+    }
 }
 
 #[cfg(test)]
@@ -962,8 +1051,10 @@ mod tests {
             }
             ran.push(index);
             let outcome = match machine {
-                "cn-gpu-box" => Err("`cn-gpu-box` refused".to_owned()),
-                "cn-jetson" => Err("cannot reach `cn-jetson`".to_owned()),
+                "cn-gpu-box" => Err(precondition_failed("`cn-gpu-box` refused")),
+                "cn-jetson" => Err(crate::services::stack::resource_unavailable(
+                    "cannot reach `cn-jetson`",
+                )),
                 _ => Ok(()),
             };
             walk.record(machine, outcome);
@@ -973,9 +1064,15 @@ mod tests {
             [0, 1, 3, 4],
             "the second stop on cn-gpu-box is skipped"
         );
+        let failure = walk.finish().unwrap_err().failure().clone();
         assert_eq!(
-            walk.finish().unwrap_err(),
+            failure.message(),
             "`cn-gpu-box` refused; cannot reach `cn-jetson`"
+        );
+        assert_eq!(
+            failure.kind().as_str(),
+            "precondition_failed",
+            "the failure has the kind of the first machine's"
         );
         assert!(StopWalk::default().finish().is_ok());
     }

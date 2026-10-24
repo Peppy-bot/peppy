@@ -142,7 +142,7 @@ fn main() {
 
     if let Err(e) = result {
         error!("Error: {}", e);
-        std::process::exit(1);
+        std::process::exit(e.exit_code());
     }
 }
 

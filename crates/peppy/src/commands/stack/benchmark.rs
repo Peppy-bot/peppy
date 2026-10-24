@@ -21,17 +21,17 @@ use std::time::Duration;
 
 use core_node_api::encoding::{
     DEFAULT_SAMPLES, InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
-    StackBenchmarkGoalResponse, StackBenchmarkResult,
+    StackBenchmarkResult,
 };
 use latency_report::baseline::{self, StoredStats};
 use latency_report::environment::CpuEnvironment;
 use latency_report::format::{fmt_delta, fmt_duration};
-use peppylib::ActionMessenger;
 use peppylib::core_node::transport::send_goal;
-use peppylib::messaging::ResultStatus;
+use peppylib::messaging::GoalAnswer;
 use tracing::info;
 
-use super::super::action_poll::FEEDBACK_DRAIN_TIMEOUT;
+use super::super::action_poll::{CtrlC, FollowedGoal, poll_action_to_completion};
+use super::super::node::TimeoutConfig;
 use crate::commands::colors::{
     BINDING_COLOR, MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR, MEASURE_NODE_COLOR,
     MEASURE_SERVICE_COLOR, NODE_COLOR, paint,
@@ -94,84 +94,41 @@ async fn benchmark_async(
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to send benchmark goal: {}", e)))?;
 
-    let goal_response = StackBenchmarkGoalResponse::decode(&action_handle.goal_reply().body)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
-
-    if !goal_response.accepted {
-        let reason = goal_response
-            .rejection_reason
-            .unwrap_or_else(|| "unknown reason".to_string());
-        return Err(Error::ExecutionFailed(format!(
-            "Benchmark goal rejected: {}",
-            reason
+    if let GoalAnswer::Refused(refusal) = &action_handle.goal_reply().answer {
+        return Err(Error::ExecutionFailed(crate::commands::reply_failure_text(
+            "Benchmark refused",
+            refusal,
         )));
     }
 
-    // Drain feedback (progress lines) until the daemon closes the stream.
-    let absolute_deadline = tokio::time::Instant::now() + CLI_MAX_TIMEOUT;
-    let mut last_activity = tokio::time::Instant::now();
-    let mut scrolling = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
-
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= absolute_deadline {
-            scrolling.clear();
-            return Err(Error::ExecutionFailed(
-                "Benchmark timed out: max timeout exceeded".to_string(),
-            ));
-        }
-        if now.duration_since(last_activity) >= CLI_IDLE_TIMEOUT {
-            scrolling.clear();
-            return Err(Error::ExecutionFailed(format!(
-                "Benchmark timed out: no progress for {}s",
-                CLI_IDLE_TIMEOUT.as_secs()
-            )));
-        }
-
-        match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                last_activity = tokio::time::Instant::now();
-                if let Ok(feedback) = StackBenchmarkFeedback::decode(msg.payload_bytes().as_ref()) {
-                    scrolling.add_line(&feedback.line);
-                }
-            }
-            Ok(Err(_)) => break, // end-of-stream: the goal has completed
-            Err(_) => {}         // drain slice elapsed; re-check timeouts
-        }
-    }
-
-    let result_timeout = absolute_deadline
-        .saturating_duration_since(tokio::time::Instant::now())
-        .max(Duration::from_secs(5));
-    let reply = ActionMessenger::request_result(conn.messenger, &action_handle, result_timeout)
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to get benchmark result: {}", e)))?;
-
-    scrolling.clear();
-
-    let body = match reply.status {
-        ResultStatus::Completed | ResultStatus::Cancelled => reply.body,
-        ResultStatus::Abandoned => {
-            return Err(Error::ExecutionFailed(
-                "the benchmark goal was abandoned before producing a result".to_string(),
-            ));
-        }
-        ResultStatus::Expired => {
-            return Err(Error::ExecutionFailed(
-                "the benchmark result expired before it could be fetched".to_string(),
-            ));
-        }
+    // Drain feedback (progress lines) until the daemon ends the goal.
+    let timeouts = TimeoutConfig {
+        idle_secs: CLI_IDLE_TIMEOUT.as_secs(),
+        max_secs: CLI_MAX_TIMEOUT.as_secs(),
+        flags: false,
     };
-
-    let result = StackBenchmarkResult::decode(body.as_ref())
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode benchmark result: {}", e)))?;
-
-    if !result.success {
-        let msg = result
-            .error_message
-            .unwrap_or_else(|| "unknown error".to_string());
-        return Err(Error::ExecutionFailed(format!("Benchmark failed: {}", msg)));
-    }
+    let mut scrolling = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
+    let result = poll_action_to_completion(
+        conn.messenger,
+        &mut action_handle,
+        &timeouts,
+        &mut scrolling,
+        |payload, output| {
+            if let Ok(feedback) = StackBenchmarkFeedback::decode(payload) {
+                output.add_line(&feedback.line);
+            }
+        },
+        |payload| {
+            StackBenchmarkResult::decode(payload)
+                .map_err(|e| format!("Failed to decode benchmark result: {e}"))
+        },
+        &FollowedGoal {
+            doing: "Benchmark",
+            log_path: None,
+        },
+        &mut CtrlC::listen(),
+    )
+    .await?;
 
     render_report(&result, effective_samples);
     Ok(())

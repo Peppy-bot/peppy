@@ -1,12 +1,13 @@
 mod common;
 
 use common::{
-    StartedCoreNode, TestPackagesCache, poll_core_node, poll_core_node_with_timeout,
-    start_core_node_with_mock_messenger,
+    StartedCoreNode, TestPackagesCache, poll_core_node, start_core_node_with_mock_messenger,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::encoding::{NodeSyncRequest, RepoSourceKind};
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
+use peppylib::messaging::Failure;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -45,17 +46,11 @@ async fn listen_for_node_sync_success() {
     );
 
     let expected_git_hash = "deadbeef";
-    let response = poll_core_node(
+    poll_core_node(
         &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), expected_git_hash, false),
     )
     .await;
-
-    assert!(
-        response.success,
-        "node_sync should succeed, got error: {}",
-        response.error_message
-    );
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     assert!(
@@ -106,17 +101,17 @@ async fn listen_for_node_sync_success() {
 async fn listen_for_node_sync_missing_node_root_dir_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    let response = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started_core_node,
         &NodeSyncRequest::new("", common::TEST_GIT_HASH, false),
     )
     .await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::Rejected);
 
-    assert!(!response.success, "node_sync should fail");
     assert!(
-        response.error_message.contains("Missing `node_root_dir`"),
+        failure.message().contains("Missing `node_root_dir`"),
         "error should mention missing node_root_dir, got: {}",
-        response.error_message
+        failure
     );
 }
 
@@ -132,19 +127,17 @@ async fn listen_for_node_sync_node_root_dir_does_not_exist_fails() {
         missing_dir.display()
     );
 
-    let response = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started_core_node,
         &NodeSyncRequest::new(missing_dir, common::TEST_GIT_HASH, false),
     )
     .await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::Rejected);
 
-    assert!(!response.success, "node_sync should fail");
     assert!(
-        response
-            .error_message
-            .contains("`node_root_dir` does not exist"),
+        failure.message().contains("`node_root_dir` does not exist"),
         "error should mention missing directory, got: {}",
-        response.error_message
+        failure
     );
 }
 
@@ -156,19 +149,19 @@ async fn listen_for_node_sync_node_root_dir_is_not_a_directory_fails() {
     let file_path = tmp.path().join("not_a_directory");
     fs::write(&file_path, "not a dir").expect("failed to write temp file");
 
-    let response = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started_core_node,
         &NodeSyncRequest::new(file_path, common::TEST_GIT_HASH, false),
     )
     .await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::Rejected);
 
-    assert!(!response.success, "node_sync should fail");
     assert!(
-        response
-            .error_message
+        failure
+            .message()
             .contains("`node_root_dir` is not a directory"),
         "error should mention not a directory, got: {}",
-        response.error_message
+        failure
     );
 }
 
@@ -180,19 +173,19 @@ async fn listen_for_node_sync_missing_peppy_json5_fails() {
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     let cargo_toml_path = node_dir.path().join("Cargo.toml");
 
-    let response = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
     )
     .await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::Rejected);
 
-    assert!(!response.success, "node_sync should fail");
     assert!(
-        response
-            .error_message
+        failure
+            .message()
             .contains("Node config file does not exist"),
         "error should mention missing node config, got: {}",
-        response.error_message
+        failure
     );
 
     assert!(
@@ -216,19 +209,17 @@ async fn listen_for_node_sync_invalid_peppy_json5_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
     )
     .await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::Rejected);
 
-    assert!(!response.success, "node_sync should fail");
     assert!(
-        response
-            .error_message
-            .contains("Failed to parse node config"),
+        failure.message().contains("Failed to parse node config"),
         "error should mention parse failure, got: {}",
-        response.error_message
+        failure
     );
     assert!(
         !peppygen_dir.exists(),
@@ -291,19 +282,19 @@ async fn listen_for_node_sync_missing_dependency_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
     )
     .await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
 
-    assert!(!response.success, "node_sync should fail");
     assert!(
-        response.error_message.contains(
+        failure.message().contains(
             "`my_robot_brain:v1` depends on `uvc_camera:v1`, but it does not exist in the stack"
         ),
         "error should mention missing dependency, got: {}",
-        response.error_message
+        failure
     );
 
     assert!(
@@ -349,40 +340,40 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
     )
     .await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
 
-    assert!(!response.success, "node_sync should fail");
     // The error message should contain all three unique missing dependencies
     assert!(
-        response.error_message.contains("uvc_camera:v1"),
+        failure.message().contains("uvc_camera:v1"),
         "error should mention uvc_camera dependency, got: {}",
-        response.error_message
+        failure
     );
     assert!(
-        response.error_message.contains("lidar_sensor:v1"),
+        failure.message().contains("lidar_sensor:v1"),
         "error should mention lidar_sensor dependency, got: {}",
-        response.error_message
+        failure
     );
     assert!(
-        response.error_message.contains("gps_module:v2"),
+        failure.message().contains("gps_module:v2"),
         "error should mention gps_module dependency, got: {}",
-        response.error_message
+        failure
     );
     assert!(
-        response.error_message.contains("they do not exist"),
+        failure.message().contains("they do not exist"),
         "error should use plural form for multiple missing dependencies, got: {}",
-        response.error_message
+        failure
     );
     // Verify deduplication: uvc_camera should only appear once despite two subscriptions
     assert_eq!(
-        response.error_message.matches("uvc_camera:v1").count(),
+        failure.message().matches("uvc_camera:v1").count(),
         1,
         "uvc_camera:v1 should appear exactly once (deduplicated), got: {}",
-        response.error_message
+        failure
     );
 
     assert!(
@@ -493,17 +484,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     );
 
     // Generate the brain node - this should succeed now that uvc_camera is in the stack
-    let brain_response = poll_core_node(
+    poll_core_node(
         &started_core_node,
         &NodeSyncRequest::new(brain_node_dir.path(), common::TEST_GIT_HASH, false),
     )
     .await;
-
-    assert!(
-        brain_response.success,
-        "my_robot_brain node_sync should succeed, got error: {}",
-        brain_response.error_message
-    );
 
     // Verify that peppygen was generated for the brain node
     let brain_peppygen_dir = brain_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
@@ -826,16 +811,11 @@ async fn listen_for_node_sync_generates_rust_consumed_interfaces(
 
     let consumer_node_dir = tempdir().expect("failed to create temp node directory");
     common::write_plain_peppy_json5(consumer_node_dir.path(), consumer_config);
-    let consumer_response = poll_core_node(
+    poll_core_node(
         &started_core_node,
         &NodeSyncRequest::new(consumer_node_dir.path(), common::TEST_GIT_HASH, false),
     )
     .await;
-    assert!(
-        consumer_response.success,
-        "consumer node_sync should succeed, got error: {}",
-        consumer_response.error_message
-    );
 
     let consumer_peppygen_dir = consumer_node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     assert!(
@@ -945,17 +925,11 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     );
 
     // First generation - creates the .peppy folder
-    let response = poll_core_node(
+    poll_core_node(
         &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
     )
     .await;
-
-    assert!(
-        response.success,
-        "first node_sync should succeed, got error: {}",
-        response.error_message
-    );
 
     let peppy_dir = node_dir.path().join(PEPPY_OUTPUT_DIR);
     assert!(
@@ -974,17 +948,11 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     );
 
     // Second generation - should delete the .peppy folder and recreate it
-    let response = poll_core_node(
+    poll_core_node(
         &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
     )
     .await;
-
-    assert!(
-        response.success,
-        "second node_sync should succeed, got error: {}",
-        response.error_message
-    );
 
     // The .peppy folder should still exist (recreated by generation)
     assert!(
@@ -1055,17 +1023,17 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
 
     let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
 
-    let response = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started_core_node,
         &NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH, false),
     )
     .await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
 
-    assert!(!response.success, "node_sync should fail");
     assert!(
-        response.error_message.contains("undeclared link_id"),
+        failure.message().contains("undeclared link_id"),
         "error should mention undeclared link_id, got: {}",
-        response.error_message
+        failure
     );
 
     assert!(
@@ -1078,17 +1046,11 @@ async fn listen_for_node_sync_undeclared_link_id_fails() {
 /// Syncs the node at `node_dir`, then adds it to the stack, so that a node
 /// synced after it can depend on it. Panics if either step fails.
 async fn sync_and_add_node(started: &StartedCoreNode, node_dir: &Path) {
-    let response = poll_core_node(
+    poll_core_node(
         started,
         &NodeSyncRequest::new(node_dir, common::TEST_GIT_HASH, false),
     )
     .await;
-    assert!(
-        response.success,
-        "node_sync of {} should succeed, got error: {}",
-        node_dir.display(),
-        response.error_message
-    );
 
     let add_result = common::send_node_add_and_wait(
         &started.caller_handle,
@@ -1100,12 +1062,7 @@ async fn sync_and_add_node(started: &StartedCoreNode, node_dir: &Path) {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_result.success,
-        "node_add of {} should succeed, got error: {}",
-        node_dir.display(),
-        add_result.error_message.unwrap_or_default()
-    );
+    add_result.completed();
 }
 
 // -----------------------------------------------------------------------
@@ -1182,13 +1139,15 @@ async fn sync_with_flag(
     started: &StartedCoreNode,
     node_root: &Path,
     include_repositories: bool,
-) -> core_node_api::encoding::NodeSyncResponse {
-    poll_core_node_with_timeout(
+) -> Result<core_node_api::encoding::NodeSyncResponse, Failure> {
+    common::poll_core_node_as(
         started,
+        common::CALLER_INSTANCE_ID,
         &NodeSyncRequest::new(node_root, common::TEST_GIT_HASH, include_repositories),
         Duration::from_secs(20),
     )
     .await
+    .map_err(|error| common::error_reply(&error))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1206,15 +1165,14 @@ async fn include_repositories_false_does_not_resolve_fs_dep_from_repository() {
     let brain_dir = tempdir().expect("brain tempdir");
     common::write_plain_peppy_json5(brain_dir.path(), brain_consumes_camera_config());
 
-    let response = sync_with_flag(&started, brain_dir.path(), false).await;
-
-    assert!(!response.success, "sync should fail without -r");
+    let failure = sync_with_flag(&started, brain_dir.path(), false)
+        .await
+        .expect_err("sync should fail without -r");
+    common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
     assert!(
-        response
-            .error_message
-            .contains("does not exist in the stack"),
+        failure.message().contains("does not exist in the stack"),
         "error should be the missing-from-stack message, got: {}",
-        response.error_message
+        failure
     );
 }
 
@@ -1231,13 +1189,10 @@ async fn include_repositories_true_resolves_fs_dep_from_repository() {
     let brain_dir = tempdir().expect("brain tempdir");
     common::write_plain_peppy_json5(brain_dir.path(), brain_consumes_camera_config());
 
-    let response = sync_with_flag(&started, brain_dir.path(), true).await;
+    let response = sync_with_flag(&started, brain_dir.path(), true)
+        .await
+        .expect("sync should succeed with -r");
 
-    assert!(
-        response.success,
-        "sync should succeed with -r, got error: {}",
-        response.error_message
-    );
     assert!(
         response.resolved_from_stack.is_empty(),
         "stack provenance should be empty (camera was repo-resolved): {:?}",
@@ -1350,12 +1305,9 @@ async fn include_repositories_true_caches_git_checkout_across_deps() {
         "#,
     );
 
-    let response = sync_with_flag(&started, brain_dir.path(), true).await;
-    assert!(
-        response.success,
-        "sync should succeed, got error: {}",
-        response.error_message
-    );
+    let response = sync_with_flag(&started, brain_dir.path(), true)
+        .await
+        .expect("sync should succeed with -r");
     assert_eq!(response.resolved_from_repositories.len(), 2);
     for entry in &response.resolved_from_repositories {
         assert_eq!(entry.source_kind, RepoSourceKind::Git);
@@ -1409,11 +1361,7 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
     )
     .await
     .expect("node_add should succeed");
-    assert!(
-        add_result.success,
-        "stack camera node_add should succeed, got: {}",
-        add_result.error_message.unwrap_or_default()
-    );
+    add_result.completed();
 
     // Repo version has only `topic_y`, missing `topic_x`.
     let repo_camera_dir = tempdir().expect("repo camera tempdir");
@@ -1466,12 +1414,9 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         "#,
     );
 
-    let response = sync_with_flag(&started, brain_dir.path(), true).await;
-    assert!(
-        response.success,
-        "sync should succeed via stack version, got error: {}",
-        response.error_message
-    );
+    let response = sync_with_flag(&started, brain_dir.path(), true)
+        .await
+        .expect("sync should succeed with -r");
     assert!(
         response
             .resolved_from_stack
@@ -1578,12 +1523,9 @@ async fn include_repositories_true_walks_transitive_dep() {
         }"#,
     );
 
-    let response = sync_with_flag(&started, brain_dir.path(), true).await;
-    assert!(
-        response.success,
-        "sync should succeed, got error: {}",
-        response.error_message
-    );
+    let response = sync_with_flag(&started, brain_dir.path(), true)
+        .await
+        .expect("sync should succeed with -r");
     let names: Vec<String> = response
         .resolved_from_repositories
         .iter()
@@ -1609,20 +1551,21 @@ async fn include_repositories_true_missing_from_stack_and_repo_fails() {
     let brain_dir = tempdir().expect("brain tempdir");
     common::write_plain_peppy_json5(brain_dir.path(), brain_consumes_camera_config());
 
-    let response = sync_with_flag(&started, brain_dir.path(), true).await;
-
-    assert!(!response.success, "sync should fail with missing dep");
+    let failure = sync_with_flag(&started, brain_dir.path(), true)
+        .await
+        .expect_err("sync should fail with missing dep");
+    common::assert_failure_kind(&failure, PeppyFailureKind::AttemptFailed);
     assert!(
-        response
-            .error_message
+        failure
+            .message()
             .contains("not found in node stack or repository cache"),
         "error should mention both layers, got: {}",
-        response.error_message
+        failure
     );
     assert!(
-        response.error_message.contains("peppy repo refresh"),
+        failure.message().contains("peppy repo refresh"),
         "error should suggest repo refresh, got: {}",
-        response.error_message
+        failure
     );
 }
 
@@ -1645,11 +1588,12 @@ async fn include_repositories_true_topic_the_dependency_does_not_emit_fails() {
         &brain_consumes_camera_config().replace("video_stream", "depth_image"),
     );
 
-    let response = sync_with_flag(&started, brain_dir.path(), true).await;
-
-    assert!(!response.success, "sync should fail on an unexposed topic");
+    let failure = sync_with_flag(&started, brain_dir.path(), true)
+        .await
+        .expect_err("sync should fail on an unexposed topic");
+    common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
     assert_eq!(
-        response.error_message,
+        failure.message(),
         "`my_robot_brain:v1` expects topic `depth_image` from `uvc_camera:v1`, \
          but it is not exposed"
     );
@@ -1726,12 +1670,9 @@ async fn node_sync_resolves_git_sourced_implements_contract() {
         }"#,
     );
 
-    let response = sync_with_flag(&started, node_dir.path(), true).await;
-    assert!(
-        response.success,
-        "sync should resolve the git-sourced implemented contract, got error: {}",
-        response.error_message
-    );
+    sync_with_flag(&started, node_dir.path(), true)
+        .await
+        .expect("sync should succeed with -r");
 
     // The contract's checkout should exist on disk now; this proves
     // `ensure_checkout` ran rather than `std::fs::read` silently relying

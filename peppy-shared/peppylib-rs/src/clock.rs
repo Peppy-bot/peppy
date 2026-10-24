@@ -23,10 +23,11 @@ use core_node_api::{TopicId, names};
 use crate::core_node::poll_bound_core_node;
 use crate::error::{Error, Result};
 use crate::messaging::{
-    SenderTarget, ServiceRequestContext, Subscription, TopicBuffer, TopicMessenger, TopicPublisher,
+    Failure, SenderTarget, ServiceAnswer, ServiceRequestContext, Subscription, TopicBuffer,
+    TopicMessenger, TopicPublisher,
 };
 use crate::runtime::{NodeRunner, TaskHandle, spawn};
-use crate::types::Payload;
+use config::failure_kind::PeppyFailureKind;
 
 /// Failures observable from a [`ClockSource`]. Wall mode propagates a system
 /// clock error; sim mode reports a missing first tick.
@@ -86,34 +87,46 @@ impl ClockSource for SimClockSource {
 pub fn handle_clock_request(
     source: &dyn ClockSource,
     context: ServiceRequestContext,
-) -> Result<Payload> {
+) -> ServiceAnswer {
     // Stamp t1 first: every line after this point inflates server processing
     // time and corrupts the offset estimate the client computes.
-    let server_recv_time = source
-        .now_ns()
-        .map_err(|e| invalid_clock_request(&context, e))?;
+    let server_recv_time = source.now_ns().map_err(clock_unavailable)?;
     let request = ClockRequest::decode(context.message().payload_bytes().as_ref())
         .map_err(|e| invalid_clock_request(&context, e))?;
 
     // Stamp t2 last: the response encode + send happens after this point and
     // is part of the round-trip delay the client measures, not server time.
-    let server_send_time = source
-        .now_ns()
-        .map_err(|e| invalid_clock_request(&context, e))?;
+    let server_send_time = source.now_ns().map_err(clock_unavailable)?;
 
     ClockResponse::new(request.client_send_time, server_recv_time, server_send_time)
         .encode()
-        .map_err(|e| invalid_clock_request(&context, e))
+        .map_err(|e| Failure::new(PeppyFailureKind::AttemptFailed, e.to_string()))
 }
 
-/// The refusal of a `clock` request, attributed to the calling instance. It
-/// is built only on a failure, so the success path does not build the
-/// instance id between the t1 and t2 stamps.
-fn invalid_clock_request(context: &ServiceRequestContext, error: impl std::fmt::Display) -> Error {
-    Error::InvalidServiceRequest {
-        identifier: context.message().instance_id().to_string(),
-        reason: error.to_string(),
-    }
+/// The error reply of a `clock` request when the source has no time to give.
+/// It is built only on a failure, so the success path pays nothing between
+/// the t1 and t2 stamps.
+fn clock_unavailable(error: ClockSourceError) -> Failure {
+    let kind = match error {
+        ClockSourceError::NotReady => PeppyFailureKind::PreconditionFailed,
+        ClockSourceError::Wall(_) => PeppyFailureKind::AttemptFailed,
+    };
+    Failure::new(kind, error.to_string())
+}
+
+/// The refusal of a `clock` request that does not decode, attributed to the
+/// calling instance.
+fn invalid_clock_request(
+    context: &ServiceRequestContext,
+    error: impl std::fmt::Display,
+) -> Failure {
+    Failure::new(
+        PeppyFailureKind::Rejected,
+        format!(
+            "invalid clock request from {}: {error}",
+            context.message().instance_id()
+        ),
+    )
 }
 
 /// Wall-clock "now" in nanoseconds since the UNIX epoch, the canonical reader
@@ -650,13 +663,13 @@ mod clock_request_tests {
             .into_inner()
     }
 
-    fn assert_invalid_request_from_caller(result: Result<Payload>, expected_reason: &str) {
+    fn assert_failure(result: ServiceAnswer, expected_kind: &str, expected_message: &str) {
         match result {
-            Err(Error::InvalidServiceRequest { identifier, reason }) => {
-                assert_eq!(identifier, CALLER_INSTANCE);
-                assert_eq!(reason, expected_reason);
+            Err(failure) => {
+                assert_eq!(failure.kind().as_str(), expected_kind);
+                assert_eq!(failure.message(), expected_message);
             }
-            other => panic!("expected InvalidServiceRequest, got {other:?}"),
+            Ok(payload) => panic!("expected an error reply, got {payload:?}"),
         }
     }
 
@@ -671,28 +684,40 @@ mod clock_request_tests {
     }
 
     #[test]
-    fn a_clock_not_ready_at_the_receive_stamp_names_the_clock_error() {
+    fn a_clock_not_ready_at_the_receive_stamp_fails_with_a_precondition() {
         let source = ClockReadyFor::new(0);
         let result = handle_clock_request(&source, clock_request_context(encoded_clock_request(7)));
-        assert_invalid_request_from_caller(result, &ClockSourceError::NotReady.to_string());
+        assert_failure(
+            result,
+            "precondition_failed",
+            &ClockSourceError::NotReady.to_string(),
+        );
     }
 
     #[test]
-    fn a_clock_not_ready_at_the_send_stamp_names_the_clock_error_once() {
+    fn a_clock_not_ready_at_the_send_stamp_fails_with_a_precondition_once() {
         let source = ClockReadyFor::new(1);
         let result = handle_clock_request(&source, clock_request_context(encoded_clock_request(7)));
-        assert_invalid_request_from_caller(result, &ClockSourceError::NotReady.to_string());
+        assert_failure(
+            result,
+            "precondition_failed",
+            &ClockSourceError::NotReady.to_string(),
+        );
     }
 
     #[test]
-    fn an_undecodable_request_names_the_decode_error() {
+    fn an_undecodable_request_is_rejected_with_the_decode_error_of_its_caller() {
         let source = ClockReadyFor::new(2);
         let garbage = Bytes::from_static(b"\x01");
         let decode_error = ClockRequest::decode(garbage.as_ref())
             .expect_err("one byte is no capnp message")
             .to_string();
         let result = handle_clock_request(&source, clock_request_context(garbage));
-        assert_invalid_request_from_caller(result, &decode_error);
+        assert_failure(
+            result,
+            "rejected",
+            &format!("invalid clock request from {CALLER_INSTANCE}: {decode_error}"),
+        );
     }
 }
 

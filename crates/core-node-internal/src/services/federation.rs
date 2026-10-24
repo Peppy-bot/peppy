@@ -56,10 +56,13 @@ pub(crate) use service::{
     listen_for_relationship_notify,
 };
 
+use crate::services::response::failure;
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
-use core_node_api::LaunchScoped;
 use core_node_api::encoding::LaunchIdentity;
+use core_node_api::{DaemonFailureKind, LaunchScoped};
 use parking_lot::Mutex;
+use peppylib::messaging::Failure;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -234,12 +237,13 @@ impl SliceOwnership {
         self.admitted_restarts.lock().keys().cloned().collect()
     }
 
-    /// Takes the stack for one change, refusing while a change or a node
-    /// goal holds it with the text this daemon answers, which names each
-    /// restart holding it and the stop that ends that restart.
+    /// Takes the stack for one change, refusing with the kind `busy` while a
+    /// change or a node goal holds it, with the text this daemon answers,
+    /// which names each restart holding it and the stop that ends that
+    /// restart.
     pub(crate) fn try_begin_change(
         &self,
-    ) -> std::result::Result<crate::services::node::gate::StackHold, String> {
+    ) -> std::result::Result<crate::services::node::gate::StackHold, Failure> {
         self.stack
             .try_begin_change()
             .map_err(|busy| busy.refusal(&self.admitted_restarts(), &self.core_node_name))
@@ -345,31 +349,38 @@ impl SliceOwnership {
     ///
     /// Refuses, with the reason and its fix, a goal that arrives while a
     /// stack change holds the stack, while a `stack reset` is in progress,
-    /// while this daemon is reserved for another launch, naming a launch
-    /// whose reservation has ended, or naming the reserved launch before
-    /// its slice-begin reached this daemon.
+    /// or while this daemon is reserved for another launch, with the kind
+    /// `busy`; and a goal naming a launch whose reservation has ended, or
+    /// naming the reserved launch before its slice-begin reached this
+    /// daemon, with the kind `precondition_failed`.
     pub fn admit_node_goal(
         &self,
         goal: &impl LaunchScoped,
-    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, String> {
+    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Failure> {
         self.admit_node_change(goal.launch_id())
     }
 
     pub(crate) fn admit_node_change(
         &self,
         launch_id: Option<&str>,
-    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, String> {
+    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Failure> {
         let admission = self
             .stack
             .try_admit_node_goal()
-            .map_err(|busy| busy.to_string())?;
+            .map_err(|busy| busy.failure())?;
         if self.stack.cancellation().is_cancelled() {
-            return Err("stack reset is in progress; wait for it to finish".to_owned());
+            return Err(failure(
+                DaemonFailureKind::Busy,
+                "stack reset is in progress; wait for it to finish",
+            ));
         }
         let state = self.state.lock();
         let Some(held) = state.reservation.as_ref() else {
             if launch_id.is_some() {
-                return Err("this launch reservation has ended; launch the stack again".to_owned());
+                return Err(failure(
+                    PeppyFailureKind::PreconditionFailed,
+                    "this launch reservation has ended; launch the stack again",
+                ));
             }
             return Ok(admission);
         };
@@ -377,17 +388,23 @@ impl SliceOwnership {
             if state.slice_came_from(held) {
                 return Ok(admission);
             }
-            return Err(format!(
-                "this daemon is reserved for launch `{}` and holds no slice of it; `{}` begins \
-                 the slice on this daemon before it dispatches nodes",
-                held.launch_id, held.coordinator_core_node
+            return Err(failure(
+                PeppyFailureKind::PreconditionFailed,
+                format!(
+                    "this daemon is reserved for launch `{}` and holds no slice of it; `{}` \
+                     begins the slice on this daemon before it dispatches nodes",
+                    held.launch_id, held.coordinator_core_node
+                ),
             ));
         }
-        Err(format!(
-            "this daemon is reserved for federated launch `{}`, driven by `{}`, \
-             which is changing its stack. Wait for that operation to finish, or clear the \
-             reservation with `peppy stack reset --core-node {}`.",
-            held.launch_id, held.coordinator_core_node, self.core_node_name
+        Err(failure(
+            DaemonFailureKind::Busy,
+            format!(
+                "this daemon is reserved for federated launch `{}`, driven by `{}`, which is \
+                 changing its stack. Wait for that operation to finish, or clear the \
+                 reservation with `peppy stack reset --core-node {}`.",
+                held.launch_id, held.coordinator_core_node, self.core_node_name
+            ),
         ))
     }
 
@@ -794,21 +811,31 @@ mod tests {
         let refusal = ownership
             .admit_node_goal(&LOCAL)
             .expect_err("a local action names no launch, so it is excluded");
-        assert!(refusal.contains("launch-a"), "got: {refusal}");
+        assert_eq!(
+            refusal.kind().as_str(),
+            "busy",
+            "the same goal can run once the launch ends; got: {refusal}"
+        );
+        let text = refusal.message();
+        assert!(text.contains("launch-a"), "got: {text}");
         assert!(
-            refusal.contains("cn-robot-7"),
-            "the refusal must name the coordinator to wait on; got: {refusal}"
+            text.contains("cn-robot-7"),
+            "the refusal must name the coordinator to wait on; got: {text}"
         );
         assert!(
-            refusal.contains("stack reset --core-node cn-held"),
+            text.contains("stack reset --core-node cn-held"),
             "the refusal must name the escape hatch aimed at THIS daemon, not whichever \
-             one the operator's CLI happens to target; got: {refusal}"
+             one the operator's CLI happens to target; got: {text}"
         );
 
         let refusal = ownership
             .admit_node_goal(&Goal(Some("launch-a")))
             .expect_err("the reserving launch dispatches nodes only after its slice-begin");
-        assert!(refusal.contains("holds no slice"), "got: {refusal}");
+        assert_eq!(refusal.kind().as_str(), "precondition_failed");
+        assert!(
+            refusal.message().contains("holds no slice"),
+            "got: {refusal}"
+        );
         ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
         assert!(
             ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok(),
@@ -873,7 +900,10 @@ mod tests {
         assert!(ownership.stack.try_begin_change().is_err());
         drop(second);
         let mutation = ownership.stack.try_begin_change().unwrap();
-        assert!(ownership.admit_node_goal(&LOCAL).is_err());
+        let refusal = ownership
+            .admit_node_goal(&LOCAL)
+            .expect_err("a stack change holds the stack");
+        assert_eq!(refusal.kind().as_str(), "busy", "got: {refusal}");
         drop(mutation);
         assert!(ownership.admit_node_goal(&LOCAL).is_ok());
     }
@@ -920,7 +950,14 @@ mod tests {
         ownership.record_slice(LaunchIdentity::new("launch-a", "coordinator"));
         assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok());
         ownership.clear();
-        assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_err());
+        let refusal = ownership
+            .admit_node_goal(&Goal(Some("launch-a")))
+            .expect_err("the reservation of the launch ended");
+        assert_eq!(
+            refusal.kind().as_str(),
+            "precondition_failed",
+            "a goal of an ended launch can never run; got: {refusal}"
+        );
         assert!(ownership.admit_node_goal(&LOCAL).is_ok());
     }
 
@@ -946,10 +983,12 @@ mod tests {
         let busy = "a node add, build, run, stop or removal, or a restart, is in progress on \
                     this daemon; run this again once it ends";
         let refusal = || {
-            ownership
+            let refusal = ownership
                 .try_begin_change()
                 .err()
-                .expect("admitted restarts hold the stack")
+                .expect("admitted restarts hold the stack");
+            assert_eq!(refusal.kind().as_str(), "busy", "got: {refusal}");
+            refusal.message().to_owned()
         };
         assert_eq!(
             refusal(),

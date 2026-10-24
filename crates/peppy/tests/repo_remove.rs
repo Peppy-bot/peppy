@@ -1,4 +1,5 @@
-use super::common::{add_repo, setup};
+use super::common::{add_repo, assert_daemon_failure, setup};
+use config::failure_kind::PeppyFailureKind;
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 use peppy::test_support::ServeCommandEmulation;
@@ -57,11 +58,7 @@ fn repo_remove_nonexistent_id_fails() {
     .execute(&ctx);
 
     let err = result.expect_err("repo remove of nonexistent id should fail");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("not found"),
-        "error should mention 'not found', got: {msg}"
-    );
+    assert_daemon_failure(&err, PeppyFailureKind::Rejected, "not found");
 }
 
 #[test]

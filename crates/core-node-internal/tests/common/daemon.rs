@@ -11,8 +11,7 @@ use core_node::{
 };
 use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
-use peppylib::Payload;
-use peppylib::messaging::{MessengerHandle, ServiceRequestContext};
+use peppylib::messaging::{MessengerHandle, ServiceAnswer, ServiceRequestContext};
 use peppylib::runtime::spawn;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::future::Future;
@@ -784,7 +783,7 @@ pub async fn peer_daemon_service<F, Fut>(
 ) -> AbortOnDrop<peppylib::PeppyResult<()>>
 where
     F: FnMut(ServiceRequestContext) -> Fut + Send + 'static,
-    Fut: Future<Output = peppylib::PeppyResult<Payload>> + Send + 'static,
+    Fut: Future<Output = ServiceAnswer> + Send + 'static,
 {
     let mut listener = peppylib::ServiceMessenger::listen(
         &started.caller_handle,
@@ -814,7 +813,7 @@ pub async fn node_service_mock<F, Fut>(
 ) -> AbortOnDrop<peppylib::PeppyResult<()>>
 where
     F: FnMut(ServiceRequestContext) -> Fut + Send + 'static,
-    Fut: Future<Output = peppylib::PeppyResult<Payload>> + Send + 'static,
+    Fut: Future<Output = ServiceAnswer> + Send + 'static,
 {
     let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let mut endpoint = peppylib::ServiceMessenger::listen(

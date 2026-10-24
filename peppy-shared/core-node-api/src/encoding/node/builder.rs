@@ -136,28 +136,18 @@ impl NodeBuildGoal {
     }
 }
 
-/// Response to the NodeBuild goal request.
+/// The goal response of an accepted node build: where the daemon writes the
+/// build's log. The daemon refuses a goal in the goal envelope, with a
+/// failure kind and a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildGoalResponse {
-    pub accepted: bool,
     pub log_path: PathBuf,
-    pub rejection_reason: Option<String>,
 }
 
 impl NodeBuildGoalResponse {
-    pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
+    pub fn new(log_path: impl Into<PathBuf>) -> Self {
         Self {
-            accepted: true,
             log_path: log_path.into(),
-            rejection_reason: None,
-        }
-    }
-
-    pub fn rejected(reason: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            log_path: PathBuf::new(),
-            rejection_reason: Some(reason.into()),
         }
     }
 
@@ -165,11 +155,7 @@ impl NodeBuildGoalResponse {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_build_goal_response::Builder>();
-            response.set_accepted(self.accepted);
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
-            if let Some(ref reason) = self.rejection_reason {
-                response.set_rejection_reason(reason);
-            }
         }
         encode_message(&builder)
     }
@@ -178,9 +164,7 @@ impl NodeBuildGoalResponse {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_build_goal_response::Reader>()?;
         Ok(Self {
-            accepted: response.get_accepted(),
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
         })
     }
 }
@@ -244,31 +228,17 @@ impl NodeBuildFeedback {
     }
 }
 
-/// Result message for the NodeBuild action.
+/// The result of a completed node build: the artifact it produced. A failed
+/// build gives a failure kind and a message, and no result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildResult {
     pub artifact_path: PathBuf,
-    pub log_path: PathBuf,
-    pub success: bool,
-    pub error_message: Option<String>,
 }
 
 impl NodeBuildResult {
-    pub fn success(artifact_path: impl Into<PathBuf>, log_path: impl Into<PathBuf>) -> Self {
+    pub fn new(artifact_path: impl Into<PathBuf>) -> Self {
         Self {
             artifact_path: artifact_path.into(),
-            log_path: log_path.into(),
-            success: true,
-            error_message: None,
-        }
-    }
-
-    pub fn failure(log_path: impl Into<PathBuf>, error_message: impl Into<String>) -> Self {
-        Self {
-            artifact_path: PathBuf::new(),
-            log_path: log_path.into(),
-            success: false,
-            error_message: Some(error_message.into()),
         }
     }
 
@@ -276,12 +246,7 @@ impl NodeBuildResult {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_build_result::Builder>();
-            result.set_success(self.success);
-            if let Some(ref error_message) = self.error_message {
-                result.set_error_message(error_message);
-            }
             result.set_artifact_path(self.artifact_path.to_string_lossy().as_ref());
-            result.set_log_path(self.log_path.to_string_lossy().as_ref());
         }
         encode_message(&builder)
     }
@@ -291,9 +256,6 @@ impl NodeBuildResult {
         let result = reader.get_root::<node_capnp::node_build_result::Reader>()?;
         Ok(Self {
             artifact_path: PathBuf::from(result.get_artifact_path()?.to_str()?),
-            log_path: PathBuf::from(result.get_log_path()?.to_str()?),
-            success: result.get_success(),
-            error_message: optional_text(result.get_error_message()?.to_str()?),
         })
     }
 }
@@ -434,22 +396,9 @@ mod tests {
     // --- NodeBuildGoalResponse ---
 
     #[test]
-    fn node_build_goal_response_accepted_roundtrip() {
-        let response = NodeBuildGoalResponse::accepted("/var/log/build.log");
-        assert!(response.accepted);
+    fn node_build_goal_response_roundtrip() {
+        let response = NodeBuildGoalResponse::new("/var/log/build.log");
         assert_eq!(response.log_path, PathBuf::from("/var/log/build.log"));
-        assert_eq!(response.rejection_reason, None);
-        let encoded = response.encode().expect("encode");
-        let decoded = NodeBuildGoalResponse::decode(&encoded).expect("decode");
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn node_build_goal_response_rejected_roundtrip() {
-        let response = NodeBuildGoalResponse::rejected("busy");
-        assert!(!response.accepted);
-        assert_eq!(response.log_path, PathBuf::new());
-        assert_eq!(response.rejection_reason, Some("busy".to_owned()));
         let encoded = response.encode().expect("encode");
         let decoded = NodeBuildGoalResponse::decode(&encoded).expect("decode");
         assert_eq!(decoded, response);
@@ -498,24 +447,9 @@ mod tests {
     // --- NodeBuildResult ---
 
     #[test]
-    fn node_build_result_success_roundtrip() {
-        let result = NodeBuildResult::success("/artifacts/node.bin", "/var/log/build.log");
-        assert!(result.success);
+    fn node_build_result_roundtrip() {
+        let result = NodeBuildResult::new("/artifacts/node.bin");
         assert_eq!(result.artifact_path, PathBuf::from("/artifacts/node.bin"));
-        assert_eq!(result.log_path, PathBuf::from("/var/log/build.log"));
-        assert_eq!(result.error_message, None);
-        let encoded = result.encode().expect("encode");
-        let decoded = NodeBuildResult::decode(&encoded).expect("decode");
-        assert_eq!(decoded, result);
-    }
-
-    #[test]
-    fn node_build_result_failure_roundtrip() {
-        let result = NodeBuildResult::failure("/var/log/build.log", "boom");
-        assert!(!result.success);
-        assert_eq!(result.artifact_path, PathBuf::new());
-        assert_eq!(result.log_path, PathBuf::from("/var/log/build.log"));
-        assert_eq!(result.error_message, Some("boom".to_owned()));
         let encoded = result.encode().expect("encode");
         let decoded = NodeBuildResult::decode(&encoded).expect("decode");
         assert_eq!(decoded, result);

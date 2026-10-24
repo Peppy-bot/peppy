@@ -9,7 +9,7 @@ use tracing::info;
 use super::types::NodeName;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use peppylib::core_node::transport::poll;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -77,7 +77,7 @@ impl NodeInitBuilder {
             self.toolchain,
         );
 
-        let response = poll(
+        poll(
             &request,
             conn.messenger,
             &conn.core_node_name,
@@ -86,11 +86,7 @@ impl NodeInitBuilder {
             self.timeout,
         )
         .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_init service: {}", e)))?;
-
-        if !response.success {
-            return Err(Error::ExecutionFailed(response.error_message));
-        }
+        .map_err(|e| crate::commands::request_error("Failed to initialize the node", e))?;
 
         info!(
             "Successfully created node '{}' at {}/{}",

@@ -989,6 +989,19 @@ fn action_liveliness_watch_wildcards_unpinned_producer_slots() {
 }
 
 #[test]
+fn client_presence_token_pins_the_wire_grammar() {
+    let client = ClientPresence {
+        core_node: seg("robot_a"),
+        instance_id: seg("brain"),
+        generation: seg("3f9a2c1d"),
+    };
+    assert_eq!(
+        ZenohWireFormat::client_presence_token(&client),
+        "client_presence/robot_a/brain/3f9a2c1d"
+    );
+}
+
+#[test]
 fn core_node_presence_token_and_filters_pin_the_wire_grammar() {
     let core_node = seg("daemon_a");
     let instance_id = seg("generation_42");
@@ -1461,14 +1474,14 @@ fn service_query_attachment_decode_rejects_truncated_payload() {
     ));
 }
 
-// ─── Service reply attachment (Ack / Response / HandlerError) ────────────
+// ─── Service reply attachment (Ack / Response / Failure) ─────────────────
 
 #[test]
 fn service_reply_attachment_roundtrips_every_kind() {
     for kind in [
         ServiceReplyKind::Ack,
         ServiceReplyKind::Response,
-        ServiceReplyKind::HandlerError,
+        ServiceReplyKind::Failure,
     ] {
         let attachment = ServiceReplyAttachment { kind };
         let decoded = ServiceReplyAttachment::decode(attachment.encode().as_ref())

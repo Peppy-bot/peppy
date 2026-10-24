@@ -1,7 +1,7 @@
 use capnp::message::Builder;
 
 use crate::encoding::repo::add::{RepoSourceKind, decode_source_kind};
-use crate::encoding::{decode_message, encode_message, encode_message_non_empty, optional_text};
+use crate::encoding::{decode_message, encode_message, encode_message_non_empty};
 use crate::repo_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
 
@@ -25,48 +25,27 @@ impl RepoRefreshGoal {
     }
 }
 
-/// Response to the RepoRefresh goal request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepoRefreshGoalResponse {
-    pub accepted: bool,
-    pub rejection_reason: Option<String>,
-}
+/// The goal response of an accepted repository refresh. Carries no fields:
+/// the daemon refuses a goal in the goal envelope, with a failure kind and a
+/// message.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RepoRefreshGoalResponse;
 
 impl RepoRefreshGoalResponse {
-    pub fn accepted() -> Self {
-        Self {
-            accepted: true,
-            rejection_reason: None,
-        }
-    }
-
-    pub fn rejected(reason: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            rejection_reason: Some(reason.into()),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        {
-            let mut response =
-                builder.init_root::<repo_capnp::repo_refresh_goal_response::Builder>();
-            response.set_accepted(self.accepted);
-            if let Some(ref reason) = self.rejection_reason {
-                response.set_rejection_reason(reason);
-            }
-        }
+        builder.init_root::<repo_capnp::repo_refresh_goal_response::Builder>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<repo_capnp::repo_refresh_goal_response::Reader>()?;
-        Ok(Self {
-            accepted: response.get_accepted(),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
-        })
+        reader.get_root::<repo_capnp::repo_refresh_goal_response::Reader>()?;
+        Ok(Self)
     }
 }
 
@@ -210,25 +189,25 @@ impl RepoRefreshFeedback {
     }
 }
 
-/// Result message for the RepoRefresh action.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The result of a completed repository refresh: it ran, it published the
+/// caches, and every repository that read cleanly is current. A failed
+/// refresh gives a failure kind and a message, and no result; a cancelled
+/// refresh publishes nothing and gives its reason, and no result.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoRefreshResult {
-    pub success: bool,
-    pub error_message: Option<String>,
     pub total_nodes_found: u32,
     pub total_launchers_found: u32,
     pub total_contracts_found: u32,
     pub total_pairings_found: u32,
     pub total_mcp_exposures_found: u32,
-    /// Repositories that could not be updated this run. `success` covers
-    /// the refresh as a whole; this reports the repositories it could not
-    /// read, each still serving the entries it last published. Empty when
-    /// every configured repository was read.
-    pub failure_report: String,
+    /// The repositories that could not be read this run, each still
+    /// serving the entries it last published, and why. Empty when every
+    /// configured repository was read.
+    pub read_failure_report: String,
 }
 
 impl RepoRefreshResult {
-    pub fn success(
+    pub fn new(
         total_nodes_found: u32,
         total_launchers_found: u32,
         total_contracts_found: u32,
@@ -236,69 +215,33 @@ impl RepoRefreshResult {
         total_mcp_exposures_found: u32,
     ) -> Self {
         Self {
-            success: true,
-            error_message: None,
             total_nodes_found,
             total_launchers_found,
             total_contracts_found,
             total_pairings_found,
             total_mcp_exposures_found,
-            failure_report: String::new(),
+            read_failure_report: String::new(),
         }
     }
 
-    /// The refresh ran and published its caches, but some repositories
-    /// could not be read. Kept separate from [`Self::failure`] so a caller
-    /// can tell "the refresh did not happen" from "the refresh happened,
-    /// and these repositories are not current". The counts are the ones
-    /// the caches actually hold, retained entries included.
-    pub fn success_with_failure_report(
-        total_nodes_found: u32,
-        total_launchers_found: u32,
-        total_contracts_found: u32,
-        total_pairings_found: u32,
-        total_mcp_exposures_found: u32,
-        report: impl Into<String>,
-    ) -> Self {
-        Self {
-            success: true,
-            error_message: None,
-            total_nodes_found,
-            total_launchers_found,
-            total_contracts_found,
-            total_pairings_found,
-            total_mcp_exposures_found,
-            failure_report: report.into(),
-        }
-    }
-
-    pub fn failure(message: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            error_message: Some(message.into()),
-            total_nodes_found: 0,
-            total_launchers_found: 0,
-            total_contracts_found: 0,
-            total_pairings_found: 0,
-            total_mcp_exposures_found: 0,
-            failure_report: String::new(),
-        }
+    /// The refresh ran and published its caches, but the repositories that
+    /// `report` names could not be read. The counts are the ones the caches
+    /// actually hold, retained entries included.
+    pub fn with_read_failure_report(mut self, report: impl Into<String>) -> Self {
+        self.read_failure_report = report.into();
+        self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<repo_capnp::repo_refresh_result::Builder>();
-            result.set_success(self.success);
-            if let Some(ref msg) = self.error_message {
-                result.set_error_message(msg);
-            }
             result.set_total_nodes_found(self.total_nodes_found);
             result.set_total_launchers_found(self.total_launchers_found);
             result.set_total_contracts_found(self.total_contracts_found);
             result.set_total_pairings_found(self.total_pairings_found);
             result.set_total_mcp_exposures_found(self.total_mcp_exposures_found);
-            result.set_failure_report(&self.failure_report);
+            result.set_read_failure_report(&self.read_failure_report);
         }
         encode_message(&builder)
     }
@@ -307,14 +250,12 @@ impl RepoRefreshResult {
         let reader = decode_message(data)?;
         let result = reader.get_root::<repo_capnp::repo_refresh_result::Reader>()?;
         Ok(Self {
-            success: result.get_success(),
-            error_message: optional_text(result.get_error_message()?.to_str()?),
             total_nodes_found: result.get_total_nodes_found(),
             total_launchers_found: result.get_total_launchers_found(),
             total_contracts_found: result.get_total_contracts_found(),
             total_pairings_found: result.get_total_pairings_found(),
             total_mcp_exposures_found: result.get_total_mcp_exposures_found(),
-            failure_report: result.get_failure_report()?.to_str()?.to_owned(),
+            read_failure_report: result.get_read_failure_report()?.to_str()?.to_owned(),
         })
     }
 }
@@ -353,29 +294,11 @@ mod tests {
     }
 
     #[test]
-    fn goal_response_accepted_roundtrips() {
-        let response = RepoRefreshGoalResponse::accepted();
-        assert!(response.accepted);
-        assert_eq!(response.rejection_reason, None);
-        let bytes = response.encode().expect("encode");
+    fn goal_response_roundtrips() {
+        let bytes = RepoRefreshGoalResponse::new().encode().expect("encode");
         assert_eq!(
             RepoRefreshGoalResponse::decode(&bytes).expect("decode"),
-            response
-        );
-    }
-
-    #[test]
-    fn goal_response_rejected_roundtrips() {
-        let response = RepoRefreshGoalResponse::rejected("already refreshing");
-        assert!(!response.accepted);
-        assert_eq!(
-            response.rejection_reason.as_deref(),
-            Some("already refreshing")
-        );
-        let bytes = response.encode().expect("encode");
-        assert_eq!(
-            RepoRefreshGoalResponse::decode(&bytes).expect("decode"),
-            response
+            RepoRefreshGoalResponse
         );
     }
 
@@ -512,16 +435,14 @@ mod tests {
     }
 
     #[test]
-    fn result_success_roundtrips() {
-        let result = RepoRefreshResult::success(3, 1, 2, 4, 5);
-        assert!(result.success);
-        assert_eq!(result.error_message, None);
+    fn result_roundtrips() {
+        let result = RepoRefreshResult::new(3, 1, 2, 4, 5);
         assert_eq!(result.total_nodes_found, 3);
         assert_eq!(result.total_launchers_found, 1);
         assert_eq!(result.total_contracts_found, 2);
         assert_eq!(result.total_pairings_found, 4);
         assert_eq!(result.total_mcp_exposures_found, 5);
-        assert!(result.failure_report.is_empty());
+        assert!(result.read_failure_report.is_empty());
         let bytes = result.encode().expect("encode");
         assert_eq!(RepoRefreshResult::decode(&bytes).expect("decode"), result);
     }
@@ -530,39 +451,13 @@ mod tests {
     /// published *and* the ones it could not read, so a caller can act on
     /// the problem without treating the run as a failure.
     #[test]
-    fn result_success_with_failure_report_roundtrips() {
-        let result = RepoRefreshResult::success_with_failure_report(
-            3,
-            1,
-            2,
-            4,
-            5,
-            "1 of the configured repositories could not be updated.",
-        );
-        assert!(result.success);
-        assert_eq!(result.error_message, None);
+    fn result_with_read_failure_report_roundtrips() {
+        let result = RepoRefreshResult::new(3, 1, 2, 4, 5)
+            .with_read_failure_report("1 of the configured repositories could not be updated.");
         assert_eq!(result.total_nodes_found, 3);
         assert_eq!(
-            result.failure_report,
+            result.read_failure_report,
             "1 of the configured repositories could not be updated."
-        );
-        let bytes = result.encode().expect("encode");
-        assert_eq!(RepoRefreshResult::decode(&bytes).expect("decode"), result);
-    }
-
-    #[test]
-    fn result_failure_roundtrips() {
-        let result = RepoRefreshResult::failure("scan failed");
-        assert!(!result.success);
-        assert_eq!(result.error_message.as_deref(), Some("scan failed"));
-        assert_eq!(result.total_nodes_found, 0);
-        assert_eq!(result.total_launchers_found, 0);
-        assert_eq!(result.total_contracts_found, 0);
-        assert_eq!(result.total_pairings_found, 0);
-        assert_eq!(result.total_mcp_exposures_found, 0);
-        assert!(
-            result.failure_report.is_empty(),
-            "a run that never happened has no per-repository report to give"
         );
         let bytes = result.encode().expect("encode");
         assert_eq!(RepoRefreshResult::decode(&bytes).expect("decode"), result);

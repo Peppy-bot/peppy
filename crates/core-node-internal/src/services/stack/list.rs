@@ -1,14 +1,15 @@
 use crate::Result;
 use crate::services::current_host_name;
-use crate::services::response::into_service_response;
+use crate::services::response::into_service_answer;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{StackListRequest, StackListResponse};
 use core_node_api::names;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
+use peppylib::messaging::ServiceAnswer;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -59,11 +60,14 @@ async fn handle_stack_list_request(
     core_node: String,
     instance_id: String,
     ownership: Arc<crate::services::federation::SliceOwnership>,
-) -> PeppyResult<Payload> {
-    into_service_response(
+) -> ServiceAnswer {
+    into_service_answer(handle_stack_list_request_inner(
         &context,
-        handle_stack_list_request_inner(&context, node_stack, core_node, instance_id, &ownership),
-    )
+        node_stack,
+        core_node,
+        instance_id,
+        &ownership,
+    ))
 }
 
 fn handle_stack_list_request_inner(
