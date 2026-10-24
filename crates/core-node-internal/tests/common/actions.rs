@@ -835,6 +835,68 @@ async fn send_node_build_and_wait_internal(
     .await
 }
 
+/// A build that [`send_logged_node_build`] sent: the log path that the goal
+/// response of the accepted goal names, and how the build ended.
+pub struct LoggedBuild {
+    pub log_path: PathBuf,
+    pub end: GoalEnd<NodeBuildResult>,
+}
+
+/// Sends the build goal of the staged node `(node_name, node_tag)` with no
+/// env overrides, forwards each feedback line of the build to `feedback_tx`
+/// when there is one, and returns the log path of the accepted goal with how
+/// the build ended. Panics when the daemon refuses the goal.
+pub async fn send_logged_node_build(
+    started: &StartedCoreNode,
+    node_name: &str,
+    node_tag: &str,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    feedback_tx: Option<&UnboundedSender<NodeBuildFeedback>>,
+) -> LoggedBuild {
+    let goal = NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs());
+    let mut action_handle = send_daemon_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        &goal,
+        goal_timeout,
+    )
+    .await
+    .expect("the node_build goal should be sent");
+    let goal_response = goal_answer(
+        &action_handle,
+        NodeBuildGoalResponse::decode,
+        "build goal response",
+    )
+    .expect("the goal answer should decode")
+    .unwrap_or_else(|refusal| panic!("the daemon refused the node_build goal: {refusal}"));
+    let deadline = tokio::time::Instant::now() + result_timeout;
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| NodeBuildFeedback::decode(payload).expect("failed to decode NodeBuildFeedback"),
+        forward_until_closed(feedback_tx),
+        deadline,
+    )
+    .await;
+    assert!(
+        !matches!(drained, FeedbackDrainOutcome::TimedOut),
+        "the build did not end within {result_timeout:?}"
+    );
+    let end = fetch_end(
+        &started.caller_handle,
+        &action_handle,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+        NodeBuildResult::decode,
+        "build result",
+    )
+    .await
+    .expect("the end of the build should be fetched");
+    LoggedBuild {
+        log_path: goal_response.log_path,
+        end,
+    }
+}
+
 /// Helper function to send a node_add goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
 pub async fn send_node_add_and_wait<'a>(

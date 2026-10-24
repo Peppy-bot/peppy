@@ -1,22 +1,18 @@
 mod common;
 
 use common::{
-    FeedbackDrainOutcome, GoalEnd, NodeAddSource, acquire_container_test_guard,
-    archive_contains_entry, assert_failure, entity_artifact_path, path_env_with_dir_first,
-    read_file_from_archive, send_node_add_and_wait, send_node_build_and_wait,
-    send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
-    start_core_node_with_mock_messenger_outside_home, write_executable_script, write_peppy_json5,
+    GoalEnd, NodeAddSource, acquire_container_test_guard, archive_contains_entry, assert_failure,
+    entity_artifact_path, path_env_with_dir_first, read_file_from_archive, send_logged_node_build,
+    send_node_add_and_wait, send_node_build_and_wait, send_node_build_and_wait_forced,
+    start_core_node_with_mock_messenger, start_core_node_with_mock_messenger_outside_home,
+    write_executable_script, write_peppy_json5,
 };
 use config::failure_kind::PeppyFailureKind;
-use core_node_api::encoding::{
-    NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
-};
+use core_node_api::encoding::{NodeBuildFeedback, NodeBuildResult};
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use peppylib::messaging::Failure;
-use std::ops::ControlFlow;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
-use tokio::sync::mpsc::UnboundedSender;
 
 const BUILD_CMD_MARKER_FILE: &str = "build_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -103,72 +99,6 @@ async fn build_node_and_wait(
     )
     .await
     .expect("node_build request should complete")
-}
-
-/// A build that [`send_logged_node_build`] sent: the log path that the goal
-/// response of the accepted goal names, and how the build ended.
-struct LoggedBuild {
-    log_path: PathBuf,
-    end: GoalEnd<NodeBuildResult>,
-}
-
-/// Sends the build goal of the staged node `(node_name, node_tag)` with no
-/// env overrides, forwards each feedback line of the build to `feedback_tx`
-/// when there is one, and returns the log path of the accepted goal with how
-/// the build ended. Panics when the daemon refuses the goal.
-async fn send_logged_node_build(
-    started_core_node: &common::StartedCoreNode,
-    node_name: &str,
-    node_tag: &str,
-    result_timeout: Duration,
-    feedback_tx: Option<&UnboundedSender<NodeBuildFeedback>>,
-) -> LoggedBuild {
-    let goal = NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs());
-    let mut action_handle = common::send_daemon_goal(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        &goal,
-        GOAL_TIMEOUT,
-    )
-    .await
-    .expect("the node_build goal should be sent");
-    let goal_response = common::goal_answer(
-        &action_handle,
-        NodeBuildGoalResponse::decode,
-        "build goal response",
-    )
-    .expect("the goal answer should decode")
-    .unwrap_or_else(|refusal| panic!("the daemon refused the node_build goal: {refusal}"));
-    let deadline = tokio::time::Instant::now() + result_timeout;
-    let drained = common::drain_feedback(
-        &mut action_handle,
-        |payload| NodeBuildFeedback::decode(payload).expect("failed to decode NodeBuildFeedback"),
-        |feedback| {
-            if let Some(tx) = feedback_tx {
-                let _ = tx.send(feedback);
-            }
-            ControlFlow::Continue(())
-        },
-        deadline,
-    )
-    .await;
-    assert!(
-        !matches!(drained, FeedbackDrainOutcome::TimedOut),
-        "the build did not end within {result_timeout:?}"
-    );
-    let end = common::fetch_end(
-        &started_core_node.caller_handle,
-        &action_handle,
-        deadline.saturating_duration_since(tokio::time::Instant::now()),
-        NodeBuildResult::decode,
-        "build result",
-    )
-    .await
-    .expect("the end of the build should be fetched");
-    LoggedBuild {
-        log_path: goal_response.log_path,
-        end,
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -357,6 +287,7 @@ wheels = [
         &started_core_node,
         &node_name,
         &node_tag,
+        GOAL_TIMEOUT,
         RESULT_TIMEOUT,
         None,
     )
@@ -702,6 +633,7 @@ async fn listen_for_node_build_writes_log_file() {
         &started_core_node,
         &node_name,
         &node_tag,
+        GOAL_TIMEOUT,
         RESULT_TIMEOUT,
         None,
     )
@@ -925,6 +857,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         &started_core_node,
         &node_name,
         &node_tag,
+        GOAL_TIMEOUT,
         CONTAINER_RESULT_TIMEOUT,
         None,
     )
@@ -1118,6 +1051,7 @@ From: nowhere
         &started_core_node,
         &node_name,
         &node_tag,
+        GOAL_TIMEOUT,
         CONTAINER_RESULT_TIMEOUT,
         Some(&feedback_tx),
     )
@@ -1184,6 +1118,7 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
         &started_core_node,
         &node_name,
         &node_tag,
+        GOAL_TIMEOUT,
         RESULT_TIMEOUT,
         None,
     )
