@@ -111,4 +111,15 @@ sanitize to the module name `{sanitized}`"
         first_key: String,
         second_key: String,
     },
+    /// Two failure kinds of one member give the same Rust variant of its
+    /// generated `FailureKind`: `kind_2` and `kind2` both give `Kind2`.
+    #[error(
+        "failure kinds `{first}` and `{second}` both give the Rust variant `{variant}`: give one \
+of them another name in the contract"
+    )]
+    FailureKindVariantCollision {
+        first: String,
+        second: String,
+        variant: String,
+    },
 }

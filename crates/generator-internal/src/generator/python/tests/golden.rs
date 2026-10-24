@@ -19,9 +19,9 @@
 use super::*;
 use crate::generator::golden_support::{
     CONSUMED_ACTION, CONSUMED_SERVICE, CONSUMED_SERVICE_REQUEST, CONSUMED_SERVICE_RESPONSE,
-    CONSUMED_TOPIC, CONSUMED_TOPIC_FORMAT, GoldenDocument, PEER_TOPIC, assert_matches_golden,
-    full_action_messages, parse, peer, push_artifact_section, register_bodyless_dependency,
-    register_own_emitted_topics, register_own_services_and_actions,
+    CONSUMED_TOPIC, CONSUMED_TOPIC_FORMAT, GoldenDocument, PEER_TOPIC, arm_control_dependency,
+    assert_matches_golden, full_action_messages, parse, peer, push_artifact_section,
+    register_bodyless_dependency, register_own_emitted_topics, register_own_services_and_actions,
 };
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
@@ -94,11 +94,7 @@ fn render_everything(node_dir: &Path) -> Vec<InterfaceArtifact> {
     let mut action: ConsumedAction = parse(CONSUMED_ACTION);
     action.link_id = "left_arm".to_string();
     generator
-        .add_consumed_action(
-            &action,
-            &full_action_messages(),
-            &DependencyContext::contract("arm_control", "v1", "left_arm", Cardinality::One),
-        )
+        .add_consumed_action(&action, &full_action_messages(), &arm_control_dependency())
         .unwrap();
 
     // Pairing slots: required and optional, in both directions.

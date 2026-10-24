@@ -392,6 +392,7 @@ mod tests {
             link_id: "depth_cam".to_string(),
             contract_name: "depth_camera".to_string(),
             contract_tag: "v1".to_string(),
+            failure_kinds: Default::default(),
         };
         let contract_backed = InterfaceArtifact::for_leaf(
             Some(&contract_origin),

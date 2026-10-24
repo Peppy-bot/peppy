@@ -166,7 +166,7 @@ fn main() -> Result<()> {
         tokio::spawn(async move {
             enable_camera::handle_next_request(
                 &node_runner,
-                |request| -> Result<enable_camera::Response> {
+                |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
                     println!(
                         "enable_camera request from {}: enable = {}",
                         request.instance_id, request.data.enable
@@ -191,6 +191,8 @@ The `request` argument contains:
 - `instance_id`: the consumer instance that sent the request, read straight from the request context. The producer is binding-agnostic; it doesn't know which slot on the consumer this call is heading to.
 - `core_node`: the core node hosting that consumer instance, read from the request context.
 - `data`: the deserialized request payload (only present when a `request_message_format` is defined).
+
+The handler answers with its response, a success, or with a failure. A failure gives the caller an **error reply**: a failure kind and a message for a person (see [Error replies](#error-replies)).
 
 `handle_next_request` processes a single request and returns.
 To serve requests continuously, call it in a loop inside a spawned task:
@@ -248,7 +250,7 @@ use peppygen::exposed_services::get_camera_info;
 tokio::spawn(async move {
     get_camera_info::handle_next_request(
         &node_runner,
-        |request| -> Result<get_camera_info::Response> {
+        |request| -> std::result::Result<get_camera_info::Response, get_camera_info::Failure> {
             println!("get_camera_info request from {}", request.instance_id);
             Ok(get_camera_info::Response::new(
                 "UVC Webcam".to_owned(),
@@ -264,6 +266,43 @@ tokio::spawn(async move {
 </Tabs>
 
 A producer exposes its service exactly once and serves any consumer that calls it. Starting the producer before any consumer (or after them) is equally valid.
+
+### Error replies
+
+A service answers each request with its response, or with an error reply: a **failure kind** and a message. The response is a success. So no response reports a failure in a field of its own, such as `success: false` and an error text; a field that gives the answer of a check, such as whether a pose is reachable, is data and stays in the response.
+
+A service gives a kind from a closed set: the kinds of peppy, and the kinds that the contract of the service declares in its [`failure_kinds` block](/advanced_guides/contract_implementation/#failure-kinds). A native service gives the kinds of peppy only (`attempt_failed`, `timeout`, `precondition_failed`, `resource_unavailable`, `rejected`; see [How a goal ends](/advanced_guides/actions/#how-a-goal-ends)). The generated module of each service declares them as a `FailureKind` enum and a `Failure` type (`kind`, `message`), and the generated handler can give no other kind: in Rust a kind the service does not declare is not a variant of the enum, so the node does not compile; in Python `Failure` raises `ValueError` for it.
+
+<Tabs>
+  <TabItem label="Python">
+```python
+def handler(request):
+    if not camera_is_connected():
+        # Raise, or return, the Failure of this service.
+        raise enable_camera.Failure(
+            enable_camera.FailureKind.RESOURCE_UNAVAILABLE, "the camera is unplugged"
+        )
+    return enable_camera.Response(enabled=request.data.enable, error_msg=None)
+```
+
+    A handler that raises any other exception gives an error reply of the kind `attempt_failed`, with the text of the exception.
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+|request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
+    if !camera_is_connected() {
+        return Err(enable_camera::Failure::new(
+            enable_camera::FailureKind::ResourceUnavailable,
+            "the camera is unplugged",
+        ));
+    }
+    Ok(enable_camera::Response::new(request.data.enable, None))
+}
+```
+  </TabItem>
+</Tabs>
+
+A request that does not decode into the declared `request_message_format` never reaches the handler: the generated server gives it an error reply of the kind `rejected`, with the decode error as the message. A response that does not serialize gives an error reply of the kind `attempt_failed`.
 
 ## Consuming a service
 
@@ -611,7 +650,35 @@ Service calls can fail with four error types:
 - **TargetNotBound** (`ValueError` in Python): the selected target is not a member of the slot's bound set; raised before anything reaches the wire.
 - **ServiceUnreachable** (`ConnectionError` in Python): no instance is listening for that service.
 - **ServiceTimeout** (`TimeoutError` in Python): no response was received within the timeout.
-- **ServiceError** (`RuntimeError` in Python): the handler returned an error, which is propagated back to the caller.
+- **ServiceFailed** (the `Failure` of the service in Python): the provider gave an [error reply](#error-replies), with a failure kind and a message.
 
-If the service handler returns an `Err` in Rust or raises an exception in Python, the error is forwarded to the caller rather than silently timing out.
-This means a failing handler does not block the service from continuing to accept new requests.
+The error reply of a handler reaches the caller as fast as a response, rather than as a timeout, and the service goes on to accept new requests.
+
+The generated `poll` parses the error reply into the `Failure` of its service. In Rust, `Failure::of(&error)` reads it from the `Error::ServiceFailed` of the call; in Python, `poll` raises the `Failure` of the service, a `peppylib.FailureError`:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+try:
+    response = await enable_camera.poll(node_runner, camera, request, 5.0)
+except enable_camera.Failure as failure:
+    if failure.kind is enable_camera.FailureKind.RESOURCE_UNAVAILABLE:
+        print(f"the camera is gone: {failure.message}")
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+match enable_camera::poll(&node_runner, camera, Duration::from_secs(5), request).await {
+    Ok(response) => println!("enabled={}", response.data.enabled),
+    Err(error) => match enable_camera::Failure::of(&error) {
+        Some(failure) if failure.kind == enable_camera::FailureKind::ResourceUnavailable => {
+            println!("the camera is gone: {}", failure.message)
+        }
+        _ => return Err(error),
+    },
+}
+```
+  </TabItem>
+</Tabs>
+
+An error reply with a kind that the service does not declare breaks the contract of the service: the generated `poll` gives a deserialization error (`ValueError` in Python) instead of a failure of an unknown kind.

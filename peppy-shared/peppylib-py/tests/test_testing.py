@@ -168,8 +168,7 @@ async def test_mock_action_stop_yields_producer_gone_deterministically():
                 "move_arm",
                 producer,
                 b"goal",
-                QoSProfile.Reliable,
-                5.0,
+                goal_timeout_secs=5.0,
             )
         )
 

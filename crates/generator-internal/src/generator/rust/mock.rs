@@ -629,6 +629,7 @@ fn render_dep_service(
         pub mod #module_ident {
             #request_reexport
             #response_reexport
+            pub use #production::{Failure, FailureKind};
             #[allow(unused_imports)]
             use #production::*;
 
@@ -674,9 +675,16 @@ fn render_dep_service(
                     self.inner.respond(#response_payload).await
                 }
 
-                /// Fails the parked request with a handler-error reason.
-                pub async fn respond_error(self, reason: impl Into<String>) -> crate::Result<()> {
-                    self.inner.respond_error(reason.into()).await
+                /// Answers the parked request with an error reply: a failure
+                /// kind that this member declares and a message.
+                pub async fn respond_failure(
+                    self,
+                    kind: FailureKind,
+                    message: impl Into<String>,
+                ) -> crate::Result<()> {
+                    self.inner
+                        .respond_failure(Failure::new(kind, message).to_wire())
+                        .await
                 }
             }
 
@@ -762,39 +770,26 @@ fn render_dep_action(
         quote!()
     };
 
-    let (accept_param, accept_payload, reject_param, reject_payload) =
-        if let Some(format) = &spec.messages.goal_response {
-            let fn_ident = Ident::new("serialize_goal_response", Span::call_site());
-            codecs.push(build_struct_serializer(
-                generator,
-                &fn_ident,
-                CodecSpec {
-                    schema_key: &keys.goal_response,
-                    struct_prefix: &format!("{action_struct_name}GoalResponse"),
-                    format,
-                    context_label: &format!("mock {action_name} goal response"),
-                },
-                &quote!(GoalResponseData),
-            )?);
-            (
-                quote!(response: GoalResponseData),
-                quote!(serialize_goal_response(&response)?),
-                quote!(response: Option<GoalResponseData>),
-                quote! {
-                    match response {
-                        Some(response) => serialize_goal_response(&response)?,
-                        None => peppylib::Payload::new(),
-                    }
-                },
-            )
-        } else {
-            (
-                quote!(),
-                quote!(peppylib::Payload::new()),
-                quote!(),
-                quote!(peppylib::Payload::new()),
-            )
-        };
+    let (accept_param, accept_payload) = if let Some(format) = &spec.messages.goal_response {
+        let fn_ident = Ident::new("serialize_goal_response", Span::call_site());
+        codecs.push(build_struct_serializer(
+            generator,
+            &fn_ident,
+            CodecSpec {
+                schema_key: &keys.goal_response,
+                struct_prefix: &format!("{action_struct_name}GoalResponse"),
+                format,
+                context_label: &format!("mock {action_name} goal response"),
+            },
+            &quote!(GoalResponseData),
+        )?);
+        (
+            quote!(response: GoalResponseData),
+            quote!(serialize_goal_response(&response)?),
+        )
+    } else {
+        (quote!(), quote!(peppylib::Payload::new()))
+    };
 
     let publish_feedback_method = if let Some(format) = &spec.messages.feedback {
         let fn_ident = Ident::new("serialize_feedback", Span::call_site());
@@ -843,12 +838,14 @@ fn render_dep_action(
             &quote!(ResultResponseData),
         )?);
         (
-            quote!(result: &ResultResponseData),
+            Some(quote!(result: &ResultResponseData)),
             quote!(serialize_result(result)?),
         )
     } else {
-        (quote!(), quote!(peppylib::Payload::new()))
+        (None, quote!(peppylib::Payload::new()))
     };
+    let cancelled_params =
+        std::iter::once(quote!(reason: impl Into<String>)).chain(complete_param.clone());
 
     let doc = format!(
         "Typed mock action server for the consumed action `{action_name}`, on the real \
@@ -861,6 +858,8 @@ fn render_dep_action(
             #( #reexports )*
             #[allow(unused_imports)]
             use #production::*;
+
+            pub use #production::{Failure, FailureKind};
 
             pub struct Action {
                 core: peppylib::testing::MockActionServerCore,
@@ -899,7 +898,7 @@ fn render_dep_action(
                 }
             }
 
-            /// A goal received by the mock, awaiting accept/reject.
+            /// A goal received by the mock, awaiting accept/refuse.
             pub struct PendingGoal {
                 pending: peppylib::testing::MockPendingGoal,
                 #request_field
@@ -918,13 +917,15 @@ fn render_dep_action(
                     Ok(ActiveGoal { context })
                 }
 
-                /// Rejects the goal with an optional human-readable reason.
-                pub async fn reject(
+                /// Refuses the goal with a failure kind that this member
+                /// declares and a message. A refusal carries no goal
+                /// response.
+                pub async fn refuse(
                     self,
-                    reason: Option<&str>,
-                    #reject_param
+                    kind: FailureKind,
+                    message: impl Into<String>,
                 ) -> crate::Result<()> {
-                    self.pending.reject(reason, #reject_payload).await
+                    self.pending.refuse(Failure::new(kind, message).to_wire()).await
                 }
             }
 
@@ -936,25 +937,48 @@ fn render_dep_action(
             impl ActiveGoal {
                 #publish_feedback_method
 
-                /// Resolves when the node requests cancellation of this goal.
+                /// Resolves when this goal receives its cancel signal: a
+                /// cancel request of the node, or the end of the node.
                 pub async fn cancel_signal(&self) {
                     self.context.cancel_signal().await
                 }
 
-                /// Whether cancellation has been requested for this goal.
+                /// Whether this goal received its cancel signal.
                 pub fn is_cancelled(&self) -> bool {
                     self.context.is_cancelled()
                 }
 
-                /// Completes the goal successfully.
+                /// Why this goal received its cancel signal; `None` before
+                /// it did.
+                pub fn cancel_cause(&self) -> Option<peppylib::messaging::CancelCause> {
+                    self.context.cancel_cause()
+                }
+
+                /// Ends the goal with the status completed: a success.
                 pub async fn complete(&self, #complete_param) -> crate::Result<()> {
                     self.context.complete(#complete_payload).await?;
                     Ok(())
                 }
 
-                /// Completes the goal as cancelled.
-                pub async fn complete_cancelled(&self, #complete_param) -> crate::Result<()> {
-                    self.context.complete_cancelled(#complete_payload).await?;
+                /// Ends the goal with the status failed: a failure kind
+                /// that this member declares, a message, and no result.
+                pub async fn fail(
+                    &self,
+                    kind: FailureKind,
+                    message: impl Into<String>,
+                ) -> crate::Result<()> {
+                    self.context.fail(Failure::new(kind, message).to_wire()).await?;
+                    Ok(())
+                }
+
+                /// Ends the goal with the status cancelled, for `reason`.
+                pub async fn complete_cancelled(
+                    &self,
+                    #(#cancelled_params),*
+                ) -> crate::Result<()> {
+                    self.context
+                        .complete_cancelled(reason, #complete_payload)
+                        .await?;
                     Ok(())
                 }
             }

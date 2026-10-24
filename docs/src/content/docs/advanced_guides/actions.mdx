@@ -18,10 +18,10 @@ A node can drive **multiple goals concurrently** for the same action. Each accep
 
 An action consists of four communication channels built on top of services and topics:
 
-1. **Goal** (service): the client sends a goal request; the server accepts or rejects it.
+1. **Goal** (service): the client sends a goal request; the server accepts or refuses it.
 2. **Feedback** (topic): the server publishes progress updates while working on the goal.
 3. **Cancel** (service): the client asks a live goal to stop, at any time; delivery is a signal the worker may honor or ignore.
-4. **Result** (service): the client requests the final result once the server finishes.
+4. **Result** (service): the client requests how the goal ended once the server finishes.
 
 ```
 Client                              Server
@@ -35,6 +35,32 @@ Client                              Server
   │──── get_result (request) ─────────>│
   │<─── ResultResponse ────────────────│
 ```
+
+### How a goal ends
+
+The server answers each goal with its acceptance or its refusal. An accepted goal then ends with one terminal status:
+
+| Status | What ends the goal | What the client gets |
+| --- | --- | --- |
+| `completed` | The worker calls `complete` | The result. The goal is a success. |
+| `failed` | The worker calls `fail` | A failure kind and a message, and no result |
+| `cancelled` | The worker calls `complete_cancelled` | The reason of the cancel and a result |
+| `abandoned` | The worker drops the goal without an end, or the producer is gone | Nothing |
+| `expired` | The goal ended, and the producer no longer keeps its result | Nothing |
+
+A refusal and a failed goal give a **failure kind** and a message for a person. The kind says why, so that the client can try again, plan again or call a person. A member gives a kind from a closed set: the kinds of peppy, and the kinds that the contract of the member declares in its [`failure_kinds` block](/advanced_guides/contract_implementation/#failure-kinds). A native action, which no contract declares, gives the kinds of peppy only:
+
+| `failure_kind` | Meaning |
+| --- | --- |
+| `attempt_failed` | The attempt gave no result |
+| `timeout` | The bound of the provider passed |
+| `precondition_failed` | A precondition failed |
+| `resource_unavailable` | A robot, limb or host is gone |
+| `rejected` | The provider refused the goal, and no other kind says why |
+
+The generated code of each action declares these kinds as a `FailureKind` enum and a `Failure` type (`kind`, `message`). The generated provider can give no other kind: in Rust a kind that the member does not declare is not a variant of the enum, so the node does not compile; in Python `Failure` raises `ValueError` for it before anything reaches the wire. The generated client parses each failure from the wire into the same type: a kind that the member does not declare is an error, never a failure of an unknown kind.
+
+So no result reports a refusal or a failure in a field of its own, such as `success: false` and an error text. A field that gives the answer of a check, such as whether a pose is reachable, is data and stays in the result.
 
 ## Exposing an action
 
@@ -160,18 +186,18 @@ Each action can define a `goal_service`, a `feedback_topic`, and a `result_servi
   </TabItem>
 </Tabs>
 
-The `goal_service` payloads and the `result_service` response are all optional: any of `goal_service.request_message_format`, `goal_service.response_message_format`, and `result_service.response_message_format` is omitted when the corresponding payload carries no fields. For example, a `calibrate` action can omit `goal_service.request_message_format` because it has no goal parameters, and a `result_service` that only signals completion can omit its `response_message_format` too. The `result_service` block itself is also optional, but omitting it removes the completion API entirely: no `complete` / `complete_cancelled` is generated, so a goal of such an action can only ever resolve as `Abandoned`.
+The `goal_service` payloads and the `result_service` response are all optional: any of `goal_service.request_message_format`, `goal_service.response_message_format`, and `result_service.response_message_format` is omitted when the corresponding payload carries no fields. For example, a `calibrate` action can omit `goal_service.request_message_format` because it has no goal parameters, and a `result_service` that only signals completion can omit its `response_message_format` too. The `result_service` block itself is also optional: the goals of an action without it end with `complete`, `fail` or `complete_cancelled` all the same, with an empty result.
 
 The `result_service` never carries a user-defined request. A `get_result` call is correlated to its goal by the `goal_id` the framework assigns at `fire_goal`, so the only payload you declare on the result side is `response_message_format`, which the producer supplies through `complete` or `complete_cancelled`. Declaring a `result_service.request_message_format` is rejected when the config is parsed, since no generated API, wire message, or producer handler could ever read it.
 
 The `feedback_topic` block is optional: actions that don't stream progress can omit it entirely. When you do declare `feedback_topic`, however, its `message_format` is required and cannot be empty: every feedback message must carry a non-empty payload, since empty payloads are reserved as the framework's per-goal end-of-stream signal (see [Receiving feedback](#receiving-feedback)). A `feedback_topic` declared without a `message_format`, or with an empty one, is rejected when the config is parsed, identically for Rust and Python nodes.
 
-Feedback is live only: `feedback_topic` takes no `retention`. The server always publishes feedback with the `reliable` profile's settings; a `qos_profile` key on `feedback_topic` is not read by the generated code, and the feedback subscription's own QoS is chosen by the client at `fire_goal`.
+Feedback is live only: `feedback_topic` takes no `retention`. The server always publishes feedback with the `reliable` profile's settings; a `qos_profile` key on `feedback_topic` is not read by the generated code. The client sets how many unread feedback messages its handle keeps with the feedback bound of `fire_goal` (see [Receiving feedback](#receiving-feedback)).
 
 ### Handling goals
 
 After running `peppy node sync`, the code generator creates a module for each exposed action under `peppygen::exposed_actions`.
-Use `ActionHandle::expose` to set up the action, then loop accepting goals. `handle_goal_next_request` returns the next *accepted* goal as a `GoalContext`; rejected goals are answered and skipped for you, so the accept loop ends only when the goal stream closes (the node is shutting down). Spawn a worker per context so goals run concurrently; each context owns that goal's feedback, cancel signal, and result, so nothing crosses between goals:
+Use `ActionHandle::expose` to set up the action, then loop accepting goals. `handle_goal_next_request` returns the next *accepted* goal as a `GoalContext`; refused goals are answered and skipped for you, so the accept loop ends only when the goal stream closes (the node is shutting down). Spawn a worker per context so goals run concurrently; each context owns that goal's feedback, cancel signal, and result, so nothing crosses between goals:
 
 <Tabs>
   <TabItem label="Python">
@@ -195,8 +221,8 @@ async def drive(ctx):
 async def run_action(node_runner):
     action = await move_arm.ActionHandle.expose(node_runner)
 
-    # The decider sets the concurrency policy: e.g. reject a goal for a busy
-    # arm_id. Rejected goals are answered and skipped internally.
+    # The decider sets the concurrency policy: e.g. refuse a goal for a busy
+    # arm_id. Refused goals are answered and skipped internally.
     def decide(request):
         print(
             f"goal from {request.instance_id}: arm_id={request.data.arm_id} "
@@ -237,7 +263,7 @@ fn main() -> Result<()> {
         // Spawn the accept loop so this setup closure returns and the node
         // starts serving. The loop runs for the life of the node.
         tokio::spawn(async move {
-            // Each call returns the next accepted goal; rejected goals are
+            // Each call returns the next accepted goal; refused goals are
             // answered and skipped, so the loop ends only when the stream
             // closes (None) or errors.
             while let Ok(Some(ctx)) = action
@@ -246,7 +272,7 @@ fn main() -> Result<()> {
                         "goal from {}: arm_id={} desired={:?}",
                         request.instance_id, request.data.arm_id, request.data.desired_position
                     );
-                    // The decider sets the concurrency policy: e.g. reject a
+                    // The decider sets the concurrency policy: e.g. refuse a
                     // goal for a busy `arm_id`.
                     Ok(move_arm::GoalDecision::accept())
                 })
@@ -270,13 +296,12 @@ fn main() -> Result<()> {
   </TabItem>
 </Tabs>
 
-`GoalDecision` controls admission. The decision and its optional rejection reason travel in a framework-owned envelope wrapped around the goal reply, so they never appear in your schema: `GoalResponse` contains exactly the fields declared in `goal_service.response_message_format`, and the framework never adds an `accepted` or error field to it.
+`GoalDecision` controls admission. The decision and the failure of a refusal travel in a framework-owned envelope wrapped around the goal reply, so they never appear in your schema: `GoalResponse` contains exactly the fields declared in `goal_service.response_message_format`, and the framework never adds an `accepted` or error field to it.
 
 - `GoalDecision::accept()` (`GoalDecision.accept()` in Python) admits the goal, replies to the client, and yields a `GoalContext`. When the action declares a `response_message_format`, the constructor takes the declared response instead: `GoalDecision::accept(response)`.
-- `GoalDecision::reject(reason)` (`GoalDecision.reject(reason)` in Python) declines it: the client sees `accepted == false` and the reason on its handle, no context is created, and the accept loop transparently moves on to the next goal. This is where you enforce per-resource concurrency limits.
-- A reject can also carry the declared response payload: construct `GoalDecision::Reject { reason, response }` directly in Rust, or pass both arguments in Python with `GoalDecision.reject(reason, response)`. The client's `data` is absent when a rejection carried no payload.
+- `GoalDecision::refuse(kind, message)` (`GoalDecision.refuse(kind, message)` in Python) refuses it with a [failure kind](#how-a-goal-ends) of the action and a message: the client sees `accepted == false` and the failure on its handle, no context is created, and the accept loop transparently moves on to the next goal. A refusal carries no goal response. This is where you enforce per-resource concurrency limits.
 
-A goal whose request bytes do not decode into the declared `request_message_format` (a field missing, a fixed-length array of the wrong length) never reaches your decider: the generated server rejects it with the decode error as the reason and keeps serving the next goal. The client sent something this server's shape does not admit, which is the client's problem to learn about, not a reason to stop serving.
+A goal whose request bytes do not decode into the declared `request_message_format` (a field missing, a fixed-length array of the wrong length) never reaches your decider: the generated server refuses it with the kind `rejected` and the decode error as the message, and keeps serving the next goal. The client sent something this server's shape does not admit, which is the client's problem to learn about, not a reason to stop serving.
 
 The `GoalRequest` passed to the decider contains:
 - `instance_id`: the client instance that sent the goal. The producer is binding-agnostic; it doesn't know which slot on the client this goal is heading to.
@@ -286,13 +311,18 @@ The `GoalRequest` passed to the decider contains:
 The `GoalContext` (`ctx`) is the only handle you need to drive the goal:
 - `ctx.request()`: the decoded `GoalRequest`.
 - `ctx.goal_id()`: this goal's correlation id.
+- `ctx.sender()` (Rust): the process that sent the goal (see [Goals that end with their sender](#goals-that-end-with-their-sender)).
 - `ctx.publish_feedback(...)`: publish a feedback message on this goal's stream.
-- `ctx.cancel_signal()` / `ctx.is_cancelled()`: observe cancellation (see below).
-- `ctx.complete(...)` / `ctx.complete_cancelled(...)`: deliver the final result.
+- `ctx.cancel_signal()` / `ctx.is_cancelled()` / `ctx.cancel_cause()`: observe cancellation and why it came (see below).
+- `ctx.complete(...)`: end the goal with its result, a success.
+- `ctx.fail(kind, message)`: end the goal failed, with a failure kind of the action, a message, and no result.
+- `ctx.complete_cancelled(reason, ...)`: end the goal cancelled, for `reason`, with its result.
+
+The first of `complete`, `fail` and `complete_cancelled` ends the goal; later calls do nothing.
 
 A producer exposes its action once and serves any client that fires a goal at it. Starting the producer before or after the client is equally valid.
 
-To enforce a concurrency limit (say, one in-flight goal per arm), reject a goal whose arm is already busy, and release the arm when the goal finishes. The decider and the per-goal workers share the busy set:
+To enforce a concurrency limit (say, one in-flight goal per arm), refuse a goal whose arm is already busy, and release the arm when the goal finishes. The decider and the per-goal workers share the busy set:
 
 <Tabs>
   <TabItem label="Python">
@@ -312,8 +342,10 @@ async def drive(ctx):
 def decide(request):
     arm_id = request.data.arm_id
     if arm_id in busy:
-        # The reason rides back to the client in the goal ack.
-        return move_arm.GoalDecision.reject(f"arm {arm_id} is already moving")
+        # The failure rides back to the client in the goal ack.
+        return move_arm.GoalDecision.refuse(
+            move_arm.FailureKind.REJECTED, f"arm {arm_id} is already moving"
+        )
     busy.add(arm_id)
     return move_arm.GoalDecision.accept()
 
@@ -341,11 +373,11 @@ while let Ok(Some(ctx)) = action
             if busy.lock().unwrap().insert(request.data.arm_id) {
                 Ok(move_arm::GoalDecision::accept())
             } else {
-                // The reason rides back to the client in the goal ack.
-                Ok(move_arm::GoalDecision::reject(format!(
-                    "arm {} is already moving",
-                    request.data.arm_id
-                )))
+                // The failure rides back to the client in the goal ack.
+                Ok(move_arm::GoalDecision::refuse(
+                    move_arm::FailureKind::Rejected,
+                    format!("arm {} is already moving", request.data.arm_id),
+                ))
             }
         }
     })
@@ -363,9 +395,41 @@ while let Ok(Some(ctx)) = action
   </TabItem>
 </Tabs>
 
+### Failing a goal
+
+A worker that cannot reach the end of its goal ends it with `fail`: a failure kind of the action and a message. A failed goal gives no result, so the client never reads a result that only reports the failure:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+async def drive(ctx):
+    plan = await plan_motion(ctx.request().data.desired_position)
+    if plan is None:
+        await ctx.fail(move_arm.FailureKind.ATTEMPT_FAILED, "no plan to the target")
+        return
+    await ctx.complete(True, None, plan.final_position)
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+tokio::spawn(async move {
+    let Some(plan) = plan_motion(ctx.request().data.desired_position).await else {
+        ctx.fail(move_arm::FailureKind::AttemptFailed, "no plan to the target")
+            .await
+            .ok();
+        return;
+    };
+    ctx.complete(true, None, plan.final_position).await.ok();
+});
+```
+  </TabItem>
+</Tabs>
+
+A contract can declare kinds of its own, such as `unreachable` for "No plan to the target". The action of a node that implements the contract then gives them too: `FailureKind::Unreachable` in Rust, `FailureKind.UNREACHABLE` in Python.
+
 ### Handling cancellation
 
-A worker reacts to a cancel for **its** goal via `ctx.cancel_signal()`, which resolves when a cancel request arrives for that `goal_id`. Pair it with the goal's work and report the outcome with `complete_cancelled`:
+A worker reacts to a cancel for **its** goal via `ctx.cancel_signal()`, which resolves when the goal receives its cancel signal: a cancel request of its caller arrives for that `goal_id`, or [its sender is gone](#goals-that-end-with-their-sender). `ctx.cancel_cause()` tells which: `CancelCause::Caller` or `CancelCause::SenderGone` in Rust (`CancelCause::reason()` gives a reason in words), `"caller"` or `"sender_gone"` in Python. Pair the signal with the goal's work and end the goal with `complete_cancelled`, its reason and its result:
 
 <Tabs>
   <TabItem label="Python">
@@ -380,8 +444,13 @@ async def drive(ctx):
         task.cancel()
 
     if cancel_task in done:
-        # A cancel arrived for this goal; wind down and report it.
-        await ctx.complete_cancelled(False, "cancelled", last_known_position)
+        # This goal received its cancel signal; wind down and report it.
+        reason = (
+            "cancelled by its caller"
+            if ctx.cancel_cause() == "caller"
+            else "its sender is gone"
+        )
+        await ctx.complete_cancelled(reason, False, None, last_known_position)
     else:
         outcome = work_task.result()
         for position in outcome.steps:
@@ -400,8 +469,9 @@ tokio::spawn(async move {
             ctx.complete(true, None, outcome.final_position).await.ok();
         }
         _ = ctx.cancel_signal() => {
-            // A cancel arrived for this goal; wind down and report it.
-            ctx.complete_cancelled(false, Some("cancelled".to_owned()), last_known_position)
+            // This goal received its cancel signal; wind down and report it.
+            let reason = ctx.cancel_cause().map_or("cancelled", |cause| cause.reason());
+            ctx.complete_cancelled(reason, false, None, last_known_position)
                 .await
                 .ok();
         }
@@ -411,7 +481,32 @@ tokio::spawn(async move {
   </TabItem>
 </Tabs>
 
-Cancellation is **auto-acknowledged** by the framework: the client's `cancel_goal` returns a typed `CancelState`: `Signalled` when a goal with that `goal_id` is in flight (the signal was delivered), `AlreadyTerminal` when it had already finished, or `Unknown`. `Signalled` means *delivered*, not *will stop*; a worker is free to ignore the signal and keep running. The worker decides the goal's fate: calling `complete_cancelled` (or `complete`) is what a subsequent `get_result` returns. Whichever completion runs first wins; the framework closes this goal's feedback stream on completion, so the client's `on_next_feedback_message` loop ends cleanly. The clean close is not the only way a stream ends: if the producer instance dies mid-goal, the client's loop ends with a producer-gone error instead (see [Receiving feedback](#receiving-feedback)). A goal's cancel never affects other concurrent goals.
+Cancellation is **auto-acknowledged** by the framework: the client's `cancel_goal` returns a typed `CancelState`: `Signalled` when a goal with that `goal_id` is in flight (the signal was delivered), `AlreadyTerminal` when it had already finished, or `Unknown`. `Signalled` means *delivered*, not *will stop*; a worker is free to ignore the signal and keep running. The worker decides the goal's fate: calling `complete_cancelled` (or `complete`, or `fail`) is what a subsequent `get_result` returns. Whichever end runs first wins; the framework closes this goal's feedback stream when the goal ends, so the client's `on_next_feedback_message` loop ends cleanly. The clean close is not the only way a stream ends: if the producer instance dies mid-goal, the client's loop ends with a producer-gone error instead (see [Receiving feedback](#receiving-feedback)). A goal's cancel never affects other concurrent goals.
+
+A member that ends the goals of other clients, such as a `stop` that ends every running move, ends each of them with `complete_cancelled` and a reason of its own, such as `"stopped by a stop request"`. The clients of those goals read the reason with the `Cancelled` outcome.
+
+### Goals that end with their sender
+
+A goal ends when the process that sent it is gone, so no robot goes on for a client that is gone. Each client process advertises its presence, and each goal carries the presence of its sender. The action watches the sender of each goal. When the sender is gone and the **sender grace** of the action passed, each goal of that sender that did not end receives its cancel signal, with the cause `SenderGone` (`"sender_gone"` in Python). The worker then ends the goal with `complete_cancelled`, as for any other cancel.
+
+The sender grace is zero unless the provider sets it. Set it when a client that stops and starts again within some time must find its goals still running, such as a robot initializer that attaches a robot to a simulation:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+action = await move_arm.ActionHandle.expose(node_runner)
+await action.set_sender_grace(5.0)  # seconds
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+let action = move_arm::ActionHandle::expose(&node_runner).await?;
+action.set_sender_grace(std::time::Duration::from_secs(5));
+```
+  </TabItem>
+</Tabs>
+
+The sender grace applies to each sender that is found gone after the call. A sender is found gone when its presence disappears and two probes confirm it.
 
 ## Consuming an action
 
@@ -497,7 +592,7 @@ Use `fire_goal` to send a goal, then listen for feedback and request the result:
 ```python
 import asyncio
 
-from peppygen import NodeBuilder, QoSProfile
+from peppygen import NodeBuilder
 from peppygen.consumed_actions.brain import move_arm
 
 
@@ -510,12 +605,14 @@ async def run(node_runner):
         arm,                    # which bound instance executes the goal
         request,
         5.0,                    # timeout (seconds)
-        QoSProfile.SensorData,  # QoS for the feedback topic
+        feedback_bound=None,    # unread feedback messages kept; None: 1024
     )
-    print(
-        f"goal accepted={action_handle.accepted} reason={action_handle.reason}",
-        flush=True,
-    )
+    if action_handle.refusal is not None:
+        print(
+            f"goal refused kind={action_handle.refusal.kind.value} "
+            f"message={action_handle.refusal.message}",
+            flush=True,
+        )
 
 
 async def setup(parameters, node_runner):
@@ -533,7 +630,7 @@ if __name__ == "__main__":
   <TabItem label="Rust">
 ```rust
 use peppygen::consumed_actions::brain::move_arm;
-use peppygen::{NodeBuilder, Parameters, QoSProfile, Result};
+use peppygen::{DEFAULT_FEEDBACK_BOUND, NodeBuilder, Parameters, Result};
 use std::time::Duration;
 
 fn main() -> Result<()> {
@@ -549,14 +646,13 @@ fn main() -> Result<()> {
             arm,                    // which bound instance executes the goal
             Duration::from_secs(5), // timeout
             request,
-            QoSProfile::SensorData, // QoS for the feedback topic
+            DEFAULT_FEEDBACK_BOUND, // unread feedback messages kept: 1024
         )
         .await?;
 
-        println!(
-            "goal accepted={} reason={:?}",
-            action_handle.accepted, action_handle.reason
-        );
+        if let Some(refusal) = &action_handle.refusal {
+            println!("goal refused kind={} message={}", refusal.kind, refusal.message);
+        }
 
         Ok(())
     })
@@ -567,7 +663,7 @@ fn main() -> Result<()> {
 
 `fire_goal` requires the caller to pass one explicit target for every [cardinality](/advanced_guides/topics/#dependency-cardinality), including the default `one`; obtain it from the slot's cardinality-typed accessor (the singular, infallible `bound_producer()` on a `one` slot, the same name returning an `Option` on a `zero_or_one` slot, where a vacant slot has no target to fire at and the caller branches on that first, and `bound_producers()` on the multi cardinalities, never empty for `one_or_more`). The target must belong to the slot's own set; anything else fails with a runtime error before the goal reaches the wire. Firing a goal at every bound producer of a multi-cardinality slot is a plain loop over `bound_producers()`; each returned handle drives its own feedback stream, cancel, and result, exactly as a single goal does.
 
-`fire_goal` returns an `ActionHandle`. Its `accepted` flag and optional rejection `reason` are decoded from the framework goal ack, and, when the action declares a `response_message_format`, its `data` field holds the declared goal response (absent when a rejection carried no payload). The handle retains the selected target: goal submission, feedback, result retrieval, and cancellation all stay pinned to that same producer; no stage uses a wildcard, fallback producer, discovery, or automatic retargeting. The handle is what you use for subsequent feedback, result, and cancel calls. You can fire multiple goals concurrently, and each returns its own handle, so the server can drive them in parallel.
+`fire_goal` returns an `ActionHandle`. Its `accepted` flag and its `refusal` are decoded from the framework goal ack: `refusal` is the `Failure` of a refused goal (`kind`, a [failure kind](#how-a-goal-ends) of the action, and `message`), and absent for an accepted goal. When the action declares a `response_message_format`, its `data` field holds the declared goal response of an accepted goal; a refused goal has none. The handle retains the selected target: goal submission, feedback, result retrieval, and cancellation all stay pinned to that same producer; no stage uses a wildcard, fallback producer, discovery, or automatic retargeting. The handle is what you use for subsequent feedback, result, and cancel calls. You can fire multiple goals concurrently, and each returns its own handle, so the server can drive them in parallel.
 
 ### Receiving feedback
 
@@ -576,14 +672,18 @@ Use `on_next_feedback_message` on the handle to receive feedback. The idiomatic 
 <Tabs>
   <TabItem label="Python">
 ```python
+import peppylib
+
 while True:
     try:
         feedback = await action_handle.on_next_feedback_message()
         print(f"new_position={feedback.new_position}", flush=True)
     except ConnectionError:
         break  # producer instance died; get_result yields ABANDONED
+    except peppylib.FeedbackOverflowError:
+        break  # this caller fell behind its bound; the handle cancelled the goal
     except Exception:
-        break  # server has completed (or cancelled) this goal
+        break  # the goal ended
 ```
   </TabItem>
   <TabItem label="Rust">
@@ -596,21 +696,30 @@ loop {
         Err(Error::ActionFeedbackProducerGone { .. }) => {
             break; // producer instance died; get_result yields Abandoned
         }
-        Err(_) => break, // server has completed (or cancelled) this goal
+        Err(Error::ActionFeedbackOverflow { bound, .. }) => {
+            // This caller fell behind by more than `bound` unread messages;
+            // the handle cancelled the goal.
+            println!("lost feedback beyond {bound} unread messages");
+            break;
+        }
+        Err(_) => break, // the goal ended
     }
 }
 ```
   </TabItem>
 </Tabs>
 
-Feedback the handle has not read yet waits in the handle's buffer. The buffer holds the newest messages, up to the [subscriber buffer size](/advanced_guides/daemon_config/#zenohmanagedsubscriber_buffers-subscriber-buffer-sizes) of the `feedback_qos` tier you pass to `fire_goal`: 128 messages by default, or 1024 for `sensor_data`. When a message arrives while the buffer is full, the oldest unread message is dropped, so a handle that reads slowly skips older feedback and still gets the newest. The end of the stream is always kept. Receiving never waits for the handle: feedback read late, or never, does not hold up `get_result` or any other message to the node.
+Feedback the handle has not read yet waits in the handle's buffer. The buffer keeps **every** message until the handle reads it, up to the feedback bound that you pass to `fire_goal`: a number of unread messages, `DEFAULT_FEEDBACK_BOUND` (1024) in Rust, or `feedback_bound=None` for the same default in Python. The end of the stream is always kept. Receiving never waits for the handle: feedback read late, or never, does not hold up `get_result` or any other message to the node.
 
-Each goal has its own feedback stream, addressed by `goal_id`, so feedback for one goal never reaches another handle, even when several goals run concurrently on the same server. Two terminal errors end the drain loop:
+A handle that falls behind by more unread messages than its bound **overflows**: the buffer drops the unread messages and takes no message after them, and the handle cancels the goal itself. The next read gives the loss as an error, `ActionFeedbackOverflow` (`peppylib.FeedbackOverflowError` in Python), so a client never misses a feedback message without notice. Set a bound that holds every message your client can fall behind by, or read the feedback as it arrives.
 
-- **Clean close** (`ActionFeedbackChannelClosed`; `RuntimeError` in Python): the server closed this goal's stream: its worker completed the goal (`complete` or `complete_cancelled`) or abandoned it without completing it (an early return or a panic). Call `get_result` to learn the outcome.
+Each goal has its own feedback stream, addressed by `goal_id`, so feedback for one goal never reaches another handle, even when several goals run concurrently on the same server. Three terminal errors end the drain loop:
+
+- **Clean close** (`ActionFeedbackChannelClosed`; `RuntimeError` in Python): the server closed this goal's stream: its worker ended the goal (`complete`, `fail` or `complete_cancelled`) or abandoned it without an end (an early return or a panic). Call `get_result` to learn the outcome.
 - **Producer gone** (`ActionFeedbackProducerGone`; `ConnectionError` in Python): the producer instance this goal is pinned to died without closing the stream (process killed, host lost). Feedback already in flight (including a clean close that did make it out) is drained first, so a graceful shutdown never surfaces as producer-gone. After this error, `get_result` resolves to the `Abandoned` outcome.
+- **Overflow** (`ActionFeedbackOverflow`; `peppylib.FeedbackOverflowError` in Python): this caller fell behind its bound, and the handle cancelled the goal. `get_result` then gives the outcome the worker ended the goal with, usually `Cancelled`.
 
-Either way, a client draining feedback always terminates rather than hanging. In Python, catch `ConnectionError` before the generic handler when you want to distinguish producer death from a clean close; a bare `except Exception` treats both as end-of-stream.
+Either way, a client draining feedback always terminates rather than hanging. In Python, catch `ConnectionError` and `peppylib.FeedbackOverflowError` before the generic handler when you want to tell them from a clean close; a bare `except Exception` treats all three as end-of-stream.
 
 :::note
 Producer death is confirmed via liveliness probes, so a transport outage (e.g. a router restart) that outlasts the confirmation window can surface as producer-gone even though the process survived. The `Abandoned` outcome remains the correct consumer-side interpretation: the goal's results are unreachable.
@@ -626,13 +735,17 @@ Use `get_result` on the handle to request the final result. The call is routed t
 result = await action_handle.get_result(5.0)
 
 if result.status == move_arm.ResultStatus.COMPLETED:
+    print(f"completed at {result.data.final_position}", flush=True)
+elif result.status == move_arm.ResultStatus.FAILED:
     print(
-        f"completed: success={result.data.success} error={result.data.error_msg} "
-        f"final_position={result.data.final_position}",
+        f"failed: kind={result.failure.kind.value} message={result.failure.message}",
         flush=True,
     )
 elif result.status == move_arm.ResultStatus.CANCELLED:
-    print(f"cancelled at {result.data.final_position}", flush=True)
+    print(
+        f"cancelled ({result.cancel_reason}) at {result.data.final_position}",
+        flush=True,
+    )
 elif result.status == move_arm.ResultStatus.ABANDONED:
     print("the worker abandoned the goal without producing a result", flush=True)
 elif result.status == move_arm.ResultStatus.EXPIRED:
@@ -644,14 +757,14 @@ elif result.status == move_arm.ResultStatus.EXPIRED:
 let result = action_handle.get_result(Duration::from_secs(5)).await?;
 
 match result.outcome {
-    move_arm::ResultOutcome::Completed(data) => println!(
-        "completed: success={} error={:?} final_position={:?}",
-        data.success,
-        data.error_msg.as_deref(),
-        data.final_position,
-    ),
-    move_arm::ResultOutcome::Cancelled(data) => {
-        println!("cancelled at {:?}", data.final_position)
+    move_arm::ResultOutcome::Completed(data) => {
+        println!("completed at {:?}", data.final_position)
+    }
+    move_arm::ResultOutcome::Failed(failure) => {
+        println!("failed: kind={} message={}", failure.kind, failure.message)
+    }
+    move_arm::ResultOutcome::Cancelled { reason, data } => {
+        println!("cancelled ({reason}) at {:?}", data.final_position)
     }
     move_arm::ResultOutcome::Abandoned => {
         println!("the worker abandoned the goal without producing a result")
@@ -664,9 +777,11 @@ match result.outcome {
   </TabItem>
 </Tabs>
 
-A poll on a still-running goal **parks** until the goal reaches a terminal state, then returns a typed outcome, so you can call `get_result` whenever you like; a forwarding/relaying node does not have to time its poll to the worker's lifecycle. The returned outcome (a Rust `ResultOutcome` enum, or `result.status` plus optional `result.data` in Python) tells you exactly what happened:
+A poll on a still-running goal **parks** until the goal reaches a terminal state, then returns a typed outcome, so you can call `get_result` whenever you like; a forwarding/relaying node does not have to time its poll to the worker's lifecycle. The returned outcome (a Rust `ResultOutcome` enum, or `result.status` with `result.data`, `result.failure` and `result.cancel_reason` in Python) tells you exactly what happened:
 
-- **`Completed`** / **`Cancelled`**: the worker delivered a result via `complete` / `complete_cancelled`; the payload is in `data`.
+- **`Completed`**: the worker delivered a result via `complete`; the goal is a success and the payload is in `data`.
+- **`Failed`**: the worker ended the goal via `fail`; the `Failure` gives the kind and the message, and there is no result.
+- **`Cancelled`**: the worker ended the goal via `complete_cancelled`; the outcome gives the `reason` (`cancel_reason` in Python), and the payload is in `data`.
 - **`Abandoned`**: the worker dropped the goal without ever delivering a result (an early return or a panic), or the producer instance itself died mid-goal. A poll on a goal whose producer is confirmed gone resolves to `Abandoned` instead of parking forever.
 - **`Expired`**: the goal finished, but its result was retained only for a bounded window (30&nbsp;s by default) that has since elapsed, or the result was already evicted.
 
@@ -708,7 +823,7 @@ The `CancelState` reports what the cancel found:
 - **`AlreadyTerminal`**: the goal had already reached a terminal state, so there was nothing to cancel. This answer survives result eviction: a bounded tombstone set remembers terminal goals after their results are dropped.
 - **`Unknown`**: no goal with that `goal_id` is known (it never existed, or its tombstone has aged out of the bounded set).
 
-The cancel targets only this goal; other concurrent goals are unaffected. To learn the goal's final state, call `get_result`: if the worker reacted with `complete_cancelled` you get a `Cancelled` outcome; if it ignored the cancel and finished normally you get `Completed`.
+The cancel targets only this goal; other concurrent goals are unaffected. To learn the goal's final state, call `get_result`: if the worker reacted with `complete_cancelled` you get a `Cancelled` outcome with its reason; if it ignored the cancel and finished normally you get `Completed`.
 
 ## Bindings and routing
 
@@ -804,6 +919,6 @@ interfere with one another.
 This makes the "one server, many resources" pattern natural: include a
 discriminator in the goal request (e.g. `arm_id` or `device_id`) and route to a
 per-resource worker. Your goal handler is responsible for the concurrency
-policy: accept goals to run them in parallel, or reject a goal (with
-`GoalDecision::reject(reason)`) when its target resource is already busy. A goal
-that is not accepted yields no `GoalContext` and cannot be cancelled or completed.
+policy: accept goals to run them in parallel, or refuse a goal (with
+`GoalDecision::refuse(kind, message)`) when its target resource is already busy. A
+goal that is not accepted yields no `GoalContext` and cannot be cancelled or ended.

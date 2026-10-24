@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use crate::generator::naming::{array_item_type_name, nested_type_name};
+use config::failure_kind::{ContractFailureKinds, MemberFailureKinds};
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, FormatRuleViolation,
     MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, PeppygenLanguage,
@@ -72,12 +73,15 @@ impl From<&NativeExposedAction> for ConsumedActionMessage {
 /// the generated module nesting (`emitted_topics::{link_id}::{topic}`).
 /// `(contract_name, contract_tag)` drive the two extra Zenoh segments on the
 /// wire path and the scoped schema key, both of which stay keyed on contract
-/// identity.
+/// identity. `failure_kinds` is the `failure_kinds` block of the contract:
+/// with the kinds of peppy, the closed set of kinds each member of the
+/// contract can give.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractOrigin {
     pub link_id: String,
     pub contract_name: String,
     pub contract_tag: String,
+    pub failure_kinds: ContractFailureKinds,
 }
 
 impl ContractOrigin {
@@ -95,6 +99,16 @@ impl ContractOrigin {
             crate::generator::naming::sanitize_contract_tag(&self.contract_tag),
             local
         )
+    }
+}
+
+/// The failure kinds a member can give: the kinds of peppy and, for a member
+/// of a contract (`origin` is `Some`), the kinds of that contract. A native
+/// member gives the kinds of peppy only.
+pub fn member_failure_kinds(origin: Option<&ContractOrigin>) -> MemberFailureKinds {
+    match origin {
+        Some(origin) => MemberFailureKinds::of_contract(origin.failure_kinds.clone()),
+        None => MemberFailureKinds::peppy_only(),
     }
 }
 
@@ -254,12 +268,15 @@ impl DependencyContext {
     /// no producer node here; `producer_name` / `producer_tag` carry the
     /// contract's `(name, tag)` so codegen labels stay readable, and
     /// `origin` is set to the same `(name, tag)` so consumer-side codegen
-    /// takes the `SenderTarget::Contract` path.
+    /// takes the `SenderTarget::Contract` path. `failure_kinds` is the
+    /// `failure_kinds` block of the contract, which the generated clients
+    /// parse each failure against.
     pub fn contract(
         contract_name: impl Into<String>,
         contract_tag: impl Into<String>,
         link_id: impl Into<String>,
         cardinality: Cardinality,
+        failure_kinds: ContractFailureKinds,
     ) -> Self {
         let contract_name = contract_name.into();
         let contract_tag = contract_tag.into();
@@ -271,10 +288,19 @@ impl DependencyContext {
                 link_id: link_id.clone(),
                 contract_name,
                 contract_tag,
+                failure_kinds,
             }),
             link_id,
             cardinality,
         }
+    }
+
+    /// The failure kinds the consumed member can give: the kinds of peppy,
+    /// and the kinds of its contract for a `depends_on.contracts`
+    /// dependency. A node dependency exposes native members only, which give
+    /// the kinds of peppy only.
+    pub fn member_failure_kinds(&self) -> MemberFailureKinds {
+        member_failure_kinds(self.origin.as_ref())
     }
 
     /// Pre-wrapped doc lines stating how a caller selects `target` from
@@ -1273,6 +1299,7 @@ mod tests {
             "v2",
             "cam_left",
             config::node::Cardinality::One,
+            lens_failure_kinds(),
         );
         assert_eq!(contract.producer_name, "camera_contract");
         assert_eq!(contract.producer_tag, "v2");
@@ -1282,9 +1309,44 @@ mod tests {
                 link_id: "cam_left".to_string(),
                 contract_name: "camera_contract".to_string(),
                 contract_tag: "v2".to_string(),
+                failure_kinds: lens_failure_kinds(),
             })
         );
         assert_eq!(contract.link_id, "cam_left");
+    }
+
+    fn lens_failure_kinds() -> ContractFailureKinds {
+        ContractFailureKinds::new([(
+            config::failure_kind::FailureKindName::parse("lens_covered").unwrap(),
+            "The lens is covered".to_string(),
+        )])
+        .unwrap()
+    }
+
+    #[test]
+    fn a_contract_member_gives_the_kinds_of_its_contract_and_a_native_member_those_of_peppy() {
+        let native =
+            DependencyContext::native("uvc_camera", "v1", "cam", config::node::Cardinality::One);
+        assert_eq!(
+            native.member_failure_kinds(),
+            MemberFailureKinds::peppy_only()
+        );
+
+        let contract = DependencyContext::contract(
+            "camera_contract",
+            "v2",
+            "cam",
+            config::node::Cardinality::One,
+            lens_failure_kinds(),
+        );
+        let kinds = contract.member_failure_kinds();
+        assert!(kinds.allows("lens_covered"));
+        assert!(kinds.allows("rejected"));
+        assert_eq!(
+            member_failure_kinds(contract.origin.as_ref()),
+            MemberFailureKinds::of_contract(lens_failure_kinds())
+        );
+        assert_eq!(member_failure_kinds(None), MemberFailureKinds::peppy_only());
     }
 
     #[test]
@@ -1293,6 +1355,7 @@ mod tests {
             link_id: "cam_left".to_string(),
             contract_name: "depth_camera".to_string(),
             contract_tag: "v1".to_string(),
+            failure_kinds: ContractFailureKinds::default(),
         };
         // The generated module path is keyed on the slot's link_id.
         assert_eq!(

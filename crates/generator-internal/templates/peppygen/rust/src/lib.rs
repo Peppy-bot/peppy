@@ -18,8 +18,10 @@ pub mod fixtures;
 pub mod mock;
 
 pub use parameters::Parameters;
-pub use peppylib::config::QoSProfile;
-pub use peppylib::messaging::{ObservedSource, PeerInfo, PeerMember, ProducerRef};
+pub use peppylib::messaging::{
+    CancelCause, ClientPresence, DEFAULT_FEEDBACK_BOUND, FeedbackBound, ObservedSource, PeerInfo,
+    PeerMember, ProducerRef,
+};
 pub use peppylib::runtime::{
     EndpointBinding, NodeBuilder, NodeRunner, PeerPublisher, StandaloneConfig,
 };

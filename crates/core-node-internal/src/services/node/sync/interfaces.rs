@@ -344,6 +344,7 @@ impl ResolvedDependencies {
                         &entry.tag,
                         link_id,
                         entry.cardinality,
+                        parsed.failure_kinds.clone(),
                     ),
                 )))
             }
@@ -484,7 +485,8 @@ struct SlotCoverage {
 /// entry -> implements slot -> contract document -> member (by name and
 /// kind) -> shape/qos with the entry's `refine` block applied, stamped with
 /// a [`ContractOrigin`] so the generator nests the artifact under
-/// `{link_id}/{leaf}` and embeds the matching wire segments.
+/// `{link_id}/{leaf}`, embeds the matching wire segments and gives the
+/// member the failure kinds of the contract.
 ///
 /// After resolution, the Tier B coverage check runs per (slot x kind): the
 /// contract-backed entries referencing a slot must cover every member of
@@ -559,6 +561,7 @@ fn resolve_implements(
             link_id: slot.link_id.as_str().to_string(),
             contract_name: slot.name.as_str().to_string(),
             contract_tag: slot.tag.clone(),
+            failure_kinds: doc.failure_kinds.clone(),
         };
         let slot_coverage = coverage.entry(slot.link_id.as_str()).or_default();
 
@@ -1029,12 +1032,14 @@ mod implements_tests {
     }
 
     /// Services and actions resolve through the same entry-driven path with
-    /// origins stamped, including the contract-declared action shape.
+    /// origins stamped, including the contract-declared action shape and the
+    /// failure kinds of the contract.
     #[test]
     fn resolves_service_and_action_members_with_origin() {
         const ARM_BODY: &str = r#"{
             peppy_schema: "contract/v1",
             manifest: { name: "arm", tag: "v1" },
+            failure_kinds: { leader_streaming: "A leader streams a limb of the goal" },
             interfaces: {
                 services: [ { name: "control" } ],
                 actions: [ { name: "move_arm" } ]
@@ -1066,6 +1071,7 @@ mod implements_tests {
                     assert_eq!(service.name, "control");
                     assert_eq!(o.contract_name, "arm");
                     assert_eq!(o.contract_tag, "v1");
+                    assert!(o.failure_kinds.contains("leader_streaming"));
                     saw_service = true;
                 }
                 InterfaceVariant::ExposedAction {
@@ -1075,6 +1081,7 @@ mod implements_tests {
                     assert_eq!(action.name, "move_arm");
                     assert_eq!(o.contract_name, "arm");
                     assert_eq!(o.contract_tag, "v1");
+                    assert!(o.failure_kinds.contains("leader_streaming"));
                     saw_action = true;
                 }
                 other => panic!("unexpected resolved variant: {other:?}"),
@@ -1757,6 +1764,7 @@ mod implements_tests {
     const ARM_ACTIONS_V1_BODY: &str = r#"{
         peppy_schema: "contract/v1",
         manifest: { name: "arm_actions", tag: "v1" },
+        failure_kinds: { unreachable: "No plan to the target" },
         interfaces: {
             actions: [
                 {
@@ -1835,6 +1843,12 @@ mod implements_tests {
                     .expect("a contract slot must resolve to a contract-origin dependency");
                 assert_eq!(origin.contract_name, "arm_actions");
                 assert_eq!(origin.contract_tag, "v1");
+                let kinds = dependency.member_failure_kinds();
+                assert!(
+                    kinds.allows("unreachable"),
+                    "the consumed member takes the failure kinds of its contract"
+                );
+                assert!(kinds.allows("rejected"), "and the kinds of peppy");
             }
             other => panic!("expected ConsumedAction variant, got {other:?}"),
         }
@@ -2121,6 +2135,11 @@ mod implements_tests {
                 assert!(
                     dependency.origin.is_none(),
                     "node-dep consumption must be node-addressed"
+                );
+                assert_eq!(
+                    dependency.member_failure_kinds(),
+                    config::failure_kind::MemberFailureKinds::peppy_only(),
+                    "a native member gives the kinds of peppy only"
                 );
             }
             other => panic!("expected ConsumedTopic, got {other:?}"),

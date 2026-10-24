@@ -1,10 +1,13 @@
 use super::PythonSchemaInfo;
 use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass};
 use super::deserialization;
+use super::failures::emit_failure_items;
 use super::serialization;
 use super::topics::emit_capnp_schema_loader;
 use crate::error::Result;
-use crate::generator::types::{ContractOrigin, DocLanguage, non_empty_message_format};
+use crate::generator::types::{
+    ContractOrigin, DocLanguage, member_failure_kinds, non_empty_message_format,
+};
 use config::node::{Cardinality, ConsumedService, MessageFormat, NativeExposedService};
 
 /// Returns the Python expression for the `SenderTarget` to splice into a
@@ -170,6 +173,7 @@ pub fn build_exposed_service(
     // Service name constant
     builder.line(&format!("SERVICE_NAME = \"{}\"", service.name));
     builder.blank_line();
+    emit_failure_items(&mut builder, &member_failure_kinds(origin), "SERVICE_NAME");
 
     // _deserialize_request helper (when request format exists)
     if let Some((fmt, info)) = request_format.zip(request_schema_info) {
@@ -184,7 +188,11 @@ pub fn build_exposed_service(
 
     // Determine handler callable type
     let has_response = response_format.is_some();
-    let handler_return_type = if has_response { "Response" } else { "None" };
+    let handler_return_type = if has_response {
+        "Response | Failure"
+    } else {
+        "Failure | None"
+    };
     let handler_type = format!("Callable[[Request], {handler_return_type}]");
     builder.add_import("from typing import Callable");
 
@@ -198,30 +206,40 @@ pub fn build_exposed_service(
             "async def _handle_request_payload({payload_param}handler: {handler_type}, core_node: str, instance_id: str) -> bytes:"
         ),
         |builder| {
+            // A request that does not fit the declared shape is the caller's
+            // problem: its error reply has the kind `rejected`.
             if has_request {
                 builder.py(r#"
-request_data = _deserialize_request(payload)
+try:
+    request_data = _deserialize_request(payload)
+except (ValueError, capnp.KjException) as error:
+    raise Failure(FailureKind.REJECTED, f"request does not decode: {error}") from None
 request = Request(instance_id=instance_id, core_node=core_node, data=request_data)
 "#);
             } else {
                 builder.line("request = Request(instance_id=instance_id, core_node=core_node)");
             }
 
-            let Some((resp_fmt, resp_info)) = response_format.zip(response_schema_info) else {
-                builder.py(r#"
-maybe_response = handler(request)
-if hasattr(maybe_response, "__await__"):
-    await maybe_response
-return b""
+            // The handler gives an error reply by raising or returning a
+            // `Failure`. A `peppylib.FailureError` of a kind this member does
+            // not declare raises ValueError here, so only a declared kind
+            // reaches the wire; any other exception gives `attempt_failed`.
+            builder.py(r#"
+try:
+    response = handler(request)
+    if hasattr(response, "__await__"):
+        response = await response
+except Failure:
+    raise
+except peppylib.FailureError as error:
+    raise Failure(*error.args) from error
+if isinstance(response, Failure):
+    raise response
 "#);
+            let Some((resp_fmt, resp_info)) = response_format.zip(response_schema_info) else {
+                builder.line("return b\"\"");
                 return;
             };
-
-            builder.py(r#"
-response = handler(request)
-if hasattr(response, "__await__"):
-    response = await response
-"#);
             serialization::emit_new_capnp_message(builder, resp_info, resp_fmt, "response");
             builder.line("return capnp_msg.to_bytes()");
         },
@@ -237,6 +255,16 @@ if hasattr(response, "__await__"):
             "async def handle_next_request(node_runner: peppylib.NodeRunner, handler: {handler_type}) -> None:"
         ),
         |builder| {
+            builder.multiline_docstring(
+                "Answers the next request of this service with `handler`.",
+                [
+                    "The response of the handler is a success. A `Failure` that it raises or",
+                    "returns gives the caller an error reply of a kind that this member",
+                    "declares. A request that does not decode gets an error reply of the",
+                    "kind `rejected`, and any other exception one of the kind",
+                    "`attempt_failed`.",
+                ],
+            );
             builder.call(
                 "endpoint = await peppylib.ServiceMessenger.listen(",
                 &[
@@ -299,6 +327,11 @@ pub fn build_consumed_service(
     builder.line(&format!("SERVICE_NAME = \"{}\"", service.name));
     builder.line(&format!("LINK_ID = \"{}\"", dependency.link_id));
     builder.blank_line();
+    emit_failure_items(
+        &mut builder,
+        &dependency.member_failure_kinds(),
+        "SERVICE_NAME",
+    );
 
     // Request dataclass
     if let Some(fmt) = request_format {
@@ -362,8 +395,14 @@ pub fn build_consumed_service(
     builder.block(&signature, |builder| {
         builder.multiline_docstring(
             "Polls this service on `target`, a member of the slot's bound set.",
-            std::iter::once("A target outside the set fails before anything reaches the wire.")
-                .chain(dependency.target_selection_doc().iter().copied()),
+            [
+                "A target outside the set fails before anything reaches the wire. An",
+                "error reply of the provider raises this member's `Failure`, a",
+                "peppylib.FailureError; a kind that this member does not declare raises",
+                "ValueError.",
+            ]
+            .into_iter()
+            .chain(dependency.target_selection_doc().iter().copied()),
         );
         emit_target_membership_check(builder);
 
@@ -375,24 +414,29 @@ pub fn build_consumed_service(
             builder.line("request_payload = b\"\"");
         }
 
-        builder.call(
-            if has_response {
-                "response_message = await peppylib.ServiceMessenger.poll("
-            } else {
-                "await peppylib.ServiceMessenger.poll("
-            },
-            &[
-                "node_runner.messenger(),",
-                "node_runner.bound_core_node(),",
-                "node_runner.bound_instance_id(),",
-                &format!("{target_expr},"),
-                "SERVICE_NAME,",
-                "target,",
-                "request_payload,",
-                "timeout,",
-            ],
-            ")",
-        );
+        builder.block("try:", |builder| {
+            builder.call(
+                if has_response {
+                    "response_message = await peppylib.ServiceMessenger.poll("
+                } else {
+                    "await peppylib.ServiceMessenger.poll("
+                },
+                &[
+                    "node_runner.messenger(),",
+                    "node_runner.bound_core_node(),",
+                    "node_runner.bound_instance_id(),",
+                    &format!("{target_expr},"),
+                    "SERVICE_NAME,",
+                    "target,",
+                    "request_payload,",
+                    "timeout,",
+                ],
+                ")",
+            );
+        });
+        builder.block("except peppylib.FailureError as error:", |builder| {
+            builder.line("raise Failure(*error.args) from None");
+        });
 
         // Deserialize response and return
         if has_response {

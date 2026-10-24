@@ -269,6 +269,92 @@ if __name__ == "__main__":
     );
 }
 
+/// A handler gives an error reply by raising or returning its member's
+/// `Failure`: the caller's `poll` raises the typed `Failure` of its own
+/// member, a `peppylib.FailureError`, with the kind and the message. The
+/// first request is refused by a raised `Failure`, the second by a returned
+/// one. Runs the peer topology only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn services_communication_error_reply_reaches_the_caller_typed() {
+    let service = ServicePair::enable_camera();
+    let consumer_main = r#"
+import asyncio
+import peppylib
+from peppygen import NodeBuilder
+from peppygen.consumed_services.uvc_camera import enable_camera as uvc_camera_enable_camera
+
+async def poll_service(node_runner):
+    camera = uvc_camera_enable_camera.bound_producer(node_runner)
+    for attempt in ("raised", "returned"):
+        request = uvc_camera_enable_camera.Request(enable=True)
+        try:
+            await uvc_camera_enable_camera.poll(node_runner, camera, request, 5.0)
+        except uvc_camera_enable_camera.Failure as failure:
+            assert isinstance(failure, peppylib.FailureError)
+            assert failure.kind is uvc_camera_enable_camera.FailureKind.PRECONDITION_FAILED
+            print(f"{attempt} error reply kind={failure.kind.value} message={failure.message}", flush=True)
+
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(poll_service(node_runner))]
+
+def main():
+    NodeBuilder().run(setup)
+
+if __name__ == "__main__":
+    main()
+"#;
+    let exposer_main = r#"
+import asyncio
+from peppygen import NodeBuilder
+from peppygen.exposed_services import enable_camera
+
+async def handle_requests(node_runner):
+    def raising_handler(request):
+        raise enable_camera.Failure(enable_camera.FailureKind.PRECONDITION_FAILED, "the lens cap is on")
+
+    def returning_handler(request):
+        return enable_camera.Failure(enable_camera.FailureKind.PRECONDITION_FAILED, "the lens cap is on")
+
+    await enable_camera.handle_next_request(node_runner, raising_handler)
+    await enable_camera.handle_next_request(node_runner, returning_handler)
+    print("enable_camera handlers finished", flush=True)
+
+async def setup(parameters, node_runner) -> list[asyncio.Task]:
+    return [asyncio.create_task(handle_requests(node_runner))]
+
+def main():
+    NodeBuilder().run(setup)
+
+if __name__ == "__main__":
+    main()
+"#;
+    let expected_consumer_log =
+        "returned error reply kind=precondition_failed message=the lens cap is on";
+    let ConsumerExposerOutput {
+        consumer_stdout,
+        consumer_stderr,
+        exposer_stdout,
+        exposer_stderr,
+    } = run_single_exposer_service_flow(
+        crate::helpers::LocalNodesTopology::Peer,
+        service,
+        consumer_main,
+        exposer_main,
+        expected_consumer_log,
+    )
+    .await;
+    assert!(
+        consumer_stdout
+            .contains("raised error reply kind=precondition_failed message=the lens cap is on")
+            && consumer_stdout.contains(expected_consumer_log),
+        "consumer did not read both error replies typed.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
+    );
+    assert!(
+        exposer_stdout.contains("enable_camera handlers finished"),
+        "exposer did not answer both requests.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
+    );
+}
+
 #[rstest::rstest]
 #[case::peer(crate::helpers::LocalNodesTopology::Peer)]
 #[case::router(crate::helpers::LocalNodesTopology::Router)]

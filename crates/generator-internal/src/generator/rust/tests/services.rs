@@ -114,22 +114,35 @@ fn expose_service() {
         ],
     );
 
-    // Handler signature
+    // Handler signature: the handler gives its response, or a failure of a
+    // kind the member declares, which the caller receives as an error reply.
     assert_contains_all(
         &rendered,
         &[
             "const SERVICE_NAME: &str = \"enable_camera\";",
             "pub async fn handle_next_request<F>",
-            "F: Fn(Request) -> crate::Result<Response>",
+            "F: Fn(Request) -> std::result::Result<Response, Failure>",
+            "pub enum FailureKind",
+            "pub struct Failure",
+            "pub fn of(error: &crate::Error) -> Option<Self>",
         ],
     );
 
-    // Request processing
+    // Request processing: a request that does not decode gets an error reply
+    // of the kind `rejected`, a response that does not serialize one of the
+    // kind `attempt_failed`.
     assert_contains_all(
         &rendered,
         &[
             "fn deserialize_request(payload: &[u8]) -> crate::Result<RequestData>",
             "fn handle_request_payload<F>(",
+            ") -> std::result::Result<peppylib::Payload, Failure>",
+            "FailureKind::Rejected",
+            "request does not decode: {error}",
+            "fn serialize_response(response: Response) -> crate::Result<peppylib::Payload>",
+            "FailureKind::AttemptFailed",
+            "response does not serialize: {error}",
+            ".map_err(|failure| failure.to_wire())",
         ],
     );
 
@@ -206,8 +219,14 @@ fn expose_two_services() {
     assert_artifact_contains(&artifacts, "const SERVICE_NAME: &str = \"get_lidar_info\";");
 
     // enable_camera has response, get_lidar_info does not
-    assert_artifact_contains(&artifacts, "F: Fn(Request) -> crate::Result<Response>");
-    assert_artifact_contains(&artifacts, "F: Fn(Request) -> crate::Result<()>");
+    assert_artifact_contains(
+        &artifacts,
+        "F: Fn(Request) -> std::result::Result<Response, Failure>",
+    );
+    assert_artifact_contains(
+        &artifacts,
+        "F: Fn(Request) -> std::result::Result<(), Failure>",
+    );
 }
 
 /// In the case of a service, a "subscribed" service is an entity expects to connect to another entity
@@ -308,6 +327,18 @@ fn consumed_service() {
             "peppylib::ServiceMessenger::poll(",
             "peppylib::messaging::ServiceTarget::Producer(target)",
             "fn deserialize_response(payload: &[u8]) -> crate::Result<ResponseData>",
+        ],
+    );
+
+    // An error reply reaches the caller as `Error::ServiceFailed`, which
+    // `Failure::of` reads; one of a kind the member does not declare is a
+    // deserialization error.
+    assert_contains_all(
+        &rendered,
+        &[
+            ".map_err(Failure::reject_undeclared_kind)?",
+            "pub fn of(error: &crate::Error) -> Option<Self>",
+            "pub(crate) fn reject_undeclared_kind(error: crate::Error) -> crate::Error",
         ],
     );
 }

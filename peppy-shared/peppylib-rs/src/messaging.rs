@@ -66,6 +66,10 @@ pub use pmi::{
     FeedbackBuffer, LivelinessEvent, LivelinessToken, LivelinessWatch, NodeIdentifier,
     PairingIdentifier, SenderTarget, SenderTargetError, TopicBuffer,
 };
+// The name of a failure kind, which a [`Failure`] holds. Generated code
+// builds it from the kinds its member declares, and a generated crate
+// depends on peppylib alone.
+pub use config::failure_kind::FailureKindName;
 
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
