@@ -22,7 +22,6 @@ use crate::services::node::gate::StackHold;
 use crate::services::response::failure;
 use crate::services::stack::LocalMounts;
 use config::failure_kind::PeppyFailureKind;
-use core_node_api::ServiceId;
 use core_node_api::encoding::{
     FederationAck, InstanceEnd, LaunchIdentity, PairCommitRequest,
     ParticipantInstancesRemoveRequest, ParticipantReleaseRequest, ParticipantReserveRequest,
@@ -31,6 +30,7 @@ use core_node_api::encoding::{
     RelationshipNotificationAck,
 };
 use core_node_api::names;
+use core_node_api::{DaemonFailureKind, ServiceId};
 use daemon_config::repository::DeploymentPins;
 use peppylib::messaging::{Failure, SenderTarget, ServiceAnswer, ServiceRequestContext};
 use peppylib::types::Payload;
@@ -160,18 +160,14 @@ fn refuse_outside_slice(
 
 /// Admits a request from the coordinator of the launch this daemon holds a
 /// slice of: the stack mutation, held for the request's lifetime, or the
-/// refusal, naming what the request left undone. Both refusals are
-/// `precondition_failed`: the stack is busy, or the slice is another
-/// launch's.
+/// refusal: `busy` while other work holds the stack, `precondition_failed`,
+/// naming what the request left undone, when the slice is another launch's.
 fn admit_slice_change(
     context: &FederationServiceContext,
     launch_id: &str,
     undone: &str,
 ) -> std::result::Result<StackHold, Failure> {
-    let mutation = context
-        .ownership
-        .try_begin_change()
-        .map_err(|refusal| failure(PeppyFailureKind::PreconditionFailed, refusal))?;
+    let mutation = context.ownership.try_begin_change()?;
     if !context.ownership.holds_slice_of(launch_id) {
         return Err(failure(
             PeppyFailureKind::PreconditionFailed,
@@ -233,18 +229,15 @@ async fn instances_remove_inner(
 }
 
 /// Takes the reservation of this daemon for the launch of the request, or
-/// refuses it: `precondition_failed` while the stack is busy or held for
-/// another launch, `rejected` for a pin that does not validate.
+/// refuses it: `busy` while other work holds the stack or another launch
+/// holds the reservation, `rejected` for a pin that does not validate.
 async fn reserve_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
 ) -> ServiceAnswer {
     let decoded = ParticipantReserveRequest::decode(request.message().payload_bytes().as_ref())
         .map_err(undecodable)?;
-    let _mutation = context
-        .ownership
-        .try_begin_change()
-        .map_err(|refusal| failure(PeppyFailureKind::PreconditionFailed, refusal))?;
+    let _mutation = context.ownership.try_begin_change()?;
 
     debug!(
         "Received `participant_reserve` for launch `{}` from coordinator `{}`",
@@ -278,7 +271,7 @@ async fn reserve_inner(
             // targets whichever daemon the operator's CLI connects to, which
             // is not the one holding the reservation.
             return Err(failure(
-                PeppyFailureKind::PreconditionFailed,
+                DaemonFailureKind::Busy,
                 format!(
                     "already reserved for launch `{launch_id}` driven by core node \
                      `{coordinator_core_node}`. If that launch is no longer running, clear \
@@ -447,8 +440,9 @@ fn watch_coordinator_presence(
 /// mount path can name an instance parameter and this daemon is handed one
 /// instance at a time.
 ///
-/// Every refusal is `precondition_failed`, except a bind source the daemon
-/// cannot prepare, which is `attempt_failed`.
+/// Every refusal is `precondition_failed`, except a stack that other work
+/// holds, which is `busy`, and a bind source the daemon cannot prepare,
+/// which is `attempt_failed`.
 async fn slice_begin_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
@@ -473,7 +467,7 @@ async fn slice_begin_inner(
         )));
     }
 
-    let _mutation = context.ownership.try_begin_change().map_err(refused)?;
+    let _mutation = context.ownership.try_begin_change()?;
     if decoded.append {
         let slice = context.ownership.slice();
         let same_launch = slice.as_ref().is_some_and(|slice| {

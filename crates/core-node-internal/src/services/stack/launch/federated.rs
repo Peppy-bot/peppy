@@ -45,10 +45,13 @@ pub(in crate::services::stack) use dispatch::{
 };
 
 use crate::services::stack::action::StackChangeContext;
-use crate::services::stack::{ChangeResult, precondition_failed, rejected, resource_unavailable};
+use crate::services::stack::{
+    ChangeResult, busy, precondition_failed, rejected, resource_unavailable,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantReserveResponse,
 };
@@ -162,6 +165,9 @@ fn reject_unreachable_core_nodes(
 /// All-or-nothing: on any refusal the reservations already obtained are
 /// released before the error returns, so a failed preflight leaves no machine
 /// held. Only after a full set of acks does anything get torn down anywhere.
+/// The failure is `resource_unavailable` when a peer did not answer, `busy`
+/// when each refusal is a peer that other work holds, and
+/// `precondition_failed` for any other refusal.
 async fn reserve_participants(
     messenger: &MessengerHandle,
     coordinator: &str,
@@ -192,8 +198,10 @@ async fn reserve_participants(
     let mut to_release: Vec<String> = Vec::new();
     let mut refusals: Vec<String> = Vec::new();
     // A peer that did not answer makes the machines of the launch unavailable;
-    // a peer that refused, or runs another version, is a precondition.
+    // a peer that other work holds is busy; a peer that refused for another
+    // reason, or runs another version, is a precondition.
     let mut a_peer_is_unavailable = false;
+    let mut every_refusal_is_busy = true;
 
     for (core_node, outcome) in acks {
         match outcome {
@@ -208,13 +216,18 @@ async fn reserve_participants(
                             root_instance_id: response.root_instance_id,
                         });
                     }
-                    Err(reason) => refusals.push(reason),
+                    Err(reason) => {
+                        every_refusal_is_busy = false;
+                        refusals.push(reason);
+                    }
                 }
             }
             Err(error) => match error.failure() {
                 // An answered refusal reserved nothing, so the peer owes no
                 // release.
                 Some(refusal) => {
+                    every_refusal_is_busy &= DaemonFailureKind::parse(refusal.kind().as_str())
+                        == Some(DaemonFailureKind::Busy);
                     refusals.push(format!("`{core_node}` refused: {}", refusal.message()));
                 }
                 // An unanswered reservation is not a refusal: the request may
@@ -254,6 +267,9 @@ async fn reserve_participants(
     );
     if a_peer_is_unavailable {
         return Err(resource_unavailable(message).into());
+    }
+    if every_refusal_is_busy {
+        return Err(busy(message).into());
     }
     Err(precondition_failed(message).into())
 }

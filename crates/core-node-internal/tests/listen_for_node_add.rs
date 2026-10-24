@@ -11,6 +11,7 @@ use common::{
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::failure_kind::PeppyFailureKind;
 use config_test_support as test_helpers;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeRemoveRequest,
 };

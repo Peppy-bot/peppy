@@ -35,7 +35,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
     .map_err(|e| Error::ExecutionFailed(format!("Failed to send repo refresh goal: {}", e)))?;
 
     if let GoalAnswer::Refused(refusal) = &action_handle.goal_reply().answer {
-        return Err(Error::ExecutionFailed(crate::commands::failure_text(
+        return Err(Error::ExecutionFailed(crate::commands::reply_failure_text(
             "Repository refresh refused",
             refusal,
         )));

@@ -19,6 +19,7 @@ use crate::services::node::gate::{
 use crate::services::node::{DaemonDefaults, HealthMonitorPolicy, RelationshipCoordinators};
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::ActionId;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     CopyAction, CopyChange, DEFAULT_IDLE_TIMEOUT_SECS, LaunchGoal, LaunchGoalResponse,
     StackBudgets, StackBuildGoal, StackJoinGoal, StackRemoveGoal,
@@ -406,11 +407,7 @@ async fn handle_stack_request(
     let mutation = match action_context.slice_ownership.try_begin_change() {
         Ok(mutation) => mutation,
         Err(refusal) => {
-            refuse_goal(
-                pending,
-                Failure::new(PeppyFailureKind::PreconditionFailed, refusal),
-            )
-            .await;
+            refuse_goal(pending, refusal).await;
             return;
         }
     };
@@ -418,7 +415,7 @@ async fn handle_stack_request(
         refuse_goal(
             pending,
             Failure::new(
-                PeppyFailureKind::PreconditionFailed,
+                DaemonFailureKind::Busy,
                 format!(
                     "this daemon is reserved for launch `{launch_id}` by `{coordinator}`; wait \
                      for that operation to finish, or clear the reservation with `peppy stack \
@@ -441,10 +438,7 @@ async fn handle_stack_request(
         Admission::AlreadyRunning { .. } => {
             refuse_goal(
                 pending,
-                Failure::new(
-                    PeppyFailureKind::PreconditionFailed,
-                    "action already in progress",
-                ),
+                Failure::new(DaemonFailureKind::Busy, "action already in progress"),
             )
             .await;
             return;

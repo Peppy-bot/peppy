@@ -46,6 +46,10 @@ const WAIT: Duration = Duration::from_secs(15);
 const QUIET: Duration = Duration::from_millis(1500);
 /// The bound on a whole stack command here, as the launch tests set it.
 const MAX_STACK_COMMAND_SECS: Option<u64> = Some(120);
+/// How a stack command says that the daemon refused it with the kind
+/// `busy`: other work holds the stack, and the same command can run once it
+/// ends.
+const BUSY_REFUSAL: &str = " refused (busy): ";
 
 /// A daemon with an injected restart backoff, with a work directory the
 /// commands run in.
@@ -291,9 +295,10 @@ fn join(h: &Harness, option: &str, name: &str) -> Result<(), peppy::error::Error
     .execute(&h.ctx)
 }
 
-/// Removes the copy `name` from the stack, trying again while a start holds
-/// the daemon: a restart's start holds it until its run returns, a moment
-/// after the listing shows its instance running.
+/// Removes the copy `name` from the stack, trying again while the daemon
+/// refuses it as `busy` because a start holds the stack: a restart's start
+/// holds it until its run returns, a moment after the listing shows its
+/// instance running.
 async fn remove_copy(h: &Harness, name: &str) {
     wait_until(h, &format!("stack remove {name}"), async || {
         let removal = StackCommand {
@@ -304,7 +309,7 @@ async fn remove_copy(h: &Harness, name: &str) {
         .execute(&h.ctx);
         match removal {
             Ok(()) => true,
-            Err(e) if e.to_string().contains("in progress on this daemon") => false,
+            Err(e) if e.to_string().contains(BUSY_REFUSAL) => false,
             Err(e) => panic!("stack remove {name}: {e}"),
         }
     })
@@ -1028,13 +1033,13 @@ async fn a_copy_removed_during_the_wait_is_absent_after_the_restart() {
         "the restarted hub starts from the shrunk set"
     );
     // The respawn holds the stack's guard until its start returns, a moment
-    // after the listing shows the hub running; a join meanwhile answers
-    // busy, as under any start, and is tried again.
+    // after the listing shows the hub running; a join meanwhile is refused
+    // with the kind `busy`, as under any start, and is tried again.
     h.emulate_startup("arm", "charlie_arm_inst").await;
     wait_until(&h, "a join once the hub runs again", async || {
         match join(&h, "real", "charlie") {
             Ok(()) => true,
-            Err(e) if e.to_string().contains("in progress on this daemon") => false,
+            Err(e) if e.to_string().contains(BUSY_REFUSAL) => false,
             Err(e) => panic!("the join is refused: {e}"),
         }
     })

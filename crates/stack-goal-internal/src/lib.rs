@@ -12,18 +12,22 @@
 //! 1. [`send`] a [`StackGoal`] along a [`DaemonRoute`]. The daemon admits or
 //!    refuses a goal at once: [`send`] returns a [`RunningStackGoal`], which
 //!    holds the goal's log file, or [`SendError::Refused`] with the failure
-//!    kind and the message of the daemon's refusal.
+//!    kind and the message of the daemon's refusal. The kind is a
+//!    [`DaemonFailureKind`]: `busy` says that other work holds the stack and
+//!    that the same goal can run once that work ends. A refusal with a kind
+//!    that the daemon does not give is [`SendError::UnknownRefusalKind`].
 //! 2. Call [`RunningStackGoal::next`] until it gives
 //!    [`StackGoalEvent::Ended`]. Each [`StackGoalEvent::Output`] is one line
 //!    of the goal's progress, in order: its `step`
 //!    ([`LaunchFeedbackStep::phase_label`] gives launch, add, build or run),
 //!    its `stream` and its `line`. The last event is the goal's
 //!    [`StackGoalEnd`]: its [`StackGoalOutcome`], completed with the goal's
-//!    [`LaunchResult`], failed with a failure kind and a message, or
-//!    cancelled with the reason of the cancel, and the log file of each node
-//!    phase the goal ran. A goal with no end gives a [`FollowError`]: the
-//!    daemon is gone, the daemon dropped the goal, its end expired or did
-//!    not arrive, or the caller fell behind its output, which cancels it
+//!    [`LaunchResult`], failed with a failure kind of the daemon and a
+//!    message, or cancelled with the reason of the cancel, and the log file
+//!    of each node phase the goal ran. A goal with no end gives a
+//!    [`FollowError`]: the daemon is gone, the daemon dropped the goal, its
+//!    end expired or did not arrive, its failure has a kind that the daemon
+//!    does not give, or the caller fell behind its output, which cancels it
 //!    ([`FollowError::FellBehind`]).
 //! 3. A caller applies its own silence window by selecting on
 //!    [`RunningStackGoal::next`], which is cancel safe. The goal goes on when
@@ -127,6 +131,7 @@
 //! `node_logs` of its end name the log file of each node phase, with
 //! `failed` set on the phase that failed.
 //!
+//! [`DaemonFailureKind`]: core_node_api::DaemonFailureKind
 //! [`LaunchFeedbackStep::phase_label`]: core_node_api::encoding::LaunchFeedbackStep::phase_label
 //! [`LaunchResult`]: core_node_api::encoding::LaunchResult
 

@@ -95,7 +95,7 @@ async fn benchmark_async(
     .map_err(|e| Error::ExecutionFailed(format!("Failed to send benchmark goal: {}", e)))?;
 
     if let GoalAnswer::Refused(refusal) = &action_handle.goal_reply().answer {
-        return Err(Error::ExecutionFailed(crate::commands::failure_text(
+        return Err(Error::ExecutionFailed(crate::commands::reply_failure_text(
             "Benchmark refused",
             refusal,
         )));

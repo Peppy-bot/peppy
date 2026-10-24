@@ -275,7 +275,7 @@ where
             Error::ExecutionFailed(format!("Failed to decode goal response: {}", e))
         })?,
         GoalAnswer::Refused(refusal) => {
-            return Err(Error::ExecutionFailed(crate::commands::failure_text(
+            return Err(Error::ExecutionFailed(crate::commands::reply_failure_text(
                 &format!("{doing} refused"),
                 refusal,
             )));
@@ -572,7 +572,7 @@ fn goal_end<R>(
         }
         GoalOutcome::Failed(failure) => Err(Error::ExecutionFailed(format!(
             "{}.{log_tail}",
-            crate::commands::failure_text(&format!("{} failed", goal.doing), &failure)
+            crate::commands::reply_failure_text(&format!("{} failed", goal.doing), &failure)
         ))),
         GoalOutcome::Cancelled { reason, .. } => Err(Error::ExecutionFailed(format!(
             "{} was {reason}.{log_tail}",
@@ -1237,7 +1237,7 @@ mod ctrl_c {
             next_goal(&mut engine)
                 .await
                 .refuse(Failure::new(
-                    PeppyFailureKind::PreconditionFailed,
+                    core_node_api::DaemonFailureKind::Busy,
                     "action already in progress, use `--force` to force adding the node",
                 ))
                 .await
@@ -1263,8 +1263,8 @@ mod ctrl_c {
 
         assert_eq!(
             error.to_string(),
-            "Node add refused (precondition_failed): action already in progress, use `--force` \
-             to force adding the node"
+            "Node add refused (busy): action already in progress, use `--force` to force \
+             adding the node"
         );
     }
 }

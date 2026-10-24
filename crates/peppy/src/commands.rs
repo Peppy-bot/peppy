@@ -22,7 +22,7 @@ use std::time::Duration;
 use config::node::EndpointKind;
 use config::runtime::{ClockDomainId, ClockIncarnation};
 use core_node_api::encoding::InstanceEndpoints;
-use core_node_api::{InstanceEndpoint, InstanceState, SerializedNodeGraph};
+use core_node_api::{DaemonFailure, InstanceEndpoint, InstanceState, SerializedNodeGraph};
 
 use crate::{
     context::{AppContext, DaemonConnection},
@@ -45,15 +45,26 @@ pub(crate) fn caller_instance_id() -> &'static str {
 /// daemon.
 pub(crate) fn request_error(doing: &str, error: peppylib::PeppyError) -> Error {
     match error.failure() {
-        Some(failure) => Error::ExecutionFailed(failure_text(doing, failure)),
+        Some(failure) => Error::ExecutionFailed(reply_failure_text(doing, failure)),
         None => Error::ExecutionFailed(format!("{doing}: {error}")),
     }
 }
 
-/// How the command line says that `doing` ended with `failure`: its failure
-/// kind, then its message, which can span lines.
-pub(crate) fn failure_text(doing: &str, failure: &peppylib::messaging::Failure) -> String {
-    format!("{doing} ({}): {}", failure.kind(), failure.message())
+/// How the command line says that `doing` ended with `failure`, a failure of
+/// the daemon: its failure kind, then its message, which can span lines.
+pub(crate) fn failure_text(doing: &str, failure: &DaemonFailure) -> String {
+    format!("{doing} ({}): {}", failure.kind, failure.message)
+}
+
+/// How the command line says that `doing` ended with `failure`, the failure
+/// of a daemon reply: the [`failure_text`] of the failure read into a kind of
+/// the daemon, or the error of a kind that the daemon does not give, with
+/// the message of the failure.
+pub(crate) fn reply_failure_text(doing: &str, failure: &peppylib::messaging::Failure) -> String {
+    match DaemonFailure::parse(failure.kind().as_str(), failure.message()) {
+        Ok(failure) => failure_text(doing, &failure),
+        Err(unknown) => format!("{doing}: {unknown}"),
+    }
 }
 
 /// Timeout for action goals to be accepted by the daemon (should be fast).
@@ -395,6 +406,44 @@ mod tests {
             "{id}"
         );
         assert_eq!(caller_instance_id(), id);
+    }
+
+    /// A refusal of the daemon reads with its kind, `busy` as each kind of
+    /// peppy does.
+    #[test]
+    fn a_daemon_failure_reads_with_its_kind() {
+        let busy = peppylib::messaging::Failure::new(
+            core_node_api::DaemonFailureKind::Busy,
+            "a stack launch is in progress on this daemon; run this again once it ends",
+        );
+        assert_eq!(
+            reply_failure_text("Join refused", &busy),
+            "Join refused (busy): a stack launch is in progress on this daemon; run this again \
+             once it ends"
+        );
+        let exists = peppylib::messaging::Failure::new(
+            config::failure_kind::PeppyFailureKind::PreconditionFailed,
+            "copy `alpha` already exists; choose another name",
+        );
+        assert_eq!(
+            reply_failure_text("Join refused", &exists),
+            "Join refused (precondition_failed): copy `alpha` already exists; choose another name"
+        );
+    }
+
+    /// A kind that the daemon does not give reads as an error of its own,
+    /// with the message of the failure, never as a failure of another kind.
+    #[test]
+    fn a_reply_failure_with_a_kind_outside_the_daemon_names_that_kind() {
+        let unknown = peppylib::messaging::Failure::new(
+            config::failure_kind::FailureKindName::parse("unreachable").unwrap(),
+            "no plan",
+        );
+        assert_eq!(
+            reply_failure_text("Join refused", &unknown),
+            "Join refused: the daemon gave the failure kind `unreachable`, which is not a kind of \
+             the daemon (message: \"no plan\")"
+        );
     }
 
     #[test]

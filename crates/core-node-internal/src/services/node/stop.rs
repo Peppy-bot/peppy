@@ -80,9 +80,7 @@ async fn handle_node_stop_request(
     relationships: RelationshipCoordinators,
     ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> ServiceAnswer {
-    let _admission = ownership
-        .admit_node_change(None)
-        .map_err(|reason| failure(PeppyFailureKind::PreconditionFailed, reason))?;
+    let _admission = ownership.admit_node_change(None)?;
     crate::services::node::gate::finish_on_reset(
         async {
             let response = handle_node_stop_request_inner(

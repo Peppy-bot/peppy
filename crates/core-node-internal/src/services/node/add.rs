@@ -25,6 +25,7 @@ use config::failure_kind::PeppyFailureKind;
 use config::node::{MissingDependencyPolicy, validate_dependency_specs};
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::ActionId;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
@@ -1077,8 +1078,8 @@ pub(crate) async fn run_node_add(
 }
 
 /// Admits a `node_add` goal through the concurrency gate. Returns the
-/// admitted generation, or the refusal message when another action is
-/// already running (and `--force` was not set).
+/// admitted generation, or the refusal, of the kind `busy`, when another
+/// add is already running (and `--force` was not set).
 ///
 /// A forced admission cancels the add it supersedes, which then ends
 /// cancelled, "superseded by a forced node add". The admission waits for
@@ -1087,7 +1088,7 @@ pub(crate) async fn run_node_add(
 async fn admit_node_add_goal(
     gate: &ConcurrencyGate,
     goal: &NodeAddGoal,
-) -> std::result::Result<u64, String> {
+) -> std::result::Result<u64, Failure> {
     if goal.force {
         debug!("Force flag set: cancelling any previous node_add task");
     }
@@ -1107,9 +1108,12 @@ async fn admit_node_add_goal(
             }
             Ok(generation)
         }
-        super::gate::Admission::AlreadyRunning { remaining_secs } => Err(format!(
-            "action already in progress (times out in {remaining_secs}s), \
-             use `--force` to force adding the node"
+        super::gate::Admission::AlreadyRunning { remaining_secs } => Err(Failure::new(
+            DaemonFailureKind::Busy,
+            format!(
+                "action already in progress (times out in {remaining_secs}s), use `--force` to \
+                 force adding the node"
+            ),
         )),
     }
 }
@@ -1135,24 +1139,16 @@ async fn handle_goal_request(
     // race a locally-typed `peppy node add`.
     let admission = match slice_ownership.admit_node_goal(&goal) {
         Ok(admission) => admission,
-        Err(reason) => {
-            refuse_goal(
-                pending,
-                Failure::new(PeppyFailureKind::PreconditionFailed, reason),
-            )
-            .await;
+        Err(refusal) => {
+            refuse_goal(pending, refusal).await;
             return;
         }
     };
 
     let generation = match admit_node_add_goal(&gate, &goal).await {
         Ok(generation) => generation,
-        Err(rejection) => {
-            refuse_goal(
-                pending,
-                Failure::new(PeppyFailureKind::PreconditionFailed, rejection),
-            )
-            .await;
+        Err(refusal) => {
+            refuse_goal(pending, refusal).await;
             return;
         }
     };

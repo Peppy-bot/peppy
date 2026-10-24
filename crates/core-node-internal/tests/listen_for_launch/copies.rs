@@ -416,7 +416,7 @@ async fn a_join_build_refuses_other_changes_until_reset_interrupts_it() {
             refusal(&started, &robot_goal("bravo", "simulated")).await,
             refusal(&started, &remove_goal("alpha")).await,
         ] {
-            assert_failure(&refused, PeppyFailureKind::PreconditionFailed, busy);
+            assert_failure(&refused, DaemonFailureKind::Busy, busy);
         }
         assert!(is_process_running(pid), "refusals leave the build running");
         participant_request(&started, &core_node_api::encoding::StackResetRequest::new()).await;

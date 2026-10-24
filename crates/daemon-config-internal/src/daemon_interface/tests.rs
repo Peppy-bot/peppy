@@ -76,6 +76,55 @@ fn the_stack_copies_members_are_the_members_of_its_document() {
     assert_eq!(StackCopiesMember::named("reset"), None);
 }
 
+/// `stack_copies:v1` declares each kind of the daemon that is not a kind of
+/// peppy, with the meaning the daemon gives it, so its members can give
+/// every kind of the daemon and no other.
+#[test]
+fn stack_copies_declares_the_kinds_of_the_daemon_beyond_peppy() {
+    use config::failure_kind::{MemberFailureKinds, PeppyFailureKind};
+    use core_node_api::DaemonFailureKind;
+
+    let declared: Vec<(&str, &str)> = DaemonInterface::StackCopies
+        .document()
+        .failure_kinds
+        .iter()
+        .map(|(name, meaning)| (name.as_str(), meaning))
+        .collect();
+    let daemon_own: Vec<(&str, &str)> = DaemonFailureKind::ALL
+        .into_iter()
+        .filter(|kind| PeppyFailureKind::from_name(kind.name()).is_none())
+        .map(|kind| (kind.name(), kind.meaning()))
+        .collect();
+    assert_eq!(declared, daemon_own);
+    assert_eq!(declared, [("busy", DaemonFailureKind::Busy.meaning())]);
+
+    let members = MemberFailureKinds::of_contract(
+        DaemonInterface::StackCopies
+            .document()
+            .failure_kinds
+            .clone(),
+    );
+    for kind in DaemonFailureKind::ALL {
+        assert!(members.allows(kind.name()), "{kind}");
+    }
+
+    // The catalog binds `stack.join` and `stack.remove` of the design's
+    // exposure to these kinds.
+    let exposure =
+        PeppyMcpExposureParser::from_content(FRAMEWORK_CONTROLS).expect("the fixture parses");
+    let validated =
+        build_exposure_bundle(&exposure, &[], &[DaemonInterface::StackCopies.resolved()])
+            .expect("the fixture validates against the interface");
+    let bound: Vec<(&str, &MemberFailureKinds)> = validated
+        .tasks()
+        .map(|(entry, bound)| (entry.name.as_str(), &bound.failure_kinds))
+        .collect();
+    assert_eq!(
+        bound,
+        [("stack.join", &members), ("stack.remove", &members)]
+    );
+}
+
 #[test]
 fn the_registry_serves_one_tag_of_each_interface() {
     assert_eq!(

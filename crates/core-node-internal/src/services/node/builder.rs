@@ -7,6 +7,7 @@ use super::gate::{COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use crate::Result;
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::ActionId;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
 };
@@ -207,12 +208,8 @@ impl NodeBuildGoalHandler {
         // not race a locally-typed `peppy node build`.
         let admission = match self.slice_ownership.admit_node_goal(&goal) {
             Ok(admission) => admission,
-            Err(reason) => {
-                refuse_goal(
-                    pending,
-                    Failure::new(PeppyFailureKind::PreconditionFailed, reason),
-                )
-                .await;
+            Err(refusal) => {
+                refuse_goal(pending, refusal).await;
                 return;
             }
         };
@@ -229,7 +226,7 @@ impl NodeBuildGoalHandler {
                 refuse_goal(
                     pending,
                     Failure::new(
-                        PeppyFailureKind::PreconditionFailed,
+                        DaemonFailureKind::Busy,
                         format!(
                             "action already in progress (times out in {remaining_secs}s), \
                              use `--force` to force building the node"

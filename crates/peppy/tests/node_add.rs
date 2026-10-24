@@ -1480,7 +1480,7 @@ fn node_add_build_force_supersedes_inflight_build() {
     .execute(&node_ctx)
     .expect(
         "node add --build --force must supersede the in-flight build; a \
-         'Node build refused (precondition_failed): action already in progress' \
+         'Node build refused (busy): action already in progress' \
          error here means --force was not forwarded to the chained build",
     );
 

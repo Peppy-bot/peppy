@@ -19,6 +19,7 @@ use config::runtime::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, apply_parameter_defaults, resolve_argument_path};
 use core_node_api::ActionId;
+use core_node_api::DaemonFailureKind;
 use core_node_api::ExitCause;
 use core_node_api::InstanceState;
 use core_node_api::encoding::{
@@ -761,12 +762,8 @@ async fn handle_goal_request(
     // race a locally-typed `peppy node run`.
     let admission = match action_context.slice_ownership.admit_node_goal(&goal) {
         Ok(admission) => admission,
-        Err(reason) => {
-            refuse_goal(
-                pending,
-                Failure::new(PeppyFailureKind::PreconditionFailed, reason),
-            )
-            .await;
+        Err(refusal) => {
+            refuse_goal(pending, refusal).await;
             return;
         }
     };
@@ -778,7 +775,7 @@ async fn handle_goal_request(
             refuse_goal(
                 pending,
                 Failure::new(
-                    PeppyFailureKind::PreconditionFailed,
+                    DaemonFailureKind::Busy,
                     format!("action already in progress (times out in {remaining_secs}s)"),
                 ),
             )

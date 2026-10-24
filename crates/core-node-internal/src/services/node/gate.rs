@@ -5,6 +5,9 @@
 //!
 //! Each of those actions allows only one in-flight task at a time and rejects
 //! concurrent goals with `"action already in progress (times out in Xs)"`.
+//! `node_add`, `node_build`, `node_run` and the stack changes give that
+//! refusal the failure kind `busy`, as the refusals of the read/write gate
+//! ([`StackBusy`]) are: their goals hold the stack.
 //! `node_add` and `node_build` additionally support `--force`, which cancels
 //! the in-flight task before admitting the new one. On force, `try_admit`
 //! signals the old task's cancel token and hands its `JoinHandle` back to the
@@ -40,10 +43,12 @@
 //! thus a safe no-op.
 
 use crate::services::action_loop::GoalEnding;
+use crate::services::response::failure;
 use config::runtime::Name;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::CopyChange;
 use parking_lot::Mutex;
-use peppylib::messaging::GoalContext;
+use peppylib::messaging::{Failure, GoalContext};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
@@ -288,7 +293,8 @@ impl Drop for GoalSlotGuard {
 }
 
 /// The refusal a stack change or a node goal meets while other work holds
-/// the stack, by what holds it.
+/// the stack, by what holds it. The daemon gives it with the failure kind
+/// `busy`: the same request can succeed once that work ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StackBusy {
     /// A stack change holds it: a launch, build, join, removal or reset, or
@@ -316,20 +322,28 @@ impl std::fmt::Display for StackBusy {
 }
 
 impl StackBusy {
-    /// The refusal the daemon `core_node` answers, naming each restart
-    /// `admitted_restarts` holds the stack for and the stop that ends it.
-    pub(crate) fn refusal(self, admitted_restarts: &[Name], core_node: &str) -> String {
+    /// The refusal, of the kind `busy`, that the daemon answers with this
+    /// text alone.
+    pub(crate) fn failure(self) -> Failure {
+        failure(DaemonFailureKind::Busy, self)
+    }
+
+    /// The refusal, of the kind `busy`, that the daemon `core_node` answers,
+    /// naming each restart `admitted_restarts` holds the stack for and the
+    /// stop that ends it.
+    pub(crate) fn refusal(self, admitted_restarts: &[Name], core_node: &str) -> Failure {
         let StackBusy::NodeGoals = self else {
-            return self.to_string();
+            return self.failure();
         };
-        admitted_restarts
+        let text = admitted_restarts
             .iter()
             .fold(self.to_string(), |refusal, instance_id| {
                 format!(
                     "{refusal}; the restart of `{instance_id}` holds this daemon, and {}",
                     stop_ends_restart(instance_id, core_node)
                 )
-            })
+            });
+        failure(DaemonFailureKind::Busy, text)
     }
 }
 

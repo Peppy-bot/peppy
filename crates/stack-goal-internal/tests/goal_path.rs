@@ -2,7 +2,8 @@
 //! it, against a mock of the daemon's `stack_join` action on peppylib's
 //! production goal engine: the acceptance at once, each line of output in
 //! order, then the end with the node logs; a refusal with the daemon's
-//! failure kind and reason; a caller that drops `next()` while it waits and
+//! failure kind and reason; a refusal or a failure with a kind that the
+//! daemon does not give; a caller that drops `next()` while it waits and
 //! loses nothing; a goal handed to a task that follows it to its end; a
 //! cancel that reaches the daemon; a caller that falls behind the output; a
 //! caller that goes away; and a daemon that goes away. Every step waits on
@@ -22,7 +23,9 @@ use core_node_api::encoding::{
     StackListResponse,
 };
 use core_node_api::names::CORE_NODE_TAG;
-use core_node_api::{ActionGoal, ServiceRequest};
+use core_node_api::{
+    ActionGoal, DaemonFailure, DaemonFailureKind, ServiceRequest, UnknownDaemonFailureKind,
+};
 use futures::FutureExt;
 use peppylib::messaging::{
     CancelCause, Failure, GoalContext, MessengerHandle, ProducerRef, SenderTarget,
@@ -188,12 +191,12 @@ fn failed_join_logs() -> NodeLogs {
     }
 }
 
-/// The failure of that join.
+/// The message of the failure of that join.
+const FAILED_JOIN: &str = "bravo_robot_initializer_inst exited during setup";
+
+/// The failure of that join, as the daemon sends it.
 fn failed_join() -> Failure {
-    Failure::new(
-        PeppyFailureKind::AttemptFailed,
-        "bravo_robot_initializer_inst exited during setup",
-    )
+    Failure::new(PeppyFailureKind::AttemptFailed, FAILED_JOIN)
 }
 
 async fn publish(context: &GoalContext, output: &LaunchOutput) {
@@ -217,7 +220,10 @@ async fn fail_join(context: &GoalContext) {
 /// The end the client reads for [`fail_join`].
 fn failed_join_end() -> StackGoalEnd {
     StackGoalEnd {
-        outcome: StackGoalOutcome::Failed(failed_join()),
+        outcome: StackGoalOutcome::Failed(DaemonFailure::new(
+            PeppyFailureKind::AttemptFailed,
+            FAILED_JOIN,
+        )),
         node_logs: failed_join_logs(),
     }
 }
@@ -263,34 +269,89 @@ async fn a_join_gives_its_acceptance_then_each_line_in_order_then_its_end() {
     ));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_refused_goal_gives_the_daemons_failure_kind_and_reason() {
+/// Sends the join, which the daemon refuses with `refusal`, and returns the
+/// error of the send.
+async fn refused_join(refusal: Failure) -> SendError {
     let (mesh, mut provider) = mesh().await;
     let goal = join_goal();
-    let refusal = Failure::new(PeppyFailureKind::PreconditionFailed, REFUSAL_REASON);
     let (sent, ()) = tokio::join!(stack_goal::send(mesh.route(), &goal), async {
         provider
             .next_goal(READINESS_TIMEOUT)
             .await
             .expect("the goal reaches the daemon")
-            .refuse(refusal.clone())
+            .refuse(refusal)
             .await
             .expect("the daemon refuses the goal");
     });
     match sent {
-        Err(error @ SendError::Refused { .. }) => {
-            assert_eq!(
-                error.to_string(),
-                format!("Join goal refused (precondition_failed): {REFUSAL_REASON}")
-            );
-            let SendError::Refused { failure, .. } = error else {
-                unreachable!()
-            };
-            assert_eq!(failure, refusal);
-        }
-        Err(other) => panic!("expected the daemon's refusal, got {other}"),
+        Err(error) => error,
         Ok(_) => panic!("the daemon refused the goal"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_goal_gives_the_daemons_failure_kind_and_reason() {
+    for kind in [
+        DaemonFailureKind::Busy,
+        DaemonFailureKind::Peppy(PeppyFailureKind::PreconditionFailed),
+    ] {
+        let error = refused_join(Failure::new(kind, REFUSAL_REASON)).await;
+        assert_eq!(
+            error.to_string(),
+            format!("Join goal refused ({kind}): {REFUSAL_REASON}")
+        );
+        let SendError::Refused { failure, .. } = error else {
+            panic!("expected the daemon's refusal, got {error}")
+        };
+        assert_eq!(failure, DaemonFailure::new(kind, REFUSAL_REASON));
+    }
+}
+
+/// A refusal with a kind that the daemon does not give is an error that
+/// keeps the message, never a refusal of another kind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refusal_with_a_kind_outside_the_daemon_is_an_error() {
+    let kind = config::failure_kind::FailureKindName::parse("unreachable").unwrap();
+    let error = refused_join(Failure::new(kind, REFUSAL_REASON)).await;
+    let SendError::UnknownRefusalKind { operation, source } = &error else {
+        panic!("expected an unknown refusal kind, got {error}")
+    };
+    assert_eq!(*operation, "Join");
+    assert_eq!(
+        source,
+        &UnknownDaemonFailureKind {
+            kind: "unreachable".to_owned(),
+            message: REFUSAL_REASON.to_owned(),
+        }
+    );
+}
+
+/// A failure with a kind that the daemon does not give ends the goal with an
+/// error that keeps the message, never a failure of another kind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failure_with_a_kind_outside_the_daemon_is_an_error() {
+    let (mesh, mut provider) = mesh().await;
+    let (running, context) = running_join(&mesh, &mut provider).await;
+    let kind = config::failure_kind::FailureKindName::parse("unreachable").unwrap();
+    context
+        .fail(Failure::new(kind, FAILED_JOIN))
+        .await
+        .expect("the daemon fails the goal");
+    let error = tokio::time::timeout(STEP, running.follow_to_end())
+        .await
+        .expect("the client reads the end the daemon sent")
+        .expect_err("a kind outside the daemon gives no end");
+    let FollowError::UnknownFailureKind { operation, source } = &error else {
+        panic!("expected an unknown failure kind, got {error}")
+    };
+    assert_eq!(*operation, "Join");
+    assert_eq!(
+        source,
+        &UnknownDaemonFailureKind {
+            kind: "unreachable".to_owned(),
+            message: FAILED_JOIN.to_owned(),
+        }
+    );
 }
 
 /// A `next()` dropped before the first message, and one dropped between two

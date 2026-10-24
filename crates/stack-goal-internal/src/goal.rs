@@ -5,11 +5,11 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use core_node_api::ActionGoal;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchOutput, LaunchResult, NodeLogs,
     StackBuildGoal, StackJoinGoal, StackRemoveGoal,
 };
+use core_node_api::{ActionGoal, DaemonFailure, UnknownDaemonFailureKind};
 use peppylib::core_node::transport::send_goal;
 use peppylib::messaging::{
     ActionGoalHandle, CancelState, Failure, GoalAnswer, GoalOutcome, MessengerHandle,
@@ -109,12 +109,21 @@ pub enum SendError {
         #[source]
         source: core_node_api::Error,
     },
-    /// The daemon refused the goal: its failure kind and its message, which
-    /// names what holds its stack when another operation does.
-    #[error("{operation} goal refused ({}): {}", .failure.kind(), .failure.message())]
+    /// The daemon refused the goal: its failure kind and its message. The
+    /// kind is `busy` while another operation holds the stack, and the
+    /// message names that operation.
+    #[error("{operation} goal refused ({}): {}", .failure.kind, .failure.message)]
     Refused {
         operation: &'static str,
-        failure: Failure,
+        failure: DaemonFailure,
+    },
+    /// The daemon refused the goal with a failure kind that the daemon does
+    /// not give.
+    #[error("{operation} goal refused: {source}")]
+    UnknownRefusalKind {
+        operation: &'static str,
+        #[source]
+        source: UnknownDaemonFailureKind,
     },
 }
 
@@ -159,6 +168,14 @@ pub enum FollowError {
         #[source]
         source: core_node_api::Error,
     },
+    /// The daemon failed the goal with a failure kind that the daemon does
+    /// not give.
+    #[error("{operation} failed: {source}")]
+    UnknownFailureKind {
+        operation: &'static str,
+        #[source]
+        source: UnknownDaemonFailureKind,
+    },
     /// The goal already gave its last event, and has no other.
     #[error("{operation} already ended")]
     Ended { operation: &'static str },
@@ -183,7 +200,7 @@ pub enum StackGoalOutcome {
     /// The daemon completed the goal: the change is a success.
     Completed(LaunchResult),
     /// The daemon failed the goal: its failure kind and its message.
-    Failed(Failure),
+    Failed(DaemonFailure),
     /// A cancel ended the goal, for this reason: its caller cancelled it,
     /// its sender is gone, or a stack reset ended it. The change stopped at
     /// the step it reached and rolled back as a failure there does.
@@ -232,10 +249,10 @@ pub struct RunningStackGoal {
 /// Sends `goal` along `route` and returns once the daemon admits it.
 ///
 /// The daemon admits or refuses a goal at once. It refuses at admission only
-/// a goal it cannot start: an invalid payload, a busy daemon, a reservation,
-/// a goal of the same kind in progress, or a log file it cannot open
-/// ([`SendError::Refused`]). It fails everything else after admission, with
-/// [`StackGoalOutcome::Failed`].
+/// a goal it cannot start: an invalid payload, or a log file it cannot open,
+/// and, with the kind `busy`, a busy daemon, a reservation or a goal of the
+/// same kind in progress ([`SendError::Refused`]). It fails everything else
+/// after admission, with [`StackGoalOutcome::Failed`].
 pub async fn send<G: StackGoal>(
     route: DaemonRoute<'_>,
     goal: &G,
@@ -256,10 +273,10 @@ pub async fn send<G: StackGoal>(
     })?;
     let response = match &handle.goal_reply().answer {
         GoalAnswer::Accepted(response) => response,
-        GoalAnswer::Refused(failure) => {
-            return Err(SendError::Refused {
-                operation,
-                failure: failure.clone(),
+        GoalAnswer::Refused(refusal) => {
+            return Err(match daemon_failure(refusal) {
+                Ok(failure) => SendError::Refused { operation, failure },
+                Err(source) => SendError::UnknownRefusalKind { operation, source },
             });
         }
     };
@@ -413,7 +430,10 @@ impl RunningStackGoal {
                 LaunchResult::decode(result.as_ref())
                     .map_err(|source| FollowError::UndecodableResult { operation, source })?,
             ),
-            GoalOutcome::Failed(failure) => StackGoalOutcome::Failed(failure),
+            GoalOutcome::Failed(failure) => StackGoalOutcome::Failed(
+                daemon_failure(&failure)
+                    .map_err(|source| FollowError::UnknownFailureKind { operation, source })?,
+            ),
             GoalOutcome::Cancelled { reason, .. } => StackGoalOutcome::Cancelled { reason },
             GoalOutcome::Abandoned if self.handle.is_producer_gone() => {
                 return Err(FollowError::DaemonGone { operation });
@@ -426,4 +446,10 @@ impl RunningStackGoal {
             node_logs: std::mem::take(&mut self.node_logs),
         })
     }
+}
+
+/// `failure`, the failure of a daemon reply, parsed into a kind of the
+/// daemon.
+fn daemon_failure(failure: &Failure) -> Result<DaemonFailure, UnknownDaemonFailureKind> {
+    DaemonFailure::parse(failure.kind().as_str(), failure.message())
 }

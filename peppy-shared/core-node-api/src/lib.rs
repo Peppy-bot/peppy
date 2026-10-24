@@ -8,7 +8,7 @@
 //!
 //! Consumers (`core-node-internal`, `daemon-config-internal`,
 //! `mcp-server-internal`, `node-stack-internal`, `stack-goal-internal`,
-//! `peppylib`, `peppylib-py`, `peppy`) see exactly five categories of public
+//! `peppylib`, `peppylib-py`, `peppy`) see exactly six categories of public
 //! items, and nothing else:
 //!
 //! 1. **Wire identifiers**: the [`ServiceId`] / [`ActionId`] / [`TopicId`]
@@ -28,6 +28,9 @@
 //! 5. **Protocol policy constants** ([`env`](mod@env)): [`FORBIDDEN_ENV_KEYS`], the
 //!    env-var blocklist enforced by the daemon when validating incoming goals
 //!    and by the CLI when filtering the caller environment before sending.
+//! 6. **The failure kinds of the daemon** ([`failure`]): [`DaemonFailureKind`],
+//!    the kinds of peppy and `busy`, and [`DaemonFailure`], which a client
+//!    parses the failure of a daemon reply into.
 //!
 //! The capnp schema and the generated `*_capnp` modules are an implementation
 //! detail, sealed behind `pub(crate)`: they never appear in a public signature.
@@ -40,6 +43,7 @@ mod capnp_generated;
 pub mod encoding;
 pub mod env;
 pub mod error;
+pub mod failure;
 pub mod graph;
 pub mod names;
 mod payload;
@@ -47,6 +51,7 @@ pub mod registry;
 
 pub use env::FORBIDDEN_ENV_KEYS;
 pub use error::{Error, Result};
+pub use failure::{DaemonFailure, DaemonFailureKind, UnknownDaemonFailureKind};
 pub use graph::{
     ExitCause, InstanceEndpoint, InstanceState, NodeNotFound, NodeStage, RestartStatus,
     SerializedEdge, SerializedInstance, SerializedNode, SerializedNodeGraph, SerializedPairingSlot,

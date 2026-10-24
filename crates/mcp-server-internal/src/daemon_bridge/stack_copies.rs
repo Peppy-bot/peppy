@@ -23,9 +23,11 @@
 //!
 //! The bridge runs one `join` at a time. A `join` takes the lock before it
 //! reads the stack and holds it until the daemon's work ends, also after its
-//! call ended; a `join` that finds it held is refused with the daemon's busy
-//! text. A `remove` takes no lock: the daemon refuses it while another stack
-//! change runs. How a call follows the change it sent is in [`change`].
+//! call ended; a `join` that finds it held is refused with the kind `busy`,
+//! as the daemon refuses a change while other work holds its stack. A
+//! `remove` takes no lock: the daemon refuses it with the kind `busy` while
+//! another stack change runs. How a call follows the change it sent is in
+//! [`change`].
 //!
 //! The daemon reports a join in its list from the moment it admits the
 //! goal. A `join` also holds the admission lock of the bridge until the
@@ -39,6 +41,7 @@ use super::OwnDaemon;
 use change::{Change, JoinLocks, start_change, wait_for_change};
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::{CopyName, CoreNodeName, CoreNodeTarget};
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     CopyChange, CopyInfo, CopyReference, SelectionWord, StackJoinGoal, StackRemoveGoal,
 };
@@ -58,8 +61,8 @@ use crate::bridges::TaskSurface;
 /// before it refuses. The daemon answers at once.
 const STACK_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The reason the bridge gives when it refuses a `join` while one it started
-/// is still in progress.
+/// The reason the bridge gives, with the kind `busy`, when it refuses a
+/// `join` while one it started is still in progress.
 pub(crate) const STACK_BUSY_REASON: &str =
     "a `join` started through this server is still in progress; wait for it to finish";
 
@@ -219,7 +222,7 @@ impl ScopedStackCopies {
             .map_err(|reason| refusal(PeppyFailureKind::Rejected, reason))?;
         let join = Arc::clone(&self.bridge.joins)
             .try_lock_owned()
-            .map_err(|_| refusal(PeppyFailureKind::PreconditionFailed, STACK_BUSY_REASON))?;
+            .map_err(|_| refusal(DaemonFailureKind::Busy, STACK_BUSY_REASON))?;
         let admission = Arc::clone(&self.bridge.admission).lock_owned().await;
         let change = Change::Addition {
             name: copy.name.clone(),
@@ -329,11 +332,12 @@ impl ScopedStackCopies {
 }
 
 /// The refusal of a change that the bridge gives before any goal reaches the
-/// daemon, with `kind`: `rejected` for an input that names what the scope
-/// does not hold, `precondition_failed` for a stack or a bridge that does not
-/// allow the change now.
-fn refusal(kind: PeppyFailureKind, reason: impl Into<String>) -> ActionExit {
-    ActionExit::Refused(ProviderFailure::new(kind, reason))
+/// daemon, with `kind`, a kind of the daemon: `rejected` for an input that
+/// names what the scope does not hold, `precondition_failed` for a stack
+/// that does not allow the change, and `busy` for a `join` of the bridge
+/// that still runs.
+fn refusal(kind: impl Into<DaemonFailureKind>, reason: impl Into<String>) -> ActionExit {
+    ActionExit::Refused(ProviderFailure::new(kind.into(), reason))
 }
 
 /// The goal of a call, which the narrowed schema already checked.

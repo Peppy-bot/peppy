@@ -4,8 +4,8 @@ use super::daemon::StartedCoreNode;
 use super::fixtures::write_peppy_json5;
 use super::poll::AbortOnDrop;
 use super::{CALLER_INSTANCE_ID, TEST_GIT_HASH, test_node_target};
-use config::failure_kind::PeppyFailureKind;
 use config::node::{RestartDeclaration, RestartPolicy, RestartRequest};
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
     NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback, NodeRunGoal,
@@ -159,19 +159,19 @@ impl<R: Debug> GoalEnd<R> {
     }
 }
 
-/// Asserts that `failure` has `kind`.
+/// Asserts that `failure` has `kind`, a kind of the daemon.
 #[track_caller]
-pub fn assert_failure_kind(failure: &Failure, kind: PeppyFailureKind) {
+pub fn assert_failure_kind(failure: &Failure, kind: impl Into<DaemonFailureKind>) {
     assert_eq!(
         failure.kind().as_str(),
-        kind.name(),
+        kind.into().name(),
         "the failure has another kind: {failure}"
     );
 }
 
 /// Asserts that `failure` has `kind` and that its message contains `text`.
 #[track_caller]
-pub fn assert_failure(failure: &Failure, kind: PeppyFailureKind, text: &str) {
+pub fn assert_failure(failure: &Failure, kind: impl Into<DaemonFailureKind>, text: &str) {
     assert_failure_kind(failure, kind);
     assert!(
         failure.message().contains(text),

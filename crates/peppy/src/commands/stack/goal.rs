@@ -437,7 +437,7 @@ mod tests {
     /// its failure and the launch log, and exit code 1.
     #[test]
     fn a_failed_stack_goal_gives_its_kind_and_its_log() {
-        let failure = peppylib::messaging::Failure::new(
+        let failure = core_node_api::DaemonFailure::new(
             config::failure_kind::PeppyFailureKind::Timeout,
             "the build of `arm:v1` produced no output for 180 s",
         );

@@ -76,9 +76,7 @@ async fn handle_node_remove_request(
 ) -> ServiceAnswer {
     let request = NodeRemoveRequest::decode(context.message().payload_bytes().as_ref())
         .map_err(|error| failure(PeppyFailureKind::Rejected, error))?;
-    let _admission = ownership
-        .admit_node_goal(&request)
-        .map_err(|reason| failure(PeppyFailureKind::PreconditionFailed, reason))?;
+    let _admission = ownership.admit_node_goal(&request)?;
     // An instance whose restart falls due during this removal is not started
     // again before the removal claims its slot; a removal that fails releases
     // its hold, and the policies apply once the notes of its shutdown

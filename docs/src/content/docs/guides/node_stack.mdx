@@ -187,9 +187,11 @@ Run-only options (trailing `key=value` arguments, `--instance-id`, `--link KEY@V
 `peppy node add`, `build` and `run` each send the daemon one goal and follow it to its end. The daemon refuses a goal that it cannot start, and a goal can fail. Either way the command prints the [failure kind](/guides/launch_files/#how-a-stack-command-ends) and the reason, a failure also the log file, and exits with code 1:
 
 ```
-Error: Node add refused (precondition_failed): action already in progress (times out in 590s), use `--force` to force adding the node
+Error: Node add refused (busy): action already in progress (times out in 590s), use `--force` to force adding the node
 Error: Node build failed (attempt_failed): build_cmd `uv sync` failed with status exit status: 2. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312.log
 ```
+
+The daemon refuses a goal with the kind `busy` while other work holds the stack: another add, build or run of the same command, a stack change, a `peppy stack reset`, or a launch that holds the machine. The same command can succeed once that work ends. `peppy node stop` and `peppy node remove` get the same refusal while a stack change, a reset or a launch that holds the machine runs.
 
 The first Ctrl+C sends the daemon a cancel of the goal. The daemon stops the work at its next step: an add publishes no node, a build kills its `build_cmd` and leaves the node `Added`, and a start stops its instance as [How an instance starts](#how-an-instance-starts) describes. The command follows the goal to that end under `--max-timeout` alone, prints how it ended, and exits with code 130:
 

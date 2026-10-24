@@ -2,13 +2,14 @@
 //! error reply with a failure kind and a message.
 
 use crate::Result;
-use config::failure_kind::PeppyFailureKind;
+use core_node_api::DaemonFailureKind;
 use peppylib::messaging::{Failure, ServiceAnswer};
 use peppylib::types::Payload;
 
-/// The failure of a request or a goal: `kind` and the message of `reason`.
-pub(crate) fn failure(kind: PeppyFailureKind, reason: impl ToString) -> Failure {
-    Failure::new(kind, reason.to_string())
+/// The failure of a request or a goal: `kind`, a kind of the daemon, and
+/// the message of `reason`.
+pub(crate) fn failure(kind: impl Into<DaemonFailureKind>, reason: impl ToString) -> Failure {
+    Failure::new(kind.into(), reason.to_string())
 }
 
 /// `failure` with `message` as its message: a failure of the same kind, which
@@ -19,7 +20,7 @@ pub(crate) fn rephrased(failure: &Failure, message: impl Into<String>) -> Failur
 
 /// The answer of a handler whose work gives `result`: the encoded response,
 /// or the error reply of its error, with the failure kind the error gives
-/// ([`crate::Error::failure_kind`]).
+/// ([`crate::Error::into_failure`]).
 ///
 /// Plain request/response service handlers funnel their result through
 /// this, so the mapping of an error to its failure lives in one place. A

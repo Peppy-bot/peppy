@@ -20,9 +20,11 @@ pub use reset::stack_reset_timeout;
 pub(crate) use reset::{clear_stack_slice, listen_for_stack_reset};
 pub(crate) use state::ActiveLaunch;
 
+use crate::error::peer_failure;
 use crate::services::action_loop::WorkStop;
 use crate::services::response::failure;
 use config::failure_kind::PeppyFailureKind;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{LaunchResult, NodeLogs};
 use peppylib::messaging::Failure;
 use std::time::Duration;
@@ -66,9 +68,16 @@ fn rejected(reason: impl ToString) -> Failure {
 }
 
 /// A change refused because the stack or a machine is not in the state it
-/// needs: busy, reserved, or holding what the change would collide with.
+/// needs: it holds what the change would collide with, or lacks what the
+/// change needs.
 fn precondition_failed(reason: impl ToString) -> Failure {
     failure(PeppyFailureKind::PreconditionFailed, reason)
+}
+
+/// A change refused because other work holds the stack of a machine: the
+/// same change can run once that work ends.
+fn busy(reason: impl ToString) -> Failure {
+    failure(DaemonFailureKind::Busy, reason)
 }
 
 /// A change whose step ran and gave no result: an add, a build, a start or
@@ -80,13 +89,6 @@ fn attempt_failed(reason: impl ToString) -> Failure {
 /// A change that needs a machine or an instance that is gone.
 fn resource_unavailable(reason: impl ToString) -> Failure {
     failure(PeppyFailureKind::ResourceUnavailable, reason)
-}
-
-/// The failure of a question to a peer daemon that did not answer it as
-/// asked: its own error reply keeps its kind, a peer that is gone is
-/// `resource_unavailable`, a peer that answers too late is `timeout`.
-fn peer_failure(error: &peppylib::PeppyError, message: impl ToString) -> Failure {
-    failure(crate::error::peppylib_failure_kind(error), message)
 }
 
 /// The stack listing of `host`, a participant of the launch.

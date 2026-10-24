@@ -24,7 +24,7 @@ use core_node_api::encoding::{
     StackListResponse, StackRemoveGoal,
 };
 use core_node_api::names::CORE_NODE_TAG;
-use core_node_api::{ActionGoal, ServiceRequest};
+use core_node_api::{ActionGoal, DaemonFailureKind, ServiceRequest};
 use daemon_config::daemon_interface::{DaemonInterface, StackCopiesScope};
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use peppy_mcp_catalog::build_exposure_bundle;
@@ -235,7 +235,7 @@ const DAEMON_REFUSAL: &str =
 
 /// The refusal of a daemon that runs another stack change.
 fn busy() -> Failure {
-    Failure::new(PeppyFailureKind::PreconditionFailed, DAEMON_REFUSAL)
+    Failure::new(DaemonFailureKind::Busy, DAEMON_REFUSAL)
 }
 
 impl FakeDaemon {
@@ -485,8 +485,11 @@ fn idle_now(bridge: &ScopedStackCopies) -> bool {
 
 /// A call that the bridge or the daemon refused with `kind` before the
 /// change ran.
-fn refused(kind: PeppyFailureKind, reason: &str) -> Result<Value, ActionExit> {
-    Err(ActionExit::Refused(ProviderFailure::new(kind, reason)))
+fn refused(kind: impl Into<DaemonFailureKind>, reason: &str) -> Result<Value, ActionExit> {
+    Err(ActionExit::Refused(ProviderFailure::new(
+        kind.into(),
+        reason,
+    )))
 }
 
 /// A call whose change the daemon failed with `kind`.
@@ -502,7 +505,7 @@ fn errored(message: &str) -> Result<Value, ActionExit> {
 /// A call whose change the daemon refused because it runs another one.
 fn refused_busy(subject: &str) -> Result<Value, ActionExit> {
     refused(
-        PeppyFailureKind::PreconditionFailed,
+        DaemonFailureKind::Busy,
         &format!("the daemon refused {subject}: {DAEMON_REFUSAL}"),
     )
 }
@@ -854,7 +857,7 @@ async fn a_join_the_daemon_refuses_is_refused_with_its_kind_and_reason() {
 /// the first is refused with the daemon's busy text before it reads the
 /// stack, and a join after the first ended runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_join_that_finds_the_lock_held_is_refused_with_the_busy_text() {
+async fn a_join_that_finds_the_lock_held_is_refused_with_the_kind_busy() {
     let (mesh, mut daemon) = mesh().await;
     let bridge = mesh.bridge(simulation_scope());
     let surface = Arc::new(ScriptedSurface::new());
@@ -865,7 +868,7 @@ async fn a_join_that_finds_the_lock_held_is_refused_with_the_busy_text() {
     let other = ScriptedSurface::new();
     assert_eq!(
         join(&bridge, &other, "charlie", "openarm_sim").await,
-        refused(PeppyFailureKind::PreconditionFailed, STACK_BUSY_REASON)
+        refused(DaemonFailureKind::Busy, STACK_BUSY_REASON)
     );
     assert_eq!(
         daemon.reads(),
@@ -899,7 +902,7 @@ async fn a_cancelled_join_reaches_the_daemon_and_ends_cancelled() {
     let other = ScriptedSurface::new();
     assert_eq!(
         join(&bridge, &other, "charlie", "so101_sim").await,
-        refused(PeppyFailureKind::PreconditionFailed, STACK_BUSY_REASON)
+        refused(DaemonFailureKind::Busy, STACK_BUSY_REASON)
     );
     end_cancelled(&context).await;
 
@@ -1053,7 +1056,7 @@ async fn a_silent_daemon_fails_the_call_after_one_window_and_the_join_goes_on() 
     let other = ScriptedSurface::new();
     assert_eq!(
         join(&bridge, &other, "charlie", "so101_sim").await,
-        refused(PeppyFailureKind::PreconditionFailed, STACK_BUSY_REASON),
+        refused(DaemonFailureKind::Busy, STACK_BUSY_REASON),
         "the join goes on under the lock"
     );
     complete(&context).await;
@@ -1868,6 +1871,104 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
     assert_eq!(
         recorded[8].1,
         "a copy `bravo` is already on the stack; choose another name"
+    );
+    endpoint.stop().await;
+}
+
+/// The daemon's refusal of a join and of a removal while other work holds
+/// its stack, and the endpoint's refusal of a second join, reach the client
+/// as a tool error with the kind `busy`, which `stack_copies:v1` declares,
+/// and the record keeps each call refused with that kind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_busy_refusal_reaches_the_client_with_the_kind_busy() {
+    let (mesh, mut daemon) = mesh().await;
+    let endpoint = Endpoint::serve(&mesh).await;
+    let join_input = |name: &str| json!({ "name": name, "option": "so101_sim", "core_node": COORDINATOR, "features": [] });
+    let busy_answer = |text: &str, message: &str| {
+        json!({
+            "text": text,
+            "structured": { "outcome": "refused", "failure_kind": "busy", "message": message },
+        })
+    };
+    let answer_of = |answer: &Value| {
+        assert_eq!(answer["result"]["isError"], true, "{answer}");
+        json!({
+            "text": answer["result"]["content"][0]["text"],
+            "structured": answer["result"]["structuredContent"],
+        })
+    };
+
+    daemon.lists(&[]);
+    let (joined, ()) = tokio::join!(endpoint.call("stack.join", join_input("bravo")), async {
+        daemon.refuses_join(busy()).await
+    });
+    let message = format!("the daemon refused the addition of bravo: {DAEMON_REFUSAL}");
+    assert_eq!(
+        answer_of(&joined),
+        busy_answer(
+            &format!("the provider refused the goal: busy: {message}"),
+            &message
+        )
+    );
+
+    daemon.lists(&[copy("alpha", "so101_sim")]);
+    let (removed, ()) = tokio::join!(
+        endpoint.call("stack.remove", json!({ "name": "alpha" })),
+        async {
+            daemon
+                .remove
+                .next_goal(READINESS_TIMEOUT)
+                .await
+                .expect("the removal reaches the daemon")
+                .refuse(busy())
+                .await
+                .expect("the daemon refuses the removal");
+        }
+    );
+    let message = format!("the daemon refused the removal of alpha: {DAEMON_REFUSAL}");
+    assert_eq!(
+        answer_of(&removed),
+        busy_answer(
+            &format!("the provider refused the goal: busy: {message}"),
+            &message
+        )
+    );
+
+    daemon.lists(&[]);
+    let first = endpoint.call("stack.join", join_input("charlie"));
+    let second = async {
+        let context = daemon.admits_join(&join_goal("charlie", "so101_sim")).await;
+        let second = endpoint.call("stack.join", join_input("delta")).await;
+        complete(&context).await;
+        second
+    };
+    let (first, second) = tokio::join!(first, second);
+    assert_eq!(first["result"]["structuredContent"], json!({}), "{first}");
+    assert_eq!(
+        answer_of(&second),
+        busy_answer(
+            &format!("the provider refused the goal: busy: {STACK_BUSY_REASON}"),
+            STACK_BUSY_REASON
+        )
+    );
+
+    let answer = endpoint.call("stack.recent_calls", json!({})).await;
+    let kinds: Vec<(Value, Value)> = answer["result"]["structuredContent"]["calls"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the record answers its calls: {answer}"))
+        .iter()
+        .rev()
+        .map(|call| (call["outcome"].clone(), call["failure_kind"].clone()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (json!("refused"), json!("busy")),
+            (json!("refused"), json!("busy")),
+            (json!("completed"), Value::Null),
+            (json!("refused"), json!("busy")),
+        ],
+        "{answer}"
     );
     endpoint.stop().await;
 }

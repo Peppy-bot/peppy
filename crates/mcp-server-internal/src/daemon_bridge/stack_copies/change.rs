@@ -14,9 +14,9 @@
 //! The call ends:
 //!
 //! - refused when the bridge or the daemon refuses the goal before it
-//!   runs, with the failure kind of the refusal: `precondition_failed`,
-//!   "the daemon refused the addition of bravo: a stack change is in
-//!   progress on this daemon";
+//!   runs, with the failure kind of the refusal: `busy`, "the daemon
+//!   refused the addition of bravo: a stack change is in progress on this
+//!   daemon";
 //! - with an empty result when the daemon completed the change: the copy is
 //!   on the stack, or off it;
 //! - failed when the daemon failed the change, with its failure kind and
@@ -28,7 +28,8 @@
 //!   and the call ends with the daemon's reason once the daemon ended the
 //!   change. A change the daemon ended first keeps its end;
 //! - failed when the change ends without an end, for example when the
-//!   daemon is gone;
+//!   daemon is gone, and when the daemon gives a failure kind that the
+//!   daemon does not give;
 //! - failed after one progress window of silence: "the daemon sent nothing
 //!   for 660 s; the addition of bravo can still be running". The bridge sends
 //!   no cancel and goes on following the change.
@@ -36,9 +37,9 @@
 use crate::bridges::{Silence, TaskSurface};
 use crate::daemon_bridge::OwnDaemon;
 use config::runtime::{CopyName, Name};
+use core_node_api::DaemonFailure;
 use core_node_api::encoding::{LaunchFeedbackStep, LaunchOutput};
 use peppy_mcp_runtime::{ActionExit, CancelledGoal, ProviderFailure};
-use peppylib::messaging::Failure;
 use serde_json::{Value, json};
 use stack_goal::{
     FollowError, RunningStackGoal, SendError, StackGoal, StackGoalEnd, StackGoalEvent,
@@ -103,20 +104,16 @@ impl Change {
 
     /// The failure of a change that the daemon failed with `failure`: its
     /// failure kind, and a message with the log files that say more.
-    fn failed_with(&self, failure: &Failure, logs: &[&Path]) -> ProviderFailure {
-        ProviderFailure::new(failure.kind().clone(), self.failed(failure.message(), logs))
+    fn failed_with(&self, failure: &DaemonFailure, logs: &[&Path]) -> ProviderFailure {
+        ProviderFailure::new(failure.kind, self.failed(&failure.message, logs))
     }
 
     /// The end of a call whose change the daemon refused before it ran: the
     /// failure kind and the reason of the refusal.
-    fn refused(&self, refusal: &Failure) -> ActionExit {
+    fn refused(&self, refusal: &DaemonFailure) -> ActionExit {
         ActionExit::Refused(ProviderFailure::new(
-            refusal.kind().clone(),
-            format!(
-                "the daemon refused {}: {}",
-                self.subject(),
-                refusal.message()
-            ),
+            refusal.kind,
+            format!("the daemon refused {}: {}", self.subject(), refusal.message),
         ))
     }
 
@@ -423,6 +420,7 @@ async fn lasted_a_window(silence: &mut Option<Silence>) -> Duration {
 mod tests {
     use super::*;
     use config::failure_kind::PeppyFailureKind;
+    use core_node_api::DaemonFailureKind;
     use core_node_api::encoding::{
         LaunchResult, NodeAddLogEntry, NodeBuildLogEntry, NodeLogs, NodeRunLogEntry,
     };
@@ -485,14 +483,14 @@ mod tests {
                     .to_owned()
             )
         );
-        let busy = Failure::new(
-            PeppyFailureKind::PreconditionFailed,
+        let busy = DaemonFailure::new(
+            DaemonFailureKind::Busy,
             "a stack change is in progress on this daemon",
         );
         assert_eq!(
             removal().refused(&busy),
             ActionExit::Refused(ProviderFailure::new(
-                PeppyFailureKind::PreconditionFailed,
+                DaemonFailureKind::Busy,
                 "the daemon refused the removal of bravo: a stack change is in progress on this \
                  daemon"
             ))
@@ -504,7 +502,7 @@ mod tests {
     }
 
     fn failed(kind: PeppyFailureKind, message: &str) -> StackGoalOutcome {
-        StackGoalOutcome::Failed(Failure::new(kind, message))
+        StackGoalOutcome::Failed(DaemonFailure::new(kind, message))
     }
 
     /// A failure names its kind, the goal's log, then the log of the node

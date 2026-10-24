@@ -82,7 +82,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     let refusal = second_result.refusal();
     assert_failure(
         refusal,
-        PeppyFailureKind::PreconditionFailed,
+        DaemonFailureKind::Busy,
         "action already in progress",
     );
     assert!(

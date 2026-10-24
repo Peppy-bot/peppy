@@ -10,6 +10,7 @@ use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::failure_kind::PeppyFailureKind;
 use config::node::NodeConfigParser;
 use config::runtime::Name;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchOutput, LaunchResult, LauncherOrigin,
     NodeLogs, StackBudgets,
@@ -370,7 +371,7 @@ impl StackGoalEnd {
     /// Asserts that the stack goal failed after its acceptance, with `kind`
     /// and a message that contains `text`.
     #[track_caller]
-    fn assert_failed(&self, kind: PeppyFailureKind, text: &str) {
+    fn assert_failed(&self, kind: impl Into<DaemonFailureKind>, text: &str) {
         assert_failure(self.failure(), kind, text);
     }
 }

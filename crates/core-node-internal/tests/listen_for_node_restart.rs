@@ -30,7 +30,7 @@ use core_node_api::encoding::{
     FederationAck, NodeAddResult, NodeInfoRequest, NodeRemoveRequest, NodeRemoveResponse,
     NodeStopRequest, NodeStopResponse, StackResetRequest,
 };
-use core_node_api::{ExitCause, InstanceState, SerializedInstance};
+use core_node_api::{DaemonFailureKind, ExitCause, InstanceState, SerializedInstance};
 use node_stack::action_log::restart_separator;
 use node_stack::action_log::test_support::{lines_without_time, nth_newest_run_log, time_of};
 use peppylib::PeppyError;
@@ -1556,7 +1556,7 @@ async fn node_stop_ends_a_restarts_start_in_flight() {
         .expect_err("the reservation is refused");
     assert_eq!(
         refusal.kind().as_str(),
-        PeppyFailureKind::PreconditionFailed.name(),
+        DaemonFailureKind::Busy.name(),
         "{refusal}"
     );
     assert!(
@@ -1676,7 +1676,7 @@ async fn node_stop_of_a_first_start_is_refused() {
     let reserved = reserved.expect_err("the reservation is refused");
     assert_eq!(
         reserved.kind().as_str(),
-        PeppyFailureKind::PreconditionFailed.name(),
+        DaemonFailureKind::Busy.name(),
         "{reserved}"
     );
     assert!(

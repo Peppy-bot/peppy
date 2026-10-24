@@ -553,7 +553,7 @@ Only the node's own output and, in the run phase, the ready signal of the instan
 `peppy stack launch`, `build`, `join` and `remove` each send the daemon one goal and follow it to its end. The daemon refuses a goal that it cannot start, for example while another stack change runs, and the command prints the refusal with its failure kind:
 
 ```text
-Error: Launch refused (precondition_failed): a stack launch, build, join, removal or reset, or a coordinator's change to this daemon's slice, is in progress on this daemon; run this again once it ends
+Error: Launch refused (busy): a stack launch, build, join, removal or reset, or a coordinator's change to this daemon's slice, is in progress on this daemon; run this again once it ends
 ```
 
 A goal that fails ends the command with its failure kind, the reason, and the launch log, after the log files of the nodes:
@@ -565,10 +565,13 @@ Error: Launch failed (attempt_failed): failed to build node arm:v1: build_cmd `c
 | Kind | What it says |
 | --- | --- |
 | `rejected` | The launcher, a word of the command or a value in it is not valid, or it names something that is not there |
-| `precondition_failed` | The stack or a machine does not allow the change now: another change runs, an instance or a copy is in the way, a machine is held by another launch |
+| `busy` | Other work holds the stack of a machine: another stack change runs, a node command or a restart runs, a `peppy stack reset` runs, or another launch holds the machine. The same command can succeed once that work ends |
+| `precondition_failed` | The stack or a machine does not allow the change: an instance or a copy is in the way, or the stack has no launcher |
 | `resource_unavailable` | A machine of the change is not live, or did not answer |
 | `timeout` | A budget ran out |
 | `attempt_failed` | A step failed, for example a build or the start of an instance |
+
+`busy` is the kind of the daemon itself. The other kinds are kinds of peppy (see [How a goal ends](/advanced_guides/actions/#how-a-goal-ends)). A federated launch fails with `busy` when each machine that refused it is busy.
 
 The command exits with code 1 when the goal is refused or fails.
 
