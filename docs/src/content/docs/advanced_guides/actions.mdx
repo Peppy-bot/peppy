@@ -58,7 +58,7 @@ A refusal and a failed goal give a **failure kind** and a message for a person. 
 | `resource_unavailable` | A robot, limb or host is gone |
 | `rejected` | The provider refused the goal, and no other kind says why |
 
-The peppy daemon gives one kind of its own beside these, as a contract does: `busy`, other work holds the stack of the daemon, and the same request can succeed once that work ends (see [How a stack command ends](/guides/launch_files/#how-a-stack-command-ends)).
+The peppy daemon gives one kind of its own beside these, as a contract does: `busy`, other work runs on the daemon (a stack change, a node goal, a repository refresh or a benchmark), and the same request can succeed once that work ends (see [How a stack command ends](/guides/launch_files/#how-a-stack-command-ends)).
 
 The generated code of each action declares these kinds as a `FailureKind` enum and a `Failure` type (`kind`, `message`). The generated provider can give no other kind: in Rust a kind that the member does not declare is not a variant of the enum, so the node does not compile; in Python `Failure` raises `ValueError` for it before anything reaches the wire. The generated client parses each failure from the wire into the same type: a kind that the member does not declare is an error, never a failure of an unknown kind. The error of an undeclared kind keeps the message of the failure in its text. In Python, `Failure` also raises `TypeError` for a message that is not a `str`: give the text of an exception `error` with `Failure(kind, str(error))`.
 

@@ -25,11 +25,11 @@ use crate::services::action_loop::{
 use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_contract_doc;
-use config::failure_kind::PeppyFailureKind;
 use config::node::{
     DependsOn, MessageSizeEstimate, NodeConfig, QoSProfile, estimate_serialized_size,
     node_implements,
 };
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     BenchmarkFeedbackStep, ClockConfidence, ClockOffsetRequest, ClockOffsetResponse, InterfaceKind,
     InterfaceLatency, MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal,
@@ -54,8 +54,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-/// Gate budget of one benchmark goal. A concurrent goal is refused with "a
-/// stack benchmark is already in progress", without the remaining time.
+/// Gate budget of one benchmark goal. A concurrent goal is refused with the
+/// kind `busy` and "a stack benchmark is already in progress", without the
+/// remaining time.
 const BENCHMARK_GATE_TIMEOUT_SECS: u64 = 1800;
 /// Absolute floor below which a measured producer offset is treated as same-host
 /// regardless of the round trip: at this magnitude the clocks share a host and
@@ -148,7 +149,7 @@ impl GoalHandler for StackBenchmarkGoalHandler {
                 refuse_goal(
                     pending,
                     Failure::new(
-                        PeppyFailureKind::PreconditionFailed,
+                        DaemonFailureKind::Busy,
                         "a stack benchmark is already in progress",
                     ),
                 )

@@ -20,8 +20,8 @@ use crate::services::repo::{
     source_identity,
 };
 use crate::source_url::SourceUrl;
-use config::failure_kind::PeppyFailureKind;
 use core_node_api::ActionId;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     GitRepoRef, PEPPY_RELEASE_REF, PeppyBuild, ReadRef, RepoItemKind, RepoRefreshFeedback,
     RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource, RepoSourceKind,
@@ -96,7 +96,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 refuse_goal(
                     pending,
                     Failure::new(
-                        PeppyFailureKind::PreconditionFailed,
+                        DaemonFailureKind::Busy,
                         "a repo refresh operation is already in progress",
                     ),
                 )

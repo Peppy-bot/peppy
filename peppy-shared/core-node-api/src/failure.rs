@@ -16,9 +16,9 @@ use std::fmt;
 pub enum DaemonFailureKind {
     /// A kind of peppy.
     Peppy(PeppyFailureKind),
-    /// Other work holds the stack of the daemon: a stack change, a node
-    /// goal, or a launch that reserved the daemon. The same request can
-    /// succeed once that work ends.
+    /// Other work runs on the daemon: a stack change, a node goal, a launch
+    /// that reserved the daemon, a repository refresh or a benchmark. The
+    /// same request can succeed once that work ends.
     Busy,
 }
 
@@ -46,8 +46,8 @@ impl DaemonFailureKind {
         match self {
             Self::Peppy(kind) => kind.meaning(),
             Self::Busy => {
-                "Other work holds the stack of the daemon; the same request can succeed once \
-                 that work ends"
+                "Other work runs on the daemon; the same request can succeed once that work \
+                 ends"
             }
         }
     }
