@@ -5,10 +5,12 @@ A change that spans several repositories lands as pull requests that share one
 head branch name, the set name (see .github/actions/hub-ci-peppy/resolve.py).
 The CI of each hub pull request tests it with the branches of the set in peppy
 and in the other hubs, so the pull requests of a set are green together and
-merge together. sim-chat, the chat that drives a stack through the MCP
-endpoints that peppy and the hubs serve, is part of a set too: no hub CI reads
-it, but its pull request merges with the set, so that its `main` and the
-`main` of the hubs change together.
+merge together. Two other repositories are part of a set too, so that their
+`main` and the `main` of the hubs change together: public-peppy-libs, the
+libraries that the nodes of the hubs build on, and sim-chat, the chat that
+drives a stack through the MCP endpoints that peppy and the hubs serve. No hub
+CI reads their branches of a set: a hub builds the libraries at the commits
+that its lockfiles pin, and reads nothing of sim-chat.
 
 The `merge-set` commit status is a required check of peppy `dev` and of the
 `main` of each other repository of a set, and only the merge-set GitHub App
@@ -52,16 +54,16 @@ to be up to date with its base, so a branch that merges its base in does not
 ask a re-run either: the merge of the set takes in that base all the same. The
 bot asks git to merge the commit and the base again, in a scratch repository
 (GitMerges), and compares the result with the head, so a conflict resolved by
-hand or any other change of the branch counts. A job reads peppy and the hubs
-alone, so a change of the sim-chat branch of a set makes no hub run out of
-date. Every job that runs the hub-ci-peppy action uploads the set it ran
-with, its set record, named after the check run of the job. A job that does
-not run the action reads no other repository, so it has no record and is
-never out of date; nor has the first job of each hub run, which runs the
-action with `wait-only` to wait for the peppy dev build of the set and
-installs nothing. Ticking "Re-run" re-runs every finished hub run that is out
-of date, at once: a re-run whose peppy dev build is not uploaded yet waits for
-it in that first job.
+hand or any other change of the branch counts. A job reads the branches of
+peppy and the hubs alone, so a change of the public-peppy-libs or sim-chat
+branch of a set makes no hub run out of date. Every job that runs the
+hub-ci-peppy action uploads the set it ran with, its set record, named after
+the check run of the job. A job that does not run the action reads no other
+repository, so it has no record and is never out of date; nor has the first
+job of each hub run, which runs the action with `wait-only` to wait for the
+peppy dev build of the set and installs nothing. Ticking "Re-run" re-runs
+every finished hub run that is out of date, at once: a re-run whose peppy dev
+build is not uploaded yet waits for it in that first job.
 
 GitHub sends every event of each repository of a set to the webhook of the
 merge-set App (webhook.py, in AWS Lambda), which hands it to the relay
@@ -142,7 +144,7 @@ class Repository:
     name: str
     # The branch every pull request of a set targets in this repository.
     integration_branch: str
-    # The hub this repository is; None for peppy and for sim-chat.
+    # The hub this repository is; None for a repository that is not a hub.
     hub: resolve.Hub | None
 
     @property
@@ -151,16 +153,20 @@ class Repository:
 
 
 PEPPY = Repository("peppy", resolve.PEPPY_DEV_BRANCH, None)
+# The libraries that the nodes of the hubs build on. No hub CI reads its branch
+# of a set.
+PUBLIC_PEPPY_LIBS = Repository("public-peppy-libs", "main", None)
 # The chat that drives a stack through the MCP endpoints that peppy and the
 # hubs serve. No hub CI reads it.
 SIM_CHAT = Repository("sim-chat", "main", None)
 
 # Every repository a set can span, in the order the bot merges them: peppy
-# first, then the hubs in the order of their repository ids, then sim-chat,
-# which uses what they serve. The order is fixed, so every report of a merge
-# reads the same way.
+# first, then public-peppy-libs, which the hubs build on, then the hubs in the
+# order of their repository ids, then sim-chat, which uses what they serve.
+# The order is fixed, so every report of a merge reads the same way.
 REPOSITORIES = (
     PEPPY,
+    PUBLIC_PEPPY_LIBS,
     *(Repository(hub.name, resolve.HUB_MAIN_BRANCH, hub) for hub in resolve.HUBS),
     SIM_CHAT,
 )
@@ -990,7 +996,8 @@ class StaleJob:
 def tested_ref_of(tested: TestedSet, repository: Repository) -> TestedRef | None:
     """What a job ran of `repository`; None when it did not read it (a job
     without the deploy key of the private hub, or with no peppy dev build),
-    and always None for sim-chat, which no job reads."""
+    and always None for a repository that is neither peppy nor a hub, whose
+    branch of a set no job reads."""
     if repository.hub is not None:
         return tested.hubs.get(repository.name)
     if repository == PEPPY:
