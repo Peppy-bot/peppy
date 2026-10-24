@@ -44,6 +44,11 @@ pub enum Error {
     #[error("duplicate repository id {id} in {file}")]
     DuplicateRepoId { id: u64, file: String },
 
+    /// A cancel stopped a repository refresh between two of its steps: it
+    /// read no other repository and published nothing.
+    #[error("the repository refresh was cancelled")]
+    RefreshCancelled,
+
     // -- node operations
     #[error("failed to shutdown node instance '{instance_id}': {reason}")]
     ShutdownInstanceFailed { instance_id: String, reason: String },

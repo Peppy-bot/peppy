@@ -463,7 +463,7 @@ async fn list_reports_retained_entries_and_the_failure_reason() {
             "source_type": "fs",
             "last_read_unix_secs": 1_753_900_000u64,
             "last_failure": {
-                "read_failure": "unreachable",
+                "kind": "unreachable",
                 "message": "path does not exist",
                 "unix_secs": 1_753_986_400u64
             }

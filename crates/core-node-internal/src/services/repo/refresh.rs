@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::services::action_loop::{
-    GoalEnding, GoalHandler, accept_goal, invalid_payload, refuse_goal, run_action_loop,
+    GoalEnding, GoalHandler, accept_goal, invalid_payload, own_cancel_reason, refuse_goal,
+    run_action_loop,
 };
 use crate::services::node::cache as node_cache;
 use crate::services::node::common::encode_response_or_err;
@@ -29,7 +30,7 @@ use core_node_api::names;
 use daemon_config::consts::{PeppyDirs, peppy_build};
 use daemon_config::repository::GitCommit;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{CancelCause, ConcurrentAction, Failure, PendingGoal};
+use peppylib::messaging::{ConcurrentAction, Failure, PendingGoal};
 use peppylib::runtime::CancellationToken;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult};
@@ -143,21 +144,15 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 move |feedback| {
                     let _ = tx.send(feedback);
                 },
-                &goal_ctx.cancellation(),
+                Some(&goal_ctx.cancellation()),
             )
             .await;
 
             let ending = match refreshed {
-                Ok(Some(refreshed)) => {
-                    GoalEnding::of(Ok(refresh_result(&refreshed).encode()), None)
+                Ok(refreshed) => GoalEnding::of(Ok(refresh_result(&refreshed).encode()), None),
+                Err(crate::Error::RefreshCancelled) => {
+                    GoalEnding::Cancelled(own_cancel_reason(&goal_ctx))
                 }
-                Ok(None) => GoalEnding::Cancelled(
-                    goal_ctx
-                        .cancel_cause()
-                        .unwrap_or(CancelCause::Caller)
-                        .reason()
-                        .to_owned(),
-                ),
                 Err(e) => {
                     warn!("Repo refresh failed: {}", e);
                     GoalEnding::Failed(e.into_failure())
@@ -227,13 +222,12 @@ pub(crate) async fn reindex_after_change(peppy_dirs: &PeppyDirs) -> Option<Strin
         RefreshScope::Every,
         SystemTime::now(),
         |_| {},
-        &CancellationToken::new(),
+        None,
     )
     .await;
     match refreshed {
-        Ok(Some(refreshed)) if refreshed.failures.is_empty() => None,
-        Ok(Some(refreshed)) => Some(failure_report(&refreshed.failures)),
-        Ok(None) => Some("re-indexing was cancelled".to_owned()),
+        Ok(refreshed) if refreshed.failures.is_empty() => None,
+        Ok(refreshed) => Some(failure_report(&refreshed.failures)),
         Err(e) => Some(format!("re-indexing failed: {e}")),
     }
 }
@@ -250,33 +244,50 @@ pub(crate) async fn reindex_after_change(peppy_dirs: &PeppyDirs) -> Option<Strin
 /// published. Caches store every entry so that `repo list` can display
 /// every source and users can pick a specific `sha256`.
 ///
-/// Returns `None` once `cancel` is cancelled before the caches are written:
-/// the refresh reads no other repository and publishes nothing, as a
-/// refresh that fails.
+/// `cancel`, when there is one, stops the refresh between two of its
+/// steps: once it is cancelled before the caches are written, the refresh
+/// reads no other repository, publishes nothing, and gives
+/// [`Error::RefreshCancelled`](crate::Error::RefreshCancelled).
 pub(crate) async fn refresh_and_write_caches(
     peppy_dirs: &PeppyDirs,
     build: PeppyBuild,
     scope: RefreshScope,
     now: SystemTime,
     mut on_feedback: impl FnMut(RepoRefreshFeedback) + Send + 'static,
-    cancel: &CancellationToken,
-) -> Result<Option<RefreshedRepos>> {
+    cancel: Option<&CancellationToken>,
+) -> Result<RefreshedRepos> {
     let peppy_dirs = peppy_dirs.clone();
-    let cancel = cancel.clone();
+    let cancel = cancel.cloned();
     tokio::task::spawn_blocking(move || {
         let _guard = crate::services::repo::refresh_lock().lock();
-        let Some(refreshed) =
-            process_refresh(&peppy_dirs, &build, &scope, now, &mut on_feedback, &cancel)?
-        else {
-            return Ok(None);
-        };
-        if cancel.is_cancelled() {
-            return Ok(None);
-        }
+        let refreshed = process_refresh(
+            &peppy_dirs,
+            &build,
+            &scope,
+            now,
+            &mut on_feedback,
+            cancel.as_ref(),
+        )?;
+        stop_if_cancelled(cancel.as_ref())?;
         write_all_caches(&peppy_dirs, &refreshed)?;
-        Ok(Some(refreshed))
+        Ok(refreshed)
     })
     .await?
+}
+
+/// Stops a refresh with [`Error::RefreshCancelled`](crate::Error::RefreshCancelled)
+/// once `cancel` is cancelled.
+fn stop_if_cancelled(cancel: Option<&CancellationToken>) -> Result<()> {
+    if is_cancelled(cancel) {
+        return Err(crate::Error::RefreshCancelled);
+    }
+    Ok(())
+}
+
+/// Whether `cancel` is cancelled. A refresh with no cancel is never
+/// cancelled.
+fn is_cancelled(cancel: Option<&CancellationToken>) -> bool {
+    cancel.is_some_and(CancellationToken::is_cancelled)
 }
 
 /// The repositories on `@{peppy-release}` that this machine last read at
@@ -381,14 +392,13 @@ pub(crate) async fn refresh_release_repositories_for_this_version(
         RefreshScope::Only(ids.clone()),
         now,
         |_| {},
-        &CancellationToken::new(),
+        None,
     )
     .await?;
-    // Nothing cancels this refresh, so it always reads.
-    let failures = refreshed
-        .map(|refreshed| refreshed.failures)
-        .unwrap_or_default();
-    Ok(VersionRefresh::Refreshed { ids, failures })
+    Ok(VersionRefresh::Refreshed {
+        ids,
+        failures: refreshed.failures,
+    })
 }
 
 /// A repository that was skipped during refresh because it appears in the
@@ -653,17 +663,18 @@ impl RefreshScope {
 /// priority of an entry, the discovery feedback, `failures` and `statuses`
 /// never depend on which read ends first.
 ///
-/// Returns `None` once `cancel` is cancelled, checked before the reads,
-/// before each read starts and after the reads end: a read that runs ends
-/// first, and no other one starts.
+/// `cancel`, when there is one, is read before the reads, before each read
+/// starts and after the reads end: once it is cancelled, a read that runs
+/// ends first, no other one starts, and the refresh gives
+/// [`Error::RefreshCancelled`](crate::Error::RefreshCancelled).
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
     build: &PeppyBuild,
     scope: &RefreshScope,
     now: SystemTime,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
-    cancel: &CancellationToken,
-) -> Result<Option<RefreshedRepos>> {
+    cancel: Option<&CancellationToken>,
+) -> Result<RefreshedRepos> {
     let (repos, exclusions) = {
         let _guard = crate::services::repo::repos_file_lock().lock();
         let repos = read_or_create_repos(peppy_dirs)?;
@@ -705,24 +716,24 @@ pub(crate) fn process_refresh(
         .iter()
         .filter_map(PlannedRepo::source_to_read)
         .collect();
-    if cancel.is_cancelled() {
-        return Ok(None);
-    }
-    let mut reads = map_in_parallel(
+    stop_if_cancelled(cancel)?;
+    // A read that the cancel comes before does not start, and gives `None`.
+    let reads: Option<Vec<RepoRead>> = map_in_parallel(
         sources_to_read,
         MAX_PARALLEL_READS,
         on_feedback,
         |source, on_feedback| {
-            if cancel.is_cancelled() {
-                return RepoRead::cancelled();
-            }
-            read_repo(source, &exclusions, build, peppy_dirs, on_feedback)
+            (!is_cancelled(cancel))
+                .then(|| read_repo(source, &exclusions, build, peppy_dirs, on_feedback))
         },
     )
-    .into_iter();
-    if cancel.is_cancelled() {
-        return Ok(None);
-    }
+    .into_iter()
+    .collect();
+    let Some(reads) = reads else {
+        return Err(crate::Error::RefreshCancelled);
+    };
+    stop_if_cancelled(cancel)?;
+    let mut reads = reads.into_iter();
 
     for repo in planned {
         let (id, identity, source) = match repo {
@@ -802,12 +813,12 @@ pub(crate) fn process_refresh(
         merged.merge(items, on_feedback);
     }
 
-    Ok(Some(RefreshedRepos {
+    Ok(RefreshedRepos {
         items: merged.items,
         excluded: excluded_repos,
         failures,
         statuses,
-    }))
+    })
 }
 
 /// What one refresh does with one configured repository, decided from its
@@ -887,20 +898,6 @@ const MAX_PARALLEL_READS: NonZeroUsize = NonZeroUsize::new(8).expect("8 is not z
 struct RepoRead {
     items: std::result::Result<RepoItems, (RepoReadFailure, String)>,
     read_ref: Option<ReadRef>,
-}
-
-impl RepoRead {
-    /// The read a cancel stopped before it started; the refresh it belongs
-    /// to publishes nothing.
-    fn cancelled() -> Self {
-        Self {
-            items: Err((
-                RepoReadFailure::Unreachable,
-                "the refresh was cancelled".to_owned(),
-            )),
-            read_ref: None,
-        }
-    }
 }
 
 /// Reads one repository, with `@{peppy-release}` resolved for `build`.
@@ -1405,9 +1402,8 @@ mod tests {
             &RefreshScope::Every,
             now,
             on_feedback,
-            &CancellationToken::new(),
+            None,
         )
-        .map(|refreshed| refreshed.expect("nothing cancels the refresh"))
     }
 
     /// Publishes only `roots`, then refreshes. For tests that deliberately
@@ -1545,10 +1541,12 @@ mod tests {
             &RefreshScope::Every,
             TEST_NOW,
             &mut |line| feedback.push(line),
-            &cancel,
-        )
-        .expect("the refresh runs");
-        assert!(read.is_none(), "the cancel stops the refresh");
+            Some(&cancel),
+        );
+        assert!(
+            matches!(read, Err(crate::Error::RefreshCancelled)),
+            "the cancel stops the refresh"
+        );
         assert!(feedback.is_empty(), "no repository is read: {feedback:?}");
 
         let published = refresh_and_write_caches(
@@ -1557,11 +1555,13 @@ mod tests {
             RefreshScope::Every,
             TEST_NOW,
             |_| {},
-            &cancel,
+            Some(&cancel),
         )
-        .await
-        .expect("the refresh runs");
-        assert!(published.is_none(), "the cancel stops the refresh");
+        .await;
+        assert!(
+            matches!(published, Err(crate::Error::RefreshCancelled)),
+            "the cancel stops the refresh"
+        );
         assert!(
             crate::services::repo::cache::load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
                 .unwrap_or_default()
@@ -2989,10 +2989,9 @@ mod tests {
             &RefreshScope::Every,
             TEST_NOW,
             &mut |_| {},
-            &CancellationToken::new(),
+            None,
         )
-        .unwrap()
-        .expect("nothing cancels the refresh");
+        .unwrap();
 
         assert!(refreshed.failures.is_empty(), "{:?}", refreshed.failures);
         let release_tag = Some(ReadRef::ReleaseTag("v0.31.2".to_owned()));
@@ -3070,10 +3069,9 @@ mod tests {
             &RefreshScope::Every,
             TEST_NOW,
             &mut |_| {},
-            &CancellationToken::new(),
+            None,
         )
-        .unwrap()
-        .expect("nothing cancels the refresh");
+        .unwrap();
         write_all_caches(&peppy_dirs, &read_for_the_old_version).unwrap();
         assert_eq!(cached_node_commit(&peppy_dirs), first);
 
