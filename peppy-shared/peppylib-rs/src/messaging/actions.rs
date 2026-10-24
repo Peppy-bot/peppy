@@ -722,13 +722,34 @@ impl std::fmt::Debug for ActionGoalHandle {
     }
 }
 
-/// How long the cancel of a goal whose feedback overflowed waits for the
+/// How long a cancel that the client sends on its own (after a feedback
+/// overflow, or for a goal whose answer it never read) waits for the
 /// provider's answer.
-const OVERFLOW_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
+const OWN_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The task that cancels a goal once its feedback overflows. Dropping it
-/// aborts the task.
-struct OverflowCancel(TaskHandle<()>);
+/// Sends the provider a cancel of `goal_id` from a task of its own, and logs
+/// a cancel that fails. `why` names the cause in that log.
+async fn send_own_cancel(
+    messenger: MessengerHandle,
+    sender: ActionWireSender,
+    goal_id: String,
+    why: &'static str,
+) {
+    if let Err(err) =
+        ActionMessenger::cancel_with_sender(&messenger, &sender, &goal_id, OWN_CANCEL_TIMEOUT).await
+    {
+        warn!(%err, %goal_id, why, "the cancel of a goal failed");
+    }
+}
+
+/// The task that cancels a goal once its feedback overflows. Dropping the
+/// handle before the overflow aborts the task; after the overflow, the task
+/// runs on, so the cancel goes out even when the caller drops its handle at
+/// once on the overflow error.
+struct OverflowCancel {
+    task: TaskHandle<()>,
+    overflow: FeedbackOverflow,
+}
 
 impl OverflowCancel {
     fn spawn(
@@ -737,25 +758,20 @@ impl OverflowCancel {
         goal_id: String,
         overflow: FeedbackOverflow,
     ) -> Self {
-        Self(spawn(async move {
-            overflow.raised().await;
-            if let Err(err) = ActionMessenger::cancel_with_sender(
-                &messenger,
-                &sender,
-                &goal_id,
-                OVERFLOW_CANCEL_TIMEOUT,
-            )
-            .await
-            {
-                warn!(%err, %goal_id, "the cancel of a goal whose feedback overflowed failed");
-            }
-        }))
+        let raised = overflow.clone();
+        let task = spawn(async move {
+            raised.raised().await;
+            send_own_cancel(messenger, sender, goal_id, "its feedback overflowed").await;
+        });
+        Self { task, overflow }
     }
 }
 
 impl Drop for OverflowCancel {
     fn drop(&mut self) {
-        self.0.abort();
+        if !self.overflow.is_raised() {
+            self.task.abort();
+        }
     }
 }
 
@@ -985,7 +1001,11 @@ impl ActionMessenger {
     /// The goal carries the presence generation of this messenger as the
     /// sender `(as_core_node, as_instance_id)`: the provider cancels the
     /// goal once that sender is gone (see
-    /// [`MessengerHandle::client_presence`]).
+    /// [`MessengerHandle::client_presence`]). When the goal request gets no
+    /// answer this caller can read (the goal service times out, or its
+    /// answer does not decode), the caller sends a cancel of the goal before
+    /// it returns the error, so a goal the provider accepted does not run on
+    /// with no handle.
     ///
     /// `to_target` must match the [`SenderTarget`] the action server used
     /// in [`Self::expose`].
@@ -1073,20 +1093,45 @@ impl ActionMessenger {
 
         let remaining_goal_budget =
             budget_left_after_discovery(goal_timeout, started_at, &resolved, to_action_name)?;
-        let goal_response = messenger
+        // A goal whose answer this caller never reads may still run on the
+        // provider, and no handle could cancel it: the caller sends the
+        // cancel itself before it reports the error.
+        let cancel_unread_goal = || {
+            spawn(send_own_cancel(
+                messenger.clone(),
+                sender.clone(),
+                goal_id.clone(),
+                "its caller did not read the answer of the goal",
+            ))
+        };
+        let goal_response = match messenger
             .poll_service(
                 &sender.goal_service(),
                 goal_payload,
                 ServiceQueryKind::UserRequest,
                 remaining_goal_budget,
             )
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                cancel_unread_goal();
+                return Err(err);
+            }
+        };
 
         // Strip the admission ack here (in the messenger, mirroring how the
         // result path decodes its outcome envelope) so generated Rust and
         // Python read the same typed reply.
+        let answer = match unwrap_goal_ack(&goal_response.payload().into_inner()) {
+            Ok(answer) => answer,
+            Err(err) => {
+                cancel_unread_goal();
+                return Err(err);
+            }
+        };
         let goal_reply = ActionGoalReply {
-            answer: unwrap_goal_ack(&goal_response.payload().into_inner())?,
+            answer,
             instance_id: goal_response.instance_id().to_string(),
             core_node: goal_response.core_node().to_string(),
         };
@@ -1469,6 +1514,45 @@ const PENDING_WAITERS_CAP: usize = 1024;
 /// server-side responder retention for polls that are never adopted.
 const PENDING_WAITER_MAX_PARK: Duration = Duration::from_secs(30);
 
+/// `goal_id` → the instant a cancel request for a goal that is not registered
+/// yet stops being remembered. A client whose goal request got no answer it
+/// could read cancels the goal at once (see [`ActionMessenger::send_goal`]);
+/// a provider that admits that goal later finds the cancel here at accept.
+/// Lock discipline as for [`PendingWaiters`]: the registry may be acquired
+/// while holding it, never the reverse.
+type EarlyCancels = Arc<StdMutex<HashMap<String, Instant>>>;
+
+/// Upper bound on the remembered early cancels, guarding against a flood of
+/// cancels for goal ids that never arrive. Past it, a cancel for an unknown
+/// goal is answered `Unknown` and forgotten.
+const EARLY_CANCELS_CAP: usize = 1024;
+
+/// Remembers a cancel for `goal_id`, which has no slot, unless `accept`
+/// registered the goal meanwhile: the registry is read again under the
+/// early-cancels lock, so the cancel either reaches the slot here or `accept`
+/// finds it.
+fn remember_early_cancel(
+    goal_id: &str,
+    registry: &GoalRegistry,
+    early_cancels: &EarlyCancels,
+) -> CancelState {
+    let mut early = early_cancels.lock().unwrap();
+    if let Some(slot) = registry.lock().unwrap().get(goal_id) {
+        if slot.is_terminal() {
+            return CancelState::AlreadyTerminal;
+        }
+        slot.signal_cancel(CancelCause::Caller);
+        return CancelState::Signalled;
+    }
+    if early.len() < EARLY_CANCELS_CAP {
+        early.insert(
+            goal_id.to_string(),
+            Instant::now() + PENDING_WAITER_MAX_PARK,
+        );
+    }
+    CancelState::Unknown
+}
+
 /// How often the retention sweeper runs. Independent of the per-goal retention
 /// grace: the grace sets each slot's `evict_at`; the sweeper only needs to run
 /// often enough to evict promptly. Cheap (a small map scan under a `std` lock).
@@ -1532,14 +1616,28 @@ struct SenderWatch {
 /// all ended.
 type SenderWatches = Arc<StdMutex<HashMap<ClientPresence, SenderWatch>>>;
 
-/// How long the engine keeps the goals of a sender that is gone: the sender
-/// grace of the action. Each sender watch reads it once its sender is
-/// confirmed gone.
-type SenderGrace = Arc<StdMutex<Duration>>;
+/// The sender grace of an action: how long its engine keeps the goals of a
+/// sender that is gone. Clones share one value, so a setter never waits for
+/// the engine, even while the engine waits for its next goal. Each sender
+/// watch reads it once its sender is confirmed gone.
+#[derive(Debug, Clone, Default)]
+pub struct SenderGrace(Arc<StdMutex<Duration>>);
 
-/// Background task: watches the presence of one sender, and once the sender
-/// is confirmed gone and the sender grace passed, sends the cancel signal to
-/// each of its goals that did not end.
+impl SenderGrace {
+    pub fn set(&self, grace: Duration) {
+        *self.0.lock().unwrap() = grace;
+    }
+
+    pub fn get(&self) -> Duration {
+        *self.0.lock().unwrap()
+    }
+}
+
+/// Background task: watches the presence of one sender. Once the sender is
+/// confirmed gone and the sender grace passed, it sends the cancel signal to
+/// each goal of the sender that did not end. A sender whose token came back
+/// during the grace, as after a router bounce, keeps its goals, and the
+/// watch goes on.
 async fn run_sender_watch(
     messenger: MessengerHandle,
     sender: ClientPresence,
@@ -1547,36 +1645,43 @@ async fn run_sender_watch(
     senders: SenderWatches,
     sender_grace: SenderGrace,
 ) {
-    let watch = match messenger.watch_client_presence(&sender).await {
-        Ok(watch) => watch,
-        Err(err) => {
-            warn!(%err, ?sender, "cannot watch the presence of the sender of a goal");
+    // Removing the entry of the sender does not abort this task: a
+    // `TaskHandle` drop detaches it.
+    let forget_sender = || senders.lock().unwrap().remove(&sender);
+    loop {
+        let watch = match messenger.watch_client_presence(&sender).await {
+            Ok(watch) => watch,
+            Err(err) => {
+                warn!(%err, ?sender, "cannot watch the presence of the sender of a goal");
+                forget_sender();
+                return;
+            }
+        };
+        let probe = || messenger.probe_client_presence(&sender, LIVELINESS_PROBE_TIMEOUT);
+        if !wait_until_confirmed_gone(watch, probe).await {
+            // The watch closed: this engine's own session is going away.
+            forget_sender();
             return;
         }
-    };
-    let probe = || messenger.probe_client_presence(&sender, LIVELINESS_PROBE_TIMEOUT);
-    if !wait_until_confirmed_gone(watch, probe).await {
+        let grace = sender_grace.get();
+        if !grace.is_zero() {
+            tokio::time::sleep(grace).await;
+            if !matches!(probe().await, Ok(false)) {
+                continue;
+            }
+        }
+        let goals = forget_sender().map(|watch| watch.goals).unwrap_or_default();
+        let slots: Vec<GoalSlot> = {
+            let registry = registry.lock().unwrap();
+            goals
+                .iter()
+                .filter_map(|goal_id| registry.get(goal_id).cloned())
+                .collect()
+        };
+        for slot in slots.iter().filter(|slot| !slot.is_terminal()) {
+            slot.signal_cancel(CancelCause::SenderGone);
+        }
         return;
-    }
-    let grace = *sender_grace.lock().unwrap();
-    tokio::time::sleep(grace).await;
-    // Removing the entry does not abort this task: a `TaskHandle` drop
-    // detaches it.
-    let goals = senders
-        .lock()
-        .unwrap()
-        .remove(&sender)
-        .map(|watch| watch.goals)
-        .unwrap_or_default();
-    let slots: Vec<GoalSlot> = {
-        let registry = registry.lock().unwrap();
-        goals
-            .iter()
-            .filter_map(|goal_id| registry.get(goal_id).cloned())
-            .collect()
-    };
-    for slot in slots.iter().filter(|slot| !slot.is_terminal()) {
-        slot.signal_cancel(CancelCause::SenderGone);
     }
 }
 
@@ -1679,11 +1784,14 @@ async fn next_goal_request(
 /// goal's [`CancellationToken`] and replies with a typed [`CancelState`]. There
 /// is no "no active goal" reply: a live goal is `Signalled`, an
 /// already-finished goal (still routable, or recently evicted) is
-/// `AlreadyTerminal`, and anything else is `Unknown`.
+/// `AlreadyTerminal`, and anything else is `Unknown`. An `Unknown` cancel is
+/// remembered for a while, so a goal that its provider admits after its
+/// caller gave up on it starts cancelled.
 async fn run_cancel_loop(
     mut cancel_service: ServiceEndpoint,
     registry: GoalRegistry,
     tombstones: Tombstones,
+    early_cancels: EarlyCancels,
     stop: CancellationToken,
 ) {
     while let Some((goal_id, responder)) =
@@ -1699,7 +1807,7 @@ async fn run_cancel_loop(
             }
             Some(_) => CancelState::AlreadyTerminal,
             None if tombstones.lock().unwrap().contains(&goal_id) => CancelState::AlreadyTerminal,
-            None => CancelState::Unknown,
+            None => remember_early_cancel(&goal_id, &registry, &early_cancels),
         };
 
         match encode_cancel_ack(state) {
@@ -1840,6 +1948,7 @@ async fn run_retention_sweeper(
     pending_waiters: PendingWaiters,
     tombstones: Tombstones,
     senders: SenderWatches,
+    early_cancels: EarlyCancels,
     stop: CancellationToken,
 ) {
     loop {
@@ -1847,23 +1956,30 @@ async fn run_retention_sweeper(
             _ = stop.cancelled() => return,
             _ = tokio::time::sleep(SWEEP_INTERVAL) => {}
         }
-        sweep_once(&registry, &pending_waiters, &tombstones, Instant::now());
+        let now = Instant::now();
+        sweep_once(&registry, &pending_waiters, &tombstones, now);
         end_idle_sender_watches(&registry, &senders);
+        early_cancels
+            .lock()
+            .unwrap()
+            .retain(|_, forget_at| *forget_at > now);
     }
 }
 
 /// Ends the watch of each sender whose goals all ended: a terminal or
-/// evicted goal needs no cancel when its sender goes.
+/// evicted goal needs no cancel when its sender goes. The senders lock is
+/// held while the registry is read, so a goal that `accept` tracks during
+/// the pass either joins a watch this pass keeps or starts a watch of its
+/// own after it.
 fn end_idle_sender_watches(registry: &GoalRegistry, senders: &SenderWatches) {
-    let live_goals: HashSet<String> = registry
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|(_, slot)| !slot.is_terminal())
-        .map(|(goal_id, _)| goal_id.clone())
-        .collect();
-    senders.lock().unwrap().retain(|_, watch| {
-        watch.goals.retain(|goal_id| live_goals.contains(goal_id));
+    let mut senders = senders.lock().unwrap();
+    let registry = registry.lock().unwrap();
+    senders.retain(|_, watch| {
+        watch.goals.retain(|goal_id| {
+            registry
+                .get(goal_id)
+                .is_some_and(|slot| !slot.is_terminal())
+        });
         if watch.goals.is_empty() {
             watch.task.abort();
             return false;
@@ -1933,6 +2049,7 @@ pub struct ConcurrentAction {
     factory: ActionFeedbackPublisherFactory,
     registry: GoalRegistry,
     pending_waiters: PendingWaiters,
+    early_cancels: EarlyCancels,
     senders: SenderWatches,
     sender_grace: SenderGrace,
     has_feedback: bool,
@@ -1986,11 +2103,13 @@ impl ConcurrentAction {
         let tombstones: Tombstones =
             Arc::new(StdMutex::new(ExpiredTombstones::new(EXPIRED_TOMBSTONE_CAP)));
         let senders: SenderWatches = Arc::new(StdMutex::new(HashMap::new()));
+        let early_cancels: EarlyCancels = Arc::new(StdMutex::new(HashMap::new()));
         let stop = CancellationToken::new();
         let cancel_loop = spawn(run_cancel_loop(
             cancel_service,
             Arc::clone(&registry),
             Arc::clone(&tombstones),
+            Arc::clone(&early_cancels),
             stop.clone(),
         ));
         let result_loop = spawn(run_result_loop(
@@ -2005,6 +2124,7 @@ impl ConcurrentAction {
             Arc::clone(&pending_waiters),
             tombstones,
             Arc::clone(&senders),
+            Arc::clone(&early_cancels),
             stop.clone(),
         ));
         Self {
@@ -2012,8 +2132,9 @@ impl ConcurrentAction {
             factory: feedback_publisher_factory,
             registry,
             pending_waiters,
+            early_cancels,
             senders,
-            sender_grace: Arc::new(StdMutex::new(Duration::ZERO)),
+            sender_grace: SenderGrace::default(),
             has_feedback,
             result_retention_grace: RESULT_RETENTION_GRACE,
             stop,
@@ -2037,44 +2158,67 @@ impl ConcurrentAction {
     /// signal. Zero by default. It applies to each sender that is confirmed
     /// gone after the call.
     pub fn set_sender_grace(&self, grace: Duration) {
-        *self.sender_grace.lock().unwrap() = grace;
+        self.sender_grace.set(grace);
     }
 
-    /// The sender grace of the action.
-    pub fn sender_grace(&self) -> Duration {
-        *self.sender_grace.lock().unwrap()
+    /// The sender grace of the action, shared with the engine: a binding that
+    /// holds the engine behind a lock sets the grace through it without that
+    /// lock.
+    pub fn sender_grace(&self) -> SenderGrace {
+        self.sender_grace.clone()
     }
 
     /// Wait for the next goal request. Returns a [`PendingGoal`] the caller
     /// inspects and then [`accept`](PendingGoal::accept)s or
     /// [`refuse`](PendingGoal::refuse)s. Returns `Ok(None)` when the goal
     /// service stream has closed.
+    ///
+    /// A request that is not a well-formed goal request is refused with
+    /// `rejected`, and a goal whose feedback publisher cannot be declared is
+    /// refused with `attempt_failed`; the engine then waits for the next
+    /// request, so one bad request never ends the caller's goal loop.
     pub async fn recv_next_goal(&mut self) -> Result<Option<PendingGoal>> {
-        let Some((context, responder)) = self.goal_service.recv_next_request().await? else {
-            return Ok(None);
-        };
-        let link_id = context.link_id().to_string();
-        let wire = context.message().payload().into_inner();
-        let request = split_goal_request(&wire)?;
-        let sender = ClientPresence {
-            core_node: Segment::try_from(context.message().core_node())
-                .map_err(pmi::SenderTargetError::from)?,
-            instance_id: Segment::try_from(context.message().instance_id())
-                .map_err(pmi::SenderTargetError::from)?,
-            generation: Segment::try_from(request.sender_generation.as_str())
-                .map_err(pmi::SenderTargetError::from)?,
-        };
-        let feedback = if self.has_feedback {
-            Some(
-                self.factory
-                    .declare_for_goal(&link_id, &request.goal_id)
-                    .await?,
-            )
-        } else {
-            None
-        };
+        loop {
+            let Some((context, responder)) = self.goal_service.recv_next_request().await? else {
+                return Ok(None);
+            };
+            let (request, sender) = match parse_goal_request(&context) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    refuse_unadmitted_goal(responder, PeppyFailureKind::Rejected, err).await;
+                    continue;
+                }
+            };
+            let feedback = if self.has_feedback {
+                match self
+                    .factory
+                    .declare_for_goal(context.link_id(), &request.goal_id)
+                    .await
+                {
+                    Ok(publisher) => Some(publisher),
+                    Err(err) => {
+                        refuse_unadmitted_goal(responder, PeppyFailureKind::AttemptFailed, err)
+                            .await;
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            return Ok(Some(
+                self.pending_goal(request, sender, responder, feedback),
+            ));
+        }
+    }
 
-        Ok(Some(PendingGoal {
+    fn pending_goal(
+        &self,
+        request: GoalRequestEnvelope,
+        sender: ClientPresence,
+        responder: ServiceResponder,
+        feedback: Option<ActionFeedbackPublisher>,
+    ) -> PendingGoal {
+        PendingGoal {
             goal_id: request.goal_id,
             sender,
             request_bytes: request.user_payload,
@@ -2084,11 +2228,46 @@ impl ConcurrentAction {
                 messenger: self.factory.messenger().clone(),
                 registry: Arc::clone(&self.registry),
                 pending_waiters: Arc::clone(&self.pending_waiters),
+                early_cancels: Arc::clone(&self.early_cancels),
                 senders: Arc::clone(&self.senders),
-                sender_grace: Arc::clone(&self.sender_grace),
+                sender_grace: self.sender_grace.clone(),
                 result_retention_grace: self.result_retention_grace,
             },
-        }))
+        }
+    }
+}
+
+/// The goal envelope and the sender of a goal request. A goal id that is
+/// not a single safe segment is refused here, so it never reaches a feedback
+/// topic.
+fn parse_goal_request(
+    context: &super::ServiceRequestContext,
+) -> Result<(GoalRequestEnvelope, ClientPresence)> {
+    let wire = context.message().payload().into_inner();
+    let request = split_goal_request(&wire)?;
+    if !is_safe_goal_id(&request.goal_id) {
+        return Err(envelope_error(format!(
+            "goal_id contains unsafe characters: {:?}",
+            request.goal_id
+        )));
+    }
+    let segment = |value: &str| -> Result<Segment> {
+        Segment::try_from(value).map_err(|err| pmi::SenderTargetError::from(err).into())
+    };
+    let sender = ClientPresence {
+        core_node: segment(context.message().core_node())?,
+        instance_id: segment(context.message().instance_id())?,
+        generation: segment(&request.sender_generation)?,
+    };
+    Ok((request, sender))
+}
+
+/// Refuses a goal request that the engine cannot admit, and logs why.
+async fn refuse_unadmitted_goal(responder: ServiceResponder, kind: PeppyFailureKind, err: Error) {
+    warn!(%err, "refusing a goal request the engine cannot admit");
+    let failure = Failure::new(kind, format!("the goal request cannot be admitted: {err}"));
+    if let Err(err) = responder.respond(wrap_goal_refused(&failure)).await {
+        warn!(%err, "the refusal of a goal request did not reach its sender");
     }
 }
 
@@ -2109,6 +2288,7 @@ struct EngineShared {
     messenger: MessengerHandle,
     registry: GoalRegistry,
     pending_waiters: PendingWaiters,
+    early_cancels: EarlyCancels,
     senders: SenderWatches,
     sender_grace: SenderGrace,
     result_retention_grace: Duration,
@@ -2128,7 +2308,7 @@ impl EngineShared {
             sender.clone(),
             Arc::clone(&self.registry),
             Arc::clone(&self.senders),
-            Arc::clone(&self.sender_grace),
+            self.sender_grace.clone(),
         ));
         senders.insert(
             sender.clone(),
@@ -2196,6 +2376,21 @@ impl PendingGoal {
             .lock()
             .unwrap()
             .insert(self.goal_id.clone(), slot.clone());
+
+        // A cancel that arrived before this slot existed applies now: its
+        // caller gave up on the goal before it read the answer. The cancel
+        // loop reads the registry again under this lock, so no cancel falls
+        // between the two.
+        if self
+            .engine
+            .early_cancels
+            .lock()
+            .unwrap()
+            .remove(&self.goal_id)
+            .is_some()
+        {
+            slot.signal_cancel(CancelCause::Caller);
+        }
 
         // Adopt any result polls that parked before this slot existed. The
         // registry insert above is visible to a concurrent `run_result_loop`
@@ -3151,7 +3346,7 @@ mod engine_tests {
         let session = mock_session().await;
         let mut action = expose_on(&process_on(&session)).await;
         action.set_sender_grace(grace);
-        assert_eq!(action.sender_grace(), grace);
+        assert_eq!(action.sender_grace().get(), grace);
         let caller = process_on(&session);
         let (goal, context) = send_and_accept(&caller, &mut action).await;
 
@@ -3163,6 +3358,191 @@ mod engine_tests {
         );
         assert!(cancelled_within(&context, MARGIN * 2).await);
         assert_eq!(context.cancel_cause(), Some(CancelCause::SenderGone));
+    }
+
+    /// A sender whose token goes and comes back during the sender grace, as
+    /// after a router bounce, keeps its goals.
+    #[tokio::test(start_paused = true)]
+    async fn a_sender_back_within_the_grace_keeps_its_goals() {
+        let grace = Duration::from_secs(3);
+        let session = mock_session().await;
+        let provider = process_on(&session);
+        let mut action = expose_on(&provider).await;
+        action.set_sender_grace(grace);
+        let client = ClientPresence {
+            core_node: Segment::try_from(CORE).unwrap(),
+            instance_id: Segment::try_from(CALLER).unwrap(),
+            generation: Segment::try_from("bouncing_process").unwrap(),
+        };
+        let token = session
+            .lock()
+            .await
+            .declare_client_presence(&client)
+            .await
+            .unwrap();
+        let sender = ActionWireSender::new(
+            CORE,
+            CALLER,
+            Some(&ProducerRef::new(CORE, PRODUCER)),
+            target(),
+            ACTION,
+        )
+        .unwrap();
+        let request = wrap_goal_request("bouncing_goal", "bouncing_process", b"goal").unwrap();
+        let goal_service = sender.goal_service();
+        let (reply, context) = tokio::join!(
+            provider.poll_service(&goal_service, request, ServiceQueryKind::UserRequest, None),
+            async {
+                action
+                    .recv_next_goal()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .accept(Payload::new())
+                    .await
+                    .unwrap()
+            }
+        );
+        reply.unwrap();
+
+        drop(token);
+        tokio::time::sleep(CONFIRM_GONE + grace / 2).await;
+        let _back = session
+            .lock()
+            .await
+            .declare_client_presence(&client)
+            .await
+            .unwrap();
+
+        assert!(!cancelled_within(&context, Duration::from_secs(60)).await);
+        assert_eq!(context.cancel_cause(), None);
+    }
+
+    /// One request that is not a goal request, such as one from a peppylib
+    /// that puts no sender generation in it, is refused with `rejected`, and
+    /// the engine goes on to the next goal.
+    #[tokio::test(start_paused = true)]
+    async fn a_malformed_goal_request_is_refused_and_the_engine_serves_the_next_goal() {
+        let (handle, mut action, sender) = expose_mock_action().await;
+        let goal_service = sender.goal_service();
+        let without_generation = wrap_goal_payload("old_goal", b"goal").unwrap();
+        let ((refusal, accepted), next_goal_id) = tokio::join!(
+            async {
+                let refusal = handle
+                    .poll_service(
+                        &goal_service,
+                        without_generation,
+                        ServiceQueryKind::UserRequest,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                let request = goal_request(&handle, "next_goal").await;
+                let accepted = handle
+                    .poll_service(&goal_service, request, ServiceQueryKind::UserRequest, None)
+                    .await
+                    .unwrap();
+                (refusal, accepted)
+            },
+            async {
+                let pending = action.recv_next_goal().await.unwrap().unwrap();
+                let goal_id = pending.goal_id().to_string();
+                let _context = pending.accept(Payload::new()).await.unwrap();
+                goal_id
+            }
+        );
+        match unwrap_goal_ack(&refusal.payload().into_inner()).unwrap() {
+            GoalAnswer::Refused(failure) => assert_eq!(failure.kind().as_str(), "rejected"),
+            GoalAnswer::Accepted(_) => panic!("a malformed request must be refused"),
+        }
+        assert!(matches!(
+            unwrap_goal_ack(&accepted.payload().into_inner()).unwrap(),
+            GoalAnswer::Accepted(_)
+        ));
+        assert_eq!(next_goal_id, "next_goal");
+    }
+
+    /// A cancel that arrives before its goal is admitted, as the cancel a
+    /// caller sends when it gave up on the answer, cancels the goal at accept.
+    #[tokio::test(start_paused = true)]
+    async fn a_cancel_that_arrives_before_accept_cancels_the_goal_at_accept() {
+        let (handle, mut action, sender) = expose_mock_action().await;
+        let goal_service = sender.goal_service();
+        let goal_id = "early_cancelled_goal";
+        let request = goal_request(&handle, goal_id).await;
+        let (reply, context) = tokio::join!(
+            handle.poll_service(&goal_service, request, ServiceQueryKind::UserRequest, None),
+            async {
+                let pending = action.recv_next_goal().await.unwrap().unwrap();
+                let cancel = ActionMessenger::cancel_with_sender(
+                    &handle,
+                    &sender,
+                    goal_id,
+                    Duration::from_secs(5),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    decode_cancel_ack(cancel.payload_bytes().as_ref()).unwrap(),
+                    CancelState::Unknown
+                );
+                pending.accept(Payload::new()).await.unwrap()
+            }
+        );
+        reply.unwrap();
+        assert!(context.is_cancelled());
+        assert_eq!(context.cancel_cause(), Some(CancelCause::Caller));
+    }
+
+    /// A caller that drops its handle on the overflow error still cancels
+    /// the goal.
+    #[tokio::test(start_paused = true)]
+    async fn a_handle_dropped_on_its_overflow_still_cancels_the_goal() {
+        let session = mock_session().await;
+        let mut action = expose_on(&process_on(&session)).await;
+        let caller = process_on(&session);
+        let one_message = FeedbackBound::new(std::num::NonZeroUsize::new(1).unwrap());
+        let producer = ProducerRef::new(CORE, PRODUCER);
+        let (goal, context) = tokio::join!(
+            ActionMessenger::send_goal(
+                &caller,
+                CORE,
+                CALLER,
+                target(),
+                ACTION,
+                Some(&producer),
+                Payload::from_static(b"goal"),
+                one_message,
+                Duration::from_secs(5),
+            ),
+            async {
+                action
+                    .recv_next_goal()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .accept(Payload::new())
+                    .await
+                    .unwrap()
+            }
+        );
+        let mut goal = goal.unwrap();
+        for message in [b"first".as_slice(), b"second"] {
+            context
+                .publish_feedback(
+                    NonEmptyPayload::try_new(Payload::from(message.to_vec())).unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+        assert!(matches!(
+            goal.try_next_feedback(),
+            Err(Error::ActionFeedbackOverflow { bound: 1, .. })
+        ));
+        drop(goal);
+
+        assert!(cancelled_within(&context, Duration::from_secs(5)).await);
+        assert_eq!(context.cancel_cause(), Some(CancelCause::Caller));
     }
 
     #[tokio::test(start_paused = true)]

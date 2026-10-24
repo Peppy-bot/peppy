@@ -22,9 +22,10 @@ pub use actions::{
     ActionCreation, ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle,
     ActionGoalReply, ActionMessenger, ActionResultReply, CancelCause, CancelState,
     ConcurrentAction, DEFAULT_FEEDBACK_BOUND, DeclaredFeedback, EmptyPayloadError, GoalAnswer,
-    GoalContext, GoalOutcome, NonEmptyPayload, PendingGoal, ResultStatus, decode_cancel_ack,
-    encode_cancel_ack, generate_goal_id, unwrap_goal_payload, wrap_goal_accepted,
-    wrap_goal_payload, wrap_goal_refused, wrap_goal_request, wrap_result_outcome,
+    GoalContext, GoalOutcome, NonEmptyPayload, PendingGoal, ResultStatus, SenderGrace,
+    decode_cancel_ack, encode_cancel_ack, generate_goal_id, unwrap_goal_payload,
+    wrap_goal_accepted, wrap_goal_payload, wrap_goal_refused, wrap_goal_request,
+    wrap_result_outcome,
 };
 pub use bound_set::{BoundSetState, NonEmptyMembers, NonEmptyProducers};
 pub use non_empty::NonEmpty;

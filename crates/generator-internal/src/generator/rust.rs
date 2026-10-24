@@ -986,7 +986,7 @@ impl LanguageGenerator for RustGenerator {
                 &member_failure_kinds(origin),
                 &quote!(SERVICE_NAME),
                 FailingMember::Service,
-            )?,
+            ),
         ];
         service_tokens.extend(context.into_tokens());
         service_tokens.push(method_token);
@@ -1030,7 +1030,7 @@ impl LanguageGenerator for RustGenerator {
             &member_failure_kinds(origin),
             &quote!(ACTION_NAME),
             FailingMember::Action,
-        )?];
+        )];
 
         let action_name_literal = Literal::string(&action.name);
 
@@ -1536,7 +1536,7 @@ impl LanguageGenerator for RustGenerator {
                 &dependency.member_failure_kinds(),
                 &quote!(SERVICE_NAME),
                 FailingMember::Service,
-            )?,
+            ),
         ];
         all_tokens.append(&mut service_tokens);
         all_tokens.push(function_token);
@@ -1741,7 +1741,7 @@ impl LanguageGenerator for RustGenerator {
                 &dependency.member_failure_kinds(),
                 &quote!(TARGET_ACTION_NAME),
                 FailingMember::Action,
-            )?,
+            ),
         ];
         items.extend(context.into_tokens());
         items.push(action_handle_struct);

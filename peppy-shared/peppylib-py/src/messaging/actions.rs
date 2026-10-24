@@ -3,7 +3,7 @@ use peppylib::messaging::{
     ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle, ActionMessenger,
     ActionResultReply, ActionWireSender, CancelCause, ConcurrentAction, DEFAULT_FEEDBACK_BOUND,
     Failure, FeedbackBound, GoalAnswer, GoalContext, GoalOutcome, NonEmptyPayload, PendingGoal,
-    ServiceEndpoint, decode_cancel_ack,
+    SenderGrace, ServiceEndpoint, decode_cancel_ack,
 };
 use peppylib::types::Payload;
 use pyo3::exceptions::PyValueError;
@@ -597,6 +597,9 @@ impl PyActionMessenger {
 #[pyclass(name = "ConcurrentAction")]
 pub struct PyConcurrentAction {
     inner: Arc<Mutex<ConcurrentAction>>,
+    /// The engine's sender grace, set without the engine's lock, which
+    /// `recv_next_goal` holds while it waits for a goal.
+    sender_grace: SenderGrace,
 }
 
 #[pymethods]
@@ -631,6 +634,7 @@ impl PyConcurrentAction {
             .await
             .map_err(to_py_err)?;
             Ok(PyConcurrentAction {
+                sender_grace: action.sender_grace(),
                 inner: Arc::new(Mutex::new(action)),
             })
         })
@@ -641,11 +645,8 @@ impl PyConcurrentAction {
     /// cancel signal. Zero by default.
     fn set_sender_grace<'py>(&self, py: Python<'py>, seconds: f64) -> PyResult<Bound<'py, PyAny>> {
         let grace = duration_from_secs_f64("seconds", seconds)?;
-        let inner = Arc::clone(&self.inner);
-        future_into_py_unit(py, async move {
-            inner.lock().await.set_sender_grace(grace);
-            Ok(())
-        })
+        self.sender_grace.set(grace);
+        future_into_py_unit(py, async move { Ok(()) })
     }
 
     /// Wait for the next goal request, returning a [`PyPendingGoal`] or `None`

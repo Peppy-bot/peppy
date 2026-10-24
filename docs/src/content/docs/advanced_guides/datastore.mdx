@@ -38,7 +38,7 @@ It is **not** a database. The store is in-memory and process-local to the core n
 
 ## `store`
 
-`store` writes `value` (arbitrary bytes) under `key`, tagged with `encoding`, on the node's bound core node. It returns once the core node acknowledges the write. Storing a key that already exists overwrites the previous value and encoding. Storing a key that another instance owns through [`store_exclusive`](#store_exclusive) fails with an error that names the owner: `PeppyError::ServiceError` in Rust, `RuntimeError` in Python.
+`store` writes `value` (arbitrary bytes) under `key`, tagged with `encoding`, on the node's bound core node. It returns once the core node acknowledges the write. Storing a key that already exists overwrites the previous value and encoding. Storing a key that another instance owns through [`store_exclusive`](#store_exclusive) fails with an error reply of the kind `precondition_failed` whose message names the owner: `PeppyError::ServiceFailed` in Rust, `peppylib.FailureError` in Python.
 
 The final argument is a response timeout. Rust accepts anything that converts to `Option<Duration>`; Python accepts a `float` in seconds. Pass `None` (or omit it in Python) to use the default of 10 seconds.
 
@@ -102,9 +102,9 @@ The key lasts as long as the process that stored it. When that process ends, how
 
 A request carries only its sender's `instance_id`, so a request still on its way when its process ends acts for the next process under that id: a `store_exclusive` sent just before a crash can make the restarted process the owner, and a `remove` sent just before a crash can delete the key the restarted process stored.
 
-When another instance owns the key, nothing is written and the answer is `ExclusiveStore::Refused { current }` (Rust) / `ExclusiveStore.Refused(current)` (Python). `current` is the `StoredValue` the owner stored, and `current.last_modified_by` is the owner's `instance_id`. Otherwise the answer is `ExclusiveStore::Stored` (Rust) / `ExclusiveStore.Stored()` (Python). `store_exclusive` takes a key that is absent, one whose owner's process ended, or one your instance already owns. A key's kind is fixed when it is created: an exclusive store of a key that exists with no owner, as `store` writes it, fails with an error (`PeppyError::ServiceError` in Rust, `RuntimeError` in Python) that names the remedy, to remove the key or use another one.
+When another instance owns the key, nothing is written and the answer is `ExclusiveStore::Refused { current }` (Rust) / `ExclusiveStore.Refused(current)` (Python). `current` is the `StoredValue` the owner stored, and `current.last_modified_by` is the owner's `instance_id`. Otherwise the answer is `ExclusiveStore::Stored` (Rust) / `ExclusiveStore.Stored()` (Python). `store_exclusive` takes a key that is absent, one whose owner's process ended, or one your instance already owns. A key's kind is fixed when it is created: an exclusive store of a key that exists with no owner, as `store` writes it, fails with an error reply of the kind `precondition_failed` (`PeppyError::ServiceFailed` in Rust, `peppylib.FailureError` in Python) whose message names the remedy, to remove the key or use another one.
 
-The owner is an instance the core node runs. `store_exclusive` from an `instance_id` the core node runs no process under fails with an error: `PeppyError::ServiceError` in Rust, `RuntimeError` in Python.
+The owner is an instance the core node runs. `store_exclusive` from an `instance_id` the core node runs no process under fails with an error reply of the kind `precondition_failed`: `PeppyError::ServiceFailed` in Rust, `peppylib.FailureError` in Python.
 
 <Tabs>
   <TabItem label="Python">
@@ -276,7 +276,7 @@ The only argument is the same response timeout as above.
 
 ## `remove`
 
-`remove` deletes (unsets) `key` from the store. It returns a boolean: `true` if the key existed and was removed, `false` if it was already absent, so removing a missing key is a no-op, not an error. Removing a key that another instance owns through [`store_exclusive`](#store_exclusive) fails with an error that names the owner: `PeppyError::ServiceError` in Rust, `RuntimeError` in Python.
+`remove` deletes (unsets) `key` from the store. It returns a boolean: `true` if the key existed and was removed, `false` if it was already absent, so removing a missing key is a no-op, not an error. Removing a key that another instance owns through [`store_exclusive`](#store_exclusive) fails with an error reply of the kind `precondition_failed` whose message names the owner: `PeppyError::ServiceFailed` in Rust, `peppylib.FailureError` in Python.
 
 The second argument is the same response timeout as above.
 

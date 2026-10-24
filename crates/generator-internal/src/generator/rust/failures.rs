@@ -6,12 +6,10 @@
 //! provider code can give no other kind, and generated client code parses
 //! each failure from the wire into it.
 
-use crate::error::{Error, Result};
 use crate::generator::naming::to_camel_case;
 use config::failure_kind::MemberFailureKinds;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
-use std::collections::HashMap;
 
 /// Whether the member is an action or a service. A service module also
 /// reads its failure from the error of a call.
@@ -40,20 +38,12 @@ pub(super) fn build_failure_items(
     kinds: &MemberFailureKinds,
     member_name: &TokenStream,
     member: FailingMember,
-) -> Result<TokenStream> {
-    let mut variants_by_name: HashMap<String, &str> = HashMap::new();
+) -> TokenStream {
     let mut variants = Vec::new();
     let mut variant_docs = Vec::new();
     let mut names = Vec::new();
     for (name, meaning) in kinds.iter() {
         let variant = failure_kind_variant(name);
-        if let Some(first) = variants_by_name.insert(variant.clone(), name) {
-            return Err(Error::FailureKindVariantCollision {
-                first: first.to_string(),
-                second: name.to_string(),
-                variant,
-            });
-        }
         variants.push(Ident::new(&variant, Span::call_site()));
         variant_docs.push(Literal::string(&format!(" {meaning}")));
         names.push(Literal::string(name));
@@ -88,7 +78,7 @@ pub(super) fn build_failure_items(
         },
     };
 
-    Ok(quote! {
+    quote! {
         /// A failure kind of this member: a kind of peppy, or a kind that
         /// its contract declares.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -172,7 +162,7 @@ pub(super) fn build_failure_items(
                 write!(f, "{}: {}", self.kind, self.message)
             }
         }
-    })
+    }
 }
 
 #[cfg(test)]
@@ -191,7 +181,7 @@ mod tests {
     }
 
     fn render(kinds: &MemberFailureKinds, member: FailingMember) -> String {
-        render_tokens(build_failure_items(kinds, &quote!(SERVICE_NAME), member).unwrap())
+        render_tokens(build_failure_items(kinds, &quote!(SERVICE_NAME), member))
     }
 
     #[test]
@@ -237,37 +227,5 @@ mod tests {
             FailingMember::Action,
         );
         assert!(rendered.contains("Self::Self_ => \"self\","), "{rendered}");
-    }
-
-    #[test]
-    fn two_kinds_that_give_one_variant_are_refused() {
-        let error = build_failure_items(
-            &contract_kinds(&[("kind_2", "First"), ("kind2", "Second")]),
-            &quote!(SERVICE_NAME),
-            FailingMember::Action,
-        )
-        .unwrap_err();
-        assert!(
-            matches!(
-                &error,
-                Error::FailureKindVariantCollision { first, second, variant }
-                    if first == "kind_2" && second == "kind2" && variant == "Kind2"
-            ),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn a_kind_that_gives_the_variant_of_a_peppy_kind_is_refused() {
-        let error = build_failure_items(
-            &contract_kinds(&[("attempt_failed_", "Trailing underscore")]),
-            &quote!(SERVICE_NAME),
-            FailingMember::Action,
-        )
-        .unwrap_err();
-        assert!(
-            matches!(&error, Error::FailureKindVariantCollision { variant, .. } if variant == "AttemptFailed"),
-            "{error}"
-        );
     }
 }

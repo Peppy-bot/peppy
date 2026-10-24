@@ -11,9 +11,11 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
-/// The name of a failure kind: 1 to [`FailureKindName::MAX_LEN`] bytes of
-/// lowercase ASCII letters, digits and `_`, that starts with a letter, such
-/// as `unreachable` or `leader_streaming`.
+/// The name of a failure kind: 1 to [`FailureKindName::MAX_LEN`] bytes, made
+/// of words of lowercase ASCII letters and digits that each start with a
+/// letter, joined by one `_`, such as `unreachable` or `leader_streaming`.
+/// So two names never give the same identifier in another case: `kind_2`,
+/// `kind__lost` and `kind_` are not names.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct FailureKindName(String);
@@ -42,15 +44,20 @@ impl FailureKindName {
         if name.len() > Self::MAX_LEN {
             return Err(invalid("it is longer than 64 bytes"));
         }
-        if !name.starts_with(|c: char| c.is_ascii_lowercase()) {
-            return Err(invalid("it must start with a lowercase ASCII letter"));
-        }
         if !name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
         {
             return Err(invalid(
                 "it may hold only lowercase ASCII letters, digits and `_`",
+            ));
+        }
+        if !name
+            .split('_')
+            .all(|word| word.starts_with(|c: char| c.is_ascii_lowercase()))
+        {
+            return Err(invalid(
+                "it must be words that each start with a lowercase ASCII letter, joined by one `_`",
             ));
         }
         Ok(Self(name.to_owned()))
@@ -243,8 +250,8 @@ mod tests {
     }
 
     #[test]
-    fn a_name_is_lowercase_snake_case_that_starts_with_a_letter() {
-        for valid in ["unreachable", "leader_streaming", "a", "kind_2"] {
+    fn a_name_is_words_that_start_with_a_letter_joined_by_one_underscore() {
+        for valid in ["unreachable", "leader_streaming", "a", "kind2", "v2_kind"] {
             assert_eq!(name(valid).as_str(), valid);
         }
         for invalid in [
@@ -252,6 +259,9 @@ mod tests {
             "Unreachable",
             "2kind",
             "_kind",
+            "kind_",
+            "kind__lost",
+            "kind_2",
             "lost-item",
             "item lost",
         ] {
