@@ -1590,7 +1590,18 @@ impl ActionHandle {
                 core_node: pending.core_node().to_string(),
                 data: request_data,
             };
-            match decider(&request)? {
+            let decision = match decider(&request) {
+                Ok(decision) => decision,
+                Err(error) => {
+                    let refusal = Failure::new(
+                        FailureKind::AttemptFailed,
+                        format!("the goal decider failed: {error}"),
+                    );
+                    pending.refuse(refusal.to_wire()).await?;
+                    continue;
+                }
+            };
+            match decision {
                 GoalDecision::Accept(response) => {
                     let response_payload = {
                         let mut capnp_msg = capnp::message::Builder::new_default();
@@ -1986,7 +1997,18 @@ impl ActionHandle {
                 instance_id: pending.instance_id().to_string(),
                 core_node: pending.core_node().to_string(),
             };
-            match decider(&request)? {
+            let decision = match decider(&request) {
+                Ok(decision) => decision,
+                Err(error) => {
+                    let refusal = Failure::new(
+                        FailureKind::AttemptFailed,
+                        format!("the goal decider failed: {error}"),
+                    );
+                    pending.refuse(refusal.to_wire()).await?;
+                    continue;
+                }
+            };
+            match decision {
                 GoalDecision::Accept => {
                     let inner = pending.accept(peppylib::Payload::new()).await?;
                     return Ok(Some(GoalContext { inner, request }));
@@ -2232,7 +2254,18 @@ impl ActionHandle {
                 instance_id: pending.instance_id().to_string(),
                 core_node: pending.core_node().to_string(),
             };
-            match decider(&request)? {
+            let decision = match decider(&request) {
+                Ok(decision) => decision,
+                Err(error) => {
+                    let refusal = Failure::new(
+                        FailureKind::AttemptFailed,
+                        format!("the goal decider failed: {error}"),
+                    );
+                    pending.refuse(refusal.to_wire()).await?;
+                    continue;
+                }
+            };
+            match decision {
                 GoalDecision::Accept => {
                     let inner = pending.accept(peppylib::Payload::new()).await?;
                     return Ok(Some(GoalContext { inner, request }));
@@ -2509,7 +2542,18 @@ impl ActionHandle {
                 instance_id: pending.instance_id().to_string(),
                 core_node: pending.core_node().to_string(),
             };
-            match decider(&request)? {
+            let decision = match decider(&request) {
+                Ok(decision) => decision,
+                Err(error) => {
+                    let refusal = Failure::new(
+                        FailureKind::AttemptFailed,
+                        format!("the goal decider failed: {error}"),
+                    );
+                    pending.refuse(refusal.to_wire()).await?;
+                    continue;
+                }
+            };
+            match decision {
                 GoalDecision::Accept => {
                     let inner = pending.accept(peppylib::Payload::new()).await?;
                     return Ok(Some(GoalContext { inner, request }));
@@ -2785,7 +2829,18 @@ impl ActionHandle {
                 core_node: pending.core_node().to_string(),
                 data: request_data,
             };
-            match decider(&request)? {
+            let decision = match decider(&request) {
+                Ok(decision) => decision,
+                Err(error) => {
+                    let refusal = Failure::new(
+                        FailureKind::AttemptFailed,
+                        format!("the goal decider failed: {error}"),
+                    );
+                    pending.refuse(refusal.to_wire()).await?;
+                    continue;
+                }
+            };
+            match decision {
                 GoalDecision::Accept(response) => {
                     let response_payload = {
                         let mut capnp_msg = capnp::message::Builder::new_default();
@@ -14442,7 +14497,18 @@ impl ActionHandle {
                 instance_id: pending.instance_id().to_string(),
                 core_node: pending.core_node().to_string(),
             };
-            match decider(&request)? {
+            let decision = match decider(&request) {
+                Ok(decision) => decision,
+                Err(error) => {
+                    let refusal = Failure::new(
+                        FailureKind::AttemptFailed,
+                        format!("the goal decider failed: {error}"),
+                    );
+                    pending.refuse(refusal.to_wire()).await?;
+                    continue;
+                }
+            };
+            match decision {
                 GoalDecision::Accept => {
                     let inner = pending.accept(peppylib::Payload::new()).await?;
                     return Ok(Some(GoalContext { inner, request }));

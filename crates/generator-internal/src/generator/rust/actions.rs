@@ -111,7 +111,10 @@ pub fn build_goal_decision_enum(has_response: bool) -> TokenStream {
 /// the kind `rejected` and the decode error as the message, before the
 /// decider ever sees it: the client sent something this server's shape does
 /// not admit, which is the client's problem to learn about, not a reason to
-/// stop serving. Transport errors propagate as `Err`.
+/// stop serving. A decider that returns `Err` refuses the goal with the kind
+/// `attempt_failed` and the error as the message, and the method keeps
+/// polling, as the Python handler that raises does. Transport errors
+/// propagate as `Err`.
 ///
 /// `response_serialization`, when present, serializes a local `response`
 /// (`GoalResponse`) into a `peppylib::Payload`.
@@ -180,7 +183,20 @@ pub fn build_handle_goal_next_request(
                     return Ok(None);
                 };
                 #decode_and_build_request
-                match decider(&request)? {
+                let decision = match decider(&request) {
+                    Ok(decision) => decision,
+                    Err(error) => {
+                        // The decider failed: the goal gets a refusal with
+                        // the error, and the loop polls for the next goal.
+                        let refusal = Failure::new(
+                            FailureKind::AttemptFailed,
+                            format!("the goal decider failed: {error}"),
+                        );
+                        pending.refuse(refusal.to_wire()).await?;
+                        continue;
+                    }
+                };
+                match decision {
                     #accept_arm
                     // Refused: answer the client and keep polling for the
                     // next goal. A refusal never ends the accept loop.

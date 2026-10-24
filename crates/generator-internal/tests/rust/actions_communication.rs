@@ -2161,9 +2161,11 @@ fn main() -> Result<()> {
 /// not for the producer's pinned shape: the generated server answers it with
 /// a refusal of the kind `rejected` carrying the decode error, never hands it
 /// to the node's goal
-/// handler, and keeps serving, which a third goal proves. Runs the peer
-/// topology only; the transport topology is orthogonal to what is under
-/// test here.
+/// handler, and keeps serving, which a third goal proves. A fourth goal
+/// meets a decider that fails: the generated server refuses it with the kind
+/// `attempt_failed` and the error, and keeps serving, which a fifth goal
+/// proves. Runs the peer topology only; the transport topology is orthogonal
+/// to what is under test here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn actions_refined_producer_interoperates_with_generic_consumer() {
     let topology = crate::helpers::LocalNodesTopology::Peer;
@@ -2270,6 +2272,26 @@ async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
         other => panic!("expected Completed outcome, got {other:?}"),
     }
 
+    // The producer's decider fails on arm 4: the answer is a refusal of the
+    // kind `attempt_failed` carrying the error.
+    let refused = fire(node_runner, 4, vec![0.7, 0.8, 0.9]).await?;
+    let refusal = refused.refusal.as_ref().expect("the goal is refused");
+    println!(
+        "goal 4 accepted={} kind={} message={}",
+        refused.accepted,
+        refusal.kind,
+        refusal.message
+    );
+
+    // The producer kept serving after its decider failed.
+    let mut handle = fire(node_runner, 5, vec![0.1, 0.1, 0.1]).await?;
+    println!("goal 5 accepted={}", handle.accepted);
+    let result = handle.get_result(Duration::from_secs(5)).await?;
+    match result.outcome {
+        joints::ResultOutcome::Completed(data) => println!("result 5 success={}", data.success),
+        other => panic!("expected Completed outcome, got {other:?}"),
+    }
+
     Ok(())
 }
 
@@ -2338,6 +2360,9 @@ async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
                     // of any other length never reaches this handler.
                     let joints: [f64; 3] = request.data.joint_positions;
                     println!("server received goal arm_id={} joints={:?}", request.data.arm_id, joints);
+                    if request.data.arm_id == 4 {
+                        return Err(peppygen::Error::Node("arm 4 is out of service".into()));
+                    }
                     Ok(move_arm_joints::GoalDecision::Accept(move_arm_joints::GoalResponse::new(true)))
                 })
                 .await;
@@ -2397,6 +2422,9 @@ fn main() -> Result<()> {
         "invalid fixed list length for field 'joint_positions': expected 3, got 2",
         "goal 3 accepted=true",
         "result 3 success=true",
+        "goal 4 accepted=false kind=attempt_failed message=the goal decider failed: arm 4 is out of service",
+        "goal 5 accepted=true",
+        "result 5 success=true",
     ] {
         assert!(
             consumer_stdout.contains(needle),
@@ -2407,8 +2435,10 @@ fn main() -> Result<()> {
     assert!(
         exposer_stdout.contains("server received goal arm_id=1 joints=[0.1, 0.2, 0.3]")
             && exposer_stdout.contains("server received goal arm_id=3 joints=[0.4, 0.5, 0.6]")
-            && exposer_stdout.matches("server completed goal").count() == 2,
-        "exposer did not run exactly the two decodable goals.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
+            && exposer_stdout.contains("server received goal arm_id=4 joints=[0.7, 0.8, 0.9]")
+            && exposer_stdout.contains("server received goal arm_id=5 joints=[0.1, 0.1, 0.1]")
+            && exposer_stdout.matches("server completed goal").count() == 3,
+        "exposer did not run exactly the three accepted goals.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
     );
     assert!(
         !exposer_stdout.contains("arm_id=2"),

@@ -311,7 +311,8 @@ fn exposed_action() {
     // are answered with their failure and skipped; None means the stream
     // closed. A request that does not decode into the declared shape is
     // refused with the kind `rejected` and the decode error before the
-    // decider runs, and the loop keeps polling.
+    // decider runs, a decider that fails refuses the goal with the kind
+    // `attempt_failed` and its error, and the loop keeps polling.
     assert_contains_all(
         &rendered,
         &[
@@ -322,6 +323,9 @@ fn exposed_action() {
             "match deserialize_goal_request(pending.request_bytes())",
             "FailureKind::Rejected",
             "goal request does not decode: {error}",
+            "let decision = match decider(&request)",
+            "FailureKind::AttemptFailed",
+            "the goal decider failed: {error}",
             "pending.refuse(refusal.to_wire()).await?;",
             "continue;",
             "GoalDecision::Accept(response)",
