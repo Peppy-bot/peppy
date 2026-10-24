@@ -7,9 +7,9 @@
 //! sends the goal, then follows the goal until the daemon's work ends. The
 //! call's handler only waits on that task ([`wait_for_change`]), so the
 //! change goes on, and the lock stays held, when the handler stops waiting
-//! or the runtime drops it: a closed call, or a whole-goal deadline of the
-//! document. The task releases the lock before it reports the end of the
-//! change, so a call that hears of the end finds the lock free.
+//! or the runtime drops it at a whole-goal deadline of the document. The
+//! task releases the lock before it reports the end of the change, so a
+//! call that hears of the end finds the lock free.
 //!
 //! The call ends:
 //!
@@ -22,11 +22,11 @@
 //! - failed when the daemon failed the change, with its failure kind and
 //!   the log files: `attempt_failed`, "the addition of bravo failed:
 //!   {error}. Log files: {logs}";
-//! - cancelled when the client cancels: the bridge sends the daemon a
-//!   cancel, the daemon stops the change at the step it reached and undoes
-//!   it as a failure there does, and the call ends with the daemon's reason
-//!   once the daemon ended the change. A change the daemon ended first keeps
-//!   its end;
+//! - cancelled when the client cancels, with `tasks/cancel` or by closing
+//!   the call: the bridge sends the daemon a cancel, the daemon stops the
+//!   change at the step it reached and undoes it as a failure there does,
+//!   and the call ends with the daemon's reason once the daemon ended the
+//!   change. A change the daemon ended first keeps its end;
 //! - failed when the change ends without an end, for example when the
 //!   daemon is gone;
 //! - failed after one progress window of silence: "the daemon sent nothing

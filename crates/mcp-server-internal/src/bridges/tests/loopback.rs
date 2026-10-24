@@ -6,8 +6,9 @@
 //! and the action server holds each goal until the test ends it.
 
 use super::{
-    LINK_ID, MEMBER, Mesh, PROVIDER_REASON, SERVICE, accepted_goal, bridge_identity, codec,
-    encoded, end_cancelled, kind, mesh, publish_percent, service_provider, unreachable_width,
+    LINK_ID, MEMBER, Mesh, PROVIDER_REASON, SERVICE, accepted_goal, bridge_identity, cancel_seen,
+    codec, encoded, end_cancelled, kind, mesh, publish_percent, service_provider,
+    unreachable_width,
 };
 use crate::bridges::{PreparedExposure, call_service, drive_goal, prepare};
 use crate::test_support::Events;
@@ -518,7 +519,7 @@ async fn an_error_reply_reaches_the_client_and_the_record_with_its_kind() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn closing_the_call_leaves_its_goal_running_to_its_end() {
+async fn closing_the_call_cancels_its_goal() {
     let (mesh, mut provider) = mesh(true).await;
     let endpoint = Endpoint::serve(&mesh).await;
 
@@ -528,21 +529,15 @@ async fn closing_the_call_leaves_its_goal_running_to_its_end() {
     let mut events = Events::of(call.await.expect("the call does not panic"));
     assert_progress(&events.next_message().await, r#"{"percent":10}"#);
 
-    // The client goes away mid-goal. In Streamable HTTP that is also how a
-    // client cancels a call: the endpoint cannot tell the two apart, and
-    // the goal runs on. The provider reports and ends the goal afterwards.
+    // The client closes the call mid-goal. In Streamable HTTP that is how a
+    // client cancels a call, and also what a client that goes away does:
+    // the endpoint takes both as a cancel, which reaches the provider.
     drop(events);
-    publish_percent(&context, 60).await;
-    context
-        .complete(encoded(&result_codec(), json!({ "width": 0.04 })))
-        .await
-        .expect("the provider completes the goal");
+    cancel_seen(&context).await;
+    end_cancelled(&context).await;
 
     let entry = endpoint.ended_entry(TOOL).await;
-    assert_eq!(entry["outcome"], "completed", "{entry}");
-    assert!(
-        !context.is_cancelled(),
-        "the provider got no cancel for a client that went away"
-    );
+    assert_eq!(entry["outcome"], "cancelled", "{entry}");
+    assert_eq!(entry["message"], PROVIDER_REASON, "{entry}");
     endpoint.stop().await;
 }

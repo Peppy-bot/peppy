@@ -870,7 +870,7 @@ impl ExposureServer {
             .meta
             .get_progress_token()
             .map(|token| ProgressReporter::new(context.peer, token));
-        self.run_action_in_call(task, arguments, client, progress)
+        self.run_action_in_call(task, arguments, client, context.ct, progress)
             .await
             .map(CallToolResponse::Complete)
     }
@@ -908,11 +908,12 @@ impl ExposureServer {
     /// token, and the goal's bound limits the wait (see
     /// [`within_goal_bound`]).
     ///
-    /// Closing the call does not cancel the goal. In Streamable HTTP a
-    /// client cancels a call by closing it, and a client that disconnects
-    /// closes it too; the goals of the endpoint end when the endpoint
-    /// stops, not when a client goes away. The goal runs on to its end,
-    /// which its entry in the call record keeps.
+    /// `closed` firing cancels the goal. The transport cancels it when the
+    /// call closes: in Streamable HTTP a client cancels a call by closing
+    /// it, and a client that disconnects closes it too. The handler goes on
+    /// after the call closed, so the goal is followed to the end its
+    /// provider gives it after the cancel, which its entry in the call
+    /// record keeps.
     ///
     /// Feedback is also what opens the call's response: the transport sends
     /// the HTTP status and headers with the handler's first message, so the
@@ -929,6 +930,7 @@ impl ExposureServer {
         task: &Arc<TaskState>,
         arguments: JsonObject,
         client: Option<ClientIdentity>,
+        closed: tokio_util::sync::CancellationToken,
         progress: Option<ProgressReporter>,
     ) -> Result<CallToolResult, McpError> {
         let mut recording = self.record_call(client, &task.entry.name, &arguments);
@@ -947,7 +949,7 @@ impl ExposureServer {
 
         let (feedback, relay) = mpsc::unbounded_channel();
         let action_context = ActionContext {
-            surface: ActionSurface::Call { feedback },
+            surface: ActionSurface::Call { feedback, closed },
         };
         let operation = task.handler.start(call, action_context);
         let outcome = within_goal_bound(
@@ -1845,6 +1847,7 @@ mod tests {
     use crate::tasks::CancelledGoal;
     use rmcp::model::ErrorCode;
     use std::sync::atomic::Ordering;
+    use tokio_util::sync::CancellationToken;
 
     fn test_bundle() -> ExposureBundle {
         ExposureBundle::from_json_str(
@@ -2084,14 +2087,26 @@ mod tests {
         server.start_task(&task_named(server, name), arguments, None)
     }
 
-    /// Runs the action in a call that carries no progress token.
+    /// Runs the action in a call that carries no progress token and stays
+    /// open.
     async fn run_in_call(
         server: &ExposureServer,
         name: &str,
         arguments: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        run_in_a_call_closed_by(server, name, arguments, CancellationToken::new()).await
+    }
+
+    /// Runs the action in a call that carries no progress token and closes
+    /// when the test cancels `closed`.
+    async fn run_in_a_call_closed_by(
+        server: &ExposureServer,
+        name: &str,
+        arguments: JsonObject,
+        closed: CancellationToken,
+    ) -> Result<CallToolResult, McpError> {
         server
-            .run_action_in_call(&task_named(server, name), arguments, None, None)
+            .run_action_in_call(&task_named(server, name), arguments, None, closed, None)
             .await
     }
 
@@ -2300,18 +2315,51 @@ mod tests {
         );
     }
 
+    /// The goal of a provider that ends it cancelled once its client asks,
+    /// with [`cancelled_resume`], for the reason a peppylib provider gives.
+    async fn cancelled_on_request(
+        _call: ToolCall,
+        context: ActionContext,
+    ) -> Result<Value, ActionExit> {
+        context.cancel_requested().await;
+        assert!(context.is_cancel_requested());
+        Err(ActionExit::Cancelled(CancelledGoal {
+            result: cancelled_resume(),
+            reason: "cancelled by its caller".to_owned(),
+        }))
+    }
+
     #[tokio::test]
-    async fn a_goal_inside_a_call_has_no_cancel_signal() {
-        // A client cancels a call of Streamable HTTP by closing it, and a
-        // client that disconnects closes it too: the goal hears of neither
-        // and runs on to its end.
+    async fn closing_the_call_cancels_the_goal_and_the_call_ends_cancelled() {
+        let server = server_with_resume(cancelled_on_request);
+        let closed = CancellationToken::new();
+        // Closed up front: the goal sees the cancel on its first look, so
+        // the outcome depends on nothing but the token.
+        closed.cancel();
+        let result = run_in_a_call_closed_by(
+            &server,
+            "recorder.resume_session",
+            JsonObject::new(),
+            closed,
+        )
+        .await
+        .expect("a cancelled goal is a tool error, not a protocol error");
+        assert_eq!(
+            tool_error_text(&result),
+            "the action was cancelled: cancelled by its caller"
+        );
+        assert_eq!(result.structured_content, Some(cancelled_resume()));
+    }
+
+    #[tokio::test]
+    async fn a_goal_inside_an_open_call_is_not_asked_to_cancel() {
         let server = server_with_resume(|_call: ToolCall, context: ActionContext| async move {
             assert!(!context.is_cancel_requested());
             let cancel = context.cancel_requested();
             tokio::pin!(cancel);
             assert!(
                 futures::poll!(cancel.as_mut()).is_pending(),
-                "a goal inside a call is never asked to cancel"
+                "a call that stays open asks for no cancel"
             );
             Ok(json!({ "resumed": true }))
         });
@@ -2346,7 +2394,10 @@ mod tests {
         let task = task_named(&server, "recorder.resume_session");
         let (feedback, relay) = mpsc::unbounded_channel();
         let context = ActionContext {
-            surface: ActionSurface::Call { feedback },
+            surface: ActionSurface::Call {
+                feedback,
+                closed: CancellationToken::new(),
+            },
         };
         let operation = task.handler.start(
             ToolCall {
@@ -4692,6 +4743,7 @@ mod tests {
                 &task_named(&server, "recorder.resume_session"),
                 JsonObject::new(),
                 a_client(),
+                CancellationToken::new(),
                 None,
             )
             .await
@@ -4760,6 +4812,28 @@ mod tests {
         assert_eq!(calls[0]["failure_kind"], Value::Null);
         assert_eq!(calls[0]["message"], "cancelled by its caller");
 
+        // A call that closes cancels its goal the way `tasks/cancel` does.
+        let (builder, _) = record_builder();
+        let server = builder
+            .with_task("recorder.resume_session", cancelled_on_request)
+            .build()
+            .expect("builds");
+        let closed = CancellationToken::new();
+        closed.cancel();
+        server
+            .run_action_in_call(
+                &task_named(&server, "recorder.resume_session"),
+                JsonObject::new(),
+                None,
+                closed,
+                None,
+            )
+            .await
+            .expect("a cancelled goal is a tool error");
+        let calls = recorded_calls(&server);
+        assert_eq!(calls[0]["outcome"], "cancelled");
+        assert_eq!(calls[0]["message"], "cancelled by its caller");
+
         let (builder, _) = record_builder();
         let server = builder
             .with_task("recorder.resume_session", refused_goal)
@@ -4770,6 +4844,7 @@ mod tests {
                 &task_named(&server, "recorder.resume_session"),
                 JsonObject::new(),
                 None,
+                CancellationToken::new(),
                 None,
             )
             .await
@@ -4810,6 +4885,7 @@ mod tests {
                 &task_named(&server, "recorder.resume_session"),
                 JsonObject::new(),
                 None,
+                CancellationToken::new(),
                 None,
             )
             .await
@@ -4832,6 +4908,7 @@ mod tests {
                 &task_named(&server, "recorder.record_episode"),
                 object(json!({ "episode_name": "demo" })),
                 None,
+                CancellationToken::new(),
                 None,
             )
             .await

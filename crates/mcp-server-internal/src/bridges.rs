@@ -557,9 +557,10 @@ pub(crate) async fn run_task(
 /// provider refuses or fails carries its failure kind and message.
 ///
 /// The server's node is the sender of the goal: the provider ends the goal
-/// when the server stops, and an MCP client that disconnects ends nothing.
-/// The bridge sends a cancel only for the client's `tasks/cancel` and for a
-/// progress window that goes by in silence.
+/// when the server stops. The bridge sends a cancel for the client's
+/// cancel, `tasks/cancel` on a task or the close of the call the goal runs
+/// in, and for a progress window that goes by in silence. A task's
+/// connection closing is no cancel.
 ///
 /// The goal's handle keeps up to `task.feedback_bound` unread feedback
 /// messages. A bridge that falls further behind loses the stream: the

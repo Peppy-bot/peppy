@@ -2,18 +2,19 @@
 //! and the context the runtime hands it while a goal runs.
 //!
 //! The runtime owns the whole MCP side of an action (the task or the call
-//! it runs in, confirmation, feedback delivery, the client's cancel of a
-//! task, a whole-goal deadline, terminal mapping); the bridge owns the
+//! it runs in, confirmation, feedback delivery, the client's cancel, a
+//! whole-goal deadline, terminal mapping); the bridge owns the
 //! whole Peppy side (firing the goal, draining feedback, forwarding the
 //! cancel, awaiting the result, and the progress window of a
 //! progress-bound goal, which only the bridge sees the signs of).
 //! [`ActionContext`] is the seam between the two, and it hides which of the
 //! two MCP surfaces the goal runs on.
 //!
-//! A goal does not end when an MCP client disconnects: a task outlives the
-//! connection that started it, and a goal that runs inside a call runs on
-//! to its end when the client closes the call. Stopping the set ends every
-//! task (see [`ExposureSet::serve`](crate::ExposureSet::serve)).
+//! A client cancels a task with `tasks/cancel`, and a task outlives the
+//! connection that started it. A client cancels a call by closing it, which
+//! a client that disconnects does too: a goal that runs inside a call is
+//! cancelled when its call closes. Stopping the set ends every task (see
+//! [`ExposureSet::serve`](crate::ExposureSet::serve)).
 
 use crate::failure::{CallFailure, FailureOutcome, ProviderFailure};
 use crate::server::ToolCall;
@@ -23,6 +24,7 @@ use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// How an action bridge finished without a completed result. The runtime
 /// maps it onto the MCP task's terminal state, or onto the tool error of
@@ -128,11 +130,13 @@ pub(crate) enum ActionSurface {
     Task(TaskContext),
     /// The `tools/call` that started the goal, for a client without the
     /// extension: feedback is relayed as progress notifications on that
-    /// call. A call gives no cancel signal. In Streamable HTTP a client
-    /// cancels a call by closing it, and a client that disconnects closes
-    /// it too: the goal runs on to its end, which the call record keeps.
+    /// call, and `closed`, which the transport cancels when the call
+    /// closes, is the cancel signal. In Streamable HTTP a client cancels a
+    /// call by closing it, and a client that disconnects closes it too: the
+    /// endpoint cannot tell the two apart, and takes both as a cancel.
     Call {
         feedback: mpsc::UnboundedSender<String>,
+        closed: CancellationToken,
     },
 }
 
@@ -151,32 +155,31 @@ impl ActionContext {
             ActionSurface::Task(task) => task.set_status_message(message),
             // A closed receiver means the call already settled; feedback
             // after that has no reader.
-            ActionSurface::Call { feedback } => {
+            ActionSurface::Call { feedback, .. } => {
                 let _ = feedback.send(message.into());
             }
         }
     }
 
-    /// Resolves once the client has asked to cancel the goal through
-    /// `tasks/cancel` (immediately, if it already has). A goal that runs
-    /// inside a call has no cancel signal, and this never resolves for it:
-    /// in Streamable HTTP a client cancels a call by closing it, and a
-    /// client that disconnects closes it too. Cancellation is cooperative:
-    /// the bridge forwards it to the Peppy action's cancel path and keeps
-    /// awaiting the terminal result, which decides the terminal state.
+    /// Resolves once the client has asked to cancel the goal (immediately,
+    /// if it already has): through `tasks/cancel` on a task, by closing the
+    /// call otherwise. A task's connection closing is no cancel. Cancellation
+    /// is cooperative: the bridge forwards it to the Peppy action's cancel
+    /// path and keeps awaiting the terminal result, which decides the
+    /// terminal state.
     pub async fn cancel_requested(&self) {
         match &self.surface {
             ActionSurface::Task(task) => task.cancelled().await,
-            ActionSurface::Call { .. } => std::future::pending().await,
+            ActionSurface::Call { closed, .. } => closed.cancelled().await,
         }
     }
 
-    /// Whether the client has asked to cancel the goal through
-    /// `tasks/cancel`; always `false` for a goal that runs inside a call.
+    /// Whether the client has asked to cancel the goal: through
+    /// `tasks/cancel` on a task, by closing the call otherwise.
     pub fn is_cancel_requested(&self) -> bool {
         match &self.surface {
             ActionSurface::Task(task) => task.is_cancel_requested(),
-            ActionSurface::Call { .. } => false,
+            ActionSurface::Call { closed, .. } => closed.is_cancelled(),
         }
     }
 }

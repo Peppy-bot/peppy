@@ -210,9 +210,9 @@ const CAMERA_NODE_CONFIG: &str = r#"{
 /// The camera: 8x8 rgb8 frames and a status snapshot every 100 ms, the
 /// info, brightness and snapshot services, never an answer to
 /// `freeze_probe`, and `record_clip` running a clip of fewer than 1000
-/// frames to completion at once, and a longer one at a frame every 100 ms,
-/// for its frames past 1000 or until the cancel signal (republishing
-/// feedback so progress is observable regardless of sensor-data QoS drops).
+/// frames to completion at once, and parking a longer one on the cancel
+/// signal (republishing feedback so progress is observable regardless of
+/// sensor-data QoS drops).
 const CAMERA_MAIN: &str = r#"
 use peppygen::emitted_topics::camera::{camera_status, video_stream};
 use peppygen::exposed_actions::camera::record_clip;
@@ -237,26 +237,16 @@ fn main() -> Result<()> {
                     Ok(Some(ctx)) => {
                         let duration = ctx.request().data.duration_frames;
                         if duration >= 1000 {
-                            let frames = duration - 1000;
-                            let mut written = 0;
-                            let cancelled = loop {
-                                written += 1;
-                                let _ = ctx.publish_feedback(written).await;
-                                if written == frames {
-                                    break false;
-                                }
+                            loop {
+                                let _ = ctx.publish_feedback(1).await;
                                 tokio::select! {
-                                    _ = ctx.cancel_signal() => break true,
+                                    _ = ctx.cancel_signal() => break,
                                     _ = tokio::time::sleep(Duration::from_millis(100)) => {}
                                 }
-                            };
-                            if cancelled {
-                                ctx.complete_cancelled("the clip stopped on the cancel", 1)
-                                    .await
-                                    .expect("complete cancelled");
-                            } else {
-                                ctx.complete(frames).await.expect("complete");
                             }
+                            ctx.complete_cancelled("the clip stopped on the cancel", 1)
+                                .await
+                                .expect("complete cancelled");
                         } else {
                             for frame in 1..=duration {
                                 ctx.publish_feedback(frame).await.expect("publish feedback");
@@ -1990,20 +1980,26 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         recorded.structured_content,
         Some(json!({ "frames_written": 3 }))
     );
-    // A goal reports its feedback as progress on the call, and the client
-    // going away mid-call ends nothing: the endpoint is the sender of the
-    // goal, so the goal runs on to its end, which the record keeps. The
-    // clip writes 30 frames, one every 100 ms; the provider serves one goal
-    // at a time, so the next clip runs once it ends.
-    let running = open_record_clip_until_progress(port, "/camera_and_recording/v1/mcp", 1030).await;
-    drop(running);
+    // A parked goal reports its feedback as progress on the call, and the
+    // client closing the call cancels it on the provider: in Streamable
+    // HTTP a closed call is how a client cancels, and also what a client
+    // that goes away leaves. The goal parks until its cancel, so its end in
+    // the record is that cancel; the provider serves one goal at a time, so
+    // the next clip runs once it ended.
+    let parked =
+        open_record_clip_until_progress(port, "/camera_and_recording/v1/mcp", 100000).await;
+    drop(parked);
     let ended = ended_call(
         &both_client,
         "recording.recent_calls",
         "front_camera.record_clip",
     )
     .await;
-    assert_eq!(ended["outcome"], "completed", "{ended}");
+    assert_eq!(ended["outcome"], "cancelled", "{ended}");
+    assert_eq!(
+        ended["message"], "the clip stopped on the cancel",
+        "{ended}"
+    );
     let recorded = both_client
         .call_tool(
             CallToolRequestParams::new("front_camera.record_clip")
@@ -3327,7 +3323,12 @@ async fn a_client_adds_robots_with_features_on_the_machines_it_names() {
             json!({ "name": name, "option": "featured_robot", "core_node": this, "features": features }),
         )
         .await;
-        assert_eq!(joined.is_error, Some(false), "{joined:?}\n{}", stack.run_logs());
+        assert_eq!(
+            joined.is_error,
+            Some(false),
+            "{joined:?}\n{}",
+            stack.run_logs()
+        );
         assert_eq!(
             joined.structured_content,
             Some(json!({})),
@@ -3467,7 +3468,12 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
     // lines of the join, the start of its instance included.
     for copy_name in ["alpha", "bravo"] {
         let joined = call(&client, "stack.join", goal(copy_name, "recorder_robot")).await;
-        assert_eq!(joined.is_error, Some(false), "{joined:?}\n{}", stack.run_logs());
+        assert_eq!(
+            joined.is_error,
+            Some(false),
+            "{joined:?}\n{}",
+            stack.run_logs()
+        );
         assert_eq!(
             joined.structured_content,
             Some(json!({})),

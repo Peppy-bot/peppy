@@ -919,9 +919,9 @@ async fn a_cancelled_join_reaches_the_daemon_and_ends_cancelled() {
     join_succeeds(&bridge, &mut daemon, "charlie").await;
 }
 
-/// A call whose handler the runtime drops (a closed call, a whole-goal
-/// deadline) leaves the join to the bridge, which follows it and holds the
-/// lock until it ends.
+/// A call whose handler the runtime drops (a whole-goal deadline) leaves
+/// the join to the bridge, which follows it and holds the lock until it
+/// ends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_dropped_call_leaves_the_join_running_under_the_lock() {
     let (mesh, mut daemon) = mesh().await;
@@ -1607,9 +1607,22 @@ impl Endpoint {
     }
 
     /// Calls `tool` with `arguments` as a client without the tasks
-    /// extension and without a progress token, and returns the JSON-RPC
-    /// answer.
-    async fn call(&self, tool: &str, arguments: Value) -> Value {
+    /// extension, with `progress_token` when one is given. Returns the
+    /// event stream of the call once its headers arrive.
+    fn open_call(
+        &self,
+        tool: &str,
+        arguments: Value,
+        progress_token: Option<&str>,
+    ) -> impl Future<Output = Events> + Send + 'static {
+        let mut meta = json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": { "name": "raw", "version": "0" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+        });
+        if let Some(token) = progress_token {
+            meta["progressToken"] = json!(token);
+        }
         let request = reqwest::Client::new()
             .post(&self.url)
             .header("content-type", "application/json")
@@ -1622,23 +1635,24 @@ impl Endpoint {
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "tools/call",
-                    "params": {
-                        "name": tool,
-                        "arguments": arguments,
-                        "_meta": {
-                            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                            "io.modelcontextprotocol/clientInfo": { "name": "raw", "version": "0" },
-                            "io.modelcontextprotocol/clientCapabilities": {},
-                        }
-                    }
+                    "params": { "name": tool, "arguments": arguments, "_meta": meta }
                 })
                 .to_string(),
             );
-        let response = tokio::time::timeout(READINESS_TIMEOUT, request.send())
-            .await
-            .expect("the response headers arrive")
-            .expect("the call opens");
-        let mut events = Events::of(response);
+        async move {
+            let response = tokio::time::timeout(READINESS_TIMEOUT, request.send())
+                .await
+                .expect("the response headers arrive")
+                .expect("the call opens");
+            Events::of(response)
+        }
+    }
+
+    /// Calls `tool` with `arguments` as a client without the tasks
+    /// extension and without a progress token, and returns the JSON-RPC
+    /// answer.
+    async fn call(&self, tool: &str, arguments: Value) -> Value {
+        let mut events = self.open_call(tool, arguments, None).await;
         loop {
             let message = events.next_message().await;
             if message.get("id").is_some() {
@@ -1665,6 +1679,23 @@ impl Endpoint {
                 )
             })
             .collect()
+    }
+
+    /// The outcome and the message of the newest call of the record, once
+    /// that call is no longer running. The wait is bounded by
+    /// [`READINESS_TIMEOUT`] and driven by the endpoint's answers.
+    async fn ended_newest_call(&self) -> (String, Value) {
+        tokio::time::timeout(READINESS_TIMEOUT, async {
+            loop {
+                let newest = self.recorded().await.pop();
+                if let Some(call) = newest.filter(|(outcome, _)| outcome != "running") {
+                    return call;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the newest call ends")
     }
 
     async fn stop(self) {
@@ -1837,6 +1868,43 @@ async fn the_endpoint_refuses_input_outside_the_scope_and_records_each_outcome()
     assert_eq!(
         recorded[8].1,
         "a copy `bravo` is already on the stack; choose another name"
+    );
+    endpoint.stop().await;
+}
+
+/// A client cancels a call by closing it: a closed `join` sends the daemon
+/// a cancel, the daemon undoes the change, and the record keeps the call
+/// cancelled with the daemon's reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn closing_a_join_call_cancels_the_daemons_goal() {
+    let (mesh, mut daemon) = mesh().await;
+    let endpoint = Endpoint::serve(&mesh).await;
+
+    daemon.lists(&[]);
+    // The headers of a call with a progress token come with its first
+    // progress, once the daemon admitted the join.
+    let opening = tokio::spawn(endpoint.open_call(
+        "stack.join",
+        json!({ "name": "bravo", "option": "so101_sim", "core_node": COORDINATOR, "features": [] }),
+        Some("join-1"),
+    ));
+    let context = daemon.admits_join(&join_goal("bravo", "so101_sim")).await;
+    let mut events = opening.await.expect("the call does not panic");
+    let accepted = events.next_message().await;
+    assert_eq!(accepted["method"], "notifications/progress", "{accepted}");
+    assert_eq!(
+        accepted["params"]["message"],
+        "launch: the daemon accepted the addition of bravo (so101_sim)"
+    );
+    drop(events);
+
+    end_cancelled(&context).await;
+    assert_eq!(
+        endpoint.ended_newest_call().await,
+        (
+            "cancelled".to_owned(),
+            json!("the addition of bravo was cancelled by its caller")
+        )
     );
     endpoint.stop().await;
 }

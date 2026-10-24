@@ -651,7 +651,8 @@ async fn a_client_without_the_tasks_capability_runs_an_action_inside_the_call() 
 /// The goal behind `recorder.replay_episode` in the walks of a closed
 /// connection: it reports `parked`, then completes with 120 frames once
 /// the test releases it. A cancel request ends it cancelled at once, so a
-/// completed goal is one that no one asked to cancel.
+/// completed goal is one that no one asked to cancel, and a goal the test
+/// never releases ends only through a cancel.
 async fn parked_until_released(
     release: Arc<Notify>,
     context: ActionContext,
@@ -721,16 +722,16 @@ async fn ended_entry(url: &str, tool: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn closing_the_call_leaves_the_goal_inside_it_running_to_its_end() {
+async fn closing_the_call_cancels_the_goal_inside_it() {
     let release = Arc::new(Notify::new());
     let set = start_set_with_parked_replay(&release).await;
     let http = reqwest::Client::new();
     for endpoint in &set.endpoints {
         // A raw call, so the test owns the response stream: once the first
         // event (the goal's feedback) proves the goal is parked, dropping
-        // the response is the client going away mid-call. In Streamable
-        // HTTP it is also how a client cancels a call: the endpoint cannot
-        // tell the two apart, and the goal runs on.
+        // the response closes the call. In Streamable HTTP that is how a
+        // client cancels a call, and also what a client that goes away
+        // does: the endpoint takes both as a cancel.
         let response = http
             .post(&endpoint.url)
             .header("content-type", "application/json")
@@ -770,20 +771,11 @@ async fn closing_the_call_leaves_the_goal_inside_it_running_to_its_end() {
         );
         drop(response);
 
-        // Another client reads the record: the goal still runs after its
-        // client went away.
-        let reader = connect(&endpoint.url).await;
-        let entry = newest_entry(&reader, "recorder.replay_episode")
-            .await
-            .expect("the record keeps the call");
-        assert_eq!(entry["outcome"], "running", "{entry}");
-        reader.cancel().await.expect("client disconnects");
-
-        // The provider ends the goal: it was never asked to cancel, and the
-        // record keeps its end.
-        release.notify_one();
+        // The goal is never released: the cancel is the one way it can
+        // end, and the record keeps that end.
         let entry = ended_entry(&endpoint.url, "recorder.replay_episode").await;
-        assert_eq!(entry["outcome"], "completed", "{entry}");
+        assert_eq!(entry["outcome"], "cancelled", "{entry}");
+        assert_eq!(entry["message"], support::CANCELLED_BY_ITS_CALLER);
         assert_eq!(entry["client"], json!({ "name": "raw", "version": "0" }));
     }
     set.stop().await;
