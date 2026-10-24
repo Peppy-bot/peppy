@@ -1580,7 +1580,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
             .output_schema
             .as_ref()
             .is_some_and(|schema| schema["properties"].get("frame").is_none()
-                && schema["properties"].get("message").is_some()),
+                && schema["properties"].get("encoding").is_some()),
         "the output schema of a pictured service is the schema of its document: {:?}",
         snapshot_tool.output_schema
     );
@@ -3502,9 +3502,9 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         .expect("stack.join answers");
     assert_eq!(
         tool_error_text(&at_limit),
-        "the action failed: the stack holds 2 copies of the options recorder_robot and \
-         broken_robot (alpha, bravo), the most the scope of this endpoint allows; remove one \
-         first"
+        "the provider refused the goal: precondition_failed: the stack holds 2 copies of the \
+         options recorder_robot and broken_robot (alpha, bravo), the most the scope of this \
+         endpoint allows; remove one first"
     );
     let in_use = client
         .call_tool(
@@ -3515,7 +3515,8 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         .expect("stack.join answers");
     assert_eq!(
         tool_error_text(&in_use),
-        "the action failed: a copy `alpha` is already on the stack; choose another name"
+        "the provider refused the goal: precondition_failed: a copy `alpha` is already on the \
+         stack; choose another name"
     );
     let outside = client
         .call_tool(
@@ -3547,6 +3548,7 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         .unwrap_or_else(|| panic!("a join that failed answers its failure: {failed:?}"));
     assert_eq!(failed.is_error, Some(true), "{failed:?}");
     assert_eq!(failure["outcome"], "failed", "{failure}");
+    assert_eq!(failure["failure_kind"], "attempt_failed", "{failure}");
     let message = failure["message"].as_str().expect("a message");
     let (error, logs) = message
         .strip_prefix("the addition of delta failed: ")
@@ -3594,11 +3596,23 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         [
             ("stack.join".to_owned(), json!("completed"), Value::Null),
             ("stack.join".to_owned(), json!("completed"), Value::Null),
-            ("stack.join".to_owned(), json!("failed"), Value::Null),
-            ("stack.join".to_owned(), json!("failed"), Value::Null),
+            (
+                "stack.join".to_owned(),
+                json!("refused"),
+                json!("precondition_failed")
+            ),
+            (
+                "stack.join".to_owned(),
+                json!("refused"),
+                json!("precondition_failed")
+            ),
             ("stack.join".to_owned(), json!("refused"), Value::Null),
             ("stack.remove".to_owned(), json!("completed"), Value::Null),
-            ("stack.join".to_owned(), json!("completed"), Value::Null),
+            (
+                "stack.join".to_owned(),
+                json!("failed"),
+                json!("attempt_failed")
+            ),
         ],
         "{record}"
     );
