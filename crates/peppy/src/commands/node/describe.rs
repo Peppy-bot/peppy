@@ -88,7 +88,7 @@ fn write_members(out: &mut String, qualifier: &str, members: &[Member]) {
                     out,
                     "  topic {name} (qos: {:?}{})",
                     topic.qos_profile,
-                    super::info::retention_note(topic.retention.clone())
+                    super::info::retention_note(topic.retention)
                 );
                 write_format(out, "message", topic.message_format.as_ref());
             }

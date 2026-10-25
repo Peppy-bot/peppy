@@ -131,7 +131,7 @@ impl TopicEcho {
                     &self.binding(target),
                     &self.producer,
                     self.topic.qos_profile.clone(),
-                    self.topic.retention.clone(),
+                    self.topic.retention,
                     self.codec.clone(),
                 )
                 .await

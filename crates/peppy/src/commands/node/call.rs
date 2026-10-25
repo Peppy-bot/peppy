@@ -706,6 +706,51 @@ mod tests {
         );
     }
 
+    /// A service of the node's own is served under the node's name and tag,
+    /// with the formats its manifest declares.
+    #[tokio::test]
+    async fn a_service_of_the_nodes_own_gives_its_response() {
+        let messenger = mock_messenger().await;
+        let mut endpoint = ServiceMessenger::listen(
+            &messenger,
+            CORE_NODE,
+            INSTANCE,
+            SenderTarget::node("arm", "v1").expect("a target"),
+            "set_gain",
+        )
+        .await
+        .expect("the service listens");
+        tokio::spawn(async move {
+            let _ = endpoint
+                .handle_requests(|context| {
+                    let request = codec(r#"{ value: "i32" }"#)
+                        .decode(context.message().payload_bytes().as_ref())
+                        .expect("the request decodes");
+                    let answer = Ok(payload(
+                        r#"{ current_value: "i32" }"#,
+                        json!({"current_value": request["value"]}),
+                    ));
+                    async move { answer }
+                })
+                .await;
+        });
+        let mut out = Vec::new();
+
+        run(
+            &member_call("arm.set_gain", &["value=-4"]),
+            &messenger,
+            &mut presses(0),
+            &mut out,
+        )
+        .await
+        .expect("the service responds");
+
+        assert_eq!(
+            lines(&out),
+            [json!({"outcome": "completed", "response": {"current_value": -4}})]
+        );
+    }
+
     /// An error reply of a service is a refusal by its provider.
     #[tokio::test]
     async fn an_error_reply_is_a_refusal_with_its_kind_and_exit_code_3() {
