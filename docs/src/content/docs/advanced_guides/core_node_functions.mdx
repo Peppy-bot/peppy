@@ -214,7 +214,7 @@ Both `info` and `stack.list` default to a 10-second timeout. Pass an explicit ti
 
 ## Daemon targets
 
-A node calls a **daemon interface**, an interface that the peppy daemon serves and no node implements, through a **daemon target** of its manifest. A daemon interface is a document in the contract format that is compiled into `peppy`. [The interfaces peppy serves](/advanced_guides/mcp/#the-interfaces-peppy-serves) lists them. For example, `fleet:v1` holds the fleet listing, the leases of the robots and the halt of the stack.
+A node calls a **daemon interface**, an interface that the peppy daemon serves and no node implements, through a **daemon target** of its manifest. A daemon interface is a document in the contract format that is compiled into `peppy`. [The interfaces peppy serves](/advanced_guides/mcp/#the-interfaces-peppy-serves) lists them. For example, `fleet:v1` holds the fleet listing, the leases of the robots and the halt of the stack (see [Robot leases and the halt](/advanced_guides/fleet/)).
 
 ### Declaring a daemon target
 
@@ -284,7 +284,7 @@ A node calls a **daemon interface**, an interface that the peppy daemon serves a
 </Tabs>
 
 - **Never pinned.** An entry takes no `sha256`. The document of the interface ships with the peppy release that serves its tag, and peppy serves one tag of each interface.
-- **One producer.** An entry takes no `cardinality`. The daemon that runs the instance is the one producer of the slot: it binds the slot to itself, under its core node name and its per-boot instance id, each time the instance starts, by a launch, a join, `peppy node run` or a restart. A launcher writes no `links` entry for a daemon target, and a launch refuses one.
+- **One producer.** An entry takes no `cardinality`. The daemon that serves the interface is the one producer of the slot: the daemon of the coordinator of the launch that started the instance, or the daemon that runs an instance of no launch. The daemon binds the slot each time the instance starts, by a launch, a join, `peppy node run` or a restart, under the core node name and the per-boot instance id of that daemon. A launcher writes no `links` entry for a daemon target, and a launch refuses one.
 - **One target of each interface.** A node names each interface once. A call names no target, so a call of an interface goes with the one scope of that interface that the instance has.
 - **One link_id namespace.** The `link_id` of a daemon target shares one namespace with the other slots of `depends_on` and with `implements`.
 

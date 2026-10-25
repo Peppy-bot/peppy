@@ -775,7 +775,7 @@ fn the_runtime_validator_refuses_input_outside_the_narrowed_schema() {
         "no field outside the interface's goal"
     );
 
-    // A listed copy has the shape of a join goal.
+    // A listed copy, without its `running`, has the shape of a join goal.
     let listed = json!({
         "name": "delta",
         "option": "openarm_sim",

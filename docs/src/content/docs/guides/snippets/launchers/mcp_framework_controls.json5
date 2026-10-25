@@ -23,10 +23,12 @@
         {
           instance_id: "framework_controls_inst",
           arguments: { port: 8903 },
-          // The daemon target `stack` takes no link. It takes a scope,
-          // keyed by the target's name. The instance has no `core_node`: an
-          // instance that serves a daemon target runs on the coordinator.
+          // The daemon targets take no link. Each takes a scope, keyed by
+          // the target's name. The instance has no `core_node`: an instance
+          // that serves a daemon target runs on the coordinator.
           daemon_scopes: {
+            // The members of fleet:v1 that the endpoint calls.
+            fleet: { members: ["list", "halt", "clear_halt"] },
             stack: {
               max_copies: 4,
               options: [

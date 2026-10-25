@@ -1,0 +1,104 @@
+---
+title: Robot leases and the halt
+description: The fleet of a stack, the leases that give one client the right to move one robot, the move check, the halt and the changes, which the daemon serves in fleet:v1
+sidebar:
+  order: 22
+---
+
+The **fleet** of a stack is the robots of the launch that the daemon coordinates. Each [copy](/guides/launch_files/#copies) of the launch is a robot of the fleet, a device that a client changes included, such as a hob. An instance that the launcher deploys outside every copy, or that `peppy node run` starts, is in no robot.
+
+The daemon serves the fleet in the daemon interface `fleet:v1`, a document in the contract format that is compiled into `peppy`. It gives the fleet listing, the **leases** that give one client the right to move one robot, the **move check**, the **halt** of the stack, and the **changes** of the fleet. Its clients are:
+
+| Client | What it uses |
+| --- | --- |
+| An MCP server of peppy | `check_move` before each call of a member that moves a robot, and `changes` while such a call runs (see [Members that move a robot](/advanced_guides/mcp/#members-that-move-a-robot)) |
+| `peppy node call` | The same as an MCP server, with no scope: it acts for the person or the program that runs it (see [Calling a running instance](/advanced_guides/calling_instances/)) |
+| A lease holder, a node with a `fleet` daemon target | `lease` with its services, `changes` and `check_move`, within the scope of its target (see [Daemon targets](/advanced_guides/core_node_functions/#daemon-targets)) |
+| The command line | [`peppy fleet`](#the-command-line): the listing, the halt and its end |
+
+The leases and the halt bind only the clients that ask the daemon before they move a robot. They prevent conflicts between clients. They are not a safety function: the emergency stop of each robot stays in its certified layers.
+
+## Members that move a robot
+
+A contract marks each member that moves a robot or changes the state of a device with `marks: ["moves_robot"]` (see [Marks](/advanced_guides/contract_implementation/#marks)). Each MCP server of peppy, `peppy node call` and each lease holder asks `check_move` before each call of a marked member. A provider reads no lease: a node that serves a goal and calls the nodes of its robot for it, such as a skill node, asks nothing, because the client of that goal asked before its call.
+
+`check_move` takes exactly one of `instance`, the instance that the client calls, and `robot`, a robot of the listing by its name: a client that streams to a robot and calls no member names the robot. It answers every sender, with no scope. Its answer gives no `refusal` when the client may move the robot, else a `refusal` with a `failure_kind` and a `message`, which the client refuses its call with:
+
+- During a halt it refuses every call, also on an instance outside every copy, with `halted`.
+- On an instance outside every copy it allows every call.
+- On a robot whose lease is open it allows every client.
+- On a robot that a client leases it allows that client, and refuses every other client with `leased`. The message names the holder and the lease name.
+- On a robot with no lease it allows a client that is not a lease holder, and refuses a lease holder with `not_leased`. The message says how the last lease of the asker on the robot ended, or that the asker does not lease it.
+
+## The fleet listing
+
+`list` gives the fleet listing, and `peppy fleet list --json` prints it:
+
+- `version`, the release tag of the peppy that runs the stack, or `unknown`; `core_node`, the machine that coordinates the stack; `launcher`, the launcher of the stack, empty when no launch runs.
+- `halted`, and `halted_by`, the client that halted the stack.
+- `robots`, each robot in name order: `name`, the name of its copy; `option`; `core_node`, its machine; `kind`, `simulated` when each instance of the robot reads the clock of a simulation, else `physical`; `clock`; `software`, `running` while the process of each instance of the robot runs, else `stopped`; `robot_commander`; `instances`, each with its `name` in the copy, `instance`, the id that the stack runs it under, `core_node`, `node` and `node_tag`; and `contracts`, each contract that an instance of the robot implements, with `name`, `tag`, `sha256`, the hash of its pinned document, and `instances`, the instances that implement it. A client reads the model and the limbs of a robot from the instances of `robot_identity:v1` and `limb_state:v1` in it.
+- `leases`, each lease in robot order: `robot`; `holder` and `holder_core_node`; `name`, the name that the holder gave the lease, such as the name of a run; `open`; `giver` and `giver_core_node`, the client that gave the lease to its holder, empty for a lease that the holder took; and `receiver` and `receiver_core_node`, the client that the holder offers the lease to, empty when no offer runs.
+- `options`, each option and feature that a [`stack_copies` scope](/advanced_guides/mcp/#scopes) of the launch names, with its `kind` and the contracts of its instances; `documents`, the pinned document of each of these contracts; and `nodes`, each node of the launch with the manifest and the commit that each machine runs, and its instances, each with the robot that it belongs to.
+
+The robot commander of a robot is the option of its copy on the axis that the launcher marks with `role: "robot_commander"` (see [Copies](/guides/launch_files/#copies)). The option `none` of that axis, or a launcher that marks no axis, gives no robot commander. A robot commander, such as a leader arm or the browser panel of the robot, drives its own robot outside the leases and the halt.
+
+The daemon of each machine tells the coordinator each start and each end of the process of an instance of the launch, so the `software` of a robot follows its instances on every machine.
+
+`contract` takes `name`, `tag` and `sha256` and gives the pinned `document` of a contract of the listing, as written. It refuses a document that the daemon does not hold with `rejected`.
+
+## Leases
+
+A lease gives one client the right to move one robot. Only a client whose `lease` goal runs holds leases: a node whose `fleet` scope gives `lease`. MCP servers and the command line hold none.
+
+- `lease` is a long goal. While it runs, its sender holds leases, and its feedback gives each event of its leases: `offer`, another client offers the sender the lease of a robot; `offer_end`, an offer to the sender ended; `lease_end`, a lease of the sender ended; and `lease_back`, a lease that the sender gave came back to it. Each feedback gives the `robot`, the `giver` and its machine, and the `cause`. A process runs one `lease` goal: a second one is refused with `precondition_failed`, and a new `lease` goal of a restarted process ends the goal of the process before it.
+- `take` takes the lease of a `robot` under a `name`, which a refusal gives to the other clients. It refuses a robot that another client leases with `leased`, unless that client offers the lease to the sender, a sender whose `lease` goal does not run with `precondition_failed`, a robot that is not on the stack and has no lease with `rejected`, and every lease during a halt with `halted`. The call returns once the daemon records the lease.
+- `release` ends a lease of the sender, and returns once the daemon records the release. A lease that the sender received goes back to its giver.
+- `offer` offers leases of the sender, `robots`, to another instance of the launch, `receiver`. Each lease stays its own, and a lease that the sender received is not offered again. The receiver takes each lease with `take`, which changes the holder in one step. An offer ends at the take, at a release by the giver, and when the giver or the receiver is gone.
+- `open` lets any client move the robot of a lease of the sender, and the sender keeps the lease; `close` ends that.
+
+A lease ends at its release, at a halt, and when its holder is gone: the process of the holder ends, or its `lease` goal ends. A lease that the holder received goes back to its giver instead, or ends when the giver is gone too. A restart of the holder, also under the same instance id, or of the daemon, keeps no lease and no offer. A new launch and `peppy stack reset` end every lease and offer. A lease stays when its robot leaves the stack, until its release.
+
+A join and a removal follow the leases. The daemon refuses a join under the name of a robot that another client leases, and the removal of a robot that another client leases, with the failure kind `leased`: only the holder of the lease, or the giver of a lease that its holder received, removes a leased robot. A lease holder that joins a robot through its `stack_copies` target leases it under the name of the robot, and its join is refused during a halt.
+
+## The halt
+
+`halt`, or `peppy fleet halt`, halts the stack with no wait for the clients:
+
+- The daemon writes the halt to its data root, ends every lease with no give-back, and ends every offer.
+- Until `clear_halt`, it refuses every lease, and `check_move` refuses every call, from every client.
+- Each lease holder, each MCP server and `peppy node call` cancel each goal that they sent on a marked member, and send no new command, not even a safe state, so the safety layer of each robot acts. A lease holder keeps its `lease` and `changes` goals, and each goal that is not on a marked member.
+- The halt stays after a restart of the daemon. A second halt changes nothing.
+
+`clear_halt`, or `peppy fleet clear-halt`, ends the halt. It starts nothing again: each client takes its leases again.
+
+## Changes
+
+`changes` is a long goal. Its first feedback gives the listing, with the change `listing`. Then it gives one feedback per change of the fleet, in order, each with the `change`, its `robot`, empty for a change of the whole stack, and the listing after the change, so a client misses no change: `join`, `removal`, `software_stop`, `software_start`, `lease_start`, `lease_end`, `lease_open`, `lease_close`, `offer_start`, `offer_end`, `holder_change`, `halt_start` and `halt_end`. A robot that joins the stack gets its software state in the listing of its `join`.
+
+## Scopes and raw calls
+
+The daemon checks each call of `fleet:v1` against its sender:
+
+- The command line calls every member: it has no scope.
+- An instance of the launch calls the members that the scope of its `fleet` target gives (see [Scoping a daemon target](/advanced_guides/core_node_functions/#scoping-a-daemon-target)).
+- `check_move` answers every sender, and `changes` answers each MCP server of peppy.
+
+A node of the stack reaches the daemon only through its daemon targets. The daemon refuses each of its raw actions, such as a launch, a join, a removal, a build or a run of a node, and each of its raw services that changes the stack, a node, a repository or a federated launch, such as a reset or the stop of a node, from an instance of the stack, with the failure kind `rejected`. An instance of the stack is an instance that the stack of the daemon runs, or an instance of the launch that the daemon coordinates. A node keeps the raw services that read or that it needs to run: the clock, the datastore, health, info, the stack listing, the node information, the documents of an instance and the repository listing.
+
+## Federation
+
+The daemon of the coordinator serves the fleet of a [federated](/advanced_guides/federation/) launch, so a client on any machine reaches the same leases and the same halt:
+
+- The daemon binds each daemon target of an instance of the launch to the daemon of the coordinator, under the per-boot instance id that began the slice of its machine. So the `fleet` slot of an MCP server on a robot machine reaches the coordinator.
+- A daemon that runs a slice of a launch of another machine refuses every call of `fleet:v1` and `stack_copies:v1` with `precondition_failed`, and names the coordinator.
+- `peppy fleet` and `peppy node call` read the stack listing of the daemon that they target, and call the daemon of the coordinator of its launch.
+
+## The command line
+
+| Command | What it does |
+| --- | --- |
+| `peppy fleet list` | Prints the launcher, the halt, and one line per robot: its option, machine, kind and software, its robot commander and its lease. `--json` prints the whole listing |
+| `peppy fleet halt` | Halts the stack |
+| `peppy fleet clear-halt` | Ends the halt |
+
+`peppy node call` asks `check_move` before it calls a marked member, and ends a refused call with the exit code of a refusal, 3. While its goal on a marked member runs, it follows `changes`, and at a halt it cancels the goal as at a Ctrl-C. `peppy stack join` and `peppy stack remove` end a join or a removal that a lease refuses with the exit code 3, and print the failure kind and the message of the daemon.

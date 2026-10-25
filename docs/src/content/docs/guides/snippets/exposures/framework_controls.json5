@@ -1,8 +1,10 @@
-// An exposure whose one target names a daemon interface: `stack_copies:v1`,
-// which the peppy daemon that started the server serves. No node implements
-// it, so the target takes no `links`: the launcher gives it a scope, the
-// robot options a client may add, the features of each, and the most robots
-// of them on the stack.
+// An exposure whose two targets name daemon interfaces: `stack_copies:v1`,
+// the copies of the launch, and `fleet:v1`, the fleet of the stack and its
+// halt. The peppy daemon of the coordinator serves them, and no node
+// implements them, so the targets take no `links`: the launcher gives each a
+// scope. The scope of `stack` gives the robot options a client may add, the
+// features of each, and the most robots of them on the stack; the scope of
+// `fleet` names the members its client may call.
 {
   peppy_schema: "mcp_exposure/v1",
   manifest: { name: "framework_controls", tag: "v1" },
@@ -46,6 +48,32 @@
           description: "Remove a robot from the stack, and wait until its software has stopped.",
           operation: "long_running",
           progress_timeout_ms: 660000,
+        },
+      ],
+    },
+    fleet: {
+      daemon: { name: "fleet", tag: "v1" },
+      services: [
+        {
+          member: "list",
+          tool: "fleet.list",
+          description: "Report the robots of this stack with their software and their leases, and the halt of the stack.",
+          operation: "read_only",
+          deadline_ms: 5000,
+        },
+        {
+          member: "halt",
+          tool: "fleet.halt",
+          description: "Halt the stack: end every lease, and refuse every move until fleet.clear_halt.",
+          operation: "mutating",
+          deadline_ms: 5000,
+        },
+        {
+          member: "clear_halt",
+          tool: "fleet.clear_halt",
+          description: "Clear the halt of the stack. It starts nothing again.",
+          operation: "mutating",
+          deadline_ms: 5000,
         },
       ],
     },

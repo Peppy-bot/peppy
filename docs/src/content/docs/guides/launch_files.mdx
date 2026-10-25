@@ -344,6 +344,8 @@ The scope of each daemon target of the instance, keyed by the target's name: wha
 
 <Code code={frameworkControlsLauncher} lang="json5" title="mcp_framework_controls.json5" />
 
+`{ vacant: "<why>" }` leaves a daemon target unserved: the server of an exposure serves none of its entries, and the daemon refuses each call of a node through it. The reason is required. For example, a launcher whose robots no client may add or remove leaves the `stack` target of its framework endpoint vacant.
+
 When the launcher is read, a scope is a free value, because only the resolution of the deployments knows which targets are daemon targets. A launcher that writes its options in its own file and its endpoint in a fragment gives the scope with a top-level [`set_daemon_scopes`](#adjustments) adjustment instead. A scope belongs to the stack: a [copy](#copies) writes none.
 
 The launch, each join and [`peppy stack resolve`](#auditing-a-composed-launch) parse every scope into the type of its interface before anything starts. These checks read the launcher, the exposure documents and the node manifests only, so `peppy stack resolve` runs those of the exposure deployments also when the nodes cache is empty. It reads the manifest of a node from the nodes cache, and its report names each node deployment whose manifest this machine's caches do not hold, whose checks did not run. A launch refuses a node whose daemon target names an interface, or a tag of it, that this peppy does not serve. The checks refuse:
@@ -351,7 +353,7 @@ The launch, each join and [`peppy stack resolve`](#auditing-a-composed-launch) p
 - `daemon_scopes` on an instance that has no daemon target;
 - a scope key that is not a daemon target of the instance; the refusal says so when the key is a target or a slot that takes `links`;
 - a daemon target with no scope;
-- a scope that does not parse into the type of its interface, for example a [`stack_copies` scope](/advanced_guides/mcp/#scopes) with no option, with an option that names no `model`, with `max_copies` 0, with `features: []`, or with two features of one option on the same axis, or a `fleet` scope with no member;
+- a scope that does not parse into the type of its interface, for example a [`stack_copies` scope](/advanced_guides/mcp/#scopes) with no option, with an option that names no `model`, with `max_copies` 0, with `features: []`, or with two features of one option on the same axis, or a [`fleet` scope](/advanced_guides/core_node_functions/#scoping-a-daemon-target) with no member or with a member named twice;
 - an instance with a daemon target that does not run on the coordinator: one that declares `core_node`, or one of a copy;
 - a `links` key that names a daemon target: the refusal says that the target takes a scope;
 - an instance with two daemon targets of one interface: a call names no target, so a call of an interface goes with the one scope of that interface that the instance has.
@@ -464,7 +466,7 @@ peppy node run --instance-id arm_1 robot_arm:v1 --link controller@ctrl_1
 For the copy `bravo`, whose backbone reached its `max_restarts`, `peppy stack list` on the coordinator shows:
 
 ```
-Copy bravo of openarm on jetson-2: hardware_version=v1,robot_commander=xr_commander
+Copy bravo of openarm on jetson-2: hardware_version=v1,robot_commander=ker_commander
   Instances: bravo_backbone_inst, bravo_camera_inst
 ```
 
@@ -472,7 +474,7 @@ and these commands start it again as it was joined:
 
 ```sh
 peppy stack remove bravo
-peppy stack join openarm:bravo@jetson-2 --with hardware_version=v1,robot_commander=xr_commander
+peppy stack join openarm:bravo@jetson-2 --with hardware_version=v1,robot_commander=ker_commander
 ```
 
 A `restart refused` line names its cause. When the cause is a clock domain whose publisher ended, the line also says what publishes the name now. For a reader a launch or `peppy stack join` started, a launch of the stack starts the reader and its publisher again; join again, after the launch, each copy `peppy stack join` added. For one `peppy node run` started, stop it and run it again with its `--clock`, after starting a publisher with `--publish-clock` when nothing publishes the name.
@@ -826,7 +828,9 @@ An option's fragment can declare `components` of its own: the axes that belong t
                               instances: [{ instance_id: "init_inst", framework: { clock: "simulation" },
                                             arguments: { model: "openarm_v2" }, links: { simulation: "simulation_inst" } }] }] },
       } },
-    { name: "robot_commander",
+    // The robot commander of the robot: a node that drives it outside the
+    // leases and the halt.
+    { name: "robot_commander", role: "robot_commander",
       options: { web_commander: "web_commander.json5", none: "../../common/fragments/none.json5",
                  ker_commander: "ker_commander.json5" } },
     { name: "recorder", cardinality: "zero_or_one", provides: ["recorder_inst"],
@@ -838,6 +842,8 @@ An option's fragment can declare `components` of its own: the axes that belong t
   ],
 }
 ```
+
+`role: "robot_commander"` marks the **robot commander axis** of the option: the option of a copy on that axis is the robot commander of the robot, a node that drives its own robot outside the [leases and the halt](/advanced_guides/fleet/), such as a leader arm, the KER or the browser panel. The fleet listing gives it as the `robot_commander` of the robot, and the option `none`, or an option that marks no axis, gives none. An option marks one axis at most, and an axis that runs as copies takes no role.
 
 A fragment's axes are `one` or `zero_or_one`; how many robots run is the launcher's `robot` axis. They are in reach whenever the fragment runs once: on a launcher whose `robot` axis is `one`, `--with ker_commander` reaches into the robot's fragment, and `--with robot_commander=ker_commander` says so explicitly. A fragment's `adjustments` and `constraints` speak in its own axis names and the launcher's, so the "cameras need a consumer" rule and the recorder's trigger rule live in the robot fragment beside the axes they speak about, and the camera rule and the recorder rule name the launcher's `headset` axis among the consumers that satisfy them. A launcher's own `adjustments` and `constraints` speak in the launcher's axis names. A fragment two levels below the launcher declares no axes: an option of a fragment's axis is a plain fragment.
 

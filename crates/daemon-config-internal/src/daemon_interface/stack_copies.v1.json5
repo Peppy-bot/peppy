@@ -24,8 +24,8 @@
         // The options of the scope with their models and their features, the
         // machines of the federation now, the copies of these options on the
         // stack, in name order, and the addition or removal of a copy of one
-        // of them that runs now. Each copy is a valid `join` goal, which adds
-        // the same copy on the same machines.
+        // of them that runs now. Each copy, without its `running`, is a valid
+        // `join` goal, which adds the same copy on the same machines.
         name: "list",
         response_message_format: {
           options: {

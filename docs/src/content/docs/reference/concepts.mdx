@@ -122,6 +122,17 @@ Each machine runs at most one daemon per Peppy data root. `peppy service serve` 
 
 Because core nodes are addressed by name over the messaging layer, every core node reachable over the same router or federation must have a **unique name**. Each daemon derives a stable, machine-specific name by default, or you can pin one with [`core_node_name`](/advanced_guides/daemon_config/#core_node_name-the-daemons-core-node-name); a daemon whose name is already taken refuses to boot.
 
+## The fleet
+
+The **fleet** of a stack is the robots of the launch that the core node coordinates: each [copy](/guides/launch_files/#copies) of the launch is a robot, a device that a client changes included. The core node serves the fleet in the daemon interface `fleet:v1` (see [Robot leases and the halt](/advanced_guides/fleet/)):
+
+- A **lease** gives one client the right to move one robot. Only a node whose launcher scopes it to hold leases takes one.
+- A **mark** on a contract member, such as `moves_robot`, says what the member does. Each MCP server of peppy, `peppy node call` and each lease holder ask the core node before they call a member with the mark `moves_robot`.
+- The **halt** ends every lease and stops each client that asks before it moves a robot, until a person or a program clears it. It stays after a restart of the core node.
+- The **robot commander** of a robot is the option of its copy on the axis that the launcher marks with `role: "robot_commander"`: a node that drives its own robot outside the leases and the halt, such as a leader arm or the browser panel.
+
+The leases and the halt prevent conflicts between clients. They are not a safety function.
+
 ## Summary
 
 ```
