@@ -4,10 +4,11 @@ mod container_mounts;
 mod copies;
 #[cfg(test)]
 mod fixtures;
+pub(crate) mod fleet_listing;
 mod launch;
 mod list;
 mod reset;
-mod state;
+pub(crate) mod state;
 
 pub(crate) use action::{StackChangeDefaults, StackChangeTimeouts, listen_for_stack_action};
 pub(crate) use benchmark::listen_for_stack_benchmark;

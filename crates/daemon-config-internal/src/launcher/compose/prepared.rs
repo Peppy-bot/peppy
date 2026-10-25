@@ -322,6 +322,18 @@ impl PreparedLauncher {
         Ok(())
     }
 
+    /// The own axis of the copy option `option` that declares the robot
+    /// commander role, if the option declares one.
+    pub fn robot_commander_axis_of(&self, option: &str) -> Option<&str> {
+        let parent = self.repeatable_axis_of(option).ok()?;
+        self.loaded
+            .option(&parent, option)
+            .axes
+            .iter()
+            .find(|axis| axis.is_robot_commander_axis())
+            .map(|axis| axis.name.as_str())
+    }
+
     /// The bare stack of `selection`, composed once, for trial joins.
     pub fn trial_stack<'a>(
         &'a self,

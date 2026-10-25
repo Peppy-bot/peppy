@@ -318,10 +318,8 @@ fn a_restarted_holder_keeps_no_lease_and_its_new_goal_ends_the_old_one() {
         "the restart keeps no lease"
     );
     book.end_holding(&client("headset"), "g1", "late end of the old goal");
-    assert!(
-        book.is_holder(&client("headset")),
-        "the late end leaves the new goal"
-    );
+    book.take(&client("headset"), "alpha", "teleop")
+        .expect("the late end leaves the new goal");
 }
 
 #[test]

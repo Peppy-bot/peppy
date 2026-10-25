@@ -41,6 +41,15 @@ impl LauncherOrigin {
     pub fn repository(name: impl Into<String>) -> Self {
         Self::Repository { name: name.into() }
     }
+
+    /// The launcher as a listing names it: the name of a launcher of the
+    /// repositories, or the path of a launcher file.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Fs(path) => path.display().to_string(),
+            Self::Repository { name } => name.clone(),
+        }
+    }
 }
 
 /// How a launch places the core node links its launcher declares and the

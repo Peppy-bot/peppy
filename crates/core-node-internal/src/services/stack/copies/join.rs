@@ -35,6 +35,7 @@ use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry,
     NodeLogs, NodeRunLogEntry, StackJoinGoal,
 };
+use daemon_config::daemon_interface::fleet::ChangeKind;
 use daemon_config::launcher::{CopyMembership, ScopeCheck};
 use futures::FutureExt;
 use std::{collections::HashMap, panic::AssertUnwindSafe};
@@ -47,9 +48,15 @@ pub(in crate::services::stack) async fn join(
     ctx: StackChangeContext,
 ) -> ChangeEnd {
     let mut logs = JoinLogs::default();
-    let outcome = change_active_launch(&ctx, async |active| {
-        join_inner(&goal, active, &ctx, &mut logs).boxed().await
-    })
+    let robot = goal.copy.name.as_str();
+    let outcome = change_active_launch(
+        &ctx,
+        async |active| join_inner(&goal, active, &ctx, &mut logs).boxed().await,
+        |book| {
+            book.note(ChangeKind::Join, robot);
+            book.lease_joined(Some(&ctx.client), robot);
+        },
+    )
     .await;
     ChangeEnd {
         node_logs: NodeLogs {

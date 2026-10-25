@@ -38,6 +38,7 @@ use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, ParticipantInstancesRemoveRequest, StackListResponse,
     StackRemoveGoal,
 };
+use daemon_config::daemon_interface::fleet::ChangeKind;
 use daemon_config::launcher::{CompositionError, CopyMembership, DeploymentInstance, Placements};
 use peppylib::core_node::transport::poll;
 use peppylib::messaging::Failure;
@@ -64,9 +65,11 @@ pub(in crate::services::stack) async fn remove(
     goal: StackRemoveGoal,
     ctx: StackChangeContext,
 ) -> ChangeEnd {
-    let outcome = change_active_launch(&ctx, async |active| {
-        remove_inner(&goal.name, active, &ctx).await
-    })
+    let outcome = change_active_launch(
+        &ctx,
+        async |active| remove_inner(&goal.name, active, &ctx).await,
+        |book| book.note(ChangeKind::Removal, goal.name.as_str()),
+    )
     .await;
     ChangeEnd::without_node_logs(outcome.map(|()| LaunchResult::default()))
 }

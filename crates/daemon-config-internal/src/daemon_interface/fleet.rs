@@ -240,7 +240,8 @@ pub struct FleetRobot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FleetInstance {
     pub name: String,
-    pub instance_id: String,
+    /// The id that the stack runs the instance under.
+    pub instance: String,
     pub core_node: String,
     pub node: String,
     pub node_tag: String,
@@ -313,7 +314,8 @@ pub struct NodeMachine {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeInstance {
-    pub instance_id: String,
+    /// The id that the stack runs the instance under.
+    pub instance: String,
     pub core_node: String,
     pub robot: String,
 }

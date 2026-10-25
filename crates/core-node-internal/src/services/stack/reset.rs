@@ -145,9 +145,11 @@ async fn handle_stack_reset_request_inner(
         observation,
     )
     .await;
-    // An emptied stack belongs to no launch. Clearing this also releases any
-    // reservation held over this machine, so a reset is a complete escape
-    // hatch rather than one that leaves the daemon refusing future launches.
+    // An emptied stack belongs to no launch, and holds no lease. Clearing
+    // this also releases any reservation held over this machine, so a reset
+    // is a complete escape hatch rather than one that leaves the daemon
+    // refusing future launches.
+    crate::services::stack::state::drop_active_launch(ownership, "the stack was reset");
     ownership.clear();
     StackResetResponse::new().encode().map_err(Into::into)
 }

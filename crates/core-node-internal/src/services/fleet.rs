@@ -5,7 +5,7 @@
 
 mod book;
 
-pub(crate) use book::{BookView, Change, ClientRef, FleetBook, HoldingGoal, Refusal, RefusalKind};
+pub(crate) use book::{ClientRef, FleetBook, Refusal, RefusalKind};
 
 use config::failure_kind::PeppyFailureKind;
 use daemon_config::daemon_interface::fleet::FleetFailureKind;

@@ -197,11 +197,6 @@ impl FleetBook {
         }
     }
 
-    /// Whether `client` is a lease holder: its `lease` goal runs.
-    pub(crate) fn is_holder(&self, client: &ClientRef) -> bool {
-        self.holders.contains_key(client)
-    }
-
     /// The holder of the lease of `robot` and the name of the lease.
     pub(crate) fn lease_of(&self, robot: &str) -> Option<(&ClientRef, &str)> {
         self.leases

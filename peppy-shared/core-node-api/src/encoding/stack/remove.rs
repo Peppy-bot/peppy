@@ -3,6 +3,7 @@
 use capnp::message::Builder;
 use config::runtime::CopyName;
 
+use super::join::GoalClient;
 use super::words::read_copy_name;
 use crate::encoding::{decode_message, encode_message};
 use crate::{Payload, Result, launch_capnp};
@@ -11,26 +12,37 @@ use crate::{Payload, Result, launch_capnp};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackRemoveGoal {
     pub name: CopyName,
+    /// The client of a daemon interface that a daemon sends the goal for;
+    /// `None` when the sender asks for itself.
+    pub client: Option<GoalClient>,
 }
 
 impl StackRemoveGoal {
     pub fn new(name: CopyName) -> Self {
-        Self { name }
+        Self { name, client: None }
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut message = Builder::new_default();
-        message
-            .init_root::<launch_capnp::stack_remove_goal::Builder>()
-            .set_name(self.name.as_str());
+        let mut goal = message.init_root::<launch_capnp::stack_remove_goal::Builder>();
+        goal.set_name(self.name.as_str());
+        if let Some(client) = &self.client {
+            client.write(goal.init_client());
+        }
         encode_message(&message)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let message = decode_message(data)?;
         let goal = message.get_root::<launch_capnp::stack_remove_goal::Reader>()?;
+        let client = if goal.has_client() {
+            Some(GoalClient::read(goal.get_client()?)?)
+        } else {
+            None
+        };
         Ok(Self {
             name: read_copy_name(goal.get_name()?.to_str()?, "StackRemoveGoal.name")?,
+            client,
         })
     }
 }
@@ -50,6 +62,17 @@ mod tests {
         assert_eq!(
             StackRemoveGoal::decode(&remove.encode().unwrap()).unwrap(),
             remove
+        );
+        let for_client = StackRemoveGoal {
+            client: Some(GoalClient {
+                core_node: "cn-one".to_owned(),
+                instance_id: "director_inst".to_owned(),
+            }),
+            ..remove.clone()
+        };
+        assert_eq!(
+            StackRemoveGoal::decode(&for_client.encode().unwrap()).unwrap(),
+            for_client
         );
         for name in ["", "bad/name", "self"] {
             let mut message = Builder::new_default();

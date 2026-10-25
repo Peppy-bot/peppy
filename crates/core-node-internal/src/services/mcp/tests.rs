@@ -285,7 +285,7 @@ fn a_daemon_target_resolves_no_contract() {
     assert_eq!(contract_pins, ["contract `rgb_camera:v1`"]);
     assert_eq!(
         mixed.plan.targets.daemon.keys().collect::<Vec<_>>(),
-        ["stack"]
+        ["fleet", "stack"]
     );
     assert_eq!(
         mixed.plan.targets.contract.iter().collect::<Vec<_>>(),

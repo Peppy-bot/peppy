@@ -1,5 +1,6 @@
 mod action_loop;
 mod clock;
+mod daemon_interfaces;
 mod datastore;
 pub(crate) mod federation;
 pub(crate) mod fleet;
@@ -949,6 +950,11 @@ impl CoreNode {
 
         clear_instances_dir(&self.peppy_dirs);
 
+        // A halt that a daemon before this one wrote stays a halt.
+        self.slice_ownership
+            .fleet
+            .keep_halt_in(self.peppy_dirs.fleet_halt_path());
+
         // Sync `repositories.json5` against the bundled default template so
         // entries that ship with a newer peppy build land in pre-existing
         // user configs.
@@ -1029,6 +1035,19 @@ impl CoreNode {
         for &id in TopicId::ALL {
             setup.push(self.topic_task(id, &ctx));
         }
+        // The daemon interfaces are contracts that the daemon serves, not
+        // methods of the registry: they are served from their compiled-in
+        // documents.
+        setup.push(
+            daemon_interfaces::serve(daemon_interfaces::InterfaceContext::new(
+                self.messenger.clone(),
+                core_node_name,
+                self.instance_id(),
+                Arc::clone(&self.node_stack),
+                Arc::clone(&self.slice_ownership),
+            ))
+            .boxed(),
+        );
         // Background tasks that are not registry methods (nothing a client
         // calls) stay outside the enum-driven loops. Runtime complement to
         // the boot-time presence claim: alarm if a foreign daemon advertises

@@ -124,6 +124,31 @@ pub struct StackJoinGoal {
     pub selections: Vec<SelectionWord>,
     pub arguments: Vec<ArgumentOverride>,
     pub budgets: StackBudgets,
+    /// The client of a daemon interface that a daemon sends the goal for;
+    /// `None` when the sender asks for itself.
+    pub client: Option<GoalClient>,
+}
+
+/// The client of a daemon interface that a daemon sends a stack goal for:
+/// the leases of the robots read it in place of the sender of the goal.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GoalClient {
+    pub core_node: String,
+    pub instance_id: String,
+}
+
+impl GoalClient {
+    pub(crate) fn write(&self, mut wire: launch_capnp::goal_client::Builder<'_>) {
+        wire.set_core_node(self.core_node.as_str());
+        wire.set_instance_id(self.instance_id.as_str());
+    }
+
+    pub(crate) fn read(wire: launch_capnp::goal_client::Reader<'_>) -> Result<Self> {
+        Ok(Self {
+            core_node: wire.get_core_node()?.to_str()?.to_owned(),
+            instance_id: wire.get_instance_id()?.to_str()?.to_owned(),
+        })
+    }
 }
 
 impl StackJoinGoal {
@@ -133,6 +158,7 @@ impl StackJoinGoal {
             selections: Vec::new(),
             arguments: Vec::new(),
             budgets,
+            client: None,
         }
     }
 
@@ -161,6 +187,9 @@ impl StackJoinGoal {
                 serde_json5::to_string(argument.value())
                     .map_err(|error| crate::Error::Encoding(error.to_string()))?,
             );
+        }
+        if let Some(client) = &self.client {
+            client.write(goal.reborrow().init_client());
         }
         self.budgets.write_env_vars(
             goal.init_env_vars(capnp_list_len(self.budgets.env_vars.len(), "env_vars")?),
@@ -202,11 +231,17 @@ impl StackJoinGoal {
             goal.get_node_run_idle_timeout_secs(),
             goal.get_max_timeout_secs(),
         )?;
+        let client = if goal.has_client() {
+            Some(GoalClient::read(goal.get_client()?)?)
+        } else {
+            None
+        };
         Ok(Self {
             copy,
             selections,
             arguments,
             budgets,
+            client,
         })
     }
 }

@@ -332,7 +332,8 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         }
         ctx.slice_ownership
             .record_slice(LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node));
-        *ctx.slice_ownership.active.lock() = Some(
+        super::state::commit_active_launch(
+            &ctx.slice_ownership,
             ActiveLaunch::new(
                 &goal.launch_id,
                 prepared,
@@ -341,7 +342,8 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
                 placements,
                 planned,
             )
-            .with_clocks(clocks, incarnations),
+            .with_clocks(clocks, incarnations)
+            .with_launcher(goal.launcher_origin.label()),
         );
         publish_stdout(
             &ctx,
@@ -502,7 +504,8 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     )
     .with_clocks(clocks.clone(), incarnations)
     .with_watchers(watchers)
-    .with_joinable_resolutions(&joinable_builds);
+    .with_joinable_resolutions(&joinable_builds)
+    .with_launcher(goal.launcher_origin.label());
     active.record_copies(copies, &ordered, &copy_core_nodes);
     let phase = PhaseGoal {
         launch_id: goal.launch_id.clone(),
@@ -612,7 +615,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     let summary = if builds_only {
         "Build complete; no instance started"
     } else {
-        *ctx.slice_ownership.active.lock() = Some(active);
+        super::state::commit_active_launch(&ctx.slice_ownership, active);
         "Launch complete"
     };
     publish_stdout(&ctx, summary, LaunchFeedbackStep::LauncherStep).await;

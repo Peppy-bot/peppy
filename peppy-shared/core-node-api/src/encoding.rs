@@ -58,7 +58,7 @@ pub use stack::benchmark::{
     StackBenchmarkResult,
 };
 pub use stack::budgets::{DEFAULT_IDLE_TIMEOUT_SECS, StackBudgets};
-pub use stack::join::{ArgumentOverride, ArgumentOverrideError, StackJoinGoal};
+pub use stack::join::{ArgumentOverride, ArgumentOverrideError, GoalClient, StackJoinGoal};
 pub use stack::launch::{
     InstanceEndpoints, LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalError,
     LaunchGoalResponse, LaunchOutput, LaunchResult, LauncherOrigin, NodeAddLogEntry,

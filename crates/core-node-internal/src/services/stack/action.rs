@@ -12,6 +12,7 @@ use crate::services::action_loop::{
     GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, expose_daemon_action,
     invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
 };
+use crate::services::fleet::{ClientRef, FleetBook};
 use crate::services::node::common::{encode_response_or_err, panic_message};
 use crate::services::node::gate::{
     Admission, ConcurrencyGate, finish_on_reset, reset_drain_budget,
@@ -157,6 +158,32 @@ impl StackRequest {
             }),
             Self::Launch(_) | Self::Build(_) => None,
         }
+    }
+
+    /// The client the request acts for: the client a daemon sent it for,
+    /// else `sender`.
+    fn client(&self, sender: ClientRef) -> ClientRef {
+        let sent_for = match self {
+            Self::Join(goal) => goal.client.as_ref(),
+            Self::Remove(goal) => goal.client.as_ref(),
+            Self::Launch(_) | Self::Build(_) => None,
+        };
+        sent_for.map_or(sender, |client| {
+            ClientRef::new(client.core_node.clone(), client.instance_id.clone())
+        })
+    }
+
+    /// The refusal of the request by the leases of the robots: a join under
+    /// the name of a robot that another client leases, a join by a lease
+    /// holder during a halt, and the removal of a robot that another client
+    /// leases.
+    fn lease_refusal(&self, book: &FleetBook, client: &ClientRef) -> Option<Failure> {
+        let checked = match self {
+            Self::Join(goal) => book.check_join(Some(client), goal.copy.name.as_str()),
+            Self::Remove(goal) => book.check_removal(Some(client), goal.name.as_str()),
+            Self::Launch(_) | Self::Build(_) => Ok(()),
+        };
+        checked.err().map(|refusal| refusal.into_daemon_failure())
     }
 
     fn process(self, ctx: StackChangeContext) -> futures::future::BoxFuture<'static, ChangeEnd> {
@@ -328,6 +355,10 @@ fn encode_accepted(action: StackAction, log_path: &Path) -> PeppyResult<Payload>
 pub(super) struct StackChangeContext {
     /// Which action the change answers, so its feedback names itself.
     pub(super) action: StackAction,
+    /// The client the change acts for: the client of a daemon interface that
+    /// a daemon sent the goal for, else the sender of the goal. The leases
+    /// of the robots read it.
+    pub(super) client: ClientRef,
     /// Cancelled by a stack reset, by the goal's caller, and by the engine
     /// when the goal's sender is gone. Each phase stops at it as it stops at
     /// a failure of its own, with the same rollback.
@@ -394,6 +425,7 @@ async fn handle_stack_request(
             return;
         }
     };
+    let client = goal.client(ClientRef::new(pending.core_node(), pending.instance_id()));
 
     let mutation = match action_context.slice_ownership.try_begin_change() {
         Ok(mutation) => mutation,
@@ -416,6 +448,15 @@ async fn handle_stack_request(
             ),
         )
         .await;
+        return;
+    }
+
+    if let Some(refusal) = action_context
+        .slice_ownership
+        .fleet
+        .with(|book| goal.lease_refusal(book, &client))
+    {
+        refuse_goal(pending, refusal).await;
         return;
     }
 
@@ -522,6 +563,7 @@ async fn handle_stack_request(
         let idle_timeouts = IdleTimeouts::of(&budgets);
         let ctx = StackChangeContext {
             action,
+            client,
             cancellation: cancellation.clone(),
             messenger,
             bound_core_node,

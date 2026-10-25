@@ -20,6 +20,12 @@ json5-pretty = { workspace = true }
 # check validates with; the daemon derives it when it registers the server
 # and when `peppy mcp catalog` asks.
 peppy-mcp-catalog = { workspace = true }
+# The run-time codec the daemon reads and writes the messages of its daemon
+# interfaces with, from their compiled-in documents.
+message-codec = { workspace = true }
+# The goal path the provider of `stack_copies:v1` sends its stack changes to
+# its own daemon on.
+stack-goal = { workspace = true }
 bytes = "1.10"
 chrono = "0.4"
 hostname = "0.4"

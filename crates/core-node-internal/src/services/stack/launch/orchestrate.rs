@@ -537,7 +537,10 @@ fn topological_sort(
 /// never orphans the previous stack's processes. Also reused by the launch
 /// failure path to tear down a partial new stack. Infallible.
 pub(in crate::services::stack) async fn teardown_and_reset_stack(ctx: &StackChangeContext) {
-    *ctx.slice_ownership.active.lock() = None;
+    crate::services::stack::state::drop_active_launch(
+        &ctx.slice_ownership,
+        "a launch replaced the stack",
+    );
     publish_stdout(
         ctx,
         "Stopping current node stack",

@@ -7,6 +7,14 @@ use serde_json::json;
 /// `stack`, that names `stack_copies:v1`.
 pub(crate) const FRAMEWORK_CONTROLS: &str = include_str!("fixtures/framework_controls.json5");
 
+/// Every interface this peppy serves, as the catalog resolves them.
+fn every_interface() -> Vec<ResolvedInterface<'static>> {
+    DaemonInterface::ALL
+        .into_iter()
+        .map(DaemonInterface::resolved)
+        .collect()
+}
+
 fn reference(name: &str, tag: &str) -> DaemonInterfaceRef {
     DaemonInterfaceRef {
         name: config::runtime::Name::new(name).expect("a name"),
@@ -127,9 +135,8 @@ fn stack_copies_declares_the_kinds_of_the_daemon_beyond_peppy() {
     // exposure to these kinds.
     let exposure =
         PeppyMcpExposureParser::from_content(FRAMEWORK_CONTROLS).expect("the fixture parses");
-    let validated =
-        build_exposure_bundle(&exposure, &[], &[DaemonInterface::StackCopies.resolved()])
-            .expect("the fixture validates against the interface");
+    let validated = build_exposure_bundle(&exposure, &[], &every_interface())
+        .expect("the fixture validates against the interface");
     let bound: Vec<(&str, &MemberFailureKinds)> = validated
         .tasks()
         .map(|(entry, bound)| (entry.name.as_str(), &bound.failure_kinds))
@@ -172,7 +179,10 @@ fn the_daemon_targets_of_an_exposure_resolve_through_the_registry() {
         PeppyMcpExposureParser::from_content(FRAMEWORK_CONTROLS).expect("the fixture parses");
     assert_eq!(
         served_interfaces(&exposure),
-        Ok(vec![("stack".to_owned(), DaemonInterface::StackCopies)])
+        Ok(vec![
+            ("stack".to_owned(), DaemonInterface::StackCopies),
+            ("fleet".to_owned(), DaemonInterface::Fleet),
+        ])
     );
 
     let unserved = PeppyMcpExposureParser::from_content(&FRAMEWORK_CONTROLS.replace(
@@ -499,7 +509,7 @@ fn the_features_of_an_option_hold_their_rules() {
 fn framework_controls_bundle() -> ExposureBundle {
     let exposure =
         PeppyMcpExposureParser::from_content(FRAMEWORK_CONTROLS).expect("the fixture parses");
-    build_exposure_bundle(&exposure, &[], &[DaemonInterface::StackCopies.resolved()])
+    build_exposure_bundle(&exposure, &[], &every_interface())
         .expect("the fixture validates against the interface")
         .bundle
 }

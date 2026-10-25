@@ -8,6 +8,12 @@
 /// constant pins the tag on both publish and subscribe sides.
 pub const CORE_NODE_TAG: &str = "core";
 
+/// The instance id every process of the command line sends as. The presence
+/// generation of each process makes two processes two senders. The daemon
+/// reads it as the command line, which has no scope and acts for the person
+/// or program that runs it.
+pub const COMMAND_LINE_INSTANCE_ID: &str = "peppy-cli";
+
 #[cfg(test)]
 mod tests {
     use super::*;

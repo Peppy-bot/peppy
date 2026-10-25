@@ -1038,7 +1038,8 @@ mod tests {
         );
     }
 
-    /// The design's `framework_controls:v1`: one daemon target, `stack`.
+    /// The design's `framework_controls:v1`: two daemon targets, `stack` and
+    /// `fleet`.
     fn framework_controls() -> PinnedExposure {
         exposure(crate::internal::daemon_interface::tests::FRAMEWORK_CONTROLS)
     }
@@ -1071,10 +1072,16 @@ mod tests {
             plan.targets,
             DeploymentTargets {
                 contract: BTreeSet::new(),
-                daemon: [(
-                    "stack".to_owned(),
-                    crate::internal::daemon_interface::DaemonInterface::StackCopies
-                )]
+                daemon: [
+                    (
+                        "stack".to_owned(),
+                        crate::internal::daemon_interface::DaemonInterface::StackCopies
+                    ),
+                    (
+                        "fleet".to_owned(),
+                        crate::internal::daemon_interface::DaemonInterface::Fleet
+                    ),
+                ]
                 .into_iter()
                 .collect(),
             }
@@ -1088,7 +1095,17 @@ mod tests {
             .map(|tool| tool.name.as_str())
             .chain(bundle.tasks.iter().map(|task| task.name.as_str()))
             .collect();
-        assert_eq!(tools, ["stack.list", "stack.join", "stack.remove"]);
+        assert_eq!(
+            tools,
+            [
+                "stack.list",
+                "fleet.list",
+                "fleet.halt",
+                "fleet.clear_halt",
+                "stack.join",
+                "stack.remove"
+            ]
+        );
     }
 
     #[test]
@@ -1122,7 +1139,10 @@ mod tests {
             plan.targets.contract,
             ["front_camera".to_owned()].into_iter().collect()
         );
-        assert_eq!(plan.targets.daemon.keys().collect::<Vec<_>>(), ["stack"]);
+        assert_eq!(
+            plan.targets.daemon.keys().collect::<Vec<_>>(),
+            ["fleet", "stack"]
+        );
     }
 
     #[test]

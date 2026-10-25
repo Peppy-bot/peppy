@@ -8,7 +8,9 @@ use super::action::StackChangeContext;
 use super::launch::joinable::JoinableBuild;
 use super::launch::watchers::LifecycleWatchers;
 use super::launch::{NodeKey, PlannedDeployment};
+use crate::services::federation::SliceOwnership;
 use config::runtime::{CopyName, CoreNodeName};
+use daemon_config::daemon_interface::fleet::ChangeKind;
 use daemon_config::launcher::{
     ClockIncarnations, CopyRecord, PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks,
     UnitSelection,
@@ -20,6 +22,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveLaunch {
     pub(super) launch_id: String,
+    /// The launcher the launch ran, as the listings name it.
+    pub(super) launcher: String,
     pub(super) prepared: PreparedLauncher,
     pub(super) flat: PeppyLauncher,
     /// The stack's selection: the launcher's own axes and those of the
@@ -47,6 +51,18 @@ pub(crate) struct ActiveLaunch {
     /// The machines watching each source of this plan, as every machine of
     /// the launch was told them. A failed join puts these back.
     pub(super) watchers: LifecycleWatchers,
+}
+
+/// The daemon targets of one instance of a launch, each with the interface
+/// it names and what the launch gave it (a scope or a vacancy, as written),
+/// and whether the instance is a built-in MCP server.
+#[derive(Debug, Clone)]
+pub(crate) struct InstanceTargets {
+    pub(crate) mcp_server: bool,
+    pub(crate) targets: Vec<(
+        daemon_config::daemon_interface::DaemonInterface,
+        serde_json::Value,
+    )>,
 }
 
 /// One copy on the stack: the record the composer keeps of it, and the
@@ -80,7 +96,7 @@ impl StackCopy {
 }
 
 impl ActiveLaunch {
-    pub(super) fn copies(&self) -> Vec<core_node_api::encoding::CopyInfo> {
+    pub(crate) fn copies(&self) -> Vec<core_node_api::encoding::CopyInfo> {
         self.copies
             .values()
             .map(|copy| core_node_api::encoding::CopyInfo {
@@ -104,6 +120,7 @@ impl ActiveLaunch {
     ) -> Self {
         Self {
             launch_id: launch_id.to_owned(),
+            launcher: String::new(),
             prepared,
             flat,
             selection,
@@ -126,6 +143,12 @@ impl ActiveLaunch {
     ) -> Self {
         self.resolved_clocks = resolved;
         self.clocks = incarnations;
+        self
+    }
+
+    /// Records the launcher the launch ran, as the listings name it.
+    pub(super) fn with_launcher(mut self, launcher: String) -> Self {
+        self.launcher = launcher;
         self
     }
 
@@ -182,6 +205,61 @@ impl ActiveLaunch {
             .map(|copy| copy.record.option.as_str())
     }
 
+    /// The daemon targets of the instance `instance_id` of this launch, with
+    /// what the launch gave each, and whether the instance is a built-in MCP
+    /// server; `None` for an id that is no instance of this launch.
+    pub(crate) fn daemon_targets_of(&self, instance_id: &str) -> Option<InstanceTargets> {
+        self.planned.iter().find_map(|planned| {
+            let instance = planned
+                .deployment
+                .instances
+                .iter()
+                .find(|instance| instance.instance_id.as_str() == instance_id)?;
+            Some(InstanceTargets {
+                mcp_server: matches!(
+                    planned.root,
+                    daemon_config::repository::DeploymentRoot::Exposures(_)
+                ),
+                targets: planned
+                    .targets
+                    .daemon
+                    .iter()
+                    .filter_map(|(target, interface)| {
+                        let scope = instance.daemon_scopes.get(target)?;
+                        Some((*interface, scope.clone()))
+                    })
+                    .collect(),
+            })
+        })
+    }
+
+    /// The copy that the instance `instance_id` belongs to: the robot of the
+    /// instance, or `None` for an instance outside any copy.
+    pub(crate) fn robot_of(&self, instance_id: &str) -> Option<&CopyName> {
+        self.copies.values().find_map(|copy| {
+            copy.record
+                .instances
+                .iter()
+                .any(|instance| instance.instance_id.as_str() == instance_id)
+                .then_some(&copy.record.name)
+        })
+    }
+
+    /// Whether the stack holds a copy called `name`.
+    pub(crate) fn holds_copy(&self, name: &str) -> bool {
+        self.copies.keys().any(|copy| copy.as_str() == name)
+    }
+
+    /// The machine of the instance `instance_id` of this launch, or `None`
+    /// for an id that is no instance of this launch.
+    pub(crate) fn machine_of(&self, instance_id: &str) -> Option<&str> {
+        self.planned
+            .iter()
+            .flat_map(|planned| &planned.deployment.instances)
+            .any(|instance| instance.instance_id.as_str() == instance_id)
+            .then(|| self.placements.of(instance_id))
+    }
+
     pub(super) fn check_name(&self, name: &CopyName) -> ChangeResult<()> {
         if self.copies.contains_key(name) {
             return Err(super::precondition_failed(format!(
@@ -191,6 +269,46 @@ impl ActiveLaunch {
         }
         Ok(())
     }
+}
+
+/// Drops the launch this daemon coordinates, for `cause`: a new launch or a
+/// stack reset. Every lease and offer ends with it, and the followers of the
+/// fleet read the removal of each of its copies.
+pub(crate) fn drop_active_launch(ownership: &SliceOwnership, cause: &str) {
+    let mut record = ownership.active.lock();
+    let removed: Vec<String> = record
+        .take()
+        .map(|active| {
+            active
+                .copies
+                .keys()
+                .map(|name| name.as_str().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    ownership.fleet.with(|book| {
+        book.end_every_lease(cause);
+        for robot in &removed {
+            book.note(ChangeKind::Removal, robot);
+        }
+    });
+}
+
+/// Makes `active` the launch this daemon coordinates: the followers of the
+/// fleet read the join of each of its copies.
+pub(super) fn commit_active_launch(ownership: &SliceOwnership, active: ActiveLaunch) {
+    let joined: Vec<String> = active
+        .copies
+        .keys()
+        .map(|name| name.as_str().to_owned())
+        .collect();
+    let mut record = ownership.active.lock();
+    *record = Some(active);
+    ownership.fleet.with(|book| {
+        for robot in &joined {
+            book.note(ChangeKind::Join, robot);
+        }
+    });
 }
 
 pub(super) fn active_launch(ctx: &StackChangeContext) -> ChangeResult<ActiveLaunch> {
