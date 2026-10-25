@@ -71,7 +71,7 @@
                 $items: {
                   $type: "object",
                   name: "string",
-                  instance_id: "string",
+                  instance: "string",
                   core_node: "string",
                   node: "string",
                   node_tag: "string",
@@ -184,7 +184,7 @@
                 $type: "array",
                 $items: {
                   $type: "object",
-                  instance_id: "string",
+                  instance: "string",
                   core_node: "string",
                   // The robot of the instance; empty for an instance outside
                   // any copy.
@@ -352,7 +352,7 @@
                     $items: {
                       $type: "object",
                       name: "string",
-                      instance_id: "string",
+                      instance: "string",
                       core_node: "string",
                       node: "string",
                       node_tag: "string",
@@ -437,7 +437,7 @@
                     $type: "array",
                     $items: {
                       $type: "object",
-                      instance_id: "string",
+                      instance: "string",
                       core_node: "string",
                       robot: "string",
                     },
