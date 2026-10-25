@@ -4,9 +4,10 @@ use super::deps::{
 };
 use crate::services::node::Report;
 use crate::services::repo::cache as repo_cache;
-use config::node::{InterfaceKind, LinkedMember, RefinementProblem, refined_ref};
+use config::node::{InterfaceKind, RefinementProblem, refined_ref};
 use config::{ContractCoverageMismatch, RefinementMismatch};
 use daemon_config::consts::PeppyDirs;
+use daemon_config::contract::RefinedMember;
 use generator::{ConsumedActionMessage, ContractOrigin, DeploymentInterface};
 use node_stack::NodeStack;
 use std::collections::{HashMap, HashSet};
@@ -567,37 +568,19 @@ fn resolve_implements(
 
         // `None`: no member of this kind by this name. `Some(Err)`: the
         // member exists but does not admit the entry's `refine` block.
-        // Each arm is the same three steps (select the member by name,
-        // apply the entry's refinement, hand the result to the generator)
-        // over a different section, refinement type, and payload.
-        macro_rules! resolve {
-            ($members:expr, $entry:expr, $build:path) => {
-                $members
-                    .iter()
-                    .find(|member| member.name == name)
-                    .map(|member| {
-                        refined_ref($entry.refine.as_deref(), member)
-                            .map(|member| $build(member.into_owned(), Some(origin)))
-                    })
-            };
-        }
-        let resolved = match member {
-            LinkedMember::Topic(entry) => resolve!(
-                doc.interfaces.topics,
-                entry,
-                DeploymentInterface::emitted_topic
-            ),
-            LinkedMember::Service(entry) => resolve!(
-                doc.interfaces.services,
-                entry,
-                DeploymentInterface::exposed_service
-            ),
-            LinkedMember::Action(entry) => resolve!(
-                doc.interfaces.actions,
-                entry,
-                DeploymentInterface::exposed_action
-            ),
-        };
+        let resolved = doc.refined_member(member).map(|refined| {
+            refined.map(|member| match member {
+                RefinedMember::Topic(topic) => {
+                    DeploymentInterface::emitted_topic(topic, Some(origin))
+                }
+                RefinedMember::Service(service) => {
+                    DeploymentInterface::exposed_service(service, Some(origin))
+                }
+                RefinedMember::Action(action) => {
+                    DeploymentInterface::exposed_action(*action, Some(origin))
+                }
+            })
+        });
 
         match resolved {
             Some(refined) => {

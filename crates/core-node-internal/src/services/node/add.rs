@@ -30,6 +30,7 @@ use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
 use daemon_config::consts::PeppyDirs;
+use daemon_config::repository::PinnedItem;
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
 use node_stack::build_io::format_bytes;
@@ -1515,22 +1516,16 @@ async fn process_node_add_inner(
         generator::CrateDeployMode::Symlink
     };
     let interface_feedback = interface_step_sink(ctx.announcer.clone());
-    // A goal carrying pins fixes which bytes its contract and pairing
-    // documents are: the launch (or the resolve-ref lowering) decided them
-    // once, and this machine's own cache picks must not override that.
-    // A goal without pins keeps the local resolution rules.
-    let doc_pins = if goal.pins_json5.is_empty() {
-        None
-    } else {
-        let decoded = super::pins::decode_pins(&goal.pins_json5)?;
-        Some(super::pins::DocPins::from_pins(&decoded))
-    };
+    let doc_pins = super::pins::DocPins::from_pins(
+        &add_document_pins(&goal, &node_config, &ctx.action.peppy_dirs, &ctx.announcer).await?,
+    );
+    let document_pins = doc_pins.of_manifest(&node_config.manifest)?;
     let consumed_interfaces = collect_all_deployment_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         &resolve_dep,
         &ctx.action.peppy_dirs,
-        doc_pins.as_ref(),
+        Some(&doc_pins),
         &interface_feedback,
     )?;
     // Generation is synchronous and runs on the blocking pool, holding its
@@ -1612,11 +1607,41 @@ async fn process_node_add_inner(
             .node_stack
             .set_add_log_path(&node_name, &node_tag, ctx.announcer.log().path());
         guard.set_pending_working_dir(Arc::clone(&staging));
+        guard.set_document_pins(document_pins);
     }
 
     debug!("Added node {}:{} (pending build)", node_name, node_tag);
 
     Ok(NodeAddResult::new(node_name, node_tag))
+}
+
+/// The pins of the contract and pairing documents an add generates the
+/// node's code from. A goal carrying pins fixes which bytes its documents
+/// are: the launch (or the resolve-ref lowering) decided them once, and this
+/// machine's own cache picks must not override that. A goal without pins has
+/// them minted here, by the local resolution rules, so every add generates
+/// from pins and the entity records the exact documents its code came from.
+async fn add_document_pins(
+    goal: &NodeAddGoal,
+    node_config: &NodeConfig,
+    peppy_dirs: &PeppyDirs,
+    announcer: &Announcer,
+) -> std::result::Result<Vec<PinnedItem>, String> {
+    if !goal.pins_json5.is_empty() {
+        return super::pins::decode_pins(&goal.pins_json5);
+    }
+    // A manifest that names no document reads no cache, as the generation
+    // that follows does not.
+    if !super::pins::names_documents(&node_config.manifest) {
+        return Ok(Vec::new());
+    }
+    super::pins::doc_pins_for_manifest_sets_async(
+        peppy_dirs,
+        vec![vec![node_config.manifest.clone()]],
+        Arc::new(interface_step_sink(announcer.clone())),
+    )
+    .await
+    .and_then(|mut sets| sets.remove(0))
 }
 
 /// The kind of a failed `push_config`: the root node is not a node a goal

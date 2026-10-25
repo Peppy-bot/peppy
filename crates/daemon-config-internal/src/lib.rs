@@ -122,7 +122,9 @@ pub mod launcher {
 
 // -- contract --
 pub mod contract {
-    pub use crate::internal::contract::{Interfaces, Manifest, PeppyContract, PeppyContractParser};
+    pub use crate::internal::contract::{
+        Interfaces, Manifest, PeppyContract, PeppyContractParser, RefinedMember,
+    };
 }
 
 // -- daemon_interface --

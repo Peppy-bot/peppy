@@ -14,6 +14,7 @@ use core_node_api::{
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::PackagesBaseUrl;
+use daemon_config::repository::PinnedItem;
 use log_export::Iostream;
 use tokio::process::Child;
 use tokio::sync::watch;
@@ -454,6 +455,11 @@ pub struct NodeEntity {
     /// `take_pending_working_dir_if_generation` clears the entity-side slot.
     /// Never persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
+    /// The pins of the contract and pairing documents this entity's manifest
+    /// names, the documents its code was generated from: set by the add that
+    /// pushed the entity, and by the registration of a built-in node. Empty
+    /// for a node whose manifest names no document, and for the root.
+    document_pins: Vec<PinnedItem>,
     /// Broadcasts this entity's stage label on every stage transition
     /// (`Added`/`Building`/`Ready`/`Root`). Observers obtain a receiver via
     /// [`NodeEntity::subscribe_stage`] and react to transitions without
@@ -477,6 +483,7 @@ impl NodeEntity {
             stage,
             generation: next_entity_generation(),
             pending_working_dir: None,
+            document_pins: Vec::new(),
             stage_tx,
         }
     }
@@ -550,6 +557,18 @@ impl NodeEntity {
     /// later `node build` can reuse it without re-cloning the source.
     pub fn set_pending_working_dir(&mut self, guard: Arc<WorkingDirGuard>) {
         self.pending_working_dir = Some(guard);
+    }
+
+    /// The pins of the contract and pairing documents the manifest names,
+    /// as [`Self::set_document_pins`] recorded them.
+    pub fn document_pins(&self) -> &[PinnedItem] {
+        &self.document_pins
+    }
+
+    /// Records the pins of the contract and pairing documents the entity's
+    /// code was generated from.
+    pub fn set_document_pins(&mut self, pins: Vec<PinnedItem>) {
+        self.document_pins = pins;
     }
 
     /// Takes the staged working-directory guard, but only if the entity's

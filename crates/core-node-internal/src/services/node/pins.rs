@@ -393,6 +393,20 @@ impl DocPins {
         }
         Ok(pin)
     }
+
+    /// The pin of every document `manifest` names, each once, in manifest
+    /// order (see [`document_refs`]): the documents an add generates the
+    /// node's code from.
+    pub fn of_manifest(&self, manifest: &Manifest) -> std::result::Result<Vec<PinnedItem>, String> {
+        let mut pins: Vec<PinnedItem> = Vec::new();
+        for (kind, (name, tag, author_sha256)) in document_refs(manifest) {
+            let pin = self.require(kind, name, tag, author_sha256)?;
+            if !pins.contains(pin) {
+                pins.push(pin.clone());
+            }
+        }
+        Ok(pins)
+    }
 }
 
 /// Mints doc pins for manifests, refusing one identity at two contents.
@@ -409,11 +423,46 @@ struct DocPinMinter {
     pins: Vec<PinnedItem>,
 }
 
-/// One document reference in a manifest, reduced to what minting needs. The
-/// four reference lists are four types over the same three fields, so they
-/// are normalized here and walked as one contract stream and one pairing
-/// stream.
+/// One document reference in a manifest, reduced to what a pin lookup needs:
+/// the name, the tag and the author's optional sha256 pin.
 type DocRef<'a> = (&'a str, &'a str, Option<&'a str>);
+
+/// Every contract and pairing document `manifest` names, with its kind, in
+/// manifest order: `manifest.implements`, `depends_on.contracts`,
+/// `depends_on.pairings`, `depends_on.pairing_observers`. The four reference
+/// lists are four types over the same three fields, so they are normalized
+/// here and walked as one stream.
+fn document_refs(manifest: &Manifest) -> impl Iterator<Item = (PinKind, DocRef<'_>)> {
+    let depends_on = manifest.depends_on.as_ref();
+    let implements = manifest
+        .implements
+        .iter()
+        .map(|e| (e.name.as_str(), e.tag.as_str(), e.sha256.as_deref()));
+    let contracts = depends_on.into_iter().flat_map(|d| {
+        d.contracts
+            .iter()
+            .map(|e| (e.name.as_str(), e.tag.as_str(), e.sha256.as_deref()))
+    });
+    let pairings = depends_on.into_iter().flat_map(|d| {
+        d.pairings
+            .iter()
+            .map(|s| (s.name.as_str(), s.tag.as_str(), s.sha256.as_deref()))
+            .chain(
+                d.pairing_observers
+                    .iter()
+                    .map(|s| (s.name.as_str(), s.tag.as_str(), s.sha256.as_deref())),
+            )
+    });
+    implements
+        .chain(contracts)
+        .map(|doc| (PinKind::Contract, doc))
+        .chain(pairings.map(|doc| (PinKind::Pairing, doc)))
+}
+
+/// Whether `manifest` names any contract or pairing document.
+pub(crate) fn names_documents(manifest: &Manifest) -> bool {
+    document_refs(manifest).next().is_some()
+}
 
 impl DocPinMinter {
     fn mint_for_manifest(
@@ -424,44 +473,18 @@ impl DocPinMinter {
         pairings: &[PairingCacheEntry],
         on_feedback: &dyn Fn(Report<'_>),
     ) -> std::result::Result<(), String> {
-        let depends_on = manifest.depends_on.as_ref();
-        let contract_refs = manifest
-            .implements
-            .iter()
-            .map(|e| (e.name.as_str(), e.tag.as_str(), e.sha256.as_deref()))
-            .chain(depends_on.into_iter().flat_map(|d| {
-                d.contracts
-                    .iter()
-                    .map(|e| (e.name.as_str(), e.tag.as_str(), e.sha256.as_deref()))
-            }));
-        for (name, tag, sha256) in contract_refs {
-            self.mint::<ContractCacheEntry>(
-                peppy_dirs,
-                contracts,
-                PinKind::Contract,
-                (name, tag, sha256),
-                on_feedback,
-            )?;
-        }
-
-        let pairing_refs = depends_on.into_iter().flat_map(|d| {
-            d.pairings
-                .iter()
-                .map(|s| (s.name.as_str(), s.tag.as_str(), s.sha256.as_deref()))
-                .chain(
-                    d.pairing_observers
-                        .iter()
-                        .map(|s| (s.name.as_str(), s.tag.as_str(), s.sha256.as_deref())),
-                )
-        });
-        for (name, tag, sha256) in pairing_refs {
-            self.mint::<PairingCacheEntry>(
-                peppy_dirs,
-                pairings,
-                PinKind::Pairing,
-                (name, tag, sha256),
-                on_feedback,
-            )?;
+        for (kind, doc) in document_refs(manifest) {
+            match kind {
+                PinKind::Contract => {
+                    self.mint::<ContractCacheEntry>(peppy_dirs, contracts, kind, doc, on_feedback)?
+                }
+                PinKind::Pairing => {
+                    self.mint::<PairingCacheEntry>(peppy_dirs, pairings, kind, doc, on_feedback)?
+                }
+                PinKind::Node | PinKind::McpExposure => {
+                    unreachable!("a manifest names contract and pairing documents only")
+                }
+            }
         }
         Ok(())
     }
@@ -666,6 +689,61 @@ mod tests {
             err.contains(pin.sha256.as_str()),
             "names the launch pin: {err}"
         );
+    }
+
+    /// The pins an add records are those of the documents its manifest
+    /// names: each once, in manifest order, and none of the other pins a
+    /// launch closure carries.
+    #[test]
+    fn the_pins_of_a_manifest_are_its_documents_once_each_in_manifest_order() {
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{
+                name: "arm",
+                tag: "v1",
+                implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
+                depends_on: {
+                    contracts: [
+                        { name: "camera", tag: "v1", link_id: "eyes" },
+                        { name: "limb_motion", tag: "v1", link_id: "other_arm" },
+                    ],
+                    pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }],
+                    pairing_observers: [{ name: "watch", tag: "v1", role: "arm", link_id: "watched" }],
+                },
+            }"#,
+        )
+        .expect("the manifest parses");
+        let limb_motion = doc_pin(PinKind::Contract, "limb_motion", "limb motion body");
+        let camera = doc_pin(PinKind::Contract, "camera", "camera body");
+        let arm_link = doc_pin(PinKind::Pairing, "arm_link", "arm link body");
+        let watch = doc_pin(PinKind::Pairing, "watch", "watch body");
+        let unrelated = doc_pin(PinKind::Contract, "gripper", "gripper body");
+        let pins = DocPins::from_pins(&[
+            unrelated,
+            watch.clone(),
+            camera.clone(),
+            arm_link.clone(),
+            limb_motion.clone(),
+        ]);
+
+        assert_eq!(
+            pins.of_manifest(&manifest)
+                .expect("every document is pinned"),
+            vec![limb_motion, camera, arm_link, watch]
+        );
+    }
+
+    /// A manifest that names a document the pins do not hold has no pins to
+    /// record: the lookup refuses as it does for the add itself.
+    #[test]
+    fn the_pins_of_a_manifest_refuse_a_document_with_no_pin() {
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{ name: "arm", tag: "v1", implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }] }"#,
+        )
+        .expect("the manifest parses");
+        let err = DocPins::from_pins(&[])
+            .of_manifest(&manifest)
+            .expect_err("a document with no pin refuses");
+        assert!(err.contains("limb_motion:v1"), "{err}");
     }
 
     /// Node pins never enter the doc lookup: a contract that happens to

@@ -295,6 +295,16 @@ pub(crate) async fn run_built_in_add(
             ),
         ));
     }
+    // The server's manifest names the contracts of the spec, and only them.
+    if let Some(entity) = action_context.node_stack.find(&name, &tag) {
+        let contract_pins = resolved
+            .spec
+            .contracts
+            .iter()
+            .map(|document| document.pin.clone())
+            .collect();
+        entity.write().set_document_pins(contract_pins);
+    }
     announcer.line(format!(
         "Registered `{name}:{tag}`, serving {}",
         http_paths.join(", ")

@@ -1,12 +1,13 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeRunTestTimeouts, answer_readiness, poll_core_node_with_timeout,
-    poll_node_info, real_build_and_spawn_instance, send_node_add_then_build,
+    AbortOnDrop, GOAL_TIMEOUT, NodeRunTestTimeouts, RESULT_TIMEOUT, TestPackagesCache,
+    answer_readiness, poll_core_node_failure, poll_core_node_with_timeout, poll_node_info,
+    real_build_and_spawn_instance, send_node_add_and_wait, send_node_add_then_build,
     send_node_run_and_wait, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
-use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
+use core_node_api::encoding::{InstanceDocumentsRequest, NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
 use peppylib::messaging::MessengerHandle;
 use std::sync::Arc;
@@ -399,5 +400,107 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
             urls: vec!["https://127.0.0.1:8080/".to_string()],
         }],
         "a literal binding yields the one URL, carried with its declared kind"
+    );
+}
+
+const CAMERA_CONTRACT: &str = r#"{
+    peppy_schema: "contract/v1",
+    manifest: { name: "uvc_camera", tag: "v1" },
+    interfaces: {
+        services: [
+            { name: "video_stream_info", response_message_format: { width: "u32" } }
+        ]
+    }
+}"#;
+
+const CAMERA_NODE: &str = r#"{
+    peppy_schema: "node/v1",
+    manifest: {
+        name: "fake_uvc_camera", tag: "v1",
+        implements: [
+            { name: "uvc_camera", tag: "v1", link_id: "cam" }
+        ]
+    },
+    interfaces: {
+        services: {
+            exposes: [ { link_id: "cam", name: "video_stream_info" } ]
+        }
+    },
+    execution: {
+        language: "rust",
+        run_cmd: ["sleep", "10"]
+    }
+}"#;
+
+/// `instance_documents` gives the manifest the stack holds and the contract
+/// document the add generated the node's code from, each under its name,
+/// tag and the fingerprint of its content. An add with no pins of its own
+/// records the pin it resolved, so the document is the one the cache held
+/// at the add, read back by that pin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn instance_documents_give_the_manifest_and_the_contracts_of_an_instance() {
+    let started = start_core_node_with_mock_messenger().await;
+    let contract_dir = tempfile::tempdir().expect("contract tempdir");
+    let contract_path = contract_dir.path().join("uvc_camera.json5");
+    std::fs::write(&contract_path, CAMERA_CONTRACT).expect("write contract");
+    TestPackagesCache::new()
+        .contract_fs_entry("uvc_camera", "v1", &contract_path, CAMERA_CONTRACT)
+        .write(&started.peppy_dirs);
+    let node_dir = tempfile::tempdir().expect("node tempdir");
+    write_peppy_json5(node_dir.path(), CAMERA_NODE);
+    send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        node_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete")
+    .completed();
+    let instance_id = Name::new("camera_inst").expect("valid instance id");
+    let _running =
+        real_build_and_spawn_instance(&started, "fake_uvc_camera", "v1", &instance_id).await;
+
+    let documents = poll_core_node_with_timeout(
+        &started,
+        &InstanceDocumentsRequest::new("camera_inst"),
+        Duration::from_secs(5),
+    )
+    .await;
+
+    assert_eq!(documents.core_node, started.core_node_name);
+    assert_eq!(documents.instance_id, "camera_inst");
+    assert_eq!(
+        (documents.manifest.name(), documents.manifest.tag()),
+        ("fake_uvc_camera", "v1")
+    );
+    let manifest = config::node::NodeConfigParser::from_content(documents.manifest.content())
+        .expect("the manifest is a node config");
+    assert_eq!(manifest.manifest.implements[0].link_id, "cam");
+    let contracts: Vec<(&str, &str, &str, &str)> = documents
+        .contracts
+        .iter()
+        .map(|d| (d.name(), d.tag(), d.sha256(), d.content()))
+        .collect();
+    let contract_sha = config::fingerprint::fingerprint_for_bytes(CAMERA_CONTRACT.as_bytes());
+    assert_eq!(
+        contracts,
+        [("uvc_camera", "v1", contract_sha.as_str(), CAMERA_CONTRACT)]
+    );
+    assert!(documents.pairings.is_empty());
+}
+
+/// An id that no instance of the stack has is refused with `rejected`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn instance_documents_refuse_an_unknown_instance() {
+    let started = start_core_node_with_mock_messenger().await;
+    let failure = poll_core_node_failure(&started, &InstanceDocumentsRequest::new("nobody")).await;
+    assert_eq!(failure.kind().as_str(), "rejected");
+    assert!(
+        failure.message().contains("'nobody' not found"),
+        "{}",
+        failure.message()
     );
 }

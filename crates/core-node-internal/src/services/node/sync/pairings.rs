@@ -473,15 +473,7 @@ fn native_topic(
     topic: &daemon_config::pairing::PairingTopic,
     refine: Option<&config::node::TopicRefinement>,
 ) -> Result<config::node::NativeEmittedTopic, Vec<config::node::RefinementProblem>> {
-    config::node::refined(
-        refine,
-        config::node::NativeEmittedTopic {
-            name: topic.name.clone(),
-            qos_profile: topic.qos_profile.clone(),
-            retention: config::node::TopicRetention::LiveOnly,
-            message_format: topic.message_format.clone(),
-        },
-    )
+    config::node::refined(refine, topic.as_native())
 }
 
 /// Turns one slot's bookkeeping into its aggregated diff. Only the emit side
