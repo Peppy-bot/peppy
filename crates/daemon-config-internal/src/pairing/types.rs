@@ -1,6 +1,6 @@
 use crate::internal::contract::{Manifest, validate_named_items};
 use config::{
-    node::{MessageFormat, QoSProfile},
+    node::{MessageFormat, NativeEmittedTopic, QoSProfile, TopicRetention},
     runtime::Name,
     schema::PeppySchema,
 };
@@ -57,6 +57,19 @@ pub struct PairingTopic {
     pub qos_profile: QoSProfile,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_format: Option<MessageFormat>,
+}
+
+impl PairingTopic {
+    /// The topic with the shape of a native topic: its QoS and its message
+    /// format, live only, as every pairing topic is.
+    pub fn as_native(&self) -> NativeEmittedTopic {
+        NativeEmittedTopic {
+            name: self.name.clone(),
+            qos_profile: self.qos_profile.clone(),
+            retention: TopicRetention::LiveOnly,
+            message_format: self.message_format.clone(),
+        }
+    }
 }
 
 /// A pairing topic as written. `retention` is read only to refuse it by name.

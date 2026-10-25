@@ -29,8 +29,8 @@ use crate::services::response::rephrased;
 use config::failure_kind::PeppyFailureKind;
 use config::node::NodeConfig;
 use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource};
-use daemon_config::repository::PinKind;
-use node_stack::{ActionLog, Announcer, VirtualDeptree, WorkingDirGuard};
+use daemon_config::repository::{PinKind, PinnedDocument};
+use node_stack::{ActionLog, Announcer, NodeEntity, VirtualDeptree, WorkingDirGuard};
 use peppylib::messaging::Failure;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -306,18 +306,13 @@ async fn execute_pinned_batch(
         // sub-add's `push_config` drops the previous entity (and its only
         // owning reference to the guard); without this clone the guard
         // would drop and the temp dir backing `config_path` would be
-        // removed before rollback ever runs.
+        // removed before rollback ever runs. The documents its code was
+        // generated from go with it, so `instance_documents` still answers
+        // for an instance of the restored node.
         let previous = action_context
             .node_stack
             .find(node.pin.name.as_str(), node.pin.tag.as_str())
-            .map(|handle| {
-                let guard = handle.read();
-                PreviousConfig {
-                    config: guard.config().clone(),
-                    config_path: guard.config_path().to_path_buf(),
-                    working_dir: guard.pending_working_dir(),
-                }
-            });
+            .map(|handle| PreviousConfig::of(&handle.read()));
 
         if let Err(failure) =
             run_single_batched_add(node, &doc_pins_json5, &goal, &action_context, &announcer).await
@@ -489,11 +484,25 @@ async fn run_single_batched_add(
 /// the sub-add: `config_path` points inside that temp dir, so without
 /// holding the guard the directory would be removed when the sub-add
 /// replaces the entity and rollback would re-install a config at a path
-/// that no longer exists.
+/// that no longer exists. `documents` are the documents the previous
+/// entity's code was generated from, which the restored entity keeps again.
 struct PreviousConfig {
     config: NodeConfig,
     config_path: PathBuf,
     working_dir: Option<Arc<WorkingDirGuard>>,
+    documents: Vec<PinnedDocument>,
+}
+
+impl PreviousConfig {
+    /// The snapshot of `entity`, taken before the batch replaces it.
+    fn of(entity: &NodeEntity) -> Self {
+        Self {
+            config: entity.config().clone(),
+            config_path: entity.config_path().to_path_buf(),
+            working_dir: entity.pending_working_dir(),
+            documents: entity.documents().to_vec(),
+        }
+    }
 }
 
 struct RollbackEntry {
@@ -544,8 +553,12 @@ impl Drop for RollbackGuard {
                         config,
                         config_path,
                         working_dir,
+                        documents,
                     } = prev;
-                    match self.node_stack.push_config(config, false, config_path) {
+                    match self
+                        .node_stack
+                        .push_config(config, documents, false, config_path)
+                    {
                         Ok(()) => {
                             // Reattach the previous working-dir guard so the
                             // restored entity owns the temp dir its
@@ -650,5 +663,63 @@ mod tests {
         assert!(gaps[0].contains("incomplete set"), "got: {gaps:?}");
         assert!(gaps[1].contains("`driver:v2`"), "got: {gaps:?}");
         assert!(gaps[1].contains("camera:v1"), "got: {gaps:?}");
+    }
+
+    /// A batch that fails after it replaced a node puts the previous node
+    /// back with the documents its code was generated from, so
+    /// `instance_documents` still answers for an instance of it.
+    #[test]
+    fn a_rolled_back_replacement_keeps_the_documents_of_the_previous_node() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = materialized("core_root", "v1", &[], false).config;
+        let node_stack = Arc::new(node_stack::NodeStack::new(root, None, dir.path()));
+        let camera = materialized("camera", "v1", &[], true);
+        let previous_path = dir.path().join("previous");
+        let contract = PinnedDocument::new(
+            PinnedItem {
+                kind: PinKind::Contract,
+                name: ItemName::parse("uvc_camera").expect("valid name"),
+                tag: ItemTag::parse("v1").expect("valid tag"),
+                sha256: ManifestFingerprint::of_bytes(b"uvc_camera contract"),
+                origin: camera.pin.origin.clone(),
+            },
+            "uvc_camera contract".to_owned(),
+        );
+        node_stack
+            .push_config(
+                camera.config.clone(),
+                vec![contract.clone()],
+                false,
+                &previous_path,
+            )
+            .expect("push the previous node");
+        let previous = PreviousConfig::of(
+            &node_stack
+                .find("camera", "v1")
+                .expect("the previous node")
+                .read(),
+        );
+        // The add of the batch replaces the node with an entity of its own.
+        node_stack
+            .push_config(
+                camera.config,
+                Vec::new(),
+                false,
+                dir.path().join("replacement"),
+            )
+            .expect("the batch replaces the node");
+        let mut rollback = RollbackGuard::new(Arc::clone(&node_stack));
+        rollback.added.push(RollbackEntry {
+            name: "camera".to_owned(),
+            tag: "v1".to_owned(),
+            previous: Some(previous),
+        });
+
+        drop(rollback);
+
+        let restored = node_stack.find("camera", "v1").expect("the restored node");
+        let restored = restored.read();
+        assert_eq!(restored.config_path(), previous_path);
+        assert_eq!(restored.documents(), [contract]);
     }
 }

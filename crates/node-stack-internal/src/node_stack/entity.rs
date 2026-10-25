@@ -14,6 +14,7 @@ use core_node_api::{
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::peppy_config::PackagesBaseUrl;
+use daemon_config::repository::PinnedDocument;
 use log_export::Iostream;
 use tokio::process::Child;
 use tokio::sync::watch;
@@ -455,6 +456,13 @@ pub struct NodeEntity {
     /// `take_pending_working_dir_if_generation` clears the entity-side slot.
     /// Never persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
+    /// The contract and pairing documents this entity's manifest names, each
+    /// beside its pin, at the bytes its code was generated from: the add or
+    /// the registration that builds the entity gives them to its
+    /// constructor, and they never change after, whatever happens to the
+    /// files they were read from. Empty for a node whose manifest names no
+    /// document, and for the root.
+    documents: Vec<PinnedDocument>,
     /// Broadcasts this entity's stage label on every stage transition
     /// (`Added`/`Building`/`Ready`/`Root`). Observers obtain a receiver via
     /// [`NodeEntity::subscribe_stage`] and react to transitions without
@@ -471,13 +479,14 @@ impl NodeEntity {
     /// constructor (`new`, `built_in`, `root`, `from_snapshot`) routes
     /// through here so the generation bump and the watch initialization
     /// cannot drift apart.
-    fn with_stage(config: NodeConfig, stage: NodeStage) -> Self {
+    fn with_stage(config: NodeConfig, stage: NodeStage, documents: Vec<PinnedDocument>) -> Self {
         let (stage_tx, _) = watch::channel(stage.to_serialized());
         Self {
             config,
             stage,
             generation: next_entity_generation(),
             pending_working_dir: None,
+            documents,
             stage_tx,
         }
     }
@@ -485,11 +494,12 @@ impl NodeEntity {
     /// Creates a built-in node, ready to start: its artifact is `launch`,
     /// whose executable the spawn runs rather than the manifest's `run_cmd`.
     /// `config_path` points at the manifest the daemon derived and wrote for
-    /// it.
+    /// it, and `documents` are the documents that manifest names.
     pub fn built_in<P: Into<PathBuf>>(
         config: NodeConfig,
         config_path: P,
         launch: BuiltInLaunch,
+        documents: Vec<PinnedDocument>,
     ) -> Self {
         Self::with_stage(
             config,
@@ -498,6 +508,7 @@ impl NodeEntity {
                 artifact: Artifact::BuiltIn(launch),
                 instances: Vec::new(),
             },
+            documents,
         )
     }
 
@@ -521,13 +532,19 @@ impl NodeEntity {
 
     /// Creates a new `NodeEntity` in the [`NodeStage::Added`] stage. The
     /// `config_path` should point at the `peppy.json5` file that supplied
-    /// `config`.
-    pub fn new<P: Into<PathBuf>>(config: NodeConfig, config_path: P) -> Self {
+    /// `config`, and `documents` are the documents its code was generated
+    /// from.
+    pub fn new<P: Into<PathBuf>>(
+        config: NodeConfig,
+        config_path: P,
+        documents: Vec<PinnedDocument>,
+    ) -> Self {
         Self::with_stage(
             config,
             NodeStage::Added {
                 config_path: config_path.into(),
             },
+            documents,
         )
     }
 
@@ -551,6 +568,12 @@ impl NodeEntity {
     /// later `node build` can reuse it without re-cloning the source.
     pub fn set_pending_working_dir(&mut self, guard: Arc<WorkingDirGuard>) {
         self.pending_working_dir = Some(guard);
+    }
+
+    /// The contract and pairing documents the manifest names, at the bytes
+    /// the entity's code was generated from.
+    pub fn documents(&self) -> &[PinnedDocument] {
+        &self.documents
     }
 
     /// Takes the staged working-directory guard, but only if the entity's
@@ -1457,6 +1480,7 @@ impl NodeEntity {
                 config_path: root_path,
                 instance: Box::new(instance),
             },
+            Vec::new(),
         )
     }
 
@@ -1493,7 +1517,7 @@ impl NodeEntity {
                 instances,
             },
         };
-        Self::with_stage(config, stage)
+        Self::with_stage(config, stage, Vec::new())
     }
 
     /// Records on the slot that the process of a `Running` instance exited
@@ -2573,6 +2597,7 @@ mod tests {
         let handle = Arc::new(RwLock::new(NodeEntity::new(
             container_sensor_config(),
             "/tmp/sensor/peppy.json5",
+            Vec::new(),
         )));
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel();
 
@@ -2607,6 +2632,7 @@ mod tests {
             sensor_config(),
             PathBuf::from("/tmp/built_in/sensor/peppy.json5"),
             built_in_launch(),
+            Vec::new(),
         );
         assert_eq!(entity.stage().to_serialized(), SerializedNodeStage::Ready);
         assert!(
@@ -2634,7 +2660,7 @@ mod tests {
             "a built-in node spawns without a build"
         );
         assert!(
-            NodeEntity::new(sensor_config(), "/tmp/sensor/peppy.json5")
+            NodeEntity::new(sensor_config(), "/tmp/sensor/peppy.json5", Vec::new())
                 .built_in_launch()
                 .is_none(),
             "a sourced node carries no recipe"
@@ -3514,6 +3540,7 @@ mod tests {
         let handle = Arc::new(RwLock::new(NodeEntity::new(
             sensor_config(),
             "/tmp/sensor/peppy.json5",
+            Vec::new(),
         )));
         let generation = handle.read().generation;
 

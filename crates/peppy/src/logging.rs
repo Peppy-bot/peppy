@@ -141,13 +141,27 @@ where
     }
 }
 
-pub fn init_tracing(style: LogStyle) {
-    subscriber(
-        style,
-        env_filter(style),
-        peppy::colors_enabled(),
-        std::io::stdout,
-    )
+/// Where the log lines of a command go.
+#[derive(Clone, Copy)]
+pub enum LogSink {
+    /// Standard output, beside the output of the command.
+    Stdout,
+    /// Standard error, for a command whose standard output carries data that
+    /// a program reads, such as the JSON lines of `peppy node call`.
+    Stderr,
+}
+
+pub fn init_tracing(style: LogStyle, sink: LogSink) {
+    let filter = env_filter(style);
+    match sink {
+        LogSink::Stdout => subscriber(style, filter, peppy::colors_enabled(), std::io::stdout),
+        LogSink::Stderr => subscriber(
+            style,
+            filter,
+            peppy::stderr_colors_enabled(),
+            std::io::stderr,
+        ),
+    }
     .init();
 }
 

@@ -70,9 +70,10 @@ kind `busy`.
 
 A Ctrl+C sends the daemon a cancel: the measurement in progress stops, no other
 one starts, and the command prints `Benchmark was cancelled by its caller.` and
-exits with code 130. A benchmark changes nothing on the stack, so the next one
-runs at once. A second Ctrl+C stops the wait for the end of the benchmark once
-the cancel reached the daemon, and a third one ends the command at once.
+exits with code 5, the exit status of a cancelled goal. A benchmark changes
+nothing on the stack, so the next one runs at once. A second Ctrl+C stops the
+wait for the end of the benchmark once the cancel reached the daemon and exits
+with code 130, and a third one ends the command at once.
 
 ## Reading the tables
 

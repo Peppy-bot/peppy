@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
 use core_node_api::encoding::{RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshResult};
-use peppylib::messaging::GoalAnswer;
 use tracing::{info, warn};
 
 use super::identity_label;
-use crate::commands::action_poll::{CtrlC, FollowedGoal, poll_action_to_completion};
+use crate::commands::action_poll::{AfterGoal, CtrlC, FollowedGoal, poll_action_to_completion};
 use crate::commands::node::TimeoutConfig;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
@@ -34,12 +33,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to send repo refresh goal: {}", e)))?;
 
-    if let GoalAnswer::Refused(refusal) = &action_handle.goal_reply().answer {
-        return Err(Error::ExecutionFailed(crate::commands::reply_failure_text(
-            "Repository refresh refused",
-            refusal,
-        )));
-    }
+    crate::commands::action_poll::accepted_goal(&action_handle, "Repository refresh")?;
 
     info!("Refreshing repositories...");
 
@@ -68,6 +62,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
             doing: "Repository refresh",
             log_path: None,
         },
+        AfterGoal::CommandEnds,
         &mut CtrlC::listen(),
     )
     .await?;

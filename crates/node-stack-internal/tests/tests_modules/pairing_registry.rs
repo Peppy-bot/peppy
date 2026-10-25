@@ -425,12 +425,18 @@ fn pairings_are_dag_invisible() {
     stack
         .push_config(
             arm_controller_config(),
+            Vec::new(),
             false,
             PathBuf::from("/tmp/ctrl.json5"),
         )
         .expect("a pairing-only node pushes with no dependencies present");
     stack
-        .push_config(robot_arm_config(), false, PathBuf::from("/tmp/arm.json5"))
+        .push_config(
+            robot_arm_config(),
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp/arm.json5"),
+        )
         .expect("push arm");
 
     let graph = stack.to_serialized_graph();

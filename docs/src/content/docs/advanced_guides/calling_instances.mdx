@@ -1,0 +1,204 @@
+---
+title: Calling a running instance
+description: Call any service or action of a running instance, print the messages of its topics, and show its interfaces from the command line, with no new code
+sidebar:
+  order: 18
+---
+
+Three commands reach the members of a running instance from the command line, with no code of your own:
+
+- `peppy node describe <instance>` shows the interfaces of the instance with their message formats.
+- `peppy node call <instance> <member>` calls one service or action and prints how the call ends.
+- `peppy node echo <instance> <topic>` prints the messages of one topic until Ctrl+C.
+
+People at a robot and scripts use the same commands. Example: a person sends an arm to its home position with `peppy node call`, and a CI script checks the exit status of the same command.
+
+## What the commands read
+
+The commands read the pinned documents of the instance, never the code of its node. The daemon that runs the instance gives them:
+
+- The manifest of the node, as the stack holds it.
+- Each contract document and each pairing document that the manifest names, at the bytes that the node's code was generated from. `peppy node add` reads each of these documents once and the daemon keeps their bytes with the node. An edit of a document file after the add changes nothing that the commands read; to use the edited document, add the node again.
+
+Each document comes with its name, its tag and the SHA-256 of its content.
+
+So the commands reach every member that the pinned manifest declares:
+
+- The members of the contracts that the node implements (`manifest.implements`).
+- The members that the node declares itself, such as `set_depth_gain` of a RealSense camera. These are the entries of `interfaces` with no `link_id`.
+- The topics that the node emits through its [pairing](/advanced_guides/pairing/) slots.
+
+Each message format is the one of the manifest. A manifest can [refine](/advanced_guides/contract_implementation/) the format of a contract, for example to give an array a fixed length, and the commands use the refined format.
+
+The `--core-node` flag selects the daemon that runs the instance. Without it, the commands ask the local daemon.
+
+## Naming a member
+
+Each member has a full name, which is its path in the code generated for its node:
+
+| Member | Full name |
+| --- | --- |
+| A member of a contract that the node implements | `<slot>.<member>`, for example `motion.move_arm` |
+| A topic that the node emits through a pairing slot | `<slot>.<topic>`, for example `controller.joint_states` |
+| A member of the node's own | `<member>`, for example `set_depth_gain` |
+
+`<slot>` is the `link_id` of the slot in the manifest of the node. The slots of a manifest have distinct names, so a node that implements two tags of one contract, or holds one pairing in two slots, gives each member a full name for each slot.
+
+The name of a member without its slot is enough when no member has that full name and one member of the instance has that name: `peppy node call arm_inst move_arm`. `peppy node call` looks among the services and the actions, and `peppy node echo` among the topics. A name that no member has, or that two members have, is refused, and the error lists the full names that it could mean.
+
+A service and an action can have one full name. `peppy node call --kind service` or `--kind action` then selects one of them.
+
+## `peppy node describe`
+
+```sh
+peppy node describe arm_inst
+```
+
+```text
+Instance arm_inst of arm:v1 on core node robot-7
+Manifest sha256: 3629…a5a7
+
+Contract limb_motion:v1 through slot `motion` (sha256: d2d4…e307)
+  service motion.check_move
+    request: {
+      joints: {
+        $type: "array",
+        $items: "f64"
+      }
+    }
+    response: {
+      reachable: "bool"
+    }
+    failure kind unreachable: No plan to the target
+  action motion.move_to
+    goal: {
+      joints: {
+        $type: "array",
+        $items: "f64",
+        $length: 3
+      }
+    }
+    feedback: {
+      progress: "f64"
+    }
+    result: {
+      reached: "bool"
+    }
+    failure kind unreachable: No plan to the target
+
+Own members of arm:v1
+  service set_gain
+    request: {
+      value: "i32"
+    }
+    response: {
+      current_value: "i32"
+    }
+
+Pairing arm_link:v1 through slot `controller`, role `arm` (sha256: dbfa…d07c)
+  topic controller.joint_states (qos: SensorData)
+    message: {
+      positions: {
+        $type: "array",
+        $items: "f64"
+      }
+    }
+```
+
+Each member shows the full name that `call` and `echo` take, its message formats, and the [failure kinds](/advanced_guides/actions/#how-a-goal-ends) of its contract that it lists. Every member can also give the failure kinds of peppy, which the listing does not repeat. `--json` prints the same as one JSON document, for a program.
+
+## `peppy node call`
+
+```sh
+peppy node call arm_inst move_to --set 'joints=[0.1, 0.2, 0.3]'
+```
+
+### The message
+
+Three flags give the request of a service or the goal of an action:
+
+- `--args <file.json5>` gives the whole message.
+- `--set <field>=<value>` gives one field. A field whose JSON value is a string (a string, bytes, a time, a 64-bit integer) takes the value as written. Any other field takes the value as JSON5.
+- `--file <field>=@<path>` gives one field from a file: the text of the file for a string field, its bytes for a bytes field. A directory, `@<directory>`, gives a list of `{ path, content }`, one item for each file under the directory, with paths relative to it, in the order of the paths. The field must be a list of objects with a string `path` and a string or bytes `content`.
+
+`--set` and `--file` name a field by its path from the root of the message, with `.` between the names: `--set pose.position.x=0.2`. They complete the message that `--args` gives. A field that two flags name, or a field in an object that another flag gives, is refused.
+
+The values follow the JSON of the MCP server: a 64-bit integer is a decimal string, bytes are base64, and a time is an RFC 3339 string. So `--set count=18446744073709551615` and `--set stamp=2026-10-25T10:00:00Z` take the value as written.
+
+Message formats have no map type. A contract that carries a map, such as the roles of a run, declares a string field that holds JSON5 text, and `--set roles='{ arm: "openarm" }'` gives that text as written.
+
+The command checks the message against the format of the pinned manifest before it sends it, and names the field that does not fit.
+
+### The output
+
+The command sends the call itself, as a client with no node, with the sender identity of its process. It prints JSON lines on standard output, and its log lines on standard error:
+
+- A `{"feedback": …}` line for each feedback message of a goal.
+- Then one line that says how the call ended, with an `outcome`:
+
+| `outcome` | Fields | Exit status |
+| --- | --- | --- |
+| `completed` | `response` of a service, or `result` of a goal | 0 |
+| `refused` | `failure_kind`, `message` | 3 |
+| `failed` | `failure_kind`, `message` | 4 |
+| `cancelled` | `reason`, `result` | 5 |
+| `abandoned` | `message` | 6 |
+| `expired` | `message` | 7 |
+
+```text
+{"feedback":{"progress":0.5}}
+{"feedback":{"progress":1.0}}
+{"outcome":"completed","result":{"reached":true}}
+```
+
+An error reply of a service is a refusal by its provider: `outcome` is `refused`, and the command exits with 3. A response that lists errors, such as that of a checker, is a response: the command exits with 0, and the caller reads the errors in the output.
+
+A provider that gives a failure kind that the contract of the member does not list breaks its contract. The command writes a warning on standard error, and reports the refusal or the failure as the provider gave it, with its exit status.
+
+An error of the command itself, such as an instance that the daemon does not run, a member that the instance does not have, or a message that does not fit its format, prints no line on standard output and exits with 1. A command line that does not parse exits with 2.
+
+### Ctrl+C
+
+The first Ctrl+C during a goal sends the provider a cancel, and the command follows the goal to its end. A goal that the cancel ends gives `cancelled` and the exit status 5, also for a member whose normal end is a cancel, such as `record_episode`, which saves its episode at the cancel: the caller reads that status as the end that it asked for. A goal that ended before the cancel reached it keeps its end.
+
+A second Ctrl+C exits at once, with 130. The process of the command ends, so the provider cancels the goal of its sender, which is gone. A command whose process ends for another reason, for example when its terminal closes, cancels its goal the same way.
+
+A service cannot be cancelled: a Ctrl+C while the command waits for a response exits at once, with 130.
+
+## `peppy node echo`
+
+```sh
+peppy node echo arm_inst limb_states
+```
+
+```text
+{"joints":[0.1,0.2,0.3]}
+{"joints":[0.11,0.2,0.3]}
+```
+
+The command prints each message of the topic as one JSON object on a line, until Ctrl+C, and exits with 0. It subscribes to the topic by its key, as a client with no node, so it needs no slot that a launcher binds:
+
+- A topic of a contract or of the node's own comes from the instance alone. A topic that keeps its newest messages for late subscribers (`retention`) gives them first.
+- A topic of a pairing comes as an observer of every pair that the slot of the instance holds. A slot that holds no pair publishes nothing, so the command prints nothing until the instance pairs.
+
+A message that does not fit the format of the pinned manifest is a warning on standard error. The command also ends with 0 when the program that reads its output closes it, for example `peppy node echo arm_inst limb_states | head -n 5`.
+
+The command never slows the instance down. When it prints slower than the topic publishes, for example on a paused terminal or behind a slow reader of its output, it skips the oldest messages that it did not print yet.
+
+## Exit statuses of the other commands
+
+The commands that send the daemon a goal give an exit status for each end of the goal, by the same rules: `peppy stack launch`, `build`, `join`, `remove` and `benchmark`, `peppy node add`, `build` and `run`, and `peppy repo refresh`.
+
+| Exit status | End |
+| --- | --- |
+| 0 | The goal completed |
+| 1 | An error of the command, for example a budget that ran out |
+| 2 | The command line does not parse |
+| 3 | The daemon refused the goal, or answered a request with an error reply |
+| 4 | The goal failed |
+| 5 | The goal was cancelled |
+| 6 | The daemon abandoned the goal |
+| 7 | The end of the goal expired before the command read it |
+| 130 | A second Ctrl+C stopped the wait for the end of the goal, or a Ctrl+C stopped a command with more goals to send, such as `peppy node add --run`, after a goal that completed before the cancel took effect |
+
+Each of these commands sends a cancel at the first Ctrl+C and exits with the status of the end that the goal then has (see [Stopping a stack command with Ctrl+C](/guides/launch_files/#stopping-a-stack-command-with-ctrlc)). `peppy node stop`, `remove`, `init` and `sync`, and `peppy repo add`, `list`, `exclude` and `remove` send the daemon a request that is not a goal, and exit with 3 when the daemon answers with an error reply.

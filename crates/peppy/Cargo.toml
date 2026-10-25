@@ -19,6 +19,21 @@ node-stack = { workspace = true }
 latency-report = { workspace = true }
 # `peppy mcp serve`, the built-in MCP server.
 mcp-server = { workspace = true }
+# The codec and the type-erased clients `peppy node call` and `echo` reach a
+# member with, the ones the MCP server uses.
+message-codec = { workspace = true }
+# The canonical JSON value rules of the codec (base64 for bytes) that
+# `peppy node call --file` writes a file's bytes with. It also pulls the MCP
+# server-side dependency tree (rmcp server, axum, image, jsonschema) into the
+# cargo cache, which the full-stack MCP e2e's offline pre-launch build of the
+# generated node resolves from; its rmcp `server` feature is what makes the
+# client capability builder available to that test.
+peppy-mcp-runtime = { workspace = true }
+# The fields of a message format that `peppy node call --set` walks.
+indexmap = "2.2"
+# The `--args` file and the `--set` values of `peppy node call`.
+serde_json5 = "0.2"
+thiserror = "2.0"
 # The goal path of `stack launch`, `build`, `join` and `remove`, and the
 # default budgets of their flags.
 stack-goal = { workspace = true }
@@ -87,9 +102,6 @@ multi_daemon_e2e = ["pmi/build_zenoh", "dep:testcontainers", "core-node/debug-em
 
 [dev-dependencies]
 tempfile = "3.8"
-# json5 parsing of on-disk state/config fixtures in the integration tests; the
-# library crate itself no longer reads json5 (that moved to auth and daemon).
-serde_json5 = "0.2"
 # In-process HTTP mock server for the auth integration tests (cli/config, OIDC
 # discovery, device/token endpoints, /me, /logout); blocking API, fits ureq.
 httpmock = "0.8"
@@ -110,11 +122,6 @@ node-stack = { workspace = true, features = ["test-support"] }
 # cargo target cache the pre-launch builds reuse.
 generator = { workspace = true }
 config-test-support = { workspace = true }
-# Also pulls the MCP server-side dependency tree (rmcp server, axum, image,
-# jsonschema) into the cargo cache, which the offline pre-launch build of
-# the generated node resolves from; its rmcp `server` feature is what makes
-# the client capability builder available to the test.
-peppy-mcp-runtime = { workspace = true }
 mcp-test-support = { workspace = true }
 rmcp = { workspace = true, features = [
     "client",

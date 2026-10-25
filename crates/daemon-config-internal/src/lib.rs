@@ -122,7 +122,9 @@ pub mod launcher {
 
 // -- contract --
 pub mod contract {
-    pub use crate::internal::contract::{Interfaces, Manifest, PeppyContract, PeppyContractParser};
+    pub use crate::internal::contract::{
+        Interfaces, Manifest, PeppyContract, PeppyContractParser, RefinedMember,
+    };
 }
 
 // -- daemon_interface --
@@ -157,9 +159,9 @@ pub mod mcp_exposure {
 pub mod mcp_deployment {
     pub use crate::internal::mcp_deployment::{
         BUILT_IN_TAG, DEFAULT_PORT, DeploymentTargets, ExposureViolations, McpDeploymentError,
-        McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, Pinned, PinnedContract, PinnedDocument,
-        PinnedExposure, RUN_COMMAND, SPEC_ENV_VAR, SourceConflict, built_in_identity,
-        endpoint_label, plan_deployment,
+        McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, Pinned, PinnedContract, PinnedExposure,
+        RUN_COMMAND, SPEC_ENV_VAR, SourceConflict, built_in_identity, endpoint_label,
+        plan_deployment,
     };
 }
 
@@ -173,8 +175,8 @@ pub mod repository {
     pub use crate::internal::repository::{
         DeclaredItem, DeclaredPaths, DeploymentPins, DeploymentRoot, EntryOrigin, GitCommit,
         GitCommitError, IndexedItem, ItemName, ItemTag, ManifestFingerprint,
-        ManifestFingerprintError, PeppyRepositoryIndexParser, PinKind, PinnedItem, RepoItemKind,
-        RepoPathError, RepoRelativePath, RepositoryIndex, TaggedSection, UniqueMap,
+        ManifestFingerprintError, PeppyRepositoryIndexParser, PinKind, PinnedDocument, PinnedItem,
+        RepoItemKind, RepoPathError, RepoRelativePath, RepositoryIndex, TaggedSection, UniqueMap,
     };
 }
 

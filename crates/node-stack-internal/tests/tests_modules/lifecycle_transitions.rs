@@ -50,7 +50,7 @@ fn push_config_creates_entity_in_added_stage() {
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
 
     stack
-        .push_config(sensor_config(), false, &config_path)
+        .push_config(sensor_config(), Vec::new(), false, &config_path)
         .expect("push_config should succeed");
 
     let handle = stack.find("sensor", "v1").expect("entity should exist");
@@ -293,7 +293,7 @@ async fn push_config_resets_existing_entity_to_added() {
     // Re-push with the same config but a different config_path. The entity
     // should be reset to Added with the new config_path; artifact_path is gone.
     stack
-        .push_config(sensor_config(), false, &config_path_v2)
+        .push_config(sensor_config(), Vec::new(), false, &config_path_v2)
         .expect("second push_config should succeed");
 
     let handle_after = stack.find("sensor", "v1").expect("entity should exist");
@@ -365,14 +365,25 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     };
 
     stack
-        .push_config(producer_a, false, PathBuf::from("/tmp/producer_a.json5"))
+        .push_config(
+            producer_a,
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp/producer_a.json5"),
+        )
         .expect("push producer_a");
     stack
-        .push_config(producer_b, false, PathBuf::from("/tmp/producer_b.json5"))
+        .push_config(
+            producer_b,
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp/producer_b.json5"),
+        )
         .expect("push producer_b");
     stack
         .push_config(
             consumer_pointing_at("producer_a"),
+            Vec::new(),
             false,
             PathBuf::from("/tmp/consumer_v1.json5"),
         )
@@ -387,6 +398,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     stack
         .push_config(
             consumer_pointing_at("producer_b"),
+            Vec::new(),
             false,
             PathBuf::from("/tmp/consumer_v2.json5"),
         )
@@ -417,7 +429,7 @@ async fn push_config_rejects_replacement_with_live_instances() {
     .await;
 
     let err = stack
-        .push_config(sensor_config(), false, &config_path_v2)
+        .push_config(sensor_config(), Vec::new(), false, &config_path_v2)
         .expect_err("re-push should be rejected when live instances exist");
     match err {
         NodeStackError::CannotOverwriteNodeWithLiveInstances {
@@ -461,6 +473,7 @@ async fn concurrent_builds_are_rejected_immediately() {
     stack
         .push_config(
             sensor_config_with_build_cmd(&blocking_cmd),
+            Vec::new(),
             false,
             &config_path,
         )
@@ -707,7 +720,7 @@ async fn try_build_sensor_from(
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
     stack
-        .push_config(config, false, &config_path)
+        .push_config(config, Vec::new(), false, &config_path)
         .expect("push_config should succeed");
     let handle = stack.find("sensor", "v1").expect("entity should exist");
     NodeEntity::build(
@@ -776,6 +789,7 @@ async fn build_runs_build_cmd_for_process_node() {
     stack
         .push_config(
             sensor_config_with_build_cmd("echo built > marker.txt"),
+            Vec::new(),
             false,
             &config_path,
         )
@@ -908,7 +922,12 @@ async fn a_missing_working_dir_fails_the_build_at_fingerprinting() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
     stack
-        .push_config(sensor_config_with_build_cmd("true"), false, &config_path)
+        .push_config(
+            sensor_config_with_build_cmd("true"),
+            Vec::new(),
+            false,
+            &config_path,
+        )
         .expect("push_config should succeed");
     let handle = stack.find("sensor", "v1").expect("entity should exist");
     let h = build_harness();
@@ -1318,7 +1337,12 @@ fn start_harness(instance_id_str: &str) -> (Name, real_lifecycle::LifecycleHarne
 async fn prepare_and_spawn_rejects_when_not_built() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     stack
-        .push_config(sensor_config(), false, PathBuf::from("/tmp/sensor"))
+        .push_config(
+            sensor_config(),
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp/sensor"),
+        )
         .expect("push_config should succeed");
     let handle = stack.find("sensor", "v1").expect("entity should exist");
     let (instance_id, h) = start_harness("test-inst-1");
@@ -1932,7 +1956,7 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
         proceed_file.display()
     ));
     stack
-        .push_config(blocking_config, false, &config_path)
+        .push_config(blocking_config, Vec::new(), false, &config_path)
         .expect("push_config should succeed");
     let handle = stack.find("sensor", "v1").expect("entity should exist");
     let captured_generation = handle.read().generation();
@@ -1980,7 +2004,11 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
         ),
         "a generation mismatch must not roll back"
     );
-    let unrelated_handle = Arc::new(RwLock::new(NodeEntity::new(sensor_config(), &config_path)));
+    let unrelated_handle = Arc::new(RwLock::new(NodeEntity::new(
+        sensor_config(),
+        &config_path,
+        Vec::new(),
+    )));
     assert!(
         !stack.rollback_to_added_if_matches(
             "sensor",

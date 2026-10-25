@@ -8,4 +8,4 @@ mod types;
 // `contract/v1` schema tag is a contract.
 pub use parse::PeppyContractParser;
 pub(crate) use types::validate_named_items;
-pub use types::{Interfaces, Manifest, PeppyContract};
+pub use types::{Interfaces, Manifest, PeppyContract, RefinedMember};

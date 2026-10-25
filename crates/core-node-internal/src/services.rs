@@ -678,6 +678,14 @@ impl CoreNode {
                 self.node_startup_timeout,
             )
             .boxed(),
+            ServiceId::InstanceDocuments => node::listen_for_instance_documents(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+            )
+            .boxed(),
             ServiceId::NodeStop => node::listen_for_node_stop(
                 &self.messenger,
                 ctx.core_node_name,

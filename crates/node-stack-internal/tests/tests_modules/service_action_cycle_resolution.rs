@@ -67,7 +67,12 @@ fn mutual_service_through_contracts_is_rejected_for_strict_and_permissive_adds()
             r#"services: { consumes: [{ link_id: "to_b", name: "do_b" }] }"#,
         );
         stack
-            .push_config(a, allow_missing_dependencies, PathBuf::from("/tmp"))
+            .push_config(
+                a,
+                Vec::new(),
+                allow_missing_dependencies,
+                PathBuf::from("/tmp"),
+            )
             .unwrap_or_else(|e| {
                 panic!("first node adds with no provider present yet ({add}): {e:?}")
             });
@@ -82,7 +87,12 @@ fn mutual_service_through_contracts_is_rejected_for_strict_and_permissive_adds()
             "to_a",
             r#"services: { consumes: [{ link_id: "to_a", name: "do_a" }] }"#,
         );
-        match stack.push_config(b, allow_missing_dependencies, PathBuf::from("/tmp")) {
+        match stack.push_config(
+            b,
+            Vec::new(),
+            allow_missing_dependencies,
+            PathBuf::from("/tmp"),
+        ) {
             Err(NodeStackError::ServiceActionContractCycle { kind, .. }) => {
                 assert_eq!(kind, "service", "{add}")
             }
@@ -105,7 +115,7 @@ fn mutual_action_through_contracts_rejected_when_second_node_added() {
         r#"actions: { consumes: [{ link_id: "to_b", name: "do_b" }] }"#,
     );
     stack
-        .push_config(a, false, PathBuf::from("/tmp"))
+        .push_config(a, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("first node adds with no provider present yet");
 
     let b = contract_node(
@@ -116,7 +126,7 @@ fn mutual_action_through_contracts_rejected_when_second_node_added() {
         r#"actions: { consumes: [{ link_id: "to_a", name: "do_a" }] }"#,
     );
     let err = stack
-        .push_config(b, false, PathBuf::from("/tmp"))
+        .push_config(b, Vec::new(), false, PathBuf::from("/tmp"))
         .expect_err("mutual action through contracts must be rejected");
 
     match err {
@@ -138,7 +148,7 @@ fn bidirectional_topics_through_contracts_allowed() {
         r#"topics: { consumes: [{ link_id: "to_b", name: "telemetry" }] }"#,
     );
     stack
-        .push_config(a, false, PathBuf::from("/tmp"))
+        .push_config(a, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("first topic consumer adds cleanly");
 
     let b = contract_node(
@@ -149,7 +159,7 @@ fn bidirectional_topics_through_contracts_allowed() {
         r#"topics: { consumes: [{ link_id: "to_a", name: "telemetry" }] }"#,
     );
     stack
-        .push_config(b, false, PathBuf::from("/tmp"))
+        .push_config(b, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("mutual topics must stay allowed");
 
     assert_eq!(stack.len(), 3, "core + a + b");
@@ -176,7 +186,7 @@ fn one_directional_service_through_contract_allowed() {
     )
     .expect("valid provider config");
     stack
-        .push_config(provider, false, PathBuf::from("/tmp"))
+        .push_config(provider, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("provider adds cleanly");
 
     // Consumer `a` calls `b`'s service through the contract; no back-edge.
@@ -188,7 +198,7 @@ fn one_directional_service_through_contract_allowed() {
         r#"services: { consumes: [{ link_id: "to_b", name: "do_b" }] }"#,
     );
     stack
-        .push_config(a, false, PathBuf::from("/tmp"))
+        .push_config(a, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("a one-way service dependency is fine");
 
     assert_eq!(stack.len(), 3, "core + b + a");

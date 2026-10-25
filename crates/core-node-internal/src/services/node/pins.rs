@@ -21,12 +21,12 @@ use crate::services::repo::cache::{
     self as repo_cache, ContractCacheEntry, EntryOrigin, NodeCacheEntry, PairingCacheEntry,
     PinnableCacheEntry, RepoCacheEntry,
 };
-use config::node::{Manifest, NodeConfig, NodeConfigParser};
+use config::node::{DocumentKind, DocumentReference, Manifest, NodeConfig, NodeConfigParser};
 use daemon_config::consts::PeppyDirs;
-use daemon_config::repository::{ItemName, ItemTag, PinKind, PinnedItem};
+use daemon_config::repository::{ItemName, ItemTag, PinKind, PinnedDocument, PinnedItem};
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -328,79 +328,145 @@ pub(crate) async fn resolve_pinned_closure(
     Ok(PinnedClosure { nodes })
 }
 
-/// The launch pins for contract and pairing documents, keyed by identity, as
-/// the pinned add consumes them.
+/// The contract and pairing documents that one manifest names, each in hand
+/// beside its pin: the bytes an add generates the node's code from, and that
+/// the entity of the node keeps for `instance_documents`.
 ///
-/// One pin per `(kind, name, tag)`: the closure that minted these refused a
-/// second content for one identity, so a lookup is never ambiguous. An
-/// author `sha256` pin in a manifest is checked against the launch pin at
-/// use, not consulted for resolution.
-pub(crate) struct DocPins {
-    by_identity: HashMap<(PinKind, String, String), PinnedItem>,
+/// One document per `(kind, name, tag)`: the pins they are read by give one
+/// content for each identity (see [`DocPinMinter`]), so a lookup is never
+/// ambiguous. An author `sha256` pin in a manifest is checked against the
+/// pin, not consulted for resolution.
+pub(crate) struct ManifestDocuments {
+    documents: Vec<PinnedDocument>,
 }
 
-impl DocPins {
-    /// Builds the lookup from a goal's decoded pin list, ignoring node pins.
-    pub fn from_pins(pins: &[PinnedItem]) -> Self {
-        let by_identity = pins
-            .iter()
-            .filter(|pin| pin.kind != PinKind::Node)
-            .map(|pin| {
-                (
-                    (
-                        pin.kind,
-                        pin.name.as_str().to_owned(),
-                        pin.tag.as_str().to_owned(),
-                    ),
-                    pin.clone(),
-                )
+impl ManifestDocuments {
+    /// Reads the document of each reference of `manifest` by its pin in
+    /// `pins`, each document once, in manifest order. Node pins and the pins
+    /// of documents the manifest does not name are left out.
+    ///
+    /// A reference absent from `pins` means the coordinator shipped an
+    /// incomplete closure; an author pin disagreeing with its pin means the
+    /// closure was minted from different bytes than this manifest. Both are
+    /// refusals, never a fall back to resolving the name here. A document
+    /// cache is loaded only when a pin of its kind needs it.
+    ///
+    /// Blocking: a pin whose local copy is gone or drifted is fetched from
+    /// its origin. Use [`Self::read_async`] inside Tokio.
+    pub fn read(
+        peppy_dirs: &PeppyDirs,
+        pins: &[PinnedItem],
+        manifest: &Manifest,
+        on_feedback: &dyn Fn(Report<'_>),
+    ) -> std::result::Result<Self, String> {
+        let mut selected: Vec<(DocumentKind, &PinnedItem)> = Vec::new();
+        for reference in manifest.document_references() {
+            let pin = find_pinned(pins, |pin| pin, reference)?;
+            if !selected.iter().any(|(_, chosen)| *chosen == pin) {
+                selected.push((reference.kind, pin));
+            }
+        }
+        let needs = |kind: DocumentKind| selected.iter().any(|(chosen, _)| *chosen == kind);
+        let contracts: Vec<ContractCacheEntry> =
+            load_doc_cache_if_needed(peppy_dirs, needs(DocumentKind::Contract))?;
+        let pairings: Vec<PairingCacheEntry> =
+            load_doc_cache_if_needed(peppy_dirs, needs(DocumentKind::Pairing))?;
+        let documents = selected
+            .into_iter()
+            .map(|(kind, pin)| match kind {
+                DocumentKind::Contract => repo_cache::materialize_pinned_document(
+                    peppy_dirs,
+                    &contracts,
+                    pin,
+                    on_feedback,
+                ),
+                DocumentKind::Pairing => {
+                    repo_cache::materialize_pinned_document(peppy_dirs, &pairings, pin, on_feedback)
+                }
             })
-            .collect();
-        Self { by_identity }
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(Self { documents })
     }
 
-    /// The launch pin for one doc reference, checked against the manifest's
-    /// own optional sha pin.
-    ///
-    /// A reference absent from the pin set means the coordinator shipped an
-    /// incomplete closure; an author pin disagreeing with the launch pin
-    /// means the closure was minted from different bytes than this manifest.
-    /// Both are refusals, never a fall back to resolving the name here.
-    pub fn require(
-        &self,
-        kind: PinKind,
-        name: &str,
-        tag: &str,
-        author_sha256: Option<&str>,
-    ) -> std::result::Result<&PinnedItem, String> {
-        let pin = self
-            .by_identity
-            .get(&(kind, name.to_owned(), tag.to_owned()))
-            .ok_or_else(|| {
-                format!(
-                    "{kind} `{name}:{tag}` is not in this launch's pins; the coordinator \
-                     shipped an incomplete closure"
-                )
-            })?;
-        if let Some(author) = author_sha256
-            && pin.sha256 != author
-        {
-            return Err(format!(
-                "{kind} `{name}:{tag}` is pinned to `{author}` by the manifest but the launch \
-                 pinned `{}`; the closure was minted from different bytes than this manifest",
-                pin.sha256
-            ));
-        }
-        Ok(pin)
+    /// [`Self::read`] on a blocking thread, with the feedback sink every
+    /// async caller already holds.
+    pub async fn read_async(
+        peppy_dirs: &PeppyDirs,
+        pins: Vec<PinnedItem>,
+        manifest: Manifest,
+        on_feedback: node_cache::MaterializeFeedback,
+    ) -> std::result::Result<Self, String> {
+        let dirs = peppy_dirs.clone();
+        tokio::task::spawn_blocking(move || {
+            Self::read(&dirs, &pins, &manifest, &|report| on_feedback(report))
+        })
+        .await
+        .map_err(|e| format!("document read task failed: {e}"))?
     }
+
+    /// The document of one reference of the manifest, parsed by `parse`.
+    pub fn parse<T>(
+        &self,
+        reference: DocumentReference<'_>,
+        parse: impl FnOnce(&str) -> std::result::Result<T, String>,
+    ) -> std::result::Result<T, String> {
+        let document = find_pinned(&self.documents, |document| &document.pin, reference)?;
+        parse(&document.content)
+            .map_err(|e| format!("failed to parse pinned {}: {e}", document.pin.label()))
+    }
+
+    /// The documents, each once, in manifest order.
+    pub fn into_documents(self) -> Vec<PinnedDocument> {
+        self.documents
+    }
+}
+
+/// The item of `items` whose pin names the document of `reference`, checked
+/// against the author's optional sha256 pin of the reference.
+fn find_pinned<'a, T>(
+    items: &'a [T],
+    pin_of: impl Fn(&T) -> &PinnedItem,
+    reference: DocumentReference<'_>,
+) -> std::result::Result<&'a T, String> {
+    let DocumentReference {
+        kind,
+        name,
+        tag,
+        sha256: author_sha256,
+    } = reference;
+    let kind = PinKind::from(kind);
+    let item = items
+        .iter()
+        .find(|item| {
+            let pin = pin_of(item);
+            pin.kind == kind && pin.name.as_str() == name && pin.tag.as_str() == tag
+        })
+        .ok_or_else(|| {
+            format!(
+                "{kind} `{name}:{tag}` is not in this launch's pins; the coordinator \
+                 shipped an incomplete closure"
+            )
+        })?;
+    let pin = pin_of(item);
+    if let Some(author) = author_sha256
+        && pin.sha256 != author
+    {
+        return Err(format!(
+            "{kind} `{name}:{tag}` is pinned to `{author}` by the manifest but the launch \
+             pinned `{}`; the closure was minted from different bytes than this manifest",
+            pin.sha256
+        ));
+    }
+    Ok(item)
 }
 
 /// Mints doc pins for manifests, refusing one identity at two contents.
 ///
 /// Within one closure every reference to a document must agree on its
-/// bytes: the pinned add resolves references by identity, so two contents
-/// under one identity would make that lookup ambiguous on another machine.
-/// The refusal names both fingerprints so the author can align the sha pins.
+/// bytes: an add reads each document of its manifest once, by identity, and
+/// the members of a contract have one wire key for each name and tag, so
+/// two contents under one identity have no single meaning. The refusal
+/// names both fingerprints so the author can align the sha pins.
 #[derive(Default)]
 struct DocPinMinter {
     /// Minted pins in first-reference order. A closure references tens of
@@ -409,11 +475,18 @@ struct DocPinMinter {
     pins: Vec<PinnedItem>,
 }
 
-/// One document reference in a manifest, reduced to what minting needs. The
-/// four reference lists are four types over the same three fields, so they
-/// are normalized here and walked as one contract stream and one pairing
-/// stream.
-type DocRef<'a> = (&'a str, &'a str, Option<&'a str>);
+/// The document cache of `E` when `needed`, and no entry otherwise: a cache
+/// that does not parse fails only the reads that need one of its documents.
+fn load_doc_cache_if_needed<E: RepoCacheEntry>(
+    peppy_dirs: &PeppyDirs,
+    needed: bool,
+) -> std::result::Result<Vec<E>, String> {
+    if !needed {
+        return Ok(Vec::new());
+    }
+    repo_cache::load_repo_cache(peppy_dirs)
+        .map_err(|e| format!("failed to load {} cache: {e}", E::KIND))
+}
 
 impl DocPinMinter {
     fn mint_for_manifest(
@@ -424,44 +497,13 @@ impl DocPinMinter {
         pairings: &[PairingCacheEntry],
         on_feedback: &dyn Fn(Report<'_>),
     ) -> std::result::Result<(), String> {
-        let depends_on = manifest.depends_on.as_ref();
-        let contract_refs = manifest
-            .implements
-            .iter()
-            .map(|e| (e.name.as_str(), e.tag.as_str(), e.sha256.as_deref()))
-            .chain(depends_on.into_iter().flat_map(|d| {
-                d.contracts
-                    .iter()
-                    .map(|e| (e.name.as_str(), e.tag.as_str(), e.sha256.as_deref()))
-            }));
-        for (name, tag, sha256) in contract_refs {
-            self.mint::<ContractCacheEntry>(
-                peppy_dirs,
-                contracts,
-                PinKind::Contract,
-                (name, tag, sha256),
-                on_feedback,
-            )?;
-        }
-
-        let pairing_refs = depends_on.into_iter().flat_map(|d| {
-            d.pairings
-                .iter()
-                .map(|s| (s.name.as_str(), s.tag.as_str(), s.sha256.as_deref()))
-                .chain(
-                    d.pairing_observers
-                        .iter()
-                        .map(|s| (s.name.as_str(), s.tag.as_str(), s.sha256.as_deref())),
-                )
-        });
-        for (name, tag, sha256) in pairing_refs {
-            self.mint::<PairingCacheEntry>(
-                peppy_dirs,
-                pairings,
-                PinKind::Pairing,
-                (name, tag, sha256),
-                on_feedback,
-            )?;
+        for reference in manifest.document_references() {
+            match reference.kind {
+                DocumentKind::Contract => {
+                    self.mint(peppy_dirs, contracts, reference, on_feedback)?
+                }
+                DocumentKind::Pairing => self.mint(peppy_dirs, pairings, reference, on_feedback)?,
+            }
         }
         Ok(())
     }
@@ -470,10 +512,16 @@ impl DocPinMinter {
         &mut self,
         peppy_dirs: &PeppyDirs,
         entries: &[E],
-        kind: PinKind,
-        (name, tag, author_sha256): DocRef<'_>,
+        reference: DocumentReference<'_>,
         on_feedback: &dyn Fn(Report<'_>),
     ) -> std::result::Result<(), String> {
+        let DocumentReference {
+            kind,
+            name,
+            tag,
+            sha256: author_sha256,
+        } = reference;
+        let kind = PinKind::from(kind);
         let (entry, _bytes) = repo_cache::resolve_cached_doc_entry(
             peppy_dirs,
             entries,
@@ -501,10 +549,10 @@ impl DocPinMinter {
             }
             Some(existing) if existing == pin.sha256 => Ok(()),
             Some(existing) => Err(format!(
-                "{kind} `{name}:{tag}` is needed at two different contents in one closure \
-                 (`{}` and `{}`); align the manifests' sha256 pins so one set of bytes serves \
-                 every reference",
-                existing, pin.sha256
+                "{kind} `{name}:{tag}` resolves to two contents, `{existing}` and `{}`; every \
+                 reference to one name and tag of a document must name the same content, so \
+                 give each reference the same sha256",
+                pin.sha256
             )),
         }
     }
@@ -519,6 +567,7 @@ impl DocPinMinter {
 /// launch minting for every deployment, and both caches are read from disk
 /// and parsed on each load. Each set keeps its own result so a deployment
 /// whose documents are missing does not suppress the report for the others.
+/// A cache is loaded only when a manifest names one of its documents.
 ///
 /// Blocking (a drift check may materialize a checkout); use
 /// [`doc_pins_for_manifest_sets_async`] inside Tokio.
@@ -527,10 +576,15 @@ pub(crate) fn doc_pins_for_manifest_sets(
     sets: &[Vec<Manifest>],
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<Vec<std::result::Result<Vec<PinnedItem>, String>>, String> {
-    let contracts = repo_cache::load_contract_cache(peppy_dirs)
-        .map_err(|e| format!("failed to load contract cache: {e}"))?;
-    let pairings = repo_cache::load_pairing_cache(peppy_dirs)
-        .map_err(|e| format!("failed to load pairing cache: {e}"))?;
+    let named = |kind: DocumentKind| {
+        sets.iter().flatten().any(|manifest| {
+            manifest
+                .document_references()
+                .any(|reference| reference.kind == kind)
+        })
+    };
+    let contracts = load_doc_cache_if_needed(peppy_dirs, named(DocumentKind::Contract))?;
+    let pairings = load_doc_cache_if_needed(peppy_dirs, named(DocumentKind::Pairing))?;
     Ok(sets
         .iter()
         .map(|manifests| {
@@ -550,7 +604,7 @@ pub(crate) fn doc_pins_for_manifest_sets(
 }
 
 /// [`doc_pins_for_manifest_sets`] on a blocking thread, with the feedback
-/// sink every async caller already holds. Both minting sites go through
+/// sink every async caller already holds. Every minting site goes through
 /// this, so the join-error wording has one owner.
 pub(crate) async fn doc_pins_for_manifest_sets_async(
     peppy_dirs: &PeppyDirs,
@@ -626,40 +680,55 @@ mod tests {
         }
     }
 
-    /// A pinned add resolves a doc reference through the launch pin: present
-    /// and unconflicted resolves, absent refuses as an incomplete closure,
-    /// and an author sha pin disagreeing with the launch pin refuses naming
-    /// both. Nothing here consults a cache by name.
+    /// A reference of `kind` to `name:v1`, with the author's `sha256`.
+    fn reference<'a>(
+        kind: DocumentKind,
+        name: &'a str,
+        sha256: Option<&'a str>,
+    ) -> DocumentReference<'a> {
+        DocumentReference {
+            kind,
+            name,
+            tag: "v1",
+            sha256,
+        }
+    }
+
+    /// A pinned add finds the pin of a doc reference among the launch pins:
+    /// present and unconflicted resolves, absent refuses as an incomplete
+    /// closure, and an author sha pin disagreeing with the launch pin
+    /// refuses naming both. Nothing here consults a cache by name.
     #[test]
     fn doc_pin_lookup_resolves_refuses_gaps_and_refuses_author_conflicts() {
         let pin = doc_pin(PinKind::Contract, "frames", "the contract body");
-        let pins = DocPins::from_pins(std::slice::from_ref(&pin));
+        let pins = std::slice::from_ref(&pin);
+        let find = |reference| find_pinned(pins, |pin| pin, reference);
 
-        let resolved = pins
-            .require(PinKind::Contract, "frames", "v1", None)
+        let resolved = find(reference(DocumentKind::Contract, "frames", None))
             .expect("a pinned reference resolves");
         assert_eq!(resolved.sha256, pin.sha256);
 
         let matching_author = pin.sha256.as_str().to_owned();
         assert!(
-            pins.require(PinKind::Contract, "frames", "v1", Some(&matching_author))
-                .is_ok(),
+            find(reference(
+                DocumentKind::Contract,
+                "frames",
+                Some(&matching_author)
+            ))
+            .is_ok(),
             "an author pin agreeing with the launch pin resolves"
         );
 
-        let err = pins
-            .require(PinKind::Pairing, "frames", "v1", None)
+        let err = find(reference(DocumentKind::Pairing, "frames", None))
             .expect_err("the wrong kind is not the same identity");
         assert!(err.contains("incomplete closure"), "{err}");
 
-        let err = pins
-            .require(PinKind::Contract, "absent", "v1", None)
+        let err = find(reference(DocumentKind::Contract, "absent", None))
             .expect_err("a missing reference is a gap");
         assert!(err.contains("incomplete closure"), "{err}");
 
         let other = "f".repeat(64);
-        let err = pins
-            .require(PinKind::Contract, "frames", "v1", Some(&other))
+        let err = find(reference(DocumentKind::Contract, "frames", Some(&other)))
             .expect_err("a disagreeing author pin must refuse");
         assert!(err.contains(&other), "names the author pin: {err}");
         assert!(
@@ -672,11 +741,189 @@ mod tests {
     /// share a node's name must not resolve through the node's pin.
     #[test]
     fn node_pins_stay_out_of_the_doc_lookup() {
-        let pins = DocPins::from_pins(&[doc_pin(PinKind::Node, "frames", "a node body")]);
+        let pins = [doc_pin(PinKind::Node, "frames", "a node body")];
         assert!(
-            pins.require(PinKind::Contract, "frames", "v1", None)
-                .is_err(),
+            find_pinned(
+                &pins,
+                |pin| pin,
+                reference(DocumentKind::Contract, "frames", None)
+            )
+            .is_err(),
             "a node pin must not serve a contract reference"
         );
+    }
+
+    /// Writes `content` as the document `name:v1` of `kind` in `dir`, and
+    /// gives the pin of a local repository entry for it.
+    fn local_document(
+        dir: &std::path::Path,
+        kind: PinKind,
+        name: &str,
+        content: &str,
+    ) -> PinnedItem {
+        let path = dir.join(format!("{name}.json5"));
+        std::fs::write(&path, content).expect("write the document");
+        PinnedItem {
+            kind,
+            name: ItemName::parse(name).expect("valid name"),
+            tag: ItemTag::parse("v1").expect("valid tag"),
+            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(content.as_bytes()),
+            origin: EntryOrigin::Fs { path },
+        }
+    }
+
+    /// The documents of a manifest are those it names: each once, in
+    /// manifest order, with the bytes of its pin, and none of the other
+    /// pins a launch closure carries.
+    #[test]
+    fn the_documents_of_a_manifest_are_read_once_each_in_manifest_order() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let peppy_dirs = PeppyDirs::new(dir.path());
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{
+                name: "arm",
+                tag: "v1",
+                implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
+                depends_on: {
+                    contracts: [
+                        { name: "camera", tag: "v1", link_id: "eyes" },
+                        { name: "limb_motion", tag: "v1", link_id: "other_arm" },
+                    ],
+                    pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }],
+                    pairing_observers: [{ name: "watch", tag: "v1", role: "arm", link_id: "watched" }],
+                },
+            }"#,
+        )
+        .expect("the manifest parses");
+        let document = |kind, name: &str| {
+            let content = format!(r#"{{ manifest: {{ name: "{name}", tag: "v1" }} }}"#);
+            let pin = local_document(dir.path(), kind, name, &content);
+            PinnedDocument::new(pin, content)
+        };
+        let limb_motion = document(PinKind::Contract, "limb_motion");
+        let camera = document(PinKind::Contract, "camera");
+        let arm_link = document(PinKind::Pairing, "arm_link");
+        let watch = document(PinKind::Pairing, "watch");
+        let pins = [
+            doc_pin(PinKind::Contract, "gripper", "gripper body"),
+            doc_pin(PinKind::Node, "arm", "arm body"),
+            watch.pin.clone(),
+            camera.pin.clone(),
+            arm_link.pin.clone(),
+            limb_motion.pin.clone(),
+        ];
+
+        let documents = ManifestDocuments::read(&peppy_dirs, &pins, &manifest, &|_| {})
+            .expect("every document is pinned and readable");
+
+        assert_eq!(
+            documents.into_documents(),
+            [limb_motion, camera, arm_link, watch]
+        );
+    }
+
+    /// A manifest that names a document the pins do not hold has no
+    /// documents to read: the lookup refuses before any read.
+    #[test]
+    fn the_documents_of_a_manifest_refuse_a_document_with_no_pin() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{ name: "arm", tag: "v1", implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }] }"#,
+        )
+        .expect("the manifest parses");
+        let Err(err) =
+            ManifestDocuments::read(&PeppyDirs::new(dir.path()), &[], &manifest, &|_| {})
+        else {
+            panic!("a document with no pin refuses");
+        };
+        assert!(err.contains("limb_motion:v1"), "{err}");
+    }
+
+    /// The read of the documents loads a document cache only when a pin
+    /// needs it: a contract cache that does not parse fails no read of a
+    /// manifest whose documents are pairings, and fails the read of one
+    /// that names a contract.
+    #[test]
+    fn reading_the_documents_loads_only_the_caches_their_pins_need() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let peppy_dirs = PeppyDirs::new(dir.path());
+        let contract_cache = repo_cache::contracts_repo_cache_path(&peppy_dirs);
+        std::fs::create_dir_all(contract_cache.parent().expect("a cache dir"))
+            .expect("create the cache dir");
+        std::fs::write(&contract_cache, "not a cache {").expect("write the contract cache");
+        let content = r#"{ manifest: { name: "arm_link", tag: "v1" } }"#;
+        let pairing = local_document(dir.path(), PinKind::Pairing, "arm_link", content);
+        let contract = PinnedItem {
+            kind: PinKind::Contract,
+            ..pairing.clone()
+        };
+        let manifest = |json5: &str| -> Manifest {
+            serde_json5::from_str(json5).expect("the manifest parses")
+        };
+        let pairing_alone = manifest(
+            r#"{ name: "arm", tag: "v1", depends_on: { pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] } }"#,
+        );
+        let a_contract = manifest(
+            r#"{ name: "arm", tag: "v1", implements: [{ name: "arm_link", tag: "v1", link_id: "arm" }] }"#,
+        );
+
+        let documents = ManifestDocuments::read(
+            &peppy_dirs,
+            std::slice::from_ref(&pairing),
+            &pairing_alone,
+            &|_| {},
+        )
+        .expect("the pairing reads with no contract cache");
+        assert_eq!(
+            documents.into_documents(),
+            [PinnedDocument::new(pairing, content.to_owned())]
+        );
+
+        let Err(error) = ManifestDocuments::read(&peppy_dirs, &[contract], &a_contract, &|_| {})
+        else {
+            panic!("a contract pin needs the contract cache");
+        };
+        assert!(error.contains("failed to load contract cache"), "{error}");
+    }
+
+    /// Minting loads a document cache only when a manifest names one of its
+    /// documents: a contract cache that does not parse fails neither a
+    /// manifest that names no document nor one that names a pairing alone,
+    /// and fails the minting of a manifest that names a contract.
+    #[test]
+    fn minting_loads_only_the_caches_of_the_documents_the_manifests_name() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let peppy_dirs = PeppyDirs::new(dir.path());
+        let contract_cache = repo_cache::contracts_repo_cache_path(&peppy_dirs);
+        std::fs::create_dir_all(contract_cache.parent().expect("a cache dir"))
+            .expect("create the cache dir");
+        std::fs::write(&contract_cache, "not a cache {").expect("write the contract cache");
+        let manifest = |json5: &str| -> Manifest {
+            serde_json5::from_str(json5).expect("the manifest parses")
+        };
+        let no_document = manifest(r#"{ name: "bare", tag: "v1" }"#);
+        let pairing_alone = manifest(
+            r#"{ name: "arm", tag: "v1", depends_on: { pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] } }"#,
+        );
+        let a_contract = manifest(
+            r#"{ name: "arm", tag: "v1", implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }] }"#,
+        );
+
+        let minted = doc_pins_for_manifest_sets(
+            &peppy_dirs,
+            &[vec![no_document], vec![pairing_alone]],
+            &|_| {},
+        )
+        .expect("no manifest names a contract, so the contract cache is not loaded");
+        assert_eq!(minted[0], Ok(Vec::new()));
+        let error = minted[1].clone().expect_err("no cache holds the pairing");
+        assert!(error.contains("arm_link"), "{error}");
+        assert!(!error.contains("contract cache"), "{error}");
+
+        let Err(error) = doc_pins_for_manifest_sets(&peppy_dirs, &[vec![a_contract]], &|_| {})
+        else {
+            panic!("the contract cache does not parse");
+        };
+        assert!(error.contains("failed to load contract cache"), "{error}");
     }
 }

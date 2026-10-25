@@ -3,6 +3,9 @@
 //! operator's budgets, cancelling it at a Ctrl-C, and reporting how it ended
 //! and the log files it wrote.
 //!
+//! The command exits with the code of the end of its goal (see
+//! [`CallEnd`]), after a Ctrl-C too.
+//!
 //! The watchdog sends no cancel: a budget that runs out ends the command,
 //! and its process exits. The daemon then finds that the sender of the goal
 //! is gone and cancels the goal, with the reason "its sender is gone".
@@ -23,11 +26,11 @@ use tokio::time::Instant;
 use tracing::{info, warn};
 
 use crate::commands::action_poll::{
-    CancelRace, CtrlC, FollowedGoal, Interrupts, cancel_unless_stopped, end_of_follow,
+    CancelRace, CtrlC, FollowedGoal, Interrupts, cancel_unless_stopped,
 };
 use crate::commands::{CALLER_INSTANCE_ID, SCROLLING_OUTPUT_LINES, failure_text};
 use crate::context::DaemonConnection;
-use crate::error::{Error, Result};
+use crate::error::{CallEnd, Error, Result};
 use crate::terminal::ScrollingOutput;
 
 // Minimum CLI fallback ceiling when the user opts into `--max-timeout-secs`. Ensures the CLI's
@@ -169,8 +172,8 @@ fn daemon_route<'a>(conn: &'a DaemonConnection<'_>) -> DaemonRoute<'a> {
 }
 
 /// Sends `goal` to the daemon and follows it to its end under `budgets`,
-/// then says how it ended. A Ctrl-C sends the daemon a cancel and the
-/// command ends with code 130 once the goal ended.
+/// then says how it ended. A Ctrl-C sends the daemon a cancel, and the
+/// command ends as the goal does.
 pub(super) async fn drive_stack_goal<G: StackGoal>(
     conn: &DaemonConnection<'_>,
     goal: &G,
@@ -181,8 +184,12 @@ pub(super) async fn drive_stack_goal<G: StackGoal>(
         stack_goal::send(daemon_route(conn), goal)
             .await
             .map_err(|error| match error {
-                SendError::Refused { failure, .. } => {
-                    Error::ExecutionFailed(failure_text(&format!("{operation} refused"), &failure))
+                SendError::Refused { failure, .. } => Error::ended(
+                    CallEnd::Refused,
+                    failure_text(&format!("{operation} refused"), &failure),
+                ),
+                refused @ SendError::UnknownRefusalKind { .. } => {
+                    Error::ended(CallEnd::Refused, refused.to_string())
                 }
                 other => Error::ExecutionFailed(other.to_string()),
             })?;
@@ -201,9 +208,9 @@ pub(super) async fn drive_stack_goal<G: StackGoal>(
 }
 
 /// How the command ends for a stack goal that ended with `outcome`, whose
-/// log file is `log_path`: a completed goal is a success, unless the
-/// operator pressed Ctrl-C, which ends the command with code 130 whichever
-/// way the goal ended.
+/// log file is `log_path`: a completed goal is a success, and the command
+/// says so, also when the operator's Ctrl-C (`cancel_sent`) came too late to
+/// cancel it; a failed or a cancelled goal ends with its own exit code.
 fn report_end(
     operation: &str,
     log_path: &Path,
@@ -211,25 +218,28 @@ fn report_end(
     cancel_sent: bool,
 ) -> Result<()> {
     let log_file = format!("Log file: {}", log_path.display());
-    let how = match outcome {
+    match outcome {
         StackGoalOutcome::Completed(result) => {
             crate::commands::log_endpoints(&result.instance_endpoints);
-            if !cancel_sent {
+            if cancel_sent {
+                info!("{operation} completed before the cancel took effect. {log_file}");
+            } else {
                 info!("{operation} completed successfully");
-                return Ok(());
             }
-            format!("{operation} completed before the cancel took effect. {log_file}")
+            Ok(())
         }
-        StackGoalOutcome::Failed(failure) => format!(
-            "{}. {log_file}",
-            failure_text(&format!("{operation} failed"), &failure)
-        ),
-        StackGoalOutcome::Cancelled { reason } => format!("{operation} was {reason}. {log_file}"),
-    };
-    if cancel_sent {
-        return Err(Error::Interrupted(how));
+        StackGoalOutcome::Failed(failure) => Err(Error::ended(
+            CallEnd::Failed,
+            format!(
+                "{}. {log_file}",
+                failure_text(&format!("{operation} failed"), &failure)
+            ),
+        )),
+        StackGoalOutcome::Cancelled { reason } => Err(Error::ended(
+            CallEnd::Cancelled,
+            format!("{operation} was {reason}. {log_file}"),
+        )),
     }
-    Err(Error::ExecutionFailed(how))
 }
 
 /// A stack goal followed to its end, and whether the operator's Ctrl-C sent
@@ -250,7 +260,6 @@ struct Followed {
 /// is followed to the end the daemon gives it, under the ceiling alone; a
 /// second press stops the wait for the end, once the cancel reached the
 /// daemon (see [`cancel_unless_stopped`]).
-/// Every error after a Ctrl-C is an [`Error::Interrupted`].
 async fn follow_under_watchdog(
     running: &mut RunningStackGoal,
     budgets: &StackBudgets,
@@ -302,18 +311,14 @@ async fn follow_under_watchdog(
         };
         let event = match event {
             Ok(Ok(event)) => event,
-            Ok(Err(error)) => {
-                let error = follow_error(&followed_goal(running), error);
-                return Err(end_of_follow(cancel_sent, error));
-            }
+            Ok(Err(error)) => return Err(follow_error(&followed_goal(running), error)),
             Err(_silence_or_ceiling) => {
-                let error = watchdog_error(
+                return Err(watchdog_error(
                     running,
                     silence_window,
                     output.step,
                     ceiling.is_some_and(|ceiling| Instant::now() >= ceiling),
-                );
-                return Err(end_of_follow(cancel_sent, error));
+                ));
             }
         };
         match event {
@@ -331,11 +336,24 @@ fn followed_goal(running: &RunningStackGoal) -> FollowedGoal<'_> {
     }
 }
 
-/// The error of the stack goal `goal` that gave no end: a command that fell
-/// behind the output of the goal says that it cancelled the goal.
+/// The error of the stack goal `goal` whose end the command could not read
+/// as a completion, a failure or a cancel: a goal that the daemon abandoned,
+/// or that its gone daemon cannot end, is abandoned; an end that expired is
+/// expired; a failure with a kind the daemon does not give is a failure. A
+/// command that fell behind the output of the goal says that it cancelled
+/// the goal, and every other error is an error of the command.
 fn follow_error(goal: &FollowedGoal<'_>, error: FollowError) -> Error {
     match error {
         FollowError::FellBehind { bound, .. } => goal.fell_behind(bound),
+        abandoned @ (FollowError::Abandoned { .. } | FollowError::DaemonGone { .. }) => {
+            Error::ended(CallEnd::Abandoned, abandoned.to_string())
+        }
+        expired @ FollowError::Expired { .. } => {
+            Error::ended(CallEnd::Expired, expired.to_string())
+        }
+        failed @ FollowError::UnknownFailureKind { .. } => {
+            Error::ended(CallEnd::Failed, failed.to_string())
+        }
         other => Error::ExecutionFailed(other.to_string()),
     }
 }
@@ -435,7 +453,7 @@ mod tests {
     }
 
     /// A failed stack goal ends the command with the kind and the message of
-    /// its failure and the launch log, and exit code 1.
+    /// its failure and the launch log, and the exit code of a failure.
     #[test]
     fn a_failed_stack_goal_gives_its_kind_and_its_log() {
         let failure = core_node_api::DaemonFailure::new(
@@ -443,7 +461,7 @@ mod tests {
             "the build of `arm:v1` produced no output for 180 s",
         );
         let error = end_of(StackGoalOutcome::Failed(failure), false).expect_err("failed");
-        assert_eq!(error.exit_code(), 1);
+        assert_eq!(error.exit_code(), CallEnd::Failed.exit_code());
         assert_eq!(
             error.to_string(),
             format!(
@@ -453,10 +471,11 @@ mod tests {
         );
     }
 
-    /// After a Ctrl-C, the command says how the goal ended and exits with
-    /// code 130, whichever way the goal ended.
+    /// After a Ctrl-C, the command says how the goal ended and exits with the
+    /// code of that end: a cancel, or a success when the goal completed
+    /// before the cancel took effect.
     #[test]
-    fn after_a_ctrl_c_the_command_says_how_the_goal_ended_and_exits_with_130() {
+    fn after_a_ctrl_c_the_command_exits_with_the_code_of_the_end_of_the_goal() {
         let cancelled = end_of(
             StackGoalOutcome::Cancelled {
                 reason: "cancelled by its caller".to_owned(),
@@ -464,25 +483,23 @@ mod tests {
             true,
         )
         .expect_err("cancelled");
-        assert_eq!(cancelled.exit_code(), 130);
+        assert_eq!(cancelled.exit_code(), CallEnd::Cancelled.exit_code());
         assert_eq!(
             cancelled.to_string(),
             format!("Launch was cancelled by its caller. Log file: {LOG_PATH}")
         );
 
-        let completed = end_of(StackGoalOutcome::Completed(Default::default()), true)
-            .expect_err("the Ctrl-C ends the command");
-        assert_eq!(completed.exit_code(), 130);
-        assert_eq!(
-            completed.to_string(),
-            format!("Launch completed before the cancel took effect. Log file: {LOG_PATH}")
+        assert!(
+            end_of(StackGoalOutcome::Completed(Default::default()), true).is_ok(),
+            "a goal that completed before the cancel took effect is a success"
         );
     }
 
     /// A goal that the daemon cancels for another reason, such as a stack
-    /// reset, fails the command with that reason.
+    /// reset, ends the command with that reason and the exit code of a
+    /// cancel.
     #[test]
-    fn a_goal_cancelled_by_a_reset_fails_the_command_with_the_reason() {
+    fn a_goal_cancelled_by_a_reset_ends_the_command_with_the_reason() {
         let error = end_of(
             StackGoalOutcome::Cancelled {
                 reason: "cancelled by a stack reset".to_owned(),
@@ -490,7 +507,7 @@ mod tests {
             false,
         )
         .expect_err("cancelled");
-        assert_eq!(error.exit_code(), 1);
+        assert_eq!(error.exit_code(), CallEnd::Cancelled.exit_code());
         assert_eq!(
             error.to_string(),
             format!("Launch was cancelled by a stack reset. Log file: {LOG_PATH}")
@@ -499,11 +516,10 @@ mod tests {
     }
 
     /// A command that fell behind the output of its stack goal says that it
-    /// cancelled the goal, and exits with code 1; after a Ctrl-C, a goal
-    /// with no end exits with code 130, as every command that a Ctrl-C
-    /// cancelled does.
+    /// cancelled the goal, and exits with code 1. A goal whose daemon is gone
+    /// before it ended is abandoned, and an end that expired is expired.
     #[test]
-    fn a_command_that_fell_behind_says_it_cancelled_the_goal() {
+    fn a_goal_with_no_end_exits_with_the_code_of_why() {
         let goal = FollowedGoal {
             doing: "Launch",
             log_path: Some(Path::new(LOG_PATH)),
@@ -525,20 +541,25 @@ mod tests {
             )
         );
 
-        let gone = end_of_follow(
-            true,
-            follow_error(
-                &goal,
-                FollowError::DaemonGone {
-                    operation: "Launch",
-                },
-            ),
+        let gone = follow_error(
+            &goal,
+            FollowError::DaemonGone {
+                operation: "Launch",
+            },
         );
-        assert_eq!(gone.exit_code(), 130);
+        assert_eq!(gone.exit_code(), CallEnd::Abandoned.exit_code());
         assert_eq!(
             gone.to_string(),
             "Launch ended without a result: its daemon is gone"
         );
+
+        let expired = follow_error(
+            &goal,
+            FollowError::Expired {
+                operation: "Launch",
+            },
+        );
+        assert_eq!(expired.exit_code(), CallEnd::Expired.exit_code());
     }
 
     /// A change of step ends the scrolling output of the step before it; the
@@ -647,7 +668,7 @@ mod ctrl_c {
             Err(error) => return error,
         };
         report_end("Join", Path::new(LOG_PATH), end.outcome, cancel_sent)
-            .expect_err("the Ctrl-C ends the command")
+            .expect_err("the goal gives no result")
     }
 
     /// A second Ctrl-C stops the wait for the end of the change, also while
@@ -678,9 +699,9 @@ mod ctrl_c {
 
     /// After a Ctrl-C the daemon rolls the change back, which can be silent
     /// for longer than the silence window of the watchdog: the command
-    /// follows the goal to its end, says how it ended, and exits with code
-    /// 130. The daemon is silent for two silence windows on the paused
-    /// clock.
+    /// follows the goal to its end, says how it ended, and exits with the
+    /// code of a cancel. The daemon is silent for two silence windows on the
+    /// paused clock.
     #[tokio::test(start_paused = true)]
     async fn after_a_ctrl_c_a_silent_rollback_is_followed_to_its_end() {
         let (mut running, context, _engine) = running_join(Duration::from_secs(30)).await;
@@ -693,18 +714,19 @@ mod ctrl_c {
         });
 
         let error = command_end(followed);
-        assert_eq!(error.exit_code(), 130);
+        assert_eq!(error.exit_code(), CallEnd::Cancelled.exit_code());
         assert_eq!(
             error.to_string(),
             format!("Join was cancelled by its caller. Log file: {LOG_PATH}")
         );
     }
 
-    /// A goal that gives no end after a Ctrl-C ends the command with code
-    /// 130 too: here the daemon holds the end of the cancelled goal for no
-    /// time, so the end expired before the command asks for it.
+    /// A goal whose end expired after a Ctrl-C ends the command with the
+    /// exit code of an expiry: here the daemon holds the end of the
+    /// cancelled goal for no time, so the end expired before the command
+    /// asks for it.
     #[tokio::test]
-    async fn after_a_ctrl_c_a_goal_with_no_end_exits_with_130() {
+    async fn after_a_ctrl_c_a_goal_whose_end_expired_exits_as_expired() {
         let (mut running, context, _engine) = running_join(Duration::ZERO).await;
 
         let (followed, ()) = tokio::join!(
@@ -713,7 +735,7 @@ mod ctrl_c {
         );
 
         let error = command_end(followed);
-        assert_eq!(error.exit_code(), 130);
+        assert_eq!(error.exit_code(), CallEnd::Expired.exit_code());
         assert_eq!(
             error.to_string(),
             "Join result expired before it could be fetched"

@@ -1,13 +1,21 @@
 mod add;
 mod builder;
+mod call;
+mod describe;
+mod echo;
 mod env;
 mod info;
 mod init;
+mod interfaces;
+mod json_lines;
 mod remove;
+pub mod request;
 mod run;
 pub(crate) mod source;
 mod stop;
 mod sync;
+#[cfg(test)]
+mod test_fixtures;
 mod types;
 
 use config::node::RestartPolicy;
@@ -27,6 +35,11 @@ use crate::{context::AppContext, error::Error as CommandError};
 
 pub use add::{AddNodeParams, add_node};
 pub use builder::{BuildOptions, build_node_async};
+pub use call::{CallKind, CallParams, call_writing};
+pub use describe::{DescribeParams, describe_rendered};
+pub use echo::EchoParams;
+#[cfg(feature = "test-support")]
+pub use echo::echo_messages;
 #[cfg(feature = "test-support")]
 pub use info::node_info_rendered;
 pub use init::NodeInitBuilder;
@@ -572,6 +585,76 @@ pub enum NodeCommands {
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
     },
+    /// Call a service or an action of a running instance, and print how the
+    /// call ends as JSON lines
+    ///
+    /// The command reads the pinned documents of the instance from the
+    /// daemon and sends the call itself. It prints a `{"feedback": ...}` line
+    /// for each feedback message of a goal, then one line with the `outcome`
+    /// of the call. It exits with 0 for a response or a completed goal, 3
+    /// for a refusal, 4 for a failure, 5 for a cancel, 6 for an abandon, 7
+    /// for an expiry, and 1 for an error of the command. A Ctrl-C during a
+    /// goal sends a cancel and waits for the end of the goal; a second Ctrl-C
+    /// exits at once with 130.
+    Call {
+        /// Id of the instance, on the daemon that `--core-node` targets
+        instance_id: String,
+        /// The member: `<slot>.<member>` for a member of a contract that the
+        /// node implements through the slot `<slot>` of its manifest, the
+        /// name alone for a member of the node's own, or for the one service
+        /// or action of the instance that has it
+        member: String,
+        /// The kind of the member, for a service and an action of one name
+        #[arg(long, value_enum)]
+        kind: Option<call::CallKind>,
+        /// A JSON5 file that holds the whole request or goal
+        #[arg(long, value_name = "FILE")]
+        args: Option<PathBuf>,
+        /// One field, by its dotted path: `<field>=<value>`. A field whose
+        /// JSON value is a string (a string, bytes in base64, a time in RFC
+        /// 3339, a 64-bit integer) takes the value as written; any other
+        /// field takes it as JSON5
+        #[arg(long = "set", value_name = "FIELD=VALUE")]
+        settings: Vec<request::FieldSetting>,
+        /// One field from a file: `<field>=@<path>`. A string field takes the
+        /// text of the file and a bytes field its bytes. A directory gives a
+        /// list of `{ path, content }`, one for each file, with paths relative
+        /// to the directory
+        #[arg(long = "file", value_name = "FIELD=@PATH")]
+        files: Vec<request::FieldFile>,
+    },
+    /// Print the messages of a topic of a running instance, one JSON object
+    /// per line, until Ctrl-C
+    Echo {
+        /// Id of the instance, on the daemon that `--core-node` targets
+        instance_id: String,
+        /// The topic: `<slot>.<topic>` for a topic that the node emits
+        /// through the slot `<slot>` of its manifest (a contract that it
+        /// implements, or a pairing that it plays a role of), the name alone
+        /// for a topic of the node's own, or for the one topic of the
+        /// instance that has it
+        topic: String,
+    },
+    /// Print the interfaces of a running instance with the message formats
+    /// of its pinned manifest
+    Describe {
+        /// Id of the instance, on the daemon that `--core-node` targets
+        instance_id: String,
+        /// Print the interfaces as one JSON document
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+impl NodeCommands {
+    /// Whether the command prints data that a program reads on standard
+    /// output, so its log lines go to standard error.
+    pub fn prints_data(&self) -> bool {
+        matches!(
+            self,
+            NodeCommands::Call { .. } | NodeCommands::Echo { .. } | NodeCommands::Describe { .. }
+        )
+    }
 }
 
 pub struct NodeCommand {
@@ -748,6 +831,32 @@ impl Command for NodeCommand {
             } => {
                 info!("Getting node info for {}:{}...", node_name, node_tag);
                 info::node_info(ctx, node_name, node_tag)
+            }
+            NodeCommands::Call {
+                instance_id,
+                member,
+                kind,
+                args,
+                settings,
+                files,
+            } => call::call(
+                ctx,
+                call::CallParams {
+                    instance_id,
+                    member,
+                    kind,
+                    message: request::MessageArguments {
+                        args,
+                        settings,
+                        files,
+                    },
+                },
+            ),
+            NodeCommands::Echo { instance_id, topic } => {
+                echo::echo(ctx, echo::EchoParams { instance_id, topic })
+            }
+            NodeCommands::Describe { instance_id, json } => {
+                describe::describe(ctx, describe::DescribeParams { instance_id, json })
             }
         }
     }

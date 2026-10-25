@@ -251,6 +251,14 @@ methods! {
             response: NodeInfoResponse,
             schema: "node.capnp",
         }
+        InstanceDocuments {
+            name: "instance_documents",
+            host: CoreNodeDaemon,
+            summary: "Give the pinned manifest, contract and pairing documents of one instance.",
+            request: InstanceDocumentsRequest,
+            response: InstanceDocuments,
+            schema: "node.capnp",
+        }
         /// The one service whose listener may be hosted by a per-instance
         /// node rather than the daemon: user node names are not unique
         /// across daemons, so daemon-root discovery alone cannot pin the
@@ -467,7 +475,7 @@ pub const SCHEMA_SOURCES: &[(&str, &str)] = &[
 /// Version of the wire protocol described by this registry. Feeds the AsyncAPI
 /// document's `info.version`. Bump the minor on additive methods/fields, the
 /// major on breaking wire changes.
-pub const WIRE_API_VERSION: &str = "0.4.0";
+pub const WIRE_API_VERSION: &str = "0.5.0";
 
 /// Version of this crate, for provenance only (not the wire version).
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -223,6 +223,40 @@ impl TopicMessenger {
         Ok(Subscription::new(subscription))
     }
 
+    /// Subscribe to one topic of a pairing as an observer of every pair that
+    /// one producer slot holds: pinned to the producer's
+    /// `(core_node, instance_id)` and the link_id of its slot, whichever peer
+    /// each message goes to. For a client that names the producer itself,
+    /// such as `peppy node echo`, with no observer slot of its own. A slot
+    /// that holds no pair publishes nothing, so the subscription receives
+    /// nothing until it does. `buffer` is as in [`Self::subscribe`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn subscribe_observing(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        pairing_target: SenderTarget,
+        producer: &ProducerRef,
+        producer_link_id: &str,
+        to_topic: &str,
+        qos: QoSProfile,
+        buffer: TopicBuffer,
+    ) -> Result<Subscription> {
+        Self::subscribe_peer_pinned(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            pairing_target,
+            producer,
+            producer_link_id,
+            PairingRecipient::Any,
+            to_topic,
+            qos,
+            buffer,
+        )
+        .await
+    }
+
     /// Subscribe to one topic pinned to the exact publisher that emits it:
     /// its `(core_node, instance_id)` plus the producer-side `link_id`
     /// segment, on a target the caller names.

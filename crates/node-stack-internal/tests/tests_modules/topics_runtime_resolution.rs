@@ -86,7 +86,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
 
     // Add the lidar dependency first
     stack
-        .push_config(lidar_dependency, false, PathBuf::from("/tmp"))
+        .push_config(lidar_dependency, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("dependency node has no dependencies");
     assert_eq!(
         stack.len(),
@@ -96,7 +96,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
 
     // Now add the dependent node - should succeed because dependency exists
     stack
-        .push_config(brain_dependent, false, PathBuf::from("/tmp"))
+        .push_config(brain_dependent, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("dependent node should be added when dependency exists");
     assert_eq!(stack.len(), 3, "stack should include the dependent node");
 
@@ -122,7 +122,7 @@ fn topic_dependency_fails_when_dependency_is_missing() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     // Adding a node that depends on a non-existent node should fail
-    let result = stack.push_config(brain_dependent, false, PathBuf::from("/tmp"));
+    let result = stack.push_config(brain_dependent, Vec::new(), false, PathBuf::from("/tmp"));
     let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingDependency {
         dependency,
         dependency_tag,
@@ -176,12 +176,17 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
 
     // Add the node with the correct name but wrong topic
     stack
-        .push_config(dependency_wrong_topic, false, PathBuf::from("/tmp"))
+        .push_config(
+            dependency_wrong_topic,
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp"),
+        )
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + lidar");
 
     // Adding brain should fail because lidar doesn't emit "push_lidar_object"
-    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
+    let result = stack.push_config(dependent, Vec::new(), false, PathBuf::from("/tmp"));
     let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingInterface(info)))) =
         result
     else {
@@ -230,7 +235,7 @@ fn topic_dependency_fails_when_link_id_is_undeclared() {
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
-    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
+    let result = stack.push_config(dependent, Vec::new(), false, PathBuf::from("/tmp"));
     let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::UndeclaredLinkId {
         link_id,
         ..

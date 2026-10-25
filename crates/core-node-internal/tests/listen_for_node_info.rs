@@ -1,12 +1,13 @@
 mod common;
 
 use common::{
-    AbortOnDrop, TIMEOUTS, answer_readiness, poll_core_node, poll_node_info,
-    real_build_and_spawn_instance, send_node_add_then_build, send_node_run_and_wait,
+    AbortOnDrop, GOAL_TIMEOUT, RESULT_TIMEOUT, TIMEOUTS, TestPackagesCache, answer_readiness,
+    poll_core_node, poll_core_node_failure, poll_node_info, real_build_and_spawn_instance,
+    send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
-use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
+use core_node_api::encoding::{InstanceDocumentsRequest, NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
 use peppylib::messaging::MessengerHandle;
 use std::sync::Arc;
@@ -42,7 +43,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     let config = config::node::NodeConfigParser::from_path(node_dir.path().join("peppy.json5"))
         .expect("parse config");
     node_stack
-        .push_config(config, false, node_dir.path())
+        .push_config(config, Vec::new(), false, node_dir.path())
         .expect("push_config should succeed");
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -283,7 +284,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
         .expect("parse config");
     started_core_node
         .node_stack
-        .push_config(config, false, node_dir.path())
+        .push_config(config, Vec::new(), false, node_dir.path())
         .expect("push_config should succeed");
 
     let info_response = poll_node_info(
@@ -375,5 +376,107 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
             urls: vec!["https://127.0.0.1:8080/".to_string()],
         }],
         "a literal binding yields the one URL, carried with its declared kind"
+    );
+}
+
+const CAMERA_CONTRACT: &str = r#"{
+    peppy_schema: "contract/v1",
+    manifest: { name: "uvc_camera", tag: "v1" },
+    interfaces: {
+        services: [
+            { name: "video_stream_info", response_message_format: { width: "u32" } }
+        ]
+    }
+}"#;
+
+const CAMERA_NODE: &str = r#"{
+    peppy_schema: "node/v1",
+    manifest: {
+        name: "fake_uvc_camera", tag: "v1",
+        implements: [
+            { name: "uvc_camera", tag: "v1", link_id: "cam" }
+        ]
+    },
+    interfaces: {
+        services: {
+            exposes: [ { link_id: "cam", name: "video_stream_info" } ]
+        }
+    },
+    execution: {
+        language: "rust",
+        run_cmd: ["sleep", "300"]
+    }
+}"#;
+
+/// `instance_documents` gives the manifest the stack holds and the contract
+/// document the add generated the node's code from, each under its name,
+/// tag and the fingerprint of its content. The entity keeps the bytes the
+/// add read, so an edit of the contract file after the add changes nothing
+/// that the service gives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn instance_documents_give_the_manifest_and_the_contracts_of_an_instance() {
+    let started = start_core_node_with_mock_messenger().await;
+    let contract_dir = tempfile::tempdir().expect("contract tempdir");
+    let contract_path = contract_dir.path().join("uvc_camera.json5");
+    std::fs::write(&contract_path, CAMERA_CONTRACT).expect("write contract");
+    TestPackagesCache::new()
+        .contract_fs_entry("uvc_camera", "v1", &contract_path, CAMERA_CONTRACT)
+        .write(&started.peppy_dirs);
+    let node_dir = tempfile::tempdir().expect("node tempdir");
+    write_peppy_json5(node_dir.path(), CAMERA_NODE);
+    send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        node_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete")
+    .completed();
+    let instance_id = Name::new("camera_inst").expect("valid instance id");
+    let _running =
+        real_build_and_spawn_instance(&started, "fake_uvc_camera", "v1", &instance_id).await;
+    std::fs::write(
+        &contract_path,
+        CAMERA_CONTRACT.replace("video_stream_info", "edited_after_the_add"),
+    )
+    .expect("edit the contract");
+
+    let documents = poll_core_node(&started, &InstanceDocumentsRequest::new("camera_inst")).await;
+
+    assert_eq!(documents.core_node, started.core_node_name);
+    assert_eq!(documents.instance_id, "camera_inst");
+    assert_eq!(
+        (documents.manifest.name(), documents.manifest.tag()),
+        ("fake_uvc_camera", "v1")
+    );
+    let manifest = config::node::NodeConfigParser::from_content(documents.manifest.content())
+        .expect("the manifest is a node config");
+    assert_eq!(manifest.manifest.implements[0].link_id, "cam");
+    let contracts: Vec<(&str, &str, &str, &str)> = documents
+        .contracts
+        .iter()
+        .map(|d| (d.name(), d.tag(), d.sha256(), d.content()))
+        .collect();
+    let contract_sha = config::fingerprint::fingerprint_for_bytes(CAMERA_CONTRACT.as_bytes());
+    assert_eq!(
+        contracts,
+        [("uvc_camera", "v1", contract_sha.as_str(), CAMERA_CONTRACT)]
+    );
+    assert!(documents.pairings.is_empty());
+}
+
+/// An id that no instance of the stack has is refused with `rejected`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn instance_documents_refuse_an_unknown_instance() {
+    let started = start_core_node_with_mock_messenger().await;
+    let failure = poll_core_node_failure(&started, &InstanceDocumentsRequest::new("nobody")).await;
+    assert_eq!(failure.kind().as_str(), "rejected");
+    assert!(
+        failure.message().contains("'nobody' not found"),
+        "{}",
+        failure.message()
     );
 }

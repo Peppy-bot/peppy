@@ -283,10 +283,13 @@ pub(crate) async fn run_built_in_add(
     let launch = built_in_launch(executable.path, &peppy_dirs, &spec_path);
     let name = plan.name.as_str().to_owned();
     let tag = plan.tag.clone();
-    if let Err(e) = action_context
-        .node_stack
-        .push_built_in(plan.config, &manifest_path, launch)
-    {
+    // The server's manifest names the contracts of the spec, and only them.
+    if let Err(e) = action_context.node_stack.push_built_in(
+        plan.config,
+        &manifest_path,
+        launch,
+        resolved.spec.contracts.clone(),
+    ) {
         return Err(record_add_failure(
             &announcer,
             Failure::new(

@@ -35,7 +35,8 @@ pub use node::builder::FeedbackStream;
 pub use node::{
     add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse, add::NodeAddResult,
     add::NodeSource, builder::NodeBuildFeedback, builder::NodeBuildGoal,
-    builder::NodeBuildGoalResponse, builder::NodeBuildResult, info::NodeInfo,
+    builder::NodeBuildGoalResponse, builder::NodeBuildResult, documents::InstanceDocuments,
+    documents::InstanceDocumentsRequest, documents::PinnedDocument, info::NodeInfo,
     info::NodeInfoRequest, info::NodeInfoResponse, info::NodeInstanceInfo, init::NodeInitRequest,
     init::NodeInitResponse, remove::NodeRemoveRequest, remove::NodeRemoveResponse,
     run::DuplicateObservationTarget, run::NodeRunFeedback, run::NodeRunGoal,

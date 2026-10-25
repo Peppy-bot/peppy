@@ -38,6 +38,7 @@ use core_node_api::{
     InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph, SerializedPairingSlot,
 };
 use daemon_config::peppy_config::PackagesBaseUrl;
+use daemon_config::repository::PinnedDocument;
 use log_export::LogExporter;
 use names_generator2::get_random;
 use parking_lot::RwLock;
@@ -550,11 +551,12 @@ impl NodeStackInner {
     fn push_config_impl<P: Into<PathBuf>>(
         &mut self,
         config: NodeConfig,
+        documents: Vec<PinnedDocument>,
         allow_missing_dependencies: bool,
         config_path: P,
     ) -> Result<()> {
         self.push_entity(
-            NodeEntity::new(config, config_path),
+            NodeEntity::new(config, config_path, documents),
             allow_missing_dependencies,
         )
     }
@@ -1486,7 +1488,8 @@ impl NodeStack {
             .collect()
     }
 
-    /// Adds a config to the stack or updates an existing one.
+    /// Adds a config to the stack or updates an existing one, with the
+    /// contract and pairing documents its code was generated from.
     ///
     /// New entities are inserted in [`NodeStage::Added`]; the caller is
     /// responsible for transitioning them to `Built` via
@@ -1498,11 +1501,12 @@ impl NodeStack {
     pub fn push_config<P: Into<PathBuf>>(
         &self,
         config: NodeConfig,
+        documents: Vec<PinnedDocument>,
         allow_missing_dependencies: bool,
         config_path: P,
     ) -> Result<()> {
         let mut guard = self.shared.write();
-        guard.push_config_impl(config, allow_missing_dependencies, config_path)
+        guard.push_config_impl(config, documents, allow_missing_dependencies, config_path)
     }
 
     /// Registers a built-in node, ready to start.
@@ -1511,14 +1515,19 @@ impl NodeStack {
     /// stack is replaced only while it has no instances, and its dependents
     /// are rewired when its interfaces or dependencies changed. There is no
     /// `Added` stage to pass through, since nothing is built for it.
+    /// `documents` are the documents its manifest names.
     pub fn push_built_in<P: Into<PathBuf>>(
         &self,
         config: NodeConfig,
         config_path: P,
         launch: BuiltInLaunch,
+        documents: Vec<PinnedDocument>,
     ) -> Result<()> {
         let mut guard = self.shared.write();
-        guard.push_entity(NodeEntity::built_in(config, config_path, launch), false)
+        guard.push_entity(
+            NodeEntity::built_in(config, config_path, launch, documents),
+            false,
+        )
     }
 
     pub fn snapshot(&self) -> Vec<EntityHandle> {
@@ -2259,6 +2268,7 @@ mod built_in_tests {
                 manifest("mcp_camera_v1"),
                 "/tmp/built_in/mcp_camera_v1/peppy.json5",
                 launch.clone(),
+                Vec::new(),
             )
             .expect("registers");
         let entity = stack
@@ -2283,11 +2293,71 @@ mod built_in_tests {
                 manifest("mcp_camera_v1"),
                 "/tmp/built_in/mcp_camera_v1/peppy.json5",
                 relaunch.clone(),
+                Vec::new(),
             )
             .expect("replaces an idle entity");
         let entity = stack
             .find("mcp_camera_v1", "builtin")
             .expect("still in the stack");
         assert_eq!(entity.read().built_in_launch(), Some(&relaunch));
+    }
+
+    /// A built-in node holds the documents its manifest names from its
+    /// registration on, and a registration that replaces it gives the new
+    /// entity the documents of its own.
+    #[test]
+    fn a_built_in_node_holds_the_documents_it_was_registered_with() {
+        use daemon_config::repository::{
+            EntryOrigin, ItemName, ItemTag, ManifestFingerprint, PinKind, PinnedItem,
+        };
+        let stack = NodeStack::new(manifest("root"), None, PathBuf::from("/tmp/root"));
+        let launch = BuiltInLaunch {
+            executable: PathBuf::from("/opt/peppy/bin/peppy"),
+            args: vec!["mcp".to_owned(), "serve".to_owned()],
+            env: Vec::new(),
+        };
+        let contract = |content: &str| {
+            PinnedDocument::new(
+                PinnedItem {
+                    kind: PinKind::Contract,
+                    name: ItemName::parse("rgb_camera").expect("valid name"),
+                    tag: ItemTag::parse("v1").expect("valid tag"),
+                    sha256: ManifestFingerprint::of_bytes(content.as_bytes()),
+                    origin: EntryOrigin::Fs {
+                        path: PathBuf::from("/tmp/hub/contracts/rgb_camera.json5"),
+                    },
+                },
+                content.to_owned(),
+            )
+        };
+        let path = "/tmp/built_in/mcp_camera_v1/peppy.json5";
+        let documents_of = |stack: &NodeStack| {
+            stack
+                .find("mcp_camera_v1", "builtin")
+                .expect("in the stack")
+                .read()
+                .documents()
+                .to_vec()
+        };
+
+        stack
+            .push_built_in(
+                manifest("mcp_camera_v1"),
+                path,
+                launch.clone(),
+                vec![contract("first")],
+            )
+            .expect("registers");
+        assert_eq!(documents_of(&stack), [contract("first")]);
+
+        stack
+            .push_built_in(
+                manifest("mcp_camera_v1"),
+                path,
+                launch,
+                vec![contract("second")],
+            )
+            .expect("replaces an idle entity");
+        assert_eq!(documents_of(&stack), [contract("second")]);
     }
 }

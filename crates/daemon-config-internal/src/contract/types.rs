@@ -2,7 +2,10 @@ use config::{
     failure_kind::{
         ContractAction, ContractFailureKinds, ContractKinds, ContractMembers, ContractService,
     },
-    node::{NativeEmittedTopic, NativeExposedAction, NativeExposedService},
+    node::{
+        LinkedMember, NativeEmittedTopic, NativeExposedAction, NativeExposedService,
+        RefinementProblem, refined_ref,
+    },
     runtime::Name,
     schema::PeppySchema,
 };
@@ -38,6 +41,60 @@ pub struct PeppyContract {
     /// refuses or fails a goal or gives an error reply.
     pub failure_kinds: ContractKinds,
     pub interfaces: Interfaces,
+}
+
+impl PeppyContract {
+    /// The member that a document-backed produced entry of a node manifest
+    /// selects, by the entry's kind and name, with the entry's `refine`
+    /// block applied. `None` when the contract declares no member of that
+    /// kind by that name, `Some(Err)` with every pin of the block that the
+    /// member does not admit.
+    pub fn refined_member(
+        &self,
+        entry: LinkedMember<'_>,
+    ) -> Option<Result<RefinedMember, Vec<RefinementProblem>>> {
+        match entry {
+            LinkedMember::Topic(entry) => self
+                .interfaces
+                .topics
+                .iter()
+                .find(|member| member.name == entry.name)
+                .map(|member| {
+                    refined_ref(entry.refine.as_deref(), member)
+                        .map(|member| RefinedMember::Topic(member.into_owned()))
+                }),
+            LinkedMember::Service(entry) => self
+                .interfaces
+                .services
+                .iter()
+                .find(|member| member.name == entry.name)
+                .map(|member| {
+                    refined_ref(entry.refine.as_deref(), member)
+                        .map(|member| RefinedMember::Service(member.into_owned()))
+                }),
+            LinkedMember::Action(entry) => self
+                .interfaces
+                .actions
+                .iter()
+                .find(|member| member.name == entry.name)
+                .map(|member| {
+                    refined_ref(entry.refine.as_deref(), member)
+                        .map(|member| RefinedMember::Action(Box::new(member.into_owned())))
+                }),
+        }
+    }
+}
+
+/// A member of a contract as a node that implements the contract produces
+/// it: the contract's shape with the `refine` block of the node's entry
+/// applied (see [`PeppyContract::refined_member`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefinedMember {
+    Topic(NativeEmittedTopic),
+    Service(NativeExposedService),
+    /// Boxed for the reason [`config::node::ExposedAction`] boxes its native
+    /// payload: its three optional endpoints dwarf the other two members.
+    Action(Box<NativeExposedAction>),
 }
 
 /// A contract document as it is written: the `failure_kinds` list of each

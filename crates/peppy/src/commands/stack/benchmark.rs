@@ -27,10 +27,9 @@ use latency_report::baseline::{self, StoredStats};
 use latency_report::environment::CpuEnvironment;
 use latency_report::format::{fmt_delta, fmt_duration};
 use peppylib::core_node::transport::send_goal;
-use peppylib::messaging::GoalAnswer;
 use tracing::info;
 
-use super::super::action_poll::{CtrlC, FollowedGoal, poll_action_to_completion};
+use super::super::action_poll::{AfterGoal, CtrlC, FollowedGoal, poll_action_to_completion};
 use super::super::node::TimeoutConfig;
 use crate::commands::colors::{
     BINDING_COLOR, MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR, MEASURE_NODE_COLOR,
@@ -94,12 +93,7 @@ async fn benchmark_async(
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to send benchmark goal: {}", e)))?;
 
-    if let GoalAnswer::Refused(refusal) = &action_handle.goal_reply().answer {
-        return Err(Error::ExecutionFailed(crate::commands::reply_failure_text(
-            "Benchmark refused",
-            refusal,
-        )));
-    }
+    crate::commands::action_poll::accepted_goal(&action_handle, "Benchmark")?;
 
     // Drain feedback (progress lines) until the daemon ends the goal.
     let timeouts = TimeoutConfig {
@@ -126,6 +120,7 @@ async fn benchmark_async(
             doing: "Benchmark",
             log_path: None,
         },
+        AfterGoal::CommandEnds,
         &mut CtrlC::listen(),
     )
     .await?;

@@ -15,3 +15,11 @@ pub mod consumer;
 mod dynamic;
 
 pub use codec::{CodecError, ConversionError, MessageCodec};
+
+use config::node::MessageFormat;
+
+/// The format of a message side that carries a payload: `None` for a side
+/// with no format, and for an empty one, which carries no payload either.
+pub fn payload_format(format: Option<&MessageFormat>) -> Option<&MessageFormat> {
+    format.filter(|format| !format.0.is_empty())
+}

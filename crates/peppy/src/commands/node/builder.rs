@@ -7,6 +7,7 @@ use tracing::info;
 
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
+use crate::commands::action_poll::AfterGoal;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -46,6 +47,7 @@ async fn build_node_async_with_connect(
         &params.node_tag,
         &params.timeouts,
         params.options,
+        AfterGoal::CommandEnds,
     )
     .await
 }
@@ -70,6 +72,7 @@ pub async fn build_node_async(
         node_tag,
         timeouts,
         options,
+        AfterGoal::CommandEnds,
     )
     .await
 }
@@ -77,7 +80,9 @@ pub async fn build_node_async(
 /// Like [`build_node_async`] but with the caller identity and the build's
 /// host split: `bound_core_node` is the local daemon (the sender address the
 /// goal rides under), `target_core_node` the daemon that runs the build. They
-/// coincide without a `--core-node` override.
+/// coincide without a `--core-node` override. `after` says whether the
+/// command sends another goal once the build completed.
+#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 pub(crate) async fn build_node_on(
     messenger: &MessengerHandle,
     bound_core_node: &str,
@@ -86,6 +91,7 @@ pub(crate) async fn build_node_on(
     node_tag: &str,
     timeouts: &TimeoutConfig,
     options: BuildOptions,
+    after: AfterGoal,
 ) -> Result<()> {
     info!("Building node {}:{}...", node_name, node_tag);
 
@@ -109,7 +115,7 @@ pub(crate) async fn build_node_on(
         NodeBuildGoalResponse,
         NodeBuildFeedback,
         NodeBuildResult,
-    >(messenger, &mut action_handle, timeouts, "Node build")
+    >(messenger, &mut action_handle, timeouts, "Node build", after)
     .await?;
 
     info!(

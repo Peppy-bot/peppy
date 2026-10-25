@@ -14,7 +14,7 @@ use peppy::{
 
 mod logging;
 
-use logging::{LogStyle, init_tracing};
+use logging::{LogSink, LogStyle, init_tracing};
 
 #[derive(Parser)]
 #[command(name = "peppy")]
@@ -113,7 +113,11 @@ fn main() {
     } else {
         LogStyle::Compact
     };
-    init_tracing(log_style);
+    let log_sink = match &cli.command {
+        Commands::Node { command } if command.prints_data() => LogSink::Stderr,
+        _ => LogSink::Stdout,
+    };
+    init_tracing(log_style, log_sink);
     clear_dev_root_of_earlier_boot();
 
     let app_ctx = match AppContext::from_current_dir() {

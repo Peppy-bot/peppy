@@ -706,3 +706,36 @@ struct NodeInfoResponse {
         }
     }
 }
+
+# Instance Documents service
+struct InstanceDocumentsRequest {
+    # Id of an instance of this daemon's stack
+    instanceId @0 :Text;
+}
+
+# One document the daemon holds, by the identity it is pinned under.
+struct PinnedDocument {
+    name @0 :Text;
+    tag @1 :Text;
+    # SHA-256 of `content`, in lowercase hex.
+    sha256 @2 :Text;
+    content @3 :Text;
+}
+
+# The pinned documents of one instance: what its build was generated from.
+# An instance that is not in the stack, or a document the daemon can no
+# longer read, is an error reply with a failure kind.
+struct InstanceDocumentsResponse {
+    # The daemon that runs the instance.
+    coreNode @0 :Text;
+    instanceId @1 :Text;
+    # The node manifest as the stack holds it, serialized as JSON5, with the
+    # node's name and tag.
+    manifest @2 :PinnedDocument;
+    # Each contract document the manifest names, in `manifest.implements`
+    # order, then `depends_on.contracts` order.
+    contracts @3 :List(PinnedDocument);
+    # Each pairing document the manifest names, in `depends_on.pairings`
+    # order, then `depends_on.pairing_observers` order.
+    pairings @4 :List(PinnedDocument);
+}

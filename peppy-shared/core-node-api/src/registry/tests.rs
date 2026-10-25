@@ -52,6 +52,7 @@ fn pinned_service_name(id: ServiceId) -> &'static str {
         ServiceId::NodeRemove => "node_remove",
         ServiceId::NodeSync => "node_sync",
         ServiceId::NodeInfo => "node_info",
+        ServiceId::InstanceDocuments => "instance_documents",
         ServiceId::NodeStop => "node_stop",
         ServiceId::RepoAdd => "repo_add",
         ServiceId::RepoExclude => "repo_exclude",

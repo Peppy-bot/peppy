@@ -34,7 +34,9 @@ use crate::source_url::SourceUrl;
 use config::node::Cardinality;
 use core_node_api::encoding::{ReadRef, RepoItemKind};
 use daemon_config::consts::PeppyDirs;
-use daemon_config::repository::{ItemName, ItemTag, ManifestFingerprint, PinKind, PinnedItem};
+use daemon_config::repository::{
+    ItemName, ItemTag, ManifestFingerprint, PinKind, PinnedDocument, PinnedItem,
+};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1074,6 +1076,24 @@ pub(crate) fn resolve_pinned_doc<E: RepoCacheEntry, T>(
         )
     })?;
     parse(content).map_err(|e| format!("failed to parse pinned {}: {e}", pin.label()))
+}
+
+/// The document of `pin` in hand: its bytes through [`resolve_pin_to_bytes`],
+/// as text beside the pin.
+pub(crate) fn materialize_pinned_document<E: RepoCacheEntry>(
+    peppy_dirs: &PeppyDirs,
+    entries: &[E],
+    pin: &PinnedItem,
+    on_feedback: &dyn Fn(Report<'_>),
+) -> std::result::Result<PinnedDocument, String> {
+    let content = resolve_pinned_doc(
+        peppy_dirs,
+        entries,
+        pin,
+        |content| Ok(content.to_owned()),
+        on_feedback,
+    )?;
+    Ok(PinnedDocument::new(pin.clone(), content))
 }
 
 struct MemoEntry {

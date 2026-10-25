@@ -1,10 +1,13 @@
-use super::types::{DependsOn, Execution, InterfaceKind, Interfaces, Manifest, NodeConfig};
+use super::types::{
+    DependsOn, DocumentKind, Execution, InterfaceKind, Interfaces, Manifest, NodeConfig,
+};
 use crate::{
     consts::normalize_tag,
     error::{ParsingError, Result},
+    internal::fingerprint::ManifestFingerprint,
     parsing::read_non_empty_file,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::path::Path;
 
 /// Validates the manifest's link namespace and implements claims:
@@ -66,6 +69,42 @@ fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
                 tag_b: entry.tag.clone(),
             }
             .into());
+        }
+    }
+    Ok(())
+}
+
+/// Rejects a document that two references of the manifest pin to two
+/// different `sha256` values. A node uses one content for each name and tag
+/// of a document: its add reads each document once, and the members of a
+/// contract have one wire key for each name and tag. A reference without a
+/// `sha256` resolves when the node is added, so only the add can find that
+/// it resolves to other bytes than a pinned one. A `sha256` that does not
+/// parse is left to the add, which names it.
+fn validate_document_pins(manifest: &Manifest) -> Result<()> {
+    let mut pinned: HashMap<(DocumentKind, &str, &str), ManifestFingerprint> = HashMap::new();
+    for reference in manifest.document_references() {
+        let Some(sha256) = reference
+            .sha256
+            .and_then(|sha256| ManifestFingerprint::parse(sha256).ok())
+        else {
+            continue;
+        };
+        match pinned.entry((reference.kind, reference.name, reference.tag)) {
+            Entry::Vacant(slot) => {
+                slot.insert(sha256);
+            }
+            Entry::Occupied(first) if *first.get() == sha256 => {}
+            Entry::Occupied(first) => {
+                return Err(ParsingError::DocumentPinnedTwice {
+                    kind: reference.kind,
+                    name: reference.name.to_owned(),
+                    tag: reference.tag.to_owned(),
+                    first: first.get().to_string(),
+                    second: sha256.to_string(),
+                }
+                .into());
+            }
         }
     }
     Ok(())
@@ -367,6 +406,7 @@ impl NodeConfigParser {
         let config: NodeConfig = crate::error::deserialize_json5_with_path(content)?;
         validate_execution(&config.execution)?;
         validate_manifest_links(&config.manifest)?;
+        validate_document_pins(&config.manifest)?;
         validate_interfaces(&config.manifest, &config.interfaces)?;
         Ok(config)
     }
@@ -1804,6 +1844,108 @@ mod tests {
                     if name == "uvc_camera"
             ),
             "expected ImplementsTagSanitizationCollision, got: {error:?}"
+        );
+    }
+
+    /// A node whose manifest has the `depends_on` that `depends_on` gives
+    /// and nothing else of note.
+    fn node_depending_on(depends_on: &str) -> String {
+        format!(
+            r#"{{
+            peppy_schema: "node/v1",
+            manifest: {{ name: "viewer", tag: "v1", depends_on: {depends_on} }},
+            interfaces: {{}},
+            execution: {{ language: "rust", run_cmd: ["./bin"] }},
+        }}"#
+        )
+    }
+
+    const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn a_contract_that_two_slots_pin_to_two_sha256_values_is_rejected() {
+        let json5 = node_with(
+            &format!(r#"{{ name: "uvc_camera", tag: "v1", link_id: "cam", sha256: "{SHA_A}" }}"#),
+            r#"{}"#,
+        )
+        .replace(
+            "implements:",
+            &format!(
+                r#"depends_on: {{ contracts: [
+                    {{ name: "uvc_camera", tag: "v1", link_id: "peer", sha256: "{SHA_B}" }}
+                ] }},
+                implements:"#
+            ),
+        );
+        let error = parse_error(&json5);
+        let ParsingError::DocumentPinnedTwice {
+            kind,
+            name,
+            tag,
+            first,
+            second,
+        } = &error
+        else {
+            panic!("expected DocumentPinnedTwice, got: {error:?}");
+        };
+        assert_eq!(
+            (*kind, name.as_str(), tag.as_str()),
+            (DocumentKind::Contract, "uvc_camera", "v1")
+        );
+        assert_eq!((first.as_str(), second.as_str()), (SHA_A, SHA_B));
+    }
+
+    #[test]
+    fn a_pairing_that_a_participant_and_an_observer_pin_to_two_sha256_values_is_rejected() {
+        let json5 = node_depending_on(&format!(
+            r#"{{
+                pairings: [{{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm", sha256: "{SHA_A}" }}],
+                pairing_observers: [{{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", sha256: "{SHA_B}" }}],
+            }}"#
+        ));
+        let error = parse_error(&json5);
+        assert!(
+            matches!(
+                &error,
+                ParsingError::DocumentPinnedTwice { kind: DocumentKind::Pairing, name, .. }
+                    if name == "arm_link"
+            ),
+            "expected DocumentPinnedTwice, got: {error:?}"
+        );
+    }
+
+    /// Two references agree when their sha256 values name one fingerprint,
+    /// whatever the case of the letters. A reference without a sha256, and
+    /// a document of another kind with the same name and tag, pin nothing
+    /// that the rule compares.
+    #[test]
+    fn references_that_agree_on_the_content_of_each_document_parse() {
+        let upper = SHA_A.to_ascii_uppercase();
+        let json5 = node_depending_on(&format!(
+            r#"{{
+                contracts: [
+                    {{ name: "arm_link", tag: "v1", link_id: "a", sha256: "{SHA_A}" }},
+                    {{ name: "arm_link", tag: "v1", link_id: "b", sha256: "{upper}" }},
+                    {{ name: "arm_link", tag: "v1", link_id: "c" }},
+                ],
+                pairings: [{{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm", sha256: "{SHA_B}" }}],
+            }}"#
+        ));
+        let config = NodeConfigParser::from_content(&json5).expect("the references agree");
+        let references: Vec<_> = config
+            .manifest
+            .document_references()
+            .map(|r| (r.kind, r.sha256))
+            .collect();
+        assert_eq!(
+            references,
+            [
+                (DocumentKind::Contract, Some(SHA_A)),
+                (DocumentKind::Contract, Some(upper.as_str())),
+                (DocumentKind::Contract, None),
+                (DocumentKind::Pairing, Some(SHA_B)),
+            ]
         );
     }
 

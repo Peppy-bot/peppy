@@ -6,8 +6,10 @@ use super::super::action_loop::{
     invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
 };
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
+use super::cache::MaterializeFeedback;
 use super::gate::{COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use super::git_utils::install_credentials;
+use super::pins::ManifestDocuments;
 use super::sync::{
     self, AutoSyncParams, DepClosure, MaterializedDeps, collect_all_deployment_interfaces,
     materialize_repo_deps, stack_resolver, stack_then_repo_resolver,
@@ -1515,22 +1517,14 @@ async fn process_node_add_inner(
         generator::CrateDeployMode::Symlink
     };
     let interface_feedback = interface_step_sink(ctx.announcer.clone());
-    // A goal carrying pins fixes which bytes its contract and pairing
-    // documents are: the launch (or the resolve-ref lowering) decided them
-    // once, and this machine's own cache picks must not override that.
-    // A goal without pins keeps the local resolution rules.
-    let doc_pins = if goal.pins_json5.is_empty() {
-        None
-    } else {
-        let decoded = super::pins::decode_pins(&goal.pins_json5)?;
-        Some(super::pins::DocPins::from_pins(&decoded))
-    };
+    let documents =
+        add_documents(&goal, &node_config, &ctx.action.peppy_dirs, &ctx.announcer).await?;
     let consumed_interfaces = collect_all_deployment_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         &resolve_dep,
         &ctx.action.peppy_dirs,
-        doc_pins.as_ref(),
+        Some(&documents),
         &interface_feedback,
     )?;
     // Generation is synchronous and runs on the blocking pool, holding its
@@ -1575,15 +1569,21 @@ async fn process_node_add_inner(
             )
         })?;
 
-    // Push the node config into the stack as an `Added` entity. Use the
-    // staged copy of peppy.json5 rather than source_path because
-    // source_path may point at a transient Git/Http clone that is cleaned
-    // up after this function returns. The staging directory persists as
-    // long as the entity holds its guard.
+    // Push the node config into the stack as an `Added` entity, with the
+    // documents its code was generated from. Use the staged copy of
+    // peppy.json5 rather than source_path because source_path may point at
+    // a transient Git/Http clone that is cleaned up after this function
+    // returns. The staging directory persists as long as the entity holds
+    // its guard.
     let config_path_for_stack = staging.path().join(NODE_CONFIG_FILE);
     ctx.action
         .node_stack
-        .push_config(node_config.clone(), false, &config_path_for_stack)
+        .push_config(
+            node_config.clone(),
+            documents.into_documents(),
+            false,
+            &config_path_for_stack,
+        )
         .map_err(|error| {
             AddStepFailure::new(
                 push_failure_kind(&error),
@@ -1617,6 +1617,35 @@ async fn process_node_add_inner(
     debug!("Added node {}:{} (pending build)", node_name, node_tag);
 
     Ok(NodeAddResult::new(node_name, node_tag))
+}
+
+/// The contract and pairing documents an add generates the node's code
+/// from, read by their pins. A goal carrying pins fixes which bytes its
+/// documents are: the launch (or the resolve-ref lowering) decided them once,
+/// and this machine's own cache picks must not override that. A goal without
+/// pins has them minted here, by the local resolution rules. The add reads
+/// each document once: the code is generated from these bytes, and the
+/// entity keeps them, so an edit of a document after the add changes
+/// nothing that the node's commands read.
+async fn add_documents(
+    goal: &NodeAddGoal,
+    node_config: &NodeConfig,
+    peppy_dirs: &PeppyDirs,
+    announcer: &Announcer,
+) -> std::result::Result<ManifestDocuments, String> {
+    let on_feedback: MaterializeFeedback = Arc::new(interface_step_sink(announcer.clone()));
+    let pins = if goal.pins_json5.is_empty() {
+        super::pins::doc_pins_for_manifest_sets_async(
+            peppy_dirs,
+            vec![vec![node_config.manifest.clone()]],
+            Arc::clone(&on_feedback),
+        )
+        .await
+        .and_then(|mut sets| sets.remove(0))?
+    } else {
+        super::pins::decode_pins(&goal.pins_json5)?
+    };
+    ManifestDocuments::read_async(peppy_dirs, pins, node_config.manifest.clone(), on_feedback).await
 }
 
 /// The kind of a failed `push_config`: the root node is not a node a goal

@@ -26,7 +26,7 @@ use core_node_api::{DaemonFailure, InstanceEndpoint, InstanceState, SerializedNo
 
 use crate::{
     context::{AppContext, DaemonConnection},
-    error::{Error, Result},
+    error::{CallEnd, Error, Result},
 };
 
 /// The instance id the command line sends its requests and goals as. Each
@@ -37,12 +37,23 @@ pub(crate) const CALLER_INSTANCE_ID: &str = "peppy-cli";
 
 /// The error of a request to the daemon that did not give its response,
 /// `doing` naming the request ("Failed to add repository"): the daemon's
-/// error reply with its failure kind, or why the request did not reach the
-/// daemon.
+/// error reply with its failure kind, which is a refusal, or why the request
+/// did not reach the daemon, which is an error of the command.
 pub(crate) fn request_error(doing: &str, error: peppylib::PeppyError) -> Error {
+    let text = request_failure_text(doing, &error);
     match error.failure() {
-        Some(failure) => Error::ExecutionFailed(reply_failure_text(doing, failure)),
-        None => Error::ExecutionFailed(format!("{doing}: {error}")),
+        Some(_) => Error::ended(CallEnd::Refused, text),
+        None => Error::ExecutionFailed(text),
+    }
+}
+
+/// How the command line says that the request `doing` got no response: the
+/// [`reply_failure_text`] of the daemon's error reply, or why the request did
+/// not reach the daemon.
+pub(crate) fn request_failure_text(doing: &str, error: &peppylib::PeppyError) -> String {
+    match error.failure() {
+        Some(failure) => reply_failure_text(doing, failure),
+        None => format!("{doing}: {error}"),
     }
 }
 

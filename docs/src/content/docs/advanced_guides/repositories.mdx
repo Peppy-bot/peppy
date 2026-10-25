@@ -268,9 +268,9 @@ This is also what lets the [installer](/guides/installation/) finish on a machin
 
 With `--strict`, the same report fails the command: `peppy repo refresh --strict` prints it and exits with an error. The repositories that read cleanly are still indexed and the failed ones still keep their entries; only the exit status differs. Use it where a repository that cannot be read must stop what comes next, as in CI, where a later step would otherwise fail with an error that does not name the repository.
 
-Only a refresh that could not run at all fails: a `repositories.json5` that does not parse or that lists the same `id` twice, or caches that cannot be written. Nothing was read in that case, so there is nothing to contain. The command then prints the failure kind and the reason, `Repository refresh failed (attempt_failed): …`, and exits with code 1.
+Only a refresh that could not run at all fails: a `repositories.json5` that does not parse or that lists the same `id` twice, or caches that cannot be written. Nothing was read in that case, so there is nothing to contain. The command then prints the failure kind and the reason, `Repository refresh failed (attempt_failed): …`, and exits with code 4, the exit status of a failed goal.
 
-A Ctrl+C sends the daemon a cancel of the refresh. The read of each repository that runs ends first, no other read starts, and the refresh publishes nothing, as a refresh that fails: the caches keep what they held. The command prints `Repository refresh was cancelled by its caller.` and exits with code 130. A second Ctrl+C stops the wait for the end once the cancel reached the daemon, and a third one ends the command at once.
+A Ctrl+C sends the daemon a cancel of the refresh. The read of each repository that runs ends first, no other read starts, and the refresh publishes nothing, as a refresh that fails: the caches keep what they held. The command prints `Repository refresh was cancelled by its caller.` and exits with code 5, the exit status of a cancelled goal. A second Ctrl+C stops the wait for the end once the cancel reached the daemon and exits with code 130, and a third one ends the command at once.
 
 Two read failures are reported, and the distinction matters because they send you to different places:
 

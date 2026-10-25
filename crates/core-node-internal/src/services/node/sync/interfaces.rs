@@ -4,9 +4,10 @@ use super::deps::{
 };
 use crate::services::node::Report;
 use crate::services::repo::cache as repo_cache;
-use config::node::{InterfaceKind, LinkedMember, RefinementProblem, refined_ref};
+use config::node::{InterfaceKind, RefinementProblem, refined_ref};
 use config::{ContractCoverageMismatch, RefinementMismatch};
 use daemon_config::consts::PeppyDirs;
+use daemon_config::contract::RefinedMember;
 use generator::{ConsumedActionMessage, ContractOrigin, DeploymentInterface};
 use node_stack::NodeStack;
 use std::collections::{HashMap, HashSet};
@@ -24,7 +25,7 @@ pub fn collect_all_deployment_interfaces(
     interfaces_cfg: &config::node::Interfaces,
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
     peppy_dirs: &PeppyDirs,
-    doc_pins: Option<&crate::services::node::pins::DocPins>,
+    documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = collect_consumed_interfaces(
@@ -32,12 +33,12 @@ pub fn collect_all_deployment_interfaces(
         interfaces_cfg,
         resolve,
         peppy_dirs,
-        doc_pins,
+        documents,
         on_feedback,
     )
     .map_err(|reason| format!("failed to resolve consumed interfaces: {reason}"))?;
     interfaces.extend(
-        resolve_implements(manifest, interfaces_cfg, peppy_dirs, doc_pins, on_feedback)
+        resolve_implements(manifest, interfaces_cfg, peppy_dirs, documents, on_feedback)
             .map_err(|reason| format!("failed to resolve `manifest.implements`: {reason}"))?,
     );
     interfaces.extend(
@@ -45,7 +46,7 @@ pub fn collect_all_deployment_interfaces(
             manifest,
             interfaces_cfg,
             peppy_dirs,
-            doc_pins,
+            documents,
             on_feedback,
         )
         .map_err(|reason| format!("failed to resolve pairing slots: {reason}"))?,
@@ -77,9 +78,10 @@ struct ResolvedDependencies {
     /// consumed through `depends_on.contracts`.
     node_offerings: HashMap<(String, String), DependencyOfferings>,
     /// Memoized parsed contracts for `depends_on.contracts` entries, keyed by
-    /// `link_id` so two entries with the same `(name, tag)` but different
-    /// sha256 pins are cached and resolved separately. `resolve_contract_doc`
-    /// handles SHA-pin matching and on-disk drift detection per load.
+    /// `link_id`: without the documents of an add, each entry resolves by the
+    /// local rules, so an entry with a sha256 pin and one without can resolve
+    /// to two contents of one `(name, tag)`. `resolve_contract_doc` handles
+    /// SHA-pin matching and on-disk drift detection per load.
     contract_docs: HashMap<String, daemon_config::contract::PeppyContract>,
 }
 
@@ -97,7 +99,7 @@ fn collect_consumed_interfaces(
     interfaces_cfg: &config::node::Interfaces,
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
     peppy_dirs: &PeppyDirs,
-    doc_pins: Option<&crate::services::node::pins::DocPins>,
+    documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
@@ -131,7 +133,7 @@ fn collect_consumed_interfaces(
                     &entry.name,
                     &entry.tag,
                     entry.sha256.as_deref(),
-                    doc_pins,
+                    documents,
                     on_feedback,
                 )?;
                 deps.contract_docs.insert(link_id.clone(), parsed);
@@ -392,38 +394,38 @@ mod action_message_tests {
 
 /// Loads a `PeppyContract` document from the local contract cache for
 /// `(name, tag)`, verifying both the SHA pin (when set) and on-disk drift
-/// against the cached fingerprint. Returns the parsed contract document,
-/// or an error string ready to surface to the client. Shared between
-/// [`resolve_implements`] (producer side) and the `depends_on.contracts`
-/// resolution path (consumer side).
+/// against the cached fingerprint, or takes it from the `documents` an add
+/// read by their pins, checked against the SHA pin. Returns the parsed
+/// contract document, or an error string ready to surface to the client.
+/// Shared between [`resolve_implements`] (producer side) and the
+/// `depends_on.contracts` resolution path (consumer side).
 pub(crate) fn resolve_contract_doc(
     peppy_dirs: &PeppyDirs,
     name: &str,
     tag: &str,
     sha256_pin: Option<&str>,
-    doc_pins: Option<&crate::services::node::pins::DocPins>,
+    documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<daemon_config::contract::PeppyContract, String> {
-    let cache = repo_cache::load_contract_cache(peppy_dirs)
-        .map_err(|e| format!("failed to load contract cache: {e}"))?;
     let parse = |content: &str| {
         daemon_config::contract::PeppyContractParser::from_content(content)
             .map_err(|e| e.to_string())
     };
 
-    // A launch pin fixes the bytes: this machine reuses its own copy on a
-    // content match and fetches the pin's origin otherwise, but its own
-    // priority rules never pick the document. Without one, the local rules
-    // apply, with the manifest's own optional sha pin.
-    if let Some(pins) = doc_pins {
-        let pin = pins.require(
-            daemon_config::repository::PinKind::Contract,
+    // The documents an add read by their pins fix the bytes: this machine's
+    // own priority rules never pick the document. Without them, the local
+    // rules apply, with the manifest's own optional sha pin.
+    if let Some(documents) = documents {
+        let reference = config::node::DocumentReference {
+            kind: config::node::DocumentKind::Contract,
             name,
             tag,
-            sha256_pin,
-        )?;
-        return repo_cache::resolve_pinned_doc(peppy_dirs, &cache, pin, parse, on_feedback);
+            sha256: sha256_pin,
+        };
+        return documents.parse(reference, parse);
     }
+    let cache = repo_cache::load_contract_cache(peppy_dirs)
+        .map_err(|e| format!("failed to load contract cache: {e}"))?;
     repo_cache::resolve_cached_doc(
         peppy_dirs,
         &cache,
@@ -504,7 +506,7 @@ fn resolve_implements(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
-    doc_pins: Option<&crate::services::node::pins::DocPins>,
+    documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<Vec<DeploymentInterface>, ImplementsError> {
     if manifest.implements.is_empty() {
@@ -527,7 +529,7 @@ fn resolve_implements(
             slot.name.as_str(),
             &slot.tag,
             slot.sha256.as_deref(),
-            doc_pins,
+            documents,
             on_feedback,
         )?;
         docs.insert(slot.link_id.as_str(), (slot, parsed));
@@ -567,37 +569,19 @@ fn resolve_implements(
 
         // `None`: no member of this kind by this name. `Some(Err)`: the
         // member exists but does not admit the entry's `refine` block.
-        // Each arm is the same three steps (select the member by name,
-        // apply the entry's refinement, hand the result to the generator)
-        // over a different section, refinement type, and payload.
-        macro_rules! resolve {
-            ($members:expr, $entry:expr, $build:path) => {
-                $members
-                    .iter()
-                    .find(|member| member.name == name)
-                    .map(|member| {
-                        refined_ref($entry.refine.as_deref(), member)
-                            .map(|member| $build(member.into_owned(), Some(origin)))
-                    })
-            };
-        }
-        let resolved = match member {
-            LinkedMember::Topic(entry) => resolve!(
-                doc.interfaces.topics,
-                entry,
-                DeploymentInterface::emitted_topic
-            ),
-            LinkedMember::Service(entry) => resolve!(
-                doc.interfaces.services,
-                entry,
-                DeploymentInterface::exposed_service
-            ),
-            LinkedMember::Action(entry) => resolve!(
-                doc.interfaces.actions,
-                entry,
-                DeploymentInterface::exposed_action
-            ),
-        };
+        let resolved = doc.refined_member(member).map(|refined| {
+            refined.map(|member| match member {
+                RefinedMember::Topic(topic) => {
+                    DeploymentInterface::emitted_topic(topic, Some(origin))
+                }
+                RefinedMember::Service(service) => {
+                    DeploymentInterface::exposed_service(service, Some(origin))
+                }
+                RefinedMember::Action(action) => {
+                    DeploymentInterface::exposed_action(*action, Some(origin))
+                }
+            })
+        });
 
         match resolved {
             Some(refined) => {
