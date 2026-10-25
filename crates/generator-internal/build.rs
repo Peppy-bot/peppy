@@ -554,6 +554,8 @@ mod peppylib_build {
         ("peppy-config-model", true),
         ("peppy-messaging-interface", false),
         ("core-node-api", false),
+        ("peppy-codec", false),
+        ("peppy-mcp-catalog", false),
     ];
 
     /// Every source file of the `.so` dependency crates. Resolved against

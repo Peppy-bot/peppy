@@ -2683,6 +2683,7 @@ dependencies = [
  "core-node-api",
  "names-generator2",
  "parking_lot",
+ "peppy-codec",
  "peppy-config-model",
  "peppylib-rs",
  "pmi",

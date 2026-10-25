@@ -12,9 +12,9 @@ use config::failure_kind::{MemberFailureKinds, MemberSection};
 use config::node::{InterfaceKind, NativeExposedAction, NativeExposedService};
 use peppylib::config::{QoSProfile, TopicRetention};
 use peppylib::messaging::{
-    ActionGoalHandle, ActionMessenger, CancelOnDrop, CancelState, Failure, FeedbackBound,
-    GoalAnswer, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, Subscription,
-    TopicBuffer, TopicMessenger, decode_cancel_ack,
+    ActionGoalHandle, ActionMessenger, ActionWireSender, CancelOnDrop, CancelState, Failure,
+    FeedbackBound, GoalAnswer, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget,
+    Subscription, TopicBuffer, TopicMessenger, decode_cancel_ack,
 };
 use peppylib::runtime::BoundSetSubscription;
 use peppylib::{Message, MessengerHandle, Payload, PeppyError};
@@ -571,21 +571,26 @@ impl GoalHandle {
         messenger: &MessengerHandle,
         deadline: Duration,
     ) -> Result<GoalOutcome, ConsumerError> {
-        use peppylib::messaging::GoalOutcome as Ended;
         let reply = ActionMessenger::request_result(messenger, &self.inner, deadline).await?;
-        let body = |payload: &Payload| decode_optional(self.result.as_ref(), payload.as_ref());
-        Ok(match reply.outcome {
-            Ended::Completed(result) => GoalOutcome::Completed(body(&result)?),
-            Ended::Cancelled { reason, result } => GoalOutcome::Cancelled {
-                reason,
-                result: body(&result)?,
-            },
-            Ended::Failed(failure) => {
-                GoalOutcome::Failed(checked_failure(failure, &self.member, &self.failure_kinds)?)
-            }
-            Ended::Abandoned => GoalOutcome::Abandoned,
-            Ended::Expired => GoalOutcome::Expired,
-        })
+        goal_outcome(
+            reply.outcome,
+            self.result.as_ref(),
+            &self.member,
+            &self.failure_kinds,
+        )
+    }
+
+    /// The requests of the goal that borrow nothing of the handle: its
+    /// cancel and its result. A caller sends them from a task of its own
+    /// while another task reads the feedback of the goal.
+    pub fn requests(&self) -> GoalRequests {
+        GoalRequests {
+            sender: self.inner.sender().clone(),
+            goal_id: self.inner.goal_id().to_owned(),
+            member: self.member.clone(),
+            result: self.result.clone(),
+            failure_kinds: self.failure_kinds.clone(),
+        }
     }
 
     /// A guard that cancels the goal when it is dropped armed: its caller
@@ -612,16 +617,84 @@ impl GoalHandle {
         messenger: &MessengerHandle,
         deadline: Duration,
     ) -> impl Future<Output = Result<CancelState, ConsumerError>> + Send + 'static {
+        let requests = self.requests();
         let messenger = messenger.clone();
-        let sender = self.inner.sender().clone();
-        let goal_id = self.inner.goal_id().to_owned();
-        async move {
-            let acknowledgement =
-                ActionMessenger::cancel_with_sender(&messenger, &sender, &goal_id, deadline)
-                    .await?;
-            Ok(decode_cancel_ack(acknowledgement.payload_bytes().as_ref())?)
-        }
+        async move { requests.cancel(&messenger, deadline).await }
     }
+}
+
+/// The cancel and the result requests of a goal, with no handle (see
+/// [`GoalHandle::requests`]).
+#[derive(Debug, Clone)]
+pub struct GoalRequests {
+    sender: ActionWireSender,
+    goal_id: String,
+    member: String,
+    result: Option<MessageCodec>,
+    failure_kinds: MemberFailureKinds,
+}
+
+impl GoalRequests {
+    /// Asks the producer to cancel the goal, waiting at most `deadline` for
+    /// its acknowledgement.
+    pub async fn cancel(
+        &self,
+        messenger: &MessengerHandle,
+        deadline: Duration,
+    ) -> Result<CancelState, ConsumerError> {
+        let acknowledgement =
+            ActionMessenger::cancel_with_sender(messenger, &self.sender, &self.goal_id, deadline)
+                .await?;
+        Ok(decode_cancel_ack(acknowledgement.payload_bytes().as_ref())?)
+    }
+
+    /// Requests the goal's terminal outcome, waiting at most `deadline`, as
+    /// [`GoalHandle::result`] does. It asks the producer even when the
+    /// handle saw it leave, and a producer that is gone gives
+    /// [`GoalOutcome::Abandoned`].
+    pub async fn result(
+        &self,
+        messenger: &MessengerHandle,
+        deadline: Duration,
+    ) -> Result<GoalOutcome, ConsumerError> {
+        let reply = ActionMessenger::request_result_with_sender(
+            messenger,
+            &self.sender,
+            &self.goal_id,
+            deadline,
+        )
+        .await?;
+        goal_outcome(
+            reply.outcome,
+            self.result.as_ref(),
+            &self.member,
+            &self.failure_kinds,
+        )
+    }
+}
+
+/// How a goal of `member` ended, its result body decoded with `codec` and
+/// its failure checked against `failure_kinds`.
+fn goal_outcome(
+    outcome: peppylib::messaging::GoalOutcome,
+    codec: Option<&MessageCodec>,
+    member: &str,
+    failure_kinds: &MemberFailureKinds,
+) -> Result<GoalOutcome, ConsumerError> {
+    use peppylib::messaging::GoalOutcome as Ended;
+    let body = |payload: &Payload| decode_optional(codec, payload.as_ref());
+    Ok(match outcome {
+        Ended::Completed(result) => GoalOutcome::Completed(body(&result)?),
+        Ended::Cancelled { reason, result } => GoalOutcome::Cancelled {
+            reason,
+            result: body(&result)?,
+        },
+        Ended::Failed(failure) => {
+            GoalOutcome::Failed(checked_failure(failure, member, failure_kinds)?)
+        }
+        Ended::Abandoned => GoalOutcome::Abandoned,
+        Ended::Expired => GoalOutcome::Expired,
+    })
 }
 
 fn encode_optional(
