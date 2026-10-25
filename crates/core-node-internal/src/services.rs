@@ -2,6 +2,7 @@ mod action_loop;
 mod clock;
 mod datastore;
 pub(crate) mod federation;
+pub(crate) mod fleet;
 mod health;
 mod info;
 pub(crate) mod mcp;

@@ -180,6 +180,10 @@ pub struct SliceOwnership {
     /// and the slice because all three answer "which launch is this machine
     /// part of, and in what role".
     pub(crate) active: Mutex<Option<crate::services::stack::ActiveLaunch>>,
+    /// The leases of the robots of the launch this daemon coordinates, and
+    /// the halt of its stack, beside the launch whose copies they lease:
+    /// every change of the copies reads and changes them.
+    pub(crate) fleet: crate::services::fleet::Fleet,
     /// How many removals hold restarts off; a restart is admitted at zero.
     restart_holds: tokio::sync::watch::Sender<usize>,
     /// The instances whose restart holds an admission, each with its count
@@ -251,6 +255,7 @@ impl SliceOwnership {
             state: Mutex::default(),
             stack: Default::default(),
             active: Mutex::default(),
+            fleet: Default::default(),
             restart_holds: tokio::sync::watch::Sender::new(0),
             admitted_restarts: Arc::default(),
             admission_waits: Arc::new(tokio::sync::watch::Sender::new(BTreeMap::new())),

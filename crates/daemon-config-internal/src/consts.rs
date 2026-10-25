@@ -219,6 +219,14 @@ impl PeppyDirs {
         self.root.join("bin")
     }
 
+    /// The halt of the stack, while the stack is halted: the daemon writes
+    /// it at `fleet.halt` and removes it at `fleet.clear_halt`, so the halt
+    /// stays after a restart of the daemon, and a clear of a per-boot root
+    /// keeps it.
+    pub fn fleet_halt_path(&self) -> PathBuf {
+        self.root.join("fleet_halt.json5")
+    }
+
     /// Path to the stack log: each instance that ends as `finished` or
     /// `failed`, each change between `healthy` and `unhealthy`, and each
     /// report of records the log export discarded.

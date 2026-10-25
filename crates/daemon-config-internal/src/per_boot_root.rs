@@ -28,6 +28,8 @@
 //! - the two lock files: a lock file that is unlinked and recreated lets two
 //!   processes lock two different inodes behind the same path.
 //! - the boot record.
+//! - [`PeppyDirs::fleet_halt_path`]: the halt of the stack, which stays until
+//!   a client clears it.
 //!
 //! The clear runs under [`PeppyDirs::root_clear_lock_path`], so two processes
 //! that start together after a reboot clear the root once. A clear continues
@@ -155,10 +157,11 @@ fn recorded_boot_id(peppy_dirs: &PeppyDirs) -> io::Result<Option<BootId>> {
 }
 
 /// The entries of the root that a clear keeps: the configuration, the
-/// container build caches, the node builds, the lock files and the boot
-/// record.
-fn kept_paths(peppy_dirs: &PeppyDirs) -> [PathBuf; 6] {
+/// container build caches, the node builds, the lock files, the boot record
+/// and the halt of the stack.
+fn kept_paths(peppy_dirs: &PeppyDirs) -> [PathBuf; 7] {
     [
+        peppy_dirs.fleet_halt_path(),
         peppy_dirs.conf_dir(),
         peppy_dirs.container_build_cache_dir(),
         peppy_dirs.built_nodes_dir(),

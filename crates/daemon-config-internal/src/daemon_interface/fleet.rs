@@ -417,6 +417,12 @@ impl FleetFailureKind {
     }
 }
 
+impl From<FleetFailureKind> for config::failure_kind::FailureKindName {
+    fn from(kind: FleetFailureKind) -> Self {
+        Self::parse(kind.name()).expect("each kind of fleet:v1 is a valid failure kind name")
+    }
+}
+
 /// The response of `check_move`: absent `refusal` when the client may move
 /// the robot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
