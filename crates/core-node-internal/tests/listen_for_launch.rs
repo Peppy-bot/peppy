@@ -319,7 +319,7 @@ fn push_unbuilt_node_onto_stack(
     let config = NodeConfigParser::from_path(node_dir.join(NODE_CONFIG_FILE))
         .expect("existing node config should parse");
     node_stack
-        .push_config(config, false, &node_dir)
+        .push_config(config, Vec::new(), false, &node_dir)
         .expect("should seed stack");
     node_dir
 }

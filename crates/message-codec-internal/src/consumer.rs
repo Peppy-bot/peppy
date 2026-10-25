@@ -27,11 +27,15 @@ pub enum ConsumerError {
     #[error(transparent)]
     Conversion(#[from] ConversionError),
     /// The provider gave a failure kind that is neither a kind of peppy nor
-    /// a kind of its contract that the member lists.
+    /// a kind of its contract that the member lists. `failure` is the error
+    /// reply, the refusal or the failure that the provider gave, with its
+    /// kind and its message.
     #[error(
-        "the provider of `{member}` gave the failure kind `{kind}`, which is neither a kind of peppy nor a kind of its contract that the member lists"
+        "the provider of `{member}` gave the failure kind `{}`, which is neither a kind of peppy nor a kind of its contract that the member lists: {}",
+        failure.kind(),
+        failure.message()
     )]
-    UndeclaredFailureKind { member: String, kind: String },
+    UndeclaredFailureKind { member: String, failure: Failure },
 }
 
 /// The failure that `error` carries, checked against the kinds `kinds`
@@ -46,7 +50,7 @@ fn checked_failure_error(
         Some(failure) if !kinds.allows(failure.kind().as_str()) => {
             ConsumerError::UndeclaredFailureKind {
                 member: member.to_string(),
-                kind: failure.kind().to_string(),
+                failure: failure.clone(),
             }
         }
         _ => ConsumerError::Messaging(error),
@@ -64,7 +68,7 @@ fn checked_failure(
     }
     Err(ConsumerError::UndeclaredFailureKind {
         member: member.to_string(),
-        kind: failure.kind().to_string(),
+        failure,
     })
 }
 

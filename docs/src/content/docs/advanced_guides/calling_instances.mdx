@@ -34,15 +34,19 @@ The `--core-node` flag selects the daemon that runs the instance. Without it, th
 
 ## Naming a member
 
-A member has the name `<qualifier>.<name>`:
+Each member has a full name, which is its path in the code generated for its node:
 
-| Member | Name |
+| Member | Full name |
 | --- | --- |
-| A member of a contract | `<contract>.<member>`, for example `limb_motion.move_arm` |
-| A member of the node's own | `<node>.<member>`, for example `realsense_d4xx.set_depth_gain` |
-| A topic of a pairing | `<pairing>.<topic>`, for example `arm_link.joint_states` |
+| A member of a contract that the node implements | `<slot>.<member>`, for example `motion.move_arm` |
+| A topic that the node emits through a pairing slot | `<slot>.<topic>`, for example `controller.joint_states` |
+| A member of the node's own | `<member>`, for example `set_depth_gain` |
 
-The name alone is enough when one member of the instance has it: `peppy node call arm_inst move_arm`. `peppy node call` looks among the services and the actions, and `peppy node echo` among the topics. A name that no member has, or that two members have, is refused, and the error lists the names it could mean.
+`<slot>` is the `link_id` of the slot in the manifest of the node. The slots of a manifest have distinct names, so a node that implements two tags of one contract, or holds one pairing in two slots, gives each member a full name for each slot.
+
+The name of a member without its slot is enough when no member has that full name and one member of the instance has that name: `peppy node call arm_inst move_arm`. `peppy node call` looks among the services and the actions, and `peppy node echo` among the topics. A name that no member has, or that two members have, is refused, and the error lists the full names that it could mean.
+
+A service and an action can have one full name. `peppy node call --kind service` or `--kind action` then selects one of them.
 
 ## `peppy node describe`
 
@@ -54,8 +58,8 @@ peppy node describe arm_inst
 Instance arm_inst of arm:v1 on core node robot-7
 Manifest sha256: 3629…a5a7
 
-Contract limb_motion:v1 through slot `arm` (sha256: d2d4…e307)
-  service limb_motion.check_move
+Contract limb_motion:v1 through slot `motion` (sha256: d2d4…e307)
+  service motion.check_move
     request: {
       joints: {
         $type: "array",
@@ -66,7 +70,7 @@ Contract limb_motion:v1 through slot `arm` (sha256: d2d4…e307)
       reachable: "bool"
     }
     failure kind unreachable: No plan to the target
-  action limb_motion.move_to
+  action motion.move_to
     goal: {
       joints: {
         $type: "array",
@@ -83,7 +87,7 @@ Contract limb_motion:v1 through slot `arm` (sha256: d2d4…e307)
     failure kind unreachable: No plan to the target
 
 Own members of arm:v1
-  service arm.set_gain
+  service set_gain
     request: {
       value: "i32"
     }
@@ -92,7 +96,7 @@ Own members of arm:v1
     }
 
 Pairing arm_link:v1 through slot `controller`, role `arm` (sha256: dbfa…d07c)
-  topic arm_link.joint_states (qos: SensorData)
+  topic controller.joint_states (qos: SensorData)
     message: {
       positions: {
         $type: "array",
@@ -101,7 +105,7 @@ Pairing arm_link:v1 through slot `controller`, role `arm` (sha256: dbfa…d07c)
     }
 ```
 
-Each member shows the name that `call` and `echo` take, its message formats, and the [failure kinds](/advanced_guides/actions/#how-a-goal-ends) of its contract that it lists. Every member can also give the failure kinds of peppy, which the listing does not repeat. `--json` prints the same as one JSON document, for a program.
+Each member shows the full name that `call` and `echo` take, its message formats, and the [failure kinds](/advanced_guides/actions/#how-a-goal-ends) of its contract that it lists. Every member can also give the failure kinds of peppy, which the listing does not repeat. `--json` prints the same as one JSON document, for a program.
 
 ## `peppy node call`
 
@@ -148,6 +152,8 @@ The command sends the call itself, as a client with no node, with the sender ide
 ```
 
 An error reply of a service is a refusal by its provider: `outcome` is `refused`, and the command exits with 3. A response that lists errors, such as that of a checker, is a response: the command exits with 0, and the caller reads the errors in the output.
+
+A provider that gives a failure kind that the contract of the member does not list breaks its contract. The command writes a warning on standard error, and reports the refusal or the failure as the provider gave it, with its exit status.
 
 An error of the command itself, such as an instance that the daemon does not run, a member that the instance does not have, or a message that does not fit its format, prints no line on standard output and exits with 1. A command line that does not parse exits with 2.
 

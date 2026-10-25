@@ -1570,15 +1570,21 @@ async fn process_node_add_inner(
             )
         })?;
 
-    // Push the node config into the stack as an `Added` entity. Use the
-    // staged copy of peppy.json5 rather than source_path because
-    // source_path may point at a transient Git/Http clone that is cleaned
-    // up after this function returns. The staging directory persists as
-    // long as the entity holds its guard.
+    // Push the node config into the stack as an `Added` entity, with the
+    // pins of the documents its code was generated from. Use the staged
+    // copy of peppy.json5 rather than source_path because source_path may
+    // point at a transient Git/Http clone that is cleaned up after this
+    // function returns. The staging directory persists as long as the
+    // entity holds its guard.
     let config_path_for_stack = staging.path().join(NODE_CONFIG_FILE);
     ctx.action
         .node_stack
-        .push_config(node_config.clone(), false, &config_path_for_stack)
+        .push_config(
+            node_config.clone(),
+            document_pins,
+            false,
+            &config_path_for_stack,
+        )
         .map_err(|error| {
             AddStepFailure::new(
                 push_failure_kind(&error),
@@ -1607,7 +1613,6 @@ async fn process_node_add_inner(
             .node_stack
             .set_add_log_path(&node_name, &node_tag, ctx.announcer.log().path());
         guard.set_pending_working_dir(Arc::clone(&staging));
-        guard.set_document_pins(document_pins);
     }
 
     debug!("Added node {}:{} (pending build)", node_name, node_tag);

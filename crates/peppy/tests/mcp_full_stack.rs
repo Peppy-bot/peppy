@@ -2217,6 +2217,7 @@ async fn node_call(
         CallParams {
             instance_id: "the_camera".to_owned(),
             member: member.to_owned(),
+            kind: None,
             message: MessageArguments {
                 args: None,
                 settings: settings
@@ -2270,9 +2271,9 @@ async fn the_command_line_reaches_an_instance_as_the_mcp_server_does() {
             "Contract rgb_camera:v1 through slot `camera` (sha256: {})",
             camera_sha()
         ),
-        "  service rgb_camera.set_brightness",
-        "  action rgb_camera.record_clip",
-        "  topic rgb_camera.camera_status (qos: Standard)",
+        "  service camera.set_brightness",
+        "  action camera.record_clip",
+        "  topic camera.camera_status (qos: Standard)",
         "    failure kind shutter_closed: The shutter of the camera is closed",
     ] {
         assert!(
@@ -2313,7 +2314,7 @@ async fn the_command_line_reaches_an_instance_as_the_mcp_server_does() {
 
     // --- An error reply: a refusal with the kind and the message of the
     // provider, the ones the MCP tool gives.
-    let (lines, ended) = node_call(&stack, "rgb_camera.snapshot", &["blank=true"]).await;
+    let (lines, ended) = node_call(&stack, "camera.snapshot", &["blank=true"]).await;
     let error = ended.expect_err("the provider gives an error reply");
     assert_eq!(error.exit_code(), CallEnd::Refused.exit_code());
     let tool = client
@@ -2363,14 +2364,14 @@ async fn the_command_line_reaches_an_instance_as_the_mcp_server_does() {
     );
 
     // --- A member the instance does not have is an error of the command.
-    let (lines, ended) = node_call(&stack, "rgb_camera.focus", &[]).await;
+    let (lines, ended) = node_call(&stack, "camera.focus", &[]).await;
     let error = ended.expect_err("no such member");
     assert_eq!(error.exit_code(), 1);
     assert!(lines.is_empty());
     assert!(
         error
             .to_string()
-            .contains("instance `the_camera` has no service or action `rgb_camera.focus`"),
+            .contains("instance `the_camera` has no service or action `camera.focus`"),
         "{error}"
     );
 }

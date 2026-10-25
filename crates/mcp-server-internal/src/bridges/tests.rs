@@ -725,7 +725,7 @@ async fn a_failed_goal_ends_with_the_providers_failure_kind_and_message() {
 fn undeclared_kind() -> Result<Value, ActionExit> {
     Err(ActionExit::Error(format!(
         "the provider of `{MEMBER}` gave the failure kind `melted`, which is neither a kind of \
-         peppy nor a kind of its contract that the member lists"
+         peppy nor a kind of its contract that the member lists: the jaws melted"
     )))
 }
 
@@ -946,7 +946,7 @@ async fn an_error_reply_gives_the_providers_failure_kind_and_an_undeclared_kind_
             Failure::new(kind("melted"), "the jaws melted"),
             ToolCallError::Error(format!(
                 "the provider of `{SERVICE}` gave the failure kind `melted`, which is neither \
-                 a kind of peppy nor a kind of its contract that the member lists"
+                 a kind of peppy nor a kind of its contract that the member lists: the jaws melted"
             )),
         ),
     ] {

@@ -14,8 +14,9 @@
 //! `refused` or `failed` with the `failure_kind` and the `message` of the
 //! provider, `cancelled` with the `reason` and the `result`, `abandoned` or
 //! `expired` with a `message`. An error reply of a service is a refusal by
-//! its provider. The command exits with the code of the end (see
-//! [`CallEnd`]).
+//! its provider. A failure kind that the contract of the member does not
+//! list is a warning, and the end stands. The command exits with the code
+//! of the end (see [`CallEnd`]).
 //!
 //! A Ctrl-C during a goal sends the provider a cancel, and the command
 //! follows the goal to its end. A second Ctrl-C ends the command at once
@@ -61,7 +62,26 @@ const RESULT_WAIT: Duration = Duration::from_secs(60);
 pub struct CallParams {
     pub instance_id: String,
     pub member: String,
+    /// The kind of the member, which tells apart a service and an action of
+    /// one name; `None` looks among both.
+    pub kind: Option<CallKind>,
     pub message: MessageArguments,
+}
+
+/// The kinds of member that `peppy node call` calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CallKind {
+    Service,
+    Action,
+}
+
+/// The kinds of member that a call of the kind `kind` looks among.
+fn kinds_to_call(kind: Option<CallKind>) -> &'static [InterfaceKind] {
+    match kind {
+        Some(CallKind::Service) => &[InterfaceKind::Service],
+        Some(CallKind::Action) => &[InterfaceKind::Action],
+        None => &[InterfaceKind::Service, InterfaceKind::Action],
+    }
 }
 
 pub fn call(ctx: &Arc<AppContext>, params: CallParams) -> Result<()> {
@@ -77,10 +97,7 @@ pub async fn call_writing(
     let conn = ctx.connect_to_daemon().await?;
     let interfaces = super::interfaces::fetch(&conn, &params.instance_id).await?;
     let selected = interfaces
-        .select(
-            &params.member,
-            &[InterfaceKind::Service, InterfaceKind::Action],
-        )
+        .select(&params.member, kinds_to_call(params.kind))
         .map_err(Error::ExecutionFailed)?;
     let call = MemberCall::new(&selected, &params.message)?;
     let caller = super::interfaces::command_line_caller(&conn);
@@ -91,8 +108,7 @@ pub async fn call_writing(
 /// One call of a service or an action of an instance, ready to send: the
 /// client of the member, where it is served, and the message.
 pub(crate) struct MemberCall {
-    /// The member as `<qualifier>.<name>`, which the messages of the command
-    /// name.
+    /// The full name of the member, which the messages of the command name.
     name: String,
     binding: MemberBinding,
     producer: ProducerRef,
@@ -114,7 +130,7 @@ impl MemberCall {
     /// The call of `selected` with the message `arguments` give, its codecs
     /// laid out from the formats of the pinned manifest.
     pub fn new(selected: &SelectedMember<'_>, arguments: &MessageArguments) -> Result<Self> {
-        let name = selected.qualified_name.clone();
+        let name = selected.full_name.clone();
         let MemberAddress::Interface { target } = &selected.address else {
             return Err(topic_is_not_called(&name));
         };
@@ -245,7 +261,8 @@ impl MemberCall {
             }
             Err(error) => error,
         };
-        if let Some(failure) = provider_failure(&error) {
+        let failure = error_reply(&error).or_else(|| self.undeclared_failure(&error));
+        if let Some(failure) = failure {
             return Err(self.refusal(failure, out)?);
         }
         Err(Error::ExecutionFailed(format!(
@@ -262,7 +279,7 @@ impl MemberCall {
         caller: &ConsumerIdentity,
         out: &mut impl Write,
     ) -> Result<GoalHandle> {
-        let goal = client
+        let sent = client
             .fire_goal(
                 messenger,
                 caller,
@@ -272,10 +289,19 @@ impl MemberCall {
                 DEFAULT_FEEDBACK_BOUND,
                 ADMISSION_TIMEOUT,
             )
-            .await
-            .map_err(|error| {
-                Error::ExecutionFailed(format!("The goal of `{}` was not sent: {error}", self.name))
-            })?;
+            .await;
+        let goal = match sent {
+            Ok(goal) => goal,
+            Err(error) => {
+                if let Some(refusal) = self.undeclared_failure(&error) {
+                    return Err(self.refusal(refusal, out)?);
+                }
+                return Err(Error::ExecutionFailed(format!(
+                    "The goal of `{}` was not sent: {error}",
+                    self.name
+                )));
+            }
+        };
         if let Some(refusal) = goal.refusal() {
             return Err(self.refusal(refusal, out)?);
         }
@@ -391,11 +417,17 @@ impl MemberCall {
         out: &mut impl Write,
     ) -> Result<()> {
         let name = &self.name;
-        let outcome = outcome.map_err(|error| {
-            Error::ExecutionFailed(format!(
-                "Cannot read how the goal of `{name}` ended: {error}"
-            ))
-        })?;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let Some(failure) = self.undeclared_failure(&error) else {
+                    return Err(Error::ExecutionFailed(format!(
+                        "Cannot read how the goal of `{name}` ended: {error}"
+                    )));
+                };
+                GoalOutcome::Failed(failure.clone())
+            }
+        };
         match outcome {
             GoalOutcome::Completed(result) => {
                 write_json_line(out, &json!({ "outcome": "completed", "result": result }))?;
@@ -439,6 +471,18 @@ impl MemberCall {
                 ))
             }
         }
+    }
+
+    /// The error reply, refusal or failure that `error` carries when its
+    /// kind is one that the member does not list. The provider broke its
+    /// contract: the command warns of it, and reports the end that the
+    /// provider gave all the same.
+    fn undeclared_failure<'e>(&self, error: &'e ConsumerError) -> Option<&'e Failure> {
+        let ConsumerError::UndeclaredFailureKind { failure, .. } = error else {
+            return None;
+        };
+        warn!("`{}`: {error}", self.name);
+        Some(failure)
     }
 
     /// Writes the refusal of the provider, and gives the end of the command.
@@ -512,13 +556,13 @@ async fn next_step(
     }
 }
 
-/// The failure of the provider that `error` carries: an error reply with a
-/// kind the member declares.
-fn provider_failure(error: &ConsumerError) -> Option<&Failure> {
-    match error {
-        ConsumerError::Messaging(messaging) => messaging.failure(),
-        ConsumerError::Conversion(_) | ConsumerError::UndeclaredFailureKind { .. } => None,
-    }
+/// The error reply of a service that `error` carries, with a kind that the
+/// member lists.
+fn error_reply(error: &ConsumerError) -> Option<&Failure> {
+    let ConsumerError::Messaging(messaging) = error else {
+        return None;
+    };
+    messaging.failure()
 }
 
 /// The line of a refused or a failed call: the `outcome`, and the
@@ -573,11 +617,29 @@ mod tests {
         )
     }
 
+    /// A failure with a kind that the contract of `limb_motion` does not
+    /// list.
+    fn overheated() -> Failure {
+        Failure::new(
+            FailureKindName::parse("overheated").expect("a kind name"),
+            "the motors are too hot",
+        )
+    }
+
+    /// The line of an end with the kind `overheated`.
+    fn overheated_line(outcome: &str) -> Value {
+        json!({
+            "outcome": outcome,
+            "failure_kind": "overheated",
+            "message": "the motors are too hot",
+        })
+    }
+
     /// The call of `member` with the fields `settings` give.
     fn member_call(member: &str, settings: &[&str]) -> MemberCall {
         let interfaces = InstanceInterfaces::from_documents(&documents()).expect("the interfaces");
         let selected = interfaces
-            .select(member, &[InterfaceKind::Service, InterfaceKind::Action])
+            .select(member, kinds_to_call(None))
             .expect("the member");
         let arguments = MessageArguments {
             args: None,
@@ -724,7 +786,7 @@ mod tests {
         let mut out = Vec::new();
 
         run(
-            &member_call("arm.set_gain", &["value=-4"]),
+            &member_call("set_gain", &["value=-4"]),
             &messenger,
             &mut presses(0),
             &mut out,
@@ -757,7 +819,7 @@ mod tests {
         assert_eq!(error.exit_code(), CallEnd::Refused.exit_code());
         assert_eq!(
             error.to_string(),
-            "`limb_motion.check_move` refused (unreachable): no plan to the target"
+            "`motion.check_move` refused (unreachable): no plan to the target"
         );
         assert_eq!(
             lines(&out),
@@ -767,6 +829,31 @@ mod tests {
                 "message": "no plan to the target",
             })]
         );
+    }
+
+    /// An error reply with a kind that the member does not list breaks the
+    /// contract of the provider, and is a refusal all the same.
+    #[tokio::test]
+    async fn an_error_reply_with_a_kind_the_member_does_not_list_is_a_refusal() {
+        let messenger = mock_messenger().await;
+        serve_check_move(&messenger, |_| Err(overheated())).await;
+        let mut out = Vec::new();
+
+        let error = run(
+            &member_call("check_move", &[JOINTS]),
+            &messenger,
+            &mut presses(0),
+            &mut out,
+        )
+        .await
+        .expect_err("the provider refuses");
+
+        assert_eq!(error.exit_code(), CallEnd::Refused.exit_code());
+        assert_eq!(
+            error.to_string(),
+            "`motion.check_move` refused (overheated): the motors are too hot"
+        );
+        assert_eq!(lines(&out), [overheated_line("refused")]);
     }
 
     /// A goal that completes gives each feedback message, then its result.
@@ -845,7 +932,7 @@ mod tests {
         assert_eq!(error.exit_code(), CallEnd::Failed.exit_code());
         assert_eq!(
             error.to_string(),
-            "The goal of `limb_motion.move_to` failed (unreachable): no plan to the target"
+            "The goal of `motion.move_to` failed (unreachable): no plan to the target"
         );
         assert_eq!(
             lines(&out),
@@ -855,6 +942,48 @@ mod tests {
                 "message": "no plan to the target",
             })]
         );
+    }
+
+    /// A goal refused or failed with a kind that the member does not list
+    /// ends as the provider says, with the exit code of its end.
+    #[tokio::test]
+    async fn a_goal_that_ends_with_a_kind_the_member_does_not_list_keeps_its_end() {
+        let messenger = mock_messenger().await;
+        let mut engine = move_to_provider(&messenger).await;
+        let call = member_call("move_to", &[JOINTS]);
+
+        let mut refused_out = Vec::new();
+        let mut no_press = presses(0);
+        let (refused, ()) = tokio::join!(
+            run(&call, &messenger, &mut no_press, &mut refused_out),
+            async {
+                next_goal(&mut engine)
+                    .await
+                    .refuse(overheated())
+                    .await
+                    .expect("the goal is refused");
+            }
+        );
+        let refused = refused.expect_err("the provider refuses");
+        assert_eq!(refused.exit_code(), CallEnd::Refused.exit_code());
+        assert_eq!(lines(&refused_out), [overheated_line("refused")]);
+
+        let mut failed_out = Vec::new();
+        let mut no_press = presses(0);
+        let (failed, ()) = tokio::join!(
+            run(&call, &messenger, &mut no_press, &mut failed_out),
+            async {
+                let context = accept_move_to(&mut engine).await;
+                context.fail(overheated()).await.expect("the goal fails");
+            }
+        );
+        let failed = failed.expect_err("the goal failed");
+        assert_eq!(failed.exit_code(), CallEnd::Failed.exit_code());
+        assert_eq!(
+            failed.to_string(),
+            "The goal of `motion.move_to` failed (overheated): the motors are too hot"
+        );
+        assert_eq!(lines(&failed_out), [overheated_line("failed")]);
     }
 
     /// A Ctrl-C sends the provider a cancel, and the command follows the
@@ -885,7 +1014,7 @@ mod tests {
         assert_eq!(error.exit_code(), CallEnd::Cancelled.exit_code());
         assert_eq!(
             error.to_string(),
-            "The goal of `limb_motion.move_to` was cancelled by its caller"
+            "The goal of `motion.move_to` was cancelled by its caller"
         );
         assert_eq!(
             lines(&out),
@@ -998,7 +1127,7 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "`arm.heartbeat` is a topic: `peppy node echo` prints its messages"
+            "`heartbeat` is a topic: `peppy node echo` prints its messages"
         );
     }
 }

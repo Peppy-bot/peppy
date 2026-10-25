@@ -395,7 +395,7 @@ Instances: 1 tracked
 `peppy node describe <instance>` shows the topics, services and actions of a running instance with their message formats. `peppy node call <instance> <member>` calls one of its services or actions, and `peppy node echo <instance> <topic>` prints the messages of one of its topics, with no code of your own:
 
 ```sh
-peppy node call camera_inst rgb_camera.set_brightness --set value=12
+peppy node call camera_inst camera.set_brightness --set value=12
 ```
 
 ```text

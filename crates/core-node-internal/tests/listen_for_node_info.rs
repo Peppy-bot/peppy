@@ -44,7 +44,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     let config = config::node::NodeConfigParser::from_path(node_dir.path().join("peppy.json5"))
         .expect("parse config");
     node_stack
-        .push_config(config, false, node_dir.path())
+        .push_config(config, Vec::new(), false, node_dir.path())
         .expect("push_config should succeed");
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -297,7 +297,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
         .expect("parse config");
     started_core_node
         .node_stack
-        .push_config(config, false, node_dir.path())
+        .push_config(config, Vec::new(), false, node_dir.path())
         .expect("push_config should succeed");
 
     let info_response = poll_node_info(

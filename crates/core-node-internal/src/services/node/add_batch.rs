@@ -556,19 +556,19 @@ impl Drop for RollbackGuard {
                         working_dir,
                         document_pins,
                     } = prev;
-                    match self.node_stack.push_config(config, false, config_path) {
+                    match self
+                        .node_stack
+                        .push_config(config, document_pins, false, config_path)
+                    {
                         Ok(()) => {
-                            // Reattach the previous working-dir guard and
-                            // document pins, mirroring the post-`push_config`
-                            // step in the add path: the restored entity owns
-                            // the temp dir its `config_path` lives inside,
-                            // and says which documents its code came from.
-                            if let Some(handle) = self.node_stack.find(&name, &tag) {
-                                let mut restored = handle.write();
-                                if let Some(guard) = working_dir {
-                                    restored.set_pending_working_dir(guard);
-                                }
-                                restored.set_document_pins(document_pins);
+                            // Reattach the previous working-dir guard so the
+                            // restored entity owns the temp dir its
+                            // `config_path` lives inside, mirroring the
+                            // post-`push_config` step in the add path.
+                            if let Some(guard) = working_dir
+                                && let Some(handle) = self.node_stack.find(&name, &tag)
+                            {
+                                handle.write().set_pending_working_dir(guard);
                             }
                             debug!("Rolled back batched replacement of {}:{}", name, tag)
                         }
@@ -676,9 +676,6 @@ mod tests {
         let node_stack = Arc::new(node_stack::NodeStack::new(root, None, dir.path()));
         let camera = materialized("camera", "v1", &[], true);
         let previous_path = dir.path().join("previous");
-        node_stack
-            .push_config(camera.config.clone(), false, &previous_path)
-            .expect("push the previous node");
         let contract_pin = PinnedItem {
             kind: PinKind::Contract,
             name: ItemName::parse("uvc_camera").expect("valid name"),
@@ -686,14 +683,28 @@ mod tests {
             sha256: ManifestFingerprint::of_bytes(b"uvc_camera contract"),
             origin: camera.pin.origin.clone(),
         };
-        let previous = {
-            let handle = node_stack.find("camera", "v1").expect("the previous node");
-            handle.write().set_document_pins(vec![contract_pin.clone()]);
-            PreviousConfig::of(&handle.read())
-        };
+        node_stack
+            .push_config(
+                camera.config.clone(),
+                vec![contract_pin.clone()],
+                false,
+                &previous_path,
+            )
+            .expect("push the previous node");
+        let previous = PreviousConfig::of(
+            &node_stack
+                .find("camera", "v1")
+                .expect("the previous node")
+                .read(),
+        );
         // The add of the batch replaces the node with an entity of its own.
         node_stack
-            .push_config(camera.config, false, dir.path().join("replacement"))
+            .push_config(
+                camera.config,
+                Vec::new(),
+                false,
+                dir.path().join("replacement"),
+            )
             .expect("the batch replaces the node");
         let mut rollback = RollbackGuard::new(Arc::clone(&node_stack));
         rollback.added.push(RollbackEntry {

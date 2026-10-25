@@ -5,7 +5,7 @@
 //! `peppy node call` and `echo` take. `--json` prints the same as one JSON
 //! document.
 
-use super::interfaces::{InstanceInterfaces, Member};
+use super::interfaces::{InstanceInterfaces, Member, full_name};
 use super::json_lines::is_closed_by_reader;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -62,11 +62,11 @@ pub(crate) fn render(interfaces: &InstanceInterfaces) -> String {
             "\nContract {}:{} through slot `{}` (sha256: {})",
             identity.name, identity.tag, contract.link_id, identity.sha256
         );
-        write_members(&mut out, &identity.name, &contract.members);
+        write_members(&mut out, Some(&contract.link_id), &contract.members);
     }
     if !interfaces.own_members.is_empty() {
         let _ = writeln!(out, "\nOwn members of {}:{}", node.name, node.tag);
-        write_members(&mut out, &node.name, &interfaces.own_members);
+        write_members(&mut out, None, &interfaces.own_members);
     }
     for pairing in &interfaces.pairings {
         let identity = &pairing.pairing;
@@ -75,7 +75,7 @@ pub(crate) fn render(interfaces: &InstanceInterfaces) -> String {
             "\nPairing {}:{} through slot `{}`, role `{}` (sha256: {})",
             identity.name, identity.tag, pairing.link_id, pairing.role, identity.sha256
         );
-        write_members(&mut out, &identity.name, &pairing.topics);
+        write_members(&mut out, Some(&pairing.link_id), &pairing.topics);
     }
     if interfaces.contracts.is_empty()
         && interfaces.own_members.is_empty()
@@ -86,11 +86,12 @@ pub(crate) fn render(interfaces: &InstanceInterfaces) -> String {
     out
 }
 
-/// Each member under its name as `peppy node call` and `echo` take it,
-/// `<qualifier>.<name>`, with its message formats.
-fn write_members(out: &mut String, qualifier: &str, members: &[Member]) {
+/// Each member under the full name that `peppy node call` and `echo` take
+/// for the members of the slot `slot`, or of the node's own, with its
+/// message formats.
+fn write_members(out: &mut String, slot: Option<&str>, members: &[Member]) {
     for member in members {
-        let name = format!("{qualifier}.{}", member.name());
+        let name = full_name(slot, member.name());
         match member {
             Member::Topic(topic) => {
                 let _ = writeln!(
@@ -189,15 +190,15 @@ mod tests {
             r#"Instance arm_inst of arm:v1 on core node robot-7
 Manifest sha256: {manifest}
 
-Contract limb_motion:v1 through slot `arm` (sha256: {contract})
-  topic limb_motion.limb_states (qos: SensorData)
+Contract limb_motion:v1 through slot `motion` (sha256: {contract})
+  topic motion.limb_states (qos: SensorData)
     message: {{
       joints: {{
         $type: "array",
         $items: "f64"
       }}
     }}
-  service limb_motion.check_move
+  service motion.check_move
     request: {{
       joints: {{
         $type: "array",
@@ -208,7 +209,7 @@ Contract limb_motion:v1 through slot `arm` (sha256: {contract})
       reachable: "bool"
     }}
     failure kind unreachable: No plan to the target
-  action limb_motion.move_to
+  action motion.move_to
     goal: {{
       joints: {{
         $type: "array",
@@ -225,11 +226,11 @@ Contract limb_motion:v1 through slot `arm` (sha256: {contract})
     failure kind unreachable: No plan to the target
 
 Own members of arm:v1
-  topic arm.heartbeat (qos: Reliable)
+  topic heartbeat (qos: Reliable)
     message: {{
       count: "u64"
     }}
-  service arm.set_gain
+  service set_gain
     request: {{
       value: "i32"
     }}
@@ -238,7 +239,7 @@ Own members of arm:v1
     }}
 
 Pairing arm_link:v1 through slot `controller`, role `arm` (sha256: {pairing})
-  topic arm_link.joint_states (qos: SensorData)
+  topic controller.joint_states (qos: SensorData)
     message: {{
       positions: {{
         $type: "array",

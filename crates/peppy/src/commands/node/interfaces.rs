@@ -23,6 +23,7 @@ use message_codec::consumer::ConsumerIdentity;
 use peppylib::messaging::{ProducerRef, SenderTarget};
 use serde::Serialize;
 use serde::ser::{SerializeSeq, Serializer};
+use std::collections::HashSet;
 use std::time::Duration;
 
 /// How long the daemon has to give the documents of an instance. A pinned
@@ -195,9 +196,9 @@ pub(crate) enum MemberAddress {
 /// A member of the instance that a name selected, with how to reach it.
 #[derive(Debug, Clone)]
 pub(crate) struct SelectedMember<'a> {
-    /// The member as `<qualifier>.<name>`: the contract, the node or the
-    /// pairing it belongs to, then its name.
-    pub qualified_name: String,
+    /// The name of the member that `peppy node call` and `echo` take (see
+    /// [`full_name`]).
+    pub full_name: String,
     pub member: &'a Member,
     pub address: MemberAddress,
     pub producer: ProducerRef,
@@ -207,12 +208,27 @@ impl SelectedMember<'_> {
     /// The codec of the message side `side` of the member, laid out from
     /// `format`, the format of the pinned manifest.
     pub fn codec(&self, side: &str, format: &MessageFormat) -> crate::error::Result<MessageCodec> {
-        let label: String = format!("{}_{side}", self.qualified_name)
+        let label: String = format!("{}_{side}", self.full_name)
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
             .collect();
         MessageCodec::new(&label, format.clone())
-            .map_err(|error| Error::ExecutionFailed(format!("`{}`: {error}", self.qualified_name)))
+            .map_err(|error| Error::ExecutionFailed(format!("`{}`: {error}", self.full_name)))
+    }
+}
+
+/// The name of a member that `peppy node call` and `echo` take, the path of
+/// the member in the code generated for its node: `<slot>.<name>` for a
+/// member that the node serves through the slot `slot` of its manifest (a
+/// contract that it implements, or a pairing that it plays a role of), and
+/// the name alone for a member of the node's own. The slots of a manifest
+/// have distinct names, so a member that two slots serve, such as a topic
+/// of one pairing that the node holds in two slots, has a full name for
+/// each slot.
+pub(crate) fn full_name(slot: Option<&str>, name: &str) -> String {
+    match slot {
+        Some(slot) => format!("{slot}.{name}"),
+        None => name.to_owned(),
     }
 }
 
@@ -296,10 +312,11 @@ impl InstanceInterfaces {
     }
 
     /// The member that `name` selects among the members of the kinds
-    /// `kinds`: `<contract>.<member>`, `<pairing>.<topic>`,
-    /// `<node>.<member>` for a member the node declares itself, or the name
-    /// alone when one member of those kinds has it. A name that selects no
-    /// member, or several, is refused with the names that it could mean.
+    /// `kinds`: the member whose full name it is (see [`full_name`]), else
+    /// the one member that the node serves through a slot and whose name
+    /// alone it is. A name that selects no member, or several, is refused
+    /// with the full names that it could mean. A service and an action can
+    /// have one full name: `kinds` then tells them apart.
     pub fn select(
         &self,
         name: &str,
@@ -310,39 +327,52 @@ impl InstanceInterfaces {
             .into_iter()
             .filter(|candidate| kinds.contains(&candidate.member.kind()))
             .collect();
-        let matches: Vec<&SelectedMember<'_>> = match name.split_once('.') {
-            Some(_) => candidates
-                .iter()
-                .filter(|candidate| candidate.qualified_name == name)
-                .collect(),
-            None => candidates
+        let by_full_name: Vec<&SelectedMember<'_>> = candidates
+            .iter()
+            .filter(|candidate| candidate.full_name == name)
+            .collect();
+        let matches = if by_full_name.is_empty() {
+            candidates
                 .iter()
                 .filter(|candidate| candidate.member.name() == name)
-                .collect(),
+                .collect()
+        } else {
+            by_full_name
         };
         let what = kind_list(kinds);
         match matches.as_slice() {
             [selected] => Ok((*selected).clone()),
             [] => Err(format!(
-                "instance `{}` has no {what} `{name}`; its {what}s: {}",
+                "instance `{}` has no {what} `{name}`; its {}: {}",
                 self.instance_id,
-                name_list(candidates.iter())
+                kinds_plural(kinds),
+                name_list(candidates.iter(), kinds)
+            )),
+            several if differ_only_by_kind(several) => Err(format!(
+                "`{name}` names more than one {what} of instance `{}`: {}; choose one with {}",
+                self.instance_id,
+                name_list(several.iter().copied(), kinds),
+                several
+                    .iter()
+                    .map(|m| format!("`--kind {}`", m.member.kind()))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
             )),
             several => Err(format!(
                 "`{name}` names more than one {what} of instance `{}`: {}; name one of them",
                 self.instance_id,
-                name_list(several.iter().copied())
+                name_list(several.iter().copied(), kinds)
             )),
         }
     }
 
-    /// Every member of the instance, with its qualified name and how the
-    /// wire reaches it: the contract members, then the own members, then
-    /// the pairing topics.
+    /// Every member of the instance, with its full name and how the wire
+    /// reaches it: the contract members, then the own members, then the
+    /// pairing topics.
     fn members<'s>(&'s self) -> Result<Vec<SelectedMember<'s>>, String> {
         let producer = ProducerRef::new(self.core_node.clone(), self.instance_id.clone());
-        let selected = |qualifier: &str, member: &'s Member, address| SelectedMember {
-            qualified_name: format!("{qualifier}.{}", member.name()),
+        let selected = |slot: Option<&str>, member: &'s Member, address| SelectedMember {
+            full_name: full_name(slot, member.name()),
             member,
             address,
             producer: producer.clone(),
@@ -356,7 +386,7 @@ impl InstanceInterfaces {
                 let address = MemberAddress::Interface {
                     target: target.clone(),
                 };
-                members.push(selected(&contract.contract.name, member, address));
+                members.push(selected(Some(&contract.link_id), member, address));
             }
         }
         let target = SenderTarget::node(&self.node.name, &self.node.tag).map_err(invalid)?;
@@ -364,7 +394,7 @@ impl InstanceInterfaces {
             let address = MemberAddress::Interface {
                 target: target.clone(),
             };
-            members.push(selected(&self.node.name, member, address));
+            members.push(selected(None, member, address));
         }
         for pairing in &self.pairings {
             let target = SenderTarget::pairing(&pairing.pairing.name, &pairing.pairing.tag)
@@ -374,7 +404,7 @@ impl InstanceInterfaces {
                     target: target.clone(),
                     link_id: pairing.link_id.clone(),
                 };
-                members.push(selected(&pairing.pairing.name, topic, address));
+                members.push(selected(Some(&pairing.link_id), topic, address));
             }
         }
         Ok(members)
@@ -390,9 +420,36 @@ fn kind_list(kinds: &[InterfaceKind]) -> String {
         .join(" or ")
 }
 
-/// The qualified names of `members`, or "none".
-fn name_list<'a, 'b: 'a>(members: impl Iterator<Item = &'a SelectedMember<'b>>) -> String {
-    let names: Vec<&str> = members.map(|m| m.qualified_name.as_str()).collect();
+/// "topics", "services and actions": the kinds a name may select, as the
+/// members of an instance.
+fn kinds_plural(kinds: &[InterfaceKind]) -> String {
+    kinds
+        .iter()
+        .map(|kind| format!("{kind}s"))
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
+/// Whether `members` share one full name and each is of a kind of its own,
+/// such as a service and an action of one name: only their kind tells them
+/// apart.
+fn differ_only_by_kind(members: &[&SelectedMember<'_>]) -> bool {
+    let kinds: HashSet<InterfaceKind> = members.iter().map(|m| m.member.kind()).collect();
+    kinds.len() == members.len() && members.iter().all(|m| m.full_name == members[0].full_name)
+}
+
+/// The full names of `members`, or "none". Among several `kinds`, each
+/// name comes after its kind.
+fn name_list<'a, 'b: 'a>(
+    members: impl Iterator<Item = &'a SelectedMember<'b>>,
+    kinds: &[InterfaceKind],
+) -> String {
+    let names: Vec<String> = members
+        .map(|m| match kinds {
+            [_] => m.full_name.clone(),
+            _ => format!("{} {}", m.member.kind(), m.full_name),
+        })
+        .collect();
     if names.is_empty() {
         return "none".to_owned();
     }
@@ -618,7 +675,7 @@ mod tests {
         let contract = &described["contracts"][0];
         assert_eq!(contract["name"], "limb_motion");
         assert_eq!(contract["sha256"], documents.contracts[0].sha256());
-        assert_eq!(contract["link_id"], "arm");
+        assert_eq!(contract["link_id"], "motion");
         let members = contract["members"].as_array().expect("a list of members");
         let kinds_and_names: Vec<(&str, &str)> = members
             .iter()
@@ -668,8 +725,8 @@ mod tests {
         );
     }
 
-    /// A name selects a member by `<qualifier>.<name>`, or by its name alone
-    /// when it is unique, with the target and the producer the wire reaches
+    /// A name selects a member by its full name, or by its name alone when
+    /// one member has it, with the target and the producer the wire reaches
     /// it at.
     #[test]
     fn a_name_selects_one_member_with_its_address() {
@@ -678,7 +735,7 @@ mod tests {
         let calls = [InterfaceKind::Service, InterfaceKind::Action];
 
         let move_to = interfaces.select("move_to", &calls).expect("unique");
-        assert_eq!(move_to.qualified_name, "limb_motion.move_to");
+        assert_eq!(move_to.full_name, "motion.move_to");
         assert_eq!(
             move_to.address,
             MemberAddress::Interface {
@@ -686,10 +743,16 @@ mod tests {
             }
         );
         assert_eq!(move_to.producer, producer);
+        assert_eq!(
+            interfaces
+                .select("motion.move_to", &calls)
+                .expect("the full name")
+                .full_name,
+            "motion.move_to"
+        );
 
-        let set_gain = interfaces
-            .select("arm.set_gain", &calls)
-            .expect("qualified");
+        let set_gain = interfaces.select("set_gain", &calls).expect("own member");
+        assert_eq!(set_gain.full_name, "set_gain");
         assert_eq!(
             set_gain.address,
             MemberAddress::Interface {
@@ -700,7 +763,7 @@ mod tests {
         let joint_states = interfaces
             .select("joint_states", &[InterfaceKind::Topic])
             .expect("unique");
-        assert_eq!(joint_states.qualified_name, "arm_link.joint_states");
+        assert_eq!(joint_states.full_name, "controller.joint_states");
         assert_eq!(
             joint_states.address,
             MemberAddress::Pairing {
@@ -717,36 +780,127 @@ mod tests {
             .expect_err("move_to is an action");
         assert_eq!(
             error,
-            "instance `arm_inst` has no topic `move_to`; its topics: limb_motion.limb_states, \
-             arm.heartbeat, arm_link.joint_states"
+            "instance `arm_inst` has no topic `move_to`; its topics: motion.limb_states, \
+             heartbeat, controller.joint_states"
         );
-        assert!(
-            interfaces()
-                .select("arm.move_to", &[InterfaceKind::Action])
-                .is_err(),
-            "a contract member is not an own member"
+        let error = interfaces()
+            .select(
+                "limb_motion.move_to",
+                &[InterfaceKind::Service, InterfaceKind::Action],
+            )
+            .expect_err("the slot names the member, not the contract");
+        assert_eq!(
+            error,
+            "instance `arm_inst` has no service or action `limb_motion.move_to`; its services \
+             and actions: service motion.check_move, action motion.move_to, service set_gain"
         );
     }
 
+    /// A member of the node's own and a member of a contract can have one
+    /// name: the name alone is the full name of the own member, and the
+    /// contract member keeps its full name.
     #[test]
-    fn a_name_alone_that_two_members_have_is_refused_with_both_names() {
+    fn a_full_name_selects_its_member_before_a_name_alone() {
         let mut interfaces = interfaces();
         let contract_service = interfaces.contracts[0].members[1].clone();
         interfaces.own_members.push(contract_service);
+        let services = [InterfaceKind::Service];
+
+        let own = interfaces.select("check_move", &services).expect("own");
+        assert_eq!(
+            own.address,
+            MemberAddress::Interface {
+                target: SenderTarget::node("arm", "v1").unwrap()
+            }
+        );
+        let contract = interfaces
+            .select("motion.check_move", &services)
+            .expect("contract");
+        assert_eq!(
+            contract.address,
+            MemberAddress::Interface {
+                target: SenderTarget::contract("limb_motion", "v1").unwrap()
+            }
+        );
+    }
+
+    /// A node that holds one pairing in two slots emits each of its topics
+    /// through both: each slot gives the topic a full name of its own.
+    #[test]
+    fn a_pairing_held_in_two_slots_gives_each_topic_a_full_name_for_each_slot() {
+        let mut documents = documents();
+        documents.manifest = PinnedDocument::new(
+            "arm",
+            "v1",
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: {
+                    name: "arm", tag: "v1",
+                    depends_on: {
+                        pairings: [
+                            { name: "arm_link", tag: "v1", role: "arm", link_id: "left" },
+                            { name: "arm_link", tag: "v1", role: "arm", link_id: "right" },
+                        ],
+                    },
+                },
+                interfaces: {
+                    topics: {
+                        emits: [
+                            { link_id: "left", name: "joint_states" },
+                            { link_id: "right", name: "joint_states" },
+                        ],
+                    },
+                },
+                execution: { language: "rust", run_cmd: ["sleep", "10"] },
+            }"#,
+        );
+        documents.contracts.clear();
+        let interfaces = InstanceInterfaces::from_documents(&documents).expect("the interfaces");
+        let topics = [InterfaceKind::Topic];
+
         let error = interfaces
-            .select("check_move", &[InterfaceKind::Service])
-            .expect_err("two services are called check_move");
+            .select("joint_states", &topics)
+            .expect_err("both slots emit joint_states");
         assert_eq!(
             error,
-            "`check_move` names more than one service of instance `arm_inst`: \
-             limb_motion.check_move, arm.check_move; name one of them"
+            "`joint_states` names more than one topic of instance `arm_inst`: \
+             left.joint_states, right.joint_states; name one of them"
         );
-        assert!(
-            interfaces
-                .select("arm.check_move", &[InterfaceKind::Service])
-                .is_ok(),
-            "the qualified name selects one"
+        let right = interfaces
+            .select("right.joint_states", &topics)
+            .expect("the full name");
+        assert_eq!(
+            right.address,
+            MemberAddress::Pairing {
+                target: SenderTarget::pairing("arm_link", "v1").unwrap(),
+                link_id: "right".to_owned(),
+            }
         );
+    }
+
+    /// A service and an action can have one name: their kind tells them
+    /// apart.
+    #[test]
+    fn a_service_and_an_action_of_one_name_are_told_apart_by_their_kind() {
+        let mut interfaces = interfaces();
+        let Member::Action(mut action) = interfaces.contracts[0].members[2].clone() else {
+            panic!("move_to is an action");
+        };
+        action.action.name = "set_gain".to_owned();
+        interfaces.own_members.push(Member::Action(action));
+
+        let error = interfaces
+            .select("set_gain", &[InterfaceKind::Service, InterfaceKind::Action])
+            .expect_err("a service and an action are called set_gain");
+        assert_eq!(
+            error,
+            "`set_gain` names more than one service or action of instance `arm_inst`: service \
+             set_gain, action set_gain; choose one with `--kind service` or `--kind action`"
+        );
+        let action = interfaces
+            .select("set_gain", &[InterfaceKind::Action])
+            .expect("the action");
+        assert_eq!(action.member.kind(), InterfaceKind::Action);
     }
 
     #[test]

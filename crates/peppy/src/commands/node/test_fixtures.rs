@@ -1,7 +1,7 @@
 //! The pinned documents of one instance that the tests of `peppy node call`,
 //! `echo` and `describe` read, and the mock messaging they run on.
 //!
-//! The node `arm:v1` implements `limb_motion:v1` through the slot `arm`,
+//! The node `arm:v1` implements `limb_motion:v1` through the slot `motion`,
 //! refining the goal of `move_to` to three joints; it declares a service and
 //! a topic of its own, and emits `joint_states` through its `arm_link:v1`
 //! pairing slot `controller`, where it plays `arm`.
@@ -22,7 +22,7 @@ pub(crate) const MANIFEST: &str = r#"{
     peppy_schema: "node/v1",
     manifest: {
         name: "arm", tag: "v1",
-        implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
+        implements: [{ name: "limb_motion", tag: "v1", link_id: "motion" }],
         depends_on: {
             pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }],
         },
@@ -31,7 +31,7 @@ pub(crate) const MANIFEST: &str = r#"{
         topics: {
             emits: [
                 { name: "heartbeat", qos_profile: "reliable", message_format: { count: "u64" } },
-                { link_id: "arm", name: "limb_states" },
+                { link_id: "motion", name: "limb_states" },
                 { link_id: "controller", name: "joint_states" },
             ],
         },
@@ -42,13 +42,13 @@ pub(crate) const MANIFEST: &str = r#"{
                     request_message_format: { value: "i32" },
                     response_message_format: { current_value: "i32" },
                 },
-                { link_id: "arm", name: "check_move" },
+                { link_id: "motion", name: "check_move" },
             ],
         },
         actions: {
             exposes: [
                 {
-                    link_id: "arm",
+                    link_id: "motion",
                     name: "move_to",
                     refine: { goal_service: { request_message_format: { joints: { $length: 3 } } } },
                 },

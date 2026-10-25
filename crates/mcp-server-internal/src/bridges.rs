@@ -705,7 +705,7 @@ impl<'m> FollowedGoal<'m> {
 
 /// The end of a goal the bridge could not follow to its end. A refusal or
 /// a failure with a kind that the member does not declare is one: the
-/// error names the kind.
+/// error names the kind and gives the message of the provider.
 fn failed(error: ConsumerError) -> ActionExit {
     ActionExit::Error(error.to_string())
 }

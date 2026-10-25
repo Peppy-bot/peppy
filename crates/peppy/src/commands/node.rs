@@ -35,7 +35,7 @@ use crate::{context::AppContext, error::Error as CommandError};
 
 pub use add::{AddNodeParams, add_node};
 pub use builder::{BuildOptions, build_node_async};
-pub use call::{CallParams, call_writing};
+pub use call::{CallKind, CallParams, call_writing};
 pub use describe::{DescribeParams, describe_rendered};
 pub use echo::EchoParams;
 #[cfg(feature = "test-support")]
@@ -599,10 +599,14 @@ pub enum NodeCommands {
     Call {
         /// Id of the instance, on the daemon that `--core-node` targets
         instance_id: String,
-        /// The member: `<contract>.<member>`, `<node>.<member>` for a member
-        /// of the node's own, or the name alone when one service or action
-        /// of the instance has it
+        /// The member: `<slot>.<member>` for a member of a contract that the
+        /// node implements through the slot `<slot>` of its manifest, the
+        /// name alone for a member of the node's own, or for the one service
+        /// or action of the instance that has it
         member: String,
+        /// The kind of the member, for a service and an action of one name
+        #[arg(long, value_enum)]
+        kind: Option<call::CallKind>,
         /// A JSON5 file that holds the whole request or goal
         #[arg(long, value_name = "FILE")]
         args: Option<PathBuf>,
@@ -624,9 +628,11 @@ pub enum NodeCommands {
     Echo {
         /// Id of the instance, on the daemon that `--core-node` targets
         instance_id: String,
-        /// The topic: `<contract>.<topic>`, `<pairing>.<topic>`,
-        /// `<node>.<topic>` for a topic of the node's own, or the name alone
-        /// when one topic of the instance has it
+        /// The topic: `<slot>.<topic>` for a topic that the node emits
+        /// through the slot `<slot>` of its manifest (a contract that it
+        /// implements, or a pairing that it plays a role of), the name alone
+        /// for a topic of the node's own, or for the one topic of the
+        /// instance that has it
         topic: String,
     },
     /// Print the interfaces of a running instance with the message formats
@@ -829,6 +835,7 @@ impl Command for NodeCommand {
             NodeCommands::Call {
                 instance_id,
                 member,
+                kind,
                 args,
                 settings,
                 files,
@@ -837,6 +844,7 @@ impl Command for NodeCommand {
                 call::CallParams {
                     instance_id,
                     member,
+                    kind,
                     message: request::MessageArguments {
                         args,
                         settings,

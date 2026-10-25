@@ -86,8 +86,7 @@ pub async fn echo_messages(
 
 /// One topic of an instance, ready to subscribe to.
 pub(crate) struct TopicEcho {
-    /// The topic as `<qualifier>.<name>`, which the messages of the command
-    /// name.
+    /// The full name of the topic, which the messages of the command name.
     name: String,
     topic: NativeEmittedTopic,
     address: MemberAddress,
@@ -100,7 +99,7 @@ impl TopicEcho {
     /// pinned manifest. A topic with no format carries no field, and each
     /// of its messages prints as an empty object.
     pub fn new(selected: &SelectedMember<'_>) -> Result<Self> {
-        let name = selected.qualified_name.clone();
+        let name = selected.full_name.clone();
         let Member::Topic(topic) = selected.member else {
             return Err(Error::ExecutionFailed(format!(
                 "`{name}` is a {}: `peppy node call` calls it",
@@ -338,7 +337,7 @@ mod tests {
         .expect("the publisher is declared");
 
         let lines = echoed(
-            &echo_of("arm.heartbeat"),
+            &echo_of("heartbeat"),
             &messenger,
             &publisher,
             vec![payload(
@@ -393,7 +392,7 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "`limb_motion.check_move` is a service: `peppy node call` calls it"
+            "`motion.check_move` is a service: `peppy node call` calls it"
         );
     }
 }

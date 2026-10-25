@@ -176,7 +176,7 @@ pub async fn build_ready_as_is(
     let tag = config.manifest.tag.clone();
 
     stack
-        .push_config(config, false, &config_path)
+        .push_config(config, Vec::new(), false, &config_path)
         .expect("test fixture: push_config should succeed");
     let handle = stack
         .find(&name, &tag)

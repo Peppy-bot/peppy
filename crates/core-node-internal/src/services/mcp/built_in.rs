@@ -283,9 +283,17 @@ pub(crate) async fn run_built_in_add(
     let launch = built_in_launch(executable.path, &peppy_dirs, &spec_path);
     let name = plan.name.as_str().to_owned();
     let tag = plan.tag.clone();
-    if let Err(e) = action_context
-        .node_stack
-        .push_built_in(plan.config, &manifest_path, launch)
+    // The server's manifest names the contracts of the spec, and only them.
+    let contract_pins = resolved
+        .spec
+        .contracts
+        .iter()
+        .map(|document| document.pin.clone())
+        .collect();
+    if let Err(e) =
+        action_context
+            .node_stack
+            .push_built_in(plan.config, &manifest_path, launch, contract_pins)
     {
         return Err(record_add_failure(
             &announcer,
@@ -294,16 +302,6 @@ pub(crate) async fn run_built_in_add(
                 format!("cannot register `{name}:{tag}` in the node stack: {e}"),
             ),
         ));
-    }
-    // The server's manifest names the contracts of the spec, and only them.
-    if let Some(entity) = action_context.node_stack.find(&name, &tag) {
-        let contract_pins = resolved
-            .spec
-            .contracts
-            .iter()
-            .map(|document| document.pin.clone())
-            .collect();
-        entity.write().set_document_pins(contract_pins);
     }
     announcer.line(format!(
         "Registered `{name}:{tag}`, serving {}",

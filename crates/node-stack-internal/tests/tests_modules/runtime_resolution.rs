@@ -496,10 +496,10 @@ fn reset_clears_all_except_core_node() {
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     stack
-        .push_config(config1, false, PathBuf::from("/tmp"))
+        .push_config(config1, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("config1 has no dependencies");
     stack
-        .push_config(config2, false, PathBuf::from("/tmp"))
+        .push_config(config2, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("config2 has no dependencies");
     assert_eq!(stack.len(), 3, "stack should have root + two entities");
 
@@ -667,7 +667,12 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
 
     // Add the first config
     stack
-        .push_config(config_with_topic, false, PathBuf::from("/tmp/sensor_v1"))
+        .push_config(
+            config_with_topic,
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp/sensor_v1"),
+        )
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + sensor");
 
@@ -675,6 +680,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
     stack
         .push_config(
             config_with_topic_and_service,
+            Vec::new(),
             false,
             PathBuf::from("/tmp/sensor_v2"),
         )
@@ -762,13 +768,13 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
 
     // Add tag v1
     stack
-        .push_config(config_v1, false, PathBuf::from("/tmp"))
+        .push_config(config_v1, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + sensor v1");
 
     // Adding tag v2 with different interfaces should succeed (different tag = different entity)
     stack
-        .push_config(config_v2, false, PathBuf::from("/tmp"))
+        .push_config(config_v2, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("different tag should create new entity even with different interfaces");
     assert_eq!(
         stack.len(),
@@ -828,7 +834,7 @@ fn cannot_modify_root_node() {
     );
 
     // Try to push a new config that would overwrite root
-    let result = stack.push_config(core_node_config(), false, PathBuf::from("/tmp"));
+    let result = stack.push_config(core_node_config(), Vec::new(), false, PathBuf::from("/tmp"));
     assert!(
         result.is_err(),
         "should not be able to overwrite root node via push_config"
@@ -899,10 +905,10 @@ fn node_stack_wires_dependencies_for_dependants() {
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     stack
-        .push_config(dependency, false, PathBuf::from("/tmp"))
+        .push_config(dependency, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("dependency has no dependencies");
     stack
-        .push_config(dependent, false, PathBuf::from("/tmp"))
+        .push_config(dependent, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("dependent dependency is present");
 
     let deps = graph_query::dependency_names(&stack, "brain", "v1");
@@ -973,12 +979,13 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
     stack
         .push_config(
             lidar_config(r#"{ name: "reset_sensor" }"#),
+            Vec::new(),
             false,
             PathBuf::from("/tmp"),
         )
         .expect("dependency has no dependencies");
     stack
-        .push_config(dependent, false, PathBuf::from("/tmp"))
+        .push_config(dependent, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("dependent dependency is present");
 
     assert!(
@@ -988,6 +995,7 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
     stack
         .push_config(
             lidar_config(r#"{ name: "reset_sensor" }"#),
+            Vec::new(),
             false,
             PathBuf::from("/tmp"),
         )
@@ -1001,6 +1009,7 @@ fn removing_a_dependency_and_adding_it_again_rewires_its_dependants() {
 
     let result = stack.push_config(
         lidar_config(r#"{ name: "reset_sensor" }, { name: "calibrate" }"#),
+        Vec::new(),
         false,
         PathBuf::from("/tmp"),
     );
@@ -1062,12 +1071,12 @@ fn dependency_fails_when_node_name_mismatches() {
 
     // Add lidar (which is NOT the expected dependency "uvc_camera")
     stack
-        .push_config(wrong_dependency, false, PathBuf::from("/tmp"))
+        .push_config(wrong_dependency, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + lidar");
 
     // Adding brain should fail because it expects "uvc_camera", not "lidar"
-    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
+    let result = stack.push_config(dependent, Vec::new(), false, PathBuf::from("/tmp"));
     let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingDependency {
         dependency,
         dependency_tag,
@@ -1127,12 +1136,17 @@ fn dependency_fails_when_node_tag_mismatches() {
 
     // Add lidar with tag "v2" (NOT the expected tag "v1")
     stack
-        .push_config(wrong_tag_dependency, false, PathBuf::from("/tmp"))
+        .push_config(
+            wrong_tag_dependency,
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp"),
+        )
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + lidar");
 
     // Adding brain should fail because it expects lidar with tag "v1", not "v2"
-    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
+    let result = stack.push_config(dependent, Vec::new(), false, PathBuf::from("/tmp"));
     let Err(NodeStackError::Config(ConfigError::Parsing(ParsingError::MissingDependency {
         dependency,
         dependency_tag,
@@ -1178,7 +1192,7 @@ fn absent_dependency_on_an_empty_admitting_slot_is_not_missing() {
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     stack
-        .push_config(dependent, false, PathBuf::from("/tmp"))
+        .push_config(dependent, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("an absent zero_or_more dependency is the admitted empty set");
     assert_eq!(stack.len(), 2, "stack should have core node + brain");
 
@@ -1197,7 +1211,7 @@ fn absent_dependency_on_an_empty_admitting_slot_is_not_missing() {
     )
     .expect("valid dependency node config");
     stack
-        .push_config(dependency, false, PathBuf::from("/tmp"))
+        .push_config(dependency, Vec::new(), false, PathBuf::from("/tmp"))
         .expect("recorder has no dependencies");
 
     let graph = stack.to_serialized_graph();
@@ -1294,13 +1308,23 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     stack
-        .push_config(dependency_v1, false, PathBuf::from("/tmp/lidar_v1"))
+        .push_config(
+            dependency_v1,
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp/lidar_v1"),
+        )
         .expect("dependency has no dependencies");
     stack
-        .push_config(dependent, false, PathBuf::from("/tmp/brain"))
+        .push_config(dependent, Vec::new(), false, PathBuf::from("/tmp/brain"))
         .expect("dependent dependency is present");
 
-    let result = stack.push_config(dependency_v2, false, PathBuf::from("/tmp/lidar_v2"));
+    let result = stack.push_config(
+        dependency_v2,
+        Vec::new(),
+        false,
+        PathBuf::from("/tmp/lidar_v2"),
+    );
     let Err(NodeStackError::CannotOverwriteNodeWithDependents {
         node_name,
         node_tag,
@@ -1369,7 +1393,12 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     stack
-        .push_config(original_config, false, PathBuf::from("/tmp/sensor"))
+        .push_config(
+            original_config,
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp/sensor"),
+        )
         .expect("first config has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + sensor");
 
@@ -1382,7 +1411,12 @@ fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
 
     // Re-push same name:tag:interfaces:root_path with different run_cmd
     stack
-        .push_config(updated_config, false, PathBuf::from("/tmp/sensor"))
+        .push_config(
+            updated_config,
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp/sensor"),
+        )
         .expect("should update config without error");
     assert_eq!(stack.len(), 2, "stack should still have core node + sensor");
 
@@ -1456,15 +1490,25 @@ fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     stack
-        .push_config(dependency_v1, false, PathBuf::from("/tmp/lidar"))
+        .push_config(
+            dependency_v1,
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp/lidar"),
+        )
         .expect("dependency has no dependencies");
     stack
-        .push_config(dependent, false, PathBuf::from("/tmp/brain"))
+        .push_config(dependent, Vec::new(), false, PathBuf::from("/tmp/brain"))
         .expect("dependent dependency is present");
 
     // Updating run_cmd without changing interfaces should succeed even with dependents
     stack
-        .push_config(dependency_v1_updated, false, PathBuf::from("/tmp/lidar"))
+        .push_config(
+            dependency_v1_updated,
+            Vec::new(),
+            false,
+            PathBuf::from("/tmp/lidar"),
+        )
         .expect("non-breaking config update should succeed even with dependents");
 
     let entity = stack.find("lidar", "v1").expect("entity should exist");

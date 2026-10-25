@@ -136,12 +136,12 @@ async fn stack_benchmark_enumerates_wired_service_edge() {
     let provider = NodeConfigParser::from_content(provider_config()).expect("provider parses");
     started
         .node_stack
-        .push_config(provider, false, "/tmp/bench_provider")
+        .push_config(provider, Vec::new(), false, "/tmp/bench_provider")
         .expect("push provider");
     let consumer = NodeConfigParser::from_content(consumer_config()).expect("consumer parses");
     started
         .node_stack
-        .push_config(consumer, false, "/tmp/bench_consumer")
+        .push_config(consumer, Vec::new(), false, "/tmp/bench_consumer")
         .expect("push consumer");
 
     let goal = StackBenchmarkGoal::new(2, 0, 200);
@@ -201,13 +201,13 @@ async fn stack_benchmark_distinguishes_edges_by_link_id() {
     let provider = NodeConfigParser::from_content(provider_config()).expect("provider parses");
     started
         .node_stack
-        .push_config(provider, false, "/tmp/bench_provider")
+        .push_config(provider, Vec::new(), false, "/tmp/bench_provider")
         .expect("push provider");
     let consumer =
         NodeConfigParser::from_content(two_link_consumer_config()).expect("consumer parses");
     started
         .node_stack
-        .push_config(consumer, false, "/tmp/bench_consumer")
+        .push_config(consumer, Vec::new(), false, "/tmp/bench_consumer")
         .expect("push consumer");
 
     let goal = StackBenchmarkGoal::new(2, 0, 200);
@@ -282,13 +282,13 @@ async fn stack_benchmark_measures_each_edge_kind_its_own_way() {
         .expect("provider parses");
     started
         .node_stack
-        .push_config(provider, false, "/tmp/bench_provider")
+        .push_config(provider, Vec::new(), false, "/tmp/bench_provider")
         .expect("push provider");
     let consumer = NodeConfigParser::from_content(action_and_topic_consumer_config())
         .expect("consumer parses");
     started
         .node_stack
-        .push_config(consumer, false, "/tmp/bench_consumer")
+        .push_config(consumer, Vec::new(), false, "/tmp/bench_consumer")
         .expect("push consumer");
 
     let goal = StackBenchmarkGoal::new(2, 0, 200);
@@ -332,13 +332,13 @@ async fn a_cancelled_benchmark_ends_cancelled_and_the_next_one_runs() {
         .expect("provider parses");
     started
         .node_stack
-        .push_config(provider, false, "/tmp/bench_provider")
+        .push_config(provider, Vec::new(), false, "/tmp/bench_provider")
         .expect("push provider");
     let consumer = NodeConfigParser::from_content(action_and_topic_consumer_config())
         .expect("consumer parses");
     started
         .node_stack
-        .push_config(consumer, false, "/tmp/bench_consumer")
+        .push_config(consumer, Vec::new(), false, "/tmp/bench_consumer")
         .expect("push consumer");
 
     // Each measurement of the topic edge waits, for a sample bound that the

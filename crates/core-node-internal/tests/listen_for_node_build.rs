@@ -189,7 +189,7 @@ async fn a_build_of_a_node_without_a_staged_working_dir_is_rejected() {
         .expect("parse config");
     started_core_node
         .node_stack
-        .push_config(config, false, source_dir.path())
+        .push_config(config, Vec::new(), false, source_dir.path())
         .expect("push_config should succeed");
 
     let build_result =

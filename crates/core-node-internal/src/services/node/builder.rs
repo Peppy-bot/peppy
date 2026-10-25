@@ -592,7 +592,7 @@ mod tests {
         let unstaged = config::node::NodeConfigParser::from_content(UNSTAGED_CONFIG)
             .expect("node config parses");
         node_stack
-            .push_config(unstaged, false, dir.path().join("unstaged"))
+            .push_config(unstaged, Vec::new(), false, dir.path().join("unstaged"))
             .expect("push the unstaged node");
         let (exporter, _records) = LogExporter::channel(None);
         let log = ActionLog::create(dir.path(), "build.log", LogKind::Build, exporter)
