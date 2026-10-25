@@ -1,0 +1,519 @@
+//! The fleet of a launch through `fleet:v1`, which the daemon serves on the
+//! messaging layer: the listing of each robot with its software, the
+//! leases, the move check, the halt and the changes, each call checked
+//! against the scope of its sender; and the refusal of the raw calls of
+//! the daemon from the instances of the stack.
+
+use super::copies::{execute, fleet_launch, participant_request, robot_goal};
+use super::*;
+use crate::common::{new_test_data_dir, start_core_node_with_mock_messenger_on};
+use core_node_api::encoding::{
+    NodeStopRequest, StackListRequest, StackRemoveGoal, StackResetRequest,
+};
+use daemon_config::consts::PeppyDirs;
+use daemon_config::daemon_interface::DaemonInterface;
+use daemon_config::daemon_interface::fleet::{FleetChange, FleetListing, FleetMember};
+use peppy_codec::consumer::{
+    ActionClient, ConsumerError, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding,
+    ServiceClient,
+};
+use peppylib::core_node::transport::{poll, poll_node_stop, send_goal};
+use peppylib::messaging::{DEFAULT_FEEDBACK_BOUND, ProducerRef};
+use serde_json::{Value, json};
+
+/// The lease holder of the launch, deployed outside any copy.
+const DIRECTOR: &str = "director_inst";
+/// The instance of the copy `alpha`.
+const ALPHA_ARM: &str = "alpha_arm_inst";
+
+/// A client of a daemon interface that sends as `instance_id` on the
+/// daemon's machine, to the daemon that serves the interface.
+pub(super) struct InterfaceClient<'a> {
+    started: &'a StartedCoreNode,
+    interface: DaemonInterface,
+    identity: ConsumerIdentity,
+    daemon: ProducerRef,
+}
+
+/// A client of `fleet:v1`.
+type FleetClient<'a> = InterfaceClient<'a>;
+
+impl<'a> InterfaceClient<'a> {
+    /// A client of `fleet:v1` that sends as `instance_id`.
+    async fn sending_as(started: &'a StartedCoreNode, instance_id: &str) -> Self {
+        Self::of(started, DaemonInterface::Fleet, instance_id).await
+    }
+
+    /// A client of `interface` that sends as `instance_id`.
+    pub(super) async fn of(
+        started: &'a StartedCoreNode,
+        interface: DaemonInterface,
+        instance_id: &str,
+    ) -> Self {
+        let listed = participant_request(started, &StackListRequest::new()).await;
+        Self {
+            started,
+            interface,
+            identity: ConsumerIdentity {
+                core_node: started.core_node_name.clone(),
+                instance_id: instance_id.to_owned(),
+            },
+            daemon: ProducerRef::new(&listed.core_node, &listed.instance_id),
+        }
+    }
+
+    /// The answer of the service `member` to `request`.
+    pub(super) async fn call(
+        &self,
+        member: impl Member,
+        request: Value,
+    ) -> Result<Value, ConsumerError> {
+        let document = self.interface.document();
+        let name = member.name();
+        ServiceClient::of_contract(document, name)
+            .expect("the interface declares the service")
+            .call(
+                &self.started.caller_handle,
+                &self.identity,
+                &MemberBinding::of_contract(document, name).expect("a binding"),
+                &self.daemon,
+                &request,
+                GOAL_TIMEOUT,
+            )
+            .await
+    }
+
+    /// The failure of the error reply of `member` to `request`.
+    pub(super) async fn refusal(&self, member: impl Member, request: Value) -> Failure {
+        let error = self
+            .call(member, request)
+            .await
+            .expect_err("the daemon refuses the call");
+        let ConsumerError::Messaging(error) = error else {
+            panic!("an error reply, got {error}");
+        };
+        error.failure().cloned().expect("an error reply")
+    }
+
+    async fn listing(&self) -> FleetListing {
+        let answer = self
+            .call(FleetMember::List, json!({}))
+            .await
+            .expect("the daemon lists the fleet");
+        serde_json::from_value(answer).expect("the listing parses")
+    }
+
+    /// The refusal that `check_move` gives for a call on `instance`, if
+    /// any: its failure kind and its message.
+    async fn check_move(&self, instance: &str) -> Option<(String, String)> {
+        let answer = self
+            .call(FleetMember::CheckMove, json!({ "instance": instance }))
+            .await
+            .expect("check_move answers every sender");
+        answer.get("refusal").map(|refusal| {
+            (
+                refusal["failure_kind"].as_str().unwrap().to_owned(),
+                refusal["message"].as_str().unwrap().to_owned(),
+            )
+        })
+    }
+
+    /// Starts the goal of the action `member`, which the daemon accepts.
+    async fn goal(&self, member: impl Member) -> GoalHandle {
+        let goal = self.send_goal(member, json!({})).await;
+        assert!(goal.refusal().is_none(), "{:?}", goal.refusal());
+        goal
+    }
+
+    /// Sends the goal `goal` of the action `member`.
+    pub(super) async fn send_goal(&self, member: impl Member, goal: Value) -> GoalHandle {
+        let document = self.interface.document();
+        let name = member.name();
+        ActionClient::of_contract(document, name)
+            .expect("the interface declares the action")
+            .fire_goal(
+                &self.started.caller_handle,
+                &self.identity,
+                &MemberBinding::of_contract(document, name).expect("a binding"),
+                &self.daemon,
+                &goal,
+                DEFAULT_FEEDBACK_BOUND,
+                GOAL_TIMEOUT,
+            )
+            .await
+            .expect("the goal reaches the daemon")
+    }
+
+    /// The end of `goal`.
+    pub(super) async fn end_of(&self, goal: &GoalHandle) -> GoalOutcome {
+        goal.result(&self.started.caller_handle, RESULT_TIMEOUT)
+            .await
+            .expect("the goal ends")
+    }
+}
+
+/// A member of a daemon interface, by its name.
+pub(super) trait Member {
+    fn name(&self) -> &'static str;
+}
+
+impl Member for FleetMember {
+    fn name(&self) -> &'static str {
+        FleetMember::name(*self)
+    }
+}
+
+impl Member for &'static str {
+    fn name(&self) -> &'static str {
+        self
+    }
+}
+
+/// The next change that a follow of `changes` gives.
+async fn next_change(follow: &mut GoalHandle) -> FleetChange {
+    let feedback = tokio::time::timeout(RESULT_TIMEOUT, follow.next_feedback())
+        .await
+        .expect("a change comes")
+        .expect("the follow goes on")
+        .expect("the follow is open");
+    serde_json::from_value(feedback).expect("the change parses")
+}
+
+/// The fleet of these tests, written under a new directory: the director,
+/// a lease holder with the daemon target `fleet` scoped to `scope`, outside
+/// any copy, and the axis `robot`, whose option `real` deploys `named_robot`
+/// as the instance `arm_inst` of each copy.
+fn fleet_with_a_director(started: &StartedCoreNode, scope: &str) -> (tempfile::TempDir, PathBuf) {
+    let directory = tempdir().unwrap();
+    let director = write_node_config_with_options(
+        directory.path(),
+        "director",
+        "v1",
+        NodeConfigOptions {
+            run_cmd: &["sleep", "300"],
+            depends_on: r#"{ daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }] }"#,
+            interfaces: r#"{
+                services: { consumes: [{ link_id: "fleet", name: "list" }] },
+                actions: { consumes: [{ link_id: "fleet", name: "lease" }] },
+            }"#,
+            ..Default::default()
+        },
+    );
+    let named_robot = write_node_config(directory.path(), "named_robot", "v1", &["sleep", "300"]);
+    TestPackagesCache::new()
+        .fs_entry("director", "v1", &director)
+        .fs_entry("named_robot", "v1", &named_robot)
+        .write(&started.peppy_dirs);
+    let launcher = directory.path().join("fleet.json5");
+    fs::write(
+        &launcher,
+        format!(
+            r#"{{
+        peppy_schema: "launcher/v1",
+        deployments: [{{ source: {{ name: "director", tag: "v1" }}, instances: [
+            {{ instance_id: "{DIRECTOR}", daemon_scopes: {{ fleet: {scope} }} }}
+        ] }}],
+        components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
+            real: {{ deployments: [{{ source: {{ name: "named_robot", tag: "v1" }},
+                instances: [{{ instance_id: "arm_inst" }}] }}] }}
+        }} }}]
+    }}"#
+        ),
+    )
+    .unwrap();
+    (directory, launcher)
+}
+
+/// Launches the fleet with a director of `scope` and joins the copy
+/// `alpha`.
+async fn launched_with_alpha(
+    started: &StartedCoreNode,
+    scope: &str,
+    launch_id: &str,
+) -> (
+    tempfile::TempDir,
+    Vec<AbortOnDrop<peppylib::PeppyResult<()>>>,
+) {
+    let (directory, launcher) = fleet_with_a_director(started, scope);
+    let mut responders = answer_readiness(started, "director", DIRECTOR).await;
+    responders.extend(answer_readiness(started, "named_robot", ALPHA_ARM).await);
+    execute(started, &fleet_launch(launcher, launch_id))
+        .await
+        .assert_completed();
+    execute(started, &robot_goal("alpha", "real"))
+        .await
+        .assert_completed();
+    (directory, responders)
+}
+
+/// The listing gives each robot with its software and the halt; the halt
+/// refuses every move until it is cleared; and the daemon checks each call
+/// against the scope of its sender.
+#[tokio::test]
+async fn the_fleet_lists_each_robot_and_the_halt_refuses_every_move_until_cleared() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, _responders) =
+        launched_with_alpha(&started, r#"{ members: ["list"] }"#, "fleet-listing-test").await;
+    let command_line =
+        FleetClient::sending_as(&started, core_node_api::names::COMMAND_LINE_INSTANCE_ID).await;
+    let director = FleetClient::sending_as(&started, DIRECTOR).await;
+
+    let listing = director.listing().await;
+    assert_eq!(listing.core_node, started.core_node_name);
+    assert!(!listing.halted);
+    let robots: Vec<(&str, &str)> = listing
+        .robots
+        .iter()
+        .map(|robot| (robot.name.as_str(), robot.option.as_str()))
+        .collect();
+    assert_eq!(robots, [("alpha", "real")]);
+    assert_eq!(
+        serde_json::to_value(listing.robots[0].software).unwrap(),
+        json!("running"),
+        "every instance of the copy runs"
+    );
+    assert_eq!(listing.robots[0].instances[0].instance, ALPHA_ARM);
+
+    let refusal = director.refusal(FleetMember::Halt, json!({})).await;
+    assert_eq!(refusal.kind().as_str(), "rejected");
+    assert!(
+        refusal
+            .message()
+            .contains("has no `fleet` target whose scope gives `halt`"),
+        "{}",
+        refusal.message()
+    );
+
+    command_line
+        .call(FleetMember::Halt, json!({}))
+        .await
+        .expect("the command line halts the stack");
+    let listing = director.listing().await;
+    assert!(listing.halted);
+    assert!(
+        listing.halted_by.contains("peppy-cli"),
+        "{}",
+        listing.halted_by
+    );
+    let (kind, _message) = director
+        .check_move(ALPHA_ARM)
+        .await
+        .expect("the halt refuses the move");
+    assert_eq!(kind, "halted");
+    assert_eq!(
+        command_line
+            .check_move(DIRECTOR)
+            .await
+            .map(|(kind, _)| kind),
+        Some("halted".to_owned()),
+        "the halt refuses a call on an instance outside any copy too"
+    );
+
+    command_line
+        .call(FleetMember::ClearHalt, json!({}))
+        .await
+        .expect("the command line clears the halt");
+    assert_eq!(director.check_move(ALPHA_ARM).await, None);
+    assert!(!director.listing().await.halted);
+}
+
+/// A lease holder takes a robot: the move check refuses every other client,
+/// a removal of the robot by another client is refused, and the release
+/// lets every client move it again. The follow of the changes gives each
+/// change in order, the stop and the start of the software of the robot
+/// included.
+#[tokio::test]
+async fn a_lease_holder_takes_a_robot_and_the_moves_follow_its_lease() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, _responders) = launched_with_alpha(
+        &started,
+        r#"{ members: ["list", "lease", "changes"] }"#,
+        "fleet-lease-test",
+    )
+    .await;
+    let command_line =
+        FleetClient::sending_as(&started, core_node_api::names::COMMAND_LINE_INSTANCE_ID).await;
+    let director = FleetClient::sending_as(&started, DIRECTOR).await;
+
+    let mut changes = director.goal(FleetMember::Changes).await;
+    let first = next_change(&mut changes).await;
+    assert_eq!(
+        serde_json::to_value(first.change).unwrap(),
+        json!("listing")
+    );
+
+    let refusal = director
+        .refusal(
+            FleetMember::Take,
+            json!({ "robot": "alpha", "name": "tidy" }),
+        )
+        .await;
+    assert_eq!(
+        refusal.kind().as_str(),
+        "precondition_failed",
+        "no lease goal runs: {}",
+        refusal.message()
+    );
+    let _lease = director.goal(FleetMember::Lease).await;
+    director
+        .call(
+            FleetMember::Take,
+            json!({ "robot": "alpha", "name": "tidy" }),
+        )
+        .await
+        .expect("the director takes alpha");
+    let taken = next_change(&mut changes).await;
+    assert_eq!(
+        serde_json::to_value(taken.change).unwrap(),
+        json!("lease_start")
+    );
+    assert_eq!(taken.robot, "alpha");
+    assert_eq!(taken.listing.leases[0].holder, DIRECTOR);
+
+    assert_eq!(director.check_move(ALPHA_ARM).await, None);
+    let (kind, message) = command_line
+        .check_move(ALPHA_ARM)
+        .await
+        .expect("another client may not move alpha");
+    assert_eq!(kind, "leased");
+    assert!(
+        message.contains(DIRECTOR) && message.contains("tidy"),
+        "{message}"
+    );
+
+    let refused = refused_removal(&started, "alpha").await;
+    assert_eq!(refused.kind().as_str(), "leased", "{}", refused.message());
+
+    let stopped = poll_node_stop(
+        &NodeStopRequest::new(ALPHA_ARM),
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        common::core_node_target(&started.core_node_name),
+        &started.core_node_name,
+        GOAL_TIMEOUT,
+    )
+    .await;
+    assert!(stopped.is_ok(), "{stopped:?}");
+    let stop = next_change(&mut changes).await;
+    assert_eq!(
+        serde_json::to_value(stop.change).unwrap(),
+        json!("software_stop")
+    );
+    assert_eq!(stop.robot, "alpha");
+    assert_eq!(
+        serde_json::to_value(stop.listing.robots[0].software).unwrap(),
+        json!("stopped")
+    );
+
+    director
+        .call(FleetMember::Release, json!({ "robot": "alpha" }))
+        .await
+        .expect("the director releases alpha");
+    let released = next_change(&mut changes).await;
+    assert_eq!(
+        serde_json::to_value(released.change).unwrap(),
+        json!("lease_end")
+    );
+    assert_eq!(command_line.check_move(ALPHA_ARM).await, None);
+}
+
+/// The failure of the removal of the copy `name` that the command line
+/// sends.
+async fn refused_removal(started: &StartedCoreNode, name: &str) -> Failure {
+    let handle = send_daemon_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        &StackRemoveGoal::new(config::runtime::CopyName::new(name).unwrap()),
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect("the removal reaches the daemon");
+    goal_answer(&handle, LaunchGoalResponse::decode, "goal response")
+        .expect("decode the goal answer")
+        .expect_err("the daemon refuses the removal")
+}
+
+/// The daemon refuses its raw goals, and its raw services that change the
+/// stack, from an instance of the stack, and answers the services that
+/// read.
+#[tokio::test]
+async fn the_daemon_refuses_its_raw_calls_that_change_the_stack_from_its_instances() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, _responders) =
+        launched_with_alpha(&started, r#"{ members: ["list"] }"#, "fleet-raw-calls-test").await;
+
+    let reset = poll(
+        &StackResetRequest::new(),
+        &started.caller_handle,
+        &started.core_node_name,
+        ALPHA_ARM,
+        &started.core_node_name,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect_err("a node of the stack does not reset the stack");
+    let failure = reset.failure().expect("an error reply");
+    assert_eq!(failure.kind().as_str(), "rejected");
+    assert!(
+        failure
+            .message()
+            .contains("raw call `stack_reset` from `alpha_arm_inst`"),
+        "{}",
+        failure.message()
+    );
+
+    let removal = send_goal(
+        &StackRemoveGoal::new(config::runtime::CopyName::new("alpha").unwrap()),
+        &started.caller_handle,
+        &started.core_node_name,
+        DIRECTOR,
+        None,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect("the goal reaches the daemon");
+    let refusal = goal_answer(&removal, LaunchGoalResponse::decode, "goal response")
+        .expect("decode the goal answer")
+        .expect_err("a node of the stack does not remove a copy");
+    assert!(
+        refusal
+            .message()
+            .contains("raw call `stack_remove` from `director_inst`"),
+        "{}",
+        refusal.message()
+    );
+
+    poll(
+        &StackListRequest::new(),
+        &started.caller_handle,
+        &started.core_node_name,
+        DIRECTOR,
+        &started.core_node_name,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect("a node of the stack reads the stack listing");
+}
+
+/// A halt that a daemon before this one wrote keeps the stack halted from
+/// the start of the daemon.
+#[tokio::test]
+async fn a_halt_on_disk_keeps_the_stack_halted_from_the_start() {
+    let data_dir = new_test_data_dir();
+    let halt = PeppyDirs::new(data_dir.path()).fleet_halt_path();
+    fs::create_dir_all(halt.parent().unwrap()).unwrap();
+    fs::write(&halt, r#"{ "halted_by": "`peppy-cli` on `cn-desk`" }"#).unwrap();
+    let started = start_core_node_with_mock_messenger_on(data_dir).await;
+
+    let command_line =
+        FleetClient::sending_as(&started, core_node_api::names::COMMAND_LINE_INSTANCE_ID).await;
+    let listing = command_line.listing().await;
+    assert!(listing.halted);
+    assert_eq!(listing.halted_by, "`peppy-cli` on `cn-desk`");
+    command_line
+        .call(FleetMember::ClearHalt, json!({}))
+        .await
+        .expect("the command line clears the halt");
+    assert!(!halt.exists(), "the end of the halt removes it from disk");
+}
