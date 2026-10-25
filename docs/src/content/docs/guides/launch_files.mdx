@@ -573,7 +573,7 @@ Error: Launch failed (attempt_failed): failed to build node arm:v1: build_cmd `c
 
 `busy` is the kind of the daemon itself. The other kinds are kinds of peppy (see [How a goal ends](/advanced_guides/actions/#how-a-goal-ends)). A federated launch fails with `busy` when each machine that refused it is busy.
 
-The command exits with code 1 when the goal is refused or fails.
+The command exits with code 3 when the goal is refused, and 4 when it fails. Each end of a goal has an exit status of its own (see [Exit statuses of the other commands](/advanced_guides/calling_instances/#exit-statuses-of-the-other-commands)).
 
 The command keeps up to 65536 lines of the change's output that it did not show yet. A command that falls further behind, for example on a terminal that shows lines slower than a build prints them, cancels the change, says `The command fell behind the output of the launch by more than 65536 unread messages and cancelled it.`, and exits with code 1.
 
@@ -585,17 +585,17 @@ The first Ctrl+C sends the daemon a cancel of the goal, and the command says so:
 Cancelling the launch; press Ctrl-C again to stop waiting for its end
 ```
 
-The daemon stops the change at the step it reached, and ends it as a failure at that step ends it: a launch or a build clears the stack, a join is undone, and a removal keeps its copy, with the instances that it did not stop yet. A join or a removal reads the cancel before it changes a machine, so a cancel that comes early leaves every stack as it was. A step that runs on another machine gets the cancel too. The command follows the change to that end, prints how it ended, and exits with code 130. The rollback can be silent for longer than the idle budgets, so after a Ctrl+C only `--max-timeout-secs` bounds the wait:
+The daemon stops the change at the step it reached, and ends it as a failure at that step ends it: a launch or a build clears the stack, a join is undone, and a removal keeps its copy, with the instances that it did not stop yet. A join or a removal reads the cancel before it changes a machine, so a cancel that comes early leaves every stack as it was. A step that runs on another machine gets the cancel too. The command follows the change to that end, prints how it ended, and exits with the status of that end, 5 for a cancel. The rollback can be silent for longer than the idle budgets, so after a Ctrl+C only `--max-timeout-secs` bounds the wait:
 
 ```text
 Error: Launch was cancelled by its caller. Log file: /home/ubuntu/.peppy/logs/launch/launch_20261023_101500_123.log
 ```
 
-A change that ended before the cancel reached it keeps its end, and the command says so: `Launch completed before the cancel took effect.` A change that failed for a cause of its own, for example a build that failed before the cancel reached it, ends failed with its kind, also when the cancel arrives during its rollback. Whichever way the change ended, a command that sent a cancel exits with code 130. A second Ctrl+C stops the wait for the end: the command waits only until the cancel reaches the daemon, which goes on with it, and a third Ctrl+C ends the command at once.
+A change that ended before the cancel reached it keeps its end, and the command says so: `Launch completed before the cancel took effect.`, with the exit status 0. A change that failed for a cause of its own, for example a build that failed before the cancel reached it, ends failed with its kind and the exit status 4, also when the cancel arrives during its rollback. A second Ctrl+C stops the wait for the end: the command waits only until the cancel reaches the daemon, which goes on with it, and exits with code 130. A third Ctrl+C ends the command at once.
 
 A command whose process goes away, for example when its terminal closes or the process is killed, cancels its goal too: the daemon sees that the sender of the goal is gone, and cancels the goal one minute later. The launch log then ends with `cancelled: its sender is gone`. The minute outlasts a restart of the messaging router by its watchdog, during which the daemon cannot see the commands that still run, so a change goes on through a router restart or a short loss of the link between two machines. Each `peppy` process is a sender of its own, so the goals of other `peppy` processes go on.
 
-A `peppy stack reset` cancels the change that runs: the change ends, `Launch was cancelled by a stack reset.`, and the command exits with code 1.
+A `peppy stack reset` cancels the change that runs: the change ends, `Launch was cancelled by a stack reset.`, and the command exits with code 5, as for any cancel.
 
 ## Running one launcher across several machines
 

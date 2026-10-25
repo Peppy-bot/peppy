@@ -17,11 +17,16 @@
 
 use peppy::commands::Command;
 use peppy::commands::mcp::mcp_catalog_rendered;
+use peppy::commands::node::request::MessageArguments;
+use peppy::commands::node::{
+    CallParams, DescribeParams, EchoParams, call_writing, describe_rendered, echo_messages,
+};
 use peppy::commands::stack::{
     JoinWords, LaunchJoins, LaunchWords, LauncherArgs, StackCommand, StackCommands, StackTimeouts,
     list_nodes_collecting, list_nodes_json_collecting,
 };
 use peppy::context::AppContext;
+use peppy::error::CallEnd;
 use peppy::test_support::ServeCommandEmulation;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
@@ -2197,6 +2202,177 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     assert!(listing.contains(&v1), "{listing}");
     assert!(!listing.contains(&both), "{listing}");
     stack.reset();
+}
+
+/// The lines `peppy node call` writes for `member` of the camera with the
+/// fields `settings` give, and how the command ended.
+async fn node_call(
+    stack: &Stack,
+    member: &str,
+    settings: &[&str],
+) -> (Vec<Value>, Result<(), peppy::error::Error>) {
+    let mut out = Vec::new();
+    let ended = call_writing(
+        &stack.ctx,
+        CallParams {
+            instance_id: "the_camera".to_owned(),
+            member: member.to_owned(),
+            message: MessageArguments {
+                args: None,
+                settings: settings
+                    .iter()
+                    .map(|setting| setting.parse().expect("a setting"))
+                    .collect(),
+                files: Vec::new(),
+            },
+        },
+        &mut out,
+    )
+    .await;
+    let lines = String::from_utf8(out)
+        .expect("UTF-8 lines")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a JSON line"))
+        .collect();
+    (lines, ended)
+}
+
+/// `peppy node call`, `echo` and `describe` reach the members of a running
+/// instance through its pinned documents, which the daemon gives from the
+/// pins its add recorded, and the command line and the MCP server give the
+/// same results for the same call: the same response, and the same failure
+/// kind and message for an error reply. The provider is a generated node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_command_line_reaches_an_instance_as_the_mcp_server_does() {
+    let stack = Stack::boot(true).await;
+    let port = ephemeral_port();
+    stack.launch_or_panic(&format!(
+        "{PROVIDERS}{}",
+        mcp_deployment(&["camera_endpoint:v1"], "mcp_server", port)
+    ));
+    wait_for_port(port, || stack.run_logs()).await;
+    let client = connect(&endpoint(port, "/camera_endpoint/v1/mcp")).await;
+
+    // --- describe: the members of the contract the camera implements, by
+    // the names call and echo take, with the formats of its manifest.
+    let described = describe_rendered(
+        &stack.ctx,
+        DescribeParams {
+            instance_id: "the_camera".to_owned(),
+            json: false,
+        },
+    )
+    .await
+    .expect("describe answers");
+    for line in [
+        "Instance the_camera of mock_uvc_camera:v1",
+        &format!(
+            "Contract rgb_camera:v1 through slot `camera` (sha256: {})",
+            camera_sha()
+        ),
+        "  service rgb_camera.set_brightness",
+        "  action rgb_camera.record_clip",
+        "  topic rgb_camera.camera_status (qos: Standard)",
+        "    failure kind shutter_closed: The shutter of the camera is closed",
+    ] {
+        assert!(
+            described.contains(line),
+            "`{line}` is described:\n{described}"
+        );
+    }
+    let described_json: Value = serde_json::from_str(
+        &describe_rendered(
+            &stack.ctx,
+            DescribeParams {
+                instance_id: "the_camera".to_owned(),
+                json: true,
+            },
+        )
+        .await
+        .expect("describe answers"),
+    )
+    .expect("one JSON document");
+    assert_eq!(described_json["contracts"][0]["name"], "rgb_camera");
+    assert_eq!(described_json["contracts"][0]["sha256"], camera_sha());
+
+    // --- A service: the response the MCP tool gives.
+    let (lines, ended) = node_call(&stack, "set_brightness", &["value=12"]).await;
+    ended.expect("the service responds");
+    let tool = client
+        .call_tool(
+            CallToolRequestParams::new("front_camera.set_brightness")
+                .with_arguments(object(json!({ "value": 12 }))),
+        )
+        .await
+        .expect("the tool answers");
+    assert_eq!(
+        lines,
+        [json!({ "outcome": "completed", "response": tool.structured_content })]
+    );
+    assert_eq!(lines[0]["response"], json!({ "applied": true }));
+
+    // --- An error reply: a refusal with the kind and the message of the
+    // provider, the ones the MCP tool gives.
+    let (lines, ended) = node_call(&stack, "rgb_camera.snapshot", &["blank=true"]).await;
+    let error = ended.expect_err("the provider gives an error reply");
+    assert_eq!(error.exit_code(), CallEnd::Refused.exit_code());
+    let tool = client
+        .call_tool(
+            CallToolRequestParams::new("front_camera.snapshot")
+                .with_arguments(object(json!({ "blank": true }))),
+        )
+        .await
+        .expect("the tool answers");
+    let tool_failure = tool.structured_content.expect("the failure of the tool");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["outcome"], "refused");
+    assert_eq!(lines[0]["failure_kind"], tool_failure["failure_kind"]);
+    assert_eq!(lines[0]["message"], tool_failure["message"]);
+    assert_eq!(lines[0]["failure_kind"], "shutter_closed");
+
+    // --- An action: each feedback message, then the result.
+    let (lines, ended) = node_call(&stack, "record_clip", &["duration_frames=3"]).await;
+    ended.expect("the goal completes");
+    assert_eq!(
+        lines,
+        [
+            json!({ "feedback": { "frame": 1 } }),
+            json!({ "feedback": { "frame": 2 } }),
+            json!({ "feedback": { "frame": 3 } }),
+            json!({ "outcome": "completed", "result": { "frames_written": 3 } }),
+        ]
+    );
+
+    // --- echo: the messages of a topic, decoded with its format.
+    let messages = echo_messages(
+        &stack.ctx,
+        EchoParams {
+            instance_id: "the_camera".to_owned(),
+            topic: "camera_status".to_owned(),
+        },
+        2,
+    )
+    .await
+    .expect("echo receives the camera status");
+    assert_eq!(
+        messages,
+        [
+            json!({ "battery": 87, "note": "operational", "recording": true }),
+            json!({ "battery": 87, "note": "operational", "recording": true }),
+        ]
+    );
+
+    // --- A member the instance does not have is an error of the command.
+    let (lines, ended) = node_call(&stack, "rgb_camera.focus", &[]).await;
+    let error = ended.expect_err("no such member");
+    assert_eq!(error.exit_code(), 1);
+    assert!(lines.is_empty());
+    assert!(
+        error
+            .to_string()
+            .contains("instance `the_camera` has no service or action `rgb_camera.focus`"),
+        "{error}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

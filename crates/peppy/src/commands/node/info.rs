@@ -345,7 +345,7 @@ fn write_consumed_interfaces(out: &mut String, interfaces: &Interfaces) {
 
 /// What a native emitted topic's line says of its retention: nothing for a
 /// live-only topic.
-fn retention_note(retention: TopicRetention) -> String {
+pub(super) fn retention_note(retention: TopicRetention) -> String {
     match retention {
         TopicRetention::LiveOnly => String::new(),
         retaining => format!(", retention: {retaining}"),

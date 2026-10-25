@@ -862,6 +862,13 @@ pub(crate) mod test_support {
         }
     }
 
+    impl Presses {
+        /// The presses `receiver` gives, each when the test sends it.
+        pub(crate) fn from_receiver(receiver: mpsc::UnboundedReceiver<()>) -> Self {
+            Self(receiver)
+        }
+    }
+
     /// `count` presses, given before the command follows its goal.
     pub(crate) fn presses(count: usize) -> Presses {
         let (press, presses) = mpsc::unbounded_channel();

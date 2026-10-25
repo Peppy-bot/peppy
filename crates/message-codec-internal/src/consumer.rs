@@ -8,13 +8,16 @@
 
 use crate::{ConversionError, MessageCodec};
 use config::failure_kind::MemberFailureKinds;
+use peppylib::config::{QoSProfile, TopicRetention};
 use peppylib::messaging::{
     ActionGoalHandle, ActionMessenger, CancelOnDrop, CancelState, Failure, FeedbackBound,
-    GoalAnswer, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, decode_cancel_ack,
+    GoalAnswer, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, Subscription,
+    TopicBuffer, TopicMessenger, decode_cancel_ack,
 };
 use peppylib::runtime::BoundSetSubscription;
 use peppylib::{Message, MessengerHandle, Payload, PeppyError};
 use serde_json::{Map, Value};
+use std::future::Future;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
@@ -82,11 +85,23 @@ pub struct MemberBinding {
     pub member: String,
 }
 
-/// A subscription to a topic member across every producer bound to its
-/// slot, decoding messages on request.
+/// A subscription to a topic member, decoding messages on request: across
+/// every producer bound to a slot of the consumer's node, or from one
+/// producer that a client with no node names itself.
 pub struct TopicConsumer {
     codec: MessageCodec,
-    subscription: BoundSetSubscription,
+    source: TopicSource,
+}
+
+/// Where the messages of a [`TopicConsumer`] come from.
+enum TopicSource {
+    /// The producers a launcher binds to a slot of the consumer's node.
+    BoundSet(BoundSetSubscription),
+    /// One producer, which the consumer named.
+    Producer {
+        producer: ProducerRef,
+        subscription: Subscription,
+    },
 }
 
 impl TopicConsumer {
@@ -95,14 +110,94 @@ impl TopicConsumer {
     pub fn new(subscription: BoundSetSubscription, codec: MessageCodec) -> Self {
         Self {
             codec,
-            subscription,
+            source: TopicSource::BoundSet(subscription),
         }
     }
 
-    /// The next message from any bound producer, or `None` once the
-    /// subscription has shut down.
+    /// Subscribes, as `identity`, to the topic `binding` names on `producer`
+    /// alone, with no slot of a node: a contract topic or a topic of the
+    /// producer's own. `qos` and `retention` are the topic's declared ones,
+    /// so a producer that retains messages gives them first.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn of_producer(
+        messenger: &MessengerHandle,
+        identity: &ConsumerIdentity,
+        binding: &MemberBinding,
+        producer: &ProducerRef,
+        qos: QoSProfile,
+        retention: TopicRetention,
+        codec: MessageCodec,
+    ) -> Result<Self, PeppyError> {
+        let subscription = TopicMessenger::subscribe(
+            messenger,
+            &identity.core_node,
+            &identity.instance_id,
+            binding.target.clone(),
+            &binding.member,
+            producer,
+            qos,
+            retention,
+            TopicBuffer::Backpressure,
+        )
+        .await?;
+        Ok(Self::of_one_producer(producer, subscription, codec))
+    }
+
+    /// Subscribes, as `identity`, to the pairing topic `binding` names on
+    /// `producer`, as an observer of every pair that the producer's slot
+    /// `link_id` holds, with no slot of a node. A pairing topic is live
+    /// only, and a slot that holds no pair publishes nothing.
+    pub async fn of_pairing_producer(
+        messenger: &MessengerHandle,
+        identity: &ConsumerIdentity,
+        binding: &MemberBinding,
+        producer: &ProducerRef,
+        link_id: &str,
+        qos: QoSProfile,
+        codec: MessageCodec,
+    ) -> Result<Self, PeppyError> {
+        let subscription = TopicMessenger::subscribe_observing(
+            messenger,
+            &identity.core_node,
+            &identity.instance_id,
+            binding.target.clone(),
+            producer,
+            link_id,
+            &binding.member,
+            qos,
+            TopicBuffer::Backpressure,
+        )
+        .await?;
+        Ok(Self::of_one_producer(producer, subscription, codec))
+    }
+
+    fn of_one_producer(
+        producer: &ProducerRef,
+        subscription: Subscription,
+        codec: MessageCodec,
+    ) -> Self {
+        Self {
+            codec,
+            source: TopicSource::Producer {
+                producer: producer.clone(),
+                subscription,
+            },
+        }
+    }
+
+    /// The next message, with the producer that published it, or `None`
+    /// once the subscription has shut down.
     pub async fn next_message(&mut self) -> Option<(ProducerRef, Message)> {
-        self.subscription.on_next_message().await
+        match &mut self.source {
+            TopicSource::BoundSet(subscription) => subscription.on_next_message().await,
+            TopicSource::Producer {
+                producer,
+                subscription,
+            } => {
+                let message = subscription.on_next_message().await?;
+                Some((producer.clone(), message))
+            }
+        }
     }
 
     pub fn decode(&self, message: &Message) -> Result<Value, ConversionError> {
@@ -140,9 +235,9 @@ impl ServiceClient {
     }
 
     /// Calls the member on `producer` and waits at most `deadline` for the
-    /// response. An error reply is a [`PeppyError::ServiceFailed`]; one with
-    /// a kind the member does not declare is a
-    /// [`ConsumerError::UndeclaredFailureKind`].
+    /// response, as long as it takes with no deadline. An error reply is a
+    /// [`PeppyError::ServiceFailed`]; one with a kind the member does not
+    /// declare is a [`ConsumerError::UndeclaredFailureKind`].
     pub async fn call(
         &self,
         messenger: &MessengerHandle,
@@ -150,7 +245,7 @@ impl ServiceClient {
         binding: &MemberBinding,
         producer: &ProducerRef,
         request: &Value,
-        deadline: Duration,
+        deadline: impl Into<Option<Duration>>,
     ) -> Result<Value, ConsumerError> {
         let payload = encode_optional(self.request.as_ref(), request)?;
         let response = ServiceMessenger::poll(
@@ -343,9 +438,25 @@ impl GoalHandle {
         messenger: &MessengerHandle,
         deadline: Duration,
     ) -> Result<CancelState, ConsumerError> {
-        let acknowledgement =
-            ActionMessenger::cancel_goal(messenger, &self.inner, deadline).await?;
-        Ok(decode_cancel_ack(acknowledgement.payload_bytes().as_ref())?)
+        self.cancel_request(messenger, deadline).await
+    }
+
+    /// The request of [`Self::cancel`], which borrows nothing: a caller
+    /// sends it from a task of its own while it goes on reading the goal.
+    pub fn cancel_request(
+        &self,
+        messenger: &MessengerHandle,
+        deadline: Duration,
+    ) -> impl Future<Output = Result<CancelState, ConsumerError>> + Send + 'static {
+        let messenger = messenger.clone();
+        let sender = self.inner.sender().clone();
+        let goal_id = self.inner.goal_id().to_owned();
+        async move {
+            let acknowledgement =
+                ActionMessenger::cancel_with_sender(&messenger, &sender, &goal_id, deadline)
+                    .await?;
+            Ok(decode_cancel_ack(acknowledgement.payload_bytes().as_ref())?)
+        }
     }
 }
 

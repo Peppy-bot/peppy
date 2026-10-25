@@ -2,7 +2,7 @@
 title: OpenTelemetry log export
 description: Export the launch, add, build, run and stack logs of a daemon as OpenTelemetry log records over OTLP/HTTP
 sidebar:
-  order: 19
+  order: 20
 ---
 
 The daemon writes log files on its own machine: a launch log for each `peppy stack launch`, `build`, `join` and `remove`, an add log and a build log for each node, a run log for each instance, and the stack log. With `otlp_endpoint` set, the daemon also exports each line it writes to these files as an [OpenTelemetry](https://opentelemetry.io/) log record, over standard OTLP/HTTP, so the logs of every machine reach one place where they filter by node and by machine.

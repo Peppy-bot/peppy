@@ -184,7 +184,7 @@ Run-only options (trailing `key=value` arguments, `--instance-id`, `--link KEY@V
 
 ### When a node command ends early
 
-`peppy node add`, `build` and `run` each send the daemon one goal and follow it to its end. The daemon refuses a goal that it cannot start, and a goal can fail. Either way the command prints the [failure kind](/guides/launch_files/#how-a-stack-command-ends) and the reason, a failure also the log file, and exits with code 1:
+`peppy node add`, `build` and `run` each send the daemon one goal and follow it to its end. The daemon refuses a goal that it cannot start, and a goal can fail. Either way the command prints the [failure kind](/guides/launch_files/#how-a-stack-command-ends) and the reason, a failure also the log file, and exits with code 3 for a refusal and 4 for a failure (see [Exit statuses of the other commands](/advanced_guides/calling_instances/#exit-statuses-of-the-other-commands)):
 
 ```
 Error: Node add refused (busy): action already in progress (times out in 590s), use `--force` to force adding the node
@@ -193,18 +193,18 @@ Error: Node build failed (attempt_failed): build_cmd `uv sync` failed with statu
 
 The daemon refuses a goal with the kind `busy` while other work holds the stack: another add, build or run of the same command, a stack change, a `peppy stack reset`, or a launch that holds the machine. The same command can succeed once that work ends. `peppy node stop` and `peppy node remove` get the same refusal while a stack change, a reset or a launch that holds the machine runs.
 
-The first Ctrl+C sends the daemon a cancel of the goal. The daemon stops the work at its next step: an add publishes no node, a build kills its `build_cmd` and leaves the node `Added`, and a start stops its instance as [How an instance starts](#how-an-instance-starts) describes. The command follows the goal to that end under `--max-timeout` alone, prints how it ended, and exits with code 130:
+The first Ctrl+C sends the daemon a cancel of the goal. The daemon stops the work at its next step: an add publishes no node, a build kills its `build_cmd` and leaves the node `Added`, and a start stops its instance as [How an instance starts](#how-an-instance-starts) describes. The command follows the goal to that end under `--max-timeout` alone, prints how it ended, and exits with the status of that end, 5 for a cancel:
 
 ```
 Cancelling the node build; press Ctrl-C again to stop waiting for its end
 Error: Node build was cancelled by its caller. Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312.log
 ```
 
-A goal that ended before the cancel reached it keeps its end, and the command says so: `Node build completed before the cancel took effect.` A goal that failed for a cause of its own, for example a build that failed before the cancel reached it, ends failed with its kind. Whichever way the goal ended, a command that sent a cancel exits with code 130. A second Ctrl+C stops the wait for the end: the command waits only until the cancel reaches the daemon, which goes on with it, and a third Ctrl+C ends the command at once. A command whose process goes away, for example when its terminal closes, cancels its goal too: the daemon sees that the sender of the goal is gone, and cancels the goal one minute later, as for a [stack command](/guides/launch_files/#how-a-stack-command-ends).
+A goal that ended before the cancel reached it keeps its end, and the command says so: `Node build completed before the cancel took effect.`, with the exit status 0. A goal that failed for a cause of its own, for example a build that failed before the cancel reached it, ends failed with its kind and the exit status 4. A second Ctrl+C stops the wait for the end: the command waits only until the cancel reaches the daemon, which goes on with it, and exits with code 130. A third Ctrl+C ends the command at once. A command whose process goes away, for example when its terminal closes, cancels its goal too: the daemon sees that the sender of the goal is gone, and cancels the goal one minute later, as for a [stack command](/guides/launch_files/#how-a-stack-command-ends).
 
 `peppy node add --run` follows three goals, one after the other: the add, the build and the start. Between two of them, a Ctrl+C ends the command at once with code 130.
 
-`--force` on `peppy node add` or `peppy node build` cancels the add or the build of the node that runs. That goal ends `Node add was superseded by a forced node add.` or `Node build was superseded by a forced node build.`, and the forced one starts once it ended.
+`--force` on `peppy node add` or `peppy node build` cancels the add or the build of the node that runs. That goal ends `Node add was superseded by a forced node add.` or `Node build was superseded by a forced node build.`, its command exits with code 5, and the forced one starts once it ended.
 
 `--idle-timeout` and `--max-timeout` bound the wait of the command. A command whose budget runs out stops waiting and exits with code 1. It sends no cancel, but its process ends, so the daemon cancels the goal, as for any command whose process goes away.
 
@@ -389,6 +389,20 @@ Instances: 1 tracked
                panel (page)  http://127.0.0.1:8765
                panel (page)  http://100.123.58.116:8765
 ```
+
+## Calling a running instance
+
+`peppy node describe <instance>` shows the topics, services and actions of a running instance with their message formats. `peppy node call <instance> <member>` calls one of its services or actions, and `peppy node echo <instance> <topic>` prints the messages of one of its topics, with no code of your own:
+
+```sh
+peppy node call camera_inst rgb_camera.set_brightness --set value=12
+```
+
+```text
+{"outcome":"completed","response":{"applied":true}}
+```
+
+See [Calling a running instance](/advanced_guides/calling_instances/) for the names of the members, the flags that give a message, the output and the exit statuses.
 
 ## Stopping your node
 

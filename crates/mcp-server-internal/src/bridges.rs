@@ -184,7 +184,7 @@ impl Codecs {
         side: &MemberSide<'_>,
         format: Option<&MessageFormat>,
     ) -> Result<Option<MessageCodec>, ServeError> {
-        match format.filter(|format| !format.0.is_empty()) {
+        match message_codec::payload_format(format) {
             Some(format) => self.lay_out(side, format).map(Some),
             None => Ok(None),
         }

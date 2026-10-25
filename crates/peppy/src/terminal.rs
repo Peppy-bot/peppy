@@ -22,7 +22,7 @@ pub fn colors_enabled() -> bool {
 
 /// Whether stderr should carry ANSI color: the gate of [`colors_enabled`] for
 /// what draws on stderr, such as a menu.
-pub(crate) fn stderr_colors_enabled() -> bool {
+pub fn stderr_colors_enabled() -> bool {
     std::io::stderr().is_terminal() && !no_color_requested()
 }
 

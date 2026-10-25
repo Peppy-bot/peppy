@@ -64,6 +64,8 @@ The generated code of each action declares these kinds as a `FailureKind` enum a
 
 So no result reports a refusal or a failure in a field of its own, such as `success: false` and an error text. A field that gives the answer of a check, such as whether a pose is reachable, is data and stays in the result.
 
+`peppy node call` sends a goal to any action of a running instance from the command line and gives each of these ends an exit status of its own (see [Calling a running instance](/advanced_guides/calling_instances/)).
+
 ## Exposing an action
 
 A node that handles action goals declares its actions under `interfaces.actions.exposes` in its `peppy.json5`.
