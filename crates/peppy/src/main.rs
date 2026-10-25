@@ -8,7 +8,7 @@ use tracing::{error, warn};
 
 use daemon_config::consts::{AppEnv, PEPPY_VERSION, PeppyDirs, RootLifetime};
 use peppy::{
-    commands::{Command, clock, container, info, mcp, node, platform, repo, service, stack},
+    commands::{Command, clock, container, fleet, info, mcp, node, platform, repo, service, stack},
     context::AppContext,
 };
 
@@ -57,6 +57,11 @@ enum Commands {
     Stack {
         #[command(subcommand)]
         command: stack::StackCommands,
+    },
+    /// The robots of the stack, their leases and the halt
+    Fleet {
+        #[command(subcommand)]
+        command: fleet::FleetCommands,
     },
     /// Clock domains: what simulated time this federation is running
     Clock {
@@ -135,6 +140,7 @@ fn main() {
         Commands::Service { command } => service::ServiceCommand { command }.execute(&app_ctx),
         Commands::Node { command } => node::NodeCommand { command }.execute(&app_ctx),
         Commands::Stack { command } => stack::StackCommand { command }.execute(&app_ctx),
+        Commands::Fleet { command } => fleet::FleetCommand { command }.execute(&app_ctx),
         Commands::Clock { command } => clock::ClockCommand { command }.execute(&app_ctx),
         Commands::Container { command } => {
             container::ContainerCommand { command }.execute(&app_ctx)

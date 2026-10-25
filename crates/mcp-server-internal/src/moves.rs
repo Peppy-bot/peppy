@@ -40,7 +40,7 @@ const DAEMON_ANSWER_BOUND: Duration = Duration::from_secs(10);
 
 /// Why the server does not make a call of a member that moves a robot.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum MoveRefused {
+pub enum MoveRefused {
     /// The daemon refuses the move: the kind and the message of its
     /// refusal, which the call gives.
     Refused(ProviderFailure),
@@ -52,7 +52,7 @@ pub(crate) enum MoveRefused {
 /// one follow of the changes serves every goal on a member that moves a
 /// robot.
 #[derive(Clone)]
-pub(crate) struct MoveRules {
+pub struct MoveRules {
     inner: Arc<Inner>,
 }
 
@@ -86,7 +86,7 @@ struct Follow {
 impl MoveRules {
     /// The rules of a server that reaches the daemon of the fleet, `fleet`,
     /// on `messenger` as `identity`.
-    pub(crate) fn new(
+    pub fn new(
         messenger: MessengerHandle,
         identity: ConsumerIdentity,
         fleet: ProducerRef,
@@ -111,7 +111,7 @@ impl MoveRules {
 
     /// Asks the daemon whether the server may call a member that moves a
     /// robot on `producer`.
-    pub(crate) async fn check(&self, producer: &ProducerRef) -> Result<(), MoveRefused> {
+    pub async fn check(&self, producer: &ProducerRef) -> Result<(), MoveRefused> {
         let inner = &self.inner;
         let request = serde_json::to_value(CheckMoveRequest {
             instance: Some(producer.instance_id.clone()),
@@ -150,7 +150,7 @@ impl MoveRules {
     /// Notes a goal on a member that moves a robot, which runs until the
     /// returned guard drops. The server follows the changes of the fleet
     /// while such a goal runs.
-    pub(crate) fn follow_marked_goal(&self) -> MarkedGoal {
+    pub fn follow_marked_goal(&self) -> MarkedGoal {
         let mut follow = self.inner.follow.lock();
         follow.goals += 1;
         if follow.goals == 1 {
@@ -242,14 +242,14 @@ async fn follow_changes(inner: Arc<Inner>, generation: u64, stop: CancellationTo
 
 /// A goal on a member that moves a robot, while it runs: the server follows
 /// the changes of the fleet until the last such goal drops its guard.
-pub(crate) struct MarkedGoal {
+pub struct MarkedGoal {
     rules: MoveRules,
     halt: watch::Receiver<Option<String>>,
 }
 
 impl MarkedGoal {
     /// Resolves once the server sees a halt of the stack.
-    pub(crate) fn halted(&self) -> impl Future<Output = ()> + Send + 'static {
+    pub fn halted(&self) -> impl Future<Output = ()> + Send + 'static {
         let mut halt = self.halt.clone();
         async move {
             if halt.wait_for(Option::is_some).await.is_err() {

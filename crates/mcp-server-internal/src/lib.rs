@@ -10,7 +10,8 @@
 //! exposure at `/<name>/<tag>/mcp` on one loopback port. The tools of a
 //! daemon target call the daemon that serves its interface, within the
 //! scope the launch gave the target, and each call of a member that moves a
-//! robot keeps the fleet rules of the stack.
+//! robot keeps the fleet rules of the stack ([`MoveRules`], which `peppy
+//! node call` keeps too).
 //!
 //! Message conversion is the runtime codec of `peppy-codec`: the layout
 //! generated nodes use, laid out from each contract's `message_format`
@@ -24,4 +25,5 @@ mod serve;
 #[cfg(test)]
 mod test_support;
 
+pub use moves::{MarkedGoal, MoveRefused, MoveRules};
 pub use serve::{ServeError, serve};

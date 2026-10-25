@@ -3,6 +3,7 @@ pub mod clock;
 mod colors;
 mod confirm;
 pub mod container;
+pub mod fleet;
 pub mod info;
 pub mod mcp;
 mod menu;

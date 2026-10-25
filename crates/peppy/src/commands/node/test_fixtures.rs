@@ -2,7 +2,8 @@
 //! `echo` and `describe` read, and the mock messaging they run on.
 //!
 //! The node `arm:v1` implements `limb_motion:v1` through the slot `motion`,
-//! refining the goal of `move_to` to three joints; it declares a service and
+//! refining the goal of `move_to`, which moves the robot, to three joints; it
+//! declares a service and
 //! a topic of its own, and emits `joint_states` through its `arm_link:v1`
 //! pairing slot `controller`, where it plays `arm`.
 
@@ -87,6 +88,7 @@ pub(crate) const LIMB_MOTION: &str = r#"{
                 feedback_topic: { message_format: { progress: "f64" } },
                 result_service: { response_message_format: { reached: "bool" } },
                 failure_kinds: ["unreachable"],
+                marks: ["moves_robot"],
             },
         ],
     },
