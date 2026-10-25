@@ -1,0 +1,52 @@
+<entry>
+  <title>v0.35.0</title>
+  <id>https://docs.peppy.bot/releases/v0-35-0/</id>
+  <updated>2026-10-25T00:00:00Z</updated>
+
+  <summary>Actions and services gain typed failure kinds, commands cancel on Ctrl+C, and new commands call running instances.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.35.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Actions and services gain typed failure kinds, commands cancel on Ctrl+C, and new commands call running instances.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on October 25, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A goal result and a service response are always a success: end a goal with &lt;code&gt;complete&lt;/code&gt; (the result only), &lt;code&gt;fail(kind, message)&lt;/code&gt; or &lt;code&gt;complete_cancelled(reason, …)&lt;/code&gt;, and update any code that passed a success or error argument.&lt;/li&gt;
+&lt;li&gt;Refuse a goal with &lt;code&gt;GoalDecision::refuse(kind, message)&lt;/code&gt; in place of &lt;code&gt;reject(reason)&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;fire_goal&lt;/code&gt; and the test harness &lt;code&gt;send_goal&lt;/code&gt; take a feedback bound such as &lt;code&gt;DEFAULT_FEEDBACK_BOUND&lt;/code&gt; instead of the feedback QoS profile; the handle keeps every message up to that bound and cancels the goal when a consumer overflows it.&lt;/li&gt;
+&lt;li&gt;A failed service call surfaces as &lt;code&gt;ServiceFailed&lt;/code&gt; (the service's &lt;code&gt;Failure&lt;/code&gt; in Python) with a failure kind and message, replacing &lt;code&gt;ServiceError&lt;/code&gt; and &lt;code&gt;RuntimeError&lt;/code&gt;; a service handler returns its response or that &lt;code&gt;Failure&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;In tests, answer a service with &lt;code&gt;respond_failure(kind, message)&lt;/code&gt; and refuse a goal with &lt;code&gt;pending.refuse(kind, message)&lt;/code&gt;, in place of &lt;code&gt;respond_error&lt;/code&gt; and &lt;code&gt;reject&lt;/code&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Failure kinds&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A contract declares its own failure kinds in a &lt;code&gt;failure_kinds&lt;/code&gt; block that each member lists, so every generated action and service exposes a typed &lt;code&gt;FailureKind&lt;/code&gt; enum and &lt;code&gt;Failure&lt;/code&gt; the provider and client must use.&lt;/li&gt;
+&lt;li&gt;The daemon refuses work that collides with other work holding a machine's stack (a stack change, node command, second repository refresh or benchmark, or a reservation) with the failure kind &lt;code&gt;busy&lt;/code&gt;, retryable once that work ends.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy repo add&lt;/code&gt;, &lt;code&gt;remove&lt;/code&gt; and &lt;code&gt;exclude&lt;/code&gt; name the failure kind of a refusal, such as &lt;code&gt;precondition_failed&lt;/code&gt; for an id already in use.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Cancelling commands&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy stack launch&lt;/code&gt;, &lt;code&gt;build&lt;/code&gt;, &lt;code&gt;join&lt;/code&gt;, &lt;code&gt;remove&lt;/code&gt; and &lt;code&gt;benchmark&lt;/code&gt;, &lt;code&gt;peppy node add&lt;/code&gt;, &lt;code&gt;build&lt;/code&gt; and &lt;code&gt;run&lt;/code&gt;, and &lt;code&gt;peppy repo refresh&lt;/code&gt; cancel their work on the first Ctrl+C, follow the goal to its end, and print its failure kind and message.&lt;/li&gt;
+&lt;li&gt;Each of these commands exits with a status for the goal's outcome: 0 completed, 3 refused, 4 failed, 5 cancelled, and 130 after a second Ctrl+C.&lt;/li&gt;
+&lt;li&gt;A goal ends when the process that sent it is gone; a provider sets &lt;code&gt;set_sender_grace&lt;/code&gt; so a client that stops and restarts keeps its goals running.&lt;/li&gt;
+&lt;li&gt;A worker reads why its goal was cancelled through &lt;code&gt;cancel_cause&lt;/code&gt; (its caller, or its sender gone) and reports the reason through &lt;code&gt;complete_cancelled&lt;/code&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Calling running instances&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy node call &amp;lt;instance&amp;gt; &amp;lt;member&amp;gt;&lt;/code&gt; calls one service or action of a running instance from the command line, taking its message through &lt;code&gt;--args&lt;/code&gt;, &lt;code&gt;--set&lt;/code&gt; and &lt;code&gt;--file&lt;/code&gt;, and prints how the call ended.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy node echo &amp;lt;instance&amp;gt; &amp;lt;topic&amp;gt;&lt;/code&gt; prints a topic's messages until Ctrl+C, and &lt;code&gt;peppy node describe &amp;lt;instance&amp;gt;&lt;/code&gt; shows a running instance's interfaces and their message formats.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;MCP exposures&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;An MCP tool that refuses or fails a call reports a failure kind and message in its tool error and call record, and the &lt;code&gt;stack_copies&lt;/code&gt; &lt;code&gt;join&lt;/code&gt; and &lt;code&gt;remove&lt;/code&gt; tools return an empty result on success.&lt;/li&gt;
+&lt;li&gt;A goal that runs inside an MCP call is cancelled when the call closes or the client disconnects, while a goal run as a task keeps running until the client cancels the task.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Node documents&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A node uses one content for each document it names; &lt;code&gt;peppy node sync&lt;/code&gt; and &lt;code&gt;peppy node add&lt;/code&gt; refuse a manifest that references one contract or pairing at two different sha256 values.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
