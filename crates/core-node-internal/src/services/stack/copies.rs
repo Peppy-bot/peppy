@@ -20,7 +20,8 @@ use crate::services::fleet::FleetBook;
 /// whatever the outcome. A change that succeeds then runs `committed` on the
 /// book of the fleet, under the lock of the record: a client that reads the
 /// record finds the book in step with it, so no client takes the lease of a
-/// copy that a lease holder joined before the join leases it.
+/// copy that a lease holder joined before the join leases it. The book then
+/// reads the software of the robots of the record.
 async fn change_active_launch(
     ctx: &StackChangeContext,
     change: impl AsyncFnOnce(&mut ActiveLaunch) -> ChangeResult<()>,
@@ -28,11 +29,15 @@ async fn change_active_launch(
 ) -> ChangeResult<()> {
     let mut active = active_launch(ctx)?;
     let outcome = change(&mut active).await;
+    let robots = active.robot_processes();
     let mut record = ctx.slice_ownership.active.lock();
     *record = Some(active);
-    if outcome.is_ok() {
-        ctx.slice_ownership.fleet.with(committed);
-    }
+    ctx.slice_ownership.fleet.with(|book| {
+        if outcome.is_ok() {
+            committed(book);
+        }
+        book.sync_software(&robots);
+    });
     drop(record);
     outcome
 }

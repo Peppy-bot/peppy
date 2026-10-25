@@ -8,11 +8,16 @@
 //! halt, and when its holder is gone; a lease that its holder received goes
 //! back to its giver instead, or ends when the giver is gone. Each change
 //! reaches the followers of the fleet in the order the book makes it.
+//!
+//! The book also keeps the processes of the stack that run, as the daemon
+//! of each machine tells, and the software state of each robot: the
+//! software of a robot runs when the process of each of its instances runs.
 
 use daemon_config::daemon_interface::fleet::{
     ChangeKind, FleetFailureKind, FleetLease, LeaseEvent, LeaseEventKind, MoveRefusal,
+    SoftwareState,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
@@ -127,11 +132,23 @@ pub(crate) struct Change {
     pub(crate) robot: String,
 }
 
-/// The state of the leases and the halt that the fleet listing gives.
+/// The state of the leases, the halt and the software of each robot that
+/// the fleet listing gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BookView {
     pub(crate) halted_by: Option<String>,
     pub(crate) leases: Vec<FleetLease>,
+    pub(crate) software: BTreeMap<String, SoftwareState>,
+}
+
+/// One process of the stack: an instance, and the machine that runs it.
+pub(crate) type Process = ClientRef;
+
+/// A robot of the stack, and the processes of its instances.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RobotProcesses {
+    pub(crate) robot: String,
+    pub(crate) processes: Vec<Process>,
 }
 
 #[derive(Default)]
@@ -144,6 +161,12 @@ pub(crate) struct FleetBook {
     /// refusal of `not_leased` gives.
     endings: BTreeMap<(ClientRef, String), String>,
     followers: Vec<UnboundedSender<Change>>,
+    /// The processes of the stack that run, on every machine, as the
+    /// daemon of each machine told.
+    running: BTreeSet<Process>,
+    /// The software state of each robot of the stack, as the followers
+    /// read it last.
+    software: BTreeMap<String, SoftwareState>,
 }
 
 impl FleetBook {
@@ -194,7 +217,50 @@ impl FleetBook {
                     }
                 })
                 .collect(),
+            software: self.software.clone(),
         }
+    }
+
+    /// Notes that `process` runs or that it ended, then the software of
+    /// `robots`, the robots of the stack now ([`Self::sync_software`]).
+    pub(crate) fn note_process(&mut self, process: Process, runs: bool, robots: &[RobotProcesses]) {
+        if runs {
+            self.running.insert(process);
+        } else {
+            self.running.remove(&process);
+        }
+        self.sync_software(robots);
+    }
+
+    /// Reads the software state of each of `robots`, the robots of the
+    /// stack now, from the processes that run. The followers read a
+    /// software start or stop of each robot whose state changed; a robot
+    /// that joined the stack gets its state with no change, as the listing
+    /// of its join gives it.
+    pub(crate) fn sync_software(&mut self, robots: &[RobotProcesses]) {
+        let mut next = BTreeMap::new();
+        for robot in robots {
+            let runs = !robot.processes.is_empty()
+                && robot
+                    .processes
+                    .iter()
+                    .all(|process| self.running.contains(process));
+            let state = if runs {
+                SoftwareState::Running
+            } else {
+                SoftwareState::Stopped
+            };
+            let previous = self.software.get(&robot.robot).copied();
+            if previous.is_some_and(|previous| previous != state) {
+                let kind = match state {
+                    SoftwareState::Running => ChangeKind::SoftwareStart,
+                    SoftwareState::Stopped => ChangeKind::SoftwareStop,
+                };
+                self.note(kind, &robot.robot);
+            }
+            next.insert(robot.robot.clone(), state);
+        }
+        self.software = next;
     }
 
     /// The holder of the lease of `robot` and the name of the lease.

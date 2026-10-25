@@ -5,8 +5,10 @@
 
 mod book;
 
-pub(crate) use book::{ClientRef, FleetBook, Refusal, RefusalKind};
+pub(crate) use book::{ClientRef, FleetBook, Process, Refusal, RefusalKind, RobotProcesses};
 
+use crate::services::federation::SliceOwnership;
+use crate::services::stack::ActiveLaunch;
 use config::failure_kind::PeppyFailureKind;
 use daemon_config::daemon_interface::fleet::FleetFailureKind;
 use peppylib::messaging::Failure;
@@ -83,6 +85,26 @@ impl Fleet {
         }
         Ok(book.clear_halt())
     }
+}
+
+/// Notes that the process of the instance `instance_id` on the machine
+/// `core_node` runs or that it ended, and the software start or stop of its
+/// robot that it gives. The daemon notes each process of its own machine,
+/// and each process of another machine whose daemon tells it.
+pub(crate) fn note_process(
+    ownership: &SliceOwnership,
+    core_node: &str,
+    instance_id: &str,
+    runs: bool,
+) {
+    let active = ownership.active.lock();
+    let robots = active
+        .as_ref()
+        .map(ActiveLaunch::robot_processes)
+        .unwrap_or_default();
+    ownership.fleet.with(|book| {
+        book.note_process(ClientRef::new(core_node, instance_id), runs, &robots);
+    });
 }
 
 /// The client that halted the stack, as `path` keeps it; `None` when no

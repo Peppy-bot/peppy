@@ -24,6 +24,7 @@
 //! [`peppylib::messaging::CancelCause::SenderGone`], and the work ends them
 //! as it ends a cancel of their caller.
 
+use crate::services::raw_calls::RawCallGate;
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::{ActionId, names};
 use peppylib::messaging::{
@@ -86,12 +87,20 @@ pub(crate) trait GoalHandler: Clone + Send + 'static {
 }
 
 /// Accept loop shared by all built-in core-node actions. Runs until the goal
-/// service closes (the messenger session is torn down).
+/// service closes (the messenger session is torn down). It refuses each goal
+/// of the action `id` from an instance of the stack ([`RawCallGate`]) and
+/// hands every other goal to `handler`.
 pub(crate) async fn run_action_loop<H: GoalHandler>(
     mut action: ConcurrentAction,
+    id: ActionId,
+    raw_calls: RawCallGate,
     handler: H,
 ) -> crate::Result<()> {
     while let Some(pending) = action.recv_next_goal().await? {
+        if let Some(refusal) = raw_calls.refusal(id.name(), pending.instance_id()) {
+            refuse_goal(pending, refusal).await;
+            continue;
+        }
         handler.handle_goal(pending).await;
     }
     Ok(())

@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::services::raw_calls::RawCallGate;
 use crate::services::response::{failure, into_service_answer};
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
@@ -36,6 +37,7 @@ pub async fn listen_for_node_stop(
     node_stack: Arc<NodeStack>,
     relationships: RelationshipCoordinators,
     ownership: Arc<crate::services::federation::SliceOwnership>,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let core_node_node = core_node_node.to_string();
     let core_instance_id = instance_id.to_string();
@@ -52,7 +54,7 @@ pub async fn listen_for_node_stop(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(|context| {
+            .handle_requests(raw_calls.guard(ServiceId::NodeStop.name(), |context| {
                 handle_node_stop_request(
                     context,
                     messenger.clone(),
@@ -62,7 +64,7 @@ pub async fn listen_for_node_stop(
                     relationships.clone(),
                     ownership.clone(),
                 )
-            })
+            }))
             .await
             .map_err(Into::into)
     });

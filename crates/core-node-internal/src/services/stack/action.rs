@@ -18,6 +18,7 @@ use crate::services::node::gate::{
     Admission, ConcurrencyGate, finish_on_reset, reset_drain_budget,
 };
 use crate::services::node::{DaemonDefaults, HealthMonitorPolicy, RelationshipCoordinators};
+use crate::services::raw_calls::RawCallGate;
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::ActionId;
 use core_node_api::DaemonFailureKind;
@@ -268,6 +269,7 @@ pub(crate) async fn listen_for_stack_action(
     peppy_dirs: PeppyDirs,
     defaults: StackChangeDefaults,
     relationships: RelationshipCoordinators,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let stack_action = StackAction::try_from(action_id).map_err(|reason| {
         peppylib::PeppyError::InvalidServiceRequest {
@@ -303,7 +305,8 @@ pub(crate) async fn listen_for_stack_action(
         gate: ConcurrencyGate::new(),
     };
 
-    let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
+    let handle =
+        tokio::spawn(async move { run_action_loop(action, action_id, raw_calls, handler).await });
 
     Ok(handle)
 }

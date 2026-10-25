@@ -9,6 +9,7 @@ mod info;
 pub(crate) mod mcp;
 mod node;
 mod presence;
+mod raw_calls;
 pub(crate) mod repo;
 mod response;
 mod stack;
@@ -314,6 +315,9 @@ struct ListenerCtx<'a> {
     /// The daemon's single pairing and observation authorities, shared by every
     /// establishment hook and lifecycle teardown path.
     relationships: node::RelationshipCoordinators,
+    /// Refuses the raw calls that change the stack from its instances,
+    /// shared by every action and by each service that changes the stack.
+    raw_calls: raw_calls::RawCallGate,
 }
 
 /// Why a daemon-side registration for a registry method deliberately does
@@ -492,6 +496,7 @@ impl CoreNode {
             peppy_version: CORE_NODE_TAG.to_owned(),
             root_instance_id: self.instance_id().to_owned(),
             shutdown_token: self.shutdown_token.clone(),
+            raw_calls: ctx.raw_calls.clone(),
         }
     }
 
@@ -597,6 +602,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 Arc::clone(ctx.relationships.observation()),
                 Arc::clone(&self.slice_ownership),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ServiceId::StackList => stack::listen_for_stack_list(
@@ -650,6 +656,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 self.peppy_dirs.clone(),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ServiceId::NodeRemove => node::listen_for_node_remove(
@@ -660,6 +667,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 ctx.relationships.clone(),
                 Arc::clone(&self.slice_ownership),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ServiceId::NodeSync => node::listen_for_node_sync(
@@ -669,6 +677,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ServiceId::NodeInfo => node::listen_for_node_info(
@@ -696,6 +705,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 ctx.relationships.clone(),
                 Arc::clone(&self.slice_ownership),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ServiceId::RepoAdd => repo::listen_for_repo_add(
@@ -704,6 +714,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 self.peppy_dirs.clone(),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ServiceId::RepoExclude => repo::listen_for_repo_exclude(
@@ -712,6 +723,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 self.peppy_dirs.clone(),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ServiceId::RepoList => repo::listen_for_repo_list(
@@ -728,6 +740,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 self.peppy_dirs.clone(),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ServiceId::ClockOffset => {
@@ -769,6 +782,7 @@ impl CoreNode {
                     peppy_version: CORE_NODE_TAG.to_owned(),
                 },
                 ctx.relationships.clone(),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ActionId::StackBenchmark => stack::listen_for_stack_benchmark(
@@ -778,6 +792,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ActionId::NodeAdd => node::listen_for_node_add(
@@ -789,6 +804,7 @@ impl CoreNode {
                 self.peppy_dirs.clone(),
                 ctx.relationships.clone(),
                 Arc::clone(&self.slice_ownership),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ActionId::NodeBuild => node::listen_for_node_build(
@@ -799,6 +815,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
                 Arc::clone(&self.slice_ownership),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ActionId::NodeRun => node::listen_for_node_run(
@@ -822,6 +839,7 @@ impl CoreNode {
                     relationships: ctx.relationships.clone(),
                     slice_ownership: Arc::clone(&self.slice_ownership),
                 },
+                ctx.raw_calls.clone(),
             )
             .boxed(),
             ActionId::RepoRefresh => repo::listen_for_repo_refresh(
@@ -830,6 +848,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 self.peppy_dirs.clone(),
+                ctx.raw_calls.clone(),
             )
             .boxed(),
         }
@@ -1002,6 +1021,7 @@ impl CoreNode {
                 pairing,
                 self.node_stack.reply_bounds().notify,
                 self.node_stack.time().clone(),
+                Arc::clone(&self.slice_ownership),
             )),
         );
         let ctx = ListenerCtx {
@@ -1012,6 +1032,10 @@ impl CoreNode {
                 core_node_name,
             )),
             relationships,
+            raw_calls: raw_calls::RawCallGate::new(
+                Arc::clone(&self.node_stack),
+                Arc::clone(&self.slice_ownership),
+            ),
         };
         // Set up all listeners concurrently so startup latency is bounded by
         // the slowest single listener, not the sum of all of them. They're

@@ -577,13 +577,13 @@ impl SliceOwnership {
     }
 
     /// Clears both the reservation and the slice record. Called by
-    /// `stack reset`: an emptied stack belongs to no launch, and a reset also
-    /// releases whatever launch was mid-flight over this machine.
+    /// `stack reset`, after it drops the launch this daemon coordinates: an
+    /// emptied stack belongs to no launch, and a reset also releases
+    /// whatever launch was mid-flight over this machine.
     pub fn clear(&self) {
         let mut state = self.state.lock();
         end_held_reservation(&mut state);
         state.slice = None;
-        *self.active.lock() = None;
     }
 }
 

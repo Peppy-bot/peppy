@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::services::raw_calls::RawCallGate;
 use crate::services::repo::cache::{UNOWNED_REPO_ID, repositories_list_path};
 use crate::services::repo::refresh::read_or_create_repos;
 use crate::services::repo::{
@@ -24,6 +25,7 @@ pub async fn listen_for_repo_add(
     instance_id: &str,
     node_name: &str,
     peppy_dirs: PeppyDirs,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -36,7 +38,9 @@ pub async fn listen_for_repo_add(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(move |context| handle_repo_add_request(context, peppy_dirs.clone()))
+            .handle_requests(raw_calls.guard(ServiceId::RepoAdd.name(), move |context| {
+                handle_repo_add_request(context, peppy_dirs.clone())
+            }))
             .await
             .map_err(Into::into)
     });

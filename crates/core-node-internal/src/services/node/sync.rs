@@ -11,6 +11,7 @@ use self::codegen::remove_previous_peppy_dir;
 pub(crate) use self::deps::{DepClosure, MaterializedDeps, materialize_repo_deps};
 use super::trace_interface_step;
 use crate::Result;
+use crate::services::raw_calls::RawCallGate;
 use crate::services::response::{failure, into_service_answer};
 use config::ParsingError;
 use config::failure_kind::PeppyFailureKind;
@@ -38,6 +39,7 @@ pub async fn listen_for_node_sync(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -50,9 +52,9 @@ pub async fn listen_for_node_sync(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(move |context| {
+            .handle_requests(raw_calls.guard(ServiceId::NodeSync.name(), move |context| {
                 handle_node_sync_request(context, Arc::clone(&node_stack), peppy_dirs.clone())
-            })
+            }))
             .await
             .map_err(Into::into)
     });

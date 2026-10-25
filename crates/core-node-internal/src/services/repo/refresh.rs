@@ -7,6 +7,7 @@ use crate::services::node::cache as node_cache;
 use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::{ShallowCheckoutError, shallow_checkout_of_read_ref};
+use crate::services::raw_calls::RawCallGate;
 use crate::services::repo::cache::{RepoCacheEntry, RepoItems, write_repo_cache};
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::index::{
@@ -46,6 +47,7 @@ pub async fn listen_for_repo_refresh(
     instance_id: &str,
     node_name: &str,
     peppy_dirs: PeppyDirs,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = expose_daemon_action(
         messenger,
@@ -61,7 +63,9 @@ pub async fn listen_for_repo_refresh(
         gate: ConcurrencyGate::new(),
     };
 
-    let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
+    let handle = tokio::spawn(async move {
+        run_action_loop(action, ActionId::RepoRefresh, raw_calls, handler).await
+    });
 
     Ok(handle)
 }

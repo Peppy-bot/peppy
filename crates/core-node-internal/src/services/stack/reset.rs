@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::services::node::{ObservationCoordinator, teardown_all_instances};
+use crate::services::raw_calls::RawCallGate;
 use crate::services::response::into_service_answer;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{StackResetRequest, StackResetResponse};
@@ -60,6 +61,7 @@ pub(crate) async fn listen_for_stack_reset(
     node_stack: Arc<NodeStack>,
     observation: Arc<ObservationCoordinator>,
     ownership: Arc<crate::services::federation::SliceOwnership>,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -80,7 +82,7 @@ pub(crate) async fn listen_for_stack_reset(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(|context| {
+            .handle_requests(raw_calls.guard(ServiceId::StackReset.name(), |context| {
                 handle_stack_reset_request(
                     context,
                     messenger.clone(),
@@ -90,7 +92,7 @@ pub(crate) async fn listen_for_stack_reset(
                     Arc::clone(&observation),
                     Arc::clone(&ownership),
                 )
-            })
+            }))
             .await
             .map_err(Into::into)
     });

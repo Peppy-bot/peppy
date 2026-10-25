@@ -9,11 +9,12 @@ use super::launch::joinable::JoinableBuild;
 use super::launch::watchers::LifecycleWatchers;
 use super::launch::{NodeKey, PlannedDeployment};
 use crate::services::federation::SliceOwnership;
+use crate::services::fleet::{Process, RobotProcesses};
 use config::runtime::{CopyName, CoreNodeName};
 use daemon_config::daemon_interface::fleet::ChangeKind;
 use daemon_config::launcher::{
-    ClockIncarnations, CopyRecord, PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks,
-    UnitSelection,
+    ClockIncarnations, CopyRecord, DeploymentInstance, PeppyLauncher, Placements, PreparedLauncher,
+    ResolvedClocks, UnitSelection,
 };
 use std::collections::BTreeMap;
 
@@ -209,27 +210,42 @@ impl ActiveLaunch {
     /// what the launch gave each, and whether the instance is a built-in MCP
     /// server; `None` for an id that is no instance of this launch.
     pub(crate) fn daemon_targets_of(&self, instance_id: &str) -> Option<InstanceTargets> {
+        let (planned, instance) = self.planned_instance(instance_id)?;
+        Some(InstanceTargets {
+            mcp_server: matches!(
+                planned.root,
+                daemon_config::repository::DeploymentRoot::Exposures(_)
+            ),
+            targets: planned
+                .targets
+                .daemon
+                .iter()
+                .filter_map(|(target, interface)| {
+                    let scope = instance.daemon_scopes.get(target)?;
+                    Some((*interface, scope.clone()))
+                })
+                .collect(),
+        })
+    }
+
+    /// Whether `instance_id` is an instance of this launch.
+    pub(crate) fn has_instance(&self, instance_id: &str) -> bool {
+        self.planned_instance(instance_id).is_some()
+    }
+
+    /// The instance `instance_id` of this launch, with the deployment that
+    /// plans it.
+    fn planned_instance(
+        &self,
+        instance_id: &str,
+    ) -> Option<(&PlannedDeployment, &DeploymentInstance)> {
         self.planned.iter().find_map(|planned| {
-            let instance = planned
+            planned
                 .deployment
                 .instances
                 .iter()
-                .find(|instance| instance.instance_id.as_str() == instance_id)?;
-            Some(InstanceTargets {
-                mcp_server: matches!(
-                    planned.root,
-                    daemon_config::repository::DeploymentRoot::Exposures(_)
-                ),
-                targets: planned
-                    .targets
-                    .daemon
-                    .iter()
-                    .filter_map(|(target, interface)| {
-                        let scope = instance.daemon_scopes.get(target)?;
-                        Some((*interface, scope.clone()))
-                    })
-                    .collect(),
-            })
+                .find(|instance| instance.instance_id.as_str() == instance_id)
+                .map(|instance| (planned, instance))
         })
     }
 
@@ -243,6 +259,26 @@ impl ActiveLaunch {
                 .any(|instance| instance.instance_id.as_str() == instance_id)
                 .then_some(&copy.record.name)
         })
+    }
+
+    /// Each robot of this launch, with the process of each of its
+    /// instances on its machine.
+    pub(crate) fn robot_processes(&self) -> Vec<RobotProcesses> {
+        self.copies
+            .values()
+            .map(|copy| RobotProcesses {
+                robot: copy.record.name.as_str().to_owned(),
+                processes: copy
+                    .record
+                    .instances
+                    .iter()
+                    .map(|instance| {
+                        let id = instance.instance_id.as_str();
+                        Process::new(self.placements.of(id), id)
+                    })
+                    .collect(),
+            })
+            .collect()
     }
 
     /// Whether the stack holds a copy called `name`.
@@ -291,6 +327,7 @@ pub(crate) fn drop_active_launch(ownership: &SliceOwnership, cause: &str) {
         for robot in &removed {
             book.note(ChangeKind::Removal, robot);
         }
+        book.sync_software(&[]);
     });
 }
 
@@ -302,12 +339,14 @@ pub(super) fn commit_active_launch(ownership: &SliceOwnership, active: ActiveLau
         .keys()
         .map(|name| name.as_str().to_owned())
         .collect();
+    let robots = active.robot_processes();
     let mut record = ownership.active.lock();
     *record = Some(active);
     ownership.fleet.with(|book| {
         for robot in &joined {
             book.note(ChangeKind::Join, robot);
         }
+        book.sync_software(&robots);
     });
 }
 

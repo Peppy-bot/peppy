@@ -3,7 +3,7 @@ mod benchmark;
 mod container_mounts;
 mod copies;
 #[cfg(test)]
-mod fixtures;
+pub(super) mod fixtures;
 pub(crate) mod fleet_listing;
 mod launch;
 mod list;

@@ -199,6 +199,16 @@ pub(super) struct PlannedDeployment {
     pub(super) targets: daemon_config::mcp_deployment::DeploymentTargets,
 }
 
+/// The id of each instance of `planned`.
+pub(super) fn planned_instance_ids(
+    planned: &[PlannedDeployment],
+) -> impl Iterator<Item = &config::runtime::Name> {
+    planned
+        .iter()
+        .flat_map(|planned| &planned.deployment.instances)
+        .map(|instance| &instance.instance_id)
+}
+
 /// The launch checks of daemon scopes over a planned stack: every scope
 /// parsed into its interface's type, and, at a launch, held against
 /// `prepared`, the launcher the stack was composed from, and the stack
@@ -420,7 +430,11 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     if !builds_only {
         announce_clock_domains(&ctx, &clocks).await;
     }
-    let watchers = match lifecycle_watchers(&planned_observations, &placements) {
+    let watchers = match lifecycle_watchers(
+        &planned_observations,
+        &placements,
+        planned_instance_ids(&planned),
+    ) {
         Ok(watchers) => watchers,
         Err(reason) => {
             publish_error(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;

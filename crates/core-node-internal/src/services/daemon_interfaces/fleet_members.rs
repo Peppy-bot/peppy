@@ -8,7 +8,7 @@ use super::codecs::Side;
 use super::{Caller, InterfaceContext, end_goal, refuse};
 use crate::services::fleet::{ClientRef, Refusal};
 use crate::services::response::failure;
-use crate::services::stack::fleet_listing::{ListingSnapshot, pinned_document, running_instances};
+use crate::services::stack::fleet_listing::pinned_document;
 use config::failure_kind::PeppyFailureKind;
 use daemon_config::daemon_interface::fleet::{
     ChangeKind, CheckMoveRequest, CheckMoveResponse, ContractRequest, ContractResponse,
@@ -19,14 +19,8 @@ use peppylib::messaging::{
     Failure, GoalContext, NonEmptyPayload, PendingGoal, ServiceAnswer, ServiceRequestContext,
 };
 use peppylib::types::Payload;
-use std::collections::BTreeSet;
-use std::time::Duration;
 
 const FLEET: DaemonInterface = DaemonInterface::Fleet;
-
-/// How long the listing waits for the daemon of another machine to give the
-/// state of the instances it runs.
-const MACHINE_STATE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Whether `caller` may call `member`: the command line calls every member,
 /// `check_move` answers every sender, `changes` answers each MCP server of
@@ -77,7 +71,7 @@ pub(super) async fn answer(
     let name = member.name();
     match member {
         FleetMember::List => {
-            let listing = fleet_listing(ctx).await;
+            let listing = fleet_listing(ctx);
             ctx.encode(FLEET, name, Side::Response, &listing)
         }
         FleetMember::Contract => {
@@ -170,29 +164,13 @@ pub(super) async fn answer(
     }
 }
 
-/// The fleet listing now: the record of the launch and the book, with the
-/// state of the instances that other machines run, as their daemons give it.
-pub(super) async fn fleet_listing(ctx: &InterfaceContext) -> FleetListing {
-    let snapshot = ListingSnapshot::take(&ctx.slice_ownership, &ctx.node_stack, &ctx.core_node);
-    let mut running_elsewhere = BTreeSet::new();
-    for machine in snapshot.machines() {
-        match peppylib::core_node::transport::poll(
-            &core_node_api::encoding::StackListRequest::new(),
-            &ctx.messenger,
-            &ctx.core_node,
-            &ctx.instance_id,
-            &machine,
-            MACHINE_STATE_TIMEOUT,
-        )
-        .await
-        {
-            Ok(response) => running_elsewhere.extend(running_instances(&response)),
-            Err(error) => {
-                tracing::debug!(%machine, %error, "the instances of a machine are listed as stopped");
-            }
-        }
-    }
-    snapshot.into_listing(&running_elsewhere)
+/// The fleet listing now.
+pub(super) fn fleet_listing(ctx: &InterfaceContext) -> FleetListing {
+    crate::services::stack::fleet_listing::fleet_listing(
+        &ctx.slice_ownership,
+        &ctx.node_stack,
+        &ctx.core_node,
+    )
 }
 
 /// `take`: a robot on the stack, or one whose lease the book holds (a lease
@@ -316,7 +294,7 @@ async fn follow_changes(ctx: &InterfaceContext, pending: PendingGoal) {
             let feedback = FleetChange {
                 change,
                 robot,
-                listing: fleet_listing(ctx).await,
+                listing: fleet_listing(ctx),
             };
             if let Err(error) = publish(ctx, &goal, name, &feedback).await {
                 tracing::debug!(%error, "a change of the fleet was not published");

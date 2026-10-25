@@ -11,6 +11,7 @@ use super::stop::{DoomedInstance, StopOutcome};
 use super::supervisor::{RestartTarget, RunOutcome, log_next_attempt, spawn_next_attempt};
 use super::{FeedbackLine, RelationshipCoordinators};
 use crate::Result;
+use crate::services::raw_calls::RawCallGate;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT};
 use config::failure_kind::PeppyFailureKind;
 use config::node::SetupTimeout;
@@ -323,6 +324,7 @@ pub async fn listen_for_node_run(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     config: NodeRunServiceConfig,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = expose_daemon_action(
         messenger,
@@ -352,7 +354,9 @@ pub async fn listen_for_node_run(
         gate: ConcurrencyGate::new(),
     };
 
-    let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
+    let handle = tokio::spawn(async move {
+        run_action_loop(action, ActionId::NodeRun, raw_calls, handler).await
+    });
 
     Ok(handle)
 }

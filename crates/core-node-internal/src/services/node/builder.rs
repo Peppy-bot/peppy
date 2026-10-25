@@ -5,6 +5,7 @@ use super::super::action_loop::{
 use super::FeedbackLine;
 use super::gate::{COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use crate::Result;
+use crate::services::raw_calls::RawCallGate;
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::ActionId;
 use core_node_api::DaemonFailureKind;
@@ -31,6 +32,7 @@ pub async fn listen_for_node_build(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
     slice_ownership: Arc<crate::services::federation::SliceOwnership>,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = expose_daemon_action(
         messenger,
@@ -50,7 +52,9 @@ pub async fn listen_for_node_build(
         slice_ownership,
     };
 
-    let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
+    let handle = tokio::spawn(async move {
+        run_action_loop(action, ActionId::NodeBuild, raw_calls, handler).await
+    });
     Ok(handle)
 }
 

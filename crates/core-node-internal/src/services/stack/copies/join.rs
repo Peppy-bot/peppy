@@ -10,6 +10,7 @@ use super::super::launch::clock::plan_clocks;
 use super::super::launch::feedback::publish_stdout;
 use super::super::launch::nodes::add_nodes_to_stack;
 use super::super::launch::orchestrate::{ValidatedPlan, validate_and_order_dependencies};
+use super::super::launch::planned_instance_ids;
 use super::super::launch::preflight::preflight_change;
 use super::super::launch::start::start_node_instances;
 use super::super::launch::watchers::{lifecycle_watchers, watchers_replacing};
@@ -152,7 +153,8 @@ async fn join_inner(
         .await
         .map_err(rejected)?;
     let grown_sets = whole_sets(&grown_slots, &bindings, &observations);
-    let watchers = lifecycle_watchers(&observations, &placements).map_err(rejected)?;
+    let watchers = lifecycle_watchers(&observations, &placements, planned_instance_ids(&planned))
+        .map_err(rejected)?;
     // The instances supplying the clocks this join reads take part in it: a
     // copy cannot bind to a domain whose publisher is not there to supply it.
     let clock_publishers: Vec<config::runtime::Name> = clocks

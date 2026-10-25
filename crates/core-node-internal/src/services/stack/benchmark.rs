@@ -25,6 +25,7 @@ use crate::services::action_loop::{
 use crate::services::node::common::encode_response_or_err;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::resolve_contract_doc;
+use crate::services::raw_calls::RawCallGate;
 use config::node::{
     DependsOn, MessageSizeEstimate, NodeConfig, QoSProfile, estimate_serialized_size,
     node_implements,
@@ -78,6 +79,7 @@ pub(crate) async fn listen_for_stack_benchmark(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = expose_daemon_action(
         messenger,
@@ -99,7 +101,9 @@ pub(crate) async fn listen_for_stack_benchmark(
         gate: ConcurrencyGate::new(),
     };
 
-    let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
+    let handle = tokio::spawn(async move {
+        run_action_loop(action, ActionId::StackBenchmark, raw_calls, handler).await
+    });
     Ok(handle)
 }
 

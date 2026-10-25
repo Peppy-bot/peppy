@@ -2,6 +2,7 @@ mod templates;
 
 use self::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
+use crate::services::raw_calls::RawCallGate;
 use crate::services::response::{failure, into_service_answer};
 use config::failure_kind::PeppyFailureKind;
 use config::node::Toolchain;
@@ -21,6 +22,7 @@ pub async fn listen_for_node_init(
     instance_id: &str,
     node_name: &str,
     peppy_dirs: PeppyDirs,
+    raw_calls: RawCallGate,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -33,7 +35,9 @@ pub async fn listen_for_node_init(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(move |context| handle_node_init_request(context, peppy_dirs.clone()))
+            .handle_requests(raw_calls.guard(ServiceId::NodeInit.name(), move |context| {
+                handle_node_init_request(context, peppy_dirs.clone())
+            }))
             .await
             .map_err(Into::into)
     });

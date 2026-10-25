@@ -190,7 +190,7 @@ pub(super) async fn answer(
     let scope = scope_of(ctx, &sender)?;
     drop(ctx.stack_copies.admission.lock().await);
     let machines = ctx.live_machines(PRESENCE_TIMEOUT).await?;
-    let fleet = super::fleet_members::fleet_listing(ctx).await;
+    let fleet = super::fleet_members::fleet_listing(ctx);
     let (copies, change) = {
         let active = ctx.slice_ownership.active.lock();
         let copies = active

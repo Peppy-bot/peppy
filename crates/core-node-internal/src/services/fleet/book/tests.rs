@@ -412,3 +412,49 @@ fn an_open_close_or_release_of_a_lease_that_the_client_does_not_hold_is_refused(
         );
     }
 }
+
+#[test]
+fn the_software_of_a_robot_runs_while_each_of_its_processes_runs_and_each_change_reaches_the_followers()
+ {
+    let mut book = FleetBook::default();
+    let mut follower = book.follow();
+    let arm = Process::new("cn-desk", "alpha_arm");
+    let camera = Process::new("cn-arm", "alpha_camera");
+    let robots = [RobotProcesses {
+        robot: "alpha".to_owned(),
+        processes: vec![arm.clone(), camera.clone()],
+    }];
+
+    book.note_process(arm.clone(), true, &[]);
+    book.note_process(camera.clone(), true, &[]);
+    book.sync_software(&robots);
+    assert_eq!(book.view().software["alpha"], SoftwareState::Running);
+    assert!(
+        changes(&mut follower).is_empty(),
+        "a robot that joined gets its state with no change"
+    );
+
+    book.note_process(camera.clone(), false, &robots);
+    book.note_process(arm.clone(), false, &robots);
+    book.note_process(arm.clone(), true, &robots);
+    assert_eq!(
+        changes(&mut follower),
+        [(ChangeKind::SoftwareStop, "alpha".to_owned())],
+        "one stop, and no start while one process of two runs"
+    );
+    book.note_process(Process::new("cn-other", "alpha_camera"), true, &robots);
+    assert!(
+        changes(&mut follower).is_empty(),
+        "an instance of the same id on another machine is another process"
+    );
+    book.note_process(camera, true, &robots);
+    assert_eq!(
+        changes(&mut follower),
+        [(ChangeKind::SoftwareStart, "alpha".to_owned())]
+    );
+    assert_eq!(book.view().software["alpha"], SoftwareState::Running);
+
+    book.sync_software(&[]);
+    assert!(book.view().software.is_empty(), "the robot left the stack");
+    assert!(changes(&mut follower).is_empty());
+}

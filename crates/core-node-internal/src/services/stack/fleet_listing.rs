@@ -6,14 +6,12 @@
 //! commit that each machine runs.
 //!
 //! The listing reads the record of the launch and the book of the fleet in
-//! one step ([`ListingSnapshot::take`]), then the state of the instances on
-//! other machines, which their daemons give ([`ListingSnapshot::machines`]),
-//! and puts the two together ([`ListingSnapshot::into_listing`]).
+//! one step ([`fleet_listing`]), so it gives the state that the last change
+//! of the fleet left.
 
 use super::state::ActiveLaunch;
 use crate::services::federation::SliceOwnership;
 use config::runtime::ClockBinding;
-use core_node_api::graph::InstanceState;
 use daemon_config::consts::peppy_build;
 use daemon_config::daemon_interface::fleet::{
     ContractPin, FleetDocument, FleetFeature, FleetInstance, FleetListing, FleetNode, FleetOption,
@@ -34,124 +32,46 @@ pub(crate) fn release_version() -> String {
     }
 }
 
-/// One instance of a robot, with where it runs.
-#[derive(Debug, Clone)]
-struct RobotInstance {
-    id: String,
-    machine: String,
-}
-
-/// What the listing reads under the locks of the record and the book.
-pub(crate) struct ListingSnapshot {
-    listing: FleetListing,
-    /// The instances of each robot, in the order of `listing.robots`.
-    robot_instances: Vec<Vec<RobotInstance>>,
-    /// The instances of this machine that run.
-    running_here: BTreeSet<String>,
-    core_node: String,
-}
-
-impl ListingSnapshot {
-    /// Reads the record of the launch, the book of the fleet and the stack
-    /// of this daemon, `core_node`.
-    pub(crate) fn take(
-        ownership: &SliceOwnership,
-        node_stack: &NodeStack,
-        core_node: &str,
-    ) -> Self {
-        let active = ownership.active.lock();
-        let book = ownership.fleet.with(|book| book.view());
-        let mut listing = FleetListing {
-            version: release_version(),
-            core_node: core_node.to_owned(),
-            halted: book.halted_by.is_some(),
-            halted_by: book.halted_by.unwrap_or_default(),
-            leases: book.leases,
-            ..FleetListing::default()
-        };
-        let mut robot_instances = Vec::new();
-        let mut running_here = BTreeSet::new();
-        if let Some(active) = active.as_ref() {
-            listing.launcher = active.launcher.clone();
-            for copy in active.copies.values() {
-                let (robot, instances) = robot_entry(active, copy);
-                for instance in &instances {
-                    if instance.machine == core_node
-                        && node_stack.instance_state(&instance.id) == Some(InstanceState::Running)
-                    {
-                        running_here.insert(instance.id.clone());
-                    }
-                }
-                listing.robots.push(robot);
-                robot_instances.push(instances);
+/// The fleet listing of the launch this daemon, `core_node`, coordinates.
+pub(crate) fn fleet_listing(
+    ownership: &SliceOwnership,
+    node_stack: &NodeStack,
+    core_node: &str,
+) -> FleetListing {
+    let active = ownership.active.lock();
+    let book = ownership.fleet.with(|book| book.view());
+    let mut listing = FleetListing {
+        version: release_version(),
+        core_node: core_node.to_owned(),
+        halted: book.halted_by.is_some(),
+        halted_by: book.halted_by.unwrap_or_default(),
+        leases: book.leases,
+        ..FleetListing::default()
+    };
+    let Some(active) = active.as_ref() else {
+        return listing;
+    };
+    listing.launcher = active.launcher.clone();
+    listing.robots = active
+        .copies
+        .values()
+        .map(|copy| {
+            let mut robot = robot_entry(active, copy);
+            if let Some(software) = book.software.get(&robot.name) {
+                robot.software = *software;
             }
-            listing.options = scoped_options(active);
-            listing.documents = documents_of(&listing.options, node_stack);
-            listing.nodes = nodes_of(active);
-        }
-        Self {
-            listing,
-            robot_instances,
-            running_here,
-            core_node: core_node.to_owned(),
-        }
-    }
-
-    /// The other machines that run an instance of a robot, whose daemons
-    /// give the state of these instances.
-    pub(crate) fn machines(&self) -> BTreeSet<String> {
-        self.robot_instances
-            .iter()
-            .flatten()
-            .filter(|instance| instance.machine != self.core_node)
-            .map(|instance| instance.machine.clone())
-            .collect()
-    }
-
-    /// The listing, with `running_elsewhere`, the instances of other
-    /// machines that run as their daemons gave them. An instance whose
-    /// daemon gave no state does not run.
-    pub(crate) fn into_listing(mut self, running_elsewhere: &BTreeSet<String>) -> FleetListing {
-        for (robot, instances) in self.listing.robots.iter_mut().zip(&self.robot_instances) {
-            let all_run = instances.iter().all(|instance| {
-                self.running_here.contains(&instance.id) || running_elsewhere.contains(&instance.id)
-            });
-            robot.software = if all_run {
-                SoftwareState::Running
-            } else {
-                SoftwareState::Stopped
-            };
-        }
-        self.listing
-    }
-}
-
-/// The instances of `machine` that run, from the stack listing its daemon
-/// gave.
-pub(crate) fn running_instances(
-    response: &core_node_api::encoding::StackListResponse,
-) -> Vec<String> {
-    serde_json::from_str::<core_node_api::SerializedNodeGraph>(&response.graph_json)
-        .map(|graph| {
-            graph
-                .nodes
-                .iter()
-                .flat_map(|node| &node.instances)
-                .filter(|instance| instance.state == InstanceState::Running)
-                .map(|instance| instance.instance_id.clone())
-                .collect()
+            robot
         })
-        .unwrap_or_default()
+        .collect();
+    listing.options = scoped_options(active);
+    listing.documents = documents_of(&listing.options, node_stack);
+    listing.nodes = nodes_of(active);
+    listing
 }
 
-/// One robot of the listing, its software state still to read, and its
-/// instances with their machines.
-fn robot_entry(
-    active: &ActiveLaunch,
-    copy: &super::state::StackCopy,
-) -> (FleetRobot, Vec<RobotInstance>) {
+/// One robot of the listing, its software state still to read.
+fn robot_entry(active: &ActiveLaunch, copy: &super::state::StackCopy) -> FleetRobot {
     let record = &copy.record;
-    let mut instances = Vec::new();
     let mut listed = Vec::new();
     let mut contracts: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
     let mut clocks: BTreeSet<String> = BTreeSet::new();
@@ -191,13 +111,9 @@ fn robot_entry(
         listed.push(FleetInstance {
             name: owned.in_copy.as_str().to_owned(),
             instance: id.to_owned(),
-            core_node: machine.clone(),
+            core_node: machine,
             node,
             node_tag,
-        });
-        instances.push(RobotInstance {
-            id: id.to_owned(),
-            machine,
         });
     }
     let clock = if clocks.len() == 1 {
@@ -220,7 +136,7 @@ fn robot_entry(
         })
         .filter(|option| option != "none")
         .unwrap_or_default();
-    let robot = FleetRobot {
+    FleetRobot {
         name: record.name.as_str().to_owned(),
         option: record.option.clone(),
         core_node: copy.core_node.as_str().to_owned(),
@@ -242,8 +158,7 @@ fn robot_entry(
                 instances,
             })
             .collect(),
-    };
-    (robot, instances)
+    }
 }
 
 /// The contracts that the node of `planned` implements, each with the
