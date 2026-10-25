@@ -136,7 +136,7 @@ pub mod daemon_interface {
     pub use crate::internal::daemon_interface::{
         DaemonInterface, DaemonScope, Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES,
         PlacedFeature, ScopedFeature, ScopedOption, StackCopiesMember, StackCopiesScope,
-        UnservedInterface, served_interfaces,
+        TargetScope, UnservedInterface, served_interfaces,
     };
 
     /// `fleet:v1`: its members, its scope and its messages.

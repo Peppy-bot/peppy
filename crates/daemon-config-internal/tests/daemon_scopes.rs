@@ -555,6 +555,38 @@ fn every_daemon_target_takes_a_scope() {
 }
 
 #[test]
+fn a_vacant_target_holds_with_a_reason_and_names_no_option() {
+    let (prepared, launcher) = flat(&format!(
+        r#"{FRAMEWORK} {{ instance_id: "mcp_inst", daemon_scopes: {{
+               stack: {{ vacant: "this launcher gives MCP clients no robot option" }} }} }} ] }}"#
+    ));
+    let selection = prepared.launch(&[], &[]).expect("composes").selection;
+    let joinable = check(
+        &prepared,
+        &launcher,
+        &CopyMembership::default(),
+        ScopeCheck::Launch(&selection),
+    )
+    .expect("a vacant target holds");
+    assert_eq!(
+        joinable,
+        JoinableNodes::default(),
+        "a vacancy brings no node"
+    );
+
+    let (prepared, launcher) = flat(&format!(
+        r#"{FRAMEWORK} {{ instance_id: "mcp_inst", daemon_scopes: {{ stack: {{ vacant: " " }} }} }} ] }}"#
+    ));
+    let refused = refusals(&prepared, &launcher);
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    let message = refused[0].to_string();
+    assert!(
+        message.contains("does not parse: `vacant` needs a reason"),
+        "{message}"
+    );
+}
+
+#[test]
 fn a_scope_parses_into_its_interfaces_type() {
     let (prepared, launcher) = flat(&format!(
         r#"{FRAMEWORK} {{ instance_id: "mcp_inst", daemon_scopes: {{ stack: {{

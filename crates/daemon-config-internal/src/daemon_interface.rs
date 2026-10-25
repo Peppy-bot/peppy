@@ -13,7 +13,7 @@ pub mod fleet;
 mod stack_copies;
 
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
-use crate::internal::launcher::{JoinableNodes, PreparedLauncher, UnitSelection};
+use crate::internal::launcher::{JoinableNodes, PreparedLauncher, UnitSelection, VacantReason};
 use peppy_mcp_catalog::{DaemonInterfaceRef, ExposureBundle, McpExposure, ResolvedInterface};
 use std::sync::LazyLock;
 
@@ -126,6 +126,44 @@ impl DaemonInterface {
             Self::Fleet => parse_value::<FleetScope>(value).map(DaemonScope::Fleet),
         }
     }
+}
+
+/// What a launcher gives one daemon target: a scope of the interface the
+/// target names, or a vacancy, `{ vacant: "<why>" }`, which leaves the target
+/// unserved: the server serves none of its entries, and the daemon grants
+/// its client nothing through it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetScope {
+    Scoped(DaemonScope),
+    Vacant(VacantReason),
+}
+
+impl DaemonInterface {
+    /// Parses what a launcher gives a target that names this interface: a
+    /// vacancy, or a scope of this interface ([`Self::parse_scope`]).
+    pub fn parse_target_scope(self, value: &serde_json::Value) -> Result<TargetScope, String> {
+        match vacancy(value)? {
+            Some(reason) => Ok(TargetScope::Vacant(reason)),
+            None => self.parse_scope(value).map(TargetScope::Scoped),
+        }
+    }
+}
+
+/// The reason of `value` when it is a vacancy, an object whose one key is
+/// `vacant`; `None` for any other value.
+fn vacancy(value: &serde_json::Value) -> Result<Option<VacantReason>, String> {
+    let Some(fields) = value.as_object() else {
+        return Ok(None);
+    };
+    let (Some(reason), 1) = (fields.get("vacant"), fields.len()) else {
+        return Ok(None);
+    };
+    let Some(reason) = reason.as_str() else {
+        return Err("`vacant` takes the reason the target stays unserved, as a string".to_owned());
+    };
+    VacantReason::new(reason)
+        .map(Some)
+        .map_err(|_| "`vacant` needs a reason: say why the target stays unserved".to_owned())
 }
 
 /// Every interface this peppy serves, as a refusal lists them.

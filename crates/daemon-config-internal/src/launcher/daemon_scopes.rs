@@ -19,7 +19,7 @@
 use super::compose::{CopyMembership, PreparedLauncher, UnitSelection};
 use super::joinable::JoinableNodes;
 use super::types::Deployment;
-use crate::internal::daemon_interface::DaemonInterface;
+use crate::internal::daemon_interface::{DaemonInterface, TargetScope};
 use crate::internal::mcp_deployment::DeploymentTargets;
 
 /// One reason the daemon scopes of a launch do not hold.
@@ -45,7 +45,8 @@ pub enum DaemonScopeError {
     #[error(
         "daemon target `{daemon_target}` ({interface}) of instance `{instance}` has no scope; \
          give it one in the instance's `daemon_scopes`, or with a `set_daemon_scopes` \
-         adjustment on `{instance}` in the launcher"
+         adjustment on `{instance}` in the launcher, or leave it unserved with \
+         `{{ vacant: \"<why>\" }}`"
     )]
     MissingScope {
         instance: String,
@@ -238,9 +239,10 @@ fn check_instance(
     }
 }
 
-/// One daemon target's scope: present, parsed into its interface's type,
-/// and, at a launch, held to the interface's checks against the launcher,
-/// whose joinable nodes join those of the other scopes.
+/// One daemon target's scope: present, a vacancy or parsed into its
+/// interface's type, and, at a launch, held to the interface's checks
+/// against the launcher, whose joinable nodes join those of the other
+/// scopes.
 fn check_scope(
     prepared: &PreparedLauncher,
     instance: &str,
@@ -259,8 +261,11 @@ fn check_scope(
         });
         return;
     };
-    let parsed = match interface.parse_scope(scope) {
-        Ok(parsed) => parsed,
+    let parsed = match interface.parse_target_scope(scope) {
+        Ok(TargetScope::Scoped(parsed)) => parsed,
+        // A vacant target is served to no client, so nothing of the
+        // launcher holds it, and it brings no node to join.
+        Ok(TargetScope::Vacant(_)) => return,
         Err(reason) => {
             refusals.push(DaemonScopeError::InvalidScope {
                 instance: instance.to_owned(),

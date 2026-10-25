@@ -23,7 +23,9 @@ mod stack_copies;
 mod tests;
 
 use crate::serve::ServeError;
-use daemon_config::daemon_interface::{DaemonInterface, DaemonScope, StackCopiesMember};
+use daemon_config::daemon_interface::{
+    DaemonInterface, DaemonScope, StackCopiesMember, TargetScope,
+};
 use peppy_mcp_catalog::{
     BundleDaemonTarget, DaemonInterfaceRef, ExposureBundle, GoalBound, TaskEntry, ToolEntry,
 };
@@ -255,7 +257,7 @@ enum ScopeProblem {
 /// its interface.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DaemonScopes {
-    by_target: BTreeMap<String, DaemonScope>,
+    by_target: BTreeMap<String, TargetScope>,
     /// The server's instance, which a refusal names.
     instance: String,
 }
@@ -284,7 +286,7 @@ impl DaemonScopes {
                 });
                 continue;
             };
-            match interface.parse_scope(value) {
+            match interface.parse_target_scope(value) {
                 Ok(scope) => {
                     by_target.insert(target.clone(), scope);
                 }
@@ -320,8 +322,20 @@ impl DaemonScopes {
     /// their schemas.
     pub(crate) fn narrow(&self, bundle: &mut ExposureBundle) {
         for (target, scope) in &self.by_target {
-            scope.narrow(bundle, target);
+            match scope {
+                TargetScope::Scoped(scope) => scope.narrow(bundle, target),
+                TargetScope::Vacant(_) => {
+                    bundle.tools.retain(|tool| tool.target != *target);
+                    bundle.tasks.retain(|task| task.target != *target);
+                }
+            }
         }
+    }
+
+    /// Whether the server serves daemon target `target`: a vacant target
+    /// is served to no client.
+    pub(crate) fn serves(&self, target: &str) -> bool {
+        matches!(self.by_target.get(target), Some(TargetScope::Scoped(_)))
     }
 
     /// The scope of daemon target `target`, which names `interface`.
@@ -329,6 +343,10 @@ impl DaemonScopes {
     fn of(&self, target: &str, interface: DaemonInterface) -> Result<&DaemonScope, ServeError> {
         self.by_target
             .get(target)
+            .and_then(|scope| match scope {
+                TargetScope::Scoped(scope) => Some(scope),
+                TargetScope::Vacant(_) => None,
+            })
             .ok_or_else(|| ServeError::DaemonScopes {
                 problems: daemon_config::format_bulleted([ScopeProblem::Missing {
                     target: target.to_owned(),
@@ -361,6 +379,11 @@ impl DaemonBridges {
     /// (see [`DaemonScopes::narrow`]).
     pub(crate) fn narrow(&self, bundle: &mut ExposureBundle) {
         self.scopes.narrow(bundle);
+    }
+
+    /// Whether the server serves daemon target `target`.
+    pub(crate) fn serves(&self, target: &str) -> bool {
+        self.scopes.serves(target)
     }
 
     /// The handler of tool `tool`: its target's bridge under its target's

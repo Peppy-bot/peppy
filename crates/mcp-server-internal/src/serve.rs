@@ -185,10 +185,18 @@ async fn run(
         let mut builder = ExposureServer::builder(exposure.bundle).with_clock(clock.clone());
         builder = register_tools(builder, exposure.tools, &node_runner, &identity);
         builder = register_tasks(builder, exposure.tasks, &node_runner, &identity);
-        for tool in &exposure.daemon_tools {
+        for tool in exposure
+            .daemon_tools
+            .iter()
+            .filter(|tool| daemon.serves(&tool.target))
+        {
             builder = builder.with_tool(tool.name.clone(), daemon.tool(tool)?);
         }
-        for task in &exposure.daemon_tasks {
+        for task in exposure
+            .daemon_tasks
+            .iter()
+            .filter(|task| daemon.serves(&task.target))
+        {
             builder = builder.with_task(task.name.clone(), daemon.task(task)?);
         }
         if per_robot {
