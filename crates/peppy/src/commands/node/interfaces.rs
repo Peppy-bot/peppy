@@ -5,7 +5,7 @@
 //! with the `refine` blocks of the manifest applied). `peppy node call`,
 //! `echo` and `describe` read this model, never the code of a node.
 
-use crate::commands::{CALLER_INSTANCE_ID, reply_failure_text};
+use crate::commands::{CALLER_INSTANCE_ID, request_failure_text};
 use crate::context::DaemonConnection;
 use crate::error::Error;
 use config::RefinementMismatch;
@@ -27,7 +27,9 @@ use std::time::Duration;
 
 /// How long the daemon has to give the documents of an instance. A pinned
 /// document whose copy on the daemon's machine is gone is fetched from its
-/// origin first.
+/// origin first. The daemon gives up on a read after 100 s, before this
+/// budget ends, and says so in its reply, unless the request waited behind
+/// the read of another request.
 const DOCUMENTS_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The interfaces of the instance `instance_id` of the daemon that `conn`
@@ -48,10 +50,7 @@ pub(crate) async fn fetch(
         DOCUMENTS_TIMEOUT,
     )
     .await
-    .map_err(|error| match error.failure() {
-        Some(failure) => Error::ExecutionFailed(reply_failure_text(&doing, failure)),
-        None => Error::ExecutionFailed(format!("{doing}: {error}")),
-    })?;
+    .map_err(|error| Error::ExecutionFailed(request_failure_text(&doing, &error)))?;
     InstanceInterfaces::from_documents(&documents)
         .map_err(|error| Error::ExecutionFailed(error.to_string()))
 }

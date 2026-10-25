@@ -110,22 +110,17 @@ pub struct MessageArguments {
 
 impl MessageArguments {
     /// The message these arguments give, for a member whose message has the
-    /// format `format`, `None` for a member whose message carries no
-    /// payload.
+    /// format `format`. A member whose message carries no payload (`format`
+    /// `None` or empty) takes an empty object: an `--args` file that gives
+    /// it a field, a `--set` or a `--file` is refused.
     pub fn build(&self, format: Option<&MessageFormat>) -> Result<Value, String> {
         self.refuse_overlapping_fields()?;
         let mut message = match &self.args {
             Some(path) => read_args_file(path)?,
             None => Value::Object(Map::new()),
         };
-        let has_fields = !self.settings.is_empty() || !self.files.is_empty();
-        let Some(format) = format.filter(|format| !format.0.is_empty()) else {
-            if has_fields {
-                return Err(
-                    "the member takes no message, so no `--set` or `--file` applies".to_owned(),
-                );
-            }
-            return Ok(message);
+        let Some(format) = message_codec::payload_format(format) else {
+            return no_payload_message(&message, self);
         };
         for setting in &self.settings {
             let schema = field_schema(format, &setting.field)?;
@@ -162,6 +157,20 @@ impl MessageArguments {
         }
         Ok(())
     }
+}
+
+/// The empty message of a member whose message carries no payload, unless
+/// `arguments` give it a field: its `--args` file `message`, or a `--set`
+/// or a `--file`.
+fn no_payload_message(message: &Value, arguments: &MessageArguments) -> Result<Value, String> {
+    let args_gives_fields = message.as_object().is_some_and(|fields| !fields.is_empty());
+    if args_gives_fields || !arguments.settings.is_empty() || !arguments.files.is_empty() {
+        return Err(
+            "the member takes no message, so no `--args` field, `--set` or `--file` applies"
+                .to_owned(),
+        );
+    }
+    Ok(Value::Object(Map::new()))
 }
 
 /// The whole message held by the JSON5 file at `path`, which is an object.
@@ -327,7 +336,9 @@ fn directory_value(
 /// Every file under `directory`, with its path relative to `root`. A
 /// symbolic link is followed to what it names, and a link back to a
 /// directory on the way is refused: it would list the same files without
-/// end.
+/// end. An entry that is neither a file nor a directory, such as a pipe, a
+/// socket or a broken link, is refused: it has no content to read, and a
+/// read of a pipe would wait for a writer.
 fn collect_files(
     root: &Path,
     directory: &Path,
@@ -346,6 +357,12 @@ fn collect_files(
         if path.is_dir() {
             collect_files(root, &path, on_the_way, files)?;
             continue;
+        }
+        if !path.is_file() {
+            return Err(std::io::Error::other(format!(
+                "{} is neither a file nor a directory",
+                path.display()
+            )));
         }
         let relative = path
             .strip_prefix(root)
@@ -498,7 +515,30 @@ mod tests {
     #[test]
     fn a_member_with_no_message_takes_no_field() {
         assert_eq!(arguments(&[], &[]).build(None), Ok(json!({})));
+        assert_eq!(
+            arguments(&[], &[]).build(Some(&MessageFormat::default())),
+            Ok(json!({})),
+            "an empty format carries no payload either"
+        );
         assert!(arguments(&["name=a"], &[]).build(None).is_err());
+        assert!(arguments(&[], &["blob=@/dev/null"]).build(None).is_err());
+    }
+
+    /// An `--args` file that gives a field to a member with no message is
+    /// refused, as a `--set` is: the field would go nowhere. An empty object
+    /// is the message itself.
+    #[test]
+    fn an_args_file_with_a_field_is_refused_for_a_member_with_no_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = dir.path().join("goal.json5");
+        std::fs::write(&args, "{ name: 'arm' }").unwrap();
+        let mut given = arguments(&[], &[]);
+        given.args = Some(args.clone());
+        let error = given.build(None).expect_err("the field goes nowhere");
+        assert!(error.contains("takes no message"), "{error}");
+
+        std::fs::write(&args, "{}").unwrap();
+        assert_eq!(given.build(None), Ok(json!({})));
     }
 
     #[test]
@@ -565,6 +605,24 @@ mod tests {
             .build(Some(&format))
             .expect_err("the loop is refused");
         assert!(error.contains("links back to a directory"), "{error}");
+    }
+
+    #[test]
+    fn an_entry_that_is_neither_a_file_nor_a_directory_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "one").unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(dir.path().join("control.sock"))
+            .expect("the socket binds");
+        let format = format(
+            r#"{ files: { $type: "array", $items: { $type: "object", path: "string", content: "string" } } }"#,
+        );
+        let error = arguments(&[], &[&format!("files=@{}", dir.path().display())])
+            .build(Some(&format))
+            .expect_err("a socket has no content");
+        assert!(
+            error.contains("is neither a file nor a directory"),
+            "{error}"
+        );
     }
 
     #[test]

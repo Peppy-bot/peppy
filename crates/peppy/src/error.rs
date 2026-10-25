@@ -3,8 +3,8 @@ use derive_more::From;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// The exit code of a command that a Ctrl-C ended before the end of its
-/// goal was known, as a shell gives a process that SIGINT ends.
+/// The exit code of a command that a Ctrl-C stopped before its work ended
+/// (see [`Error::Interrupted`]), as a shell gives a process that SIGINT ends.
 pub const INTERRUPTED_EXIT_CODE: i32 = 130;
 
 /// How a goal or a service call ended when it gave no result. Each end
@@ -59,9 +59,12 @@ pub enum Error {
         end: CallEnd,
         message: String,
     },
-    /// The operator pressed Ctrl-C again while the command waited for the
-    /// end of a goal it had cancelled, so the end is not known. The process
-    /// ends with code 130.
+    /// The operator's Ctrl-C stopped the command before its work ended: a
+    /// press while a service call waited for its response, a second press
+    /// while the command waited for the end of a goal it had cancelled, so
+    /// that end is not known, or a press during a goal that completed before
+    /// the cancel took effect in a command that had another goal to send.
+    /// The process ends with code 130.
     Interrupted(String),
     Sync(String),
 
@@ -126,8 +129,8 @@ impl Error {
     }
 
     /// The exit code of a command that ends with this error: the code of
-    /// the end of its goal or call, [`INTERRUPTED_EXIT_CODE`] after a
-    /// second Ctrl-C, and 1 for every other error of the command.
+    /// the end of its goal or call, [`INTERRUPTED_EXIT_CODE`] after a Ctrl-C
+    /// that stopped the command, and 1 for every other error of the command.
     pub fn exit_code(&self) -> i32 {
         match self {
             Error::Ended { end, .. } => end.exit_code(),
@@ -159,7 +162,7 @@ mod tests {
 
     /// Every end of a goal or a call has an exit code of its own, apart from
     /// success (0), an error of the command (1), a command line that does
-    /// not parse (2) and a second Ctrl-C (130).
+    /// not parse (2) and a Ctrl-C that stopped the command (130).
     #[test]
     fn each_end_exits_with_a_code_of_its_own() {
         let ends = [

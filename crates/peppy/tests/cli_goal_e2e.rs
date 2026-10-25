@@ -285,10 +285,10 @@ fn a_cli_process_that_is_gone_gets_its_stack_goal_cancelled_and_another_one_goes
 /// A Ctrl-C of `peppy stack launch` sends the daemon a cancel. The command
 /// says so, follows the launch to the end the daemon gives it, says that
 /// the launch was cancelled by its caller, and exits with the code of a
-/// cancel. The
-/// cancel clears the stack. The test sends SIGINT once the command follows
-/// the goal, which it shows by a line of the goal's feedback, and once the
-/// launch starts its instance, which never signals ready.
+/// cancel. The cancel clears the stack. The test sends SIGINT once the
+/// command follows the goal, which it shows by a line of the goal's
+/// feedback, and once the launch starts its instance, which never signals
+/// ready.
 #[test]
 fn a_ctrl_c_cancels_the_launch_and_the_command_exits_as_cancelled() {
     let scratch = tempfile::tempdir().expect("temp scratch dir");

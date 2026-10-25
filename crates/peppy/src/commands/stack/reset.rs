@@ -108,10 +108,7 @@ async fn reset_async(ctx: &Arc<AppContext>, federated: bool) -> Result<()> {
             .await
             {
                 Ok(_) => None,
-                Err(error) => Some(match error.failure() {
-                    Some(failure) => crate::commands::reply_failure_text(core_node, failure),
-                    None => format!("{core_node}: {error}"),
-                }),
+                Err(error) => Some(crate::commands::request_failure_text(core_node, &error)),
             }
         }
     }))

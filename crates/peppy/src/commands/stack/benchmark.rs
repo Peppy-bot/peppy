@@ -29,7 +29,7 @@ use latency_report::format::{fmt_delta, fmt_duration};
 use peppylib::core_node::transport::send_goal;
 use tracing::info;
 
-use super::super::action_poll::{CtrlC, FollowedGoal, poll_action_to_completion};
+use super::super::action_poll::{AfterGoal, CtrlC, FollowedGoal, poll_action_to_completion};
 use super::super::node::TimeoutConfig;
 use crate::commands::colors::{
     BINDING_COLOR, MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR, MEASURE_NODE_COLOR,
@@ -120,6 +120,7 @@ async fn benchmark_async(
             doing: "Benchmark",
             log_path: None,
         },
+        AfterGoal::CommandEnds,
         &mut CtrlC::listen(),
     )
     .await?;

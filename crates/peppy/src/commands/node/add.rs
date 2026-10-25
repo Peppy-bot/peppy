@@ -16,6 +16,7 @@ use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 use super::run::validate_and_run_instance;
 use super::source::parse_node_source;
+use crate::commands::action_poll::AfterGoal;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::{AppContext, DaemonConnection};
 use crate::error::{Error, Result};
@@ -213,7 +214,13 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         NodeAddGoalResponse,
         NodeAddFeedback,
         NodeAddResult,
-    >(conn.messenger, &mut action_handle, &timeouts, "Node add")
+    >(
+        conn.messenger,
+        &mut action_handle,
+        &timeouts,
+        "Node add",
+        after_goal(chain_build || run_options.is_some()),
+    )
     .await?;
 
     info!(
@@ -239,6 +246,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
             force,
             rebuild: false,
         },
+        after_goal(run_options.is_some()),
     )
     .await?;
 
@@ -268,6 +276,16 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     .await?;
 
     Ok(())
+}
+
+/// What the command does once one of its goals completed: it sends its next
+/// goal when `more_goals` is true, and ends otherwise.
+fn after_goal(more_goals: bool) -> AfterGoal {
+    if more_goals {
+        AfterGoal::NextGoal
+    } else {
+        AfterGoal::CommandEnds
+    }
 }
 
 /// Preflight check for the overwrite confirmation prompt.

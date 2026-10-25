@@ -7,8 +7,11 @@
 //! pairing slot `controller`, where it plays `arm`.
 
 use core_node_api::encoding::{InstanceDocuments, PinnedDocument};
-use peppylib::MessengerHandle;
+use message_codec::MessageCodec;
+use message_codec::consumer::ConsumerIdentity;
+use peppylib::{MessengerHandle, Payload};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -118,6 +121,25 @@ pub(crate) fn documents() -> InstanceDocuments {
         contracts: vec![PinnedDocument::new("limb_motion", "v1", LIMB_MOTION)],
         pairings: vec![PinnedDocument::new("arm_link", "v1", ARM_LINK)],
     }
+}
+
+/// Who the command is on the wire in the tests.
+pub(crate) fn caller() -> ConsumerIdentity {
+    ConsumerIdentity {
+        core_node: "laptop".to_owned(),
+        instance_id: "peppy-cli-test".to_owned(),
+    }
+}
+
+/// The codec of the message format `format`, written as JSON5.
+pub(crate) fn codec(format: &str) -> MessageCodec {
+    MessageCodec::new("test", serde_json5::from_str(format).expect("a format"))
+        .expect("the format lays out")
+}
+
+/// `value` encoded with the codec of the message format `format`.
+pub(crate) fn payload(format: &str, value: Value) -> Payload {
+    Payload::from(codec(format).encode(&value).expect("the value encodes"))
 }
 
 /// A session on in-process mock messaging, which the instance's providers

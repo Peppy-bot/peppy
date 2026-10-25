@@ -24,6 +24,7 @@ use std::time::Duration;
 use tokio::time::{Instant, sleep};
 use tracing::info;
 
+use crate::commands::action_poll::AfterGoal;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -49,7 +50,7 @@ const BUILD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 enum BuildDecision {
     /// Stage is `Ready`: artifact exists, skip the build and run directly.
     Skip,
-    /// Stage is `Added`: trigger `build_node_async`.
+    /// Stage is `Added`: send a build goal, then the start.
     Build,
     /// Stage is `Building`: another build is in flight, poll until it
     /// finishes instead of trying to start a second build (the daemon
@@ -1104,7 +1105,13 @@ pub async fn run_instance_async(
         NodeRunGoalResponse,
         NodeRunFeedback,
         NodeRunResult,
-    >(messenger_handle, &mut action_handle, timeouts, "Node run")
+    >(
+        messenger_handle,
+        &mut action_handle,
+        timeouts,
+        "Node run",
+        AfterGoal::CommandEnds,
+    )
     .await?;
 
     if let Some(pid) = start_result.pid {
@@ -1201,13 +1208,15 @@ async fn run_node_async(ctx: &Arc<AppContext>, params: RunNodeParams) -> Result<
                 );
             }
             BuildDecision::Build => {
-                super::builder::build_node_async(
+                super::builder::build_node_on(
                     conn.messenger,
+                    &conn.core_node_name,
                     &conn.core_node_name,
                     &node_name,
                     &tag,
                     &remaining_timeouts(&timeouts, start, "build")?,
                     super::BuildOptions::default(),
+                    AfterGoal::NextGoal,
                 )
                 .await?;
             }

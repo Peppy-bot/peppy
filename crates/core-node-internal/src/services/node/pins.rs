@@ -459,9 +459,17 @@ fn document_refs(manifest: &Manifest) -> impl Iterator<Item = (PinKind, DocRef<'
         .chain(pairings.map(|doc| (PinKind::Pairing, doc)))
 }
 
-/// Whether `manifest` names any contract or pairing document.
-pub(crate) fn names_documents(manifest: &Manifest) -> bool {
-    document_refs(manifest).next().is_some()
+/// The document cache of `E` when `needed`, and no entry otherwise: a cache
+/// that does not parse fails only the reads that need one of its documents.
+pub(crate) fn load_doc_cache_if_needed<E: RepoCacheEntry>(
+    peppy_dirs: &PeppyDirs,
+    needed: bool,
+) -> std::result::Result<Vec<E>, String> {
+    if !needed {
+        return Ok(Vec::new());
+    }
+    repo_cache::load_repo_cache(peppy_dirs)
+        .map_err(|e| format!("failed to load {} cache: {e}", E::KIND))
 }
 
 impl DocPinMinter {
@@ -542,6 +550,7 @@ impl DocPinMinter {
 /// launch minting for every deployment, and both caches are read from disk
 /// and parsed on each load. Each set keeps its own result so a deployment
 /// whose documents are missing does not suppress the report for the others.
+/// A cache is loaded only when a manifest names one of its documents.
 ///
 /// Blocking (a drift check may materialize a checkout); use
 /// [`doc_pins_for_manifest_sets_async`] inside Tokio.
@@ -550,10 +559,13 @@ pub(crate) fn doc_pins_for_manifest_sets(
     sets: &[Vec<Manifest>],
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<Vec<std::result::Result<Vec<PinnedItem>, String>>, String> {
-    let contracts = repo_cache::load_contract_cache(peppy_dirs)
-        .map_err(|e| format!("failed to load contract cache: {e}"))?;
-    let pairings = repo_cache::load_pairing_cache(peppy_dirs)
-        .map_err(|e| format!("failed to load pairing cache: {e}"))?;
+    let named = |kind: PinKind| {
+        sets.iter()
+            .flatten()
+            .any(|manifest| document_refs(manifest).any(|(named_kind, _)| named_kind == kind))
+    };
+    let contracts = load_doc_cache_if_needed(peppy_dirs, named(PinKind::Contract))?;
+    let pairings = load_doc_cache_if_needed(peppy_dirs, named(PinKind::Pairing))?;
     Ok(sets
         .iter()
         .map(|manifests| {
@@ -573,7 +585,7 @@ pub(crate) fn doc_pins_for_manifest_sets(
 }
 
 /// [`doc_pins_for_manifest_sets`] on a blocking thread, with the feedback
-/// sink every async caller already holds. Both minting sites go through
+/// sink every async caller already holds. Every minting site goes through
 /// this, so the join-error wording has one owner.
 pub(crate) async fn doc_pins_for_manifest_sets_async(
     peppy_dirs: &PeppyDirs,
@@ -744,6 +756,47 @@ mod tests {
             .of_manifest(&manifest)
             .expect_err("a document with no pin refuses");
         assert!(err.contains("limb_motion:v1"), "{err}");
+    }
+
+    /// Minting loads a document cache only when a manifest names one of its
+    /// documents: a contract cache that does not parse fails neither a
+    /// manifest that names no document nor one that names a pairing alone,
+    /// and fails the minting of a manifest that names a contract.
+    #[test]
+    fn minting_loads_only_the_caches_of_the_documents_the_manifests_name() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let peppy_dirs = PeppyDirs::new(dir.path());
+        let contract_cache = repo_cache::contracts_repo_cache_path(&peppy_dirs);
+        std::fs::create_dir_all(contract_cache.parent().expect("a cache dir"))
+            .expect("create the cache dir");
+        std::fs::write(&contract_cache, "not a cache {").expect("write the contract cache");
+        let manifest = |json5: &str| -> Manifest {
+            serde_json5::from_str(json5).expect("the manifest parses")
+        };
+        let no_document = manifest(r#"{ name: "bare", tag: "v1" }"#);
+        let pairing_alone = manifest(
+            r#"{ name: "arm", tag: "v1", depends_on: { pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] } }"#,
+        );
+        let a_contract = manifest(
+            r#"{ name: "arm", tag: "v1", implements: [{ name: "limb_motion", tag: "v1", link_id: "arm" }] }"#,
+        );
+
+        let minted = doc_pins_for_manifest_sets(
+            &peppy_dirs,
+            &[vec![no_document], vec![pairing_alone]],
+            &|_| {},
+        )
+        .expect("no manifest names a contract, so the contract cache is not loaded");
+        assert_eq!(minted[0], Ok(Vec::new()));
+        let error = minted[1].clone().expect_err("no cache holds the pairing");
+        assert!(error.contains("arm_link"), "{error}");
+        assert!(!error.contains("contract cache"), "{error}");
+
+        let Err(error) = doc_pins_for_manifest_sets(&peppy_dirs, &[vec![a_contract]], &|_| {})
+        else {
+            panic!("the contract cache does not parse");
+        };
+        assert!(error.contains("failed to load contract cache"), "{error}");
     }
 
     /// Node pins never enter the doc lookup: a contract that happens to

@@ -7,10 +7,12 @@
 //! the node's own from the instance alone, and a pairing topic as an
 //! observer of every pair that the instance's slot holds. It decodes each
 //! message with the format of the pinned manifest. A topic that retains its
-//! newest messages gives them first.
+//! newest messages gives them first. An echo that writes slower than the
+//! topic publishes, for example on a paused terminal, skips the oldest
+//! messages it did not print, so it never holds up the instance.
 
 use super::interfaces::{Member, MemberAddress, SelectedMember};
-use super::json_lines::write_json_line;
+use super::json_lines::{is_closed_by_reader, write_json_line};
 use crate::commands::action_poll::{CtrlC, Interrupts};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -18,7 +20,7 @@ use config::node::{InterfaceKind, MessageFormat, NativeEmittedTopic};
 use message_codec::MessageCodec;
 use message_codec::consumer::{ConsumerIdentity, MemberBinding, TopicConsumer};
 use peppylib::messaging::{MessengerHandle, ProducerRef};
-use std::io::{ErrorKind, Write};
+use std::io::Write;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -194,7 +196,7 @@ impl TopicEcho {
             };
             match write_json_line(out, &value) {
                 Ok(()) => {}
-                Err(error) if error.kind() == ErrorKind::BrokenPipe => return Ok(()),
+                Err(error) if is_closed_by_reader(&error) => return Ok(()),
                 Err(error) => return Err(error.into()),
             }
         }
@@ -206,9 +208,11 @@ impl TopicEcho {
 #[cfg(test)]
 mod tests {
     use super::super::interfaces::InstanceInterfaces;
-    use super::super::test_fixtures::{CORE_NODE, INSTANCE, documents, mock_messenger};
+    use super::super::test_fixtures::{
+        CORE_NODE, INSTANCE, caller, documents, mock_messenger, payload,
+    };
     use super::*;
-    use crate::commands::action_poll::test_support::Presses;
+    use crate::commands::action_poll::test_support::presses_on_demand;
     use config::node::{QoSProfile, TopicRetention};
     use peppylib::Payload;
     use peppylib::messaging::{SenderTarget, TopicMessenger, TopicPublisher};
@@ -246,19 +250,6 @@ mod tests {
         TopicEcho::new(&selected).expect("the echo builds")
     }
 
-    fn caller() -> ConsumerIdentity {
-        ConsumerIdentity {
-            core_node: "laptop".to_owned(),
-            instance_id: "peppy-cli-test".to_owned(),
-        }
-    }
-
-    fn payload(format: &str, value: Value) -> Payload {
-        let codec = MessageCodec::new("test", serde_json5::from_str(format).expect("a format"))
-            .expect("the format lays out");
-        Payload::from(codec.encode(&value).expect("the value encodes"))
-    }
-
     /// Prints what `echo` receives while `publisher` publishes `messages`,
     /// and stops at a press once it printed them all: the lines it printed.
     async fn echoed(
@@ -276,8 +267,7 @@ mod tests {
             line: Vec::new(),
             lines: lines_tx,
         };
-        let (press, receiver) = mpsc::unbounded_channel();
-        let mut presses = Presses::from_receiver(receiver);
+        let (press, mut presses) = presses_on_demand();
         let count = messages.len();
         let (printed, lines) =
             tokio::join!(echo.print(&mut consumer, &mut presses, &mut out), async {

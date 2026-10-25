@@ -177,6 +177,8 @@ The command prints each message of the topic as one JSON object on a line, until
 
 A message that does not fit the format of the pinned manifest is a warning on standard error. The command also ends with 0 when the program that reads its output closes it, for example `peppy node echo arm_inst limb_states | head -n 5`.
 
+The command never slows the instance down. When it prints slower than the topic publishes, for example on a paused terminal or behind a slow reader of its output, it skips the oldest messages that it did not print yet.
+
 ## Exit statuses of the other commands
 
 The commands that send the daemon a goal give an exit status for each end of the goal, by the same rules: `peppy stack launch`, `build`, `join`, `remove` and `benchmark`, `peppy node add`, `build` and `run`, and `peppy repo refresh`.
@@ -191,6 +193,6 @@ The commands that send the daemon a goal give an exit status for each end of the
 | 5 | The goal was cancelled |
 | 6 | The daemon abandoned the goal |
 | 7 | The end of the goal expired before the command read it |
-| 130 | A second Ctrl+C stopped the wait for the end of the goal |
+| 130 | A second Ctrl+C stopped the wait for the end of the goal, or a Ctrl+C stopped a command with more goals to send, such as `peppy node add --run`, after a goal that completed before the cancel took effect |
 
-Each of these commands sends a cancel at the first Ctrl+C and exits with the status of the end that the goal then has (see [Stopping a stack command with Ctrl+C](/guides/launch_files/#stopping-a-stack-command-with-ctrlc)). The requests to the daemon that are not goals, such as `peppy node stop` or `peppy repo add`, exit with 3 when the daemon answers with an error reply.
+Each of these commands sends a cancel at the first Ctrl+C and exits with the status of the end that the goal then has (see [Stopping a stack command with Ctrl+C](/guides/launch_files/#stopping-a-stack-command-with-ctrlc)). `peppy node stop`, `remove`, `init` and `sync`, and `peppy repo add`, `list`, `exclude` and `remove` send the daemon a request that is not a goal, and exit with 3 when the daemon answers with an error reply.

@@ -6,6 +6,7 @@
 //! document.
 
 use super::interfaces::{InstanceInterfaces, Member};
+use super::json_lines::is_closed_by_reader;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use config::node::MessageFormat;
@@ -20,8 +21,16 @@ pub struct DescribeParams {
 
 pub fn describe(ctx: &Arc<AppContext>, params: DescribeParams) -> Result<()> {
     let text = crate::commands::block_on(describe_rendered(ctx, params))?;
-    print!("{text}");
-    Ok(())
+    write_text(&mut std::io::stdout(), &text)
+}
+
+/// Writes `text` to `out`. A program that reads the output and closes it
+/// before the end, such as `head`, ends the command as a success.
+fn write_text(out: &mut impl std::io::Write, text: &str) -> Result<()> {
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Err(error) if is_closed_by_reader(&error) => Ok(()),
+        written => Ok(written?),
+    }
 }
 
 /// What `peppy node describe` prints for `params`.
@@ -242,6 +251,30 @@ Pairing arm_link:v1 through slot `controller`, role `arm` (sha256: {pairing})
             pairing = documents.pairings[0].sha256(),
         );
         assert_eq!(text, expected);
+    }
+
+    /// A writer whose reader closed it: each write fails as on a closed pipe.
+    struct ClosedPipe;
+
+    impl std::io::Write for ClosedPipe {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    /// `peppy node describe arm_inst | head -n 1` ends as a success: the
+    /// reader closed the output once it had what it needed.
+    #[test]
+    fn an_output_that_its_reader_closes_ends_the_command_as_a_success() {
+        assert!(write_text(&mut ClosedPipe, "Instance arm_inst\n").is_ok());
+
+        let mut out = Vec::new();
+        write_text(&mut out, "Instance arm_inst\n").expect("the text is written");
+        assert_eq!(out, b"Instance arm_inst\n");
     }
 
     #[test]

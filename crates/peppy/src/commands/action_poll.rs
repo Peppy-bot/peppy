@@ -15,7 +15,9 @@
 //! exits with the code of that end. A second Ctrl-C stops the wait for the
 //! end of the goal: the command waits only for the cancel to reach the
 //! daemon and exits with code 130, and a third Ctrl-C ends the process at
-//! once.
+//! once. A command that sends another goal after this one (see
+//! [`AfterGoal`]) sends no further goal after a Ctrl-C: it exits with code
+//! 130 also when the goal completed before the cancel took effect.
 
 use peppylib::messaging::{ActionGoalHandle, ActionResultReply, GoalAnswer, GoalOutcome};
 use peppylib::{ActionMessenger, Message, MessengerHandle, Payload, PeppyError};
@@ -245,6 +247,18 @@ pub(crate) fn accepted_goal<'h>(
     }
 }
 
+/// What the command does once the goal it follows completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AfterGoal {
+    /// The command ends.
+    CommandEnds,
+    /// The command sends its next goal, as `peppy node add --build` and
+    /// `--run` do. A Ctrl-C during this goal stops the command before the
+    /// next goal, also when this goal completed before the cancel took
+    /// effect: the operator asked the command to stop.
+    NextGoal,
+}
+
 /// What came first after a Ctrl-C started a cancel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CancelRace {
@@ -282,13 +296,15 @@ pub(crate) async fn cancel_unless_stopped(
 /// Drives a node goal that has already been sent to its end: reads the
 /// daemon's answer, refused with a failure kind or accepted with its log
 /// file, prints the log file, polls feedback into a scrolling output, and
-/// gives the result of the completed goal. Shared by `node add`, `node
-/// build` and `node run`.
+/// gives the result of the completed goal, or stops the command after a
+/// Ctrl-C when `after` is [`AfterGoal::NextGoal`]. Shared by `node add`,
+/// `node build` and `node run`.
 pub(crate) async fn run_action_with_feedback<Resp, Fb, Res>(
     messenger: &MessengerHandle,
     action_handle: &mut ActionGoalHandle,
     timeouts: &TimeoutConfig,
     doing: &str,
+    after: AfterGoal,
 ) -> Result<Res>
 where
     Resp: ActionGoalResponseLike,
@@ -320,6 +336,7 @@ where
             doing,
             log_path: Some(goal_response.log_path()),
         },
+        after,
         &mut CtrlC::listen(),
     )
     .await?;
@@ -366,7 +383,9 @@ pub(crate) fn deadline_after(
 /// - The first press `interrupts` gives sends the daemon a cancel, and the
 ///   command follows the goal to its end under the max budget alone and
 ///   ends as that end does: a goal that completed before the cancel took
-///   effect gives its result, and the command says so. A second press stops
+///   effect gives its result, and the command says so, unless `after` is
+///   [`AfterGoal::NextGoal`]: the command then stops with
+///   [`Error::Interrupted`] and sends no further goal. A second press stops
 ///   the wait for the end, once the cancel reached the daemon (see
 ///   [`cancel_unless_stopped`]), with [`Error::Interrupted`].
 ///
@@ -380,6 +399,7 @@ pub(crate) async fn poll_action_to_completion<R>(
     mut on_feedback: impl FnMut(&[u8], &mut ScrollingOutput),
     decode_result: impl Fn(&[u8]) -> std::result::Result<R, String>,
     goal: &FollowedGoal<'_>,
+    after: AfterGoal,
     interrupts: &mut impl Interrupts,
 ) -> Result<R> {
     let followed = follow_goal(
@@ -398,14 +418,25 @@ pub(crate) async fn poll_action_to_completion<R>(
         cancel_sent,
     } = followed?;
     let ended = goal_end(goal, outcome, decode_result);
-    if cancel_sent && ended.is_ok() {
-        info!(
-            "{} completed before the cancel took effect.{}",
+    if !cancel_sent || ended.is_err() {
+        return ended;
+    }
+    match after {
+        AfterGoal::CommandEnds => {
+            info!(
+                "{} completed before the cancel took effect.{}",
+                goal.doing,
+                goal.log_tail()
+            );
+            ended
+        }
+        AfterGoal::NextGoal => Err(Error::Interrupted(format!(
+            "{} completed before the cancel took effect, so the command sends no further \
+             goal.{}",
             goal.doing,
             goal.log_tail()
-        );
+        ))),
     }
-    ended
 }
 
 /// A goal followed to its end, and whether the operator's Ctrl-C sent the
@@ -862,11 +893,11 @@ pub(crate) mod test_support {
         }
     }
 
-    impl Presses {
-        /// The presses `receiver` gives, each when the test sends it.
-        pub(crate) fn from_receiver(receiver: mpsc::UnboundedReceiver<()>) -> Self {
-            Self(receiver)
-        }
+    /// Presses that the test gives one at a time, each when it sends one
+    /// on the sender.
+    pub(crate) fn presses_on_demand() -> (mpsc::UnboundedSender<()>, Presses) {
+        let (press, presses) = mpsc::unbounded_channel();
+        (press, Presses(presses))
     }
 
     /// `count` presses, given before the command follows its goal.
@@ -1004,15 +1035,23 @@ mod ctrl_c {
         handle: &mut ActionGoalHandle,
         presses: &mut Presses,
     ) -> Result<NodeAddResult> {
-        follow_under(messenger, handle, &HOUR_LONG, presses).await
+        follow_under(
+            messenger,
+            handle,
+            &HOUR_LONG,
+            AfterGoal::CommandEnds,
+            presses,
+        )
+        .await
     }
 
     /// Follows `handle` as `node add` does, under `timeouts`, with
-    /// `presses`.
+    /// `presses`; `after` says whether the command sends a goal after it.
     async fn follow_under(
         messenger: &MessengerHandle,
         handle: &mut ActionGoalHandle,
         timeouts: &TimeoutConfig,
+        after: AfterGoal,
         presses: &mut Presses,
     ) -> Result<NodeAddResult> {
         let goal = FollowedGoal {
@@ -1027,6 +1066,7 @@ mod ctrl_c {
             |_, _| {},
             |payload| NodeAddResult::decode(payload).map_err(|error| error.to_string()),
             &goal,
+            after,
             presses,
         )
         .await
@@ -1086,6 +1126,83 @@ mod ctrl_c {
         assert_eq!(result.node_name, "source");
     }
 
+    /// A goal that completes before the cancel takes effect, in a command
+    /// that sends another goal after it, as `node add --run` does, stops the
+    /// command with code 130: the operator asked it to stop, so the next
+    /// goal does not start.
+    #[tokio::test]
+    async fn a_goal_that_completes_before_the_cancel_stops_a_command_with_a_next_goal() {
+        let (messenger, engine) = daemon().await;
+        let accepted = accept_next(engine);
+        let mut handle = send_node_add(&messenger).await;
+        let (context, _engine) = accepted.await.expect("the daemon does not panic");
+
+        let mut presses = presses(1);
+        let (ended, ()) = tokio::join!(
+            follow_under(
+                &messenger,
+                &mut handle,
+                &HOUR_LONG,
+                AfterGoal::NextGoal,
+                &mut presses
+            ),
+            async {
+                context.cancel_signal().await;
+                context
+                    .complete(
+                        NodeAddResult::new("source", "v1")
+                            .encode()
+                            .expect("the result encodes"),
+                    )
+                    .await
+                    .expect("the daemon completes the goal");
+            }
+        );
+
+        let error = ended.expect_err("the Ctrl-C stops the command");
+        assert_eq!(error.exit_code(), INTERRUPTED_EXIT_CODE);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Node add completed before the cancel took effect, so the command sends no \
+                 further goal. Log file: {LOG_PATH}"
+            )
+        );
+    }
+
+    /// With no Ctrl-C, a goal that completes in a command that sends another
+    /// goal after it gives its result: the command goes on.
+    #[tokio::test]
+    async fn a_goal_that_completes_with_no_ctrl_c_lets_the_next_goal_start() {
+        let (messenger, engine) = daemon().await;
+        let accepted = accept_next(engine);
+        let mut handle = send_node_add(&messenger).await;
+        let (context, _engine) = accepted.await.expect("the daemon does not panic");
+
+        let mut no_press = presses(0);
+        let (ended, ()) = tokio::join!(
+            follow_under(
+                &messenger,
+                &mut handle,
+                &HOUR_LONG,
+                AfterGoal::NextGoal,
+                &mut no_press
+            ),
+            async {
+                context
+                    .complete(
+                        NodeAddResult::new("source", "v1")
+                            .encode()
+                            .expect("the result encodes"),
+                    )
+                    .await
+                    .expect("the daemon completes the goal");
+            }
+        );
+
+        assert_eq!(ended.expect("the goal completed").node_name, "source");
+    }
+
     /// A second Ctrl-C stops the wait for the end of the goal, also while
     /// the cancel that the first one sent is on its way to the daemon: here
     /// the second press is there before the daemon answers the cancel. The
@@ -1136,7 +1253,13 @@ mod ctrl_c {
 
         let mut presses = presses(1);
         let (ended, ()) = tokio::join!(
-            follow_under(&messenger, &mut handle, &timeouts, &mut presses),
+            follow_under(
+                &messenger,
+                &mut handle,
+                &timeouts,
+                AfterGoal::CommandEnds,
+                &mut presses
+            ),
             async {
                 context.cancel_signal().await;
                 tokio::time::sleep(Duration::from_secs(3 * timeouts.idle_secs)).await;
@@ -1170,9 +1293,15 @@ mod ctrl_c {
             flags: true,
         };
 
-        let error = follow_under(&messenger, &mut handle, &timeouts, &mut presses(1))
-            .await
-            .expect_err("the max budget ends the wait");
+        let error = follow_under(
+            &messenger,
+            &mut handle,
+            &timeouts,
+            AfterGoal::CommandEnds,
+            &mut presses(1),
+        )
+        .await
+        .expect_err("the max budget ends the wait");
 
         assert!(context.is_cancelled(), "the press sent the cancel");
         assert_eq!(error.exit_code(), 1);
@@ -1284,6 +1413,7 @@ mod ctrl_c {
                     flags: true,
                 },
                 "Node add",
+                AfterGoal::CommandEnds,
             )
             .await
             .expect_err("the daemon refused the goal");

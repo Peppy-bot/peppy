@@ -548,11 +548,14 @@ fn topic_is_not_called(name: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::super::interfaces::InstanceInterfaces;
-    use super::super::test_fixtures::{CORE_NODE, INSTANCE, documents, mock_messenger};
+    use super::super::test_fixtures::{
+        CORE_NODE, INSTANCE, caller, codec, documents, mock_messenger, payload,
+    };
     use super::*;
-    use crate::commands::action_poll::test_support::{Presses, next_goal, presses};
+    use crate::commands::action_poll::test_support::{
+        Presses, next_goal, presses, presses_on_demand,
+    };
     use config::failure_kind::FailureKindName;
-    use message_codec::MessageCodec;
     use peppylib::Payload;
     use peppylib::messaging::{
         CancelCause, ConcurrentAction, GoalContext, NonEmptyPayload, SenderTarget, ServiceAnswer,
@@ -562,22 +565,6 @@ mod tests {
 
     const FEEDBACK: &str = r#"{ progress: "f64" }"#;
     const RESULT: &str = r#"{ reached: "bool" }"#;
-
-    fn caller() -> ConsumerIdentity {
-        ConsumerIdentity {
-            core_node: "laptop".to_owned(),
-            instance_id: "peppy-cli-test".to_owned(),
-        }
-    }
-
-    fn codec(format: &str) -> MessageCodec {
-        MessageCodec::new("test", serde_json5::from_str(format).expect("a format"))
-            .expect("the format lays out")
-    }
-
-    fn payload(format: &str, value: Value) -> Payload {
-        Payload::from(codec(format).encode(&value).expect("the value encodes"))
-    }
 
     fn unreachable() -> Failure {
         Failure::new(
@@ -878,10 +865,7 @@ mod tests {
         let mut engine = move_to_provider(&messenger).await;
         let call = member_call("move_to", &[JOINTS]);
         let mut out = Vec::new();
-        let (press, mut presses) = {
-            let (press, receiver) = tokio::sync::mpsc::unbounded_channel();
-            (press, Presses::from_receiver(receiver))
-        };
+        let (press, mut presses) = presses_on_demand();
 
         let (ended, ()) = tokio::join!(run(&call, &messenger, &mut presses, &mut out), async {
             let context = accept_move_to(&mut engine).await;
@@ -921,10 +905,7 @@ mod tests {
         let mut engine = move_to_provider(&messenger).await;
         let call = member_call("move_to", &[JOINTS]);
         let mut out = Vec::new();
-        let (press, mut presses) = {
-            let (press, receiver) = tokio::sync::mpsc::unbounded_channel();
-            (press, Presses::from_receiver(receiver))
-        };
+        let (press, mut presses) = presses_on_demand();
 
         let (ended, _context) =
             tokio::join!(run(&call, &messenger, &mut presses, &mut out), async {

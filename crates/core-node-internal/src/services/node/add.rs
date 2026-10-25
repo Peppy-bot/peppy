@@ -1630,11 +1630,6 @@ async fn add_document_pins(
     if !goal.pins_json5.is_empty() {
         return super::pins::decode_pins(&goal.pins_json5);
     }
-    // A manifest that names no document reads no cache, as the generation
-    // that follows does not.
-    if !super::pins::names_documents(&node_config.manifest) {
-        return Ok(Vec::new());
-    }
     super::pins::doc_pins_for_manifest_sets_async(
         peppy_dirs,
         vec![vec![node_config.manifest.clone()]],

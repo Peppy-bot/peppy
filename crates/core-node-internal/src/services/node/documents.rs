@@ -3,8 +3,11 @@
 //! code was generated from, read from the document caches by their pins.
 
 use super::Report;
+use super::pins::load_doc_cache_if_needed;
 use crate::Result;
-use crate::services::repo::cache::{self as repo_cache, RepoCacheEntry};
+use crate::services::repo::cache::{
+    self as repo_cache, ContractCacheEntry, PairingCacheEntry, RepoCacheEntry,
+};
 use crate::services::response::failure;
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
@@ -20,6 +23,14 @@ use std::{sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
+/// How long one request may take to read the documents of an instance,
+/// fetches from their origins included. It is shorter than the 120 s that
+/// `peppy node call`, `echo` and `describe` wait, so a read that takes too
+/// long reaches the command as a `timeout` reply that says so. The service
+/// answers one request at a time: a request that waits behind a slow read
+/// can still reach the end of the command's wait first.
+const DOCUMENTS_READ_TIMEOUT: Duration = Duration::from_secs(100);
+
 pub async fn listen_for_instance_documents(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -27,7 +38,6 @@ pub async fn listen_for_instance_documents(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
-    timeout: Duration,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -47,14 +57,14 @@ pub async fn listen_for_instance_documents(
                     peppy_dirs: peppy_dirs.clone(),
                 };
                 async move {
-                    tokio::time::timeout(timeout, reading.answer(&context))
+                    tokio::time::timeout(DOCUMENTS_READ_TIMEOUT, reading.answer(&context))
                         .await
                         .unwrap_or_else(|_| {
                             Err(failure(
                                 PeppyFailureKind::Timeout,
                                 format!(
                                     "reading the documents of the instance took longer than {}s",
-                                    timeout.as_secs_f64()
+                                    DOCUMENTS_READ_TIMEOUT.as_secs()
                                 ),
                             ))
                         })
@@ -143,16 +153,19 @@ impl DocumentReading {
 
 /// The contract documents and the pairing documents of `pins`, in pin order,
 /// each read from its cache by its pin. Blocking: a pin whose local copy is
-/// gone or drifted is fetched from its origin.
+/// gone or drifted is fetched from its origin. A cache is loaded only when a
+/// pin of its kind needs it, so a cache that does not parse fails only the
+/// instances that read from it.
 fn read_pinned_documents(
     peppy_dirs: &PeppyDirs,
     pins: &[PinnedItem],
 ) -> std::result::Result<(Vec<PinnedDocument>, Vec<PinnedDocument>), Failure> {
     let unreadable = |reason: String| failure(PeppyFailureKind::AttemptFailed, reason);
-    let contract_cache = repo_cache::load_contract_cache(peppy_dirs)
-        .map_err(|e| unreadable(format!("failed to load contract cache: {e}")))?;
-    let pairing_cache = repo_cache::load_pairing_cache(peppy_dirs)
-        .map_err(|e| unreadable(format!("failed to load pairing cache: {e}")))?;
+    let needs = |kind: PinKind| pins.iter().any(|pin| pin.kind == kind);
+    let contract_cache: Vec<ContractCacheEntry> =
+        load_doc_cache_if_needed(peppy_dirs, needs(PinKind::Contract)).map_err(unreadable)?;
+    let pairing_cache: Vec<PairingCacheEntry> =
+        load_doc_cache_if_needed(peppy_dirs, needs(PinKind::Pairing)).map_err(unreadable)?;
     let mut contracts = Vec::new();
     let mut pairings = Vec::new();
     for pin in pins {
@@ -200,4 +213,49 @@ fn read_pinned_document<E: RepoCacheEntry>(
         pin.tag.as_str(),
         content,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::repo::cache::EntryOrigin;
+    use daemon_config::repository::{ItemName, ItemTag, ManifestFingerprint};
+
+    /// A document cache is loaded only when a pin needs it: a contract cache
+    /// that does not parse fails no read of an instance whose documents are
+    /// pairings, and fails the read of one that needs a contract.
+    #[test]
+    fn a_cache_that_does_not_parse_fails_only_the_reads_that_need_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let peppy_dirs = PeppyDirs::new(dir.path());
+        let contract_cache = repo_cache::contracts_repo_cache_path(&peppy_dirs);
+        std::fs::create_dir_all(contract_cache.parent().expect("a cache dir"))
+            .expect("create the cache dir");
+        std::fs::write(&contract_cache, "not a cache {").expect("write the contract cache");
+        let document_path = dir.path().join("arm_link.json5");
+        let document = r#"{ manifest: { name: "arm_link", tag: "v1" } }"#;
+        std::fs::write(&document_path, document).expect("write the document");
+        let pin = |kind: PinKind| PinnedItem {
+            kind,
+            name: ItemName::parse("arm_link").expect("valid name"),
+            tag: ItemTag::parse("v1").expect("valid tag"),
+            sha256: ManifestFingerprint::of_bytes(document.as_bytes()),
+            origin: EntryOrigin::Fs {
+                path: document_path.clone(),
+            },
+        };
+
+        let (contracts, pairings) = read_pinned_documents(&peppy_dirs, &[pin(PinKind::Pairing)])
+            .expect("the pairing reads with no contract cache");
+        assert!(contracts.is_empty());
+        assert_eq!(pairings, [PinnedDocument::new("arm_link", "v1", document)]);
+
+        let error = read_pinned_documents(&peppy_dirs, &[pin(PinKind::Contract)])
+            .expect_err("a contract pin needs the contract cache");
+        assert!(
+            error.message().contains("failed to load contract cache"),
+            "{}",
+            error.message()
+        );
+    }
 }

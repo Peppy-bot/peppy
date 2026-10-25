@@ -118,7 +118,11 @@ impl TopicConsumer {
     /// alone, with no slot of a node: a contract topic or a topic of the
     /// producer's own. `qos` and `retention` are the topic's declared ones,
     /// so a producer that retains messages gives them first.
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// The subscription keeps the newest unread messages
+    /// ([`TopicBuffer::KeepLatest`]): a client that reads slower than the
+    /// producer publishes loses the oldest unread messages, and never holds
+    /// up the producer or the other messages of its session.
     pub async fn of_producer(
         messenger: &MessengerHandle,
         identity: &ConsumerIdentity,
@@ -137,7 +141,7 @@ impl TopicConsumer {
             producer,
             qos,
             retention,
-            TopicBuffer::Backpressure,
+            TopicBuffer::KeepLatest,
         )
         .await?;
         Ok(Self::of_one_producer(producer, subscription, codec))
@@ -146,7 +150,9 @@ impl TopicConsumer {
     /// Subscribes, as `identity`, to the pairing topic `binding` names on
     /// `producer`, as an observer of every pair that the producer's slot
     /// `link_id` holds, with no slot of a node. A pairing topic is live
-    /// only, and a slot that holds no pair publishes nothing.
+    /// only, and a slot that holds no pair publishes nothing. The
+    /// subscription keeps the newest unread messages, as in
+    /// [`Self::of_producer`].
     pub async fn of_pairing_producer(
         messenger: &MessengerHandle,
         identity: &ConsumerIdentity,
@@ -165,7 +171,7 @@ impl TopicConsumer {
             link_id,
             &binding.member,
             qos,
-            TopicBuffer::Backpressure,
+            TopicBuffer::KeepLatest,
         )
         .await?;
         Ok(Self::of_one_producer(producer, subscription, codec))
