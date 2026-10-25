@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    AbortOnDrop, GOAL_TIMEOUT, RESULT_TIMEOUT, assert_failure, build_staged_node,
+    AbortOnDrop, GOAL_TIMEOUT, RESULT_TIMEOUT, WAIT, assert_failure, build_staged_node,
     install_shutdown_listener_for_instance, send_node_add_and_wait, spawn_real_running_instance,
     spawn_real_stuck_instance, start_core_node_with_mock_messenger, wait_until_service_reachable,
     write_peppy_json5,
@@ -12,7 +12,6 @@ use core_node_api::encoding::NodeRemoveRequest;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::oneshot::error::TryRecvError;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -206,14 +205,13 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         peppylib::messaging::SHUTDOWN_SERVICE,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
-        Duration::from_secs(5),
     )
     .await;
 
     let response = common::poll_core_node_with_timeout(
         &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
-        core_node::node_remove_bound(node_stack.shutdown_grace()) + Duration::from_secs(5),
+        core_node::node_remove_bound(node_stack.shutdown_grace()) + WAIT,
     )
     .await;
 
@@ -225,7 +223,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
 
     // node_remove answers only after the shutdown request got its answer,
     // which the listener reports once it ended the process.
-    tokio::time::timeout(Duration::from_secs(1), shutdown_rx)
+    tokio::time::timeout(WAIT, shutdown_rx)
         .await
         .expect("the shutdown listener reports the request the removal sent")
         .expect("the shutdown listener is still running");
@@ -339,7 +337,7 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
     common::poll_core_node_with_timeout(
         &started_core_node,
         &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
-        Duration::from_secs(10),
+        core_node::node_remove_bound(node_stack.shutdown_grace()) + WAIT,
     )
     .await;
     assert!(
@@ -421,7 +419,6 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         peppylib::messaging::SHUTDOWN_SERVICE,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
-        Duration::from_secs(5),
     )
     .await;
 

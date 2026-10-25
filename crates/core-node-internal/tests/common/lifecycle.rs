@@ -1,23 +1,14 @@
 #![allow(dead_code)] // Each test binary uses only a subset of these shared helpers.
 
 use super::{
-    AbortOnDrop, GoalEnd, NodeRunTestTimeouts, StartedCoreNode, TEST_NODE_TAG,
-    answer_health_probes, answer_ready_probe, default_instance_plan, node_run_goal,
-    poll_until_explained, send_node_run_goal_and_wait, settle,
+    AbortOnDrop, GoalEnd, StartedCoreNode, TEST_NODE_TAG, TIMEOUTS, WAIT, answer_health_probes,
+    answer_ready_probe, default_instance_plan, node_run_goal, poll_until_explained,
+    send_node_run_goal_and_wait, settle,
 };
 use config::node::RestartRequest;
 use config::runtime::{Name, NodeInstancePlan};
 use core_node_api::InstanceState;
 use core_node_api::encoding::NodeRunResult;
-use std::time::Duration;
-
-/// The goal and result bounds of a lifecycle test's `node_run`.
-pub const TIMEOUTS: NodeRunTestTimeouts = NodeRunTestTimeouts {
-    goal: Duration::from_secs(10),
-    result: Duration::from_secs(30),
-};
-/// How long a test waits for a state or a stack log line.
-pub const WAIT: Duration = Duration::from_secs(15);
 
 /// A probe answerer that stops answering when dropped.
 pub type Mock = AbortOnDrop<peppylib::PeppyResult<()>>;
@@ -108,4 +99,20 @@ pub async fn wait_for_state(started: &StartedCoreNode, instance_id: &str, state:
         || (state_of(started, instance_id) == Some(state)).then_some(()),
     )
     .await;
+}
+
+/// Waits until no background task of `instance_id` is live: its exit
+/// watcher, the wait of its restart and its health monitor have ended, so
+/// nothing but a request acts on the instance any more.
+pub async fn wait_for_supervision_end(started: &StartedCoreNode, instance_id: &str) {
+    let tasks = started.node_stack.instance_tasks();
+    tokio::time::timeout(WAIT, tasks.ended(&name(instance_id)))
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "the supervision of `{instance_id}` ends, {} tasks live; stack log:\n{}",
+                tasks.live(&name(instance_id)),
+                stack_log(started)
+            )
+        });
 }

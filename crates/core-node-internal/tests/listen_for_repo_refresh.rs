@@ -1,10 +1,11 @@
 mod common;
 
 use common::{
-    FeedbackDrainOutcome, StartedCoreNode, create_node_dir, drain_feedback, fetch_end,
-    fs_repositories_json, goal_answer, minimal_peppy_json5, read_json5_array, send_daemon_goal,
-    start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
-    write_excluded_repositories_json5, write_repositories_json5, write_repositories_json5_in,
+    FeedbackDrainOutcome, GOAL_TIMEOUT, RESULT_TIMEOUT, StartedCoreNode, WAIT, create_node_dir,
+    drain_feedback, fetch_end, fs_repositories_json, goal_answer, minimal_peppy_json5,
+    read_json5_array, send_daemon_goal, start_core_node_with_mock_messenger,
+    start_core_node_with_real_messenger, write_excluded_repositories_json5,
+    write_repositories_json5, write_repositories_json5_in,
 };
 use config::consts::NODE_CONFIG_FILE;
 use core_node::nodes_repo_cache_path;
@@ -15,7 +16,6 @@ use core_node_api::encoding::{
 use daemon_config::consts::PeppyDirs;
 use git2::Repository;
 use std::ops::ControlFlow;
-use std::time::Duration;
 
 struct RefreshTestResult {
     feedbacks: Vec<RepoRefreshFeedback>,
@@ -62,7 +62,7 @@ async fn send_refresh_and_wait(started: &StartedCoreNode) -> RefreshTestResult {
         &started.caller_handle,
         &started.core_node_name,
         &RepoRefreshGoal,
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
     )
     .await
     .expect("send goal should succeed");
@@ -76,7 +76,7 @@ async fn send_refresh_and_wait(started: &StartedCoreNode) -> RefreshTestResult {
     .unwrap_or_else(|refusal| panic!("the daemon refused the refresh: {refusal}"));
 
     let mut feedbacks = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + RESULT_TIMEOUT;
 
     // Drain feedback until the server closes the stream on completion, then
     // fetch the buffered result once.
@@ -94,13 +94,10 @@ async fn send_refresh_and_wait(started: &StartedCoreNode) -> RefreshTestResult {
         panic!("Timeout waiting for repo_refresh result");
     }
 
-    let fetch_timeout = deadline
-        .saturating_duration_since(tokio::time::Instant::now())
-        .max(Duration::from_secs(1));
     let result = fetch_end(
         &started.caller_handle,
         &action_handle,
-        fetch_timeout,
+        GOAL_TIMEOUT,
         RepoRefreshResult::decode,
         "repo_refresh result",
     )
@@ -949,7 +946,7 @@ async fn a_cancelled_refresh_publishes_nothing_and_ends_cancelled() {
         &started.caller_handle,
         &started.core_node_name,
         &RepoRefreshGoal,
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
     )
     .await
     .expect("send goal should succeed");
@@ -960,24 +957,20 @@ async fn a_cancelled_refresh_publishes_nothing_and_ends_cancelled() {
     )
     .unwrap_or_else(|err| panic!("{err}"))
     .unwrap_or_else(|refusal| panic!("the daemon refused the refresh: {refusal}"));
-    tokio::task::spawn_blocking(move || opened_rx.recv_timeout(Duration::from_secs(30)))
+    tokio::task::spawn_blocking(move || opened_rx.recv_timeout(WAIT))
         .await
         .expect("the wait does not panic")
         .expect("the refresh reads the index");
-    peppylib::ActionMessenger::cancel_goal(
-        &started.caller_handle,
-        &action_handle,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("the daemon answers the cancel");
+    peppylib::ActionMessenger::cancel_goal(&started.caller_handle, &action_handle, GOAL_TIMEOUT)
+        .await
+        .expect("the daemon answers the cancel");
     write_tx.send(()).expect("the writer waits");
     writer.join().expect("the writer does not panic");
-    common::wait_until_action_completes(&mut action_handle, Duration::from_secs(30)).await;
+    common::wait_until_action_completes(&mut action_handle, RESULT_TIMEOUT).await;
     let end = fetch_end(
         &started.caller_handle,
         &action_handle,
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
         RepoRefreshResult::decode,
         "repo_refresh result",
     )

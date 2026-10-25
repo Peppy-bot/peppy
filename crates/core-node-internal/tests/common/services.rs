@@ -1,7 +1,7 @@
 #![allow(dead_code)] // Each test binary uses only a subset of these shared helpers.
 
 use super::daemon::StartedCoreNode;
-use super::{CALLER_INSTANCE_ID, core_node_target};
+use super::{CALLER_INSTANCE_ID, WAIT, core_node_target};
 use config::node::QoSProfile;
 use core_node_api::encoding::{
     ClockRequest, ClockTick, DatastoreGetRequest, DatastoreGetResponse, DatastoreListRequest,
@@ -16,12 +16,8 @@ use std::time::Duration;
 
 /// Sends a `NODE_INFO` poll request and unwraps the `Found` body; a node the
 /// daemon answers `NotInStack` for is a test's setup gone wrong.
-pub async fn poll_node_info(
-    started: &StartedCoreNode,
-    request: &NodeInfoRequest,
-    timeout: Duration,
-) -> NodeInfo {
-    match poll_core_node_with_timeout(started, request, timeout).await {
+pub async fn poll_node_info(started: &StartedCoreNode, request: &NodeInfoRequest) -> NodeInfo {
+    match poll_core_node(started, request).await {
         NodeInfoResponse::Found(info) => *info,
         NodeInfoResponse::NotInStack => panic!(
             "node_info unexpectedly reported `{}:{}` as not in the stack",
@@ -30,13 +26,19 @@ pub async fn poll_node_info(
     }
 }
 
-/// [`poll_core_node_with_timeout`] with the 5-second timeout that a request
-/// the daemon answers without long work needs.
+/// [`poll_core_node_with_timeout`] with [`WAIT`], the bound of a request
+/// that the daemon answers without long work.
 pub async fn poll_core_node<R: ServiceRequest>(
     started: &StartedCoreNode,
     request: &R,
 ) -> R::Response {
-    poll_core_node_with_timeout(started, request, Duration::from_secs(5)).await
+    poll_core_node_with_timeout(started, request, WAIT).await
+}
+
+/// How long a test waits for the answer to a `node_stop` that stops an
+/// instance: the bound of the daemon on the stop, then [`WAIT`].
+pub fn node_stop_timeout(started: &StartedCoreNode) -> Duration {
+    core_node::node_stop_bound(started.node_stack.shutdown_grace()) + WAIT
 }
 
 /// Polls the core-node service that `request` belongs to on the started core
@@ -93,7 +95,7 @@ pub async fn poll_core_node_failure<R: ServiceRequest>(
 where
     R::Response: std::fmt::Debug,
 {
-    let error = poll_core_node_as(started, CALLER_INSTANCE_ID, request, Duration::from_secs(5))
+    let error = poll_core_node_as(started, CALLER_INSTANCE_ID, request, WAIT)
         .await
         .expect_err("the daemon gives an error reply");
     error.failure().cloned().unwrap_or_else(|| {
@@ -114,7 +116,7 @@ pub async fn datastore_store_exclusive_as(
 ) -> peppylib::PeppyResult<DatastoreStoreExclusiveResponse> {
     let request = DatastoreStoreExclusiveRequest::new(key, value.to_vec(), "text/plain")
         .expect("test key should be a valid datastore key");
-    poll_core_node_as(started, writer, &request, Duration::from_secs(5)).await
+    poll_core_node_as(started, writer, &request, WAIT).await
 }
 
 /// Sends a `datastore_store` request to the started core node. Panics on any
