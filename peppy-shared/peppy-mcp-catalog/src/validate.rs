@@ -25,11 +25,13 @@ use crate::schema::{
     MaxSerializedSize, empty_object_schema, integer_bounds, max_serialized_json_bytes,
     message_format_to_json_schema, without_root_member,
 };
+use peppy_config_model::contract_member::ContractMarks;
 use peppy_config_model::failure_kind::{ContractKinds, MemberFailureKinds, MemberSection};
 use peppy_config_model::fingerprint::ManifestFingerprint;
+use peppy_config_model::mark::Marks;
 use peppy_config_model::node::{
-    MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, SchemaType,
-    TypeToken,
+    InterfaceKind, MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService,
+    SchemaType, TypeToken,
 };
 use peppy_config_model::type_token_name;
 use serde_json::Value;
@@ -37,13 +39,15 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 /// The members a contract or a daemon interface declares, in the contract
-/// format, and the failure kinds it declares and that each of them gives.
+/// format, the failure kinds it declares and that each of them gives, and
+/// the marks of each member.
 #[derive(Debug, Clone, Copy)]
 pub struct DeclaredMembers<'a> {
     pub topics: &'a [NativeEmittedTopic],
     pub services: &'a [NativeExposedService],
     pub actions: &'a [NativeExposedAction],
     pub failure_kinds: &'a ContractKinds,
+    pub marks: &'a ContractMarks,
 }
 
 /// One contract as resolved for validation: its identity, the fingerprint of
@@ -102,20 +106,28 @@ pub enum MemberSource {
 
 /// The member behind one catalog entry, as validation resolved it: the
 /// source the entry's target draws from, the member it selects as that
-/// source declares it, and the failure kinds the member can give.
+/// source declares it, the failure kinds the member can give, and the marks
+/// that its source gives it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundMember<M> {
     pub source: MemberSource,
     pub member: M,
     pub failure_kinds: MemberFailureKinds,
+    pub marks: Marks,
 }
 
 impl<M: Clone> BoundMember<M> {
-    fn new(source: &MemberSource, member: &M, failure_kinds: MemberFailureKinds) -> Self {
+    fn new(
+        source: &MemberSource,
+        member: &M,
+        failure_kinds: MemberFailureKinds,
+        marks: Marks,
+    ) -> Self {
         Self {
             source: source.clone(),
             member: member.clone(),
             failure_kinds,
+            marks,
         }
     }
 }
@@ -299,6 +311,7 @@ pub fn build_exposure_bundle(
                 &source,
                 declared,
                 MemberFailureKinds::peppy_only(),
+                members.marks.of(InterfaceKind::Topic, &declared.name),
             ));
         }
 
@@ -322,7 +335,8 @@ pub fn build_exposure_bundle(
             let failure_kinds = members
                 .failure_kinds
                 .of(MemberSection::Service, &declared.name);
-            tool_members.push(BoundMember::new(&source, declared, failure_kinds));
+            let marks = members.marks.of(InterfaceKind::Service, &declared.name);
+            tool_members.push(BoundMember::new(&source, declared, failure_kinds, marks));
         }
 
         for action in &target.actions {
@@ -350,7 +364,8 @@ pub fn build_exposure_bundle(
             let failure_kinds = members
                 .failure_kinds
                 .of(MemberSection::Action, &declared.name);
-            task_members.push(BoundMember::new(&source, declared, failure_kinds));
+            let marks = members.marks.of(InterfaceKind::Action, &declared.name);
+            task_members.push(BoundMember::new(&source, declared, failure_kinds, marks));
         }
         match source {
             MemberSource::Slot(slot) => pins.push((slot, argument.map(ToString::to_string))),

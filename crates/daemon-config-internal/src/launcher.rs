@@ -25,7 +25,7 @@ pub use compose::{
     RunningStack, SkipReason, SkippedAdjustment, TrialCopy, TrialStack, UnitSelection, WrittenWord,
     check_composition,
 };
-pub use composition::{ComponentAxis, LauncherFragmentParser, OptionSpec};
+pub use composition::{AxisRole, ComponentAxis, LauncherFragmentParser, OptionSpec};
 pub use daemon_scopes::{DaemonScopeError, DaemonScopeRefusals, ScopeCheck, check_daemon_scopes};
 pub use joinable::{JoinableNode, JoinableNodes};
 pub use links::validate_link_plan;

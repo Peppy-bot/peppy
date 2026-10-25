@@ -98,12 +98,7 @@ impl PinnedContract {
             name: self.pin.name.as_str(),
             tag: self.pin.tag.as_str(),
             sha256: &self.pin.sha256,
-            members: peppy_mcp_catalog::DeclaredMembers {
-                topics: &self.document.interfaces.topics,
-                services: &self.document.interfaces.services,
-                actions: &self.document.interfaces.actions,
-                failure_kinds: &self.document.failure_kinds,
-            },
+            members: self.document.declared_members(),
         }
     }
 }

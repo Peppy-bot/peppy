@@ -8,6 +8,7 @@ use super::setup_timeout::SetupTimeout;
 use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
+    internal::mark::{EnumValues, Marks},
     internal::runtime::Name,
     schema::PeppySchema,
 };
@@ -197,7 +198,7 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum InterfaceKind {
     Topic,
     Service,
@@ -259,8 +260,13 @@ impl std::str::FromStr for InterfaceKind {
     }
 }
 
-// Schema types used inside MessageFormat
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+// Schema types used inside MessageFormat.
+//
+// A field is a type name (`"string"`) or an object whose `$type` says which
+// form it takes: `"array"`, `"object"` (or no `$type`, for an object), or a
+// type name. The deserializer reads `$type` first and parses the field in
+// that one form, so the error of a field names its own problem at any depth.
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum SchemaType {
     Type(TypeToken),
@@ -269,18 +275,105 @@ pub enum SchemaType {
     Object(ObjectSchema),
 }
 
+impl<'de> Deserialize<'de> for SchemaType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let form = match &value {
+            serde_json::Value::String(_) => "type",
+            serde_json::Value::Object(fields) => match fields.get("$type") {
+                None => "object",
+                Some(serde_json::Value::String(kind)) if kind == "object" => "object",
+                Some(serde_json::Value::String(kind)) if kind == "array" => "array",
+                Some(serde_json::Value::String(_)) => "primitive",
+                Some(_) => {
+                    return Err(de::Error::custom(
+                        "`$type` is a string: a type name such as \"string\", \"array\" or \"object\"",
+                    ));
+                }
+            },
+            _ => {
+                return Err(de::Error::custom(
+                    "a field is a type name such as \"string\", or an object with a `$type`",
+                ));
+            }
+        };
+        let parsed = match form {
+            "type" => TypeToken::deserialize(value).map(SchemaType::Type),
+            "object" => ObjectSchema::deserialize(value).map(SchemaType::Object),
+            "array" => ArraySchema::deserialize(value).map(SchemaType::Array),
+            _ => PrimitiveSchema::deserialize(value).map(SchemaType::Primitive),
+        };
+        parsed.map_err(de::Error::custom)
+    }
+}
+
 /// A primitive field in its structured form: a `$type` token plus modifiers.
 ///
 /// `$optional` is accepted only on the pointer-backed tokens (`string`,
 /// `bytes`, `time`); [`MessageFormat`] enforces that, and
-/// [`TypeToken::is_scalar`] explains why a scalar cannot carry it.
+/// [`TypeToken::is_scalar`] explains why a scalar cannot carry it. `$enum`
+/// is accepted only on `string`: the closed set of values the field holds.
+/// `$marks` names the marks of the field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawPrimitiveSchema")]
 pub struct PrimitiveSchema {
     #[serde(rename = "$type")]
     pub kind: TypeToken,
     #[serde(rename = "$optional", default, skip_serializing_if = "is_false")]
     pub optional: bool,
+    #[serde(rename = "$enum", default, skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<EnumValues>,
+    #[serde(rename = "$marks", default, skip_serializing_if = "Marks::is_empty")]
+    pub marks: Marks,
+}
+
+impl PrimitiveSchema {
+    /// The structured form of `kind`, with no modifier.
+    pub fn of(kind: TypeToken) -> Self {
+        Self {
+            kind,
+            optional: false,
+            enum_values: None,
+            marks: Marks::default(),
+        }
+    }
+}
+
+/// Wire shape of [`PrimitiveSchema`], whose `$enum` is refused on a field
+/// that is not a `string`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPrimitiveSchema {
+    #[serde(rename = "$type")]
+    kind: TypeToken,
+    #[serde(rename = "$optional", default)]
+    optional: bool,
+    #[serde(rename = "$enum", default)]
+    enum_values: Option<EnumValues>,
+    #[serde(rename = "$marks", default)]
+    marks: Marks,
+}
+
+impl TryFrom<RawPrimitiveSchema> for PrimitiveSchema {
+    type Error = String;
+
+    fn try_from(raw: RawPrimitiveSchema) -> Result<Self, String> {
+        if raw.enum_values.is_some() && raw.kind != TypeToken::String {
+            return Err(format!(
+                "`$enum` is only for a `string` field, and this field is a `{}`",
+                type_token_name(&raw.kind)
+            ));
+        }
+        Ok(Self {
+            kind: raw.kind,
+            optional: raw.optional,
+            enum_values: raw.enum_values,
+            marks: raw.marks,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -294,6 +387,8 @@ pub struct ArraySchema {
     pub length: Option<usize>,
     #[serde(rename = "$optional", default, skip_serializing_if = "is_false")]
     pub optional: bool,
+    #[serde(rename = "$marks", default, skip_serializing_if = "Marks::is_empty")]
+    pub marks: Marks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -310,6 +405,8 @@ pub struct ObjectSchema {
     pub fields: IndexMap<String, SchemaType>,
     #[serde(rename = "$optional", skip_serializing_if = "is_false")]
     pub optional: bool,
+    #[serde(rename = "$marks", skip_serializing_if = "Marks::is_empty")]
+    pub marks: Marks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -360,6 +457,7 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
     {
         let mut kind: Option<ObjectKind> = None;
         let mut optional = false;
+        let mut marks = Marks::default();
         let mut fields = IndexMap::<String, SchemaType>::new();
 
         while let Some(key) = map.next_key::<String>()? {
@@ -374,8 +472,19 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
                 "$optional" => {
                     optional = map.next_value()?;
                 }
+                "$marks" => {
+                    marks = map.next_value()?;
+                }
+                modifier if modifier.starts_with('$') => {
+                    return Err(de::Error::custom(format!(
+                        "unknown modifier `{modifier}` on an object; an object takes `$type`, \
+`$optional` and `$marks`"
+                    )));
+                }
                 _ => {
-                    let value: SchemaType = map.next_value()?;
+                    let value: SchemaType = map
+                        .next_value()
+                        .map_err(|error| de::Error::custom(format!("field `{key}`: {error}")))?;
                     if value.is_optional() {
                         return Err(de::Error::custom(format!(
                             "`$optional` is not supported on nested field `{key}`"
@@ -393,6 +502,7 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
             kind,
             fields,
             optional,
+            marks,
         })
     }
 }
@@ -2805,6 +2915,95 @@ mod tests {
             serde_json5::from_str(json5).expect("pointer-backed structures may be optional");
         assert!(parsed.0["header"].is_optional());
         assert!(parsed.0["samples"].is_optional());
+    }
+
+    /// A string field can hold a closed set of values, and every field form
+    /// can carry marks; both round-trip.
+    #[test]
+    fn enums_and_marks_parse_at_any_depth_and_round_trip() {
+        let json5 = r#"{
+            action: { $type: "string", $enum: ["join", "remove"], $marks: ["change_kind"] },
+            items: {
+                $type: "array",
+                $marks: ["item_list"],
+                $items: { $type: "string", $enum: ["cup", "plate"], $marks: ["item_id"] },
+            },
+            place: {
+                $type: "object",
+                $marks: ["location"],
+                surface: { $type: "string", $marks: ["surface_id"] },
+            },
+        }"#;
+        let parsed: MessageFormat = serde_json5::from_str(json5).expect("should parse");
+        let SchemaType::Primitive(action) = &parsed.0["action"] else {
+            panic!("`action` is a structured primitive");
+        };
+        assert_eq!(
+            action.enum_values.as_ref().map(|values| values.values()),
+            Some(["join".to_owned(), "remove".to_owned()].as_slice())
+        );
+        assert!(action.marks.contains("change_kind"));
+        let SchemaType::Array(items) = &parsed.0["items"] else {
+            panic!("`items` is an array");
+        };
+        assert!(items.marks.contains("item_list"));
+        let SchemaType::Primitive(item) = items.items.as_ref() else {
+            panic!("an item of `items` is a structured primitive");
+        };
+        assert!(item.marks.contains("item_id"));
+        let SchemaType::Object(place) = &parsed.0["place"] else {
+            panic!("`place` is an object");
+        };
+        assert!(place.marks.contains("location"));
+        assert_eq!(place.fields.len(), 1, "`$marks` is not a field");
+
+        let serialized = serde_json5::to_string(&parsed).expect("should serialize");
+        let reparsed: MessageFormat = serde_json5::from_str(&serialized).expect("should re-parse");
+        assert_eq!(parsed, reparsed);
+    }
+
+    /// Each problem of an enum, a mark or a modifier is refused with its own
+    /// message, inside nested objects and array items too.
+    #[test]
+    fn a_bad_enum_mark_or_modifier_is_refused_with_its_reason() {
+        for (json5, expected) in [
+            (
+                r#"{ count: { $type: "u32", $enum: ["a"] } }"#,
+                "`$enum` is only for a `string` field, and this field is a `u32`",
+            ),
+            (
+                r#"{ kind: { $type: "string", $enum: [] } }"#,
+                "lists no value",
+            ),
+            (
+                r#"{ kind: { $type: "string", $enum: ["a", "a"] } }"#,
+                "value \"a\" twice",
+            ),
+            (
+                r#"{ place: { $type: "object", inner: { $type: "string", $marks: ["Bad"] } } }"#,
+                "field `inner`: invalid mark name \"Bad\"",
+            ),
+            (
+                r#"{ list: { $type: "array", $items: { $type: "string", $marks: [] } } }"#,
+                "leave it out",
+            ),
+            (
+                r#"{ place: { $type: "object", $label: "x", inner: "string" } }"#,
+                "unknown modifier `$label` on an object",
+            ),
+            (
+                r#"{ name: { $type: "string", $label: "x" } }"#,
+                "unknown field `$label`",
+            ),
+        ] {
+            let error = serde_json5::from_str::<MessageFormat>(json5)
+                .expect_err(json5)
+                .to_string();
+            assert!(
+                error.contains(expected),
+                "{json5}: expected {expected:?} in {error:?}"
+            );
+        }
     }
 
     #[test]

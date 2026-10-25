@@ -397,8 +397,12 @@ impl DaemonBridges {
 
     /// The `stack_copies` bridge under the scope of daemon target `target`.
     fn stack_copies_of(&self, target: &str) -> Result<ScopedStackCopies, ServeError> {
-        let DaemonScope::StackCopies(scope) =
-            self.scopes.of(target, DaemonInterface::StackCopies)?;
-        Ok(self.stack_copies.scoped(scope.clone()))
+        match self.scopes.of(target, DaemonInterface::StackCopies)? {
+            DaemonScope::StackCopies(scope) => Ok(self.stack_copies.scoped(scope.clone())),
+            DaemonScope::Fleet(_) => Err(ServeError::UnservedDaemonInterface {
+                target: target.to_owned(),
+                reason: "the target names `fleet:v1`, which this bridge does not serve".to_owned(),
+            }),
+        }
     }
 }

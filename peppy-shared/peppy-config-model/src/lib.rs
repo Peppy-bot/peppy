@@ -26,14 +26,17 @@ mod parsing;
 #[path = "."]
 mod internal {
     pub mod consts;
+    pub mod contract_member;
     pub mod failure_kind;
     pub mod fingerprint;
+    pub mod mark;
     pub mod namespace;
     pub mod node;
     pub mod peppy_config;
     pub mod repo_node_id;
     pub mod runtime;
     pub mod schema;
+    pub(crate) mod word_name;
 }
 
 // -- common --
@@ -60,12 +63,26 @@ pub mod consts {
     };
 }
 
+// -- contract_member --
+pub mod contract_member {
+    pub use crate::internal::contract_member::{
+        ContractAction, ContractMarks, ContractMembers, ContractService, ContractTopic,
+    };
+}
+
 // -- failure_kind --
 pub mod failure_kind {
     pub use crate::internal::failure_kind::{
-        ContractAction, ContractFailureKinds, ContractKinds, ContractMembers, ContractService,
-        FailureKindName, InvalidContractFailureKinds, InvalidFailureKindName, InvalidMemberKinds,
-        MemberFailureKinds, MemberSection, PeppyFailureKind,
+        ContractFailureKinds, ContractKinds, FailureKindName, InvalidContractFailureKinds,
+        InvalidFailureKindName, InvalidMemberKinds, MemberFailureKinds, MemberSection,
+        PeppyFailureKind,
+    };
+}
+
+// -- mark --
+pub mod mark {
+    pub use crate::internal::mark::{
+        EnumValues, InvalidEnumValues, InvalidMarkName, InvalidMarks, MOVES_ROBOT, MarkName, Marks,
     };
 }
 

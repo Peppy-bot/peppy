@@ -176,12 +176,14 @@ mod tests {
             items: Box::new(SchemaType::Type(TypeToken::U8)),
             length: None,
             optional: false,
+            marks: Default::default(),
         });
         let invalid_array = SchemaType::Array(ArraySchema {
             kind: ArrayKind::Array,
             items: Box::new(invalid_items),
             length: None,
             optional: false,
+            marks: Default::default(),
         });
         let mut fields = IndexMap::new();
         fields.insert("samples".to_string(), invalid_array);

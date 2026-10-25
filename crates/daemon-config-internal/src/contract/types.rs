@@ -1,7 +1,9 @@
+use super::comments::ContractComments;
 use config::{
-    failure_kind::{
-        ContractAction, ContractFailureKinds, ContractKinds, ContractMembers, ContractService,
+    contract_member::{
+        ContractAction, ContractMarks, ContractMembers, ContractService, ContractTopic,
     },
+    failure_kind::{ContractFailureKinds, ContractKinds},
     node::{
         LinkedMember, NativeEmittedTopic, NativeExposedAction, NativeExposedService,
         RefinementProblem, refined_ref,
@@ -40,10 +42,28 @@ pub struct PeppyContract {
     /// A member gives the kinds it lists, or a kind of peppy, when it
     /// refuses or fails a goal or gives an error reply.
     pub failure_kinds: ContractKinds,
+    /// The marks of the members of the contract: the `marks` list of each
+    /// topic, service and action.
+    pub marks: ContractMarks,
     pub interfaces: Interfaces,
+    /// The comments of the document, which [`super::PeppyContractParser`]
+    /// reads from its text. Empty for a contract that serde reads alone.
+    pub comments: ContractComments,
 }
 
 impl PeppyContract {
+    /// The members of the contract as the MCP catalog validates an exposure
+    /// against them: their shapes, failure kinds and marks.
+    pub fn declared_members(&self) -> peppy_mcp_catalog::DeclaredMembers<'_> {
+        peppy_mcp_catalog::DeclaredMembers {
+            topics: &self.interfaces.topics,
+            services: &self.interfaces.services,
+            actions: &self.interfaces.actions,
+            failure_kinds: &self.failure_kinds,
+            marks: &self.marks,
+        }
+    }
+
     /// The member that a document-backed produced entry of a node manifest
     /// selects, by the entry's kind and name, with the entry's `refine`
     /// block applied. `None` when the contract declares no member of that
@@ -123,7 +143,7 @@ struct DocumentInterfaces {
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "deserialize_topics"
     )]
-    topics: Vec<NativeEmittedTopic>,
+    topics: Vec<ContractTopic>,
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
@@ -148,16 +168,23 @@ impl TryFrom<ContractDocument> for PeppyContract {
             failure_kinds,
             interfaces,
         } = document;
-        let members = ContractMembers::new(failure_kinds, interfaces.services, interfaces.actions)?;
+        let members = ContractMembers::new(
+            failure_kinds,
+            interfaces.topics,
+            interfaces.services,
+            interfaces.actions,
+        )?;
         Ok(Self {
             peppy_schema,
             manifest,
             failure_kinds: members.failure_kinds,
+            marks: members.marks,
             interfaces: Interfaces {
-                topics: interfaces.topics,
+                topics: members.topics,
                 services: members.services,
                 actions: members.actions,
             },
+            comments: ContractComments::default(),
         })
     }
 }
@@ -168,19 +195,23 @@ impl From<PeppyContract> for ContractDocument {
             peppy_schema,
             manifest,
             failure_kinds,
+            marks,
             interfaces,
+            comments: _,
         } = contract;
         let members = ContractMembers {
+            topics: interfaces.topics,
             services: interfaces.services,
             actions: interfaces.actions,
             failure_kinds,
+            marks,
         };
         Self {
             peppy_schema,
             manifest,
             failure_kinds: members.failure_kinds.declared().clone(),
             interfaces: DocumentInterfaces {
-                topics: interfaces.topics,
+                topics: members.documented_topics(),
                 services: members.documented_services(),
                 actions: members.documented_actions(),
             },
@@ -224,11 +255,11 @@ pub struct Interfaces {
     pub actions: Vec<NativeExposedAction>,
 }
 
-fn deserialize_topics<'de, D>(deserializer: D) -> Result<Vec<NativeEmittedTopic>, D::Error>
+fn deserialize_topics<'de, D>(deserializer: D) -> Result<Vec<ContractTopic>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let items = Vec::<NativeEmittedTopic>::deserialize(deserializer)?;
+    let items = Vec::<ContractTopic>::deserialize(deserializer)?;
     validate_named_items(items.iter().map(|t| t.name.as_str()), "topic")
         .map_err(de::Error::custom)?;
     Ok(items)
@@ -279,6 +310,7 @@ pub(crate) fn validate_named_items<'a>(
 mod tests {
     use super::*;
     use config::failure_kind::{FailureKindName, MemberFailureKinds, MemberSection};
+    use config::node::InterfaceKind;
     use config::node::{
         ArrayKind, MessageFormat, QoSProfile, SchemaType, TopicRetention, TypeToken,
     };
@@ -777,6 +809,90 @@ mod tests {
         assert_eq!(parsed.interfaces.actions.len(), 1);
     }
 
+    /// Each topic, service and action can carry marks, which the contract
+    /// keeps per member and writes back on its member.
+    #[test]
+    fn members_keep_their_marks_through_a_round_trip() {
+        let json5 = r#"{
+            peppy_schema: "contract/v1",
+            manifest: { name: "arm", tag: "v1" },
+            interfaces: {
+                topics: [{ name: "state", marks: ["robot_state"] }],
+                services: [{ name: "move", marks: ["moves_robot"] }, { name: "read" }],
+                actions: [{ name: "move", marks: ["moves_robot", "long_motion"] }],
+            },
+        }"#;
+        let parsed: PeppyContract = serde_json5::from_str(json5).expect("should parse");
+        assert!(parsed.marks.moves_robot(InterfaceKind::Service, "move"));
+        assert!(!parsed.marks.moves_robot(InterfaceKind::Service, "read"));
+        assert!(parsed.marks.moves_robot(InterfaceKind::Action, "move"));
+        assert!(!parsed.marks.moves_robot(InterfaceKind::Topic, "state"));
+        assert!(
+            parsed
+                .marks
+                .of(InterfaceKind::Topic, "state")
+                .contains("robot_state")
+        );
+        let written = serde_json5::to_string(&parsed).expect("should serialize");
+        let reparsed: PeppyContract = serde_json5::from_str(&written).expect("should re-parse");
+        assert_eq!(parsed, reparsed);
+
+        for (members, expected) in [
+            (r#"services: [{ name: "a", marks: [] }]"#, "leave it out"),
+            (
+                r#"actions: [{ name: "a", marks: ["moves_robot", "moves_robot"] }]"#,
+                "twice",
+            ),
+            (
+                r#"topics: [{ name: "a", marks: ["Moves"] }]"#,
+                "invalid mark name",
+            ),
+        ] {
+            let json5 = format!(
+                r#"{{ peppy_schema: "contract/v1", manifest: {{ name: "x", tag: "v1" }},
+                    interfaces: {{ {members} }} }}"#
+            );
+            let error = serde_json5::from_str::<PeppyContract>(&json5)
+                .expect_err(members)
+                .to_string();
+            assert!(error.contains(expected), "{members}: {error}");
+        }
+    }
+
+    /// The parser reads the comments of the text beside the document.
+    #[test]
+    fn the_parser_keeps_the_comments_of_the_text() {
+        let json5 = r#"// An arm.
+        {
+            peppy_schema: "contract/v1",
+            manifest: { name: "arm", tag: "v1" },
+            interfaces: {
+                services: [
+                    // Moves the arm.
+                    { name: "move", request_message_format: {
+                        // The target, in meters.
+                        x: "f64",
+                    } },
+                ],
+            },
+        }"#;
+        let parsed = super::super::PeppyContractParser::from_content(json5).expect("should parse");
+        assert_eq!(parsed.comments.document(), Some("An arm."));
+        assert_eq!(
+            parsed.comments.member(InterfaceKind::Service, "move"),
+            Some("Moves the arm.")
+        );
+        assert_eq!(
+            parsed.comments.field(
+                InterfaceKind::Service,
+                "move",
+                super::super::MessageSide::Request,
+                &["x"]
+            ),
+            Some("The target, in meters.")
+        );
+    }
+
     /// Round-tripping survives canonicalization: the parsed AST serializes
     /// back to a form that re-parses to the same AST.
     #[test]
@@ -801,6 +917,8 @@ mod tests {
                 )],
             )
             .unwrap(),
+            marks: ContractMarks::default(),
+            comments: ContractComments::default(),
             interfaces: Interfaces {
                 topics: vec![NativeEmittedTopic {
                     name: "stream".to_string(),

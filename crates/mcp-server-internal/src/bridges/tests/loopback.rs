@@ -16,7 +16,7 @@ use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::repository::ManifestFingerprint;
 use message_codec::MessageCodec;
-use peppy_mcp_catalog::{DeclaredMembers, ResolvedContract, build_exposure_bundle};
+use peppy_mcp_catalog::{ResolvedContract, build_exposure_bundle};
 use peppy_mcp_runtime::{ActionContext, ExposureServer, ExposureSet, ToolCall};
 use peppylib::messaging::Failure;
 use peppylib::testing::{MockActionServerCore, MockPendingGoal, READINESS_TIMEOUT};
@@ -115,12 +115,7 @@ fn prepared_exposure() -> PreparedExposure {
         name: "limb_motion",
         tag: "v1",
         sha256: &fingerprint,
-        members: DeclaredMembers {
-            topics: &contract.interfaces.topics,
-            services: &contract.interfaces.services,
-            actions: &contract.interfaces.actions,
-            failure_kinds: &contract.failure_kinds,
-        },
+        members: contract.declared_members(),
     };
     let exposure = PeppyMcpExposureParser::from_content(EXPOSURE).expect("the exposure parses");
     let validated =

@@ -17,9 +17,12 @@ impl PeppyContractParser {
         Self::from_content(&content)
     }
 
-    /// Takes a JSON5 content string and parses it as a contract document.
+    /// Takes a JSON5 content string and parses it as a contract document,
+    /// with the comments of the text.
     pub fn from_content(content: &str) -> Result<PeppyContract> {
-        crate::error::deserialize_json5_with_path(content)
+        let mut contract: PeppyContract = crate::error::deserialize_json5_with_path(content)?;
+        contract.comments = super::comments::ContractComments::of_document(content);
+        Ok(contract)
     }
 }
 

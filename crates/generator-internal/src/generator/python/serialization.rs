@@ -236,6 +236,7 @@ mod tests {
             items: Box::new(SchemaType::Type(item)),
             length,
             optional: false,
+            marks: Default::default(),
         });
         let mut builder = PythonCodeBuilder::new();
         let mut counter = 0u32;
@@ -295,9 +296,11 @@ mod tests {
                 kind: ObjectKind::Object,
                 fields,
                 optional: false,
+                marks: Default::default(),
             })),
             length,
             optional: false,
+            marks: Default::default(),
         });
 
         let mut builder = PythonCodeBuilder::new();

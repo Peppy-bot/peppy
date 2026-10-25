@@ -96,15 +96,27 @@ fn stack_copies_declares_the_kinds_of_the_daemon_beyond_peppy() {
         .map(|kind| (kind.name(), kind.meaning()))
         .collect();
     assert_eq!(declared, daemon_own);
-    assert_eq!(declared, [("busy", DaemonFailureKind::Busy.meaning())]);
+    assert_eq!(
+        declared,
+        [
+            ("busy", DaemonFailureKind::Busy.meaning()),
+            ("halted", DaemonFailureKind::Halted.meaning()),
+            ("leased", DaemonFailureKind::Leased.meaning()),
+        ]
+    );
 
-    // `join` and `remove` give every kind of the daemon; `list` gives the
-    // kinds of peppy only.
+    // `join` gives every kind of the daemon, `remove` each one but halted:
+    // the halt refuses a lease, and a removal takes no lease. `list` gives
+    // the kinds of peppy only.
     let join = kinds.of(MemberSection::Action, "join");
     let remove = kinds.of(MemberSection::Action, "remove");
     for kind in DaemonFailureKind::ALL {
         assert!(join.allows(kind.name()), "{kind}");
-        assert!(remove.allows(kind.name()), "{kind}");
+        assert_eq!(
+            remove.allows(kind.name()),
+            kind != DaemonFailureKind::Halted,
+            "{kind}"
+        );
     }
     assert_eq!(
         kinds.of(MemberSection::Service, "list"),
@@ -131,6 +143,10 @@ fn the_registry_serves_one_tag_of_each_interface() {
         DaemonInterface::served(&reference("stack_copies", "v1")),
         Ok(DaemonInterface::StackCopies)
     );
+    assert_eq!(
+        DaemonInterface::served(&reference("fleet", "v1")),
+        Ok(DaemonInterface::Fleet)
+    );
 
     let error =
         DaemonInterface::served(&reference("stack_copies", "v2")).expect_err("v2 is not served");
@@ -146,7 +162,7 @@ fn the_registry_serves_one_tag_of_each_interface() {
     assert_eq!(
         error.to_string(),
         "daemon interface `node_controls:v1` is not one this peppy serves; it serves \
-         `stack_copies:v1`"
+         `stack_copies:v1`, `fleet:v1`"
     );
 }
 
@@ -178,6 +194,7 @@ fn the_daemon_targets_of_an_exposure_resolve_through_the_registry() {
 fn scope(value: serde_json::Value) -> Result<StackCopiesScope, String> {
     match DaemonInterface::StackCopies.parse_scope(&value)? {
         DaemonScope::StackCopies(scope) => Ok(scope),
+        DaemonScope::Fleet(_) => panic!("the stack_copies interface parses a stack_copies scope"),
     }
 }
 

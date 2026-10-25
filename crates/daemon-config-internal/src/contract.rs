@@ -1,3 +1,4 @@
+mod comments;
 mod parse;
 mod types;
 
@@ -6,6 +7,7 @@ mod types;
 // contract: the topics, services, and actions a node claims to expose.
 // Filenames are not fixed; any `.json5` whose body carries the
 // `contract/v1` schema tag is a contract.
+pub use comments::{ContractComments, MessageSide};
 pub use parse::PeppyContractParser;
 pub(crate) use types::validate_named_items;
 pub use types::{Interfaces, Manifest, PeppyContract, RefinedMember};

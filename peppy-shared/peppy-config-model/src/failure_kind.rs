@@ -10,10 +10,6 @@
 //! that lists none, or that no contract declares, gives the kinds of peppy
 //! only. [`MemberFailureKinds`] is the closed set of one member.
 
-use crate::internal::node::{
-    ActionTopicEndpoint, GoalServiceEndpoint, MessageFormat, NativeExposedAction,
-    NativeExposedService, ResultServiceEndpoint,
-};
 use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
@@ -39,36 +35,16 @@ pub struct InvalidFailureKindName {
 impl FailureKindName {
     /// The longest name, in bytes. A name rides on the wire behind a one-byte
     /// length.
-    pub const MAX_LEN: usize = 64;
+    pub const MAX_LEN: usize = crate::internal::word_name::MAX_WORD_NAME_LEN;
 
     pub fn parse(name: &str) -> Result<Self, InvalidFailureKindName> {
-        let invalid = |reason| InvalidFailureKindName {
-            name: name.to_owned(),
-            reason,
-        };
-        if name.is_empty() {
-            return Err(invalid("it is empty"));
+        match crate::internal::word_name::word_name_problem(name) {
+            Some(reason) => Err(InvalidFailureKindName {
+                name: name.to_owned(),
+                reason,
+            }),
+            None => Ok(Self(name.to_owned())),
         }
-        if name.len() > Self::MAX_LEN {
-            return Err(invalid("it is longer than 64 bytes"));
-        }
-        if !name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-        {
-            return Err(invalid(
-                "it may hold only lowercase ASCII letters, digits and `_`",
-            ));
-        }
-        if !name
-            .split('_')
-            .all(|word| word.starts_with(|c: char| c.is_ascii_lowercase()))
-        {
-            return Err(invalid(
-                "it must be words that each start with a lowercase ASCII letter, joined by one `_`",
-            ));
-        }
-        Ok(Self(name.to_owned()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -323,129 +299,6 @@ impl ContractKinds {
             .get(&(section, name.to_owned()))
             .map(|kinds| kinds.iter().map(|(kind, _)| kind.clone()).collect())
             .unwrap_or_default()
-    }
-}
-
-/// A service of a contract document: the shape of a native service, and
-/// the kinds of the contract that it gives.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ContractService {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub request_message_format: Option<MessageFormat>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response_message_format: Option<MessageFormat>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub failure_kinds: Vec<FailureKindName>,
-}
-
-/// An action of a contract document: the shape of a native action, and the
-/// kinds of the contract that it gives.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ContractAction {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub goal_service: Option<GoalServiceEndpoint>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub feedback_topic: Option<ActionTopicEndpoint>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_service: Option<ResultServiceEndpoint>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub failure_kinds: Vec<FailureKindName>,
-}
-
-/// The services and actions of a contract, each with the shape of a native
-/// member, and the kinds of the contract that each gives.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ContractMembers {
-    pub services: Vec<NativeExposedService>,
-    pub actions: Vec<NativeExposedAction>,
-    pub failure_kinds: ContractKinds,
-}
-
-impl ContractMembers {
-    /// The members of a contract document that declares `declared` in its
-    /// `failure_kinds` block and lists `services` and `actions`.
-    pub fn new(
-        declared: ContractFailureKinds,
-        services: Vec<ContractService>,
-        actions: Vec<ContractAction>,
-    ) -> Result<Self, InvalidMemberKinds> {
-        let mut listed = Vec::with_capacity(services.len() + actions.len());
-        let services = services
-            .into_iter()
-            .map(|service| {
-                let ContractService {
-                    name,
-                    request_message_format,
-                    response_message_format,
-                    failure_kinds,
-                } = service;
-                listed.push((MemberSection::Service, name.clone(), failure_kinds));
-                NativeExposedService {
-                    name,
-                    request_message_format,
-                    response_message_format,
-                }
-            })
-            .collect();
-        let actions = actions
-            .into_iter()
-            .map(|action| {
-                let ContractAction {
-                    name,
-                    goal_service,
-                    feedback_topic,
-                    result_service,
-                    failure_kinds,
-                } = action;
-                listed.push((MemberSection::Action, name.clone(), failure_kinds));
-                NativeExposedAction {
-                    name,
-                    goal_service,
-                    feedback_topic,
-                    result_service,
-                }
-            })
-            .collect();
-        Ok(Self {
-            services,
-            actions,
-            failure_kinds: ContractKinds::new(declared, listed)?,
-        })
-    }
-
-    /// The services of the document, each with the kinds it lists.
-    pub fn documented_services(&self) -> Vec<ContractService> {
-        self.services
-            .iter()
-            .map(|service| ContractService {
-                name: service.name.clone(),
-                request_message_format: service.request_message_format.clone(),
-                response_message_format: service.response_message_format.clone(),
-                failure_kinds: self
-                    .failure_kinds
-                    .listed(MemberSection::Service, &service.name),
-            })
-            .collect()
-    }
-
-    /// The actions of the document, each with the kinds it lists.
-    pub fn documented_actions(&self) -> Vec<ContractAction> {
-        self.actions
-            .iter()
-            .map(|action| ContractAction {
-                name: action.name.clone(),
-                goal_service: action.goal_service.clone(),
-                feedback_topic: action.feedback_topic.clone(),
-                result_service: action.result_service.clone(),
-                failure_kinds: self
-                    .failure_kinds
-                    .listed(MemberSection::Action, &action.name),
-            })
-            .collect()
     }
 }
 

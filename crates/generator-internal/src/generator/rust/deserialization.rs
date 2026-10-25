@@ -682,8 +682,8 @@ mod tests {
     #[test]
     fn optional_field_without_presence_check_reads_into_some() {
         let schema = SchemaType::Primitive(config::node::PrimitiveSchema {
-            kind: TypeToken::U32,
             optional: true,
+            ..config::node::PrimitiveSchema::of(TypeToken::U32)
         });
         let mut names = NameGenerator::new();
 

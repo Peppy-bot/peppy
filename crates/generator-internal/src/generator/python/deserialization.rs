@@ -359,6 +359,7 @@ mod tests {
             items: Box::new(items),
             length,
             optional: false,
+            marks: Default::default(),
         })
     }
 
@@ -416,6 +417,7 @@ mod tests {
                     kind: ObjectKind::Object,
                     fields,
                     optional: false,
+                    marks: Default::default(),
                 }),
                 length,
             ),

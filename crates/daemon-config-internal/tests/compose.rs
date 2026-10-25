@@ -1097,6 +1097,7 @@ fn unsafe_fragment_paths_are_refused() {
             options: BTreeMap::from([("sim".to_owned(), spec)]),
             cardinality: Default::default(),
             provides: Vec::new(),
+            role: None,
         };
         let launcher = PeppyLauncher {
             peppy_schema: config::schema::PeppySchema::LauncherV1,

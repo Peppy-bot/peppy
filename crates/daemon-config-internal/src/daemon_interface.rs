@@ -1,24 +1,23 @@
 //! The daemon interfaces this peppy serves: the registry that the exposure
-//! checks, the derived node, the hub check and the server read.
+//! checks, the derived node, the hub check, the daemon and its clients read.
 //!
 //! A daemon interface is a document in the contract format, compiled into
-//! peppy. No node implements it and nothing on the messaging layer answers
-//! it: it gives a function of the peppy daemon a public shape for MCP
-//! clients, and the server's daemon bridge fills in the rest of the call.
-//! peppy serves one tag of each interface. Each entry of the registry holds
-//! the interface's document, the type of the scope a launcher gives a target
-//! that names it, the narrowing of its published schema by a scope, and the
-//! checks a launch runs on a scope.
+//! peppy. No node implements it: the peppy daemon serves it on the messaging
+//! layer, as a provider of the contract, and checks each call against the
+//! scope of its sender. peppy serves one tag of each interface. Each entry
+//! of the registry holds the interface's document, the type of the scope a
+//! launcher gives a target that names it, the narrowing of its published
+//! schema by a scope, and the checks a launch runs on a scope.
 
+pub mod fleet;
 mod stack_copies;
 
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
 use crate::internal::launcher::{JoinableNodes, PreparedLauncher, UnitSelection};
-use peppy_mcp_catalog::{
-    DaemonInterfaceRef, DeclaredMembers, ExposureBundle, McpExposure, ResolvedInterface,
-};
+use peppy_mcp_catalog::{DaemonInterfaceRef, ExposureBundle, McpExposure, ResolvedInterface};
 use std::sync::LazyLock;
 
+use fleet::FleetScope;
 pub use stack_copies::{
     Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES, PlacedFeature, ScopedFeature, ScopedOption,
     StackCopiesMember, StackCopiesScope,
@@ -30,6 +29,9 @@ pub enum DaemonInterface {
     /// `stack_copies`: list the copies of the running launch, add one,
     /// remove one.
     StackCopies,
+    /// `fleet`: the fleet listing and its changes, the leases of the robots,
+    /// the move check and the halt of the stack.
+    Fleet,
 }
 
 static STACK_COPIES_DOCUMENT: LazyLock<PeppyContract> = LazyLock::new(|| {
@@ -37,21 +39,27 @@ static STACK_COPIES_DOCUMENT: LazyLock<PeppyContract> = LazyLock::new(|| {
         .expect("the compiled-in `stack_copies` document parses as a contract")
 });
 
+static FLEET_DOCUMENT: LazyLock<PeppyContract> = LazyLock::new(|| {
+    PeppyContractParser::from_content(fleet::DOCUMENT)
+        .expect("the compiled-in `fleet` document parses as a contract")
+});
+
 impl DaemonInterface {
     /// Every interface this peppy serves.
-    pub const ALL: [Self; 1] = [Self::StackCopies];
+    pub const ALL: [Self; 2] = [Self::StackCopies, Self::Fleet];
 
     /// The name a target's `daemon` reference names the interface by.
     pub fn name(self) -> &'static str {
         match self {
             Self::StackCopies => "stack_copies",
+            Self::Fleet => "fleet",
         }
     }
 
     /// The one tag of the interface this peppy serves.
     pub fn tag(self) -> &'static str {
         match self {
-            Self::StackCopies => "v1",
+            Self::StackCopies | Self::Fleet => "v1",
         }
     }
 
@@ -64,6 +72,7 @@ impl DaemonInterface {
     pub fn document_text(self) -> &'static str {
         match self {
             Self::StackCopies => stack_copies::DOCUMENT,
+            Self::Fleet => fleet::DOCUMENT,
         }
     }
 
@@ -71,22 +80,17 @@ impl DaemonInterface {
     pub fn document(self) -> &'static PeppyContract {
         match self {
             Self::StackCopies => &STACK_COPIES_DOCUMENT,
+            Self::Fleet => &FLEET_DOCUMENT,
         }
     }
 
     /// The interface as the catalog validates an exposure against it: its
     /// identity beside its members.
     pub fn resolved(self) -> ResolvedInterface<'static> {
-        let interfaces = &self.document().interfaces;
         ResolvedInterface {
             name: self.name(),
             tag: self.tag(),
-            members: DeclaredMembers {
-                topics: &interfaces.topics,
-                services: &interfaces.services,
-                actions: &interfaces.actions,
-                failure_kinds: &self.document().failure_kinds,
-            },
+            members: self.document().declared_members(),
         }
     }
 
@@ -119,6 +123,7 @@ impl DaemonInterface {
             Self::StackCopies => {
                 parse_value::<StackCopiesScope>(value).map(DaemonScope::StackCopies)
             }
+            Self::Fleet => parse_value::<FleetScope>(value).map(DaemonScope::Fleet),
         }
     }
 }
@@ -191,6 +196,7 @@ pub fn served_interfaces(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonScope {
     StackCopies(StackCopiesScope),
+    Fleet(FleetScope),
 }
 
 impl DaemonScope {
@@ -198,6 +204,7 @@ impl DaemonScope {
     pub fn interface(&self) -> DaemonInterface {
         match self {
             Self::StackCopies(_) => DaemonInterface::StackCopies,
+            Self::Fleet(_) => DaemonInterface::Fleet,
         }
     }
 
@@ -212,6 +219,9 @@ impl DaemonScope {
     ) -> Result<JoinableNodes, Vec<String>> {
         match self {
             Self::StackCopies(scope) => scope.check_launch(prepared, selection),
+            // A fleet scope names members of the interface alone, so every
+            // launcher holds it, and a member brings no node to join.
+            Self::Fleet(_) => Ok(JoinableNodes::default()),
         }
     }
 
@@ -222,6 +232,8 @@ impl DaemonScope {
     pub fn narrow(&self, bundle: &mut ExposureBundle, target: &str) {
         match self {
             Self::StackCopies(scope) => scope.narrow(bundle, target),
+            // No input of `fleet:v1` takes a value that a scope limits.
+            Self::Fleet(_) => {}
         }
     }
 }

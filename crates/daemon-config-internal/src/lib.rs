@@ -104,26 +104,27 @@ pub mod peppy_config {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        AlreadyPairedSlots, AppliedChange, BindingValidationItem, ClockIncarnations, ComponentAxis,
-        ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyInstance,
-        CopyMembership, CopyRecord, DaemonScopeError, DaemonScopeRefusals, Deployment,
-        DeploymentInstance, DeploymentSource, ExternallyCoveredSlots, FrameworkOverrides,
-        JoinRequest, JoinableNode, JoinableNodes, LauncherFragmentParser, LinkTargets, LinkValue,
-        MemberAddressing, OptionSpec, PairingValidationItem, PartMachines, PartRefusal,
-        PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation, PlannedPairEndpoint,
-        PlannedPairing, PreparedLauncher, ResolvedClocks, RunningStack, SETS_READ_WHOLE,
-        ScopeCheck, Selection, SkipReason, SkippedAdjustment, TrialCopy, TrialStack, UnitSelection,
-        VacantReason, WALL_CLOCK, WrittenWord, check_composition, check_daemon_scopes,
-        instance_restart, mint_incarnation, participant_vacancies, resolve_clocks, resolve_restart,
-        restart_request_of, split_link_target, validate_bindings, validate_clock_connections,
-        validate_link_plan, validate_pairings,
+        AlreadyPairedSlots, AppliedChange, AxisRole, BindingValidationItem, ClockIncarnations,
+        ComponentAxis, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport,
+        CopyInstance, CopyMembership, CopyRecord, DaemonScopeError, DaemonScopeRefusals,
+        Deployment, DeploymentInstance, DeploymentSource, ExternallyCoveredSlots,
+        FrameworkOverrides, JoinRequest, JoinableNode, JoinableNodes, LauncherFragmentParser,
+        LinkTargets, LinkValue, MemberAddressing, OptionSpec, PairingValidationItem, PartMachines,
+        PartRefusal, PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation,
+        PlannedPairEndpoint, PlannedPairing, PreparedLauncher, ResolvedClocks, RunningStack,
+        SETS_READ_WHOLE, ScopeCheck, Selection, SkipReason, SkippedAdjustment, TrialCopy,
+        TrialStack, UnitSelection, VacantReason, WALL_CLOCK, WrittenWord, check_composition,
+        check_daemon_scopes, instance_restart, mint_incarnation, participant_vacancies,
+        resolve_clocks, resolve_restart, restart_request_of, split_link_target, validate_bindings,
+        validate_clock_connections, validate_link_plan, validate_pairings,
     };
 }
 
 // -- contract --
 pub mod contract {
     pub use crate::internal::contract::{
-        Interfaces, Manifest, PeppyContract, PeppyContractParser, RefinedMember,
+        ContractComments, Interfaces, Manifest, MessageSide, PeppyContract, PeppyContractParser,
+        RefinedMember,
     };
 }
 
@@ -137,6 +138,11 @@ pub mod daemon_interface {
         PlacedFeature, ScopedFeature, ScopedOption, StackCopiesMember, StackCopiesScope,
         UnservedInterface, served_interfaces,
     };
+
+    /// `fleet:v1`: its members, its scope and its messages.
+    pub mod fleet {
+        pub use crate::internal::daemon_interface::fleet::*;
+    }
 }
 
 // -- mcp_exposure --
