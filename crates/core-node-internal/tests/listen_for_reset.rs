@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    GOAL_TIMEOUT, NodeRunTestTimeouts, RESULT_TIMEOUT, add_and_build_forking_node,
+    GOAL_TIMEOUT, RESULT_TIMEOUT, StartedCoreNode, TIMEOUTS, WAIT, add_and_build_forking_node,
     add_and_build_process_node, answer_readiness, build_staged_node,
     install_kill_on_shutdown_listener, is_process_running, poll_core_node,
     poll_core_node_with_timeout, send_node_add_and_wait, send_node_add_then_build,
@@ -15,6 +15,12 @@ use core_node_api::encoding::StackResetRequest;
 use node_stack::NodeStack;
 use std::path::PathBuf;
 use std::time::Duration;
+
+/// How long a test waits for the answer to a stack reset: the bound of the
+/// daemon on the reset, then [`WAIT`].
+fn reset_timeout(started: &StartedCoreNode) -> Duration {
+    core_node::stack_reset_timeout(started.node_stack.shutdown_grace().as_secs()) + WAIT
+}
 
 /// The instance id of the stack's root, which is the core node itself. A
 /// reset keeps it.
@@ -151,7 +157,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     // could have killed it.
     wait_until_process_exits(
         node_a_pid,
-        Duration::from_secs(10),
+        WAIT,
         &format!("node A process {node_a_pid} should be terminated by reset, not orphaned"),
     )
     .await;
@@ -216,12 +222,11 @@ async fn node_reset_force_kills_whole_process_group() {
     }
 
     // The reset request waits out the stuck node's cooperative window, then
-    // force-kills its group, so the client timeout must exceed
-    // force_kill_deadline(grace) + reap. Default grace is 5s.
+    // force-kills its group, within the bound of the daemon on a reset.
     poll_core_node_with_timeout(
         &started_core_node,
         &StackResetRequest::new(),
-        Duration::from_secs(30),
+        reset_timeout(&started_core_node),
     )
     .await;
 
@@ -230,7 +235,7 @@ async fn node_reset_force_kills_whole_process_group() {
     // The node and every grandchild must be gone, with no orphans left behind.
     wait_until_process_exits(
         node_pid,
-        Duration::from_secs(5),
+        WAIT,
         &format!("node process {node_pid} should be gone after reset"),
     )
     .await;
@@ -299,8 +304,6 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -316,10 +319,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(10),
-            result: Duration::from_secs(30),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -337,19 +337,14 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     let _kill_on_shutdown =
         install_kill_on_shutdown_listener(&started, TARGET_NODE_NAME, &instance_id, pid).await;
 
-    poll_core_node_with_timeout(&started, &StackResetRequest::new(), Duration::from_secs(30)).await;
+    poll_core_node_with_timeout(&started, &StackResetRequest::new(), reset_timeout(&started)).await;
 
     assert_eq!(
         started.node_stack.len(),
         1,
         "only the root should remain after reset"
     );
-    wait_until_process_exits(
-        pid,
-        Duration::from_secs(5),
-        "node process should be gone after reset",
-    )
-    .await;
+    wait_until_process_exits(pid, WAIT, "node process should be gone after reset").await;
 
     // The instance is removed from EVERY state, not left as a terminal record.
     assert!(
@@ -481,10 +476,7 @@ async fn a_start_stopped_by_a_reset_runs_the_node_s_shutdown_hook() {
                 common::default_instance_plan(INSTANCE_ID),
                 NODE_NAME,
                 NODE_TAG,
-                &NodeRunTestTimeouts {
-                    goal: Duration::from_secs(10),
-                    result: Duration::from_secs(120),
-                },
+                &TIMEOUTS,
                 Some(feedback_tx),
                 env_vars,
             )
@@ -495,7 +487,7 @@ async fn a_start_stopped_by_a_reset_runs_the_node_s_shutdown_hook() {
     // The daemon reports the ready signal of the instance; from then on the
     // start waits for a setup that waits until it is stopped.
     let ready_line = format!("`{INSTANCE_ID}` is ready");
-    tokio::time::timeout(Duration::from_secs(60), async {
+    tokio::time::timeout(WAIT, async {
         while let Some(feedback) = feedback_rx.recv().await {
             if feedback.line.contains(&ready_line) {
                 return;
@@ -512,12 +504,7 @@ async fn a_start_stopped_by_a_reset_runs_the_node_s_shutdown_hook() {
         "the setup still waits, and the hook has not run"
     );
 
-    poll_core_node_with_timeout(
-        &started,
-        &StackResetRequest::new(),
-        core_node::stack_reset_timeout(started.node_stack.shutdown_grace().as_secs()),
-    )
-    .await;
+    poll_core_node_with_timeout(&started, &StackResetRequest::new(), reset_timeout(&started)).await;
 
     assert_eq!(
         std::fs::read_to_string(&marker).expect("the shutdown hook should have left its marker"),

@@ -1,16 +1,15 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeRunTestTimeouts, answer_readiness, poll_core_node_with_timeout,
-    poll_node_info, real_build_and_spawn_instance, send_node_add_then_build,
-    send_node_run_and_wait, start_core_node_with_mock_messenger, write_peppy_json5,
+    AbortOnDrop, TIMEOUTS, answer_readiness, poll_core_node, poll_node_info,
+    real_build_and_spawn_instance, send_node_add_then_build, send_node_run_and_wait,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::runtime::Name;
 use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
 use core_node_api::{InstanceState, NodeStage};
 use peppylib::messaging::MessengerHandle;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Happy path: add a node + start an instance, then `node info` reports the
 /// stage, instance list, run logs, and (after it's set) the add log path.
@@ -32,7 +31,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
             },
             execution: {
                 language: "rust",
-                run_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "300"]
             }
         }"#;
     write_peppy_json5(node_dir.path(), peppy_json5);
@@ -56,7 +55,7 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     .await;
 
     let request = NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG);
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5)).await;
+    let info_response = poll_node_info(&started_core_node, &request).await;
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -114,7 +113,6 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     let info_response = poll_node_info(
         &started_core_node,
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        Duration::from_secs(5),
     )
     .await;
     assert_eq!(
@@ -135,7 +133,6 @@ async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     let info_response = poll_node_info(
         &started_core_node,
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        Duration::from_secs(5),
     )
     .await;
     assert!(
@@ -165,7 +162,7 @@ async fn node_info_has_instance_ids() {
             },
             execution: {
                 language: "rust",
-                run_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "300"]
             }
         }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
@@ -174,8 +171,6 @@ async fn node_info_has_instance_ids() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
     )
     .await
     .expect("node_add should complete");
@@ -195,10 +190,7 @@ async fn node_info_has_instance_ids() {
         instance_plan_1,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(10),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -212,10 +204,7 @@ async fn node_info_has_instance_ids() {
         instance_plan_2,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(10),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -225,7 +214,6 @@ async fn node_info_has_instance_ids() {
     let info_response = poll_node_info(
         &started_core_node,
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        Duration::from_secs(5),
     )
     .await;
 
@@ -265,10 +253,9 @@ async fn node_info_reports_not_in_stack_and_recovers() {
 
     // First: an unknown node; the daemon answers `NotInStack` on the
     // successful response channel. No error log, no transport fault.
-    let response = poll_core_node_with_timeout(
+    let response = poll_core_node(
         &started_core_node,
         &NodeInfoRequest::new("ghost_node", "v999"),
-        Duration::from_secs(2),
     )
     .await;
     assert!(
@@ -288,7 +275,7 @@ async fn node_info_reports_not_in_stack_and_recovers() {
             },
             execution: {
                 language: "rust",
-                run_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "300"]
             }
         }"#;
     write_peppy_json5(node_dir.path(), peppy_json5);
@@ -302,7 +289,6 @@ async fn node_info_reports_not_in_stack_and_recovers() {
     let info_response = poll_node_info(
         &started_core_node,
         &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        Duration::from_secs(5),
     )
     .await;
     assert_eq!(
@@ -328,7 +314,7 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
             manifest: { name: "{NODE_NAME}", tag: "v1" },
             execution: {
                 language: "rust",
-                run_cmd: ["sleep", "30"],
+                run_cmd: ["sleep", "300"],
                 endpoints: {
                     viewer: { kind: "page", description: "The viewer page." },
                 },
@@ -340,8 +326,6 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         node_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -374,22 +358,14 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
         common::default_instance_plan(INSTANCE_ID),
         NODE_NAME,
         "v1",
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(15),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
     .expect("node_run action should complete");
     start_response.end.completed();
 
-    let info = poll_node_info(
-        &started_core_node,
-        &NodeInfoRequest::new(NODE_NAME, "v1"),
-        Duration::from_secs(5),
-    )
-    .await;
+    let info = poll_node_info(&started_core_node, &NodeInfoRequest::new(NODE_NAME, "v1")).await;
     assert_eq!(info.instances.len(), 1);
     assert_eq!(
         info.instances[0].endpoints,

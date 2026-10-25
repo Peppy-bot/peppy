@@ -2,11 +2,11 @@ mod common;
 
 use common::{
     AbortOnDrop, FeedbackDrainOutcome, GOAL_TIMEOUT, GoalEnd, NodeAddSource, RESULT_TIMEOUT,
-    StartedCoreNode, TEST_GIT_HASH, add_and_build_forking_node, assert_failure, build_staged_node,
-    commit_path, create_tar_zst_from_dir, entity_artifact_path, is_process_running,
-    send_node_add_and_wait, send_node_add_and_wait_with_force, spawn_real_stuck_instance,
-    start_core_node_with_mock_messenger, wait_until_action_completes, wait_until_process_exits,
-    wait_until_service_reachable, write_peppy_json5,
+    StartedCoreNode, TEST_GIT_HASH, WAIT, add_and_build_forking_node, assert_failure,
+    build_staged_node, commit_path, create_tar_zst_from_dir, entity_artifact_path,
+    is_process_running, send_node_add_and_wait, send_node_add_and_wait_with_force,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger, wait_until_action_completes,
+    wait_until_process_exits, wait_until_service_reachable, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::failure_kind::PeppyFailureKind;

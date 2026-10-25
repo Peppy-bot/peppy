@@ -5,6 +5,13 @@ use peppylib::messaging::{MessengerHandle, ServiceTarget};
 use peppylib::runtime::TaskHandle;
 use std::time::Duration;
 
+/// How long a test waits for one event: a state, a stack log line, the exit
+/// of a process, the answer to a request that the daemon answers without
+/// long work. A test that waits for a request with a bound of the daemon
+/// waits that bound, then this. No event of these tests comes near it on a
+/// host of any speed: a test runs into it only when the daemon does not act.
+pub const WAIT: Duration = Duration::from_secs(15);
+
 /// A wrapper around `TaskHandle` that aborts the task when dropped.
 pub struct AbortOnDrop<T>(pub TaskHandle<T>);
 
@@ -88,25 +95,21 @@ pub fn children_of(parent_pid: u32) -> Vec<u32> {
 /// from [`add_and_build_forking_node`](super::add_and_build_forking_node)
 /// forks, and returns their pids.
 pub async fn wait_for_forked_grandchildren(node_pid: u32) -> Vec<u32> {
-    poll_until(
-        Duration::from_secs(5),
-        "expected the node to fork two grandchildren",
-        || {
-            let children = children_of(node_pid);
-            (children.len() >= 2).then_some(children)
-        },
-    )
+    poll_until(WAIT, "expected the node to fork two grandchildren", || {
+        let children = children_of(node_pid);
+        (children.len() >= 2).then_some(children)
+    })
     .await
 }
 
-/// Polls until every process in `grandchildren` has exited, each within 5 s.
-/// `killed_by` names the action whose group kill must have reaped them, for
-/// the timeout message.
+/// Polls until every process in `grandchildren` has exited, each within
+/// [`WAIT`]. `killed_by` names the action whose group kill must have reaped
+/// them, for the timeout message.
 pub async fn wait_until_grandchildren_exit(grandchildren: &[u32], killed_by: &str) {
     for &grandchild in grandchildren {
         wait_until_process_exits(
             grandchild,
-            Duration::from_secs(5),
+            WAIT,
             &format!("grandchild {grandchild} should be gone after {killed_by} (group kill)"),
         )
         .await;
@@ -114,7 +117,7 @@ pub async fn wait_until_grandchildren_exit(grandchildren: &[u32], killed_by: &st
 }
 
 /// Polls `ServiceMessenger::is_reachable` until the named service responds or
-/// `timeout` expires. It is the broker-propagation barrier for tests that
+/// [`WAIT`] expires. It is the broker-propagation barrier for tests that
 /// spawn a `handle_requests` task and then need to be sure callers can route
 /// to it.
 pub async fn wait_until_service_reachable(
@@ -124,10 +127,9 @@ pub async fn wait_until_service_reachable(
     to_service_name: &str,
     target_core_node: &str,
     target_instance_id: &str,
-    timeout: Duration,
 ) {
     use peppylib::messaging::ServiceMessenger;
-    let deadline = std::time::Instant::now() + timeout;
+    let deadline = std::time::Instant::now() + WAIT;
     loop {
         if let Ok(true) = ServiceMessenger::is_reachable(
             messenger,
@@ -148,7 +150,7 @@ pub async fn wait_until_service_reachable(
             panic!(
                 "service {to_node_name}/{to_service_name} on \
                  {target_core_node}/{target_instance_id} did not become \
-                 reachable within {timeout:?}"
+                 reachable within {WAIT:?}"
             );
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
