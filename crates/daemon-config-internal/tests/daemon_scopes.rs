@@ -3,15 +3,16 @@
 //! through a copy, and the launch checks every scope meets once the
 //! exposure deployments are resolved.
 
+use config::node::NodeConfigParser;
 use core_node_api::encoding::CopyReference;
 use daemon_config::daemon_interface::DaemonInterface;
+use daemon_config::launcher::DeploymentTargets;
 use daemon_config::launcher::{
     AppliedChange, ComposedLaunch, CompositionError, CopyMembership, DaemonScopeError,
     DaemonScopeRefusals, Deployment, DeploymentInstance, DeploymentSource, JoinRequest,
     JoinableNodes, PeppyLauncher, PeppyLauncherParser, PreparedLauncher, RunningStack, ScopeCheck,
     SkipReason, UnitSelection, check_daemon_scopes,
 };
-use daemon_config::mcp_deployment::DeploymentTargets;
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -99,12 +100,38 @@ fn instance<'a>(flat: &'a PeppyLauncher, id: &str) -> &'a DeploymentInstance {
         .unwrap_or_else(|| panic!("{id} is in the plan"))
 }
 
+/// The manifest of `director:v1`: a node with the daemon target `fleet` of
+/// `fleet:v1` beside the contract slot `arm`.
+const DIRECTOR: &str = r#"{
+    peppy_schema: "node/v1",
+    manifest: { name: "director", tag: "v1", depends_on: {
+        contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
+        daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }],
+    } },
+    interfaces: {
+        services: { consumes: [{ link_id: "fleet", name: "list" }] },
+        actions: { consumes: [{ link_id: "fleet", name: "lease" }] },
+    },
+    execution: { language: "rust", run_cmd: ["./director"] },
+}"#;
+
+/// The targets of `director:v1`, read from its manifest as a launch reads
+/// them.
+fn director_targets() -> DeploymentTargets {
+    let config = NodeConfigParser::from_content(DIRECTOR).expect("the director parses");
+    DeploymentTargets::of_node(&config.manifest).expect("this peppy serves fleet:v1")
+}
+
 /// The targets the resolution of each deployment would report: the
-/// framework's endpoint serves the daemon target `stack`, the camera
-/// endpoint the contract target `front_camera`, and a node none.
+/// framework's endpoint serves the daemon target `stack`, the copies
+/// endpoint the daemon target `copies` of the same interface, the camera
+/// endpoint the contract target `front_camera`, the director its manifest's
+/// targets, and every other node none.
 fn targets_of(deployment: &Deployment) -> DeploymentTargets {
-    let DeploymentSource::Exposures { exposures } = &deployment.source else {
-        return DeploymentTargets::default();
+    let exposures = match &deployment.source {
+        DeploymentSource::Exposures { exposures } => exposures,
+        DeploymentSource::Node { name, .. } if name == "director" => return director_targets(),
+        DeploymentSource::Node { .. } => return DeploymentTargets::default(),
     };
     let mut targets = DeploymentTargets::default();
     for exposure in exposures {
@@ -114,8 +141,13 @@ fn targets_of(deployment: &Deployment) -> DeploymentTargets {
                     .daemon
                     .insert("stack".to_owned(), DaemonInterface::StackCopies);
             }
+            "copies_controls" => {
+                targets
+                    .daemon
+                    .insert("copies".to_owned(), DaemonInterface::StackCopies);
+            }
             "camera" => {
-                targets.contract.insert("front_camera".to_owned());
+                targets.linked.insert("front_camera".to_owned());
             }
             other => panic!("no targets known for exposure `{other}`"),
         }
@@ -498,7 +530,7 @@ fn an_instance_that_serves_no_daemon_target_takes_no_scope() {
     );
     assert!(
         refused[0].to_string().starts_with(
-            "instance `arm_inst` declares `daemon_scopes`, but it serves no daemon target"
+            "instance `arm_inst` declares `daemon_scopes`, but it has no daemon target"
         ),
         "{}",
         refused[0]
@@ -522,11 +554,10 @@ fn a_scope_key_names_a_daemon_target_of_the_instance() {
     assert_eq!(
         messages,
         [
-            "`daemon_scopes.front_camera` of instance `mcp_inst` names no daemon target of its \
-             exposures (`front_camera` is a contract target, which takes `links`); its daemon \
-             targets: `stack`",
-            "`daemon_scopes.stacks` of instance `mcp_inst` names no daemon target of its \
-             exposures; its daemon targets: `stack`",
+            "`daemon_scopes.front_camera` of instance `mcp_inst` names none of its daemon \
+             targets (`front_camera` takes `links`, not a scope); its daemon targets: `stack`",
+            "`daemon_scopes.stacks` of instance `mcp_inst` names none of its daemon targets; its \
+             daemon targets: `stack`",
         ]
     );
 }
@@ -730,7 +761,7 @@ fn a_daemon_target_takes_no_link() {
     assert!(
         refused[0]
             .to_string()
-            .contains("which takes no link: the daemon that started the server serves it, and the target takes a scope instead"),
+            .contains("which takes no link: the daemon that runs the instance serves it, and the target takes a scope instead"),
         "{}",
         refused[0]
     );
@@ -760,6 +791,212 @@ fn every_refusal_is_reported_at_once() {
     assert!(
         instances.iter().all(|id| rendered.contains(id)),
         "{rendered}"
+    );
+}
+
+// -- daemon targets of nodes ----------------------------------------------
+
+/// The deployment of the director, whose one instance `director_inst` is
+/// written `instance`.
+fn director_deployment(instance: &str) -> String {
+    format!(r#"{{ source: {{ name: "director", tag: "v1" }}, instances: [{instance}] }}"#)
+}
+
+/// A node's targets are its slots: each daemon target with its interface,
+/// and every other slot as a target that takes `links`. A daemon target
+/// that names an interface this peppy does not serve is refused with the
+/// registry's message.
+#[test]
+fn the_targets_of_a_node_are_read_from_its_manifest() {
+    let targets = director_targets();
+    assert_eq!(
+        targets.daemon.into_iter().collect::<Vec<_>>(),
+        [("fleet".to_owned(), DaemonInterface::Fleet)]
+    );
+    assert_eq!(targets.linked.into_iter().collect::<Vec<_>>(), ["arm"]);
+
+    for (tag_and_name, expected) in [
+        (
+            r#"name: "fleet", tag: "v2""#,
+            "daemon target `fleet`: daemon interface `fleet:v2` is not one this peppy serves; it \
+             serves `fleet` at tag `v1` only",
+        ),
+        (
+            r#"name: "robots", tag: "v1""#,
+            "daemon target `fleet`: daemon interface `robots:v1` is not one this peppy serves; \
+             it serves `stack_copies:v1`, `fleet:v1`",
+        ),
+    ] {
+        let config = NodeConfigParser::from_content(
+            &DIRECTOR.replace(r#"name: "fleet", tag: "v1""#, tag_and_name),
+        )
+        .expect("the manifest parses");
+        let refusals =
+            DeploymentTargets::of_node(&config.manifest).expect_err("the interface is refused");
+        assert_eq!(refusals.len(), 1, "{refusals:?}");
+        assert!(
+            refusals[0].starts_with(expected),
+            "`{expected}` does not start: {}",
+            refusals[0]
+        );
+    }
+}
+
+/// A node's daemon target takes a scope of its interface, or a vacancy, on
+/// an instance outside every copy on the coordinator.
+#[test]
+fn the_daemon_target_of_a_node_takes_a_scope_or_a_vacancy() {
+    for scope in [
+        r#"{ members: ["list", "lease", "check_move"] }"#,
+        r#"{ vacant: "this stack has no lease holder" }"#,
+    ] {
+        let (prepared, launcher) = flat(&director_deployment(&format!(
+            r#"{{ instance_id: "director_inst", links: {{ arm: {{ vacant: "no arm here" }} }},
+                  daemon_scopes: {{ fleet: {scope} }} }}"#
+        )));
+        let selection = prepared.launch(&[], &[]).expect("composes").selection;
+        let joinable = check(
+            &prepared,
+            &launcher,
+            &CopyMembership::default(),
+            ScopeCheck::Launch(&selection),
+        )
+        .unwrap_or_else(|refusals| panic!("{scope} holds: {refusals}"));
+        assert_eq!(
+            joinable,
+            JoinableNodes::default(),
+            "a fleet scope brings no node"
+        );
+    }
+}
+
+/// The daemon target of a node is held to the rules of every daemon target:
+/// a scope that parses, no link, no placement off the coordinator, no scope
+/// key of another slot.
+#[test]
+fn the_daemon_target_of_a_node_is_held_to_every_rule() {
+    let (prepared, launcher) = flat(&director_deployment(r#"{ instance_id: "director_inst" }"#));
+    assert_eq!(
+        refusals(&prepared, &launcher),
+        [DaemonScopeError::MissingScope {
+            instance: "director_inst".to_owned(),
+            daemon_target: "fleet".to_owned(),
+            interface: "fleet:v1".to_owned(),
+        }]
+    );
+
+    let (prepared, launcher) = flat(&director_deployment(
+        r#"{ instance_id: "director_inst", core_node: "robot_pc",
+             links: { fleet: "director_inst" },
+             daemon_scopes: { fleet: { members: [] }, arm: {} } }"#,
+    ));
+    let refused = refusals(&prepared, &launcher);
+    assert_eq!(
+        refused[..3],
+        [
+            DaemonScopeError::PlacedOffCoordinator {
+                instance: "director_inst".to_owned(),
+                daemon_target: "fleet".to_owned(),
+                core_node: "robot_pc".to_owned(),
+            },
+            DaemonScopeError::LinkToDaemonTarget {
+                instance: "director_inst".to_owned(),
+                daemon_target: "fleet".to_owned(),
+            },
+            DaemonScopeError::UnknownScopeKey {
+                instance: "director_inst".to_owned(),
+                key: "arm".to_owned(),
+                linked_target: true,
+                daemon_targets: "`fleet`".to_owned(),
+            },
+        ],
+        "{refused:?}"
+    );
+    assert_eq!(refused.len(), 4, "{refused:?}");
+    let message = refused[3].to_string();
+    assert!(
+        message.starts_with(
+            "the scope of daemon target `fleet` (fleet:v1) on instance `director_inst` does not \
+             parse:"
+        ) && message.contains("`members` names no member"),
+        "{message}"
+    );
+    assert_eq!(
+        refused[2].to_string(),
+        "`daemon_scopes.arm` of instance `director_inst` names none of its daemon targets \
+         (`arm` takes `links`, not a scope); its daemon targets: `fleet`"
+    );
+}
+
+/// An instance of a node with a daemon target runs outside every copy: an
+/// option of the axis that runs as copies cannot deploy it.
+#[test]
+fn a_node_with_a_daemon_target_runs_outside_every_copy() {
+    let prepared = load(&simulation_mcp(
+        "",
+        &format!(
+            "directed: {{ deployments: [{}] }},",
+            director_deployment(r#"{ instance_id: "director_inst" }"#)
+        ),
+    ));
+    let composed = prepared
+        .launch(&[], &[launch_join("directed", "delta")])
+        .expect("composes");
+    let copies = CopyMembership::of(composed.copies());
+    let refused = check(
+        &prepared,
+        &composed.launcher,
+        &copies,
+        ScopeCheck::Launch(&composed.selection),
+    )
+    .expect_err("the copy's instance has a daemon target")
+    .0;
+    assert!(
+        refused.contains(&DaemonScopeError::InCopy {
+            instance: "delta_director_inst".to_owned(),
+            copy: "delta".to_owned(),
+            daemon_target: "fleet".to_owned(),
+        }),
+        "{refused:?}"
+    );
+    let message = refused
+        .iter()
+        .find(|refusal| matches!(refusal, DaemonScopeError::InCopy { .. }))
+        .expect("the copy is refused")
+        .to_string();
+    assert_eq!(
+        message,
+        "instance `delta_director_inst` of copy `delta` has daemon target `fleet`; an instance \
+         with a daemon target runs on the coordinator and belongs to the stack, so deploy it \
+         outside the options of an axis that runs as copies"
+    );
+}
+
+/// An instance has at most one daemon target of each interface, whichever
+/// exposures give them: a call names no target, so the daemon reads each
+/// call against the one scope of its interface.
+#[test]
+fn an_instance_has_one_daemon_target_of_each_interface() {
+    let (prepared, launcher) = flat(
+        r#"{ source: { exposures: ["framework_controls:v1", "copies_controls:v1"] }, instances: [
+               { instance_id: "mcp_inst", daemon_scopes: {
+                   stack: { vacant: "no copy here" }, copies: { vacant: "no copy here" } } } ] }"#,
+    );
+    let refused = refusals(&prepared, &launcher);
+    assert_eq!(
+        refused,
+        [DaemonScopeError::TargetsOfOneInterface {
+            instance: "mcp_inst".to_owned(),
+            interface: "stack_copies:v1".to_owned(),
+            daemon_targets: "`copies`, `stack`".to_owned(),
+        }]
+    );
+    assert_eq!(
+        refused[0].to_string(),
+        "instance `mcp_inst` has daemon targets `copies`, `stack` of one interface, \
+         `stack_copies:v1`; a call names no daemon target, so the daemon reads each call of an \
+         interface against the one scope of that interface that its sender has: give the \
+         instance one daemon target of each interface"
     );
 }
 

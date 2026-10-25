@@ -617,6 +617,18 @@ pub enum ParsingError {
     /// observer).
     #[error(transparent)]
     LinkUnknownSlot(Box<LinkUnknownSlot>),
+    /// A `links:` key (or `--link KEY`) that names a daemon target of the
+    /// instance's node, a `depends_on.daemon` entry, which the daemon that
+    /// runs the instance binds itself.
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` names daemon target `{link}`, which \
+         takes no link: the daemon that runs the instance serves it, and a launcher gives the \
+         target a scope in `daemon_scopes` instead"
+    )]
+    LinkToDaemonTarget {
+        owner_instance_id: String,
+        link: String,
+    },
     /// A `links:` value on a scalar participant pairing slot (`one` or
     /// `zero_or_one`) arrived in array (or repeated-flag) shape. Such a slot
     /// holds one pair, so it takes exactly one target

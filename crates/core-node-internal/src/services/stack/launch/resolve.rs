@@ -503,9 +503,10 @@ struct ResolvedDeployment {
     /// How the deployment's node reads the sets its slots hold: the
     /// built-in server's comes from its plan, and a node reads them whole.
     addressing: daemon_config::launcher::MemberAddressing,
-    /// The targets the built-in server's exposures serve, from its plan;
-    /// empty for a node.
-    targets: daemon_config::mcp_deployment::DeploymentTargets,
+    /// The targets of the deployment: those of the built-in server's
+    /// exposures, from its plan, or the slots and daemon targets of a
+    /// node's manifest.
+    targets: daemon_config::launcher::DeploymentTargets,
 }
 
 /// Whether any instance of `deployment` is placed off this daemon, which is
@@ -601,13 +602,17 @@ async fn resolve_one(
     // config and pin are the two largest things in it.
     let mut nodes = closure.nodes;
     let root = nodes.remove(0);
+    // A daemon target that names an interface this peppy does not serve
+    // refuses the launch here, before anything is reserved.
+    let targets = daemon_config::launcher::DeploymentTargets::of_node(&root.config.manifest)
+        .map_err(|refusals| format!("deployment {label}: {}", refusals.join("; ")))?;
     Ok(ResolvedDeployment {
         config: root.config,
         root: DeploymentRoot::Node(root.pin),
         closure_pins: dep_pins,
         pin_manifests: manifests,
         addressing: daemon_config::launcher::MemberAddressing::WholeSet,
-        targets: daemon_config::mcp_deployment::DeploymentTargets::default(),
+        targets,
     })
 }
 

@@ -14,6 +14,7 @@ mod stack_copies;
 
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
 use crate::internal::launcher::{JoinableNodes, PreparedLauncher, UnitSelection, VacantReason};
+use config::node::{DaemonTargetDependency, DependsOn};
 use peppy_mcp_catalog::{DaemonInterfaceRef, ExposureBundle, McpExposure, ResolvedInterface};
 use std::sync::LazyLock;
 
@@ -116,6 +117,15 @@ impl DaemonInterface {
         Ok(interface)
     }
 
+    /// The interface that a `depends_on.daemon` entry of a node names, when
+    /// this peppy serves it at the named tag.
+    pub fn of_target(target: &DaemonTargetDependency) -> Result<Self, UnservedInterface> {
+        Self::served(&DaemonInterfaceRef {
+            name: target.name.clone(),
+            tag: target.tag.clone(),
+        })
+    }
+
     /// Parses a scope a launcher gives a target that names this interface
     /// into the interface's scope type, which holds the scope's rules.
     pub fn parse_scope(self, value: &serde_json::Value) -> Result<DaemonScope, String> {
@@ -211,15 +221,48 @@ pub enum UnservedInterface {
 pub fn served_interfaces(
     exposure: &McpExposure,
 ) -> Result<Vec<(String, DaemonInterface)>, Vec<String>> {
+    collect_served(
+        exposure
+            .surface
+            .targets()
+            .into_iter()
+            .filter_map(|(target, selection, _)| {
+                let reference = selection.source.daemon()?;
+                Some((
+                    target.clone(),
+                    DaemonInterface::served(reference)
+                        .map_err(|error| format!("target `{target}`: {error}")),
+                ))
+            }),
+    )
+}
+
+/// The daemon interface of each daemon target of a node, by its link_id, in
+/// the order of `depends_on.daemon`, resolved through the registry, or one
+/// refusal per target that names an interface this peppy does not serve.
+pub fn served_targets(
+    depends_on: &DependsOn,
+) -> Result<Vec<(String, DaemonInterface)>, Vec<String>> {
+    collect_served(depends_on.daemon.iter().map(|target| {
+        (
+            target.link_id.clone(),
+            DaemonInterface::of_target(target)
+                .map_err(|error| format!("daemon target `{}`: {error}", target.link_id)),
+        )
+    }))
+}
+
+/// Every served target of `resolved`, or every refusal when one target or
+/// more names an interface this peppy does not serve.
+fn collect_served(
+    resolved: impl Iterator<Item = (String, Result<DaemonInterface, String>)>,
+) -> Result<Vec<(String, DaemonInterface)>, Vec<String>> {
     let mut served = Vec::new();
     let mut refusals = Vec::new();
-    for (target, selection, _) in exposure.surface.targets() {
-        let Some(reference) = selection.source.daemon() else {
-            continue;
-        };
-        match DaemonInterface::served(reference) {
-            Ok(interface) => served.push((target.clone(), interface)),
-            Err(error) => refusals.push(format!("target `{target}`: {error}")),
+    for (target, interface) in resolved {
+        match interface {
+            Ok(interface) => served.push((target, interface)),
+            Err(refusal) => refusals.push(refusal),
         }
     }
     if refusals.is_empty() {
