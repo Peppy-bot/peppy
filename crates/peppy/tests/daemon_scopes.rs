@@ -134,8 +134,14 @@ fn launcher_with(
 
 const ENDPOINT: &str = r#"{ instance_id: "framework_controls_inst", arguments: { port: 8903 } }"#;
 
+/// The scope of the `fleet` target of `framework_controls:v1`, as the
+/// framework endpoints of the launchers give it.
+const FLEET_SCOPE: &str = r#"{ members: ["list", "halt", "clear_halt"] }"#;
+
 fn scoped(scope: &str) -> String {
-    format!(r#"{{ target: "framework_controls_inst", set_daemon_scopes: {{ stack: {scope} }} }}"#)
+    format!(
+        r#"{{ target: "framework_controls_inst", set_daemon_scopes: {{ stack: {scope}, fleet: {FLEET_SCOPE} }} }}"#
+    )
 }
 
 fn refusal(dirs: &PeppyDirs, launcher: PathBuf) -> String {
@@ -157,7 +163,7 @@ fn a_scoped_daemon_target_resolves_with_a_cold_nodes_cache() {
     let report = report.join("\n");
     assert!(
         report.contains(
-            "daemon scopes hold: 1 daemon target(s) scoped and placed on the coordinator"
+            "daemon scopes hold: 2 daemon target(s) scoped and placed on the coordinator"
         ),
         "{report}"
     );
@@ -268,7 +274,7 @@ fn scopes_and_links_of_the_wrong_instance_or_target_are_refused() {
         ),
     );
     for expected in [
-        "instance `framework_controls_inst` has daemon target `stack` and declares \
+        "instance `framework_controls_inst` has daemon target `fleet` and declares \
          `core_node: \"robot_pc\"`",
         "`links.stack` of instance `framework_controls_inst` names daemon target `stack`, which \
          takes no link",
@@ -291,7 +297,7 @@ fn scopes_and_links_of_the_wrong_instance_or_target_are_refused() {
     assert!(
         error.contains(
             "`daemon_scopes.recorder` of instance `framework_controls_inst` names none of its \
-             daemon targets; its daemon targets: `stack`"
+             daemon targets; its daemon targets: `fleet`, `stack`"
         ) && !error.contains("does not parse"),
         "{error}"
     );
@@ -374,7 +380,7 @@ fn an_exposure_not_in_the_caches_skips_its_own_checks_and_no_other() {
     );
     assert!(
         report.contains(
-            "daemon scopes hold: 1 daemon target(s) scoped and placed on the coordinator"
+            "daemon scopes hold: 2 daemon target(s) scoped and placed on the coordinator"
         ),
         "{report}"
     );
@@ -390,7 +396,7 @@ fn an_exposure_not_in_the_caches_skips_its_own_checks_and_no_other() {
     );
     assert!(
         error.contains(
-            "instance `framework_controls_inst` has daemon target `stack` and declares \
+            "instance `framework_controls_inst` has daemon target `fleet` and declares \
              `core_node: \"robot_pc\"`"
         ),
         "{error}"
@@ -457,7 +463,7 @@ fn featured_launcher(root: &Path, features: &str, constraints: &str) -> PathBuf 
                 max_copies: 2,
                 options: [{{ option: "featured_sim", model: "featured", description: "A featured robot",
                              features: [{features}] }}],
-            }} }} }}],
+            }}, fleet: {FLEET_SCOPE} }} }}],
         }}"#
         ),
     )
@@ -590,7 +596,7 @@ fn the_daemon_target_of_a_cached_node_is_checked_and_an_uncached_one_is_reported
     let report = report.join("\n");
     assert!(
         report.contains(
-            "daemon scopes hold: 2 daemon target(s) scoped and placed on the coordinator"
+            "daemon scopes hold: 3 daemon target(s) scoped and placed on the coordinator"
         ) && !report.contains("node deployment(s) whose manifest"),
         "{report}"
     );
