@@ -36,15 +36,9 @@ use peppylib::messaging::{
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::warn;
 
 use super::common::{SlotUpdateClient, SlotUpdateTarget};
-
-/// How long a single `observation_update` delivery may take before it is
-/// treated as failed. The service is pre-setup (registered before the node's
-/// ready signal), so a healthy observer answers promptly.
-pub(crate) const OBSERVATION_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A source instance's full address. Two daemons can host same-named
 /// instances, so the pair is the identity: keying the registry on the instance
@@ -824,7 +818,7 @@ impl ObservationCoordinator {
                 target,
                 OBSERVATION_UPDATE_SERVICE,
                 payload,
-                OBSERVATION_UPDATE_TIMEOUT,
+                self.updates.node_stack().reply_bounds().observation_update,
                 "observation_update rejected",
             )
             .await

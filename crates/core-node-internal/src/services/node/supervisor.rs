@@ -13,7 +13,7 @@ use core_node_api::encoding::NodeRunResult;
 use node_stack::{ActionLog, Attempt, EntityHandle, NodeEntity, RespawnInputs};
 use peppylib::messaging::Failure;
 use std::num::NonZeroU32;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -102,8 +102,9 @@ pub(crate) fn log_next_attempt(stack_log: &StackLog, next: &Attempt) {
     }
 }
 
-/// Spawns the task that waits what is left of a scheduled attempt's delay
-/// and respawns the instance; a stop that claimed the slot since ends it.
+/// Spawns the background task of the instance that waits until a scheduled
+/// attempt is due and respawns the instance; a stop that claimed the slot
+/// since ends it.
 pub(crate) fn spawn_next_attempt(target: RestartTarget, next: Attempt) {
     if let Attempt::Scheduled {
         attempt,
@@ -113,27 +114,34 @@ pub(crate) fn spawn_next_attempt(target: RestartTarget, next: Attempt) {
     } = next
         && !token.is_cancelled()
     {
-        let wait = delay.saturating_sub(scheduled_at.elapsed());
-        tokio::spawn(restart_task(target, attempt, wait, token));
+        let tasks = target.action.node_stack.instance_tasks().clone();
+        let instance_id = target.instance_id.clone();
+        tasks.spawn(
+            &instance_id,
+            restart_task(target, attempt, scheduled_at, delay, token),
+        );
     }
 }
 
-/// Waits `wait`, is admitted onto the stack, and starts the next process of
-/// the instance; a failed start takes the backoff's next attempt, a refusal
-/// ends the restarts.
+/// Waits, on the time of the stack, until `delay` after `scheduled_at`, is
+/// admitted onto the stack, and starts the next process of the instance; a
+/// failed start takes the backoff's next attempt, a refusal ends the
+/// restarts.
 async fn restart_task(
     target: RestartTarget,
     attempt: NonZeroU32,
-    wait: Duration,
+    scheduled_at: Instant,
+    delay: Duration,
     restart_token: CancellationToken,
 ) {
     let reset = target.action.slice_ownership.stack.cancellation();
+    let time = target.action.node_stack.time().clone();
     tokio::select! {
         biased;
         _ = target.action.shutdown_token.cancelled() => return,
         _ = reset.cancelled() => return,
         _ = restart_token.cancelled() => return,
-        _ = tokio::time::sleep(wait) => {}
+        _ = time.sleep_from(scheduled_at, delay) => {}
     }
     let Some(admission) = target
         .action
@@ -169,6 +177,7 @@ async fn restart_task(
                 &target.instance_id,
                 ExitCause::Message(reason.clone()),
                 &target.action.restart_backoff,
+                target.action.node_stack.time().now(),
             ) else {
                 return;
             };
@@ -279,7 +288,6 @@ mod tests {
     use super::*;
     use daemon_config::consts::PeppyDirs;
     use log_export::LogExporter;
-    use std::time::Instant;
 
     /// The scheduled attempt and the capped one, each under `token`.
     fn attempts(token: &CancellationToken) -> [Attempt; 2] {

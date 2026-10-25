@@ -254,6 +254,8 @@ pub fn default_arguments() -> CoreNodeArguments {
         // Zero: the emulation runs on an in-memory mock broker that is
         // authoritative immediately, with no links to settle.
         name_claim_settle: Duration::ZERO,
+        time_source: core_node::TimeSource::System,
+        reply_bounds: core_node::ReplyBounds::DEFAULT,
     }
 }
 

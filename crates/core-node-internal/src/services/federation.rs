@@ -186,6 +186,30 @@ pub struct SliceOwnership {
     /// of admissions (the next restart of an instance can be admitted before
     /// the last one's pair requests end), which a busy refusal names.
     admitted_restarts: Arc<Mutex<BTreeMap<Name, usize>>>,
+    /// The instances whose restart waits for its admission behind a change
+    /// of the stack, the reservation of a launch or a removal's hold, each
+    /// with its count of waits.
+    admission_waits: Arc<tokio::sync::watch::Sender<BTreeMap<Name, usize>>>,
+}
+
+/// A restart's wait for its admission, among the admission waits of its
+/// instance until it drops.
+struct AdmissionWait {
+    waits: Arc<tokio::sync::watch::Sender<BTreeMap<Name, usize>>>,
+    instance_id: Name,
+}
+
+impl Drop for AdmissionWait {
+    fn drop(&mut self) {
+        self.waits.send_modify(|waits| {
+            if let Some(count) = waits.get_mut(&self.instance_id) {
+                *count -= 1;
+                if *count == 0 {
+                    waits.remove(&self.instance_id);
+                }
+            }
+        });
+    }
 }
 
 /// A restart's admission: the stack's read guard, and its instance among
@@ -229,7 +253,28 @@ impl SliceOwnership {
             active: Mutex::default(),
             restart_holds: tokio::sync::watch::Sender::new(0),
             admitted_restarts: Arc::default(),
+            admission_waits: Arc::new(tokio::sync::watch::Sender::new(BTreeMap::new())),
         })
+    }
+
+    /// Records that the restart of `instance_id` waits for its admission,
+    /// until the returned wait drops.
+    fn admission_wait(&self, instance_id: &Name) -> AdmissionWait {
+        self.admission_waits
+            .send_modify(|waits| *waits.entry(instance_id.clone()).or_default() += 1);
+        AdmissionWait {
+            waits: Arc::clone(&self.admission_waits),
+            instance_id: instance_id.clone(),
+        }
+    }
+
+    /// Waits until the restart of `instance_id` waits for its admission.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn restart_waits_for_admission(&self, instance_id: &Name) {
+        let mut waits = self.admission_waits.subscribe();
+        let _ = waits
+            .wait_for(|waits| waits.contains_key(instance_id))
+            .await;
     }
 
     /// The instances whose restart holds an admission on this daemon.
@@ -411,7 +456,9 @@ impl SliceOwnership {
     /// Admits the restart of `instance_id`. Waits for the stack's mutation
     /// guard, gives up when a reset ran meanwhile, waits again while a
     /// reservation holds this daemon or a removal holds restarts off;
-    /// `cancel` ends the wait. `None` when `cancel` fires or a reset ran.
+    /// `cancel` ends the wait. Each wait counts among the admission waits of
+    /// the instance while it lasts. `None` when `cancel` fires or a reset
+    /// ran.
     pub(crate) async fn admit_restart(
         &self,
         cancel: &CancellationToken,
@@ -419,15 +466,22 @@ impl SliceOwnership {
     ) -> Option<RestartAdmission> {
         loop {
             let reset = self.stack.cancellation();
-            let guard = tokio::select! {
-                _ = cancel.cancelled() => return None,
-                guard = self.stack.admit_node_goal_waiting() => guard,
+            let guard = match self.stack.try_admit_node_goal() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    let _waiting = self.admission_wait(instance_id);
+                    tokio::select! {
+                        _ = cancel.cancelled() => return None,
+                        guard = self.stack.admit_node_goal_waiting() => guard,
+                    }
+                }
             };
             if reset.is_cancelled() {
                 return None;
             }
             if let Some(lifetime) = self.held_lifetime() {
                 drop(guard);
+                let _waiting = self.admission_wait(instance_id);
                 tokio::select! {
                     _ = cancel.cancelled() => return None,
                     _ = lifetime.ended() => continue,
@@ -447,6 +501,7 @@ impl SliceOwnership {
                 });
             }
             drop(guard);
+            let _waiting = self.admission_wait(instance_id);
             tokio::select! {
                 _ = cancel.cancelled() => return None,
                 _ = holds.wait_for(|holds| *holds == 0) => {}

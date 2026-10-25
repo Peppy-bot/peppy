@@ -42,7 +42,7 @@ pub use documents::listen_for_instance_documents;
 pub use health_monitor::HealthMonitorPolicy;
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
-pub use node_stack::RestartBackoff;
+pub use node_stack::{ManualTime, ReplyBounds, RestartBackoff, TimeSource};
 pub use observation::ObservationCoordinator;
 pub use pairing::PairingCoordinator;
 pub(crate) use relationship_notify::RelationshipNotifier;

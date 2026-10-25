@@ -28,8 +28,11 @@
 //! optional root instance id, and the root path; [`NodeStack::with_shutdown_grace`]
 //! is the builder knob for the cooperative-shutdown grace period,
 //! [`NodeStack::with_pypi_mirror`] the one for the PyPI mirror of Python
-//! builds, and [`NodeStack::with_log_exporter`] the one for the exporter of the
-//! log files. The crate reads one environment variable of its own,
+//! builds, [`NodeStack::with_log_exporter`] the one for the exporter of the
+//! log files, [`NodeStack::with_time_source`] the one for the time the
+//! supervision of the instances runs on, and [`NodeStack::with_reply_bounds`]
+//! the one for the bounds on the answers to the daemon's requests. The crate
+//! reads one environment variable of its own,
 //! `PEPPY_NO_CONTAINER_BUILD_CACHE`, which turns the container build cache
 //! off (`node_stack::container_build_cache`), and the HTTP client of the PyPI
 //! mirror check follows the proxy variables of the daemon (`ALL_PROXY`,
@@ -47,9 +50,12 @@ mod archive;
 pub mod build_io;
 mod build_progress;
 mod error;
+mod instance_tasks;
 mod node_stack;
 mod process_group;
+mod reply_bounds;
 mod service_action_cycle;
+mod time_source;
 mod virtual_deptree;
 
 pub use error::Error as NodeStackError;
@@ -58,6 +64,7 @@ pub use action_log::{ActionLog, Announcer};
 pub use archive::extract_tar_zst;
 pub use build_io::{FeedbackLine, FeedbackOwner, FeedbackStream, OutputReaderHooks};
 pub use core_node_api::InstanceState;
+pub use instance_tasks::InstanceTasks;
 pub use node_stack::add_steps;
 pub use node_stack::{
     Artifact, Attempt, BuildContext, BuiltInLaunch, CACHED_BUILD_REUSE_PREFIX, EntityHandle,
@@ -73,4 +80,6 @@ pub use process_group::{
     GUEST_FORCE_KILL_BUDGET, ProcessGroup, kill_guest_groups, kill_process_group,
     terminate_guest_groups, terminate_process_group,
 };
+pub use reply_bounds::ReplyBounds;
+pub use time_source::{ManualTime, TimeSource};
 pub use virtual_deptree::{NodeKey, VirtualDeptree, VirtualNodeInfo};

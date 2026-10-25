@@ -19,6 +19,7 @@
 
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
+use core_node_api::ServiceRequest;
 use core_node_api::encoding::{PairCommitRequest, PairTarget};
 use daemon_config::launcher::{
     AlreadyPairedSlots, DeploymentInstance, ExternallyCoveredSlots, LinkTargets, LinkValue,
@@ -34,24 +35,10 @@ use peppylib::encoding::peer_update::PeerUpdateRequest;
 use peppylib::messaging::Failure;
 use peppylib::messaging::{PEER_UPDATE_SERVICE, PeerInfo, PeerMember, ProducerRef};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use super::common::SlotUpdateClient;
-
-/// How long a single `peer_update` delivery may take before the operation is
-/// treated as failed and reverted. The service is pre-setup (registered
-/// before the node's ready signal), so a healthy endpoint answers promptly.
-const PEER_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// How long a cross-daemon `pair_commit` may take. Strictly longer than
-/// [`PEER_UPDATE_TIMEOUT`] because it CONTAINS one: the receiving daemon
-/// commits to its registry, pins its own node over `peer_update`, and answers.
-/// Reusing the inner budget for the outer call would let the requester give up
-/// on a peer that is still inside a delivery it was granted the full time for,
-/// and then revert a pair the peer goes on to establish.
-const PAIR_COMMIT_TIMEOUT: Duration = Duration::from_secs(15);
+use super::common::{SlotUpdateClient, unanswered};
 
 pub struct PairingCoordinator {
     updates: SlotUpdateClient,
@@ -496,16 +483,25 @@ impl PairingCoordinator {
             held,
         };
         let peer_daemon = &endpoint.slot.core_node;
-        let error = match peppylib::core_node::transport::poll(
-            &request,
-            self.updates.messenger(),
-            self.updates.core_node_name(),
-            self.updates.caller_instance_id(),
-            peer_daemon,
-            PAIR_COMMIT_TIMEOUT,
-        )
-        .await
-        {
+        let node_stack = self.updates.node_stack();
+        let committed = node_stack
+            .time()
+            .bounded(
+                node_stack.reply_bounds().pair_commit,
+                |bound| {
+                    peppylib::core_node::transport::poll(
+                        &request,
+                        self.updates.messenger(),
+                        self.updates.core_node_name(),
+                        self.updates.caller_instance_id(),
+                        peer_daemon,
+                        bound,
+                    )
+                },
+                unanswered(None, PairCommitRequest::ID.name()),
+            )
+            .await;
+        let error = match committed {
             Ok(_) => return Ok(()),
             Err(error) => error,
         };
@@ -739,7 +735,7 @@ impl PairingCoordinator {
                 &slot.instance_id,
                 PEER_UPDATE_SERVICE,
                 payload,
-                PEER_UPDATE_TIMEOUT,
+                self.updates.node_stack().reply_bounds().peer_update,
                 "peer_update rejected",
             )
             .await

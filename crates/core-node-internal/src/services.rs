@@ -17,8 +17,9 @@ pub use action_loop::DAEMON_SENDER_GRACE;
 pub use node::cache::git::{checkout_dir_for, materialized_checkout};
 pub use node::endpoints::{HostAddressSource, test_host_addresses};
 pub use node::{
-    ExportDiscardLog, HealthMonitorPolicy, Report, RestartBackoff, TEARDOWN_REAP_BUDGET,
-    force_kill_deadline, node_remove_bound, node_stop_bound, teardown_all_instances,
+    ExportDiscardLog, HealthMonitorPolicy, ManualTime, ReplyBounds, Report, RestartBackoff,
+    TEARDOWN_REAP_BUDGET, TimeSource, force_kill_deadline, node_remove_bound, node_stop_bound,
+    teardown_all_instances,
 };
 pub use presence::NAME_CLAIM_LINKED_SETTLE;
 pub use stack::{
@@ -102,6 +103,12 @@ pub struct CoreNodeArguments {
     /// refuses pre-commit. [`NAME_CLAIM_LINKED_SETTLE`] when the daemon's
     /// router has configured federation links, [`Duration::ZERO`] standalone.
     pub name_claim_settle: Duration,
+    /// The time the supervision of the instances runs on: the host's for a
+    /// daemon, a manual one that a test advances.
+    pub time_source: TimeSource,
+    /// The bounds on the answers to the requests the daemon sends its nodes
+    /// and the peer daemons: [`ReplyBounds::DEFAULT`] for a daemon.
+    pub reply_bounds: ReplyBounds,
 }
 
 impl CoreNodeArguments {
@@ -342,6 +349,8 @@ impl CoreNode {
         let clock_publish_interval = arguments.clock_publish_interval;
         let heartbeat_interval = arguments.heartbeat_interval;
         let name_claim_settle = arguments.name_claim_settle;
+        let time_source = arguments.time_source.clone();
+        let reply_bounds = arguments.reply_bounds;
 
         let node_config = NodeConfig {
             peppy_schema: PeppySchema::NodeV1,
@@ -371,15 +380,18 @@ impl CoreNode {
         );
         // The core node is the root of the node stack. Resolve the cooperative
         // shutdown grace and the PyPI mirror from config once and pin them on
-        // the stack, with the log exporter, so every stop path (teardown,
-        // node_stop, overwrite) reads the same grace, every build the same
-        // mirror, and every log file sends its lines to the same exporter.
+        // the stack, with the log exporter, the time and the reply bounds, so
+        // every stop path (teardown, node_stop, overwrite) reads the same
+        // grace, time and bounds, every build the same mirror, and every log
+        // file sends its lines to the same exporter.
         let node_stack = NodeStack::new(node_config.clone(), None, root_dir)
             .with_shutdown_grace(Duration::from_secs(
                 peppy_config.lifecycle.shutdown_grace_secs,
             ))
             .with_pypi_mirror(peppy_config.pypi_mirror.clone())
-            .with_log_exporter(log_exporter);
+            .with_log_exporter(log_exporter)
+            .with_time_source(time_source)
+            .with_reply_bounds(reply_bounds);
         let slice_ownership = federation::SliceOwnership::new(node_config.manifest.name.as_str());
         let clock_watches = Arc::new(clock::watch::ClockWatches::new());
 
@@ -983,6 +995,8 @@ impl CoreNode {
                 core_node_name,
                 self.instance_id(),
                 pairing,
+                self.node_stack.reply_bounds().notify,
+                self.node_stack.time().clone(),
             )),
         );
         let ctx = ListenerCtx {

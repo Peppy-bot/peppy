@@ -42,6 +42,7 @@ use super::supervision::{
     Supervision,
 };
 use crate::process_group::ProcessGroup;
+use crate::time_source::TimeSource;
 
 pub(super) fn serialize_node_entity(entity: &NodeEntity, core_node: &str) -> SerializedNode {
     let all_instances = entity.instances();
@@ -1287,13 +1288,15 @@ impl NodeEntity {
     ///
     /// `endpoints` is what the start sequence read from the node and expanded
     /// once it was healthy; the commit records it on the instance, the one
-    /// place the set is written. A respawn's commit counts the restart.
+    /// place the set is written. A respawn's commit counts the restart. The
+    /// run of the process starts at `now`.
     pub async fn commit_started(
         handle: &Arc<RwLock<NodeEntity>>,
         mut child: Child,
         started_ctx: StartedInstanceCtx,
         instance_id: Name,
         endpoints: Vec<InstanceEndpoint>,
+        now: Instant,
     ) -> Result<Child> {
         // Helper: every error path kills the start's process group, its
         // forked children and a container's in-VM group included, before the
@@ -1324,6 +1327,7 @@ impl NodeEntity {
             &instance_dir,
             &runtime_config_path,
             endpoints,
+            now,
         );
         if let Err(error) = committed {
             // Concurrent push_config / stale generation / inconsistent
@@ -1346,7 +1350,7 @@ impl NodeEntity {
 
     /// The entity half of [`Self::commit_started`]: flips the `Starting`
     /// instance `instance_id` to `Running`, records its on-disk paths and
-    /// endpoints and its supervision's start of a run. Refuses, and leaves
+    /// endpoints and its supervision's start of a run at `now`. Refuses, and leaves
     /// the entity untouched, when this is not the entity the start
     /// registered on (generation `start_generation`), the entity is not
     /// `Ready`, or the instance is missing or not `Starting`.
@@ -1357,6 +1361,7 @@ impl NodeEntity {
         instance_dir: &Path,
         runtime_config_path: &Path,
         endpoints: Vec<InstanceEndpoint>,
+        now: Instant,
     ) -> Result<()> {
         let refuse = |from: &'static str, to: &'static str| Error::InvalidStageTransition {
             node_name: self.config.manifest.name.as_str().to_owned(),
@@ -1387,7 +1392,7 @@ impl NodeEntity {
             runtime_config_path.to_path_buf(),
         );
         instance.set_endpoints(endpoints);
-        instance.record_running();
+        instance.record_running(now);
         Ok(())
     }
 
@@ -1405,13 +1410,15 @@ impl NodeEntity {
     ///
     /// The caller decides how the instance ends before this: a start given up
     /// after the ready signal has stopped it through its shutdown request
-    /// already, and the kill here only reaps what is left.
+    /// already, and the kill here only reaps what is left. The output readers
+    /// are joined on `time`.
     pub async fn abort_started(
         handle: &Arc<RwLock<NodeEntity>>,
         child: Child,
         started_ctx: StartedInstanceCtx,
         error: String,
         instance_id: &Name,
+        time: &TimeSource,
     ) -> String {
         let StartedInstanceCtx {
             instance_dir,
@@ -1429,6 +1436,7 @@ impl NodeEntity {
             &error,
             stderr_buffer,
             output_reader_handles,
+            time,
         )
         .await;
 
@@ -1520,34 +1528,37 @@ impl NodeEntity {
     /// lock, so they cannot race a concurrent stop. `take_registrations` runs
     /// under the same write lock: it takes the registrations the exit ends (the
     /// instance's observer records and watchers), so an edit of them that
-    /// lands after the flip finds the record on the slot.
+    /// lands after the flip finds the record on the slot. The process exited
+    /// at `now`.
     pub fn mark_instance_exited(
         handle: &Arc<RwLock<NodeEntity>>,
         instance_id: &Name,
         pid: u32,
         cause: ExitCause,
         backoff: &RestartBackoff,
+        now: Instant,
         take_registrations: impl FnOnce() -> Registrations,
     ) -> Option<ExitRecord> {
         let mut guard = handle.write();
         let inst = guard
             .instance_mut(instance_id.as_str())
             .filter(|inst| inst.runs_unclaimed_process(pid))?;
-        Some(inst.record_exit(cause, backoff, take_registrations))
+        Some(inst.record_exit(cause, backoff, now, take_registrations))
     }
 
-    /// Records the failure of a `Restarting` instance's start that did not
-    /// reach `running`, and takes the backoff's next attempt. `None` when the
-    /// instance is not `restarting`, or a stop path claimed it.
+    /// Records the failure at `now` of a `Restarting` instance's start that
+    /// did not reach `running`, and takes the backoff's next attempt. `None`
+    /// when the instance is not `restarting`, or a stop path claimed it.
     pub fn mark_start_failed(
         handle: &Arc<RwLock<NodeEntity>>,
         instance_id: &Name,
         exit: ExitCause,
         backoff: &RestartBackoff,
+        now: Instant,
     ) -> Option<Attempt> {
         Self::edit_awaiting_restart(handle, instance_id, |inst| {
             inst.supervision.last_exit = Some(exit);
-            inst.take_next_attempt(backoff, None)
+            inst.take_next_attempt(backoff, None, now)
         })
     }
 
@@ -2186,6 +2197,13 @@ impl TrackedNodeInstance {
         &self.supervision
     }
 
+    /// Whether a removal stops this instance's process, so that its exit
+    /// ends the instance whatever its policy.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requests > 0
+    }
+
     /// Returns the validator-resolved per-slot bindings recorded for
     /// this instance. Empty for instances whose manifest has no
     /// `depends_on` slots or for snapshot-restored / test-fixture
@@ -2364,11 +2382,13 @@ impl TrackedNodeInstance {
     /// whatever its status, and an exit a removal asked for ends the crash
     /// loop (`attempt` 0). The pid is cleared because the process is gone, so
     /// nothing downstream tries to signal a stale (and possibly reused) pid,
-    /// and the endpoints with it, which only a running process serves.
+    /// and the endpoints with it, which only a running process serves. The
+    /// process exited at `now`.
     fn record_exit(
         &mut self,
         cause: ExitCause,
         backoff: &RestartBackoff,
+        now: Instant,
         take_registrations: impl FnOnce() -> Registrations,
     ) -> ExitRecord {
         let health_kill = self.supervision.health_kill.take();
@@ -2381,7 +2401,7 @@ impl TrackedNodeInstance {
                 Some(kill) => kill.last_answer.map_or(Duration::ZERO, |answer| {
                     answer.saturating_duration_since(since)
                 }),
-                None => since.elapsed(),
+                None => now.saturating_duration_since(since),
             });
         let exit = match health_kill {
             Some(kill) => ExitCause::HealthKill {
@@ -2413,7 +2433,7 @@ impl TrackedNodeInstance {
         };
         let next = restarts_again.then(|| {
             self.supervision.registrations = registrations.clone();
-            self.take_next_attempt(backoff, ran_for)
+            self.take_next_attempt(backoff, ran_for, now)
         });
         ExitRecord {
             exit,
@@ -2422,14 +2442,15 @@ impl TrackedNodeInstance {
         }
     }
 
-    /// Takes the backoff's next attempt: the slot stays `Restarting` until it
-    /// is due, or is `Failed` at the attempt `max_restarts` refuses.
+    /// Takes the backoff's next attempt at `now`: the slot stays `Restarting`
+    /// until it is due, or is `Failed` at the attempt `max_restarts` refuses.
     fn take_next_attempt(
         &mut self,
         backoff: &RestartBackoff,
         ran_for: Option<Duration>,
+        now: Instant,
     ) -> Attempt {
-        let next = self.supervision.advance_backoff(backoff, ran_for);
+        let next = self.supervision.advance_backoff(backoff, ran_for, now);
         if let Attempt::Capped { .. } = next {
             self.state = InstanceState::Failed;
         }
@@ -2462,10 +2483,10 @@ impl TrackedNodeInstance {
     }
 
     /// Same-module mutator used by `NodeEntity::commit_starting_instance` once the
-    /// process is `Running`: the clock of its run starts, and a slot past
-    /// its first attempt, a restart's, counts the restart.
-    fn record_running(&mut self) {
-        self.supervision.run_started = Some(Instant::now());
+    /// process is `Running`: its run starts at `now`, and a slot past its
+    /// first attempt, a restart's, counts the restart.
+    fn record_running(&mut self, now: Instant) {
+        self.supervision.run_started = Some(now);
         self.supervision.running_since = Some(SystemTime::now());
         if self.supervision.attempt > 0 {
             self.supervision.restart_count = self.supervision.restart_count.saturating_add(1);
@@ -2686,8 +2707,15 @@ mod tests {
             stale_generation,
         );
 
-        let committed =
-            NodeEntity::commit_started(&handle, child, started_ctx, instance_id, Vec::new()).await;
+        let committed = NodeEntity::commit_started(
+            &handle,
+            child,
+            started_ctx,
+            instance_id,
+            Vec::new(),
+            Instant::now(),
+        )
+        .await;
         assert!(
             matches!(committed, Err(Error::InvalidStageTransition { .. })),
             "a stale generation refuses the commit"
@@ -2732,6 +2760,7 @@ mod tests {
             started_ctx,
             instance_id.clone(),
             endpoints.clone(),
+            Instant::now(),
         )
         .await
         .expect("commit_started should succeed");
@@ -2770,6 +2799,7 @@ mod tests {
             pid,
             ExitCause::Code(0),
             &BACKOFF,
+            Instant::now(),
             Registrations::default,
         )
         .expect("the running instance exits");
@@ -2831,6 +2861,7 @@ mod tests {
         instance.record_exit(
             ExitCause::signal(9, false),
             &BACKOFF,
+            Instant::now(),
             Registrations::default,
         );
         instance
@@ -2846,7 +2877,7 @@ mod tests {
                     ..FirstStart::fixture(id, "sensor", "v1")
                 });
         instance.set_starting_pid(PID);
-        instance.record_running();
+        instance.record_running(Instant::now());
         instance.supervision.attempt = attempt;
         instance
     }
@@ -2939,6 +2970,7 @@ mod tests {
             PID,
             ExitCause::signal(15, false),
             &BACKOFF,
+            Instant::now(),
             Registrations::default,
         )
         .expect("a running instance exits");
@@ -2955,6 +2987,7 @@ mod tests {
             PID,
             ExitCause::Code(0),
             &BACKOFF,
+            Instant::now(),
             Registrations::default,
         )
         .expect("a running instance exits");
@@ -2974,6 +3007,7 @@ mod tests {
             PID,
             ExitCause::Code(0),
             &BACKOFF,
+            Instant::now(),
             Registrations::default,
         )
         .expect("a running instance exits");
@@ -2999,6 +3033,7 @@ mod tests {
                 PID,
                 ExitCause::Code(0),
                 &BACKOFF,
+                Instant::now(),
                 Registrations::default,
             )
             .expect("a running instance exits");
@@ -3019,6 +3054,7 @@ mod tests {
             PID,
             ExitCause::Code(0),
             &BACKOFF,
+            Instant::now(),
             Registrations::default,
         )
         .expect("a running instance exits");
@@ -3252,11 +3288,16 @@ mod tests {
             watchers: vec!["cn-atlas".to_owned()],
         };
         let mut instance = running_under(&id, on_failure(), 0);
-        instance.record_exit(ExitCause::signal(9, false), &BACKOFF, || kept.clone());
+        instance.record_exit(
+            ExitCause::signal(9, false),
+            &BACKOFF,
+            Instant::now(),
+            || kept.clone(),
+        );
         instance.begin_respawn();
         assert_eq!(instance.supervision.registrations, kept);
 
-        instance.record_running();
+        instance.record_running(Instant::now());
         assert_eq!(instance.supervision.registrations, Registrations::default());
         assert_eq!(instance.supervision.restart_count, 1);
     }
@@ -3299,6 +3340,7 @@ mod tests {
                 PID,
                 ExitCause::Code(0),
                 &BACKOFF,
+                Instant::now(),
                 Registrations::default,
             )
             .expect("a running instance exits");
@@ -3402,6 +3444,7 @@ mod tests {
             started_ctx,
             Name::new("sensor_inst").unwrap(),
             Vec::new(),
+            Instant::now(),
         )
         .await
         .expect_err("commit_started should refuse the start");
@@ -3683,6 +3726,7 @@ mod tests {
             PID,
             ExitCause::Code(0),
             &BACKOFF,
+            Instant::now(),
             || taken.clone(),
         )
         .expect("a running instance exits");
@@ -3712,6 +3756,7 @@ mod tests {
                 PID,
                 ExitCause::Code(1),
                 &BACKOFF,
+                Instant::now(),
                 || { panic!("a terminal instance takes no registrations") }
             )
             .is_none()
@@ -3740,6 +3785,7 @@ mod tests {
             PID,
             ExitCause::signal(9, false),
             &BACKOFF,
+            Instant::now(),
             || taken.clone(),
         )
         .expect("a running instance exits");
@@ -3775,6 +3821,7 @@ mod tests {
             PID,
             ExitCause::signal(9, false),
             &reset_after_a_short_run,
+            Instant::now(),
             || taken.clone(),
         )
         .expect("a running instance exits");
@@ -3824,6 +3871,7 @@ mod tests {
             PID,
             ExitCause::Code(1),
             &BACKOFF,
+            Instant::now(),
             Registrations::default,
         )
         .expect("a running instance exits");
@@ -3845,6 +3893,7 @@ mod tests {
             PID,
             ExitCause::Code(0),
             &BACKOFF,
+            Instant::now(),
             Registrations::default,
         )
         .expect("a running instance exits");
@@ -3871,6 +3920,7 @@ mod tests {
             PID,
             ExitCause::Code(0),
             &BACKOFF,
+            Instant::now(),
             Registrations::default,
         )
         .expect("a running instance exits");
@@ -3899,6 +3949,7 @@ mod tests {
             PID,
             ExitCause::signal(9, false),
             &BACKOFF,
+            Instant::now(),
             Registrations::default,
         )
         .expect("a running instance exits");
@@ -3938,6 +3989,7 @@ mod tests {
                 earlier_process,
                 ExitCause::signal(9, false),
                 &BACKOFF,
+                Instant::now(),
                 || panic!("another process's exit takes no registrations"),
             )
             .is_none()
@@ -3970,6 +4022,7 @@ mod tests {
                 PID,
                 ExitCause::Code(0),
                 &BACKOFF,
+                Instant::now(),
                 || { panic!("a claimed instance takes no registrations") }
             )
             .is_none()
@@ -4145,8 +4198,14 @@ mod tests {
         let handle = ready_entity_with(waiting_instance(&id));
         let before = SystemTime::now();
         let spawn_failed = ExitCause::Message("spawn failed".to_owned());
-        let next = NodeEntity::mark_start_failed(&handle, &id, spawn_failed.clone(), &BACKOFF)
-            .expect("a restarting slot takes the attempt");
+        let next = NodeEntity::mark_start_failed(
+            &handle,
+            &id,
+            spawn_failed.clone(),
+            &BACKOFF,
+            Instant::now(),
+        )
+        .expect("a restarting slot takes the attempt");
         let Attempt::Scheduled { attempt, delay, .. } = next else {
             panic!("{next:?}")
         };
@@ -4167,12 +4226,17 @@ mod tests {
         let capped_id = Name::new("waiting-4").unwrap();
         let handle = ready_entity_with(waiting_instance_under(&capped_id, capped(2)));
         assert!(matches!(
-            NodeEntity::mark_start_failed(&handle, &capped_id, spawn_failed.clone(), &BACKOFF),
+            NodeEntity::mark_start_failed(&handle, &capped_id, spawn_failed.clone(), &BACKOFF, Instant::now()),
             Some(Attempt::Scheduled { attempt, .. }) if attempt.get() == 2
         ));
-        let next =
-            NodeEntity::mark_start_failed(&handle, &capped_id, spawn_failed.clone(), &BACKOFF)
-                .expect("the capped attempt is taken");
+        let next = NodeEntity::mark_start_failed(
+            &handle,
+            &capped_id,
+            spawn_failed.clone(),
+            &BACKOFF,
+            Instant::now(),
+        )
+        .expect("the capped attempt is taken");
         assert!(
             matches!(
                 next,
@@ -4188,8 +4252,14 @@ mod tests {
             assert_eq!(inst.supervision().next_start, None);
         }
         assert!(
-            NodeEntity::mark_start_failed(&handle, &capped_id, spawn_failed.clone(), &BACKOFF)
-                .is_none(),
+            NodeEntity::mark_start_failed(
+                &handle,
+                &capped_id,
+                spawn_failed.clone(),
+                &BACKOFF,
+                Instant::now()
+            )
+            .is_none(),
             "a failed slot takes no attempt"
         );
 
@@ -4201,7 +4271,16 @@ mod tests {
         let claimed = Name::new("waiting-6").unwrap();
         let handle = ready_entity_with(waiting_instance(&claimed));
         handle.read().instances()[0].mark_stopping();
-        assert!(NodeEntity::mark_start_failed(&handle, &claimed, spawn_failed, &BACKOFF).is_none());
+        assert!(
+            NodeEntity::mark_start_failed(
+                &handle,
+                &claimed,
+                spawn_failed,
+                &BACKOFF,
+                Instant::now()
+            )
+            .is_none()
+        );
         assert!(!NodeEntity::mark_restart_refused(&handle, &claimed));
         assert!(NodeEntity::respawn_inputs_of(&handle, &claimed).is_none());
     }

@@ -21,7 +21,8 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use super::RelationshipCoordinators;
-use super::stop::{DoomedInstance, SHUTDOWN_TIMEOUT, StopOutcome, await_exit_then_force_kill};
+use super::common::unanswered;
+use super::stop::{DoomedInstance, StopOutcome, await_exit_then_force_kill};
 
 pub async fn listen_for_node_remove(
     messenger: &MessengerHandle,
@@ -328,21 +329,29 @@ async fn handle_node_remove_request_inner(
     }
 
     // Shut down instances concurrently. Overall wall-clock latency is
-    // bounded by the slowest shutdown (up to SHUTDOWN_TIMEOUT) rather than
-    // the sum.
+    // bounded by the slowest shutdown (up to the stack's shutdown reply
+    // bound) rather than the sum.
+    let reply_bound = node_stack.reply_bounds().shutdown;
+    let time = node_stack.time();
     let shutdown_results = futures::future::join_all(running_targets.iter().map(|target| {
         let producer =
             peppylib::messaging::ProducerRef::new(core_node_name, target.instance_id.as_str());
         async move {
-            ServiceMessenger::poll(
-                messenger,
-                core_node_name,
-                core_instance_id,
-                SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
-                SHUTDOWN_SERVICE,
-                ServiceTarget::Producer(&producer),
-                Payload::from_static(b"shutdown"),
-                SHUTDOWN_TIMEOUT,
+            time.bounded(
+                reply_bound,
+                |bound| {
+                    ServiceMessenger::poll(
+                        messenger,
+                        core_node_name,
+                        core_instance_id,
+                        SenderTarget::node_from_validated(&target.node_name, &target.node_tag),
+                        SHUTDOWN_SERVICE,
+                        ServiceTarget::Producer(&producer),
+                        Payload::from_static(b"shutdown"),
+                        bound,
+                    )
+                },
+                unanswered(Some(target.instance_id.as_str()), SHUTDOWN_SERVICE),
             )
             .await
         }
@@ -355,12 +364,13 @@ async fn handle_node_remove_request_inner(
     if let Some((target, Err(e))) = failed.into_iter().next() {
         // The instances that answered exit on their request and end there
         // within the force-kill deadline a stop gives them, so their notes
-        // stand that long after the removal fails.
+        // stand that long after the removal fails, on the stack's time.
         let standing =
             noted_shutdowns.split_off(answered.iter().map(|(target, _)| &target.instance_id));
         let deadline = super::stop::force_kill_deadline(node_stack.shutdown_grace());
+        let time = node_stack.time().clone();
         tokio::spawn(async move {
-            tokio::time::sleep(deadline).await;
+            time.sleep(deadline).await;
             drop(standing);
         });
         return Err(RemoveFailure::new(
@@ -404,13 +414,8 @@ async fn handle_node_remove_request_inner(
                 .any(|unreachable| unreachable.instance_id == target.instance_id)
         })
         .collect();
-    let outcomes = await_exit_then_force_kill(
-        &claimed,
-        &no_shutdown,
-        &claimed_elsewhere,
-        node_stack.shutdown_grace(),
-    )
-    .await;
+    let outcomes =
+        await_exit_then_force_kill(&claimed, &no_shutdown, &claimed_elsewhere, &node_stack).await;
     let force_killed: Vec<String> = claimed
         .iter()
         .zip(outcomes)
