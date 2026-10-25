@@ -26,12 +26,9 @@ use serde::ser::{SerializeSeq, Serializer};
 use std::collections::HashSet;
 use std::time::Duration;
 
-/// How long the daemon has to give the documents of an instance. A pinned
-/// document whose copy on the daemon's machine is gone is fetched from its
-/// origin first. The daemon gives up on a read after 100 s, before this
-/// budget ends, and says so in its reply, unless the request waited behind
-/// the read of another request.
-const DOCUMENTS_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the daemon has to give the documents of an instance. It holds
+/// them in memory, so this is the wait of `peppy node info`.
+const DOCUMENTS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The interfaces of the instance `instance_id` of the daemon that `conn`
 /// targets, read from the pinned documents the daemon gives. An instance

@@ -14,7 +14,7 @@ use crate::internal::contract::{PeppyContract, PeppyContractParser};
 use crate::internal::daemon_interface::{DaemonInterface, served_interfaces};
 use crate::internal::launcher::MemberAddressing;
 use crate::internal::mcp_exposure::PeppyMcpExposureParser;
-use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedItem};
+use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedDocument, PinnedItem};
 use crate::internal::source::ExposureRef;
 use config::node::{NodeConfig, NodeConfigParser};
 use config::runtime::Name;
@@ -577,34 +577,6 @@ pub fn plan_deployment(
         addressing,
         targets,
     })
-}
-
-/// A document the daemon materialized from a pin, carried by its bytes so
-/// the reader needs no cache: the fingerprint of `content` must equal the
-/// pin's.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PinnedDocument {
-    pub pin: PinnedItem,
-    pub content: String,
-}
-
-impl PinnedDocument {
-    pub fn new(pin: PinnedItem, content: String) -> Self {
-        Self { pin, content }
-    }
-
-    fn verified_content(&self) -> Result<&str, String> {
-        let actual = ManifestFingerprint::of_bytes(self.content.as_bytes());
-        if actual != self.pin.sha256 {
-            return Err(format!(
-                "{} carries bytes fingerprinting to `{actual}`, not the pinned `{}`",
-                self.pin.label(),
-                self.pin.sha256
-            ));
-        }
-        Ok(&self.content)
-    }
 }
 
 /// What the daemon hands `peppy mcp serve`: the exposure documents to serve

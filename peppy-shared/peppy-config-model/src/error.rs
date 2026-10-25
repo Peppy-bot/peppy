@@ -1,3 +1,4 @@
+use crate::internal::node::DocumentKind;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -485,6 +486,16 @@ pub enum ParsingError {
         name: String,
         tag_a: String,
         tag_b: String,
+    },
+    #[error(
+        "The manifest pins {kind} `{name}:{tag}` to two sha256 values, `{first}` and `{second}`; every reference to one name and tag of a document must name the same content"
+    )]
+    DocumentPinnedTwice {
+        kind: DocumentKind,
+        name: String,
+        tag: String,
+        first: String,
+        second: String,
     },
     #[error(
         "Entry in `{section}` references link_id `{link_id}`, which is declared in `depends_on.{found_in}` — `topics.emits` may reference a `manifest.implements` or `depends_on.pairings` slot, while `services.exposes` and `actions.exposes` may reference only a `manifest.implements` slot; interfaces obtained from a dependency belong in the `consumes` lists"

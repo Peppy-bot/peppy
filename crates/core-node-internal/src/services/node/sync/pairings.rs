@@ -31,30 +31,30 @@ fn resolve_pairing_doc(
 /// Resolves one pairing document against an already-loaded cache, so
 /// multi-slot validation doesn't re-read `pairings.json5` per entry.
 ///
-/// A launch pin fixes the bytes: this machine reuses its own copy on a
-/// content match and fetches the pin's origin otherwise, but its own
-/// priority rules never pick the document. Without one, the local rules
-/// apply, with the manifest's own optional sha pin.
+/// The documents an add read by their pins fix the bytes: this machine's
+/// own priority rules never pick the document, and the cache is not read.
+/// Without them, the local rules apply, with the manifest's own optional
+/// sha pin.
 fn resolve_pairing_doc_cached(
     cache: &[repo_cache::PairingCacheEntry],
     peppy_dirs: &PeppyDirs,
     name: &str,
     tag: &str,
     sha256_pin: Option<&str>,
-    doc_pins: Option<&crate::services::node::pins::DocPins>,
+    documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<PeppyPairing, String> {
     let parse = |content: &str| {
         daemon_config::pairing::PeppyPairingParser::from_content(content).map_err(|e| e.to_string())
     };
-    if let Some(pins) = doc_pins {
-        let pin = pins.require(
-            daemon_config::repository::PinKind::Pairing,
+    if let Some(documents) = documents {
+        let reference = config::node::DocumentReference {
+            kind: config::node::DocumentKind::Pairing,
             name,
             tag,
-            sha256_pin,
-        )?;
-        return repo_cache::resolve_pinned_doc(peppy_dirs, cache, pin, parse, on_feedback);
+            sha256: sha256_pin,
+        };
+        return documents.parse(reference, parse);
     }
     repo_cache::resolve_cached_doc(peppy_dirs, cache, name, tag, sha256_pin, parse, on_feedback)
 }
@@ -75,7 +75,7 @@ fn resolve_pairing_doc_cached(
 fn validate_pairing_specs(
     manifest: &config::node::Manifest,
     peppy_dirs: &PeppyDirs,
-    doc_pins: Option<&crate::services::node::pins::DocPins>,
+    documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<HashMap<String, PeppyPairing>, String> {
     let slots = pairing_slots(manifest);
@@ -83,8 +83,12 @@ fn validate_pairing_specs(
         return Ok(HashMap::new());
     }
 
-    let cache = repo_cache::load_pairing_cache(peppy_dirs)
-        .map_err(|e| format!("failed to load pairing cache: {e}"))?;
+    // The documents an add read need no cache.
+    let cache = match documents {
+        Some(_) => Vec::new(),
+        None => repo_cache::load_pairing_cache(peppy_dirs)
+            .map_err(|e| format!("failed to load pairing cache: {e}"))?,
+    };
 
     // Two slots referencing the same document (e.g. a commander driving two
     // arms over the same pairing) resolve it once, not once per slot.
@@ -99,7 +103,7 @@ fn validate_pairing_specs(
                 slot.name,
                 slot.tag,
                 slot.sha256,
-                doc_pins,
+                documents,
                 on_feedback,
             )?),
         };
@@ -217,7 +221,7 @@ pub(super) fn collect_pairing_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
-    doc_pins: Option<&crate::services::node::pins::DocPins>,
+    documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
 ) -> std::result::Result<Vec<generator::DeploymentInterface>, PairingError> {
     let Some(depends_on) = manifest.depends_on.as_ref() else {
@@ -226,7 +230,7 @@ pub(super) fn collect_pairing_interfaces(
     if depends_on.pairings.is_empty() && depends_on.pairing_observers.is_empty() {
         return Ok(Vec::new());
     }
-    let docs = validate_pairing_specs(manifest, peppy_dirs, doc_pins, on_feedback)?;
+    let docs = validate_pairing_specs(manifest, peppy_dirs, documents, on_feedback)?;
     let doc_of = |link_id: &str| {
         docs.get(link_id)
             .expect("validate_pairing_specs returns a doc per declared slot")

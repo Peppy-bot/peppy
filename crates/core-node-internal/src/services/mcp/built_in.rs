@@ -284,17 +284,12 @@ pub(crate) async fn run_built_in_add(
     let name = plan.name.as_str().to_owned();
     let tag = plan.tag.clone();
     // The server's manifest names the contracts of the spec, and only them.
-    let contract_pins = resolved
-        .spec
-        .contracts
-        .iter()
-        .map(|document| document.pin.clone())
-        .collect();
-    if let Err(e) =
-        action_context
-            .node_stack
-            .push_built_in(plan.config, &manifest_path, launch, contract_pins)
-    {
+    if let Err(e) = action_context.node_stack.push_built_in(
+        plan.config,
+        &manifest_path,
+        launch,
+        resolved.spec.contracts.clone(),
+    ) {
         return Err(record_add_failure(
             &announcer,
             Failure::new(

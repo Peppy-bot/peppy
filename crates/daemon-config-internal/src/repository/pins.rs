@@ -21,6 +21,7 @@
 
 use super::origin::EntryOrigin;
 use super::types::{ItemName, ItemTag, ManifestFingerprint};
+use config::node::DocumentKind;
 use serde::{Deserialize, Serialize, de};
 use std::fmt;
 
@@ -49,6 +50,15 @@ impl fmt::Display for PinKind {
     }
 }
 
+impl From<DocumentKind> for PinKind {
+    fn from(kind: DocumentKind) -> Self {
+        match kind {
+            DocumentKind::Contract => Self::Contract,
+            DocumentKind::Pairing => Self::Pairing,
+        }
+    }
+}
+
 /// One pinned identity: what it is called, which bytes it is, and where to
 /// read them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +81,35 @@ impl PinnedItem {
     /// How refusals name a pin: `node camera:v1`.
     pub fn label(&self) -> String {
         format!("{} `{}:{}`", self.kind, self.name, self.tag)
+    }
+}
+
+/// A document the daemon materialized from a pin, carried by its bytes so
+/// the reader needs no cache: the fingerprint of `content` must equal the
+/// pin's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedDocument {
+    pub pin: PinnedItem,
+    pub content: String,
+}
+
+impl PinnedDocument {
+    pub fn new(pin: PinnedItem, content: String) -> Self {
+        Self { pin, content }
+    }
+
+    /// The content, when it fingerprints to the pin.
+    pub(crate) fn verified_content(&self) -> Result<&str, String> {
+        let actual = ManifestFingerprint::of_bytes(self.content.as_bytes());
+        if actual != self.pin.sha256 {
+            return Err(format!(
+                "{} carries bytes fingerprinting to `{actual}`, not the pinned `{}`",
+                self.pin.label(),
+                self.pin.sha256
+            ));
+        }
+        Ok(&self.content)
     }
 }
 

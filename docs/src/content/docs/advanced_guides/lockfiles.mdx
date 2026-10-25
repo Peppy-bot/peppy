@@ -38,6 +38,13 @@ evolves.
 An author pin is a statement about authorship: it travels with the manifest,
 so every machine that ever adds the node enforces it.
 
+A node uses one content for each document that its manifest names. Two
+references to one `name:tag` of a contract, or of a pairing, with two
+different `sha256` values make the manifest invalid, so `node sync` and
+`node add` refuse it and name both values. A reference without a `sha256`
+resolves when the node is added: an add whose references resolve to two
+contents of one document is refused, naming both fingerprints.
+
 The contract references of an [MCP exposure](/advanced_guides/mcp/#contracts-are-referenced-by-identity-and-optionally-by-content)
 take the same optional `sha256` with the same meaning: a launch serving the
 exposure resolves the contract through the pin, and refuses naming both

@@ -434,9 +434,9 @@ const CAMERA_NODE: &str = r#"{
 
 /// `instance_documents` gives the manifest the stack holds and the contract
 /// document the add generated the node's code from, each under its name,
-/// tag and the fingerprint of its content. An add with no pins of its own
-/// records the pin it resolved, so the document is the one the cache held
-/// at the add, read back by that pin.
+/// tag and the fingerprint of its content. The entity keeps the bytes the
+/// add read, so an edit of the contract file after the add changes nothing
+/// that the service gives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn instance_documents_give_the_manifest_and_the_contracts_of_an_instance() {
     let started = start_core_node_with_mock_messenger().await;
@@ -462,6 +462,11 @@ async fn instance_documents_give_the_manifest_and_the_contracts_of_an_instance()
     let instance_id = Name::new("camera_inst").expect("valid instance id");
     let _running =
         real_build_and_spawn_instance(&started, "fake_uvc_camera", "v1", &instance_id).await;
+    std::fs::write(
+        &contract_path,
+        CAMERA_CONTRACT.replace("video_stream_info", "edited_after_the_add"),
+    )
+    .expect("edit the contract");
 
     let documents = poll_core_node_with_timeout(
         &started,

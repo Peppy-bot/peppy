@@ -1683,6 +1683,74 @@ pub struct Manifest {
     pub depends_on: Option<DependsOn>,
 }
 
+impl Manifest {
+    /// Every reference of the manifest to a contract or a pairing document,
+    /// in manifest order: `implements`, `depends_on.contracts`,
+    /// `depends_on.pairings`, `depends_on.pairing_observers`. A document that
+    /// two slots name comes once for each slot.
+    pub fn document_references(&self) -> impl Iterator<Item = DocumentReference<'_>> {
+        use DocumentKind::{Contract, Pairing};
+        let depends_on = self.depends_on.as_ref();
+        let implements = self
+            .implements
+            .iter()
+            .map(|e| DocumentReference::new(Contract, &e.name, &e.tag, &e.sha256));
+        let contracts = depends_on.into_iter().flat_map(|d| {
+            d.contracts
+                .iter()
+                .map(|c| DocumentReference::new(Contract, &c.name, &c.tag, &c.sha256))
+        });
+        let pairings = depends_on.into_iter().flat_map(|d| {
+            d.pairings
+                .iter()
+                .map(|p| DocumentReference::new(Pairing, &p.name, &p.tag, &p.sha256))
+                .chain(
+                    d.pairing_observers
+                        .iter()
+                        .map(|o| DocumentReference::new(Pairing, &o.name, &o.tag, &o.sha256)),
+                )
+        });
+        implements.chain(contracts).chain(pairings)
+    }
+}
+
+/// The kind of a document that a manifest names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DocumentKind {
+    Contract,
+    Pairing,
+}
+
+impl fmt::Display for DocumentKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Contract => "contract",
+            Self::Pairing => "pairing",
+        })
+    }
+}
+
+/// One reference of a manifest to a document: its kind, its name, its tag
+/// and the optional `sha256` pin that the author wrote for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocumentReference<'a> {
+    pub kind: DocumentKind,
+    pub name: &'a str,
+    pub tag: &'a str,
+    pub sha256: Option<&'a str>,
+}
+
+impl<'a> DocumentReference<'a> {
+    fn new(kind: DocumentKind, name: &'a Name, tag: &'a str, sha256: &'a Option<String>) -> Self {
+        Self {
+            kind,
+            name: name.as_str(),
+            tag,
+            sha256: sha256.as_deref(),
+        }
+    }
+}
+
 // The blocked-mount-path list and predicate live in the sibling `mount_policy`
 // module so this crate (config-parse-time validation) and `containers` (Lima YAML
 // mutation) share one source of truth. Re-exported as

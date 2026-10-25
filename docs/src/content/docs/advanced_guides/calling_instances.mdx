@@ -18,7 +18,7 @@ People at a robot and scripts use the same commands. Example: a person sends an 
 The commands read the pinned documents of the instance, never the code of its node. The daemon that runs the instance gives them:
 
 - The manifest of the node, as the stack holds it.
-- Each contract document and each pairing document that the manifest names, at the bytes that the node's code was generated from. Every `peppy node add` records the pins of these documents, and the daemon reads each document from its caches by its pin.
+- Each contract document and each pairing document that the manifest names, at the bytes that the node's code was generated from. `peppy node add` reads each of these documents once and the daemon keeps their bytes with the node. An edit of a document file after the add changes nothing that the commands read; to use the edited document, add the node again.
 
 Each document comes with its name, its tag and the SHA-256 of its content.
 

@@ -29,7 +29,7 @@ use crate::services::response::rephrased;
 use config::failure_kind::PeppyFailureKind;
 use config::node::NodeConfig;
 use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource};
-use daemon_config::repository::{PinKind, PinnedItem};
+use daemon_config::repository::{PinKind, PinnedDocument};
 use node_stack::{ActionLog, Announcer, NodeEntity, VirtualDeptree, WorkingDirGuard};
 use peppylib::messaging::Failure;
 use std::collections::{HashMap, HashSet};
@@ -306,9 +306,9 @@ async fn execute_pinned_batch(
         // sub-add's `push_config` drops the previous entity (and its only
         // owning reference to the guard); without this clone the guard
         // would drop and the temp dir backing `config_path` would be
-        // removed before rollback ever runs. The pins of the documents its
-        // code was generated from go with it, so `instance_documents` still
-        // answers for an instance of the restored node.
+        // removed before rollback ever runs. The documents its code was
+        // generated from go with it, so `instance_documents` still answers
+        // for an instance of the restored node.
         let previous = action_context
             .node_stack
             .find(node.pin.name.as_str(), node.pin.tag.as_str())
@@ -484,14 +484,13 @@ async fn run_single_batched_add(
 /// the sub-add: `config_path` points inside that temp dir, so without
 /// holding the guard the directory would be removed when the sub-add
 /// replaces the entity and rollback would re-install a config at a path
-/// that no longer exists. `document_pins` are the pins of the documents the
-/// previous entity's code was generated from, which the restored entity
-/// records again.
+/// that no longer exists. `documents` are the documents the previous
+/// entity's code was generated from, which the restored entity keeps again.
 struct PreviousConfig {
     config: NodeConfig,
     config_path: PathBuf,
     working_dir: Option<Arc<WorkingDirGuard>>,
-    document_pins: Vec<PinnedItem>,
+    documents: Vec<PinnedDocument>,
 }
 
 impl PreviousConfig {
@@ -501,7 +500,7 @@ impl PreviousConfig {
             config: entity.config().clone(),
             config_path: entity.config_path().to_path_buf(),
             working_dir: entity.pending_working_dir(),
-            document_pins: entity.document_pins().to_vec(),
+            documents: entity.documents().to_vec(),
         }
     }
 }
@@ -554,11 +553,11 @@ impl Drop for RollbackGuard {
                         config,
                         config_path,
                         working_dir,
-                        document_pins,
+                        documents,
                     } = prev;
                     match self
                         .node_stack
-                        .push_config(config, document_pins, false, config_path)
+                        .push_config(config, documents, false, config_path)
                     {
                         Ok(()) => {
                             // Reattach the previous working-dir guard so the
@@ -667,26 +666,29 @@ mod tests {
     }
 
     /// A batch that fails after it replaced a node puts the previous node
-    /// back with the pins of the documents its code was generated from, so
+    /// back with the documents its code was generated from, so
     /// `instance_documents` still answers for an instance of it.
     #[test]
-    fn a_rolled_back_replacement_keeps_the_document_pins_of_the_previous_node() {
+    fn a_rolled_back_replacement_keeps_the_documents_of_the_previous_node() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = materialized("core_root", "v1", &[], false).config;
         let node_stack = Arc::new(node_stack::NodeStack::new(root, None, dir.path()));
         let camera = materialized("camera", "v1", &[], true);
         let previous_path = dir.path().join("previous");
-        let contract_pin = PinnedItem {
-            kind: PinKind::Contract,
-            name: ItemName::parse("uvc_camera").expect("valid name"),
-            tag: ItemTag::parse("v1").expect("valid tag"),
-            sha256: ManifestFingerprint::of_bytes(b"uvc_camera contract"),
-            origin: camera.pin.origin.clone(),
-        };
+        let contract = PinnedDocument::new(
+            PinnedItem {
+                kind: PinKind::Contract,
+                name: ItemName::parse("uvc_camera").expect("valid name"),
+                tag: ItemTag::parse("v1").expect("valid tag"),
+                sha256: ManifestFingerprint::of_bytes(b"uvc_camera contract"),
+                origin: camera.pin.origin.clone(),
+            },
+            "uvc_camera contract".to_owned(),
+        );
         node_stack
             .push_config(
                 camera.config.clone(),
-                vec![contract_pin.clone()],
+                vec![contract.clone()],
                 false,
                 &previous_path,
             )
@@ -718,6 +720,6 @@ mod tests {
         let restored = node_stack.find("camera", "v1").expect("the restored node");
         let restored = restored.read();
         assert_eq!(restored.config_path(), previous_path);
-        assert_eq!(restored.document_pins(), [contract_pin]);
+        assert_eq!(restored.documents(), [contract]);
     }
 }

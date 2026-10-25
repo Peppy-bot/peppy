@@ -7,10 +7,12 @@ use crate::services::repo::cache::{
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::mcp_deployment::{
-    McpDeploymentPlan, McpServeSpec, Pinned, PinnedDocument, PinnedExposure, plan_deployment,
+    McpDeploymentPlan, McpServeSpec, Pinned, PinnedExposure, plan_deployment,
 };
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
-use daemon_config::repository::{DeploymentPins, DeploymentRoot, ManifestFingerprint, PinnedItem};
+use daemon_config::repository::{
+    DeploymentPins, DeploymentRoot, ManifestFingerprint, PinnedDocument, PinnedItem,
+};
 use daemon_config::source::ExposureRef;
 use std::collections::BTreeMap;
 
@@ -265,15 +267,6 @@ fn materialize_pinned<E: RepoCacheEntry>(
     on_feedback: &dyn Fn(Report<'_>),
 ) -> Result<Vec<PinnedDocument>, String> {
     pins.iter()
-        .map(|pin| {
-            let content = repo_cache::resolve_pinned_doc(
-                peppy_dirs,
-                entries,
-                pin,
-                |content| Ok(content.to_owned()),
-                on_feedback,
-            )?;
-            Ok(PinnedDocument::new(pin.clone(), content))
-        })
+        .map(|pin| repo_cache::materialize_pinned_document(peppy_dirs, entries, pin, on_feedback))
         .collect()
 }
