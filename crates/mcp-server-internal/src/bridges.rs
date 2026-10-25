@@ -1069,10 +1069,15 @@ impl Silence {
 
 /// The failure of a goal that went `window` without a sign of progress. A
 /// goal with no cancel of the client gets the bridge's cancel as the
-/// follow ends (see [`FollowedGoal`]); a goal with one did not answer it.
-fn went_silent(window: Duration, cancel_sent: bool) -> ActionExit {
+/// follow ends, unless it is on a member that moves a robot, which a task
+/// of its own follows on (see [`FollowedGoal`]); a goal with a cancel did
+/// not answer it.
+fn went_silent(window: Duration, cancel_sent: bool, followed_on: bool) -> ActionExit {
     let what = if cancel_sent {
         "a cancel was sent and the provider did not answer it"
+    } else if followed_on {
+        "the goal moves a robot, so the endpoint follows it on until it ends, and cancels it at a \
+         halt of the stack"
     } else {
         "the endpoint stopped following the goal and cancelled it"
     };
@@ -1180,7 +1185,13 @@ async fn follow_progress(
             Turn::Feedback(FeedbackStep::Overflowed { bound }) => {
                 return Err(end_overflowed_goal(goal, bound, window).await);
             }
-            Turn::Silence => return Err(went_silent(window, cancel_sent)),
+            Turn::Silence => {
+                return Err(went_silent(
+                    window,
+                    cancel_sent,
+                    goal.keep_following.is_some(),
+                ));
+            }
         }
     }
     let outcome = goal.result(window).await.map_err(failed)?;

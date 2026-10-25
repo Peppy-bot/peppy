@@ -8,7 +8,7 @@
 
 use super::{
     AfterCancel, Binding, FeedbackStep, GoalFollow, PreparedTask, PreparedTool, Silence, Turn,
-    after_cancel, call_service, drive_goal, next_turn, service_call_error,
+    after_cancel, call_service, drive_goal, next_turn, service_call_error, went_silent,
 };
 use crate::test_support::{PausedRuntime, ScriptedSurface};
 use config::failure_kind::{
@@ -1104,5 +1104,24 @@ fn a_cancel_the_provider_cannot_act_on_ends_the_follow_saying_why() {
         Err(ActionExit::Error(format!(
             "a cancel was sent and failed: {error}"
         )))
+    );
+}
+
+/// A silent goal says what the endpoint does with it: a goal that moves a
+/// robot is followed on, and every other goal gets the cancel.
+#[test]
+fn a_silent_goal_says_whether_the_endpoint_follows_it_on() {
+    let message = |followed_on| match went_silent(Duration::from_secs(1), false, followed_on) {
+        ActionExit::Error(message) => message,
+        other => panic!("an error, got {other:?}"),
+    };
+    assert_eq!(
+        message(false),
+        "no progress within 1000 ms; the endpoint stopped following the goal and cancelled it"
+    );
+    assert_eq!(
+        message(true),
+        "no progress within 1000 ms; the goal moves a robot, so the endpoint follows it on until \
+         it ends, and cancels it at a halt of the stack"
     );
 }
