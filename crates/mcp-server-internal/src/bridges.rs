@@ -517,7 +517,7 @@ pub(crate) async fn call_tool(
             .check(&producer)
             .await
             .map_err(|refused| match refused {
-                MoveRefused::Refused(failure) => ToolCallError::Failed(failure),
+                MoveRefused::Refused(failure) => ToolCallError::MoveRefused(failure),
                 MoveRefused::Unanswered(message) => ToolCallError::Unavailable(message),
             })?;
     }
@@ -629,7 +629,7 @@ pub(crate) async fn run_task(
         .check(&producer)
         .await
         .map_err(|refused| match refused {
-            MoveRefused::Refused(failure) => ActionExit::Refused(failure),
+            MoveRefused::Refused(failure) => ActionExit::MoveRefused(failure),
             MoveRefused::Unanswered(message) => ActionExit::Error(message),
         })?;
     let marked = route.rules.follow_marked_goal();

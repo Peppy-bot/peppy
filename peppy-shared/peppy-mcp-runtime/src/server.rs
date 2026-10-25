@@ -1727,6 +1727,15 @@ fn service_error_result(error: &ToolCallError, recording: &mut Recording) -> Cal
             recording.ended_with(&failure);
             failure.into_tool_result()
         }
+        ToolCallError::MoveRefused(failure) => {
+            let failure = CallFailure {
+                outcome: FailureOutcome::Refused,
+                failure,
+                summary: message,
+            };
+            recording.ended_with(&failure);
+            failure.into_tool_result()
+        }
         ToolCallError::Unavailable(_) => {
             recording.refused(message.clone());
             tool_error(message)

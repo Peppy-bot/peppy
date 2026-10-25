@@ -5,14 +5,18 @@
 //! deadline only bounds the failure path.
 
 use super::{MarkedSurface, MoveRefused, MoveRules};
-use crate::bridges::{Binding, GoalFollow, PreparedTask, drive_goal};
+use crate::bridges::{
+    Binding, GoalFollow, PreparedTask, PreparedTool, Route, call_tool, drive_goal,
+};
 use crate::test_support::ScriptedSurface;
 use config::failure_kind::{FailureKindName, MemberFailureKinds, PeppyFailureKind};
 use daemon_config::daemon_interface::DaemonInterface;
 use daemon_config::daemon_interface::fleet::{ChangeKind, FleetChange, FleetListing};
 use peppy_codec::MessageCodec;
-use peppy_codec::consumer::{ActionClient, ConsumerIdentity, MemberBinding};
-use peppy_mcp_runtime::{ActionExit, CancelledGoal, ProviderFailure};
+use peppy_codec::consumer::{ActionClient, ConsumerIdentity, MemberBinding, ServiceClient};
+use peppy_mcp_runtime::{
+    ActionExit, CancelledGoal, ProviderFailure, Recipient, ToolCall, ToolCallError,
+};
 use peppylib::messaging::{
     DEFAULT_FEEDBACK_BOUND, Failure, GoalContext, MessengerHandle, NonEmptyPayload, ProducerRef,
     SenderTarget,
@@ -453,4 +457,57 @@ async fn a_marked_goal_that_its_client_stops_waiting_for_is_followed_until_it_en
         !goal.is_cancelled(),
         "the goal ran on to its end with no cancel"
     );
+}
+
+/// A tool of a member that moves a robot, which the daemon refuses, ends
+/// with the move refusal of the stack and never reaches its provider, whose
+/// service does not even listen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_marked_tool_that_the_daemon_refuses_never_reaches_its_provider() {
+    let mesh = mesh().await;
+    let route = Route {
+        messenger: mesh.server.clone(),
+        identity: identity(),
+        bound_producer: Arc::new(|_target| arm_producer()),
+        rules: rules(&mesh),
+    };
+    let tool = PreparedTool {
+        name: "arm.stop".to_owned(),
+        binding: Binding {
+            target: "arm".to_owned(),
+            contract: arm_contract(),
+            member: "stop".to_owned(),
+        },
+        client: ServiceClient::new(None, None, MemberFailureKinds::peppy_only()),
+        deadline: DEADLINE,
+        moves_robot: true,
+    };
+    mesh.check_move.enqueue_response(check_move_answer(Some((
+        "halted",
+        "the stack is halted (by `peppy-cli` on `cn-desk`): no move until the halt is cleared",
+    ))));
+
+    let refused = call_tool(
+        &tool,
+        &route,
+        ToolCall {
+            input: json!({}),
+            recipient: Recipient::BoundProducer,
+        },
+    )
+    .await;
+
+    assert_eq!(
+        refused,
+        Err(ToolCallError::MoveRefused(ProviderFailure::new(
+            FailureKindName::parse("halted").unwrap(),
+            "the stack is halted (by `peppy-cli` on `cn-desk`): no move until the halt is cleared",
+        )))
+    );
+    assert_eq!(
+        refused.unwrap_err().to_string(),
+        "the stack refused the move: halted: the stack is halted (by `peppy-cli` on `cn-desk`): \
+         no move until the halt is cleared"
+    );
+    assert_eq!(mesh.check_move.captured().len(), 1, "one move check");
 }

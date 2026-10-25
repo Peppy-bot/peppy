@@ -3266,7 +3266,7 @@ fn featured_framework_launcher(port: u16) -> String {
                                          description: "A second recorder of the same episodes" }}] }},
                         {{ option: "recorder_robot", model: "recorder", description: "A robot that records episodes" }},
                     ],
-                }} }},
+                }}, fleet: {{ members: ["list", "halt", "clear_halt"] }} }},
             }},
         ],
     }}"#
@@ -3307,7 +3307,7 @@ fn framework_launcher(port: u16) -> String {
                         {{ option: "recorder_robot", model: "recorder", description: "A robot that records episodes" }},
                         {{ option: "broken_robot", model: "broken", description: "A robot whose software cannot start" }},
                     ],
-                }} }},
+                }}, fleet: {{ members: ["list", "halt", "clear_halt"] }} }},
             }},
         ],
     }}"#
@@ -3875,7 +3875,7 @@ fn joinable_launcher(port: u16) -> String {
                                          description: "A camera beside the recorder" }}] }},
                         {{ option: "recorder_robot", model: "recorder", description: "A robot that records episodes" }},
                     ],
-                }} }},
+                }}, fleet: {{ members: ["list", "halt", "clear_halt"] }} }},
             }},
         ],
     }}"#
