@@ -3,6 +3,10 @@ use derive_more::From;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// The exit code of a command that a Ctrl-C ended, as a shell gives a
+/// process that SIGINT ends.
+pub const INTERRUPTED_EXIT_CODE: i32 = 130;
+
 #[derive(Debug, From)]
 pub enum Error {
     // -- general
@@ -15,6 +19,9 @@ pub enum Error {
 
     // -- commands
     ExecutionFailed(String),
+    /// The operator pressed Ctrl-C while the command followed a daemon goal;
+    /// the text says how the goal ended. The process ends with code 130.
+    Interrupted(String),
     Sync(String),
 
     // -- Node
@@ -53,6 +60,7 @@ impl Display for Error {
                 let readable_msg = msg.replace("\\n", "\n");
                 write!(fmt, "{readable_msg}")
             }
+            Error::Interrupted(msg) => write!(fmt, "{msg}"),
             Error::Sync(msg) => write!(fmt, "Sync error: {msg}"),
             Error::InvalidNodeName(name) => write!(fmt, "Invalid node name: {name}"),
             Error::NodeWatcher(msg) => write!(fmt, "Node watcher error: {msg}"),
@@ -62,6 +70,17 @@ impl Display for Error {
             Error::Auth(msg) => write!(fmt, "{msg}"),
             Error::AuthEngine(e) => write!(fmt, "{e}"),
             Error::Peppy(e) => write!(fmt, "{e}"),
+        }
+    }
+}
+
+impl Error {
+    /// The exit code of a command that ends with this error:
+    /// [`INTERRUPTED_EXIT_CODE`] after a Ctrl-C, and 1 otherwise.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Error::Interrupted(_) => INTERRUPTED_EXIT_CODE,
+            _ => 1,
         }
     }
 }

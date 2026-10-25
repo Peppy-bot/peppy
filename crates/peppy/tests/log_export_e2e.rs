@@ -15,18 +15,12 @@
 #[allow(dead_code)]
 mod common;
 
-use common::{
-    Boot, DaemonGuard, MessagingEngine, PORT_ATTEMPTS, SERVE_INITIALIZED, free_port,
-    spawn_daemon_with_env, wait_for_boot,
-};
-use daemon::state::DaemonState;
+use common::{ZenohDaemon, free_port};
 use daemon_config::consts::PeppyDirs;
 use log_export::test_support::{OtlpReceiver, ReceivedRecord};
 use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const CORE_NODE_NAME: &str = "cn-export-e2e";
@@ -52,97 +46,34 @@ const REQUEST_ARRIVAL: Duration = Duration::from_secs(30);
 /// How long the daemon gets to exit: its teardown and the flush of the export.
 const DAEMON_EXIT: Duration = Duration::from_secs(30);
 
-/// A daemon on its own home and zenoh port.
-struct Daemon {
-    home: tempfile::TempDir,
-    port: u16,
-    guard: DaemonGuard,
-    logs: Arc<Mutex<String>>,
+/// A daemon on its own home and zenoh port, whose config file holds the
+/// export settings of a case.
+struct Daemon(ZenohDaemon);
+
+impl std::ops::Deref for Daemon {
+    type Target = ZenohDaemon;
+
+    fn deref(&self) -> &ZenohDaemon {
+        &self.0
+    }
 }
 
 impl Daemon {
     /// Boots a daemon whose config file holds `otlp_settings` besides its
     /// core node name, and whose headers file holds [`API_KEY`].
     fn boot(otlp_settings: &str, envs: &[(&str, &str)]) -> Self {
-        for _ in 0..PORT_ATTEMPTS {
-            let home = tempfile::tempdir().expect("temp home");
-            let dirs = PeppyDirs::new(home.path());
-            std::fs::create_dir_all(dirs.conf_dir()).expect("create the conf dir");
-            std::fs::write(
-                dirs.conf_dir().join("peppy_config.json5"),
-                format!("{{ core_node_name: \"{CORE_NODE_NAME}\", {otlp_settings} }}\n"),
-            )
-            .expect("write the config");
-            std::fs::write(
-                dirs.otlp_headers_path(),
-                format!("{{ \"x-api-key\": \"{API_KEY}\" }}\n"),
-            )
-            .expect("write the headers file");
-
-            let port = free_port();
-            let (mut guard, logs) =
-                spawn_daemon_with_env(home.path(), MessagingEngine::Zenoh { port }, envs);
-            let boot = wait_for_boot(&mut guard, &logs, SERVE_INITIALIZED);
-            if let Boot::Ready = boot {
-                return Self {
-                    home,
-                    port,
-                    guard,
-                    logs,
-                };
-            }
-        }
-        panic!("{PORT_ATTEMPTS} attempts in a row hit a port collision");
-    }
-
-    fn dirs(&self) -> PeppyDirs {
-        PeppyDirs::new(self.home.path())
-    }
-
-    /// Runs `peppy` with `args` against this daemon. Returns whether it
-    /// succeeded and what it printed.
-    fn peppy_outcome(&self, args: &[&str]) -> (bool, String) {
-        let output = Command::new(env!("CARGO_BIN_EXE_peppy"))
-            .args(args)
-            .env(config::consts::PEPPY_HOME_ENV, self.home.path())
-            .env(
-                daemon_config::consts::PEPPY_MESSAGING_PORT_VAR_NAME,
-                self.port.to_string(),
-            )
-            .env_remove("ZENOH_CONFIG")
-            .env_remove(config::consts::PEPPY_CONFIG_ENV)
-            .output()
-            .expect("run peppy");
-        let printed = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        (output.status.success(), printed)
-    }
-
-    /// Runs `peppy` with `args` against this daemon, which succeeds. Returns
-    /// what it printed.
-    fn peppy(&self, args: &[&str]) -> String {
-        let (success, printed) = self.peppy_outcome(args);
-        assert!(
-            success,
-            "`peppy {}` failed:\n{printed}\nDaemon output:\n{}",
-            args.join(" "),
-            self.logs.lock().unwrap()
-        );
-        printed
-    }
-
-    /// Stages `manifest` as the node `name` in a new nodes directory. Returns
-    /// the nodes directory, which the caller holds for as long as the daemon
-    /// may read the node, and the node directory.
-    fn install_node(&self, name: &str, manifest: &str) -> (tempfile::TempDir, PathBuf) {
-        let nodes = tempfile::tempdir().expect("temp nodes dir");
-        // A node directory is added by the binary that generated its code.
-        let git_hash = common::read_daemon_git_hash(&DaemonState::state_file_in(self.home.path()));
-        let node_dir = common::install_node_manifest(nodes.path(), name, &git_hash, manifest);
-        (nodes, node_dir)
+        Self(ZenohDaemon::boot(
+            CORE_NODE_NAME,
+            otlp_settings,
+            envs,
+            |dirs| {
+                std::fs::write(
+                    dirs.otlp_headers_path(),
+                    format!("{{ \"x-api-key\": \"{API_KEY}\" }}\n"),
+                )
+                .expect("write the headers file");
+            },
+        ))
     }
 
     /// Writes the node whose build prints [`BUILD_NOTE`], [`BUILD_WARNING`]
@@ -223,14 +154,8 @@ impl Daemon {
 
     /// Stops the daemon with SIGTERM and waits for it to exit. Returns what
     /// it printed.
-    fn stop(mut self) -> (tempfile::TempDir, String) {
-        let pid = rustix::process::Pid::from_child(&self.guard.0);
-        rustix::process::kill_process(pid, rustix::process::Signal::TERM)
-            .expect("signal the daemon");
-        let status = common::wait_for_exit(&mut self.guard.0, DAEMON_EXIT);
-        let printed = self.logs.lock().unwrap().clone();
-        assert!(status.success(), "the daemon exits cleanly:\n{printed}");
-        (self.home, printed)
+    fn stop(self) -> (tempfile::TempDir, String) {
+        self.0.stop(DAEMON_EXIT)
     }
 }
 
@@ -398,16 +323,26 @@ fn a_daemon_exports_each_line_of_its_add_and_build_logs() {
 
 /// The entries of each log file under `dirs`, by the kind of the log, with
 /// what differs between two daemons masked: the daemon's home, the temporary
-/// directories, and the fingerprints and ids the daemon draws. The logs of
-/// a kind are sorted, since their names carry the time they were created.
+/// directories, the names of the log files that an entry names, and the
+/// fingerprints and ids the daemon draws. The logs of a kind are sorted,
+/// since their names carry the time they were created.
 fn entries_of_every_log(dirs: &PeppyDirs) -> BTreeMap<&'static str, Vec<Vec<String>>> {
     let home = dirs.root().display().to_string();
     let masked = |line: &str| -> String {
         let line = mask_hex_runs(&line.replace(&home, "<home>"));
         line.split(' ')
-            .map(|word| match word.find("/tmp/.tmp") {
-                Some(start) => format!("{}<tmp>", &word[..start]),
-                None => word.to_owned(),
+            .map(|word| {
+                if let Some(start) = word.find("/tmp/.tmp") {
+                    return format!("{}<tmp>", &word[..start]);
+                }
+                match word.rsplit_once('/') {
+                    Some((dir, file))
+                        if dir.starts_with("<home>/logs/") && file.ends_with(".log") =>
+                    {
+                        format!("{dir}/<log file>")
+                    }
+                    _ => word.to_owned(),
+                }
             })
             .collect::<Vec<_>>()
             .join(" ")

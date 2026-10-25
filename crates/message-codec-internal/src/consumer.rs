@@ -7,10 +7,10 @@
 //! the same envelopes. A provider cannot tell the two apart.
 
 use crate::{ConversionError, MessageCodec};
-use peppylib::config::QoSProfile;
+use config::failure_kind::MemberFailureKinds;
 use peppylib::messaging::{
-    ActionGoalHandle, ActionMessenger, CancelState, ProducerRef, ResultStatus, SenderTarget,
-    ServiceMessenger, ServiceTarget, decode_cancel_ack,
+    ActionGoalHandle, ActionMessenger, CancelOnDrop, CancelState, Failure, FeedbackBound,
+    GoalAnswer, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, decode_cancel_ack,
 };
 use peppylib::runtime::BoundSetSubscription;
 use peppylib::{Message, MessengerHandle, Payload, PeppyError};
@@ -23,6 +23,46 @@ pub enum ConsumerError {
     Messaging(#[from] PeppyError),
     #[error(transparent)]
     Conversion(#[from] ConversionError),
+    /// The provider gave a failure kind that is neither a kind of peppy nor
+    /// a kind of its contract that the member lists.
+    #[error(
+        "the provider of `{member}` gave the failure kind `{kind}`, which is neither a kind of peppy nor a kind of its contract that the member lists"
+    )]
+    UndeclaredFailureKind { member: String, kind: String },
+}
+
+/// The failure that `error` carries, checked against the kinds `kinds`
+/// allows: an error with an undeclared kind becomes
+/// [`ConsumerError::UndeclaredFailureKind`].
+fn checked_failure_error(
+    error: PeppyError,
+    member: &str,
+    kinds: &MemberFailureKinds,
+) -> ConsumerError {
+    match error.failure() {
+        Some(failure) if !kinds.allows(failure.kind().as_str()) => {
+            ConsumerError::UndeclaredFailureKind {
+                member: member.to_string(),
+                kind: failure.kind().to_string(),
+            }
+        }
+        _ => ConsumerError::Messaging(error),
+    }
+}
+
+/// `failure` when the member's kinds allow its kind.
+fn checked_failure(
+    failure: Failure,
+    member: &str,
+    kinds: &MemberFailureKinds,
+) -> Result<Failure, ConsumerError> {
+    if kinds.allows(failure.kind().as_str()) {
+        return Ok(failure);
+    }
+    Err(ConsumerError::UndeclaredFailureKind {
+        member: member.to_string(),
+        kind: failure.kind().to_string(),
+    })
 }
 
 /// Who the consumer is in the graph: the core node it is bound to and the
@@ -81,15 +121,28 @@ impl TopicConsumer {
 pub struct ServiceClient {
     request: Option<MessageCodec>,
     response: Option<MessageCodec>,
+    failure_kinds: MemberFailureKinds,
 }
 
 impl ServiceClient {
-    pub fn new(request: Option<MessageCodec>, response: Option<MessageCodec>) -> Self {
-        Self { request, response }
+    /// `failure_kinds` is the closed set of kinds the member can give in an
+    /// error reply.
+    pub fn new(
+        request: Option<MessageCodec>,
+        response: Option<MessageCodec>,
+        failure_kinds: MemberFailureKinds,
+    ) -> Self {
+        Self {
+            request,
+            response,
+            failure_kinds,
+        }
     }
 
     /// Calls the member on `producer` and waits at most `deadline` for the
-    /// response.
+    /// response. An error reply is a [`PeppyError::ServiceFailed`]; one with
+    /// a kind the member does not declare is a
+    /// [`ConsumerError::UndeclaredFailureKind`].
     pub async fn call(
         &self,
         messenger: &MessengerHandle,
@@ -110,7 +163,8 @@ impl ServiceClient {
             payload,
             deadline,
         )
-        .await?;
+        .await
+        .map_err(|error| checked_failure_error(error, &binding.member, &self.failure_kinds))?;
         Ok(decode_optional(
             self.response.as_ref(),
             response.payload_bytes().as_ref(),
@@ -124,27 +178,36 @@ pub struct ActionClient {
     goal: Option<MessageCodec>,
     feedback: Option<MessageCodec>,
     result: Option<MessageCodec>,
+    failure_kinds: MemberFailureKinds,
 }
 
 impl ActionClient {
     /// `goal` converts the goal request, `feedback` each feedback message
-    /// and `result` the completed result's body; each is `None` for a side
-    /// the contract declares without a message format.
+    /// and `result` the result's body; each is `None` for a side the
+    /// contract declares without a message format. `failure_kinds` is the
+    /// closed set of kinds the member can give when it refuses or fails a
+    /// goal.
     pub fn new(
         goal: Option<MessageCodec>,
         feedback: Option<MessageCodec>,
         result: Option<MessageCodec>,
+        failure_kinds: MemberFailureKinds,
     ) -> Self {
         Self {
             goal,
             feedback,
             result,
+            failure_kinds,
         }
     }
 
     /// Sends `goal` to `producer`, waiting at most `deadline` for the
     /// producer's admission reply. The handle reports whether the goal was
-    /// accepted and drives its feedback, result and cancellation.
+    /// accepted and drives its feedback, result and cancellation. The
+    /// handle keeps up to `feedback_bound` unread feedback messages. A
+    /// caller that reads the feedback and falls behind by more loses the
+    /// stream: the handle cancels the goal, and the next read reports the
+    /// loss. A caller that never reads the feedback keeps its goal.
     #[allow(clippy::too_many_arguments)]
     pub async fn fire_goal(
         &self,
@@ -153,7 +216,7 @@ impl ActionClient {
         binding: &MemberBinding,
         producer: &ProducerRef,
         goal: &Value,
-        feedback_qos: QoSProfile,
+        feedback_bound: FeedbackBound,
         deadline: Duration,
     ) -> Result<GoalHandle, ConsumerError> {
         let payload = encode_optional(self.goal.as_ref(), goal)?;
@@ -165,15 +228,19 @@ impl ActionClient {
             &binding.member,
             Some(producer),
             payload,
-            feedback_qos,
-            peppylib::messaging::FeedbackBuffer::KeepLatest,
+            feedback_bound,
             deadline,
         )
         .await?;
+        if let Some(refusal) = inner.goal_reply().refusal() {
+            checked_failure(refusal.clone(), &binding.member, &self.failure_kinds)?;
+        }
         Ok(GoalHandle {
             inner,
+            member: binding.member.clone(),
             feedback: self.feedback.clone(),
             result: self.result.clone(),
+            failure_kinds: self.failure_kinds.clone(),
         })
     }
 }
@@ -181,19 +248,23 @@ impl ActionClient {
 /// A goal in flight.
 pub struct GoalHandle {
     inner: ActionGoalHandle,
+    member: String,
     feedback: Option<MessageCodec>,
     result: Option<MessageCodec>,
+    failure_kinds: MemberFailureKinds,
 }
 
 /// How a goal ended, as reported by the producer's result service.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GoalOutcome {
-    /// The goal ran to completion; the value is the decoded result body,
-    /// an empty object for an action without a result format.
+    /// The goal ran to completion, a success; the value is the decoded
+    /// result body, an empty object for an action without a result format.
     Completed(Value),
-    /// The goal ended cancelled; the value is the result body the producer
-    /// ended it with, decoded as a completed one is.
-    Cancelled(Value),
+    /// The goal ended cancelled, for `reason`; `result` is the result body
+    /// the producer ended it with, decoded as a completed one is.
+    Cancelled { reason: String, result: Value },
+    /// The goal failed: a failure kind the member declares and a message.
+    Failed(Failure),
     /// The producer dropped the goal before it settled.
     Abandoned,
     /// The producer no longer retains the goal's result.
@@ -202,12 +273,16 @@ pub enum GoalOutcome {
 
 impl GoalHandle {
     pub fn accepted(&self) -> bool {
-        self.inner.goal_reply().accepted
+        self.inner.goal_reply().is_accepted()
     }
 
-    /// The producer's reason for rejecting the goal, when it gave one.
-    pub fn rejection_reason(&self) -> Option<&str> {
-        self.inner.goal_reply().reason.as_deref()
+    /// The failure the producer refused the goal with: a kind the member
+    /// declares, and a message.
+    pub fn refusal(&self) -> Option<&Failure> {
+        match &self.inner.goal_reply().answer {
+            GoalAnswer::Refused(failure) => Some(failure),
+            GoalAnswer::Accepted(_) => None,
+        }
     }
 
     pub fn goal_id(&self) -> &str {
@@ -230,20 +305,35 @@ impl GoalHandle {
 
     /// Requests the goal's terminal outcome, waiting at most `deadline`. A
     /// completed or cancelled result body that does not convert is a
-    /// [`ConsumerError::Conversion`].
+    /// [`ConsumerError::Conversion`], and a failure with a kind the member
+    /// does not declare is a [`ConsumerError::UndeclaredFailureKind`].
     pub async fn result(
         &self,
         messenger: &MessengerHandle,
         deadline: Duration,
     ) -> Result<GoalOutcome, ConsumerError> {
+        use peppylib::messaging::GoalOutcome as Ended;
         let reply = ActionMessenger::request_result(messenger, &self.inner, deadline).await?;
-        let body = || decode_optional(self.result.as_ref(), reply.body.as_ref());
-        Ok(match reply.status {
-            ResultStatus::Completed => GoalOutcome::Completed(body()?),
-            ResultStatus::Cancelled => GoalOutcome::Cancelled(body()?),
-            ResultStatus::Abandoned => GoalOutcome::Abandoned,
-            ResultStatus::Expired => GoalOutcome::Expired,
+        let body = |payload: &Payload| decode_optional(self.result.as_ref(), payload.as_ref());
+        Ok(match reply.outcome {
+            Ended::Completed(result) => GoalOutcome::Completed(body(&result)?),
+            Ended::Cancelled { reason, result } => GoalOutcome::Cancelled {
+                reason,
+                result: body(&result)?,
+            },
+            Ended::Failed(failure) => {
+                GoalOutcome::Failed(checked_failure(failure, &self.member, &self.failure_kinds)?)
+            }
+            Ended::Abandoned => GoalOutcome::Abandoned,
+            Ended::Expired => GoalOutcome::Expired,
         })
+    }
+
+    /// A guard that cancels the goal when it is dropped armed: its caller
+    /// stops following the goal before the goal ended (see
+    /// [`CancelOnDrop`]).
+    pub fn cancel_on_drop(&self, why: &'static str) -> CancelOnDrop {
+        self.inner.cancel_on_drop(why)
     }
 
     /// Asks the producer to cancel the goal, waiting at most `deadline` for

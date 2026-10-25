@@ -110,16 +110,24 @@ async fn acknowledge<F: Future>(token: &ResponseToken, call: Pin<&mut F>, wake: 
     assert!(poll_once(call, wake).is_pending());
 }
 
+/// The error reply the producer of these tests gives.
+fn handler_failure() -> pmi::Failure {
+    pmi::Failure::new(
+        config::failure_kind::PeppyFailureKind::AttemptFailed,
+        "handler failed",
+    )
+}
+
 fn assert_handler_error(result: Result<Message>) {
     match result.unwrap_err() {
-        Error::ServiceError {
+        Error::ServiceFailed {
             instance_id,
             service_name,
-            reason,
+            failure,
         } => {
             assert_eq!(instance_id.as_deref(), Some(PRODUCER));
             assert_eq!(service_name, SERVICE);
-            assert_eq!(reason, "handler failed");
+            assert_eq!(failure, handler_failure());
         }
         error => panic!("expected the handler error, got {error:?}"),
     }
@@ -344,7 +352,7 @@ async fn a_terminal_reply_in_hand_wins_when_the_caller_resumes_after_expiry() {
             if handler_error {
                 request
                     .token
-                    .respond_handler_error("handler failed".into())
+                    .respond_failure(&handler_failure())
                     .await
                     .unwrap();
             } else {
@@ -391,7 +399,7 @@ async fn timely_terminal_replies_preserve_payloads_and_handler_errors() {
             if handler_error {
                 request
                     .token
-                    .respond_handler_error("handler failed".into())
+                    .respond_failure(&handler_failure())
                     .await
                     .unwrap();
                 assert_handler_error(call.await);

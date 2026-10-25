@@ -85,18 +85,10 @@ async fn remove_node_async(
         remove_request_timeout(conn.shutdown_grace_secs),
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_remove service: {}", e)))?;
+    .map_err(|e| crate::commands::request_error("Failed to remove the node", e))?;
 
-    // A failed removal may have force-killed some instances before it failed.
     for instance_id in &remove_response.force_killed {
         warn_force_killed(instance_id);
-    }
-    if !remove_response.success {
-        return Err(Error::ExecutionFailed(
-            remove_response
-                .error_message
-                .unwrap_or_else(|| "node_remove failed with no error message".to_string()),
-        ));
     }
     info!("Removed node '{}:{}'", node_name, tag);
     Ok(())

@@ -1,15 +1,16 @@
 use crate::Result;
 use crate::services::current_host_name;
-use crate::services::response::into_service_response;
+use crate::services::response::into_service_answer;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{ContainerInfo, InfoRequest, InfoResponse};
 use core_node_api::names;
 use daemon_config::consts::PEPPY_VERSION;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
+use peppylib::messaging::ServiceAnswer;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinHandle;
@@ -69,18 +70,15 @@ async fn handle_info_request(
     start_time: Instant,
     node_stack: &NodeStack,
     messaging_port: u16,
-) -> PeppyResult<Payload> {
-    into_service_response(
+) -> ServiceAnswer {
+    into_service_answer(handle_info_request_inner(
         &context,
-        handle_info_request_inner(
-            &context,
-            core_node_name,
-            instance_id,
-            start_time,
-            node_stack,
-            messaging_port,
-        ),
-    )
+        core_node_name,
+        instance_id,
+        start_time,
+        node_stack,
+        messaging_port,
+    ))
 }
 
 fn handle_info_request_inner(

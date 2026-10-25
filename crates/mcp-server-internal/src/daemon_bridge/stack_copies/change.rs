@@ -5,43 +5,54 @@
 //! A task of the bridge owns the change ([`start_change`]): it holds the
 //! bridge's lock when the change takes it, reads the stack and refuses or
 //! sends the goal, then follows the goal until the daemon's work ends. The
-//! call's handler only waits on that task ([`wait_for_change`]), so the
-//! change goes on, and the lock stays held, when the handler stops waiting
-//! or the runtime drops it: a cancel, a closed call, or a whole-goal
-//! deadline of the document. The task releases the lock before it reports
-//! the end of the change, so a call that hears of the end finds the lock
-//! free.
+//! call's handler only waits on that task ([`wait_for_change`]). When the
+//! handler stops waiting before the end (a progress window of silence) or
+//! the runtime drops it (a whole-goal deadline of the document, the TTL of
+//! its task, the stop of the endpoint), the task sends the daemon a cancel,
+//! unless the client's cancel went out already, and follows the change to
+//! the end the daemon gives it, with the lock held. The task releases the
+//! lock before it reports the end of the change, so a call that hears of
+//! the end finds the lock free.
 //!
 //! The call ends:
 //!
-//! - refused (`failed` in the call record) when the bridge or the daemon
-//!   refuses the goal before it runs;
-//! - with the result the daemon ended the change with: `success` true and
-//!   "bravo (so101_sim) is on the stack", or `success` false and "the
-//!   addition of bravo failed: {error}. Log files: {logs}";
-//! - failed when the change ends without a result, for example when the
-//!   daemon is gone;
-//! - cancelled, at once, when the client cancels after the daemon accepted
-//!   the change: "stopped waiting; the addition of bravo continues on the
-//!   stack". The bridge sends the daemon nothing: a stack change ignores a
-//!   cancel. A cancel that comes before the daemon answered the goal waits
-//!   for that answer, which the read of the stack and the admission of the
-//!   goal bound, so the call ends refused when the change never ran;
+//! - refused when the bridge or the daemon refuses the goal before it
+//!   runs, with the failure kind of the refusal: `busy`, "the daemon
+//!   refused the addition of bravo: a stack change is in progress on this
+//!   daemon";
+//! - with an empty result when the daemon completed the change: the copy is
+//!   on the stack, or off it;
+//! - failed when the daemon failed the change, with its failure kind and
+//!   the log files: `attempt_failed`, "the addition of bravo failed:
+//!   {error}. Log files: {logs}";
+//! - cancelled when the client cancels, with `tasks/cancel` or by closing
+//!   the call: the bridge sends the daemon a cancel, the daemon stops the
+//!   change at the step it reached and undoes it as a failure there does,
+//!   and the call ends with the daemon's reason once the daemon ended the
+//!   change. A change the daemon ended first keeps its end;
+//! - failed when the change ends without an end, for example when the
+//!   daemon is gone, and when the daemon gives a failure kind that the
+//!   daemon does not give;
 //! - failed after one progress window of silence: "the daemon sent nothing
-//!   for 660 s; the addition of bravo can still be running". The bridge sends
-//!   no cancel and goes on following the change.
+//!   for 660 s; the endpoint cancelled the addition of bravo". The bridge
+//!   sends the daemon a cancel and follows the change to its end.
 
 use crate::bridges::{Silence, TaskSurface};
 use crate::daemon_bridge::OwnDaemon;
 use config::runtime::{CopyName, Name};
-use core_node_api::encoding::{LaunchFeedback, LaunchFeedbackStep, LaunchResult};
-use peppy_mcp_runtime::{ActionExit, CancelledGoal};
+use core_node_api::DaemonFailure;
+use core_node_api::encoding::{LaunchFeedbackStep, LaunchOutput};
+use peppy_mcp_runtime::{ActionExit, CancelledGoal, ProviderFailure};
 use serde_json::{Value, json};
-use stack_goal::{FollowError, RunningStackGoal, SendError, StackGoal, StackGoalEvent};
+use stack_goal::{
+    FollowError, RunningStackGoal, SendError, StackGoal, StackGoalEnd, StackGoalEvent,
+    StackGoalOutcome,
+};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::{OwnedMutexGuard, mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 /// What a change of the bridge does, as every message about it names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,12 +84,13 @@ impl Change {
         }
     }
 
-    /// The message of a change that succeeded.
-    fn succeeded(&self) -> String {
-        match self {
-            Self::Addition { name, option } => format!("{name} ({option}) is on the stack"),
-            Self::Removal { name } => format!("{name} is off the stack"),
-        }
+    /// The progress line of a cancel the client asked for.
+    fn cancelling(&self) -> String {
+        let launch = LaunchFeedbackStep::LauncherStep.phase_label();
+        format!(
+            "{launch}: the client cancelled {}; the daemon stops it and undoes it",
+            self.subject()
+        )
     }
 
     /// The message of a change that failed for `error`, with the log files
@@ -93,61 +105,49 @@ impl Change {
         )
     }
 
-    /// The result the daemon ended the change with, as the call completes.
-    fn outcome(&self, result: &LaunchResult) -> Value {
-        if result.success {
-            return json!({ "success": true, "message": self.succeeded() });
+    /// The failure of a change that the daemon failed with `failure`: its
+    /// failure kind, and a message with the log files that say more.
+    fn failed_with(&self, failure: &DaemonFailure, logs: &[&Path]) -> ProviderFailure {
+        ProviderFailure::new(failure.kind, self.failed(&failure.message, logs))
+    }
+
+    /// The end of a call whose change the daemon refused before it ran: the
+    /// failure kind and the reason of the refusal.
+    fn refused(&self, refusal: &DaemonFailure) -> ActionExit {
+        ActionExit::Refused(ProviderFailure::new(
+            refusal.kind,
+            format!("the daemon refused {}: {}", self.subject(), refusal.message),
+        ))
+    }
+
+    /// The end of the call of a change that ended with `end`, whose log file
+    /// is `log_path`: an empty result when the daemon completed it, else the
+    /// failure, with its kind and the log files that say more, or the
+    /// cancel, with its reason.
+    fn outcome(&self, end: &StackGoalEnd, log_path: &Path) -> Result<Value, ActionExit> {
+        match &end.outcome {
+            StackGoalOutcome::Completed(_) => Ok(json!({})),
+            StackGoalOutcome::Failed(failure) => {
+                let mut logs = vec![log_path];
+                logs.extend(end.node_logs.failed());
+                Err(ActionExit::Failed(self.failed_with(failure, &logs)))
+            }
+            StackGoalOutcome::Cancelled { reason } => Err(ActionExit::Cancelled(CancelledGoal {
+                result: json!({}),
+                reason: format!("{} was {reason}", self.subject()),
+            })),
         }
-        let error = result
-            .error_message
-            .as_deref()
-            .unwrap_or("the daemon gave no reason");
-        let mut logs = vec![result.log_path.as_path()];
-        logs.extend(failed_node_logs(result));
-        json!({ "success": false, "message": self.failed(error, &logs) })
     }
 
-    /// The end of a call whose client cancelled after the daemon accepted
-    /// the change.
-    fn stopped_waiting(&self) -> ActionExit {
-        ActionExit::Cancelled(CancelledGoal {
-            result: json!({
-                "success": false,
-                "message": format!("stopped waiting; {} continues on the stack", self.subject()),
-            }),
-            reason: None,
-        })
-    }
-
-    /// The end of a call the daemon sent nothing to for `window`.
+    /// The end of a call the daemon sent nothing to for `window`. The
+    /// task of the change then cancels it (see [`follow_change`]).
     fn silent(&self, window: Duration) -> ActionExit {
-        ActionExit::Failed(format!(
-            "the daemon sent nothing for {} s; {} can still be running",
+        ActionExit::Error(format!(
+            "the daemon sent nothing for {} s; the endpoint cancelled {}",
             seconds(window),
             self.subject()
         ))
     }
-}
-
-/// The log file of each node phase that failed: the add, build or run log
-/// of the node that failed the change.
-fn failed_node_logs(result: &LaunchResult) -> impl Iterator<Item = &Path> {
-    let add = result
-        .node_add_logs
-        .iter()
-        .filter(|entry| entry.failed)
-        .map(|entry| entry.log_path.as_path());
-    let build = result
-        .node_build_logs
-        .iter()
-        .filter(|entry| entry.failed)
-        .map(|entry| entry.log_path.as_path());
-    let run = result
-        .node_run_logs
-        .iter()
-        .filter(|entry| entry.failed)
-        .map(|entry| entry.log_path.as_path());
-    add.chain(build).chain(run)
 }
 
 /// `window` in whole seconds when it is a whole number of them, else with
@@ -165,8 +165,8 @@ fn seconds(window: Duration) -> String {
 #[derive(Debug)]
 enum Start {
     /// The bridge refused the change, or the daemon did not admit its goal:
-    /// the refusal to report.
-    Refused(String),
+    /// the end of the call.
+    Refused(ActionExit),
     /// The daemon admitted the goal, whose log file is `log_path`.
     Accepted { log_path: PathBuf },
 }
@@ -175,19 +175,19 @@ enum Start {
 #[derive(Debug)]
 enum ChangeEvent {
     /// One line of the change's progress.
-    Progress(LaunchFeedback),
-    /// The result the daemon ended the change with.
-    Ended(LaunchResult),
-    /// The change ended without a result.
-    NoResult(FollowError),
+    Progress(LaunchOutput),
+    /// The end the daemon gave the change.
+    Ended(StackGoalEnd),
+    /// The change ended without an end.
+    NoEnd(FollowError),
 }
 
 impl From<Result<StackGoalEvent, FollowError>> for ChangeEvent {
     fn from(event: Result<StackGoalEvent, FollowError>) -> Self {
         match event {
-            Ok(StackGoalEvent::Feedback(feedback)) => Self::Progress(feedback),
-            Ok(StackGoalEvent::Ended(result)) => Self::Ended(result),
-            Err(error) => Self::NoResult(error),
+            Ok(StackGoalEvent::Output(output)) => Self::Progress(output),
+            Ok(StackGoalEvent::Ended(end)) => Self::Ended(end),
+            Err(error) => Self::NoEnd(error),
         }
     }
 }
@@ -196,6 +196,9 @@ impl From<Result<StackGoalEvent, FollowError>> for ChangeEvent {
 pub(super) struct StartedChange {
     start: oneshot::Receiver<Start>,
     events: mpsc::UnboundedReceiver<ChangeEvent>,
+    /// Cancelled by the call when its client cancels: the task sends the
+    /// daemon a cancel.
+    cancel: CancellationToken,
 }
 
 /// The locks of the bridge that a `join` holds: `join` until the daemon's
@@ -209,19 +212,21 @@ pub(super) struct JoinLocks {
 /// `join`, each for as long as [`JoinLocks`] says. The task awaits `goal`,
 /// which reads the stack and gives the goal to send or a refusal, sends the
 /// goal to `daemon`, and follows it to its end. It reports to the call the
-/// returned [`StartedChange`] reads, and goes on to the end when the call
-/// stops reading.
+/// returned [`StartedChange`] reads, sends the daemon a cancel when the call
+/// asks for one, and goes on to the end when the call stops reading.
 pub(super) fn start_change<G>(
     daemon: OwnDaemon,
     locks: Option<JoinLocks>,
     change: Change,
-    goal: impl Future<Output = Result<G, String>> + Send + 'static,
+    goal: impl Future<Output = Result<G, ActionExit>> + Send + 'static,
 ) -> StartedChange
 where
     G: StackGoal + Send + Sync + 'static,
 {
     let (start_sender, start) = oneshot::channel();
     let (event_sender, events) = mpsc::unbounded_channel();
+    let cancel = CancellationToken::new();
+    let cancel_requested = cancel.clone();
     tokio::spawn(async move {
         let (lock, admission) = locks
             .map(|JoinLocks { join, admission }| (join, admission))
@@ -238,43 +243,65 @@ where
         };
         let log_path = running.log_path().to_owned();
         let _ = start_sender.send(Start::Accepted { log_path });
-        follow_change(running, lock, &change, event_sender).await;
+        follow_change(running, lock, &change, event_sender, cancel_requested).await;
     });
-    StartedChange { start, events }
+    StartedChange {
+        start,
+        events,
+        cancel,
+    }
 }
 
-/// Reads the stack and sends the goal of `change`, or gives the refusal:
-/// the bridge's, the daemon's reason when it rejects the goal, or why the
-/// goal did not reach it.
+/// Reads the stack and sends the goal of `change`, or gives the end of the
+/// call that refuses it: the bridge's refusal, the daemon's with its failure
+/// kind, or why the goal did not reach the daemon.
 async fn admit_goal<G: StackGoal>(
     daemon: &OwnDaemon,
     change: &Change,
-    goal: impl Future<Output = Result<G, String>>,
-) -> Result<RunningStackGoal, String> {
+    goal: impl Future<Output = Result<G, ActionExit>>,
+) -> Result<RunningStackGoal, ActionExit> {
     let goal = goal.await?;
     stack_goal::send(daemon.route(), &goal)
         .await
         .map_err(|error| match error {
-            SendError::Rejected { reason, .. } => reason,
-            other => format!("the daemon did not take {}: {other}", change.subject()),
+            SendError::Refused { failure, .. } => change.refused(&failure),
+            other => ActionExit::Error(format!(
+                "the daemon did not take {}: {other}",
+                change.subject()
+            )),
         })
 }
 
 /// Follows an admitted change to its end, and hands each event to the call
-/// while it reads them. The lock goes before the last event, so a call that
-/// hears of the end finds the lock free. Once the call stops reading, the
+/// while it reads them. A cancel the call asks for (`cancel`) reaches the
+/// daemon, and the change is followed to the end the daemon gives it. The
+/// lock goes before the last event, so a call that hears of the end finds
+/// the lock free. Once the call stops reading before the end, the daemon
+/// gets a cancel, unless the call's cancel went out already, and the
 /// change is followed to its end all the same, and its end is logged.
 async fn follow_change(
     mut running: RunningStackGoal,
     lock: Option<OwnedMutexGuard<()>>,
     change: &Change,
     events: mpsc::UnboundedSender<ChangeEvent>,
+    cancel: CancellationToken,
 ) {
+    let mut cancel_sent = false;
     loop {
         let event = tokio::select! {
             biased;
+            () = cancel.cancelled(), if !cancel_sent => {
+                cancel_sent = true;
+                cancel_change(&running, change).await;
+                continue;
+            }
             event = running.next() => ChangeEvent::from(event),
-            () = events.closed() => break,
+            () = events.closed() => {
+                if !cancel_sent {
+                    cancel_change(&running, change).await;
+                }
+                break;
+            }
         };
         if let ChangeEvent::Progress(_) = event {
             if events.send(event).is_err() {
@@ -293,19 +320,31 @@ async fn follow_change(
     log_unwatched_end(change, &end);
 }
 
+/// Sends the daemon the cancel of `change`, and logs a cancel that does not
+/// reach it.
+async fn cancel_change(running: &RunningStackGoal, change: &Change) {
+    if let Err(error) = running.cancel().await {
+        tracing::warn!(%error, "{} was not cancelled", change.subject());
+    }
+}
+
 /// Logs the end of a change that no call waits for any more.
 fn log_unwatched_end(change: &Change, end: &ChangeEvent) {
     let subject = change.subject();
     match end {
-        ChangeEvent::Ended(result) if result.success => {
-            tracing::info!("{subject}, which no call waits for, succeeded");
-        }
-        ChangeEvent::Ended(result) => tracing::warn!(
-            error = result.error_message.as_deref().unwrap_or_default(),
-            log = %result.log_path.display(),
-            "{subject}, which no call waits for, failed"
-        ),
-        ChangeEvent::NoResult(error) => {
+        ChangeEvent::Ended(end) => match &end.outcome {
+            StackGoalOutcome::Completed(_) => {
+                tracing::info!("{subject}, which no call waits for, succeeded");
+            }
+            StackGoalOutcome::Failed(failure) => tracing::warn!(
+                %failure,
+                "{subject}, which no call waits for, failed"
+            ),
+            StackGoalOutcome::Cancelled { reason } => {
+                tracing::warn!(reason, "{subject}, which no call waits for, was cancelled");
+            }
+        },
+        ChangeEvent::NoEnd(error) => {
             tracing::warn!(%error, "{subject}, which no call waits for, ended without a result");
         }
         ChangeEvent::Progress(_) => {}
@@ -315,54 +354,64 @@ fn log_unwatched_end(change: &Change, end: &ChangeEvent) {
 /// Waits, on behalf of a call, for a change that a task of the bridge owns
 /// (see the module's documentation for how the call ends). Each line of the
 /// change's progress reaches the client through `surface` as "{step}:
-/// {line}", the first one as soon as the daemon admits the change. `window`
-/// is the most silence the call waits through, `None` under a whole-goal
-/// deadline that the runtime holds the call to.
+/// {line}", the first one as soon as the daemon admits the change, and the
+/// next event is read once the client took the line. A cancel of the client
+/// reaches the daemon, and the call waits for the end the daemon then gives
+/// the change. `window` is the most silence the call waits through, `None`
+/// under a whole-goal deadline that the runtime holds the call to. An event
+/// that arrived while the client took a line wins over a window that ran
+/// out meanwhile: the daemon showed progress.
 pub(super) async fn wait_for_change(
     started: StartedChange,
     change: &Change,
     surface: &impl TaskSurface,
     window: Option<Duration>,
 ) -> Result<Value, ActionExit> {
-    let StartedChange { start, mut events } = started;
+    let StartedChange {
+        start,
+        mut events,
+        cancel,
+    } = started;
     let log_path = match start.await {
         Ok(Start::Accepted { log_path }) => log_path,
-        Ok(Start::Refused(refusal)) => return Err(ActionExit::Failed(refusal)),
+        Ok(Start::Refused(refusal)) => return Err(refusal),
         Err(_) => {
-            return Err(ActionExit::Failed(format!(
+            return Err(ActionExit::Error(format!(
                 "{} ended before the daemon answered its goal",
                 change.subject()
             )));
         }
     };
-    surface.report_feedback(change.accepted());
+    surface.report_feedback(change.accepted()).await;
     let mut silence = window.map(Silence::new);
     loop {
         let event = tokio::select! {
             biased;
-            () = surface.cancel_requested() => return Err(change.stopped_waiting()),
+            () = surface.cancel_requested(), if !cancel.is_cancelled() => {
+                cancel.cancel();
+                surface.report_feedback(change.cancelling()).await;
+                continue;
+            }
             event = events.recv() => event,
             window = lasted_a_window(&mut silence) => return Err(change.silent(window)),
         };
         match event {
-            Some(ChangeEvent::Progress(feedback)) => {
-                surface.report_feedback(format!(
-                    "{}: {}",
-                    feedback.step.phase_label(),
-                    feedback.line
-                ));
+            Some(ChangeEvent::Progress(output)) => {
                 if let Some(silence) = &mut silence {
                     silence.restart();
                 }
+                surface
+                    .report_feedback(format!("{}: {}", output.step.phase_label(), output.line))
+                    .await;
             }
-            Some(ChangeEvent::Ended(result)) => return Ok(change.outcome(&result)),
-            Some(ChangeEvent::NoResult(error)) => {
-                return Err(ActionExit::Failed(
+            Some(ChangeEvent::Ended(end)) => return change.outcome(&end, &log_path),
+            Some(ChangeEvent::NoEnd(error)) => {
+                return Err(ActionExit::Error(
                     change.failed(&error.to_string(), &[log_path.as_path()]),
                 ));
             }
             None => {
-                return Err(ActionExit::Failed(format!(
+                return Err(ActionExit::Error(format!(
                     "{} ended without its last event",
                     change.subject()
                 )));
@@ -386,7 +435,11 @@ async fn lasted_a_window(silence: &mut Option<Silence>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_node_api::encoding::{NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry};
+    use config::failure_kind::PeppyFailureKind;
+    use core_node_api::DaemonFailureKind;
+    use core_node_api::encoding::{
+        LaunchResult, NodeAddLogEntry, NodeBuildLogEntry, NodeLogs, NodeRunLogEntry,
+    };
 
     fn name(name: &str) -> Name {
         Name::new(name).expect("a name")
@@ -427,43 +480,53 @@ mod tests {
             removal().accepted(),
             "launch: the daemon accepted the removal of bravo"
         );
-        assert_eq!(addition().succeeded(), "bravo (so101_sim) is on the stack");
-        assert_eq!(removal().succeeded(), "bravo is off the stack");
+        assert_eq!(
+            addition().cancelling(),
+            "launch: the client cancelled the addition of bravo; the daemon stops it and undoes it"
+        );
         let window = Duration::from_secs(660);
         assert_eq!(
             addition().silent(window),
-            ActionExit::Failed(
-                "the daemon sent nothing for 660 s; the addition of bravo can still be running"
+            ActionExit::Error(
+                "the daemon sent nothing for 660 s; the endpoint cancelled the addition of bravo"
                     .to_owned()
             )
         );
         assert_eq!(
             removal().silent(window),
-            ActionExit::Failed(
-                "the daemon sent nothing for 660 s; the removal of bravo can still be running"
+            ActionExit::Error(
+                "the daemon sent nothing for 660 s; the endpoint cancelled the removal of bravo"
                     .to_owned()
             )
         );
-        for (change, subject) in [(addition(), "addition"), (removal(), "removal")] {
-            assert_eq!(
-                change.stopped_waiting(),
-                ActionExit::Cancelled(CancelledGoal {
-                    result: json!({
-                        "success": false,
-                        "message": format!(
-                            "stopped waiting; the {subject} of bravo continues on the stack"
-                        ),
-                    }),
-                    reason: None,
-                })
-            );
-        }
+        let busy = DaemonFailure::new(
+            DaemonFailureKind::Busy,
+            "a stack change is in progress on this daemon",
+        );
+        assert_eq!(
+            removal().refused(&busy),
+            ActionExit::Refused(ProviderFailure::new(
+                DaemonFailureKind::Busy,
+                "the daemon refused the removal of bravo: a stack change is in progress on this \
+                 daemon"
+            ))
+        );
     }
 
-    /// A failure names the goal's log, then the log of the node phase that
-    /// failed, whichever phase it is; a log that did not fail is not named.
+    fn ended(outcome: StackGoalOutcome, node_logs: NodeLogs) -> StackGoalEnd {
+        StackGoalEnd { outcome, node_logs }
+    }
+
+    fn failed(kind: PeppyFailureKind, message: &str) -> StackGoalOutcome {
+        StackGoalOutcome::Failed(DaemonFailure::new(kind, message))
+    }
+
+    /// A failure names its kind, the goal's log, then the log of the node
+    /// phase that failed, whichever phase it is; a log that did not fail is
+    /// not named.
     #[test]
-    fn a_failure_names_the_stack_log_then_the_log_of_the_phase_that_failed() {
+    fn a_failure_names_its_kind_the_stack_log_then_the_log_of_the_phase_that_failed() {
+        let join_log = Path::new("/logs/stack/join.log");
         let add = |failed| NodeAddLogEntry {
             node_label: "robot_initializer:v1".to_owned(),
             log_path: PathBuf::from("/logs/add/robot_initializer.log"),
@@ -483,55 +546,86 @@ mod tests {
             failed,
             core_node: "cn".to_owned(),
         };
-        let at_start = LaunchResult::failure("/logs/stack/join.log", "it exited during setup")
-            .with_node_logs(
-                vec![add(false)],
-                vec![build(false)],
-                vec![run("bravo_arm_inst", false), run("bravo_init_inst", true)],
-            );
+        let at_start = ended(
+            failed(PeppyFailureKind::AttemptFailed, "it exited during setup"),
+            NodeLogs {
+                node_add_logs: vec![add(false)],
+                node_build_logs: vec![build(false)],
+                node_run_logs: vec![run("bravo_arm_inst", false), run("bravo_init_inst", true)],
+            },
+        );
         assert_eq!(
-            addition().outcome(&at_start),
-            json!({
-                "success": false,
-                "message": "the addition of bravo failed: it exited during setup. Log files: \
-                            /logs/stack/join.log, /logs/run/bravo_init_inst.log",
-            })
+            addition().outcome(&at_start, join_log),
+            Err(ActionExit::Failed(ProviderFailure::new(
+                PeppyFailureKind::AttemptFailed,
+                "the addition of bravo failed: it exited during setup. Log files: \
+                 /logs/stack/join.log, /logs/run/bravo_init_inst.log"
+            )))
         );
 
-        let at_build = LaunchResult::failure("/logs/stack/join.log", "the build failed")
-            .with_node_logs(vec![add(false)], vec![build(true)], Vec::new());
+        let at_build = ended(
+            failed(PeppyFailureKind::Timeout, "the build went quiet"),
+            NodeLogs {
+                node_add_logs: vec![add(false)],
+                node_build_logs: vec![build(true)],
+                node_run_logs: Vec::new(),
+            },
+        );
         assert_eq!(
-            addition().outcome(&at_build)["message"],
-            "the addition of bravo failed: the build failed. Log files: /logs/stack/join.log, \
-             /logs/build/robot_initializer.log"
+            addition().outcome(&at_build, join_log),
+            Err(ActionExit::Failed(ProviderFailure::new(
+                PeppyFailureKind::Timeout,
+                "the addition of bravo failed: the build went quiet. Log files: \
+                 /logs/stack/join.log, /logs/build/robot_initializer.log"
+            )))
         );
 
-        let refused = LaunchResult::failure(
-            "/logs/stack/remove.log",
-            "copy `bravo` is absent; peppy stack list shows the copies on the stack",
+        let not_live = ended(
+            failed(
+                PeppyFailureKind::ResourceUnavailable,
+                "these core nodes are not live on the federation: `cn-gone`. Live right now: `cn`.",
+            ),
+            NodeLogs::default(),
         );
         assert_eq!(
-            removal().outcome(&refused),
-            json!({
-                "success": false,
-                "message": "the removal of bravo failed: copy `bravo` is absent; peppy stack list \
-                            shows the copies on the stack. Log files: /logs/stack/remove.log",
-            })
+            addition().outcome(&not_live, join_log),
+            Err(ActionExit::Failed(ProviderFailure::new(
+                PeppyFailureKind::ResourceUnavailable,
+                "the addition of bravo failed: these core nodes are not live on the federation: \
+                 `cn-gone`. Live right now: `cn`. Log files: /logs/stack/join.log"
+            )))
         );
+    }
 
-        let not_live = LaunchResult::failure(
-            "/logs/stack/join.log",
-            "these core nodes are not live on the federation: `cn-gone`. Live right now: `cn`.",
+    /// A completed change answers an empty result; a cancelled one ends the
+    /// call cancelled, with the daemon's reason.
+    #[test]
+    fn a_completed_change_answers_an_empty_result_and_a_cancelled_one_its_reason() {
+        let log = Path::new("/logs/stack/remove.log");
+        assert_eq!(
+            removal().outcome(
+                &ended(
+                    StackGoalOutcome::Completed(LaunchResult::default()),
+                    NodeLogs::default()
+                ),
+                log
+            ),
+            Ok(json!({}))
         );
         assert_eq!(
-            addition().outcome(&not_live)["message"],
-            "the addition of bravo failed: these core nodes are not live on the federation: \
-             `cn-gone`. Live right now: `cn`. Log files: /logs/stack/join.log"
-        );
-
-        assert_eq!(
-            addition().outcome(&LaunchResult::success("/logs/stack/join.log")),
-            json!({ "success": true, "message": "bravo (so101_sim) is on the stack" })
+            addition().outcome(
+                &ended(
+                    StackGoalOutcome::Cancelled {
+                        reason: "cancelled by its caller".to_owned(),
+                    },
+                    NodeLogs::default()
+                ),
+                log
+            ),
+            Err(ActionExit::Cancelled(CancelledGoal {
+                result: json!({}),
+                reason: "the addition of bravo was cancelled by its caller".to_owned(),
+            }))
         );
     }
 }

@@ -4,6 +4,7 @@ mod tests;
 mod actions;
 mod context;
 mod deserialization;
+mod failures;
 mod fixtures;
 pub(crate) mod identifiers;
 mod mock;
@@ -19,13 +20,14 @@ pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
-    InterfaceKind, LanguageGenerator, PairTopicConsumerKind, non_empty_message_format,
-    scoped_schema_key,
+    InterfaceKind, LanguageGenerator, PairTopicConsumerKind, member_failure_kinds,
+    non_empty_message_format, scoped_schema_key,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
     resolve_schema_file_stem, sanitize_component, sanitize_node_display_name, to_camel_case,
 };
+use config::failure_kind::MemberSection;
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
     NativeExposedAction, NativeExposedService, TopicRetention,
@@ -38,16 +40,17 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use actions::{
-    build_action_expose_method, build_action_handle_struct, build_action_request_deserializer,
-    build_goal_context_base_methods, build_goal_context_complete,
-    build_goal_context_publish_feedback, build_goal_context_struct, build_goal_decision_enum,
-    build_handle_goal_next_request,
+    ResultDelivery, build_action_expose_method, build_action_handle_struct,
+    build_action_request_deserializer, build_goal_context_base_methods,
+    build_goal_context_complete, build_goal_context_publish_feedback, build_goal_context_struct,
+    build_goal_decision_enum, build_handle_goal_next_request,
 };
 use context::{
     GenerationContext, add_response_struct, build_fields_from_params, collect_function_params,
     map_declared_message_format, map_message_format,
 };
 use deserialization::{build_deserialize_fn, deserialize_format_fields};
+use failures::{FailingMember, build_failure_items};
 use serialization::{
     MessageEncodingSpec, build_serialize_payload, generate_assignments_for_format,
     generate_assignments_from_struct,
@@ -293,30 +296,31 @@ impl RustGenerator {
                 );
                 helper_items.push(deserialize_helper);
 
-                // An empty body means no response was supplied (a declared
-                // response serializes to a non-empty capnp message), which
-                // only a reject can produce.
+                // An accepted goal carries the declared response; a refused
+                // one carries none.
                 let data_binding = quote! {
-                    let data = if reply.body.is_empty() {
-                        None
-                    } else {
-                        Some(deserialize_goal_response(reply.body.as_ref())?)
+                    let data = match &reply.answer {
+                        peppylib::messaging::GoalAnswer::Accepted(response) => {
+                            Some(deserialize_goal_response(response.as_ref())?)
+                        }
+                        peppylib::messaging::GoalAnswer::Refused(_) => None,
                     };
                 };
                 (data_binding, quote!(data,))
             }
             None => (TokenStream::new(), TokenStream::new()),
         };
+        // The refusal is parsed into the member's `Failure`: a kind the
+        // member does not declare is an error, not a refusal.
         let response_handling = quote! {
             let reply = action_handle.goal_reply();
-            let accepted = reply.accepted;
-            let reason = reply.reason.clone();
+            let refusal = reply.refusal().map(Failure::from_wire).transpose()?;
             #data_binding
             Ok(Self {
                 messenger: node_runner.messenger().clone(),
+                accepted: refusal.is_none(),
                 inner: action_handle,
-                accepted,
-                reason,
+                refusal,
                 #data_field
             })
         };
@@ -340,13 +344,20 @@ impl RustGenerator {
             /// target: feedback, result retrieval, and cancellation all address
             /// that producer directly.
             ///
+            /// The handle keeps every feedback message until it is read, up to
+            /// `feedback_bound` unread messages (`DEFAULT_FEEDBACK_BOUND` holds
+            /// 1024). A caller that reads the feedback and falls behind by more
+            /// cancels the goal, and its next read gives
+            /// `Error::ActionFeedbackOverflow`. A caller that never reads the
+            /// feedback keeps its goal.
+            ///
             #(#target_selection_doc)*
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
                 target: &peppylib::messaging::ProducerRef,
                 timeout: std::time::Duration,
                 #request_param
-                feedback_qos: peppylib::config::QoSProfile,
+                feedback_bound: peppylib::messaging::FeedbackBound,
             ) -> crate::Result<Self> {
                 node_runner.processor().ensure_target_bound(LINK_ID, target)?;
 
@@ -360,8 +371,7 @@ impl RustGenerator {
                     TARGET_ACTION_NAME,
                     Some(target),
                     goal_payload,
-                    feedback_qos,
-                    peppylib::messaging::FeedbackBuffer::KeepLatest,
+                    feedback_bound,
                     timeout,
                 )
                 .await?;
@@ -376,11 +386,11 @@ impl RustGenerator {
     /// Builds the consumed action `get_result` method and its supporting types.
     ///
     /// `get_result` returns a typed `ResultResponse` carrying a `ResultOutcome`
-    /// enum (Completed/Cancelled with the decoded result data, or the empty
-    /// Abandoned/Expired terminal states). The engine frames the reply as a
-    /// `peppylib::messaging::ResultStatus` tag plus the raw body, stripped by
-    /// `ActionMessenger::request_result` into a typed reply, so this only needs
-    /// to decode the body for the data-bearing variants.
+    /// enum (Completed/Cancelled with the decoded result data, Failed with the
+    /// member's `Failure`, or the empty Abandoned/Expired terminal states).
+    /// `ActionMessenger::request_result` decodes the engine's framing into a
+    /// `peppylib::messaging::GoalOutcome`, so this only decodes the result
+    /// bodies and parses the failure.
     fn build_consumed_action_get_result_method(
         &mut self,
         context: &mut GenerationContext,
@@ -588,15 +598,19 @@ impl RustGenerator {
 
         let method_ident = Ident::new("on_next_feedback_message", Span::call_site());
         let method_tokens = quote! {
-            /// Receives the next feedback message for this goal.
+            /// Receives the next feedback message for this goal. The handle
+            /// keeps every message until it is read, up to the feedback bound
+            /// of `fire_goal`.
             ///
             /// Terminal errors that end a feedback drain loop:
             /// `Error::ActionFeedbackChannelClosed` when the producer closed
-            /// the stream cleanly (end-of-stream sentinel), and
+            /// the stream cleanly (end-of-stream sentinel),
             /// `Error::ActionFeedbackProducerGone` when the producer instance
-            /// disappeared without closing it (process killed, crashed); in
-            /// the latter case `get_result` resolves to
-            /// `ResultOutcome::Abandoned`.
+            /// disappeared without closing it (process killed, crashed), in
+            /// which case `get_result` resolves to `ResultOutcome::Abandoned`,
+            /// and `Error::ActionFeedbackOverflow` when this caller fell behind
+            /// by more unread messages than its bound, in which case the
+            /// handle cancelled the goal.
             pub async fn #method_ident(
                 &mut self,
             ) -> crate::Result<#struct_ident> {
@@ -618,7 +632,7 @@ struct ResultDecoder {
 }
 
 /// The variants of a `ResultOutcome` enum and the `let outcome = match ...;`
-/// statement that maps a result reply's `ResultStatus` onto them.
+/// statement that maps a result reply's `GoalOutcome` onto them.
 struct ResultOutcomeTokens {
     variants: TokenStream,
     decode: TokenStream,
@@ -627,51 +641,70 @@ struct ResultOutcomeTokens {
 /// Builds the `ResultOutcome` mapping shared by the production `get_result`
 /// and the fixture caller of an exposed action. With a `decoder`, the
 /// completed and cancelled outcomes carry the decoded result data; without
-/// one, every outcome is a unit variant. Abandoned and expired outcomes
-/// never carry data.
+/// one, they carry none. A cancelled outcome always carries its reason, and
+/// a failed one the member's `Failure` (parsed from the wire, so a kind the
+/// member does not declare is an error). Abandoned and expired outcomes
+/// carry nothing.
 fn build_result_outcome(
     outcome_ident: &Ident,
     decoder: Option<&ResultDecoder>,
 ) -> ResultOutcomeTokens {
-    let Some(ResultDecoder {
-        data_ident,
-        deserialize_fn_ident,
-    }) = decoder
-    else {
-        return ResultOutcomeTokens {
-            variants: quote! {
-                Completed,
-                Cancelled,
-                Abandoned,
-                Expired,
+    let (completed_variant, cancelled_variant, completed_arm, cancelled_arm) = match decoder {
+        Some(ResultDecoder {
+            data_ident,
+            deserialize_fn_ident,
+        }) => (
+            quote!(Completed(#data_ident)),
+            quote!(Cancelled { reason: String, data: #data_ident }),
+            quote! {
+                peppylib::messaging::GoalOutcome::Completed(result) => {
+                    #outcome_ident::Completed(#deserialize_fn_ident(result.as_ref())?)
+                }
             },
-            decode: quote! {
-                let outcome = match reply.status {
-                    peppylib::messaging::ResultStatus::Completed => #outcome_ident::Completed,
-                    peppylib::messaging::ResultStatus::Cancelled => #outcome_ident::Cancelled,
-                    peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
-                    peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
-                };
+            quote! {
+                peppylib::messaging::GoalOutcome::Cancelled { reason, result } => {
+                    #outcome_ident::Cancelled {
+                        reason,
+                        data: #deserialize_fn_ident(result.as_ref())?,
+                    }
+                }
             },
-        };
+        ),
+        None => (
+            quote!(Completed),
+            quote!(Cancelled { reason: String }),
+            quote!(peppylib::messaging::GoalOutcome::Completed(_) => #outcome_ident::Completed,),
+            quote! {
+                peppylib::messaging::GoalOutcome::Cancelled { reason, .. } => {
+                    #outcome_ident::Cancelled { reason }
+                }
+            },
+        ),
     };
     ResultOutcomeTokens {
         variants: quote! {
-            Completed(#data_ident),
-            Cancelled(#data_ident),
+            /// The goal is a success.
+            #completed_variant,
+            /// The goal ended cancelled, for `reason`.
+            #cancelled_variant,
+            /// The goal failed: a failure kind that the action declares,
+            /// a message, and no result.
+            Failed(Failure),
+            /// The goal ended without a result: its worker dropped it, or
+            /// the provider is gone.
             Abandoned,
+            /// The goal ended, and the provider no longer keeps its result.
             Expired,
         },
         decode: quote! {
-            let outcome = match reply.status {
-                peppylib::messaging::ResultStatus::Completed => {
-                    #outcome_ident::Completed(#deserialize_fn_ident(reply.body.as_ref())?)
+            let outcome = match reply.outcome {
+                #completed_arm
+                #cancelled_arm
+                peppylib::messaging::GoalOutcome::Failed(failure) => {
+                    #outcome_ident::Failed(Failure::from_wire(&failure)?)
                 }
-                peppylib::messaging::ResultStatus::Cancelled => {
-                    #outcome_ident::Cancelled(#deserialize_fn_ident(reply.body.as_ref())?)
-                }
-                peppylib::messaging::ResultStatus::Abandoned => #outcome_ident::Abandoned,
-                peppylib::messaging::ResultStatus::Expired => #outcome_ident::Expired,
+                peppylib::messaging::GoalOutcome::Abandoned => #outcome_ident::Abandoned,
+                peppylib::messaging::GoalOutcome::Expired => #outcome_ident::Expired,
             };
         },
     }
@@ -950,7 +983,14 @@ impl LanguageGenerator for RustGenerator {
             quote!(const SERVICE_NAME: &str = #service_name_str;)
         };
 
-        let mut service_tokens = vec![service_name_const];
+        let mut service_tokens = vec![
+            service_name_const,
+            build_failure_items(
+                &member_failure_kinds(origin, MemberSection::Service, &service.name),
+                &quote!(SERVICE_NAME),
+                FailingMember::Service,
+            ),
+        ];
         service_tokens.extend(context.into_tokens());
         service_tokens.push(method_token);
         service_tokens.extend(helper_tokens);
@@ -983,20 +1023,25 @@ impl LanguageGenerator for RustGenerator {
         let action_prefix = to_camel_case(&base_name);
 
         let mut context = GenerationContext::default();
-        // Methods on `impl GoalContext` (request/goal_id/cancel_signal/... plus
-        // publish_feedback and complete/complete_cancelled when applicable).
+        // Methods on `impl GoalContext` (request/goal_id/cancel_signal/fail
+        // plus publish_feedback when applicable, and complete /
+        // complete_cancelled).
         let mut goal_context_methods: Vec<TokenStream> = Vec::new();
         let mut helper_tokens: Vec<TokenStream> = Vec::new();
-        // Free items (the GoalDecision enum).
-        let mut extra_items: Vec<TokenStream> = Vec::new();
+        // Free items (the failure kinds and the GoalDecision enum).
+        let mut extra_items: Vec<TokenStream> = vec![build_failure_items(
+            &member_failure_kinds(origin, MemberSection::Action, &action.name),
+            &quote!(ACTION_NAME),
+            FailingMember::Action,
+        )];
 
         let action_name_literal = Literal::string(&action.name);
 
         let has_feedback = action.feedback_topic.is_some();
 
         // Every action is goal-driven in the concurrent model: clients fire a
-        // goal, the server accepts/rejects and (when accepted) drives it through
-        // a GoalContext. An absent `goal_service` simply means the goal carries
+        // goal, the server accepts or refuses it and (when accepted) drives it
+        // through a GoalContext. An absent `goal_service` simply means the goal carries
         // no request/response payload. The block yields the
         // `handle_goal_next_request` method of `impl ActionHandle`.
         let handle_goal_method = {
@@ -1071,11 +1116,12 @@ impl LanguageGenerator for RustGenerator {
                 helper_tokens.push(deserializer_fn);
             }
 
-            // The user closure returns this to accept or reject the goal.
+            // The user closure returns this to accept or refuse the goal.
             extra_items.push(build_goal_decision_enum(response_artifacts.is_some()));
 
-            // Serialization for the accepted/rejected `GoalResponse` (reads a
-            // local `response` variable). `None` when the goal has no response.
+            // Serialization for the `GoalResponse` of an accepted goal (reads a
+            // local `response` variable); a refusal carries no response. `None`
+            // when the goal has no response.
             let response_serialization = if let Some(return_artifacts) = response_artifacts.as_ref()
             {
                 let response_schema_prefix = format!("{schema_struct_prefix}Response");
@@ -1132,36 +1178,32 @@ impl LanguageGenerator for RustGenerator {
             ));
         }
 
-        // Result → `GoalContext::complete` / `complete_cancelled`.
-        if let Some(result) = action.result_service.as_ref() {
-            let label = format!("{base_name}_result");
-            let schema_struct_prefix = format!("{action_prefix}Result");
-            let scoped_result_key = scoped_schema_key(origin, &format!("{label}_response"));
+        // Result → `GoalContext::complete` / `complete_cancelled`. An action
+        // that declares no result ends its goals with an empty one.
+        let result_format = action
+            .result_service
+            .as_ref()
+            .and_then(|result| result.response_message_format.as_ref());
+        let label = format!("{base_name}_result");
+        let schema_struct_prefix = format!("{action_prefix}Result");
+        let scoped_result_key = scoped_schema_key(origin, &format!("{label}_response"));
+        let response_artifacts = map_message_format(&scoped_result_key, result_format)?;
 
-            let response_artifacts =
-                map_message_format(&scoped_result_key, result.response_message_format.as_ref())?;
-
-            // The result-response fields become `complete(fields…)` parameters.
-            let result_params = collect_function_params(
-                response_artifacts.as_ref(),
-                &schema_struct_prefix,
-                &mut context,
-            )?;
-            let encoding = self.prepare_message_encoding(
-                &scoped_result_key,
-                &schema_struct_prefix,
-                response_artifacts.as_ref(),
-                &result_params,
-            )?;
-
+        // The result-response fields become `complete(fields…)` parameters.
+        let result_params = collect_function_params(
+            response_artifacts.as_ref(),
+            &schema_struct_prefix,
+            &mut context,
+        )?;
+        let encoding = self.prepare_message_encoding(
+            &scoped_result_key,
+            &schema_struct_prefix,
+            response_artifacts.as_ref(),
+            &result_params,
+        )?;
+        for delivery in [ResultDelivery::Completed, ResultDelivery::Cancelled] {
             goal_context_methods.push(build_goal_context_complete(
-                "complete",
-                &result_params,
-                encoding.as_ref(),
-                &label,
-            ));
-            goal_context_methods.push(build_goal_context_complete(
-                "complete_cancelled",
+                delivery,
                 &result_params,
                 encoding.as_ref(),
                 &label,
@@ -1366,6 +1408,9 @@ impl LanguageGenerator for RustGenerator {
         // against the set before anything reaches the wire and then
         // addressed directly with no discovery.
         let to_target_expr = consumed_to_target_expression(dependency);
+        // An error reply reaches the caller as `Error::ServiceFailed`, which
+        // `Failure::of` reads; one with a kind this member does not declare
+        // is a deserialization error.
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
@@ -1377,6 +1422,8 @@ impl LanguageGenerator for RustGenerator {
                 request_payload,
                 timeout,
             )
+            .await
+            .map_err(Failure::reject_undeclared_kind)
         };
 
         let response_struct_ident = Ident::new("Response", Span::call_site());
@@ -1401,7 +1448,7 @@ impl LanguageGenerator for RustGenerator {
                 )?;
 
                 let poll_tokens = quote! {
-                    let response_message = #poll_call.await?;
+                    let response_message = #poll_call?;
                 };
 
                 context
@@ -1435,7 +1482,7 @@ impl LanguageGenerator for RustGenerator {
                 )
             } else {
                 let poll_tokens = quote! {
-                    let _ = #poll_call.await?;
+                    let _ = #poll_call?;
                 };
                 (quote!(()), quote!(Ok(())), poll_tokens, None)
             };
@@ -1470,6 +1517,10 @@ impl LanguageGenerator for RustGenerator {
             /// member by construction); a target outside the set fails before
             /// anything reaches the wire.
             ///
+            /// An error reply of the provider is `Error::ServiceFailed`:
+            /// `Failure::of` reads its failure, with a kind that this member
+            /// declares.
+            ///
             #(#target_selection_doc)*
             pub async fn #method_ident(#(#fn_param_tokens),*) -> crate::Result<#return_ty> {
                 node_runner.processor().ensure_target_bound(LINK_ID, target)?;
@@ -1482,7 +1533,15 @@ impl LanguageGenerator for RustGenerator {
             }
         };
 
-        let mut all_tokens = vec![constants_tokens, bound_producer_accessor_fn];
+        let mut all_tokens = vec![
+            constants_tokens,
+            bound_producer_accessor_fn,
+            build_failure_items(
+                &dependency.member_failure_kinds(MemberSection::Service, &service.name),
+                &quote!(SERVICE_NAME),
+                FailingMember::Service,
+            ),
+        ];
         all_tokens.append(&mut service_tokens);
         all_tokens.push(function_token);
         if let Some(deserialize_fn) = deserialize_fn_tokens {
@@ -1657,9 +1716,8 @@ impl LanguageGenerator for RustGenerator {
         let goal_response_data_ident = Ident::new("GoalResponseData", Span::call_site());
         let data_field = has_goal_response_data.then(|| {
             quote! {
-                /// The declared goal response. Always present for
-                /// accepted goals; `None` when a rejection carried no
-                /// response payload.
+                /// The declared goal response of an accepted goal; `None`
+                /// for a refused goal.
                 pub data: Option<#goal_response_data_ident>,
             }
         });
@@ -1667,13 +1725,12 @@ impl LanguageGenerator for RustGenerator {
             pub struct ActionHandle {
                 messenger: peppylib::MessengerHandle,
                 inner: peppylib::messaging::ActionGoalHandle,
-                /// Whether the producer admitted the goal, decoded from
-                /// the framework goal-ack envelope.
+                /// Whether the producer accepted the goal: `refusal` is
+                /// `None`.
                 pub accepted: bool,
-                /// Optional human-readable rejection reason from the
-                /// goal-ack envelope. `None` for accepted goals and for
-                /// rejections sent without a reason.
-                pub reason: Option<String>,
+                /// The failure the producer refused the goal with, of a kind
+                /// that this member declares; `None` for an accepted goal.
+                pub refusal: Option<Failure>,
                 #data_field
             }
         };
@@ -1681,7 +1738,15 @@ impl LanguageGenerator for RustGenerator {
         let bound_producer_accessor_fn =
             crate::generator::rust::topics::build_bound_producer_accessor_fn(dependency);
 
-        let mut items = vec![constants_tokens, bound_producer_accessor_fn];
+        let mut items = vec![
+            constants_tokens,
+            bound_producer_accessor_fn,
+            build_failure_items(
+                &dependency.member_failure_kinds(MemberSection::Action, &action.name),
+                &quote!(TARGET_ACTION_NAME),
+                FailingMember::Action,
+            ),
+        ];
         items.extend(context.into_tokens());
         items.push(action_handle_struct);
         items.push(quote! {

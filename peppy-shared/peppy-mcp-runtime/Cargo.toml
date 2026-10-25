@@ -7,6 +7,9 @@ description = "The shared MCP server runtime that generated Peppy MCP server nod
 
 [dependencies]
 peppy-mcp-catalog = { path = "../peppy-mcp-catalog" }
+# The failure kind a provider gives, which a tool error and the call record
+# carry.
+peppy-config-model = { path = "../peppy-config-model" }
 # The official MCP SDK: protocol model, 2026-07-28 lifecycle, and the
 # Streamable HTTP server transport. Default features are dropped to leave the
 # proc macros out; tools and resources here are built dynamically from the

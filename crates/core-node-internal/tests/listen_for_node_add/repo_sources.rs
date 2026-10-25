@@ -19,12 +19,10 @@ async fn add_node_successfully<'a>(
     )
     .await
     .unwrap_or_else(|err| panic!("{what} should complete: {err}"));
-    assert!(
-        result.success,
-        "{what} should succeed, err={:?}",
-        result.error_message
-    );
-    result
+    match result {
+        GoalEnd::Completed(result) => result,
+        other => panic!("{what} should succeed, got: {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -88,9 +86,9 @@ async fn repo_node_add_chain_of_three_fs() {
     assert!(node_stack.contains("c", "v1"));
     assert_eq!(node_stack.len(), 4, "root + a + b + c");
     assert_eq!(
-        res.node_name.as_deref(),
-        Some("c"),
-        "result should report the root target name"
+        (res.node_name.as_str(), res.node_tag.as_str()),
+        ("c", "v1"),
+        "result should report the root target"
     );
 }
 

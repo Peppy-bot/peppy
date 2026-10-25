@@ -8,7 +8,7 @@ use tracing::info;
 use super::source::resolve_node_root_dir;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 use peppylib::core_node::transport::poll;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -68,16 +68,7 @@ async fn sync_resolved_node(
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_generate service: {}", e)))?;
-
-    if !response.success {
-        let msg = if response.error_message.trim().is_empty() {
-            "node_generate failed with no error message".to_string()
-        } else {
-            response.error_message
-        };
-        return Err(Error::ExecutionFailed(msg));
-    }
+    .map_err(|e| crate::commands::request_error("Failed to sync the node", e))?;
 
     info!("Synced node interfaces at {}", node_root_dir.display());
 

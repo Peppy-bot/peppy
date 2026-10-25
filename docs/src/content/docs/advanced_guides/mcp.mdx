@@ -111,7 +111,7 @@ A target must select at least one member, and an exposure must declare at least 
 
 ### Contracts are referenced by identity and, optionally, by content
 
-A target's `contract` names the contract by `name:tag`. Contract membership is frozen per tag, so that identity says which members the target can select. The `sha256` is optional. It is an [author pin](/advanced_guides/lockfiles/#author-pins-what-a-manifest-may-state) with the meaning pins have everywhere in Peppy:
+A target's `contract` names the contract by `name:tag`, and selects members of the contract that resolves under that identity. A contract can change under its tag: the fields of a message, or the [failure kinds](#refused-and-failed-calls) it declares. The `sha256` is optional. It is an [author pin](/advanced_guides/lockfiles/#author-pins-what-a-manifest-may-state) with the meaning pins have everywhere in Peppy:
 
 - **Present:** the contract resolved for the exposure must fingerprint to exactly that value. A launch or a repository check that resolves different bytes refuses, naming the pinned fingerprint and the resolved one.
 - **Absent:** the launch pins the contract bytes it resolves, and the exposure is validated against those. The exposure follows the contract as its repository evolves.
@@ -141,8 +141,10 @@ A machine is the core node name of a peppy daemon: the name that presence lists 
 | Member | Request | Feedback | Response or result |
 | --- | --- | --- | --- |
 | `list` (service) | none | | `options`: each `{ option, model, description, features }` of the scope, `features` each `{ feature, description }`, empty when the option has none. `core_nodes`: this machine and every live daemon of the same workspace or project, each once, in name order. `this_core_node`: the machine of this stack, the coordinator. `copies`: each `{ name, option, core_node, features }`, the copies of the scope's options on the stack, in name order: `core_node` is the copy's machine, which runs its base, and `features` holds each feature of the option that the copy holds, as `{ feature, core_node }` with the machine of its part. `max_copies`: the most copies of the scope's options on the stack. `change`: `{ action, name, option }`, the addition (`join`) or the removal (`remove`) of a copy of a scoped option that runs now; absent while none runs |
-| `join` (action) | `name`, `option`, `core_node`, `features`: each `{ feature, core_node }` | `step` (`launch`, `add`, `build` or `run`) and `line`, one message per line of the join's log | `success`, and a `message` that says why and names the log files when the join failed |
-| `remove` (action) | `name` | `step` and `line`, one message per line of the removal's log | `success` and `message` |
+| `join` (action) | `name`, `option`, `core_node`, `features`: each `{ feature, core_node }` | `step` (`launch`, `add`, `build` or `run`) and `line`, one message per line of the join's log | none: a join that completes gives an empty result, and a join that fails gives a failure kind and a message that says why and names the log files |
+| `remove` (action) | `name` | `step` and `line`, one message per line of the removal's log | none: a removal that completes gives an empty result, and a removal that fails gives a failure kind and a message |
+
+Beside the kinds of peppy, `stack_copies:v1` declares one failure kind in its `failure_kinds` block, the kind of the daemon: `busy`, "Other work runs on the daemon; the same request can succeed once that work ends". `join` and `remove` list it, and are refused with it while another stack change or node operation runs on the daemon. A client that reads `busy` can call again once that work ends.
 
 `join` adds a copy of `option` under `name` on the machine `core_node`, with the features it names, each part on its own machine, as `peppy stack join OPTION:NAME@CORE_NODE` does with one `--with axis=option@CORE_NODE` word for each feature, the axis and the option that the scope gives that feature: the option's entry in the launcher decides the rest of the copy's selection. Every field is required, and `features` is empty for the copy of the launcher's entry. So each item of `copies` is a valid `join` input, and for a copy that `join` added, it adds the same copy on the same machines. `remove` stops and removes a copy, as `peppy stack remove NAME` does.
 
@@ -177,22 +179,26 @@ The endpoint calls the daemon that started it, through the same goal path as `pe
 - `join` first parses its input: the name as a copy name, the option as an option of the scope, each machine as a core node name, and each feature as a feature of the option, named once. It refuses a feature that the option does not offer ("`ai_brain` is not a feature of option `so101_sim`, which has no feature", or with the list of the option's features) and a feature named twice ("`features` names feature `ai_brain` twice; name each feature once").
 - `join` then reads the copies of the stack. It refuses a name that a copy of any option has ("a copy `bravo` is already on the stack; choose another name"), and refuses when the stack holds `max_copies` copies of the scope's options, naming them. It then sends the join of the option under the name on its machine, with the word `axis=option` of each feature on the machine of its part, as `peppy stack join OPTION:NAME@CORE_NODE --with axis=option@CORE_NODE` does: a machine equal to `this_core_node` travels as the coordinator, and a feature on the copy's machine names no machine, so its part runs with the copy's base. The join carries no argument and no environment, and it runs under the [default budgets](/guides/launch_files/#launch-timeouts) of the CLI. The robot runs with the environment that its launcher entries declare.
 - The launch builds on the coordinator every node that a `join` of a scoped option can bring (see [Building the nodes a join brings](/guides/launch_files/#building-the-nodes-a-join-brings)), so a `join` on `this_core_node` adds and starts nodes and builds none. A part that a `join` places on another machine builds on that machine when the join runs, which can take minutes the first time, and so do the nodes of every join after a launch with `--no-prebuild`.
-- The endpoint reads no presence for a `join`. The daemon reads it when it plans a join that names another machine, and refuses a machine that is not live before any machine changes. The join then ends with `success: false`, and its message lists the live machines: "these core nodes are not live on the federation: `cn-gpu-box`. Live right now: `cn-desk`. …". A machine in `core_nodes` can still refuse a join, for example one that runs another peppy version, that another launch holds, or that holds instances outside this launch, and a node of a filesystem repository runs on the coordinator alone (see [Federation](/advanced_guides/federation/#limits)). These joins end the same way, with the daemon's reason in `message`.
-- When the daemon accepts the join, the first progress message says so (`launch: the daemon accepted the addition of bravo (so101_sim)`), and each line of the join's log follows as `<step>: <line>`, where the step is `launch`, `add`, `build` or `run`. The lines of a starting instance are in it. A join that succeeds ends with `success: true` and "bravo (so101_sim) is on the stack". A join that fails is undone, and ends with `success: false` and a message that says why and names the log files: the log of the join, then the log of the node phase that failed. When the undo cannot clean up, the message says that the copy remains listed. A refusal that the daemon gives after it accepts the join, for example a copy of that name that joined since the read of the stack, ends the same way.
-- The endpoint runs one `join` at a time, from its read of the stack until the daemon's work ends, also after the call ended. Another `join` in that time is refused: "a `join` started through this server is still in progress; wait for it to finish".
-- `remove` reads the copies of the stack, and refuses a name that is not a copy of an option of the scope ("no copy `zulu` of the options openarm_sim and so101_sim on the stack"). It then sends the removal, which reports each instance that it stops, the last started first, on each machine of the copy, and what it leaves on a machine where nothing stops (see [copies](/guides/launch_files/#copies)). A removal that succeeds ends with `success: true` and "bravo is off the stack". A removal that the daemon refuses after it accepts it, for example of a copy that the stack links to, ends with `success: false`. `remove` waits for no other call of the endpoint: the daemon refuses a removal while another stack change runs.
-- A cancel, or a closed call, stops the wait and not the change: the call ends at once as cancelled, with `success: false` and "stopped waiting; the addition of bravo continues on the stack". The endpoint sends no cancel to the daemon, because a stack change ignores one, and follows the change to its end. A cancel that comes before the daemon answers the goal waits for that answer, so a goal that the daemon refuses ends refused. Call `list` before you add or remove again: its `change` reports the change until it ends.
-- When the daemon sends nothing for one progress window of the document, the call fails with "the daemon sent nothing for 660 s; the addition of bravo can still be running". The endpoint sends no cancel and follows the change to its end. A change that ends without a result, for example because the daemon is gone, fails the call and names the log of the change.
+- The endpoint reads no presence for a `join`. The daemon reads it when it plans a join that names another machine, and refuses a machine that is not live before any machine changes. The join then fails with the kind `resource_unavailable`, and its message lists the live machines: "these core nodes are not live on the federation: `cn-gpu-box`. Live right now: `cn-desk`. …". A machine in `core_nodes` can still refuse a join, for example one that runs another peppy version, that another launch holds, or that holds instances outside this launch, and a node of a filesystem repository runs on the coordinator alone (see [Federation](/advanced_guides/federation/#limits)). These joins fail the same way, with the kind and the reason of the daemon.
+- When the daemon accepts the join, the first progress message says so (`launch: the daemon accepted the addition of bravo (so101_sim)`), and each line of the join's log follows as `<step>: <line>`, where the step is `launch`, `add`, `build` or `run`. The lines of a starting instance are in it. A join that completes gives an empty result: the copy is on the stack. A join that fails is undone, and fails with the kind of its failure and a message that says why and names the log files, "the addition of bravo failed: …. Log files: …": the log of the join, then the log of the node phase that failed. The kind is `precondition_failed` for a stack that does not allow the join, for example a copy of that name that joined since the read of the stack, `resource_unavailable` for a machine that is not live, `timeout` for a budget that ran out, and `attempt_failed` for a step that failed, such as a build. When the undo cannot clean up, the message says that the copy remains listed.
+- The endpoint runs one `join` at a time, from its read of the stack until the daemon's work ends, also after the call ended. Another `join` in that time is refused with the kind `busy`: "a `join` started through this server is still in progress; wait for it to finish". The daemon refuses a `join` with the kind `busy` too while another stack change or node operation runs on it: "the daemon refused the addition of bravo: …".
+- `remove` reads the copies of the stack, and refuses a name that is not a copy of an option of the scope ("no copy `zulu` of the options openarm_sim and so101_sim on the stack"). It then sends the removal, which reports each instance that it stops, the last started first, on each machine of the copy, and what it leaves on a machine where nothing stops (see [copies](/guides/launch_files/#copies)). A removal that completes gives an empty result: the copy is off the stack. A removal that the stack does not allow, for example of a copy whose clock the stack reads, or of the last copy of a `one_or_more` axis, fails with the kind `precondition_failed`. `remove` waits for no other call of the endpoint: the daemon refuses a removal while another stack change or node operation runs, with the kind `busy`.
+- A client that cancels a `join` or a `remove`, with `tasks/cancel` on a task or by closing the call (see [Goals and connections](#goals-and-connections)), makes the endpoint send the daemon a cancel, after the progress message "launch: the client cancelled the addition of bravo; the daemon stops it and undoes it". The daemon stops the change at the step it reached, and ends it as a failure at that step ends it: a join is undone, and a removal keeps the copy, with the instances that it did not stop yet. The endpoint follows the change to that end, also after the call closed, and the call or the task ends cancelled, "the addition of bravo was cancelled by its caller". A change that the daemon ended before the cancel keeps its end. A cancel that comes before the daemon answers the goal waits for that answer, so a goal that the daemon refuses ends refused. A task whose connection closes cancels nothing. Call `list` before you add or remove again: its `change` reports the change until it ends.
+- When the daemon sends nothing for one progress window of the document, the call fails with "the daemon sent nothing for 660 s; the endpoint cancelled the addition of bravo". The endpoint sends the daemon a cancel and follows the change to its end, as at the whole-goal deadline of a call or the TTL of a task. A change that ends without a result, for example because the daemon is gone, fails the call and names the log of the change.
 
 The [call record](#the-call-record) writes:
 
-| Call | `outcome` | `success` |
+| Call | `outcome` | `failure_kind` |
 | --- | --- | --- |
 | Input outside the narrowed schema | `refused` | |
-| A refusal before the change: a feature that the option does not offer or that the input names twice, a name in use, the limit, a second `join`, a name that is no copy of the scope, or the daemon's refusal of the goal, its busy text included | `failed` | |
-| A join or a removal that ran to its end, a join refused for a machine that is not live included | `completed` | `true` or `false` |
-| A call that stopped waiting | `cancelled` | |
-| A silent daemon, or a change with no result | `failed` | |
+| A refusal of the endpoint before the change: a feature that the option does not offer or that the input names twice, or a name that is no copy of the scope | `refused` | `rejected` |
+| A refusal of the endpoint before the change: a name in use or the limit | `refused` | `precondition_failed` |
+| A refusal of the endpoint before the change: a second `join` | `refused` | `busy` |
+| The daemon's refusal of the goal | `refused` | the kind of the daemon: `busy` while another stack change or node operation runs |
+| A join or a removal that completed | `completed` | |
+| A join or a removal that failed, a join refused for a machine that is not live included | `failed` | the kind of the daemon |
+| A join or a removal that the client cancelled | `cancelled` | |
+| A silent daemon, or a change with no end | `failed` | |
 
 ### Public names
 
@@ -281,7 +287,7 @@ The topic must carry `representation.image: "jpeg"`: a `png16` or a `raw` frame 
 | `max_result_bytes` | no | Cap on the serialized tool result: the serialized document plus, under a representation, the base64 text of the frame. A larger response is a tool error |
 | `on_oversize` | no | What to do when the result exceeds that cap: `downscale` (re-encode the frame small enough to fit; needs a `jpeg` or `png16` representation) or `reject` (a tool error). Needs `max_result_bytes` |
 
-A service `representation` is the [topic `representation`](#topic-policies), on the members of the service's response: `fields.data` names the response member that carries the frame, and the other three its encoding label and dimensions, all of the same types a topic needs. The tool answers as a [picture tool](#picture-tools) does: the frame as an image block in the codec of the representation, and the rest of the response as the text and the structured content. Its published output schema is the schema of that document: the response without the member the frame is taken from. A response whose frame is empty carries no picture and is answered as the document alone, so a service that refuses (`success: false` with a `message`) reaches the client with its words. A frame that does not decode is a tool error.
+A service `representation` is the [topic `representation`](#topic-policies), on the members of the service's response: `fields.data` names the response member that carries the frame, and the other three its encoding label and dimensions, all of the same types a topic needs. The tool answers as a [picture tool](#picture-tools) does: the frame as an image block in the codec of the representation, and the rest of the response as the text and the structured content. Its published output schema is the schema of that document: the response without the member the frame is taken from. A response whose frame is empty carries no picture and is answered as the document alone. A service that cannot answer gives an error reply, which reaches the client as the tool error of a [failed call](#refused-and-failed-calls). A frame that does not decode is a tool error.
 
 ```json5
 {
@@ -316,23 +322,25 @@ Each bound must fit the member's type. For example, validation rejects `min: -20
 
 An action declares exactly one of `deadline_ms` and `progress_timeout_ms`.
 
-`deadline_ms` bounds the whole goal. Feedback does not extend it. When it passes, the call or the task fails with a message that names the deadline, and the provider gets no cancel: the goal keeps running.
+`deadline_ms` bounds the whole goal. Feedback does not extend it. When it passes, the call or the task fails with a message that names the deadline, and the endpoint sends the provider a cancel: no goal runs on with no one following it.
 
-`progress_timeout_ms` bounds the silence, not the work. Use it for a goal whose length depends on something the robot does not control, such as assets that download over a slow link. The signs of progress are the admission of the goal, each feedback message, and the end of the feedback stream when the goal settles. Each sign starts a new window, and the request for the result after the end of the stream gets one window. When a window goes by without a sign of progress, the endpoint sends the provider one cancel and continues to follow the goal under the same rule:
+`progress_timeout_ms` bounds the silence, not the work. Use it for a goal whose length depends on something the robot does not control, such as assets that download over a slow link. The signs of progress are the admission of the goal, each feedback message, and the end of the feedback stream when the goal settles. Each sign starts a new window, and the request for the result after the end of the stream gets one window. When a window goes by without a sign of progress, the call or the task fails with `no progress within <N> ms; the endpoint stopped following the goal and cancelled it`, and the endpoint sends the provider a cancel.
+
+When the client cancels a goal under `progress_timeout_ms`, the endpoint sends the provider the cancel and continues to follow the goal under the same rule:
 
 - A goal that completes returns its result, as usual.
-- A goal that ends cancelled returns the provider's result as a [cancelled goal](#cancelled-goals), with the message `the action was cancelled: no progress within <N> ms`.
-- A goal that stays silent for one more window fails with `no progress within <N> ms; a cancel was sent and the provider did not answer it`.
+- A goal that ends cancelled returns the provider's result as a [cancelled goal](#cancelled-goals).
+- A goal that stays silent for one window fails with `no progress within <N> ms; a cancel was sent and the provider did not answer it`.
 
-The provider's reply to the cancel is read too. A reply that the goal had already ended means the end of its feedback stream did not come through: the endpoint reads the result at once and returns it, or fails with `the goal ended, but its result is no longer readable` when the provider no longer keeps it. A reply that the provider does not know the goal fails with `no progress within <N> ms; a cancel was sent and the provider does not know the goal`. A cancel that fails, for example because no reply came within one window, fails with `no progress within <N> ms; a cancel was sent and failed: <error>`, and the endpoint logs it as a warning, because the goal can still run on the provider. The cancel the endpoint forwards for the client gets the same replies, and the same messages without the `no progress within <N> ms; ` part.
+The provider's reply to the cancel is read too. A reply that the goal had already ended means the end of its feedback stream did not come through: the endpoint reads the result at once and returns it, or fails with `the goal ended, but its result is no longer readable` when the provider no longer keeps it. A reply that the provider does not know the goal fails with `a cancel was sent and the provider does not know the goal`. A cancel that fails, for example because no reply came within one window, fails with `a cancel was sent and failed: <error>`, and the endpoint logs it as a warning, because the goal can still run on the provider.
 
-A tool of a [daemon target](#daemon-targets) follows a different rule, because a stack change ignores a cancel: after one window without a sign of progress, the call fails, the endpoint sends no cancel, and it follows the change to its end (see [What the tools of `stack_copies` do](#what-the-tools-of-stack_copies-do)).
+A tool of a [daemon target](#daemon-targets) follows the same rule with its own text: after one window without a sign of progress, the call fails, the endpoint sends the daemon a cancel, and it follows the change to its end (see [What the tools of `stack_copies` do](#what-the-tools-of-stack_copies-do)).
 
 A feedback message that does not decode is logged and not shown to the client. It is still a message the provider sent for the goal, so it counts as a sign of progress.
 
 The bound relies on the provider: it publishes a feedback message each time its progress changes, and none while nothing changes. A message sent on a timer while nothing moves would hide a goal that is stuck. The wait for a confirmation is no progress of the goal, and nothing would bound it, so an action cannot declare `progress_timeout_ms` together with `confirmation_required`.
 
-Under both bounds, the first wait is for the provider to admit the goal, and it is bounded too: by `deadline_ms`, or by one window of `progress_timeout_ms`. When that wait runs out, the call or the task fails and the provider gets no cancel, because the endpoint has no handle on a goal that the provider did not admit. This is a limit of both bounds: a provider that admits the goal after that runs it with nothing following it, until the goal ends or the provider cancels it for a reason of its own.
+Under both bounds, the first wait is for the provider to admit the goal, and it is bounded too: by `deadline_ms`, or by one window of `progress_timeout_ms`. When that wait runs out, the call or the task fails. A provider that acknowledged the goal and did not answer in time gets a cancel of it. A provider that the goal did not reach gets none, and has no goal to run.
 
 ### The call record
 
@@ -342,7 +350,7 @@ An exposure can keep a record of the state-changing calls its endpoint takes, an
 // Beside `server` and `targets`.
 call_record: {
   tool: "robot.recent_calls",  // a public name, in the one namespace of the exposure
-  description: "The last state-changing calls of this endpoint, newest first. Read `outcome` and `success` together: a completed call with `success: false` ran to its end and reports a failure.",
+  description: "The last state-changing calls of this endpoint, newest first, each with how it ended: its outcome, and the failure kind and message of a refused or failed call.",
   keep: 200,  // how many calls the endpoint keeps, 1 to 1000
 },
 ```
@@ -357,11 +365,16 @@ The endpoint records every call of a tool that is not read-only (a `mutating` se
 | `arguments` | The arguments as sent, when their JSON is 1024 bytes or fewer; `null` otherwise |
 | `arguments_bytes` | The size of the arguments' JSON |
 | `outcome` | `running`, `completed`, `failed`, `cancelled` or `refused` |
-| `success` | The `success` member of the result of a completed call that has one, else `null` |
-| `message` | The result's `message` member of a completed call; for the other outcomes, what ended the call |
+| `failure_kind` | The [failure kind](#refused-and-failed-calls) the provider gave a refused or failed call, else `null` |
+| `message` | What ended a call that did not complete: the provider's message of a refused or failed call, the reason of a cancelled call, or the endpoint's words; `null` for a running or completed call |
 | `duration_ms` | How long the call ran, once it ended |
 
-A task's entry is `running` until the task ends. A call ends `completed` when the provider answered, whatever its answer says; `failed` when the call did not reach an answer (a deadline, a provider error, a goal that ended rejected or abandoned); `cancelled` when the goal ended cancelled, the task was cancelled, or its confirmation was declined; `refused` when the call never reached the provider: its arguments failed the published schema, it named a robot or a member that is not there, it needed the tasks extension the client did not declare, or no provider was bound.
+The entry keeps nothing of a result: a completed goal and a response are a success. A task's entry is `running` until the task ends, and so is the entry of a call whose client closed it, until the provider ends the cancelled goal. A call ends:
+
+- `completed` when the goal completed or the service answered with its response.
+- `refused` when the provider refused the goal, with the kind it gave; or when the call never reached the provider: its arguments failed the published schema, it named a robot or a member that is not there, it needed the tasks extension the client did not declare, or no provider was bound. Only a refusal of the provider has a `failure_kind`.
+- `failed` when the goal failed or the service gave an error reply, with the kind the provider gave; or when the call did not reach an end that the provider gave: a deadline, a progress window without a sign of progress, a transport error, a goal that the provider abandoned, a kind that the member does not declare, feedback that overflowed, a task whose TTL passed before its goal ended, `the task expired before its goal ended; the endpoint cancelled the goal`, or before its goal started, `the task expired before its goal started`. Only a failure of the provider has a `failure_kind`.
+- `cancelled` when the goal ended cancelled, with its reason, for example because its client cancelled the task or closed the call; or when the task ended before its goal started: its confirmation was declined, or its client cancelled it while the confirmation waited.
 
 The record holds the calls of MCP clients on that endpoint. A motion that a teleoperation or another node of the stack commanded is not in it. When a client finds the robot in a state it did not command, the record says whether another client of the endpoint did it, and, when no entry accounts for it, that no client did.
 
@@ -608,7 +621,7 @@ A read answers with the first message the endpoint receives after the read arriv
 
 The guarantee is about when the endpoint received the message, not about when the source captured it. A message carries the source's stamp, on the source's clock (in a simulation, simulated time), and a frame that the source captured before a change and delivered after the read arrived still shows the old state. A client that needs the picture after a change reads the stamp.
 
-**Tools.** The endpoint checks input against the published schema, including `restrict` bounds, before sending anything to the Peppy graph. It rejects invalid input and unknown tool names. If a service does not respond within `deadline_ms`, the client receives a readable tool error. A service with a [`representation`](#service-policies) answers in the shape of a picture tool: the frame as an image block, the rest of the response as the text and the structured content, and the document alone when the response carries no frame.
+**Tools.** The endpoint checks input against the published schema, including `restrict` bounds, before sending anything to the Peppy graph. It rejects invalid input and unknown tool names. If a service does not respond within `deadline_ms`, the client receives a readable tool error. A service that gives an error reply ends the call with the tool error of a [failed call](#refused-and-failed-calls). A service with a [`representation`](#service-policies) answers in the shape of a picture tool: the frame as an image block, the rest of the response as the text and the structured content, and the document alone when the response carries no frame.
 
 **Picture tools.** A picture tool is listed read-only (`readOnlyHint: true`, `destructiveHint: false`) and answers inside the call for every client: it is never a task. Its result carries the snapshot a read of its resource serves at that moment:
 
@@ -631,33 +644,94 @@ For a client that declares the tasks extension (`io.modelcontextprotocol/tasks` 
 
 1. If `confirmation_required`, the task waits in `input_required` until the client confirms through `tasks/update`. No goal is sent before that.
 2. The server sends the goal. Action feedback updates the task's status message.
-3. `tasks/cancel` forwards a request to the action's cooperative cancellation path. A declined confirmation, or a cancel before the client confirms, ends the task as `cancelled`, and no goal is sent.
-4. On success, the task completes with the structured result. A goal that ends cancelled ends the task as `cancelled`, and the task's status message says why, as a [cancelled goal](#cancelled-goals) describes. A goal that is rejected, abandoned, expired, or past its bound ends as `failed` with a message saying which event occurred.
+3. `tasks/cancel` forwards a request to the action's cooperative cancellation path. It is the one way a client cancels a task. A declined confirmation, or a cancel before the client confirms, ends the task as `cancelled`, and no goal is sent.
+4. A goal that completes completes the task with the structured result. A goal that ends cancelled ends the task as `cancelled`, and the task's status message says why, as a [cancelled goal](#cancelled-goals) describes. A goal that the provider refuses or fails ends the task as `failed`, with the failure in its error, as a [refused or failed call](#refused-and-failed-calls) describes. A goal that is abandoned, expired, or past its bound ends the task as `failed` with a message saying which event occurred.
 
-Task handles outlive connections. A client that reconnects can continue and observe the same task. They do not outlive the process: stopping the stack ends every task the endpoint was running.
+Task handles outlive connections, and do not outlive the process. A client that disconnects while its goal runs cancels nothing: the goal runs on, and a client that reconnects can continue and observe the same task. Stopping the stack ends every task the endpoint was running (see [Goals and connections](#goals-and-connections)).
 
-A task under `deadline_ms` advertises a TTL of the deadline plus a short grace window. A task under `progress_timeout_ms` advertises a TTL of one day (86400000 ms): the progress window ends a goal that goes silent, and the TTL is the longest a goal that keeps making progress may run as a task. When the TTL passes, the task fails with a generic expiry and the provider gets no cancel. Every task stays readable for one more TTL after it ends.
+A task under `deadline_ms` advertises a TTL of the deadline plus a short grace window. A task under `progress_timeout_ms` advertises a TTL of one day (86400000 ms): the progress window fails a task whose goal goes silent, and the TTL is the longest a goal that keeps making progress may run as a task. When the TTL passes, the task fails with a generic expiry, the endpoint sends the provider a cancel, and the [call record](#the-call-record) keeps the task `failed`. Every task stays readable for one more TTL after it ends.
 
 For a client without the extension, the goal runs inside the call:
 
 1. The server sends the goal and the call stays open until the goal settles or its bound fails it. Under `progress_timeout_ms` the endpoint sets no limit on the total time of the call: a goal that keeps making progress runs until it settles or the client closes the call.
-2. Action feedback is sent as `notifications/progress` under the call's progress token, in order, before the result. The first notification also opens the response: the endpoint sends the response headers with it. While the server waits for the client to take one notification, new feedback waits in the goal's [feedback buffer](/advanced_guides/actions/#receiving-feedback), which keeps only the newest messages. A call without a progress token gets no feedback, and nothing arrives on it, not even the response headers, until the goal settles. A client that limits the wait for the headers then limits the whole goal.
-3. Closing the call forwards a request to the action's cooperative cancellation path.
-4. On success, the call returns the structured result. A goal that ends cancelled returns the tool error of a [cancelled goal](#cancelled-goals). A goal that is rejected, abandoned, expired, or past its bound returns a readable tool error saying which event occurred.
+2. Action feedback is sent as `notifications/progress` under the call's progress token, in order, before the result. The first notification also opens the response: the endpoint sends the response headers with it. The endpoint holds one notification for the client at a time: while the client has not taken it, the endpoint reads no more feedback of the goal, and new feedback waits in the goal's feedback buffer (see below). A call without a progress token gets no feedback, and nothing arrives on it, not even the response headers, until the goal settles.
+3. Closing the call forwards a request to the action's cooperative cancellation path at once, also while a notification waits for the client (see [Goals and connections](#goals-and-connections)). The endpoint follows the goal to the end that its provider gives it after the cancel, and the [call record](#the-call-record) keeps that end, `cancelled` when the provider honours the cancel.
+4. A goal that completes returns the structured result. A goal that ends cancelled returns the tool error of a [cancelled goal](#cancelled-goals). A goal that the provider refuses or fails returns the tool error of a [refused or failed call](#refused-and-failed-calls). A goal that is abandoned, expired, or past its bound returns a readable tool error saying which event occurred.
+
+On both surfaces, every feedback message of a goal waits in the goal's [feedback buffer](/advanced_guides/actions/#receiving-feedback) until the endpoint shows it, up to 1024 unread messages: the default bound of the buffer. On a task the endpoint shows each message as it comes. On a call it shows the next message once the client took the one before, so a client that reads its call slowly keeps the messages in the buffer. A goal whose unread feedback goes past the bound loses the stream: the buffer drops the unread messages and cancels the goal, and the call or the task fails with `the action failed: the endpoint fell behind the feedback of the goal by more than 1024 unread messages, so it cancelled the goal`.
 
 A tool with `confirmation_required` cannot run inside a call: the confirmation is an input request only a task can carry. The endpoint refuses it with error `-32021` (Missing Required Client Capability), naming the tool and the extension in the message and the capability in the error data.
 
+### Goals and connections
+
+The MCP server is the sender of the goals of its tools: the provider sees the server's node, never the MCP client. A goal ends when its provider ends it, when the client cancels it, when the endpoint stops following it, or when the server stops. When the server's process stops, its providers see that their sender is gone and cancel its goals after their sender grace.
+
+How a client cancels a goal depends on the surface it runs on:
+
+- A task outlives the connection that started it. A client that disconnects while its goal runs cancels nothing: the goal runs on, and a client that reconnects reads the same task. `tasks/cancel` is the one cancel of a task.
+- A goal that runs inside a call is cancelled when its call closes. In Streamable HTTP a client cancels a call by closing it, and a client that disconnects closes it too: the endpoint cannot tell the two apart, and takes both as a cancel. Closing the call sends the provider a cancel, so a client that stops waiting, for example when its user interrupts it, stops the robot it moves. A client that must keep a goal running after it goes away declares the tasks extension.
+
+The endpoint cancels a goal for its client, when the client cancels its task or closes its call. It also cancels a goal that it stops following before the goal ended: at a deadline, after a window of `progress_timeout_ms` without a sign of progress, at the TTL of a task, and when the unread feedback of the goal goes past its bound (see [What a client sees](#what-a-client-sees)). The call or the task then fails, and no goal runs on with no one following it. The endpoint sends a goal one cancel at most.
+
+### Refused and failed calls
+
+A provider that refuses a goal, fails a goal, or gives the error reply of a service, gives a **failure kind** and a message. The kind is a kind of peppy, which every provider can give, or a kind of the contract of the member that the member lists, such as `unreachable` of `move_arm`. A [daemon interface](#the-interfaces-peppy-serves) declares its kinds the same way, such as `busy` of `stack_copies:v1`:
+
+| Kind of peppy | Meaning |
+| --- | --- |
+| `attempt_failed` | The attempt gave no result |
+| `timeout` | The bound of the provider passed |
+| `precondition_failed` | A precondition failed |
+| `resource_unavailable` | A robot, limb or host is gone |
+| `rejected` | The provider refused the goal, and no other kind says why |
+
+In a call, the endpoint returns a tool error:
+
+- `isError` is `true`.
+- The one text says what happened, with the kind and the message: `the provider refused the goal: <kind>: <message>`, `the provider failed the goal: <kind>: <message>`, or `the provider gave an error reply: <kind>: <message>`.
+- `structuredContent` holds `outcome` (`refused` for a refused goal, which never ran; `failed` for a failed goal or an error reply), `failure_kind` and `message`. It is not in the tool's output schema, which describes a result: read `isError` first.
+
+```json
+{
+  "content": [
+    { "type": "text", "text": "the provider refused the goal: unreachable: no plan reaches the pose" }
+  ],
+  "structuredContent": {
+    "outcome": "refused",
+    "failure_kind": "unreachable",
+    "message": "no plan reaches the pose"
+  },
+  "isError": true
+}
+```
+
+In a task, the task ends `failed`. Its `error` has the same text as its `message` and the same object as its `data`:
+
+```json
+{
+  "code": -32603,
+  "message": "the provider failed the goal: unreachable: no plan reaches the pose",
+  "data": { "outcome": "failed", "failure_kind": "unreachable", "message": "no plan reaches the pose" }
+}
+```
+
+A failed goal gives no result. The [call record](#the-call-record) keeps the outcome, the kind and the message of the call.
+
+A provider can give only a kind of peppy or of the contract of the member. A kind that neither declares is a fault of the provider: the call fails with a readable tool error that names the member and the kind, such as ``the action failed: the provider of `move_arm` gave the failure kind `melted`, which neither peppy nor the contract of the member declares``, and with no structured content.
+
 ### Cancelled goals
 
-A goal ends cancelled when the client cancels it, when the endpoint cancels it because a window of `progress_timeout_ms` went by without a sign of progress, or when the provider cancels it for a reason of its own, for example because a newer goal replaced it. In each case the provider ends the goal with a result. When the provider cancelled the goal on its own, that result is where it says why.
+A goal ends cancelled when the client cancels its task or closes its call, or when the provider cancels it for a reason of its own, for example because a newer goal replaced it or another client stopped the robot. In each case the provider ends the goal with a result and a reason.
 
-In a call, the endpoint returns the result in a tool error:
+In a call that is still open, the endpoint returns the result in a tool error:
 
 - `isError` is `true`, whatever the result says: the goal did not run to its end.
-- The first text says that the goal was cancelled: `the action was cancelled`, or `the action was cancelled: no progress within <N> ms` when the endpoint cancelled it for the silence.
+- The first text says that the goal was cancelled and why: `the action was cancelled: <reason>`, with the reason of the provider.
 - `structuredContent` is the provider's result, in the tool's output schema, and the second text is the same result as JSON.
 
 In a task, the task ends `cancelled`, which carries no result. Its status message is the same first text, followed by `: ` and the provider's result as JSON.
+
+The [call record](#the-call-record) keeps the reason as the `message` of the call.
 
 ## What validation refuses
 

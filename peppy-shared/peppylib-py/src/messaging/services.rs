@@ -1,6 +1,7 @@
+use config::failure_kind::PeppyFailureKind;
 use peppylib::ServiceMessenger;
 use peppylib::messaging::{
-    ServiceEndpoint, ServiceRequestContext, ServiceResponder, ServiceTarget,
+    Failure, ServiceEndpoint, ServiceRequestContext, ServiceResponder, ServiceTarget,
 };
 use peppylib::types::Payload;
 use pyo3::exceptions::PyValueError;
@@ -95,9 +96,16 @@ impl PyServiceResponder {
         })
     }
 
-    /// Send a handler-error reply; the caller's `poll` surfaces `reason` as a
-    /// service error.
-    fn respond_error<'py>(&self, py: Python<'py>, reason: String) -> PyResult<Bound<'py, PyAny>> {
+    /// Send an error reply with the failure kind `kind` and `message`; the
+    /// caller's `poll` raises it as a `FailureError`. Raises `ValueError` for
+    /// a text that is not a failure kind name.
+    fn respond_failure<'py>(
+        &self,
+        py: Python<'py>,
+        kind: String,
+        message: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let failure = super::failure_from_py(&kind, message)?;
         let inner = Arc::clone(&self.inner);
         super::future_into_py_unit(py, async move {
             let responder = inner
@@ -105,7 +113,10 @@ impl PyServiceResponder {
                 .await
                 .take()
                 .ok_or_else(|| PyValueError::new_err("ServiceResponder already used"))?;
-            responder.respond_error(reason).await.map_err(to_py_err)?;
+            responder
+                .respond_failure(failure)
+                .await
+                .map_err(to_py_err)?;
             Ok(())
         })
     }
@@ -182,18 +193,17 @@ impl PyServiceEndpoint {
             }) else {
                 return Ok(false);
             };
-            // Phase 3: send response (pure Rust). Handler errors take the
-            // structured `respond_error` path so the caller sees
-            // `ServiceError { reason }` without the framework smuggling a
-            // sentinel through the response payload.
+            // Phase 3: send response (pure Rust). A handler that raises
+            // gives an error reply: a `FailureError` with its kind, any other
+            // exception with `attempt_failed`.
             let response = match handler_call {
                 Ok(HandlerReply::Ready(bytes)) => Ok(bytes),
                 Ok(HandlerReply::Pending(future)) => awaited_response_bytes(future.await),
-                Err(err) => Err(err.to_string()),
+                Err(err) => Err(super::failure_of_py_err(err)),
             };
             let send_result = match response {
                 Ok(bytes) => responder.respond(Payload::from(bytes)).await,
-                Err(reason) => responder.respond_error(reason).await,
+                Err(failure) => responder.respond_failure(failure).await,
             };
             send_result.map_err(to_py_err)?;
 
@@ -209,15 +219,20 @@ enum HandlerReply<F> {
     Pending(F),
 }
 
-/// The response bytes an async handler resolved to, or the reason the caller
-/// receives as a service error. Extracting the bytes attaches to the
+/// The response bytes an async handler resolved to, or the failure the
+/// caller receives as an error reply. Extracting the bytes attaches to the
 /// interpreter through the shutdown gate, so a node that is shutting down
-/// answers with that reason instead.
-fn awaited_response_bytes(awaited: PyResult<Py<PyAny>>) -> Result<Vec<u8>, String> {
-    let value = awaited.map_err(|err| err.to_string())?;
+/// answers with `resource_unavailable` instead.
+fn awaited_response_bytes(awaited: PyResult<Py<PyAny>>) -> Result<Vec<u8>, Failure> {
+    let value = awaited.map_err(super::failure_of_py_err)?;
     match crate::py_future::try_attach_gated(|py| value.extract::<Vec<u8>>(py)) {
-        Some(extracted) => extracted.map_err(|err| err.to_string()),
-        None => Err("node is shutting down".to_string()),
+        Some(extracted) => {
+            extracted.map_err(|err| Failure::new(PeppyFailureKind::AttemptFailed, err.to_string()))
+        }
+        None => Err(Failure::new(
+            PeppyFailureKind::ResourceUnavailable,
+            "node is shutting down",
+        )),
     }
 }
 

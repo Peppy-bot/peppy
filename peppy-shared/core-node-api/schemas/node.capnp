@@ -197,13 +197,11 @@ struct NodeAddGitSource {
     repoRef @2 :Text;
 }
 
+# The goal response of an accepted node add. The daemon refuses a goal in
+# the goal envelope, with a failure kind and a message.
 struct NodeAddGoalResponse {
-    # Whether the goal was accepted
-    accepted @0 :Bool;
-    # Path to the log file (empty if rejected)
-    logPath @1 :Text;
-    # Rejection reason (empty if accepted)
-    rejectionReason @2 :Text;
+    # Path to the log file of the add, on the daemon's machine.
+    logPath @0 :Text;
 }
 
 struct NodeAddFeedback {
@@ -212,17 +210,14 @@ struct NodeAddFeedback {
     line @1 :Text;
 }
 
+# The result of a completed node add. A failed add gives a failure kind
+# and a message, and no result; a cancelled add gives its reason, and no
+# result.
 struct NodeAddResult {
-    # Whether the node was added successfully
-    success @0 :Bool;
-    # Error message if failed
-    errorMessage @1 :Text;
-    # Path to the log file containing stdout/stderr output
-    logPath @2 :Text;
-    # Name of the added node (empty on failure)
-    nodeName @3 :Text;
-    # Tag of the added node (empty on failure)
-    nodeTag @4 :Text;
+    # Name of the added node
+    nodeName @0 :Text;
+    # Tag of the added node
+    nodeTag @1 :Text;
 }
 
 # Node Build Action: drives the build of a previously-added node
@@ -241,10 +236,11 @@ struct NodeBuildGoal {
     rebuild @6 :Bool;
 }
 
+# The goal response of an accepted node build. The daemon refuses a goal
+# in the goal envelope, with a failure kind and a message.
 struct NodeBuildGoalResponse {
-    accepted @0 :Bool;
-    logPath @1 :Text;
-    rejectionReason @2 :Text;
+    # Path to the log file of the build, on the daemon's machine.
+    logPath @0 :Text;
 }
 
 struct NodeBuildFeedback {
@@ -252,12 +248,12 @@ struct NodeBuildFeedback {
     line @1 :Text;
 }
 
+# The result of a completed node build. A failed build gives a failure kind
+# and a message, and no result; a cancelled build gives its reason, and no
+# result.
 struct NodeBuildResult {
-    success @0 :Bool;
-    errorMessage @1 :Text;
-    # Path to the resulting .sif/archive in storage (empty on failure)
-    artifactPath @2 :Text;
-    logPath @3 :Text;
+    # Path to the resulting .sif/archive in storage
+    artifactPath @0 :Text;
 }
 
 # Node Init service
@@ -274,11 +270,9 @@ struct NodeInitRequest {
     withContainer @4 :Bool;
 }
 
+# The response of a node init that succeeded. A failed init is an error
+# reply, with a failure kind and a message.
 struct NodeInitResponse {
-    # Whether the init was successful
-    success @0 :Bool;
-    # Error message if failed
-    errorMessage @1 :Text;
 }
 
 # Node Sync service
@@ -295,17 +289,15 @@ struct NodeSyncRequest {
     includeRepositories @2 :Bool;
 }
 
+# The response of a node sync that succeeded. A failed sync is an error
+# reply, with a failure kind and a message.
 struct NodeSyncResponse {
-    # Whether the sync was successful
-    success @0 :Bool;
-    # Error message if failed
-    errorMessage @1 :Text;
     # `name:tag` of every dependency the daemon resolved through the
-    # persistent node stack. Always populated on success; empty on failure.
-    resolvedFromStack @2 :List(Text);
+    # persistent node stack.
+    resolvedFromStack @0 :List(Text);
     # Every dependency the daemon resolved by fetching from the repository
     # cache. Only populated when the request set `includeRepositories`.
-    resolvedFromRepositories @3 :List(RepoResolvedEntry);
+    resolvedFromRepositories @1 :List(RepoResolvedEntry);
 }
 
 struct RepoResolvedEntry {
@@ -505,13 +497,11 @@ struct ObservedPeer {
     linkId @1 :Text;
 }
 
+# The goal response of an accepted node run. The daemon refuses a goal in
+# the goal envelope, with a failure kind and a message.
 struct NodeRunGoalResponse {
-    # Whether the goal was accepted
-    accepted @0 :Bool;
-    # Path to the log file (empty if rejected)
-    logPath @1 :Text;
-    # Rejection reason (empty if accepted)
-    rejectionReason @2 :Text;
+    # Path to the log file of the run, on the daemon's machine.
+    logPath @0 :Text;
 }
 
 struct NodeRunFeedback {
@@ -537,16 +527,15 @@ struct InstanceEndpoint {
     urls @2 :List(Text);
 }
 
+# The result of a completed node run. A failed run gives a failure kind
+# and a message, and no result; a cancelled run gives its reason, and no
+# result.
 struct NodeRunResult {
-    # Whether the run was successful
-    success @0 :Bool;
-    # Error message if failed (optional)
-    errorMessage @1 :Text;
-    # Process ID of the running node (0 if not available or failed)
-    pid @2 :UInt32;
+    # Process ID of the running node (0 if not available)
+    pid @0 :UInt32;
     # The endpoints the started instance serves, in label order; empty for a
-    # node that declares none or for a failed run.
-    endpoints @3 :List(InstanceEndpoint);
+    # node that declares none.
+    endpoints @1 :List(InstanceEndpoint);
 }
 
 # Node Stop service
@@ -555,14 +544,12 @@ struct NodeStopRequest {
     instanceId @0 :Text;
 }
 
+# The response of a node stop that succeeded. A failed stop is an error
+# reply, with a failure kind and a message.
 struct NodeStopResponse {
-    # Whether the stop was successful
-    success @0 :Bool;
-    # Error message if failed (optional)
-    errorMessage @1 :Text;
     # Whether the node had to be force-killed (it did not exit within the
     # cooperative shutdown grace period). False when it exited gracefully.
-    forceKilled @2 :Bool;
+    forceKilled @0 :Bool;
 }
 
 # Node Remove service
@@ -578,26 +565,22 @@ struct NodeRemoveRequest {
     launchId @3 :Text;
 }
 
+# The response of a node removal that succeeded. A failed removal is an
+# error reply, with a failure kind and a message.
 struct NodeRemoveResponse {
-    # Whether the removal was successful
-    success @0 :Bool;
-    # Error message if failed (optional)
-    errorMessage @1 :Text;
     # The instances the removal stopped that did not exit within the
     # cooperative shutdown window and were force-killed; empty when each
     # exited gracefully.
-    forceKilled @2 :List(Text);
+    forceKilled @0 :List(Text);
 }
 
 # Stack Reset service
 struct StackResetRequest {
 }
 
+# The response of a stack reset that succeeded. A failed reset is an error
+# reply, with a failure kind and a message.
 struct StackResetResponse {
-    # Whether the reset was successful
-    success @0 :Bool;
-    # Error message if failed (optional)
-    errorMessage @1 :Text;
 }
 
 # Node Info service

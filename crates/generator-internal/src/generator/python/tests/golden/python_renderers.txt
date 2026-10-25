@@ -119,6 +119,7 @@ async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicP
 ExposedService :: enable_camera
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.resources import files
 from typing import Callable
@@ -152,25 +153,94 @@ class Request:
 
 SERVICE_NAME = "enable_camera"
 
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
+
 
 def _deserialize_request(payload: bytes) -> RequestData:
     with _enable_camera_request_message_capnp().EnableCameraRequestMessage.from_bytes(payload) as capnp_msg:
         enable_0 = capnp_msg.enable
         return RequestData(enable=enable_0)
 
-async def _handle_request_payload(payload: bytes, handler: Callable[[Request], Response], core_node: str, instance_id: str) -> bytes:
-    request_data = _deserialize_request(payload)
+async def _handle_request_payload(payload: bytes, handler: Callable[[Request], Response | Failure], core_node: str, instance_id: str) -> bytes:
+    try:
+        request_data = _deserialize_request(payload)
+    except (ValueError, capnp.KjException) as error:
+        raise Failure(FailureKind.REJECTED, f"request does not decode: {error}") from None
     request = Request(instance_id=instance_id, core_node=core_node, data=request_data)
-    response = handler(request)
-    if hasattr(response, "__await__"):
-        response = await response
+    try:
+        response = handler(request)
+        if hasattr(response, "__await__"):
+            response = await response
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from error
+    if isinstance(response, peppylib.FailureError):
+        raise Failure(*response.args) from None
     capnp_msg = _enable_camera_response_message_capnp().EnableCameraResponseMessage.new_message()
     capnp_msg.enabled = response.enabled
     if response.error_msg is not None:
         capnp_msg.errorMsg = response.error_msg
     return capnp_msg.to_bytes()
 
-async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response]) -> None:
+async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response | Failure]) -> None:
+    """Answers the next request of this service with `handler`.
+
+    The response of the handler is a success. A `Failure` that it raises or
+    returns gives the caller an error reply of its kind. So does any
+    `peppylib.FailureError`, such as the `Failure` of another member, when
+    this member declares its kind. A request that does not decode gets an
+    error reply of the kind `rejected`, and any other exception, or a kind
+    that this member does not declare, one of the kind `attempt_failed`.
+    """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
         node_runner.bound_core_node(),
@@ -190,6 +260,7 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
 ExposedService :: set_mode
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.resources import files
 from typing import Callable
@@ -213,21 +284,90 @@ class Request:
 
 SERVICE_NAME = "set_mode"
 
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
+
 
 def _deserialize_request(payload: bytes) -> RequestData:
     with _set_mode_request_message_capnp().SetModeRequestMessage.from_bytes(payload) as capnp_msg:
         mode_0 = capnp_msg.mode
         return RequestData(mode=mode_0)
 
-async def _handle_request_payload(payload: bytes, handler: Callable[[Request], None], core_node: str, instance_id: str) -> bytes:
-    request_data = _deserialize_request(payload)
+async def _handle_request_payload(payload: bytes, handler: Callable[[Request], Failure | None], core_node: str, instance_id: str) -> bytes:
+    try:
+        request_data = _deserialize_request(payload)
+    except (ValueError, capnp.KjException) as error:
+        raise Failure(FailureKind.REJECTED, f"request does not decode: {error}") from None
     request = Request(instance_id=instance_id, core_node=core_node, data=request_data)
-    maybe_response = handler(request)
-    if hasattr(maybe_response, "__await__"):
-        await maybe_response
+    try:
+        response = handler(request)
+        if hasattr(response, "__await__"):
+            response = await response
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from error
+    if isinstance(response, peppylib.FailureError):
+        raise Failure(*response.args) from None
     return b""
 
-async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], None]) -> None:
+async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Failure | None]) -> None:
+    """Answers the next request of this service with `handler`.
+
+    The response of the handler is a success. A `Failure` that it raises or
+    returns gives the caller an error reply of its kind. So does any
+    `peppylib.FailureError`, such as the `Failure` of another member, when
+    this member declares its kind. A request that does not decode gets an
+    error reply of the kind `rejected`, and any other exception, or a kind
+    that this member does not declare, one of the kind `attempt_failed`.
+    """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
         node_runner.bound_core_node(),
@@ -247,6 +387,7 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
 ExposedService :: get_system_status
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.resources import files
 from typing import Callable
@@ -269,17 +410,83 @@ class Request:
 
 SERVICE_NAME = "get_system_status"
 
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
-async def _handle_request_payload(handler: Callable[[Request], Response], core_node: str, instance_id: str) -> bytes:
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
+
+
+async def _handle_request_payload(handler: Callable[[Request], Response | Failure], core_node: str, instance_id: str) -> bytes:
     request = Request(instance_id=instance_id, core_node=core_node)
-    response = handler(request)
-    if hasattr(response, "__await__"):
-        response = await response
+    try:
+        response = handler(request)
+        if hasattr(response, "__await__"):
+            response = await response
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from error
+    if isinstance(response, peppylib.FailureError):
+        raise Failure(*response.args) from None
     capnp_msg = _get_system_status_response_message_capnp().GetSystemStatusResponseMessage.new_message()
     capnp_msg.healthy = response.healthy
     return capnp_msg.to_bytes()
 
-async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response]) -> None:
+async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response | Failure]) -> None:
+    """Answers the next request of this service with `handler`.
+
+    The response of the handler is a success. A `Failure` that it raises or
+    returns gives the caller an error reply of its kind. So does any
+    `peppylib.FailureError`, such as the `Failure` of another member, when
+    this member declares its kind. A request that does not decode gets an
+    error reply of the kind `rejected`, and any other exception, or a kind
+    that this member does not declare, one of the kind `attempt_failed`.
+    """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
         node_runner.bound_core_node(),
@@ -298,6 +505,7 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
 ExposedService :: ping
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from typing import Callable
 import peppylib
 
@@ -308,15 +516,81 @@ class Request:
 
 SERVICE_NAME = "ping"
 
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
 
-async def _handle_request_payload(handler: Callable[[Request], None], core_node: str, instance_id: str) -> bytes:
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
+
+
+async def _handle_request_payload(handler: Callable[[Request], Failure | None], core_node: str, instance_id: str) -> bytes:
     request = Request(instance_id=instance_id, core_node=core_node)
-    maybe_response = handler(request)
-    if hasattr(maybe_response, "__await__"):
-        await maybe_response
+    try:
+        response = handler(request)
+        if hasattr(response, "__await__"):
+            response = await response
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from error
+    if isinstance(response, peppylib.FailureError):
+        raise Failure(*response.args) from None
     return b""
 
-async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], None]) -> None:
+async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Failure | None]) -> None:
+    """Answers the next request of this service with `handler`.
+
+    The response of the handler is a success. A `Failure` that it raises or
+    returns gives the caller an error reply of its kind. So does any
+    `peppylib.FailureError`, such as the `Failure` of another member, when
+    this member declares its kind. A request that does not decode gets an
+    error reply of the kind `rejected`, and any other exception, or a kind
+    that this member does not declare, one of the kind `attempt_failed`.
+    """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
         node_runner.bound_core_node(),
@@ -335,6 +609,7 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
 ExposedService :: feed/enable_camera
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.resources import files
 from typing import Callable
@@ -368,25 +643,96 @@ class Request:
 
 SERVICE_NAME = "enable_camera"
 
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+    LENS_COVERED = "lens_covered"
+    "The lens of the camera is covered"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
+
 
 def _deserialize_request(payload: bytes) -> RequestData:
     with _camera_feed_v1_enable_camera_request_message_capnp().CameraFeedV1EnableCameraRequestMessage.from_bytes(payload) as capnp_msg:
         enable_0 = capnp_msg.enable
         return RequestData(enable=enable_0)
 
-async def _handle_request_payload(payload: bytes, handler: Callable[[Request], Response], core_node: str, instance_id: str) -> bytes:
-    request_data = _deserialize_request(payload)
+async def _handle_request_payload(payload: bytes, handler: Callable[[Request], Response | Failure], core_node: str, instance_id: str) -> bytes:
+    try:
+        request_data = _deserialize_request(payload)
+    except (ValueError, capnp.KjException) as error:
+        raise Failure(FailureKind.REJECTED, f"request does not decode: {error}") from None
     request = Request(instance_id=instance_id, core_node=core_node, data=request_data)
-    response = handler(request)
-    if hasattr(response, "__await__"):
-        response = await response
+    try:
+        response = handler(request)
+        if hasattr(response, "__await__"):
+            response = await response
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from error
+    if isinstance(response, peppylib.FailureError):
+        raise Failure(*response.args) from None
     capnp_msg = _camera_feed_v1_enable_camera_response_message_capnp().CameraFeedV1EnableCameraResponseMessage.new_message()
     capnp_msg.enabled = response.enabled
     if response.error_msg is not None:
         capnp_msg.errorMsg = response.error_msg
     return capnp_msg.to_bytes()
 
-async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response]) -> None:
+async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callable[[Request], Response | Failure]) -> None:
+    """Answers the next request of this service with `handler`.
+
+    The response of the handler is a success. A `Failure` that it raises or
+    returns gives the caller an error reply of its kind. So does any
+    `peppylib.FailureError`, such as the `Failure` of another member, when
+    this member declares its kind. A request that does not decode gets an
+    error reply of the kind `rejected`, and any other exception, or a kind
+    that this member does not declare, one of the kind `attempt_failed`.
+    """
     endpoint = await peppylib.ServiceMessenger.listen(
         node_runner.messenger(),
         node_runner.bound_core_node(),
@@ -406,9 +752,11 @@ async def handle_next_request(node_runner: peppylib.NodeRunner, handler: Callabl
 ExposedAction :: move_arm
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.resources import files
 from typing import Callable
+from typing import Literal
 from typing import Optional
 from typing import Self
 import capnp
@@ -433,6 +781,58 @@ def _move_arm_feedback_message_capnp() -> types.ModuleType:
 
 ACTION_NAME = "move_arm"
 
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {ACTION_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
+
 @dataclass
 class GoalRequestData:
     arm_id: int
@@ -449,18 +849,33 @@ class GoalResponse:
     accepted: bool
 
 class GoalDecision:
-    def __init__(self, accepted: bool, reason=None, response=None):
-        self.accepted = accepted
-        self.reason = reason
+    """The decision of a goal handler: accept the goal, or refuse it with a failure."""
+
+    def __init__(self, response: GoalResponse | None, refusal: Failure | None) -> None:
+        """An accept with the declared `response`, or a refusal with no response.
+
+        Raises ValueError for both or neither. The refusal is parsed again as a
+        Failure of this member, which raises for a kind that this member does
+        not declare.
+        """
+        if (response is None) == (refusal is None):
+            raise ValueError("a goal decision is an accept with the declared GoalResponse, or a refusal with no response")
         self.response = response
+        self.refusal = None if refusal is None else Failure(*refusal.args)
+
     @staticmethod
-    def accept(response):
-        if response is None:
-            raise ValueError("GoalDecision.accept requires the declared GoalResponse")
-        return GoalDecision(True, response=response)
+    def accept(response: GoalResponse) -> "GoalDecision":
+        """Accepts the goal and replies with the declared response."""
+        return GoalDecision(response, None)
+
     @staticmethod
-    def reject(reason=None, response=None):
-        return GoalDecision(False, reason=reason, response=response)
+    def refuse(kind: FailureKind, message: str) -> "GoalDecision":
+        """Refuses the goal with a failure kind that this member declares and a message.
+
+        Raises ValueError for any other kind, and TypeError for a message that
+        is not a str. A refusal carries no goal response.
+        """
+        return GoalDecision(None, Failure(kind, message))
 
 
 def _deserialize_goal_request(payload: bytes) -> GoalRequestData:
@@ -470,6 +885,23 @@ def _deserialize_goal_request(payload: bytes) -> GoalRequestData:
         if len(desired_position_1) != 3:
             raise ValueError("invalid fixed list length for field 'desired_position': expected 3, got " + str(len(desired_position_1)))
         return GoalRequestData(arm_id=arm_id_0, desired_position=desired_position_1)
+
+async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> "Failure | bytes":
+    """The answer of `handler` to the goal `request`: a refusal, or the encoded response of an accept.
+
+    The decision of `handler` is built again as a decision of this member,
+    so a decision that this member cannot send raises.
+    """
+    decision = handler(request)
+    if hasattr(decision, "__await__"):
+        decision = await decision
+    decision = GoalDecision(decision.response, decision.refusal)
+    if decision.refusal is not None:
+        return decision.refusal
+    response = decision.response
+    capnp_msg = _move_arm_goal_response_message_capnp().MoveArmGoalResponseMessage.new_message()
+    capnp_msg.accepted = response.accepted
+    return capnp_msg.to_bytes()
 
 class ActionHandle:
     @classmethod
@@ -486,7 +918,25 @@ class ActionHandle:
         handle._inner = inner
         return handle
 
+    async def set_sender_grace(self, seconds: float) -> None:
+        """Sets the sender grace of the action, in seconds.
+
+        How long the action keeps the goals of a sender that is gone before they
+        receive their cancel signal, with the cause "sender_gone". Zero by
+        default. It applies to each sender found gone after the call.
+        """
+        await self._inner.set_sender_grace(seconds)
+
     async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> "GoalContext | None":
+        """Answers the goals of this action with `handler` up to the next goal that it accepts.
+
+        Gives the context of that goal, or None when the goal stream closes.
+        Each refused goal is answered and skipped.
+        A goal request that does not decode is refused with the kind `rejected`.
+        A handler that raises, or that gives a decision that this action cannot
+        send, refuses the goal with the kind `attempt_failed` and the text of the
+        error.
+        """
         while True:
             pending = await self._inner.recv_next_goal()
             if pending is None:
@@ -494,23 +944,18 @@ class ActionHandle:
             try:
                 request_data = _deserialize_goal_request(pending.request_bytes)
             except (ValueError, capnp.KjException) as error:
-                await pending.reject(f"goal request does not decode: {error}", b"")
+                await pending.refuse(FailureKind.REJECTED.value, f"goal request does not decode: {error}")
                 continue
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)
-            decision = handler(request)
-            if hasattr(decision, "__await__"):
-                decision = await decision
-            response = decision.response
-            if response is not None:
-                capnp_msg = _move_arm_goal_response_message_capnp().MoveArmGoalResponseMessage.new_message()
-                capnp_msg.accepted = response.accepted
-                response_bytes = capnp_msg.to_bytes()
-            else:
-                response_bytes = b""
-            if decision.accepted:
-                ctx = await pending.accept(response_bytes)
-                return GoalContext(ctx, request)
-            await pending.reject(decision.reason, response_bytes)
+            try:
+                answer = await _goal_answer(handler, request)
+            except Exception as error:
+                answer = Failure(FailureKind.ATTEMPT_FAILED, f"the goal handler raised {type(error).__name__}: {error}")
+            if isinstance(answer, Failure):
+                await pending.refuse(answer.kind.value, answer.message)
+                continue
+            ctx = await pending.accept(answer)
+            return GoalContext(ctx, request)
 
 class GoalContext:
     def __init__(self, inner, request: GoalRequest):
@@ -522,9 +967,34 @@ class GoalContext:
     def goal_id(self) -> str:
         return self._inner.goal_id
     async def cancel_signal(self) -> None:
+        """Waits for the cancel signal of this goal.
+
+        A cancel request of its caller, or the end of its sender, sends it (see
+        cancel_cause). React by calling complete_cancelled.
+        """
         await self._inner.cancel_signal()
     def is_cancelled(self) -> bool:
         return self._inner.is_cancelled()
+    def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
+        """Why this goal received its cancel signal; None before it did."""
+        return self._inner.cancel_cause
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled.
+
+        "cancelled by its caller" or "its sender is gone"; None before the goal
+        received its cancel signal.
+        """
+        return self._inner.cancel_reason
+    async def fail(self, kind: FailureKind, message: str) -> None:
+        """Ends the goal with the status failed, with no result.
+
+        A failure kind that this member declares and a message: raises
+        ValueError for any other kind, and TypeError for a message that is not
+        a str. The first of complete, fail and complete_cancelled ends the goal;
+        later calls do nothing.
+        """
+        failure = Failure(kind, message)
+        await self._inner.fail(failure.kind.value, failure.message)
     async def publish_feedback(self, new_position: list[int]) -> None:
         capnp_msg = _move_arm_feedback_message_capnp().MoveArmFeedbackMessage.new_message()
         if len(new_position) != 3:
@@ -533,29 +1003,85 @@ class GoalContext:
         payload = capnp_msg.to_bytes()
         await self._inner.publish_feedback(payload)
     async def complete(self, success: bool, error_msg: Optional[str]) -> None:
+        """Ends the goal with the status completed and its result: a success."""
         capnp_msg = _move_arm_result_response_message_capnp().MoveArmResultResponseMessage.new_message()
         capnp_msg.success = success
         if error_msg is not None:
             capnp_msg.errorMsg = error_msg
         payload = capnp_msg.to_bytes()
         await self._inner.complete(payload)
-    async def complete_cancelled(self, success: bool, error_msg: Optional[str]) -> None:
+    async def complete_cancelled(self, reason: str, success: bool, error_msg: Optional[str]) -> None:
+        """Ends the goal with the status cancelled, for `reason`, with its result."""
         capnp_msg = _move_arm_result_response_message_capnp().MoveArmResultResponseMessage.new_message()
         capnp_msg.success = success
         if error_msg is not None:
             capnp_msg.errorMsg = error_msg
         payload = capnp_msg.to_bytes()
-        await self._inner.complete_cancelled(payload)
+        await self._inner.complete_cancelled(reason, payload)
 
 ================================================================
 ExposedAction :: home_all
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from typing import Callable
+from typing import Literal
 from typing import Self
 import peppylib
 
 ACTION_NAME = "home_all"
+
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {ACTION_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
 
 @dataclass
 class GoalRequest:
@@ -563,15 +1089,47 @@ class GoalRequest:
     core_node: str
 
 class GoalDecision:
-    def __init__(self, accepted: bool, reason=None):
-        self.accepted = accepted
-        self.reason = reason
+    """The decision of a goal handler: accept the goal, or refuse it with a failure."""
+
+    def __init__(self, response: None, refusal: Failure | None) -> None:
+        """An accept when `refusal` is None, else a refusal.
+
+        Raises ValueError for a response, which this action does not declare.
+        The refusal is parsed again as a Failure of this member, which raises
+        for a kind that this member does not declare.
+        """
+        if response is not None:
+            raise ValueError("this action declares no GoalResponse")
+        self.response = None
+        self.refusal = None if refusal is None else Failure(*refusal.args)
+
     @staticmethod
-    def accept():
-        return GoalDecision(True)
+    def accept() -> "GoalDecision":
+        """Accepts the goal."""
+        return GoalDecision(None, None)
+
     @staticmethod
-    def reject(reason=None):
-        return GoalDecision(False, reason=reason)
+    def refuse(kind: FailureKind, message: str) -> "GoalDecision":
+        """Refuses the goal with a failure kind that this member declares and a message.
+
+        Raises ValueError for any other kind, and TypeError for a message that
+        is not a str. A refusal carries no goal response.
+        """
+        return GoalDecision(None, Failure(kind, message))
+
+async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> "Failure | bytes":
+    """The answer of `handler` to the goal `request`: a refusal, or the encoded response of an accept.
+
+    The decision of `handler` is built again as a decision of this member,
+    so a decision that this member cannot send raises.
+    """
+    decision = handler(request)
+    if hasattr(decision, "__await__"):
+        decision = await decision
+    decision = GoalDecision(decision.response, decision.refusal)
+    if decision.refusal is not None:
+        return decision.refusal
+    return b""
 
 class ActionHandle:
     @classmethod
@@ -588,20 +1146,38 @@ class ActionHandle:
         handle._inner = inner
         return handle
 
+    async def set_sender_grace(self, seconds: float) -> None:
+        """Sets the sender grace of the action, in seconds.
+
+        How long the action keeps the goals of a sender that is gone before they
+        receive their cancel signal, with the cause "sender_gone". Zero by
+        default. It applies to each sender found gone after the call.
+        """
+        await self._inner.set_sender_grace(seconds)
+
     async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> "GoalContext | None":
+        """Answers the goals of this action with `handler` up to the next goal that it accepts.
+
+        Gives the context of that goal, or None when the goal stream closes.
+        Each refused goal is answered and skipped.
+        A handler that raises, or that gives a decision that this action cannot
+        send, refuses the goal with the kind `attempt_failed` and the text of the
+        error.
+        """
         while True:
             pending = await self._inner.recv_next_goal()
             if pending is None:
                 return None  # goal stream closed (node shutting down)
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)
-            decision = handler(request)
-            if hasattr(decision, "__await__"):
-                decision = await decision
-            response_bytes = b""
-            if decision.accepted:
-                ctx = await pending.accept(response_bytes)
-                return GoalContext(ctx, request)
-            await pending.reject(decision.reason, response_bytes)
+            try:
+                answer = await _goal_answer(handler, request)
+            except Exception as error:
+                answer = Failure(FailureKind.ATTEMPT_FAILED, f"the goal handler raised {type(error).__name__}: {error}")
+            if isinstance(answer, Failure):
+                await pending.refuse(answer.kind.value, answer.message)
+                continue
+            ctx = await pending.accept(answer)
+            return GoalContext(ctx, request)
 
 class GoalContext:
     def __init__(self, inner, request: GoalRequest):
@@ -613,23 +1189,52 @@ class GoalContext:
     def goal_id(self) -> str:
         return self._inner.goal_id
     async def cancel_signal(self) -> None:
+        """Waits for the cancel signal of this goal.
+
+        A cancel request of its caller, or the end of its sender, sends it (see
+        cancel_cause). React by calling complete_cancelled.
+        """
         await self._inner.cancel_signal()
     def is_cancelled(self) -> bool:
         return self._inner.is_cancelled()
+    def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
+        """Why this goal received its cancel signal; None before it did."""
+        return self._inner.cancel_cause
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled.
+
+        "cancelled by its caller" or "its sender is gone"; None before the goal
+        received its cancel signal.
+        """
+        return self._inner.cancel_reason
+    async def fail(self, kind: FailureKind, message: str) -> None:
+        """Ends the goal with the status failed, with no result.
+
+        A failure kind that this member declares and a message: raises
+        ValueError for any other kind, and TypeError for a message that is not
+        a str. The first of complete, fail and complete_cancelled ends the goal;
+        later calls do nothing.
+        """
+        failure = Failure(kind, message)
+        await self._inner.fail(failure.kind.value, failure.message)
     async def complete(self) -> None:
+        """Ends the goal with the status completed and its result: a success."""
         payload = b""
         await self._inner.complete(payload)
-    async def complete_cancelled(self) -> None:
+    async def complete_cancelled(self, reason: str) -> None:
+        """Ends the goal with the status cancelled, for `reason`, with its result."""
         payload = b""
-        await self._inner.complete_cancelled(payload)
+        await self._inner.complete_cancelled(reason, payload)
 
 ================================================================
 ExposedAction :: track_target
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.resources import files
 from typing import Callable
+from typing import Literal
 from typing import Self
 import capnp
 import peppylib
@@ -641,21 +1246,105 @@ def _track_target_feedback_message_capnp() -> types.ModuleType:
 
 ACTION_NAME = "track_target"
 
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {ACTION_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
+
 @dataclass
 class GoalRequest:
     instance_id: str
     core_node: str
 
 class GoalDecision:
-    def __init__(self, accepted: bool, reason=None):
-        self.accepted = accepted
-        self.reason = reason
+    """The decision of a goal handler: accept the goal, or refuse it with a failure."""
+
+    def __init__(self, response: None, refusal: Failure | None) -> None:
+        """An accept when `refusal` is None, else a refusal.
+
+        Raises ValueError for a response, which this action does not declare.
+        The refusal is parsed again as a Failure of this member, which raises
+        for a kind that this member does not declare.
+        """
+        if response is not None:
+            raise ValueError("this action declares no GoalResponse")
+        self.response = None
+        self.refusal = None if refusal is None else Failure(*refusal.args)
+
     @staticmethod
-    def accept():
-        return GoalDecision(True)
+    def accept() -> "GoalDecision":
+        """Accepts the goal."""
+        return GoalDecision(None, None)
+
     @staticmethod
-    def reject(reason=None):
-        return GoalDecision(False, reason=reason)
+    def refuse(kind: FailureKind, message: str) -> "GoalDecision":
+        """Refuses the goal with a failure kind that this member declares and a message.
+
+        Raises ValueError for any other kind, and TypeError for a message that
+        is not a str. A refusal carries no goal response.
+        """
+        return GoalDecision(None, Failure(kind, message))
+
+async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> "Failure | bytes":
+    """The answer of `handler` to the goal `request`: a refusal, or the encoded response of an accept.
+
+    The decision of `handler` is built again as a decision of this member,
+    so a decision that this member cannot send raises.
+    """
+    decision = handler(request)
+    if hasattr(decision, "__await__"):
+        decision = await decision
+    decision = GoalDecision(decision.response, decision.refusal)
+    if decision.refusal is not None:
+        return decision.refusal
+    return b""
 
 class ActionHandle:
     @classmethod
@@ -672,20 +1361,38 @@ class ActionHandle:
         handle._inner = inner
         return handle
 
+    async def set_sender_grace(self, seconds: float) -> None:
+        """Sets the sender grace of the action, in seconds.
+
+        How long the action keeps the goals of a sender that is gone before they
+        receive their cancel signal, with the cause "sender_gone". Zero by
+        default. It applies to each sender found gone after the call.
+        """
+        await self._inner.set_sender_grace(seconds)
+
     async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> "GoalContext | None":
+        """Answers the goals of this action with `handler` up to the next goal that it accepts.
+
+        Gives the context of that goal, or None when the goal stream closes.
+        Each refused goal is answered and skipped.
+        A handler that raises, or that gives a decision that this action cannot
+        send, refuses the goal with the kind `attempt_failed` and the text of the
+        error.
+        """
         while True:
             pending = await self._inner.recv_next_goal()
             if pending is None:
                 return None  # goal stream closed (node shutting down)
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)
-            decision = handler(request)
-            if hasattr(decision, "__await__"):
-                decision = await decision
-            response_bytes = b""
-            if decision.accepted:
-                ctx = await pending.accept(response_bytes)
-                return GoalContext(ctx, request)
-            await pending.reject(decision.reason, response_bytes)
+            try:
+                answer = await _goal_answer(handler, request)
+            except Exception as error:
+                answer = Failure(FailureKind.ATTEMPT_FAILED, f"the goal handler raised {type(error).__name__}: {error}")
+            if isinstance(answer, Failure):
+                await pending.refuse(answer.kind.value, answer.message)
+                continue
+            ctx = await pending.accept(answer)
+            return GoalContext(ctx, request)
 
 class GoalContext:
     def __init__(self, inner, request: GoalRequest):
@@ -697,30 +1404,111 @@ class GoalContext:
     def goal_id(self) -> str:
         return self._inner.goal_id
     async def cancel_signal(self) -> None:
+        """Waits for the cancel signal of this goal.
+
+        A cancel request of its caller, or the end of its sender, sends it (see
+        cancel_cause). React by calling complete_cancelled.
+        """
         await self._inner.cancel_signal()
     def is_cancelled(self) -> bool:
         return self._inner.is_cancelled()
+    def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
+        """Why this goal received its cancel signal; None before it did."""
+        return self._inner.cancel_cause
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled.
+
+        "cancelled by its caller" or "its sender is gone"; None before the goal
+        received its cancel signal.
+        """
+        return self._inner.cancel_reason
+    async def fail(self, kind: FailureKind, message: str) -> None:
+        """Ends the goal with the status failed, with no result.
+
+        A failure kind that this member declares and a message: raises
+        ValueError for any other kind, and TypeError for a message that is not
+        a str. The first of complete, fail and complete_cancelled ends the goal;
+        later calls do nothing.
+        """
+        failure = Failure(kind, message)
+        await self._inner.fail(failure.kind.value, failure.message)
     async def publish_feedback(self, bearing: float) -> None:
         capnp_msg = _track_target_feedback_message_capnp().TrackTargetFeedbackMessage.new_message()
         capnp_msg.bearing = bearing
         payload = capnp_msg.to_bytes()
         await self._inner.publish_feedback(payload)
     async def complete(self) -> None:
+        """Ends the goal with the status completed and its result: a success."""
         payload = b""
         await self._inner.complete(payload)
-    async def complete_cancelled(self) -> None:
+    async def complete_cancelled(self, reason: str) -> None:
+        """Ends the goal with the status cancelled, for `reason`, with its result."""
         payload = b""
-        await self._inner.complete_cancelled(payload)
+        await self._inner.complete_cancelled(reason, payload)
 
 ================================================================
 ExposedAction :: nudge
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from typing import Callable
+from typing import Literal
 from typing import Self
 import peppylib
 
 ACTION_NAME = "nudge"
+
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {ACTION_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
 
 @dataclass
 class GoalRequest:
@@ -728,15 +1516,47 @@ class GoalRequest:
     core_node: str
 
 class GoalDecision:
-    def __init__(self, accepted: bool, reason=None):
-        self.accepted = accepted
-        self.reason = reason
+    """The decision of a goal handler: accept the goal, or refuse it with a failure."""
+
+    def __init__(self, response: None, refusal: Failure | None) -> None:
+        """An accept when `refusal` is None, else a refusal.
+
+        Raises ValueError for a response, which this action does not declare.
+        The refusal is parsed again as a Failure of this member, which raises
+        for a kind that this member does not declare.
+        """
+        if response is not None:
+            raise ValueError("this action declares no GoalResponse")
+        self.response = None
+        self.refusal = None if refusal is None else Failure(*refusal.args)
+
     @staticmethod
-    def accept():
-        return GoalDecision(True)
+    def accept() -> "GoalDecision":
+        """Accepts the goal."""
+        return GoalDecision(None, None)
+
     @staticmethod
-    def reject(reason=None):
-        return GoalDecision(False, reason=reason)
+    def refuse(kind: FailureKind, message: str) -> "GoalDecision":
+        """Refuses the goal with a failure kind that this member declares and a message.
+
+        Raises ValueError for any other kind, and TypeError for a message that
+        is not a str. A refusal carries no goal response.
+        """
+        return GoalDecision(None, Failure(kind, message))
+
+async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> "Failure | bytes":
+    """The answer of `handler` to the goal `request`: a refusal, or the encoded response of an accept.
+
+    The decision of `handler` is built again as a decision of this member,
+    so a decision that this member cannot send raises.
+    """
+    decision = handler(request)
+    if hasattr(decision, "__await__"):
+        decision = await decision
+    decision = GoalDecision(decision.response, decision.refusal)
+    if decision.refusal is not None:
+        return decision.refusal
+    return b""
 
 class ActionHandle:
     @classmethod
@@ -753,20 +1573,38 @@ class ActionHandle:
         handle._inner = inner
         return handle
 
+    async def set_sender_grace(self, seconds: float) -> None:
+        """Sets the sender grace of the action, in seconds.
+
+        How long the action keeps the goals of a sender that is gone before they
+        receive their cancel signal, with the cause "sender_gone". Zero by
+        default. It applies to each sender found gone after the call.
+        """
+        await self._inner.set_sender_grace(seconds)
+
     async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> "GoalContext | None":
+        """Answers the goals of this action with `handler` up to the next goal that it accepts.
+
+        Gives the context of that goal, or None when the goal stream closes.
+        Each refused goal is answered and skipped.
+        A handler that raises, or that gives a decision that this action cannot
+        send, refuses the goal with the kind `attempt_failed` and the text of the
+        error.
+        """
         while True:
             pending = await self._inner.recv_next_goal()
             if pending is None:
                 return None  # goal stream closed (node shutting down)
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)
-            decision = handler(request)
-            if hasattr(decision, "__await__"):
-                decision = await decision
-            response_bytes = b""
-            if decision.accepted:
-                ctx = await pending.accept(response_bytes)
-                return GoalContext(ctx, request)
-            await pending.reject(decision.reason, response_bytes)
+            try:
+                answer = await _goal_answer(handler, request)
+            except Exception as error:
+                answer = Failure(FailureKind.ATTEMPT_FAILED, f"the goal handler raised {type(error).__name__}: {error}")
+            if isinstance(answer, Failure):
+                await pending.refuse(answer.kind.value, answer.message)
+                continue
+            ctx = await pending.accept(answer)
+            return GoalContext(ctx, request)
 
 class GoalContext:
     def __init__(self, inner, request: GoalRequest):
@@ -778,17 +1616,52 @@ class GoalContext:
     def goal_id(self) -> str:
         return self._inner.goal_id
     async def cancel_signal(self) -> None:
+        """Waits for the cancel signal of this goal.
+
+        A cancel request of its caller, or the end of its sender, sends it (see
+        cancel_cause). React by calling complete_cancelled.
+        """
         await self._inner.cancel_signal()
     def is_cancelled(self) -> bool:
         return self._inner.is_cancelled()
+    def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
+        """Why this goal received its cancel signal; None before it did."""
+        return self._inner.cancel_cause
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled.
+
+        "cancelled by its caller" or "its sender is gone"; None before the goal
+        received its cancel signal.
+        """
+        return self._inner.cancel_reason
+    async def fail(self, kind: FailureKind, message: str) -> None:
+        """Ends the goal with the status failed, with no result.
+
+        A failure kind that this member declares and a message: raises
+        ValueError for any other kind, and TypeError for a message that is not
+        a str. The first of complete, fail and complete_cancelled ends the goal;
+        later calls do nothing.
+        """
+        failure = Failure(kind, message)
+        await self._inner.fail(failure.kind.value, failure.message)
+    async def complete(self) -> None:
+        """Ends the goal with the status completed and its result: a success."""
+        payload = b""
+        await self._inner.complete(payload)
+    async def complete_cancelled(self, reason: str) -> None:
+        """Ends the goal with the status cancelled, for `reason`, with its result."""
+        payload = b""
+        await self._inner.complete_cancelled(reason, payload)
 
 ================================================================
 ExposedAction :: feed/move_arm
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.resources import files
 from typing import Callable
+from typing import Literal
 from typing import Optional
 from typing import Self
 import capnp
@@ -813,6 +1686,60 @@ def _camera_feed_v1_move_arm_feedback_message_capnp() -> types.ModuleType:
 
 ACTION_NAME = "move_arm"
 
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+    LENS_COVERED = "lens_covered"
+    "The lens of the camera is covered"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {ACTION_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {ACTION_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
+
 @dataclass
 class GoalRequestData:
     arm_id: int
@@ -829,18 +1756,33 @@ class GoalResponse:
     accepted: bool
 
 class GoalDecision:
-    def __init__(self, accepted: bool, reason=None, response=None):
-        self.accepted = accepted
-        self.reason = reason
+    """The decision of a goal handler: accept the goal, or refuse it with a failure."""
+
+    def __init__(self, response: GoalResponse | None, refusal: Failure | None) -> None:
+        """An accept with the declared `response`, or a refusal with no response.
+
+        Raises ValueError for both or neither. The refusal is parsed again as a
+        Failure of this member, which raises for a kind that this member does
+        not declare.
+        """
+        if (response is None) == (refusal is None):
+            raise ValueError("a goal decision is an accept with the declared GoalResponse, or a refusal with no response")
         self.response = response
+        self.refusal = None if refusal is None else Failure(*refusal.args)
+
     @staticmethod
-    def accept(response):
-        if response is None:
-            raise ValueError("GoalDecision.accept requires the declared GoalResponse")
-        return GoalDecision(True, response=response)
+    def accept(response: GoalResponse) -> "GoalDecision":
+        """Accepts the goal and replies with the declared response."""
+        return GoalDecision(response, None)
+
     @staticmethod
-    def reject(reason=None, response=None):
-        return GoalDecision(False, reason=reason, response=response)
+    def refuse(kind: FailureKind, message: str) -> "GoalDecision":
+        """Refuses the goal with a failure kind that this member declares and a message.
+
+        Raises ValueError for any other kind, and TypeError for a message that
+        is not a str. A refusal carries no goal response.
+        """
+        return GoalDecision(None, Failure(kind, message))
 
 
 def _deserialize_goal_request(payload: bytes) -> GoalRequestData:
@@ -850,6 +1792,23 @@ def _deserialize_goal_request(payload: bytes) -> GoalRequestData:
         if len(desired_position_1) != 3:
             raise ValueError("invalid fixed list length for field 'desired_position': expected 3, got " + str(len(desired_position_1)))
         return GoalRequestData(arm_id=arm_id_0, desired_position=desired_position_1)
+
+async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> "Failure | bytes":
+    """The answer of `handler` to the goal `request`: a refusal, or the encoded response of an accept.
+
+    The decision of `handler` is built again as a decision of this member,
+    so a decision that this member cannot send raises.
+    """
+    decision = handler(request)
+    if hasattr(decision, "__await__"):
+        decision = await decision
+    decision = GoalDecision(decision.response, decision.refusal)
+    if decision.refusal is not None:
+        return decision.refusal
+    response = decision.response
+    capnp_msg = _camera_feed_v1_move_arm_goal_response_message_capnp().CameraFeedV1MoveArmGoalResponseMessage.new_message()
+    capnp_msg.accepted = response.accepted
+    return capnp_msg.to_bytes()
 
 class ActionHandle:
     @classmethod
@@ -866,7 +1825,25 @@ class ActionHandle:
         handle._inner = inner
         return handle
 
+    async def set_sender_grace(self, seconds: float) -> None:
+        """Sets the sender grace of the action, in seconds.
+
+        How long the action keeps the goals of a sender that is gone before they
+        receive their cancel signal, with the cause "sender_gone". Zero by
+        default. It applies to each sender found gone after the call.
+        """
+        await self._inner.set_sender_grace(seconds)
+
     async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> "GoalContext | None":
+        """Answers the goals of this action with `handler` up to the next goal that it accepts.
+
+        Gives the context of that goal, or None when the goal stream closes.
+        Each refused goal is answered and skipped.
+        A goal request that does not decode is refused with the kind `rejected`.
+        A handler that raises, or that gives a decision that this action cannot
+        send, refuses the goal with the kind `attempt_failed` and the text of the
+        error.
+        """
         while True:
             pending = await self._inner.recv_next_goal()
             if pending is None:
@@ -874,23 +1851,18 @@ class ActionHandle:
             try:
                 request_data = _deserialize_goal_request(pending.request_bytes)
             except (ValueError, capnp.KjException) as error:
-                await pending.reject(f"goal request does not decode: {error}", b"")
+                await pending.refuse(FailureKind.REJECTED.value, f"goal request does not decode: {error}")
                 continue
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)
-            decision = handler(request)
-            if hasattr(decision, "__await__"):
-                decision = await decision
-            response = decision.response
-            if response is not None:
-                capnp_msg = _camera_feed_v1_move_arm_goal_response_message_capnp().CameraFeedV1MoveArmGoalResponseMessage.new_message()
-                capnp_msg.accepted = response.accepted
-                response_bytes = capnp_msg.to_bytes()
-            else:
-                response_bytes = b""
-            if decision.accepted:
-                ctx = await pending.accept(response_bytes)
-                return GoalContext(ctx, request)
-            await pending.reject(decision.reason, response_bytes)
+            try:
+                answer = await _goal_answer(handler, request)
+            except Exception as error:
+                answer = Failure(FailureKind.ATTEMPT_FAILED, f"the goal handler raised {type(error).__name__}: {error}")
+            if isinstance(answer, Failure):
+                await pending.refuse(answer.kind.value, answer.message)
+                continue
+            ctx = await pending.accept(answer)
+            return GoalContext(ctx, request)
 
 class GoalContext:
     def __init__(self, inner, request: GoalRequest):
@@ -902,9 +1874,34 @@ class GoalContext:
     def goal_id(self) -> str:
         return self._inner.goal_id
     async def cancel_signal(self) -> None:
+        """Waits for the cancel signal of this goal.
+
+        A cancel request of its caller, or the end of its sender, sends it (see
+        cancel_cause). React by calling complete_cancelled.
+        """
         await self._inner.cancel_signal()
     def is_cancelled(self) -> bool:
         return self._inner.is_cancelled()
+    def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
+        """Why this goal received its cancel signal; None before it did."""
+        return self._inner.cancel_cause
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled.
+
+        "cancelled by its caller" or "its sender is gone"; None before the goal
+        received its cancel signal.
+        """
+        return self._inner.cancel_reason
+    async def fail(self, kind: FailureKind, message: str) -> None:
+        """Ends the goal with the status failed, with no result.
+
+        A failure kind that this member declares and a message: raises
+        ValueError for any other kind, and TypeError for a message that is not
+        a str. The first of complete, fail and complete_cancelled ends the goal;
+        later calls do nothing.
+        """
+        failure = Failure(kind, message)
+        await self._inner.fail(failure.kind.value, failure.message)
     async def publish_feedback(self, new_position: list[int]) -> None:
         capnp_msg = _camera_feed_v1_move_arm_feedback_message_capnp().CameraFeedV1MoveArmFeedbackMessage.new_message()
         if len(new_position) != 3:
@@ -913,19 +1910,21 @@ class GoalContext:
         payload = capnp_msg.to_bytes()
         await self._inner.publish_feedback(payload)
     async def complete(self, success: bool, error_msg: Optional[str]) -> None:
+        """Ends the goal with the status completed and its result: a success."""
         capnp_msg = _camera_feed_v1_move_arm_result_response_message_capnp().CameraFeedV1MoveArmResultResponseMessage.new_message()
         capnp_msg.success = success
         if error_msg is not None:
             capnp_msg.errorMsg = error_msg
         payload = capnp_msg.to_bytes()
         await self._inner.complete(payload)
-    async def complete_cancelled(self, success: bool, error_msg: Optional[str]) -> None:
+    async def complete_cancelled(self, reason: str, success: bool, error_msg: Optional[str]) -> None:
+        """Ends the goal with the status cancelled, for `reason`, with its result."""
         capnp_msg = _camera_feed_v1_move_arm_result_response_message_capnp().CameraFeedV1MoveArmResultResponseMessage.new_message()
         capnp_msg.success = success
         if error_msg is not None:
             capnp_msg.errorMsg = error_msg
         payload = capnp_msg.to_bytes()
-        await self._inner.complete_cancelled(payload)
+        await self._inner.complete_cancelled(reason, payload)
 
 ================================================================
 ConsumedTopic :: uvc_camera/video_stream
@@ -1013,6 +2012,7 @@ async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:
 ConsumedService :: uvc_camera/enable_camera
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.resources import files
 from typing import Optional
@@ -1031,6 +2031,58 @@ def _poll_uvc_camera_enable_camera_response_message_capnp() -> types.ModuleType:
 NODE_NAME = "uvc_camera"
 SERVICE_NAME = "enable_camera"
 LINK_ID = "uvc_camera"
+
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
 
 @dataclass
 class Request:
@@ -1072,7 +2124,10 @@ def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:
 async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: Request, timeout: float) -> Response:
     """Polls this service on `target`, a member of the slot's bound set.
 
-    A target outside the set fails before anything reaches the wire.
+    A target outside the set fails before anything reaches the wire. An
+    error reply of the provider raises this member's `Failure`, a
+    peppylib.FailureError; a kind that this member does not declare raises
+    ValueError.
     This slot declares cardinality `one`: `target` is its sole bound
     producer, returned by `bound_producer()`; the explicit parameter
     keeps call sites uniform across cardinalities.
@@ -1081,16 +2136,19 @@ async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, r
     capnp_msg = _poll_uvc_camera_enable_camera_message_capnp().PollUvcCameraEnableCameraMessage.new_message()
     capnp_msg.enable = request.enable
     request_payload = capnp_msg.to_bytes()
-    response_message = await peppylib.ServiceMessenger.poll(
-        node_runner.messenger(),
-        node_runner.bound_core_node(),
-        node_runner.bound_instance_id(),
-        peppylib.SenderTarget.node(NODE_NAME, "v1"),
-        SERVICE_NAME,
-        target,
-        request_payload,
-        timeout,
-    )
+    try:
+        response_message = await peppylib.ServiceMessenger.poll(
+            node_runner.messenger(),
+            node_runner.bound_core_node(),
+            node_runner.bound_instance_id(),
+            peppylib.SenderTarget.node(NODE_NAME, "v1"),
+            SERVICE_NAME,
+            target,
+            request_payload,
+            timeout,
+        )
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from None
     payload = response_message.payload
     response_data = _deserialize_response(payload)
     return Response(core_node=response_message.core_node, instance_id=response_message.instance_id, data=response_data)
@@ -1183,6 +2241,7 @@ async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:
 ConsumedService :: spare_camera/enable_camera
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.resources import files
 from typing import Optional
@@ -1201,6 +2260,58 @@ def _poll_uvc_camera_enable_camera_response_message_capnp() -> types.ModuleType:
 NODE_NAME = "uvc_camera"
 SERVICE_NAME = "enable_camera"
 LINK_ID = "spare_camera"
+
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
 
 @dataclass
 class Request:
@@ -1243,7 +2354,10 @@ def bound_producer(node_runner: peppylib.NodeRunner) -> Optional[peppylib.Produc
 async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: Request, timeout: float) -> Response:
     """Polls this service on `target`, a member of the slot's bound set.
 
-    A target outside the set fails before anything reaches the wire.
+    A target outside the set fails before anything reaches the wire. An
+    error reply of the provider raises this member's `Failure`, a
+    peppylib.FailureError; a kind that this member does not declare raises
+    ValueError.
     This slot declares cardinality `zero_or_one`: `target` is the
     producer `bound_producer()` returns while the slot is bound. A
     vacant slot has no target at all, so the caller branches on that
@@ -1253,16 +2367,19 @@ async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, r
     capnp_msg = _poll_uvc_camera_enable_camera_message_capnp().PollUvcCameraEnableCameraMessage.new_message()
     capnp_msg.enable = request.enable
     request_payload = capnp_msg.to_bytes()
-    response_message = await peppylib.ServiceMessenger.poll(
-        node_runner.messenger(),
-        node_runner.bound_core_node(),
-        node_runner.bound_instance_id(),
-        peppylib.SenderTarget.node(NODE_NAME, "v1"),
-        SERVICE_NAME,
-        target,
-        request_payload,
-        timeout,
-    )
+    try:
+        response_message = await peppylib.ServiceMessenger.poll(
+            node_runner.messenger(),
+            node_runner.bound_core_node(),
+            node_runner.bound_instance_id(),
+            peppylib.SenderTarget.node(NODE_NAME, "v1"),
+            SERVICE_NAME,
+            target,
+            request_payload,
+            timeout,
+        )
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from None
     payload = response_message.payload
     response_data = _deserialize_response(payload)
     return Response(core_node=response_message.core_node, instance_id=response_message.instance_id, data=response_data)
@@ -1366,6 +2483,7 @@ async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:
 ConsumedService :: camera_bank/enable_camera
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.resources import files
 from typing import List
@@ -1385,6 +2503,58 @@ def _poll_uvc_camera_enable_camera_response_message_capnp() -> types.ModuleType:
 NODE_NAME = "uvc_camera"
 SERVICE_NAME = "enable_camera"
 LINK_ID = "camera_bank"
+
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
 
 @dataclass
 class Request:
@@ -1438,7 +2608,10 @@ def bound_members(node_runner: peppylib.NodeRunner) -> List[peppylib.BoundMember
 async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: Request, timeout: float) -> Response:
     """Polls this service on `target`, a member of the slot's bound set.
 
-    A target outside the set fails before anything reaches the wire.
+    A target outside the set fails before anything reaches the wire. An
+    error reply of the provider raises this member's `Failure`, a
+    peppylib.FailureError; a kind that this member does not declare raises
+    ValueError.
     This slot declares cardinality `one_or_more`: `target` is a
     caller-selected member of the never-empty `bound_producers()`
     set, and addressing several members is a plain loop at the call
@@ -1448,16 +2621,19 @@ async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, r
     capnp_msg = _poll_uvc_camera_enable_camera_message_capnp().PollUvcCameraEnableCameraMessage.new_message()
     capnp_msg.enable = request.enable
     request_payload = capnp_msg.to_bytes()
-    response_message = await peppylib.ServiceMessenger.poll(
-        node_runner.messenger(),
-        node_runner.bound_core_node(),
-        node_runner.bound_instance_id(),
-        peppylib.SenderTarget.node(NODE_NAME, "v1"),
-        SERVICE_NAME,
-        target,
-        request_payload,
-        timeout,
-    )
+    try:
+        response_message = await peppylib.ServiceMessenger.poll(
+            node_runner.messenger(),
+            node_runner.bound_core_node(),
+            node_runner.bound_instance_id(),
+            peppylib.SenderTarget.node(NODE_NAME, "v1"),
+            SERVICE_NAME,
+            target,
+            request_payload,
+            timeout,
+        )
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from None
     payload = response_message.payload
     response_data = _deserialize_response(payload)
     return Response(core_node=response_message.core_node, instance_id=response_message.instance_id, data=response_data)
@@ -1561,6 +2737,7 @@ async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:
 ConsumedService :: camera_pool/enable_camera
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.resources import files
 from typing import List
@@ -1580,6 +2757,58 @@ def _poll_uvc_camera_enable_camera_response_message_capnp() -> types.ModuleType:
 NODE_NAME = "uvc_camera"
 SERVICE_NAME = "enable_camera"
 LINK_ID = "camera_pool"
+
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
 
 @dataclass
 class Request:
@@ -1633,7 +2862,10 @@ def bound_members(node_runner: peppylib.NodeRunner) -> List[peppylib.BoundMember
 async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: Request, timeout: float) -> Response:
     """Polls this service on `target`, a member of the slot's bound set.
 
-    A target outside the set fails before anything reaches the wire.
+    A target outside the set fails before anything reaches the wire. An
+    error reply of the provider raises this member's `Failure`, a
+    peppylib.FailureError; a kind that this member does not declare raises
+    ValueError.
     This slot declares cardinality `zero_or_more`: `target` is a
     caller-selected member of the possibly empty `bound_producers()`
     set, and addressing several members is a plain loop at the call
@@ -1643,16 +2875,19 @@ async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, r
     capnp_msg = _poll_uvc_camera_enable_camera_message_capnp().PollUvcCameraEnableCameraMessage.new_message()
     capnp_msg.enable = request.enable
     request_payload = capnp_msg.to_bytes()
-    response_message = await peppylib.ServiceMessenger.poll(
-        node_runner.messenger(),
-        node_runner.bound_core_node(),
-        node_runner.bound_instance_id(),
-        peppylib.SenderTarget.node(NODE_NAME, "v1"),
-        SERVICE_NAME,
-        target,
-        request_payload,
-        timeout,
-    )
+    try:
+        response_message = await peppylib.ServiceMessenger.poll(
+            node_runner.messenger(),
+            node_runner.bound_core_node(),
+            node_runner.bound_instance_id(),
+            peppylib.SenderTarget.node(NODE_NAME, "v1"),
+            SERVICE_NAME,
+            target,
+            request_payload,
+            timeout,
+        )
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from None
     payload = response_message.payload
     response_data = _deserialize_response(payload)
     return Response(core_node=response_message.core_node, instance_id=response_message.instance_id, data=response_data)
@@ -1661,6 +2896,7 @@ async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, r
 ConsumedAction :: left_arm/move_arm
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from enum import IntEnum
 from functools import lru_cache
 from importlib.resources import files
@@ -1690,6 +2926,62 @@ TARGET_NODE_NAME = "arm_control"
 TARGET_ACTION_NAME = "move_arm"
 LINK_ID = "left_arm"
 
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+    UNREACHABLE = "unreachable"
+    "No plan to the target"
+    LEADER_STREAMING = "leader_streaming"
+    "A leader streams a limb of the goal"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {TARGET_ACTION_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {TARGET_ACTION_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
+
 @dataclass
 class GoalRequest:
     arm_id: int
@@ -1715,6 +3007,7 @@ class ResultStatus(IntEnum):
     CANCELLED = 1
     ABANDONED = 2
     EXPIRED = 3
+    FAILED = 4
 
 @dataclass
 class ResultResponseData:
@@ -1727,6 +3020,8 @@ class ResultResponse:
     instance_id: str
     status: ResultStatus
     data: Optional[ResultResponseData]
+    failure: Optional[Failure]
+    cancel_reason: Optional[str]
 
 @dataclass
 class FeedbackMessage:
@@ -1768,12 +3063,18 @@ def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:
 
 class ActionHandle:
     @classmethod
-    async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:
+    async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: GoalRequest, timeout: float, feedback_bound: Optional[int] = None) -> Self:
         """Fires this goal at `target`, a member of the slot's bound set.
 
         A target outside the set fails before anything reaches the wire. The
         handle retains the target: feedback, result, and cancel stay pinned
-        to it.
+        to it. The handle keeps every feedback message until it is read, up to
+        `feedback_bound` unread messages (None takes the default of peppylib,
+        1024); a caller that reads the feedback and falls behind by more
+        cancels the goal, and its next read raises
+        peppylib.FeedbackOverflowError. A caller that never reads the feedback
+        keeps its goal. `refusal` holds the failure of a refused goal; a kind
+        that this member does not declare raises ValueError.
         This slot declares cardinality `one`: `target` is its sole bound
         producer, returned by `bound_producer()`; the explicit parameter
         keeps call sites uniform across cardinalities.
@@ -1793,16 +3094,15 @@ class ActionHandle:
             TARGET_ACTION_NAME,
             target,
             user_goal_payload,
-            feedback_qos,
+            feedback_bound,
             timeout,
         )
         handle = cls()
         handle._messenger = node_runner.messenger()
         handle._inner = action_handle
         handle.accepted = action_handle.accepted
-        handle.reason = action_handle.reason
-        body = action_handle.goal_reply_body
-        handle.data = _deserialize_goal_response(body) if body else None
+        handle.refusal = None if action_handle.accepted else Failure(action_handle.refusal_kind, action_handle.refusal_message)
+        handle.data = _deserialize_goal_response(action_handle.goal_reply_body) if action_handle.accepted else None
         return handle
 
     async def cancel_goal(self, timeout: float) -> CancelResponse:
@@ -1817,9 +3117,12 @@ class ActionHandle:
         """Receive the next feedback message for this goal.
 
         Raises RuntimeError when the producer closed the stream cleanly
-        (end-of-stream sentinel) and ConnectionError when the producer
-        instance disappeared without closing it (process killed, crashed);
-        in the latter case get_result resolves to ResultStatus.ABANDONED.
+        (end-of-stream sentinel), ConnectionError when the producer
+        instance disappeared without closing it (process killed, crashed),
+        in which case get_result resolves to ResultStatus.ABANDONED, and
+        peppylib.FeedbackOverflowError when this caller fell behind by more
+        unread messages than its bound, in which case the handle cancelled
+        the goal.
         """
         feedback = await self._inner.on_next_feedback()
         payload = feedback.payload
@@ -1832,10 +3135,13 @@ class ActionHandle:
             timeout,
         )
         status = ResultStatus(reply.status)
+        failure = None
+        if status is ResultStatus.FAILED:
+            failure = Failure(reply.failure_kind, reply.failure_message)
         data = None
         if status in (ResultStatus.COMPLETED, ResultStatus.CANCELLED):
             data = _deserialize_result_response(reply.body)
-        return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status, data=data)
+        return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status, data=data, failure=failure, cancel_reason=reply.cancel_reason)
 
 ================================================================
 PeerEmittedTopic :: controller/joint_states
@@ -2416,6 +3722,9 @@ class VideoStreamPublisher:
         """Waits until the node's subscription for this topic is visible; returns whether it matched within `timeout`."""
         return await self._core.wait_for_subscriber(timeout)
 
+EnableCameraFailureKind = _enable_camera.FailureKind
+EnableCameraFailure = _enable_camera.Failure
+
 @lru_cache(maxsize=1)
 def _poll_uvc_camera_enable_camera_message_capnp() -> types.ModuleType:
     return capnp.load(str(files("peppygen") / "capnp" / "poll_uvc_camera_enable_camera_message.capnp"))
@@ -2451,9 +3760,14 @@ class EnableCameraResponder:
         """Sends the typed response for the parked request."""
         await self._inner.respond(_serialize_enable_camera_response(response))
 
-    async def respond_error(self, reason: str) -> None:
-        """Fails the parked request with a handler-error reason."""
-        await self._inner.respond_error(reason)
+    async def respond_failure(self, kind: _enable_camera.FailureKind, message: str) -> None:
+        """Answers the parked request with an error reply.
+
+        A failure kind that this member declares and a message: raises
+        ValueError for any other kind.
+        """
+        failure = _enable_camera.Failure(kind, message)
+        await self._inner.respond_failure(failure.kind.value, failure.message)
 
 class EnableCameraService:
     """Typed mock server for the consumed service `enable_camera`: a background pump captures every request; scripted responses serve automatically, unscripted requests park for `next_request`."""
@@ -2595,6 +3909,9 @@ class VideoStreamPublisher:
         """Waits until the node's subscription for this topic is visible; returns whether it matched within `timeout`."""
         return await self._core.wait_for_subscriber(timeout)
 
+EnableCameraFailureKind = _enable_camera.FailureKind
+EnableCameraFailure = _enable_camera.Failure
+
 @lru_cache(maxsize=1)
 def _poll_uvc_camera_enable_camera_message_capnp() -> types.ModuleType:
     return capnp.load(str(files("peppygen") / "capnp" / "poll_uvc_camera_enable_camera_message.capnp"))
@@ -2630,9 +3947,14 @@ class EnableCameraResponder:
         """Sends the typed response for the parked request."""
         await self._inner.respond(_serialize_enable_camera_response(response))
 
-    async def respond_error(self, reason: str) -> None:
-        """Fails the parked request with a handler-error reason."""
-        await self._inner.respond_error(reason)
+    async def respond_failure(self, kind: _enable_camera.FailureKind, message: str) -> None:
+        """Answers the parked request with an error reply.
+
+        A failure kind that this member declares and a message: raises
+        ValueError for any other kind.
+        """
+        failure = _enable_camera.Failure(kind, message)
+        await self._inner.respond_failure(failure.kind.value, failure.message)
 
 class EnableCameraService:
     """Typed mock server for the consumed service `enable_camera`: a background pump captures every request; scripted responses serve automatically, unscripted requests park for `next_request`."""
@@ -2774,6 +4096,9 @@ class VideoStreamPublisher:
         """Waits until the node's subscription for this topic is visible; returns whether it matched within `timeout`."""
         return await self._core.wait_for_subscriber(timeout)
 
+EnableCameraFailureKind = _enable_camera.FailureKind
+EnableCameraFailure = _enable_camera.Failure
+
 @lru_cache(maxsize=1)
 def _poll_uvc_camera_enable_camera_message_capnp() -> types.ModuleType:
     return capnp.load(str(files("peppygen") / "capnp" / "poll_uvc_camera_enable_camera_message.capnp"))
@@ -2809,9 +4134,14 @@ class EnableCameraResponder:
         """Sends the typed response for the parked request."""
         await self._inner.respond(_serialize_enable_camera_response(response))
 
-    async def respond_error(self, reason: str) -> None:
-        """Fails the parked request with a handler-error reason."""
-        await self._inner.respond_error(reason)
+    async def respond_failure(self, kind: _enable_camera.FailureKind, message: str) -> None:
+        """Answers the parked request with an error reply.
+
+        A failure kind that this member declares and a message: raises
+        ValueError for any other kind.
+        """
+        failure = _enable_camera.Failure(kind, message)
+        await self._inner.respond_failure(failure.kind.value, failure.message)
 
 class EnableCameraService:
     """Typed mock server for the consumed service `enable_camera`: a background pump captures every request; scripted responses serve automatically, unscripted requests park for `next_request`."""
@@ -2953,6 +4283,9 @@ class VideoStreamPublisher:
         """Waits until the node's subscription for this topic is visible; returns whether it matched within `timeout`."""
         return await self._core.wait_for_subscriber(timeout)
 
+EnableCameraFailureKind = _enable_camera.FailureKind
+EnableCameraFailure = _enable_camera.Failure
+
 @lru_cache(maxsize=1)
 def _poll_uvc_camera_enable_camera_message_capnp() -> types.ModuleType:
     return capnp.load(str(files("peppygen") / "capnp" / "poll_uvc_camera_enable_camera_message.capnp"))
@@ -2988,9 +4321,14 @@ class EnableCameraResponder:
         """Sends the typed response for the parked request."""
         await self._inner.respond(_serialize_enable_camera_response(response))
 
-    async def respond_error(self, reason: str) -> None:
-        """Fails the parked request with a handler-error reason."""
-        await self._inner.respond_error(reason)
+    async def respond_failure(self, kind: _enable_camera.FailureKind, message: str) -> None:
+        """Answers the parked request with an error reply.
+
+        A failure kind that this member declares and a message: raises
+        ValueError for any other kind.
+        """
+        failure = _enable_camera.Failure(kind, message)
+        await self._inner.respond_failure(failure.kind.value, failure.message)
 
 class EnableCameraService:
     """Typed mock server for the consumed service `enable_camera`: a background pump captures every request; scripted responses serve automatically, unscripted requests park for `next_request`."""
@@ -3067,6 +4405,7 @@ Mock :: deps/left_arm
 from functools import lru_cache
 from importlib.resources import files
 from peppygen.consumed_actions.left_arm import move_arm as _move_arm
+from typing import Literal
 from typing import Optional
 import capnp
 import peppylib
@@ -3084,6 +4423,9 @@ def producer_ref() -> peppylib.ProducerRef:
 def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
     """`producer_ref` under an explicit instance id (multi-instance slots)."""
     return peppylib.ProducerRef(MOCK_CORE_NODE, instance_id)
+
+MoveArmFailureKind = _move_arm.FailureKind
+MoveArmFailure = _move_arm.Failure
 
 @lru_cache(maxsize=1)
 def _arm_control_move_arm_fire_goal_message_capnp() -> types.ModuleType:
@@ -3148,24 +4490,37 @@ class MoveArmActiveGoal:
         await self._context.publish_feedback(_serialize_move_arm_feedback(feedback))
 
     async def cancel_signal(self) -> None:
-        """Resolves when the node requests cancellation of this goal."""
+        """Waits for the cancel signal of this goal: a cancel request of the node, or the end of the node."""
         await self._context.cancel_signal()
 
     def is_cancelled(self) -> bool:
-        """Whether cancellation has been requested for this goal."""
+        """Whether this goal received its cancel signal."""
         return self._context.is_cancelled()
 
+    def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
+        """Why this goal received its cancel signal; None before it did."""
+        return self._context.cancel_cause
+
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled; None before the goal received its cancel signal."""
+        return self._context.cancel_reason
+
     async def complete(self, result: _move_arm.ResultResponseData) -> None:
-        """Completes the goal successfully."""
+        """Ends the goal with the status completed: a success."""
         await self._context.complete(_serialize_move_arm_result(result))
 
-    async def complete_cancelled(self, result: _move_arm.ResultResponseData) -> None:
-        """Completes the goal as cancelled."""
-        await self._context.complete_cancelled(_serialize_move_arm_result(result))
+    async def fail(self, kind: _move_arm.FailureKind, message: str) -> None:
+        """Ends the goal with the status failed: a failure kind that this member declares, a message, and no result."""
+        failure = _move_arm.Failure(kind, message)
+        await self._context.fail(failure.kind.value, failure.message)
+
+    async def complete_cancelled(self, reason: str, result: _move_arm.ResultResponseData) -> None:
+        """Ends the goal with the status cancelled, for `reason`."""
+        await self._context.complete_cancelled(reason, _serialize_move_arm_result(result))
 
 
 class MoveArmPendingGoal:
-    """A goal received by the mock, awaiting accept/reject."""
+    """A goal received by the mock, awaiting accept/refuse."""
 
     def __init__(self, pending, request) -> None:
         self._pending = pending
@@ -3182,9 +4537,13 @@ class MoveArmPendingGoal:
         context = await self._pending.accept(_serialize_move_arm_goal_response(response))
         return MoveArmActiveGoal(context)
 
-    async def reject(self, reason: Optional[str] = None, response: Optional[_move_arm.GoalResponseData] = None) -> None:
-        """Rejects the goal with an optional human-readable reason."""
-        await self._pending.reject(reason, _serialize_move_arm_goal_response(response) if response is not None else b"")
+    async def refuse(self, kind: _move_arm.FailureKind, message: str) -> None:
+        """Refuses the goal with a failure kind that this member declares and a message.
+
+        Raises ValueError for any other kind. A refusal carries no goal response.
+        """
+        failure = _move_arm.Failure(kind, message)
+        await self._pending.refuse(failure.kind.value, failure.message)
 
 class MoveArmAction:
     """Typed mock action server for the consumed action `move_arm`, on the real `ConcurrentAction` engine: identical goal lifecycle to a production producer, plus deterministic producer-loss via the owning mock's `stop()`."""
@@ -4293,6 +5652,9 @@ SERVICE_NAME = "enable_camera"
 FIXTURE_CORE_NODE = "fixture-core"
 FIXTURE_INSTANCE_ID = "fixture-observer"
 
+FailureKind = _production.FailureKind
+Failure = _production.Failure
+
 @lru_cache(maxsize=1)
 def _enable_camera_request_message_capnp() -> types.ModuleType:
     return capnp.load(str(files("peppygen") / "capnp" / "enable_camera_request_message.capnp"))
@@ -4321,7 +5683,7 @@ def _deserialize_response(payload: bytes) -> _production.Response:
 Response = _production.Response
 
 async def poll(harness, request: _production.RequestData, timeout: float) -> _production.Response:
-    """Polls the node's exposed service `enable_camera` once from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first. `timeout` bounds the reachability gate and the poll individually."""
+    """Polls the node's exposed service `enable_camera` once from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first. `timeout` bounds the reachability gate and the poll individually. An error reply of the node raises the member's `Failure`."""
     producer = harness.node_producer_ref()
     await peppylib.testing.wait_service_reachable(
         harness.session,
@@ -4332,16 +5694,19 @@ async def poll(harness, request: _production.RequestData, timeout: float) -> _pr
         producer,
         timeout,
     )
-    response_message = await peppylib.ServiceMessenger.poll(
-        harness.session,
-        FIXTURE_CORE_NODE,
-        FIXTURE_INSTANCE_ID,
-        peppylib.SenderTarget.node("relay_node", "v1"),
-        SERVICE_NAME,
-        producer,
-        _serialize_request(request),
-        timeout,
-    )
+    try:
+        response_message = await peppylib.ServiceMessenger.poll(
+            harness.session,
+            FIXTURE_CORE_NODE,
+            FIXTURE_INSTANCE_ID,
+            peppylib.SenderTarget.node("relay_node", "v1"),
+            SERVICE_NAME,
+            producer,
+            _serialize_request(request),
+            timeout,
+        )
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from None
     return _deserialize_response(response_message.payload)
 
 ================================================================
@@ -4361,6 +5726,9 @@ SERVICE_NAME = "set_mode"
 FIXTURE_CORE_NODE = "fixture-core"
 FIXTURE_INSTANCE_ID = "fixture-observer"
 
+FailureKind = _production.FailureKind
+Failure = _production.Failure
+
 @lru_cache(maxsize=1)
 def _set_mode_request_message_capnp() -> types.ModuleType:
     return capnp.load(str(files("peppygen") / "capnp" / "set_mode_request_message.capnp"))
@@ -4373,7 +5741,7 @@ def _serialize_request(value: _production.RequestData) -> bytes:
 RequestData = _production.RequestData
 
 async def poll(harness, request: _production.RequestData, timeout: float) -> None:
-    """Polls the node's exposed service `set_mode` once from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first. `timeout` bounds the reachability gate and the poll individually."""
+    """Polls the node's exposed service `set_mode` once from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first. `timeout` bounds the reachability gate and the poll individually. An error reply of the node raises the member's `Failure`."""
     producer = harness.node_producer_ref()
     await peppylib.testing.wait_service_reachable(
         harness.session,
@@ -4384,16 +5752,19 @@ async def poll(harness, request: _production.RequestData, timeout: float) -> Non
         producer,
         timeout,
     )
-    await peppylib.ServiceMessenger.poll(
-        harness.session,
-        FIXTURE_CORE_NODE,
-        FIXTURE_INSTANCE_ID,
-        peppylib.SenderTarget.node("relay_node", "v1"),
-        SERVICE_NAME,
-        producer,
-        _serialize_request(request),
-        timeout,
-    )
+    try:
+        await peppylib.ServiceMessenger.poll(
+            harness.session,
+            FIXTURE_CORE_NODE,
+            FIXTURE_INSTANCE_ID,
+            peppylib.SenderTarget.node("relay_node", "v1"),
+            SERVICE_NAME,
+            producer,
+            _serialize_request(request),
+            timeout,
+        )
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from None
     return None
 
 ================================================================
@@ -4413,6 +5784,9 @@ SERVICE_NAME = "get_system_status"
 FIXTURE_CORE_NODE = "fixture-core"
 FIXTURE_INSTANCE_ID = "fixture-observer"
 
+FailureKind = _production.FailureKind
+Failure = _production.Failure
+
 @lru_cache(maxsize=1)
 def _get_system_status_response_message_capnp() -> types.ModuleType:
     return capnp.load(str(files("peppygen") / "capnp" / "get_system_status_response_message.capnp"))
@@ -4426,7 +5800,7 @@ def _deserialize_response(payload: bytes) -> _production.Response:
 Response = _production.Response
 
 async def poll(harness, timeout: float) -> _production.Response:
-    """Polls the node's exposed service `get_system_status` once from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first. `timeout` bounds the reachability gate and the poll individually."""
+    """Polls the node's exposed service `get_system_status` once from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first. `timeout` bounds the reachability gate and the poll individually. An error reply of the node raises the member's `Failure`."""
     producer = harness.node_producer_ref()
     await peppylib.testing.wait_service_reachable(
         harness.session,
@@ -4437,16 +5811,19 @@ async def poll(harness, timeout: float) -> _production.Response:
         producer,
         timeout,
     )
-    response_message = await peppylib.ServiceMessenger.poll(
-        harness.session,
-        FIXTURE_CORE_NODE,
-        FIXTURE_INSTANCE_ID,
-        peppylib.SenderTarget.node("relay_node", "v1"),
-        SERVICE_NAME,
-        producer,
-        b"",
-        timeout,
-    )
+    try:
+        response_message = await peppylib.ServiceMessenger.poll(
+            harness.session,
+            FIXTURE_CORE_NODE,
+            FIXTURE_INSTANCE_ID,
+            peppylib.SenderTarget.node("relay_node", "v1"),
+            SERVICE_NAME,
+            producer,
+            b"",
+            timeout,
+        )
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from None
     return _deserialize_response(response_message.payload)
 
 ================================================================
@@ -4462,8 +5839,11 @@ SERVICE_NAME = "ping"
 FIXTURE_CORE_NODE = "fixture-core"
 FIXTURE_INSTANCE_ID = "fixture-observer"
 
+FailureKind = _production.FailureKind
+Failure = _production.Failure
+
 async def poll(harness, timeout: float) -> None:
-    """Polls the node's exposed service `ping` once from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first. `timeout` bounds the reachability gate and the poll individually."""
+    """Polls the node's exposed service `ping` once from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first. `timeout` bounds the reachability gate and the poll individually. An error reply of the node raises the member's `Failure`."""
     producer = harness.node_producer_ref()
     await peppylib.testing.wait_service_reachable(
         harness.session,
@@ -4474,16 +5854,19 @@ async def poll(harness, timeout: float) -> None:
         producer,
         timeout,
     )
-    await peppylib.ServiceMessenger.poll(
-        harness.session,
-        FIXTURE_CORE_NODE,
-        FIXTURE_INSTANCE_ID,
-        peppylib.SenderTarget.node("relay_node", "v1"),
-        SERVICE_NAME,
-        producer,
-        b"",
-        timeout,
-    )
+    try:
+        await peppylib.ServiceMessenger.poll(
+            harness.session,
+            FIXTURE_CORE_NODE,
+            FIXTURE_INSTANCE_ID,
+            peppylib.SenderTarget.node("relay_node", "v1"),
+            SERVICE_NAME,
+            producer,
+            b"",
+            timeout,
+        )
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from None
     return None
 
 ================================================================
@@ -4502,6 +5885,9 @@ import types
 SERVICE_NAME = "enable_camera"
 FIXTURE_CORE_NODE = "fixture-core"
 FIXTURE_INSTANCE_ID = "fixture-observer"
+
+FailureKind = _production.FailureKind
+Failure = _production.Failure
 
 @lru_cache(maxsize=1)
 def _camera_feed_v1_enable_camera_request_message_capnp() -> types.ModuleType:
@@ -4531,7 +5917,7 @@ def _deserialize_response(payload: bytes) -> _production.Response:
 Response = _production.Response
 
 async def poll(harness, request: _production.RequestData, timeout: float) -> _production.Response:
-    """Polls the node's exposed service `enable_camera` once from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first. `timeout` bounds the reachability gate and the poll individually."""
+    """Polls the node's exposed service `enable_camera` once from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first. `timeout` bounds the reachability gate and the poll individually. An error reply of the node raises the member's `Failure`."""
     producer = harness.node_producer_ref()
     await peppylib.testing.wait_service_reachable(
         harness.session,
@@ -4542,16 +5928,19 @@ async def poll(harness, request: _production.RequestData, timeout: float) -> _pr
         producer,
         timeout,
     )
-    response_message = await peppylib.ServiceMessenger.poll(
-        harness.session,
-        FIXTURE_CORE_NODE,
-        FIXTURE_INSTANCE_ID,
-        peppylib.SenderTarget.contract("camera_feed", "v1"),
-        SERVICE_NAME,
-        producer,
-        _serialize_request(request),
-        timeout,
-    )
+    try:
+        response_message = await peppylib.ServiceMessenger.poll(
+            harness.session,
+            FIXTURE_CORE_NODE,
+            FIXTURE_INSTANCE_ID,
+            peppylib.SenderTarget.contract("camera_feed", "v1"),
+            SERVICE_NAME,
+            producer,
+            _serialize_request(request),
+            timeout,
+        )
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from None
     return _deserialize_response(response_message.payload)
 
 ================================================================
@@ -4573,6 +5962,9 @@ import types
 ACTION_NAME = "move_arm"
 FIXTURE_CORE_NODE = "fixture-core"
 FIXTURE_INSTANCE_ID = "fixture-observer"
+
+FailureKind = _production.FailureKind
+Failure = _production.Failure
 
 @lru_cache(maxsize=1)
 def _move_arm_goal_request_message_capnp() -> types.ModuleType:
@@ -4616,6 +6008,7 @@ class ResultStatus(IntEnum):
     CANCELLED = 1
     ABANDONED = 2
     EXPIRED = 3
+    FAILED = 4
 
 @lru_cache(maxsize=1)
 def _move_arm_result_response_message_capnp() -> types.ModuleType:
@@ -4642,6 +6035,8 @@ class ResultResponse:
     instance_id: str
     status: ResultStatus
     data: Optional[ResultData]
+    failure: Optional[Failure]
+    cancel_reason: Optional[str]
 
 @lru_cache(maxsize=1)
 def _move_arm_feedback_message_capnp() -> types.ModuleType:
@@ -4660,15 +6055,16 @@ def _deserialize_feedback(payload: bytes) -> Feedback:
         return Feedback(new_position=new_position_0)
 
 class GoalHandle:
-    """A goal in flight against the node's action `move_arm`; construct with `send_goal`. Attributes: `accepted` (whether the node admitted the goal), `reason` (optional human-readable rejection reason), `data` (the decoded goal response; `None` when a rejection carried no payload)."""
+    """A goal in flight against the node's action `move_arm`; construct with `send_goal`. Attributes: `accepted` (whether the node accepted the goal), `refusal` (the `Failure` of a refused goal, else `None`), `data` (the decoded goal response of an accepted goal, else `None`)."""
 
     async def on_next_feedback(self) -> Feedback:
         """Receives the next decoded feedback message for this goal.
 
         Raises RuntimeError when the node closed the stream cleanly
-        (end-of-stream sentinel) and ConnectionError when the node instance
-        disappeared without closing it; in the latter case get_result
-        resolves to ResultStatus.ABANDONED.
+        (end-of-stream sentinel), ConnectionError when the node instance
+        disappeared without closing it, in which case get_result resolves to
+        ResultStatus.ABANDONED, and peppylib.FeedbackOverflowError when this
+        caller fell behind by more unread messages than its bound.
         """
         feedback = await self._inner.on_next_feedback()
         return _deserialize_feedback(feedback.payload)
@@ -4694,6 +6090,9 @@ class GoalHandle:
             timeout,
         )
         status = ResultStatus(reply.status)
+        failure = None
+        if status is ResultStatus.FAILED:
+            failure = Failure(reply.failure_kind, reply.failure_message)
         data = None
         if status in (ResultStatus.COMPLETED, ResultStatus.CANCELLED):
             data = _deserialize_result(reply.body)
@@ -4702,10 +6101,12 @@ class GoalHandle:
             instance_id=reply.instance_id,
             status=status,
             data=data,
+            failure=failure,
+            cancel_reason=reply.cancel_reason,
         )
 
-async def send_goal(harness, request: _production.GoalRequestData, feedback_qos: peppylib.QoSProfile, timeout: float) -> GoalHandle:
-    """Sends a goal to the node from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first, and decodes the admission reply."""
+async def send_goal(harness, request: _production.GoalRequestData, timeout: float, feedback_bound: Optional[int] = None) -> GoalHandle:
+    """Sends a goal to the node from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first, and decodes the admission reply. The handle keeps up to `feedback_bound` unread feedback messages (None takes the default of peppylib)."""
     producer = harness.node_producer_ref()
     await peppylib.testing.wait_action_reachable(
         harness.session,
@@ -4725,16 +6126,15 @@ async def send_goal(harness, request: _production.GoalRequestData, feedback_qos:
         ACTION_NAME,
         producer,
         user_goal_payload,
-        feedback_qos,
+        feedback_bound,
         timeout,
     )
     handle = GoalHandle()
     handle._messenger = harness.session
     handle._inner = inner
     handle.accepted = inner.accepted
-    handle.reason = inner.reason
-    body = inner.goal_reply_body
-    handle.data = _deserialize_goal_response(body) if body else None
+    handle.refusal = None if inner.accepted else Failure(inner.refusal_kind, inner.refusal_message)
+    handle.data = _deserialize_goal_response(inner.goal_reply_body) if inner.accepted else None
     return handle
 
 ================================================================
@@ -4745,12 +6145,16 @@ Fixture :: exposed_actions/home_all
 from dataclasses import dataclass
 from enum import IntEnum
 from peppygen.exposed_actions import home_all as _production
+from typing import Optional
 import peppylib
 import peppylib.testing
 
 ACTION_NAME = "home_all"
 FIXTURE_CORE_NODE = "fixture-core"
 FIXTURE_INSTANCE_ID = "fixture-observer"
+
+FailureKind = _production.FailureKind
+Failure = _production.Failure
 
 class CancelState(IntEnum):
     SIGNALLED = 0
@@ -4768,15 +6172,18 @@ class ResultStatus(IntEnum):
     CANCELLED = 1
     ABANDONED = 2
     EXPIRED = 3
+    FAILED = 4
 
 @dataclass
 class ResultResponse:
     core_node: str
     instance_id: str
     status: ResultStatus
+    failure: Optional[Failure]
+    cancel_reason: Optional[str]
 
 class GoalHandle:
-    """A goal in flight against the node's action `home_all`; construct with `send_goal`. Attributes: `accepted` (whether the node admitted the goal), `reason` (optional human-readable rejection reason)."""
+    """A goal in flight against the node's action `home_all`; construct with `send_goal`. Attributes: `accepted` (whether the node accepted the goal), `refusal` (the `Failure` of a refused goal, else `None`)."""
 
     async def cancel_goal(self, timeout: float) -> CancelResponse:
         """Requests cancellation of this goal."""
@@ -4799,14 +6206,19 @@ class GoalHandle:
             timeout,
         )
         status = ResultStatus(reply.status)
+        failure = None
+        if status is ResultStatus.FAILED:
+            failure = Failure(reply.failure_kind, reply.failure_message)
         return ResultResponse(
             core_node=reply.core_node,
             instance_id=reply.instance_id,
             status=status,
+            failure=failure,
+            cancel_reason=reply.cancel_reason,
         )
 
-async def send_goal(harness, feedback_qos: peppylib.QoSProfile, timeout: float) -> GoalHandle:
-    """Sends a goal to the node from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first, and decodes the admission reply."""
+async def send_goal(harness, timeout: float, feedback_bound: Optional[int] = None) -> GoalHandle:
+    """Sends a goal to the node from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first, and decodes the admission reply. The handle keeps up to `feedback_bound` unread feedback messages (None takes the default of peppylib)."""
     producer = harness.node_producer_ref()
     await peppylib.testing.wait_action_reachable(
         harness.session,
@@ -4826,14 +6238,14 @@ async def send_goal(harness, feedback_qos: peppylib.QoSProfile, timeout: float) 
         ACTION_NAME,
         producer,
         user_goal_payload,
-        feedback_qos,
+        feedback_bound,
         timeout,
     )
     handle = GoalHandle()
     handle._messenger = harness.session
     handle._inner = inner
     handle.accepted = inner.accepted
-    handle.reason = inner.reason
+    handle.refusal = None if inner.accepted else Failure(inner.refusal_kind, inner.refusal_message)
     return handle
 
 ================================================================
@@ -4846,6 +6258,7 @@ from enum import IntEnum
 from functools import lru_cache
 from importlib.resources import files
 from peppygen.exposed_actions import track_target as _production
+from typing import Optional
 import capnp
 import peppylib
 import peppylib.testing
@@ -4854,6 +6267,9 @@ import types
 ACTION_NAME = "track_target"
 FIXTURE_CORE_NODE = "fixture-core"
 FIXTURE_INSTANCE_ID = "fixture-observer"
+
+FailureKind = _production.FailureKind
+Failure = _production.Failure
 
 class CancelState(IntEnum):
     SIGNALLED = 0
@@ -4871,12 +6287,15 @@ class ResultStatus(IntEnum):
     CANCELLED = 1
     ABANDONED = 2
     EXPIRED = 3
+    FAILED = 4
 
 @dataclass
 class ResultResponse:
     core_node: str
     instance_id: str
     status: ResultStatus
+    failure: Optional[Failure]
+    cancel_reason: Optional[str]
 
 @lru_cache(maxsize=1)
 def _track_target_feedback_message_capnp() -> types.ModuleType:
@@ -4893,15 +6312,16 @@ def _deserialize_feedback(payload: bytes) -> Feedback:
         return Feedback(bearing=bearing_0)
 
 class GoalHandle:
-    """A goal in flight against the node's action `track_target`; construct with `send_goal`. Attributes: `accepted` (whether the node admitted the goal), `reason` (optional human-readable rejection reason)."""
+    """A goal in flight against the node's action `track_target`; construct with `send_goal`. Attributes: `accepted` (whether the node accepted the goal), `refusal` (the `Failure` of a refused goal, else `None`)."""
 
     async def on_next_feedback(self) -> Feedback:
         """Receives the next decoded feedback message for this goal.
 
         Raises RuntimeError when the node closed the stream cleanly
-        (end-of-stream sentinel) and ConnectionError when the node instance
-        disappeared without closing it; in the latter case get_result
-        resolves to ResultStatus.ABANDONED.
+        (end-of-stream sentinel), ConnectionError when the node instance
+        disappeared without closing it, in which case get_result resolves to
+        ResultStatus.ABANDONED, and peppylib.FeedbackOverflowError when this
+        caller fell behind by more unread messages than its bound.
         """
         feedback = await self._inner.on_next_feedback()
         return _deserialize_feedback(feedback.payload)
@@ -4927,14 +6347,19 @@ class GoalHandle:
             timeout,
         )
         status = ResultStatus(reply.status)
+        failure = None
+        if status is ResultStatus.FAILED:
+            failure = Failure(reply.failure_kind, reply.failure_message)
         return ResultResponse(
             core_node=reply.core_node,
             instance_id=reply.instance_id,
             status=status,
+            failure=failure,
+            cancel_reason=reply.cancel_reason,
         )
 
-async def send_goal(harness, feedback_qos: peppylib.QoSProfile, timeout: float) -> GoalHandle:
-    """Sends a goal to the node from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first, and decodes the admission reply."""
+async def send_goal(harness, timeout: float, feedback_bound: Optional[int] = None) -> GoalHandle:
+    """Sends a goal to the node from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first, and decodes the admission reply. The handle keeps up to `feedback_bound` unread feedback messages (None takes the default of peppylib)."""
     producer = harness.node_producer_ref()
     await peppylib.testing.wait_action_reachable(
         harness.session,
@@ -4954,14 +6379,14 @@ async def send_goal(harness, feedback_qos: peppylib.QoSProfile, timeout: float) 
         ACTION_NAME,
         producer,
         user_goal_payload,
-        feedback_qos,
+        feedback_bound,
         timeout,
     )
     handle = GoalHandle()
     handle._messenger = harness.session
     handle._inner = inner
     handle.accepted = inner.accepted
-    handle.reason = inner.reason
+    handle.refusal = None if inner.accepted else Failure(inner.refusal_kind, inner.refusal_message)
     return handle
 
 ================================================================
@@ -4972,12 +6397,16 @@ Fixture :: exposed_actions/nudge
 from dataclasses import dataclass
 from enum import IntEnum
 from peppygen.exposed_actions import nudge as _production
+from typing import Optional
 import peppylib
 import peppylib.testing
 
 ACTION_NAME = "nudge"
 FIXTURE_CORE_NODE = "fixture-core"
 FIXTURE_INSTANCE_ID = "fixture-observer"
+
+FailureKind = _production.FailureKind
+Failure = _production.Failure
 
 class CancelState(IntEnum):
     SIGNALLED = 0
@@ -4995,15 +6424,18 @@ class ResultStatus(IntEnum):
     CANCELLED = 1
     ABANDONED = 2
     EXPIRED = 3
+    FAILED = 4
 
 @dataclass
 class ResultResponse:
     core_node: str
     instance_id: str
     status: ResultStatus
+    failure: Optional[Failure]
+    cancel_reason: Optional[str]
 
 class GoalHandle:
-    """A goal in flight against the node's action `nudge`; construct with `send_goal`. Attributes: `accepted` (whether the node admitted the goal), `reason` (optional human-readable rejection reason)."""
+    """A goal in flight against the node's action `nudge`; construct with `send_goal`. Attributes: `accepted` (whether the node accepted the goal), `refusal` (the `Failure` of a refused goal, else `None`)."""
 
     async def cancel_goal(self, timeout: float) -> CancelResponse:
         """Requests cancellation of this goal."""
@@ -5026,14 +6458,19 @@ class GoalHandle:
             timeout,
         )
         status = ResultStatus(reply.status)
+        failure = None
+        if status is ResultStatus.FAILED:
+            failure = Failure(reply.failure_kind, reply.failure_message)
         return ResultResponse(
             core_node=reply.core_node,
             instance_id=reply.instance_id,
             status=status,
+            failure=failure,
+            cancel_reason=reply.cancel_reason,
         )
 
-async def send_goal(harness, feedback_qos: peppylib.QoSProfile, timeout: float) -> GoalHandle:
-    """Sends a goal to the node from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first, and decodes the admission reply."""
+async def send_goal(harness, timeout: float, feedback_bound: Optional[int] = None) -> GoalHandle:
+    """Sends a goal to the node from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first, and decodes the admission reply. The handle keeps up to `feedback_bound` unread feedback messages (None takes the default of peppylib)."""
     producer = harness.node_producer_ref()
     await peppylib.testing.wait_action_reachable(
         harness.session,
@@ -5053,14 +6490,14 @@ async def send_goal(harness, feedback_qos: peppylib.QoSProfile, timeout: float) 
         ACTION_NAME,
         producer,
         user_goal_payload,
-        feedback_qos,
+        feedback_bound,
         timeout,
     )
     handle = GoalHandle()
     handle._messenger = harness.session
     handle._inner = inner
     handle.accepted = inner.accepted
-    handle.reason = inner.reason
+    handle.refusal = None if inner.accepted else Failure(inner.refusal_kind, inner.refusal_message)
     return handle
 
 ================================================================
@@ -5082,6 +6519,9 @@ import types
 ACTION_NAME = "move_arm"
 FIXTURE_CORE_NODE = "fixture-core"
 FIXTURE_INSTANCE_ID = "fixture-observer"
+
+FailureKind = _production.FailureKind
+Failure = _production.Failure
 
 @lru_cache(maxsize=1)
 def _camera_feed_v1_move_arm_goal_request_message_capnp() -> types.ModuleType:
@@ -5125,6 +6565,7 @@ class ResultStatus(IntEnum):
     CANCELLED = 1
     ABANDONED = 2
     EXPIRED = 3
+    FAILED = 4
 
 @lru_cache(maxsize=1)
 def _camera_feed_v1_move_arm_result_response_message_capnp() -> types.ModuleType:
@@ -5151,6 +6592,8 @@ class ResultResponse:
     instance_id: str
     status: ResultStatus
     data: Optional[ResultData]
+    failure: Optional[Failure]
+    cancel_reason: Optional[str]
 
 @lru_cache(maxsize=1)
 def _camera_feed_v1_move_arm_feedback_message_capnp() -> types.ModuleType:
@@ -5169,15 +6612,16 @@ def _deserialize_feedback(payload: bytes) -> Feedback:
         return Feedback(new_position=new_position_0)
 
 class GoalHandle:
-    """A goal in flight against the node's action `move_arm`; construct with `send_goal`. Attributes: `accepted` (whether the node admitted the goal), `reason` (optional human-readable rejection reason), `data` (the decoded goal response; `None` when a rejection carried no payload)."""
+    """A goal in flight against the node's action `move_arm`; construct with `send_goal`. Attributes: `accepted` (whether the node accepted the goal), `refusal` (the `Failure` of a refused goal, else `None`), `data` (the decoded goal response of an accepted goal, else `None`)."""
 
     async def on_next_feedback(self) -> Feedback:
         """Receives the next decoded feedback message for this goal.
 
         Raises RuntimeError when the node closed the stream cleanly
-        (end-of-stream sentinel) and ConnectionError when the node instance
-        disappeared without closing it; in the latter case get_result
-        resolves to ResultStatus.ABANDONED.
+        (end-of-stream sentinel), ConnectionError when the node instance
+        disappeared without closing it, in which case get_result resolves to
+        ResultStatus.ABANDONED, and peppylib.FeedbackOverflowError when this
+        caller fell behind by more unread messages than its bound.
         """
         feedback = await self._inner.on_next_feedback()
         return _deserialize_feedback(feedback.payload)
@@ -5203,6 +6647,9 @@ class GoalHandle:
             timeout,
         )
         status = ResultStatus(reply.status)
+        failure = None
+        if status is ResultStatus.FAILED:
+            failure = Failure(reply.failure_kind, reply.failure_message)
         data = None
         if status in (ResultStatus.COMPLETED, ResultStatus.CANCELLED):
             data = _deserialize_result(reply.body)
@@ -5211,10 +6658,12 @@ class GoalHandle:
             instance_id=reply.instance_id,
             status=status,
             data=data,
+            failure=failure,
+            cancel_reason=reply.cancel_reason,
         )
 
-async def send_goal(harness, request: _production.GoalRequestData, feedback_qos: peppylib.QoSProfile, timeout: float) -> GoalHandle:
-    """Sends a goal to the node from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first, and decodes the admission reply."""
+async def send_goal(harness, request: _production.GoalRequestData, timeout: float, feedback_bound: Optional[int] = None) -> GoalHandle:
+    """Sends a goal to the node from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first, and decodes the admission reply. The handle keeps up to `feedback_bound` unread feedback messages (None takes the default of peppylib)."""
     producer = harness.node_producer_ref()
     await peppylib.testing.wait_action_reachable(
         harness.session,
@@ -5234,16 +6683,15 @@ async def send_goal(harness, request: _production.GoalRequestData, feedback_qos:
         ACTION_NAME,
         producer,
         user_goal_payload,
-        feedback_qos,
+        feedback_bound,
         timeout,
     )
     handle = GoalHandle()
     handle._messenger = harness.session
     handle._inner = inner
     handle.accepted = inner.accepted
-    handle.reason = inner.reason
-    body = inner.goal_reply_body
-    handle.data = _deserialize_goal_response(body) if body else None
+    handle.refusal = None if inner.accepted else Failure(inner.refusal_kind, inner.refusal_message)
+    handle.data = _deserialize_goal_response(inner.goal_reply_body) if inner.accepted else None
     return handle
 
 ================================================================
@@ -5586,11 +7034,64 @@ async def _start(setup, parameters, instance_id, node_dir, harness_clock, spare_
 ================================================================
 ConsumedService :: bare_link/ping
 ================================================================
+from enum import Enum
 import peppylib
 
 NODE_NAME = "bare_producer"
 SERVICE_NAME = "ping"
 LINK_ID = "bare_link"
+
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {SERVICE_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {SERVICE_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
 
 
 
@@ -5608,35 +7109,95 @@ def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:
 async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float) -> None:
     """Polls this service on `target`, a member of the slot's bound set.
 
-    A target outside the set fails before anything reaches the wire.
+    A target outside the set fails before anything reaches the wire. An
+    error reply of the provider raises this member's `Failure`, a
+    peppylib.FailureError; a kind that this member does not declare raises
+    ValueError.
     This slot declares cardinality `one`: `target` is its sole bound
     producer, returned by `bound_producer()`; the explicit parameter
     keeps call sites uniform across cardinalities.
     """
     node_runner.ensure_target_bound(LINK_ID, target)
     request_payload = b""
-    await peppylib.ServiceMessenger.poll(
-        node_runner.messenger(),
-        node_runner.bound_core_node(),
-        node_runner.bound_instance_id(),
-        peppylib.SenderTarget.node(NODE_NAME, "v1"),
-        SERVICE_NAME,
-        target,
-        request_payload,
-        timeout,
-    )
+    try:
+        await peppylib.ServiceMessenger.poll(
+            node_runner.messenger(),
+            node_runner.bound_core_node(),
+            node_runner.bound_instance_id(),
+            peppylib.SenderTarget.node(NODE_NAME, "v1"),
+            SERVICE_NAME,
+            target,
+            request_payload,
+            timeout,
+        )
+    except peppylib.FailureError as error:
+        raise Failure(*error.args) from None
 
 ================================================================
 ConsumedAction :: bare_link/home_all
 ================================================================
 from dataclasses import dataclass
+from enum import Enum
 from enum import IntEnum
+from typing import Optional
 from typing import Self
 import peppylib
 
 TARGET_NODE_NAME = "bare_producer"
 TARGET_ACTION_NAME = "home_all"
 LINK_ID = "bare_link"
+
+class FailureKind(str, Enum):
+    """A failure kind of this member: a kind of peppy, or a kind of its contract that it lists."""
+
+    ATTEMPT_FAILED = "attempt_failed"
+    "The attempt gave no result"
+    TIMEOUT = "timeout"
+    "The bound of the provider passed"
+    PRECONDITION_FAILED = "precondition_failed"
+    "A precondition failed"
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    "A robot, limb or host is gone"
+    REJECTED = "rejected"
+    "The provider refused the goal, and no other kind says why"
+
+
+class Failure(peppylib.FailureError):
+    """Why this member refused or failed a goal, or gave an error reply.
+
+    A kind that this member declares, and a message for a person. The
+    constructor raises ValueError for any other kind, with the message in
+    its text, and TypeError for a message that is not a str. A service
+    handler raises or returns it to give an error reply of its kind.
+    """
+
+    kind: FailureKind
+    message: str
+
+    def __init__(self, kind: FailureKind | str, message: str) -> None:
+        if not isinstance(message, str):
+            raise TypeError(f"the message of a failure of {TARGET_ACTION_NAME} is a str, not {type(message).__name__}")
+        try:
+            parsed = FailureKind(kind)
+        except ValueError:
+            raise ValueError(f"{kind!r} is not a failure kind of {TARGET_ACTION_NAME} (message: {message!r})") from None
+        super().__init__(parsed.value, message)
+        self.kind = parsed
+        self.message = message
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Failure):
+            return NotImplemented
+        return self.kind is other.kind and self.message == other.message
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.message))
+
+    def __repr__(self) -> str:
+        return f"Failure({self.kind!r}, {self.message!r})"
+
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.message}"
 
 class CancelState(IntEnum):
     SIGNALLED = 0
@@ -5654,12 +7215,15 @@ class ResultStatus(IntEnum):
     CANCELLED = 1
     ABANDONED = 2
     EXPIRED = 3
+    FAILED = 4
 
 @dataclass
 class ResultResponse:
     core_node: str
     instance_id: str
     status: ResultStatus
+    failure: Optional[Failure]
+    cancel_reason: Optional[str]
 
 
 def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:
@@ -5676,12 +7240,18 @@ def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:
 
 class ActionHandle:
     @classmethod
-    async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:
+    async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float, feedback_bound: Optional[int] = None) -> Self:
         """Fires this goal at `target`, a member of the slot's bound set.
 
         A target outside the set fails before anything reaches the wire. The
         handle retains the target: feedback, result, and cancel stay pinned
-        to it.
+        to it. The handle keeps every feedback message until it is read, up to
+        `feedback_bound` unread messages (None takes the default of peppylib,
+        1024); a caller that reads the feedback and falls behind by more
+        cancels the goal, and its next read raises
+        peppylib.FeedbackOverflowError. A caller that never reads the feedback
+        keeps its goal. `refusal` holds the failure of a refused goal; a kind
+        that this member does not declare raises ValueError.
         This slot declares cardinality `one`: `target` is its sole bound
         producer, returned by `bound_producer()`; the explicit parameter
         keeps call sites uniform across cardinalities.
@@ -5696,14 +7266,14 @@ class ActionHandle:
             TARGET_ACTION_NAME,
             target,
             user_goal_payload,
-            feedback_qos,
+            feedback_bound,
             timeout,
         )
         handle = cls()
         handle._messenger = node_runner.messenger()
         handle._inner = action_handle
         handle.accepted = action_handle.accepted
-        handle.reason = action_handle.reason
+        handle.refusal = None if action_handle.accepted else Failure(action_handle.refusal_kind, action_handle.refusal_message)
         return handle
 
     async def cancel_goal(self, timeout: float) -> CancelResponse:
@@ -5721,7 +7291,10 @@ class ActionHandle:
             timeout,
         )
         status = ResultStatus(reply.status)
-        return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status)
+        failure = None
+        if status is ResultStatus.FAILED:
+            failure = Failure(reply.failure_kind, reply.failure_message)
+        return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status, failure=failure, cancel_reason=reply.cancel_reason)
 
 ================================================================
 Mock :: deps/bare_link
@@ -5730,6 +7303,7 @@ Mock :: deps/bare_link
 
 from peppygen.consumed_actions.bare_link import home_all as _home_all
 from peppygen.consumed_services.bare_link import ping as _ping
+from typing import Literal
 from typing import Optional
 import peppylib
 import peppylib.testing
@@ -5746,6 +7320,9 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
     """`producer_ref` under an explicit instance id (multi-instance slots)."""
     return peppylib.ProducerRef(MOCK_CORE_NODE, instance_id)
 
+PingFailureKind = _ping.FailureKind
+PingFailure = _ping.Failure
+
 class PingResponder:
     """Answers exactly one parked request; consumed by use."""
 
@@ -5756,9 +7333,14 @@ class PingResponder:
         """Sends the typed response for the parked request."""
         await self._inner.respond(b"")
 
-    async def respond_error(self, reason: str) -> None:
-        """Fails the parked request with a handler-error reason."""
-        await self._inner.respond_error(reason)
+    async def respond_failure(self, kind: _ping.FailureKind, message: str) -> None:
+        """Answers the parked request with an error reply.
+
+        A failure kind that this member declares and a message: raises
+        ValueError for any other kind.
+        """
+        failure = _ping.Failure(kind, message)
+        await self._inner.respond_failure(failure.kind.value, failure.message)
 
 class PingService:
     """Typed mock server for the consumed service `ping`: a background pump captures every request; scripted responses serve automatically, unscripted requests park for `next_request`."""
@@ -5793,6 +7375,9 @@ class PingService:
     async def _close(self) -> None:
         await self._core.close()
 
+HomeAllFailureKind = _home_all.FailureKind
+HomeAllFailure = _home_all.Failure
+
 class HomeAllActiveGoal:
     """An accepted goal: drives feedback and terminal completion."""
 
@@ -5800,24 +7385,37 @@ class HomeAllActiveGoal:
         self._context = context
 
     async def cancel_signal(self) -> None:
-        """Resolves when the node requests cancellation of this goal."""
+        """Waits for the cancel signal of this goal: a cancel request of the node, or the end of the node."""
         await self._context.cancel_signal()
 
     def is_cancelled(self) -> bool:
-        """Whether cancellation has been requested for this goal."""
+        """Whether this goal received its cancel signal."""
         return self._context.is_cancelled()
 
+    def cancel_cause(self) -> Literal["caller", "sender_gone"] | None:
+        """Why this goal received its cancel signal; None before it did."""
+        return self._context.cancel_cause
+
+    def cancel_reason(self) -> str | None:
+        """The reason that the cause of the cancel signal gives, for complete_cancelled; None before the goal received its cancel signal."""
+        return self._context.cancel_reason
+
     async def complete(self) -> None:
-        """Completes the goal successfully."""
+        """Ends the goal with the status completed: a success."""
         await self._context.complete(b"")
 
-    async def complete_cancelled(self) -> None:
-        """Completes the goal as cancelled."""
-        await self._context.complete_cancelled(b"")
+    async def fail(self, kind: _home_all.FailureKind, message: str) -> None:
+        """Ends the goal with the status failed: a failure kind that this member declares, a message, and no result."""
+        failure = _home_all.Failure(kind, message)
+        await self._context.fail(failure.kind.value, failure.message)
+
+    async def complete_cancelled(self, reason: str) -> None:
+        """Ends the goal with the status cancelled, for `reason`."""
+        await self._context.complete_cancelled(reason, b"")
 
 
 class HomeAllPendingGoal:
-    """A goal received by the mock, awaiting accept/reject."""
+    """A goal received by the mock, awaiting accept/refuse."""
 
     def __init__(self, pending) -> None:
         self._pending = pending
@@ -5832,9 +7430,13 @@ class HomeAllPendingGoal:
         context = await self._pending.accept(b"")
         return HomeAllActiveGoal(context)
 
-    async def reject(self, reason: Optional[str] = None) -> None:
-        """Rejects the goal with an optional human-readable reason."""
-        await self._pending.reject(reason, b"")
+    async def refuse(self, kind: _home_all.FailureKind, message: str) -> None:
+        """Refuses the goal with a failure kind that this member declares and a message.
+
+        Raises ValueError for any other kind. A refusal carries no goal response.
+        """
+        failure = _home_all.Failure(kind, message)
+        await self._pending.refuse(failure.kind.value, failure.message)
 
 class HomeAllAction:
     """Typed mock action server for the consumed action `home_all`, on the real `ConcurrentAction` engine: identical goal lifecycle to a production producer, plus deterministic producer-loss via the owning mock's `stop()`."""

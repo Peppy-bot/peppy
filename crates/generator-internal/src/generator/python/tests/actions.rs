@@ -212,16 +212,35 @@ fn exposed_action() {
 
     // GoalResponse mirrors response_message_format exactly. GoalDecision
     // controls framework admission independently: an accept carries the
-    // declared payload, a reject carries an optional reason and optional
-    // payload.
+    // declared payload, a refusal carries a failure of a declared kind. The
+    // constructor takes no other pair, and parses the refusal again as a
+    // failure of this member.
     assert_contains_all(
         &rendered,
         &[
             "class GoalResponse:",
             "accepted: bool",
             "class GoalDecision:",
-            "def accept(response):",
-            "def reject(reason=None, response=None):",
+            "def __init__(self, response: GoalResponse | None, refusal: Failure | None) -> None:",
+            "if (response is None) == (refusal is None):",
+            "raise ValueError(\"a goal decision is an accept with the declared GoalResponse, or a refusal with no response\")",
+            "self.refusal = None if refusal is None else Failure(*refusal.args)",
+            "def accept(response: GoalResponse) -> \"GoalDecision\":",
+            "def refuse(kind: FailureKind, message: str) -> \"GoalDecision\":",
+            "return GoalDecision(None, Failure(kind, message))",
+        ],
+    );
+
+    // A native action gives the kinds of peppy only, and its `Failure` takes
+    // no other kind.
+    assert_contains_all(
+        &rendered,
+        &[
+            "class FailureKind(str, Enum):",
+            "ATTEMPT_FAILED = \"attempt_failed\"",
+            "REJECTED = \"rejected\"",
+            "class Failure(peppylib.FailureError):",
+            "parsed = FailureKind(kind)",
         ],
     );
 
@@ -263,24 +282,56 @@ fn exposed_action() {
         ],
     );
 
-    // handle_goal_next_request: recv → decode → accept/reject → GoalContext.
-    // A request that does not decode into the declared shape is rejected with
-    // the decode error before the handler runs, and the loop keeps polling.
+    // handle_goal_next_request: recv → decode → accept/refuse → GoalContext.
+    // A request that does not decode into the declared shape is refused with
+    // the kind `rejected` before the handler runs, and the loop keeps
+    // polling.
     assert_contains_all(
         &rendered,
         &[
             "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> \"GoalContext | None\":",
+            "A goal request that does not decode is refused with the kind `rejected`.",
             "pending = await self._inner.recv_next_goal()",
             "    request_data = _deserialize_goal_request(pending.request_bytes)",
             "except (ValueError, capnp.KjException) as error:",
-            "await pending.reject(f\"goal request does not decode: {error}\", b\"\")",
+            "await pending.refuse(FailureKind.REJECTED.value, f\"goal request does not decode: {error}\")",
             "continue",
             "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)",
-            "response = decision.response",
-            "if response is not None:",
-            "ctx = await pending.accept(response_bytes)",
+            "ctx = await pending.accept(answer)",
             "return GoalContext(ctx, request)",
-            "await pending.reject(decision.reason, response_bytes)",
+        ],
+    );
+
+    // The answer of the handler: its decision is built again as a decision
+    // of this member before anything of it reaches the wire, and an accept
+    // gives the encoded response.
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def _goal_answer(handler: Callable[[GoalRequest], GoalDecision], request: GoalRequest) -> \"Failure | bytes\":",
+            "decision = handler(request)",
+            "decision = await decision",
+            "decision = GoalDecision(decision.response, decision.refusal)\n    if decision.refusal is not None:\n        return decision.refusal\n    response = decision.response\n",
+            "return capnp_msg.to_bytes()",
+        ],
+    );
+
+    // A handler that raises, or that gives a decision that this member
+    // cannot send, refuses the goal with `attempt_failed`: the goal gets an
+    // answer and the loop keeps polling.
+    assert_contains_all(
+        &rendered,
+        &[
+            "            try:\n                answer = await _goal_answer(handler, request)\n            except Exception as error:\n                answer = Failure(FailureKind.ATTEMPT_FAILED, f\"the goal handler raised {type(error).__name__}: {error}\")\n            if isinstance(answer, Failure):\n                await pending.refuse(answer.kind.value, answer.message)\n                continue\n",
+        ],
+    );
+
+    // The sender grace of the action.
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def set_sender_grace(self, seconds: float) -> None:",
+            "await self._inner.set_sender_grace(seconds)",
         ],
     );
 
@@ -293,9 +344,15 @@ fn exposed_action() {
             "def goal_id(self) -> str:",
             "async def cancel_signal(self) -> None:",
             "def is_cancelled(self) -> bool:",
+            "def cancel_cause(self) -> Literal[\"caller\", \"sender_gone\"] | None:",
+            "def cancel_reason(self) -> str | None:",
+            "return self._inner.cancel_reason",
+            "async def fail(self, kind: FailureKind, message: str) -> None:",
+            "await self._inner.fail(failure.kind.value, failure.message)",
             "async def publish_feedback(self, new_position: list[int]) -> None:",
             "async def complete(self,",
-            "async def complete_cancelled(self,",
+            "async def complete_cancelled(self, reason: str,",
+            "await self._inner.complete_cancelled(reason, payload)",
             "success: bool",
             "error_msg: Optional[str]",
             "final_position: list[int]",
@@ -322,16 +379,22 @@ fn expose_action_without_request_body() {
             "class GoalRequest:",
             "class GoalResponse:",
             "class GoalDecision:",
-            "def accept(response):",
-            "def reject(reason=None, response=None):",
+            "def accept(response: GoalResponse) -> \"GoalDecision\":",
+            "def refuse(kind: FailureKind, message: str) -> \"GoalDecision\":",
             "async def handle_goal_next_request(",
         ],
     );
-    // No request data → no deserializer and a GoalRequest without `data`.
+    // No request data → no deserializer, no decode refusal, and a
+    // GoalRequest without `data`.
     assert_rendered!(
         !rendered.contains("def _deserialize_goal_request"),
         &rendered,
         "expected no _deserialize_goal_request when there is no request body"
+    );
+    assert_rendered!(
+        !rendered.contains("does not decode"),
+        &rendered,
+        "expected no decode refusal when there is no request body"
     );
     assert_contains_all(
         &rendered,
@@ -353,6 +416,38 @@ fn expose_action_without_request_body() {
     assert_contains_all(
         &rendered,
         &["async def publish_feedback(self, new_position: int, speed: int) -> None:"],
+    );
+}
+
+/// An action that declares no goal response accepts with no response: its
+/// decision takes none, and raises for one.
+#[test]
+fn expose_action_without_goal_response_takes_no_response_in_its_decision() {
+    let action: NativeExposedAction = serde_json5::from_str(r#"{ name: "home_arm" }"#).unwrap();
+
+    let mut generator = PythonGenerator::new();
+    generator.add_exposed_action(&action, None).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "def __init__(self, response: None, refusal: Failure | None) -> None:",
+            "if response is not None:",
+            "raise ValueError(\"this action declares no GoalResponse\")",
+            "self.refusal = None if refusal is None else Failure(*refusal.args)",
+            "def accept() -> \"GoalDecision\":",
+            "return GoalDecision(None, None)",
+            "decision = GoalDecision(decision.response, decision.refusal)\n    if decision.refusal is not None:\n        return decision.refusal\n    return b\"\"\n",
+        ],
+    );
+    assert_rendered!(
+        !rendered.contains("class GoalResponse"),
+        &rendered,
+        "expected no GoalResponse for an action that declares none"
     );
 }
 
@@ -573,6 +668,7 @@ fn consumed_action() {
             "CANCELLED = 1",
             "ABANDONED = 2",
             "EXPIRED = 3",
+            "FAILED = 4",
             "class ResultResponseData:",
             "final_position: list[int]",
             "class ResultResponse:",
@@ -580,6 +676,8 @@ fn consumed_action() {
             "instance_id: str",
             "status: ResultStatus",
             "data: Optional[ResultResponseData]",
+            "failure: Optional[Failure]",
+            "cancel_reason: Optional[str]",
         ],
     );
 
@@ -636,20 +734,19 @@ fn consumed_action() {
             "target: peppylib.ProducerRef",
             "request: GoalRequest",
             "timeout: float",
-            "feedback_qos: peppylib.QoSProfile",
+            "feedback_bound: Optional[int] = None",
             ") -> Self:",
             "node_runner.ensure_target_bound(LINK_ID, target)",
             "user_goal_payload = capnp_msg.to_bytes()",
             "peppylib.ActionMessenger.send_goal(",
             "TARGET_ACTION_NAME,\n            target,\n            user_goal_payload,",
-            "feedback_qos,",
+            "feedback_bound,",
             "handle = cls()",
             "handle._messenger = node_runner.messenger()",
             "handle._inner = action_handle",
             "handle.accepted = action_handle.accepted",
-            "handle.reason = action_handle.reason",
-            "body = action_handle.goal_reply_body",
-            "handle.data = _deserialize_goal_response(body) if body else None",
+            "handle.refusal = None if action_handle.accepted else Failure(action_handle.refusal_kind, action_handle.refusal_message)",
+            "handle.data = _deserialize_goal_response(action_handle.goal_reply_body) if action_handle.accepted else None",
             "return handle",
         ],
     );
@@ -703,8 +800,10 @@ fn consumed_action() {
             "self._messenger,",
             "self._inner,",
             "status = ResultStatus(reply.status)",
+            "if status is ResultStatus.FAILED:",
+            "failure = Failure(reply.failure_kind, reply.failure_message)",
             "data = _deserialize_result_response(reply.body)",
-            "return ResultResponse(",
+            "failure=failure, cancel_reason=reply.cancel_reason)",
         ],
     );
 }
@@ -797,7 +896,7 @@ fn consumed_two_actions_same_node() {
             "def _deserialize_feedback_payload(",
             "def _deserialize_result_response(",
             "request: GoalRequest",
-            "feedback_qos: peppylib.QoSProfile",
+            "feedback_bound: Optional[int] = None",
             ") -> Self:",
             ") -> CancelResponse:",
             ") -> ResultResponse:",
@@ -836,7 +935,7 @@ fn consumed_two_actions_same_node() {
             "def _deserialize_goal_response(",
             "def _deserialize_feedback_payload(",
             "def _deserialize_result_response(",
-            "feedback_qos: peppylib.QoSProfile",
+            "feedback_bound: Optional[int] = None",
             ") -> Self:",
             ") -> CancelResponse:",
             ") -> ResultResponse:",
@@ -937,7 +1036,7 @@ fn consumed_action_without_response_payload() {
         &rendered,
         &[
             "async def fire_goal(",
-            "feedback_qos: peppylib.QoSProfile",
+            "feedback_bound: Optional[int] = None",
             "async def get_result(",
             "peppylib.ActionMessenger.send_goal(",
             "peppylib.ActionMessenger.request_result(",
@@ -986,7 +1085,7 @@ fn consumed_action_without_response_payload() {
         &rendered,
         &[
             "status = ResultStatus(reply.status)",
-            "return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status)",
+            "return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status, failure=failure, cancel_reason=reply.cancel_reason)",
         ],
     );
 }
@@ -1019,7 +1118,7 @@ fn consumed_action_without_feedback() {
         &[
             "class ActionHandle:",
             "async def fire_goal(",
-            "feedback_qos: peppylib.QoSProfile",
+            "feedback_bound: Optional[int] = None",
             "async def get_result(",
             "peppylib.ActionMessenger.send_goal(",
             "peppylib.ActionMessenger.request_result(",

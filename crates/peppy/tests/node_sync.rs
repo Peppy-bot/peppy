@@ -1,8 +1,9 @@
-use super::common::serve_app_context;
+use super::common::{assert_daemon_failure, serve_app_context};
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use config::failure_kind::PeppyFailureKind;
 use config::node::{
     EmittedTopic, MessageFormat, NodeConfigParser, QoSProfile, Toolchain, TopicRetention,
 };
@@ -557,4 +558,5 @@ async fn node_sync_pairing_cache_miss_suggests_repo_refresh() {
         msg.contains("arm_link") && msg.contains("repo refresh"),
         "cache-miss error should name the pairing and suggest `peppy repo refresh`: {msg}"
     );
+    assert_daemon_failure(&err, PeppyFailureKind::AttemptFailed, "arm_link");
 }

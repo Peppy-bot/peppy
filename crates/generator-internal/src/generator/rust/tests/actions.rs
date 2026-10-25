@@ -261,7 +261,8 @@ fn exposed_action() {
 
     // GoalResponse mirrors the declared response_message_format exactly. The
     // framework decision is a separate enum: an accept carries the declared
-    // response, a reject carries an optional reason and optional response.
+    // response, a refusal carries a failure of a declared kind and no
+    // response.
     assert_contains_all(
         &rendered,
         &[
@@ -270,10 +271,21 @@ fn exposed_action() {
             "pub fn new(accepted: bool) -> Self",
             "pub enum GoalDecision",
             "Accept(GoalResponse)",
-            "reason: Option<String>",
-            "response: Option<GoalResponse>",
+            "Refuse(Failure)",
             "pub fn accept(response: GoalResponse) -> Self",
-            "pub fn reject(reason: impl Into<String>) -> Self",
+            "pub fn refuse(kind: FailureKind, message: impl Into<String>) -> Self",
+        ],
+    );
+
+    // A native action gives the kinds of peppy only.
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub enum FailureKind",
+            "Rejected,",
+            "pub struct Failure",
+            "pub kind: FailureKind",
+            "pub message: String",
         ],
     );
 
@@ -295,11 +307,12 @@ fn exposed_action() {
         ],
     );
 
-    // handle_goal_next_request returns a per-goal GoalContext. Rejected goals
-    // send their declared response and are skipped; None means the stream
+    // handle_goal_next_request returns a per-goal GoalContext. Refused goals
+    // are answered with their failure and skipped; None means the stream
     // closed. A request that does not decode into the declared shape is
-    // rejected with the decode error before the decider runs, and the loop
-    // keeps polling.
+    // refused with the kind `rejected` and the decode error before the
+    // decider runs, a decider that fails refuses the goal with the kind
+    // `attempt_failed` and its error, and the loop keeps polling.
     assert_contains_all(
         &rendered,
         &[
@@ -308,28 +321,49 @@ fn exposed_action() {
             "crate::Result<Option<GoalContext>>",
             "recv_next_goal",
             "match deserialize_goal_request(pending.request_bytes())",
+            "FailureKind::Rejected",
             "goal request does not decode: {error}",
-            "pending.reject(Some(&reason), peppylib::Payload::new()).await?;",
+            "let decision = match decider(&request)",
+            "FailureKind::AttemptFailed",
+            "the goal decider failed: {error}",
+            "pending.refuse(refusal.to_wire()).await?;",
             "continue;",
             "GoalDecision::Accept(response)",
             "pending.accept(response_payload).await?",
-            "GoalDecision::Reject { reason, response }",
-            "pending.reject(reason.as_deref(), response_payload).await?",
+            "GoalDecision::Refuse(failure)",
+            "pending.refuse(failure.to_wire()).await?",
         ],
     );
 
-    // GoalContext: request accessor, cancel signal, feedback, completion.
+    // The sender grace of the action.
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub fn set_sender_grace(&self, grace: std::time::Duration)",
+            "self.inner.set_sender_grace(grace);",
+        ],
+    );
+
+    // GoalContext: request accessor, sender, cancel signal and cause,
+    // feedback, and the three endings.
     assert_contains_all(
         &rendered,
         &[
             "pub struct GoalContext",
             "pub fn request(&self) -> &GoalRequest",
             "pub fn goal_id(&self) -> &str",
+            "pub fn sender(&self) -> &peppylib::messaging::ClientPresence",
             "pub async fn cancel_signal(&self)",
             "pub fn is_cancelled(&self) -> bool",
+            "pub fn cancel_cause(&self) -> Option<peppylib::messaging::CancelCause>",
             "pub async fn publish_feedback",
-            "pub async fn complete",
-            "pub async fn complete_cancelled",
+            "pub async fn complete(",
+            "pub async fn fail(",
+            "kind: FailureKind,",
+            "self.inner.fail(Failure::new(kind, message).to_wire()).await?;",
+            "pub async fn complete_cancelled(",
+            "reason: impl Into<String>,",
+            "self.inner.complete_cancelled(reason, payload).await?;",
             "success: bool",
             "error_msg: Option<String>",
             "final_position: [i32; 3]",
@@ -361,8 +395,7 @@ fn expose_action_without_request_body() {
             "pub struct GoalResponse",
             "pub enum GoalDecision",
             "Accept(GoalResponse)",
-            "reason: Option<String>",
-            "response: Option<GoalResponse>",
+            "Refuse(Failure)",
             "pub async fn handle_goal_next_request",
             "F: Fn(&GoalRequest) -> crate::Result<GoalDecision>",
         ],
@@ -422,7 +455,7 @@ fn exposed_action_rejects_reserved_message_field_name() {
 fn expose_feedback_only_action() {
     // A feedback-only action is still goal-driven: the client fires a goal, the
     // server accepts it and publishes feedback through the GoalContext. The goal
-    // has no request/response payload and there is no completion (no result).
+    // has no request/response payload, and it ends with an empty result.
     let action: NativeExposedAction = serde_json5::from_str(
         r#"
         {
@@ -454,11 +487,11 @@ fn expose_feedback_only_action() {
             "peppylib::messaging::ConcurrentAction::expose",
             "pub async fn handle_goal_next_request",
             "pub enum GoalDecision",
-            "Accept",
-            "Reject",
-            "reason: Option<String>",
-            "pub fn reject(reason: impl Into<String>) -> Self",
-            "pending.reject(reason.as_deref(), peppylib::Payload::new()).await?",
+            "Accept,",
+            "Refuse(Failure)",
+            "pub fn accept() -> Self",
+            "pending.accept(peppylib::Payload::new()).await?",
+            "pending.refuse(failure.to_wire()).await?",
             "pub struct GoalContext",
             "pub async fn publish_feedback",
         ],
@@ -469,11 +502,15 @@ fn expose_feedback_only_action() {
         rendered,
         "an action without response_message_format has no GoalResponse payload"
     );
-    // No result service → no completion methods.
-    assert_rendered!(
-        !rendered.contains("pub async fn complete"),
-        rendered,
-        "no completion methods without a result service"
+    // No result service → the endings carry an empty result.
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub async fn complete(&self) -> crate::Result<()>",
+            "pub async fn complete_cancelled(\n        &self,\n        reason: impl Into<String>,\n    )",
+            "pub async fn fail(",
+            "let payload = peppylib::Payload::new();",
+        ],
     );
 }
 
@@ -584,9 +621,12 @@ fn consumed_action() {
             "messenger: peppylib::MessengerHandle",
             "inner: peppylib::messaging::ActionGoalHandle",
             "pub accepted: bool",
-            "pub reason: Option<String>",
+            "pub refusal: Option<Failure>",
             "pub data: Option<GoalResponseData>",
             "impl ActionHandle",
+            "let refusal = reply.refusal().map(Failure::from_wire).transpose()?;",
+            "accepted: refusal.is_none(),",
+            "peppylib::messaging::GoalAnswer::Accepted(response)",
         ],
     );
 
@@ -611,9 +651,12 @@ fn consumed_action() {
             "pub final_position: [i32; 3]",
             "pub enum ResultOutcome",
             "Completed(ResultResponseData)",
-            "Cancelled(ResultResponseData)",
+            "Cancelled { reason: String, data: ResultResponseData }",
+            "Failed(Failure)",
             "Abandoned",
             "Expired",
+            "peppylib::messaging::GoalOutcome::Failed(failure)",
+            "ResultOutcome::Failed(Failure::from_wire(&failure)?)",
             "pub struct ResultResponse",
             "pub core_node: String",
             "pub instance_id: String",
@@ -637,13 +680,13 @@ fn consumed_action() {
             "pub async fn fire_goal(",
             "target: &peppylib::messaging::ProducerRef",
             "request: GoalRequest",
-            "feedback_qos: peppylib::config::QoSProfile",
+            "feedback_bound: peppylib::messaging::FeedbackBound",
             "-> crate::Result<Self>",
             "const LINK_ID: &str = \"brain\";",
             ".ensure_target_bound(LINK_ID, target)?",
             "peppylib::ActionMessenger::send_goal",
             "Some(target),",
-            "peppylib::messaging::FeedbackBuffer::KeepLatest,",
+            "feedback_bound,",
             "node_runner.messenger().clone()",
         ],
     );
@@ -755,6 +798,97 @@ fn consumed_action_via_contract_origin_targets_contract() {
             "pub async fn on_next_feedback_message(&mut self)",
             "pub async fn get_result(",
         ],
+    );
+}
+
+/// The kinds of the contract a consumed action comes from, for the tests
+/// that check the kinds of a contract member: its `move_arm` lists
+/// `unreachable`.
+fn reach_failure_kinds() -> config::failure_kind::ContractKinds {
+    let unreachable = config::failure_kind::FailureKindName::parse("unreachable").unwrap();
+    config::failure_kind::ContractKinds::new(
+        config::failure_kind::ContractFailureKinds::new([(
+            unreachable.clone(),
+            "No plan to the target".to_string(),
+        )])
+        .unwrap(),
+        [(
+            config::failure_kind::MemberSection::Action,
+            "move_arm".to_owned(),
+            vec![unreachable],
+        )],
+    )
+    .unwrap()
+}
+
+/// A consumed member of a contract gives the kinds of peppy, then the kinds
+/// of its contract, so its client parses a refusal or a failure of either.
+#[test]
+fn a_consumed_contract_action_declares_the_kinds_of_its_contract() {
+    let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    let mut generator = RustGenerator::new();
+    generator
+        .add_consumed_action(
+            &action,
+            &move_arm_action_messages(),
+            &crate::DependencyContext::contract(
+                "arm_contract",
+                "v2",
+                "brain",
+                config::node::Cardinality::One,
+                reach_failure_kinds(),
+            ),
+        )
+        .unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "/// No plan to the target\n    Unreachable,",
+            "Self::Unreachable => \"unreachable\",",
+            "Self::Rejected,\n        Self::Unreachable,",
+        ],
+    );
+}
+
+/// An exposed member of a contract can refuse and fail with a kind of its
+/// contract; a native one only with the kinds of peppy.
+#[test]
+fn an_exposed_contract_action_declares_the_kinds_of_its_contract() {
+    let action: NativeExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let origin = crate::ContractOrigin {
+        link_id: "arm".to_string(),
+        contract_name: "arm_contract".to_string(),
+        contract_tag: "v2".to_string(),
+        failure_kinds: reach_failure_kinds(),
+    };
+    let mut generator = RustGenerator::new();
+    generator
+        .add_exposed_action(&action, Some(&origin))
+        .unwrap();
+    generator.add_exposed_action(&action, None).unwrap();
+    let artifacts = generator.into_artifacts();
+    let contract = artifacts
+        .iter()
+        .find(|artifact| artifact.module_path.len() == 2)
+        .expect("contract artifact");
+    let native = artifacts
+        .iter()
+        .find(|artifact| artifact.module_path.len() == 1)
+        .expect("native artifact");
+
+    assert_contains_all(
+        &contract.code_output,
+        &["Unreachable,", "Self::Unreachable => \"unreachable\","],
+    );
+    assert_rendered!(
+        !native.code_output.contains("Unreachable"),
+        native.code_output,
+        "a native action gives the kinds of peppy only"
     );
 }
 
@@ -973,7 +1107,7 @@ fn consumed_action_without_response_payload() {
             "messenger: peppylib::MessengerHandle",
             "inner: peppylib::messaging::ActionGoalHandle",
             "pub accepted: bool",
-            "pub reason: Option<String>",
+            "pub refusal: Option<Failure>",
             "impl ActionHandle",
             "pub async fn fire_goal",
             "pub async fn get_result",

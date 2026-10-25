@@ -13,6 +13,7 @@ use peppylib::core_node::transport::poll;
 const DEFAULTS: TimeoutConfig = TimeoutConfig {
     idle_secs: 60,
     max_secs: 3600,
+    flags: true,
 };
 
 /// Writes `peppy_json5` into a fresh directory and adds that node to the stack

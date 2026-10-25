@@ -138,17 +138,17 @@ mod tests {
         let slots = cameras_slot(&[]);
         assert_eq!(
             apply_slot_update(&slots, &update("cameras", 5, &["front", "rear"])),
-            SlotUpdateResponse::accepted()
+            Ok(SlotUpdateResponse::taken())
         );
         assert_eq!(held(&slots), ["front", "rear"]);
         assert_eq!(
             apply_slot_update(&slots, &update("cameras", 3, &["front"])),
-            SlotUpdateResponse::stale()
+            Ok(SlotUpdateResponse::stale())
         );
         assert_eq!(held(&slots), ["front", "rear"]);
         assert_eq!(
             apply_slot_update(&slots, &update("cameras", 6, &["rear"])),
-            SlotUpdateResponse::accepted()
+            Ok(SlotUpdateResponse::taken())
         );
         assert_eq!(held(&slots), ["rear"]);
     }
@@ -162,10 +162,10 @@ mod tests {
         let mut watched = slots["cameras"].sender().subscribe();
         watched.mark_unchanged();
         let response = apply_slot_update(&slots, &update("cameras", 9, &[]));
-        assert!(!response.accepted, "{response:?}");
+        let response = response.expect_err("a refused delivery");
         assert!(
             response
-                .message
+                .message()
                 .contains("`one_or_more` admits no set of 0 members; the plan and this node's manifest disagree"),
             "{response:?}"
         );
@@ -180,9 +180,9 @@ mod tests {
     fn an_update_naming_a_slot_the_service_does_not_hold_is_refused() {
         let slots = cameras_slot(&["front"]);
         let response = apply_slot_update(&slots, &update("main", 1, &["rear"]));
-        assert!(!response.accepted, "{response:?}");
+        let response = response.expect_err("a refused delivery");
         assert!(
-            response.message.contains(
+            response.message().contains(
                 "this node holds no `one_or_more` or `zero_or_more` producer slot `main`"
             ),
             "{response:?}"

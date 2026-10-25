@@ -32,11 +32,9 @@ struct RepoAddRequest {
     }
 }
 
+# The response of a repository add that succeeded. A failed add is an
+# error reply, with a failure kind and a message.
 struct RepoAddResponse {
-    # Whether the add was successful
-    success @0 :Bool;
-    # Error message if failed (optional)
-    errorMessage @1 :Text;
 }
 
 # ── Repo Refresh (action with feedback) ──────────────────────────
@@ -45,9 +43,9 @@ struct RepoRefreshGoal {
     # Empty: refresh all repos.
 }
 
+# The goal response of an accepted refresh. The daemon refuses a goal in
+# the goal envelope, with a failure kind and a message.
 struct RepoRefreshGoalResponse {
-    accepted @0 :Bool;
-    rejectionReason @1 :Text;
 }
 
 struct RepoRefreshFeedback {
@@ -81,20 +79,20 @@ struct RepoRefreshFeedback {
     }
 }
 
+# The result of a completed refresh: it ran, it published the caches, and
+# every repository that read cleanly is current. A failed refresh gives a
+# failure kind and a message, and no result; a cancelled refresh publishes
+# nothing and gives its reason, and no result.
 struct RepoRefreshResult {
-    success @0 :Bool;
-    errorMessage @1 :Text;
-    totalNodesFound @2 :UInt32;
-    totalLaunchersFound @3 :UInt32;
-    totalContractsFound @4 :UInt32;
-    totalPairingsFound @5 :UInt32;
-    # Repositories that could not be updated this run. `success` covers the
-    # refresh as a whole: it ran, it published the caches, and every
-    # repository that read cleanly is current. This names the ones that did
-    # not, each still serving the entries it last published. Empty when
-    # every configured repository was read.
-    failureReport @6 :Text;
-    totalMcpExposuresFound @7 :UInt32;
+    totalNodesFound @0 :UInt32;
+    totalLaunchersFound @1 :UInt32;
+    totalContractsFound @2 :UInt32;
+    totalPairingsFound @3 :UInt32;
+    totalMcpExposuresFound @4 :UInt32;
+    # The repositories that could not be read this run, each still serving
+    # the entries it last published, and why. Empty when every configured
+    # repository was read.
+    readFailureReport @5 :Text;
 }
 
 # ── Repo List (request-response) ────────────────────────────────
@@ -135,18 +133,19 @@ struct RepoListRepoEntry {
     # True when the entries listed for this repository come from an
     # earlier read because its most recent one failed.
     retained @4 :Bool;
-    # "" when the last read succeeded, otherwise "unreachable" or
-    # "conflict". An outage and a content bug send the user to completely
-    # different places, so they are never collapsed into one label.
-    failureKind @5 :Text;
-    failureDetail @6 :Text;
+    # The read failure of the last read: "" when the last read succeeded,
+    # otherwise "unreachable" or "conflict". An outage and a content bug
+    # send the user to completely different places, so they are never
+    # collapsed into one label.
+    readFailure @5 :Text;
+    readFailureDetail @6 :Text;
 }
 
+# The response of a listing that succeeded. A failed listing is an error
+# reply, with a failure kind and a message.
 struct RepoListResponse {
-    success @0 :Bool;
-    errorMessage @1 :Text;
-    nodes @2 :List(RepoListNodeEntry);
-    repos @3 :List(RepoListRepoEntry);
+    nodes @0 :List(RepoListNodeEntry);
+    repos @1 :List(RepoListRepoEntry);
 }
 
 # ── Repo Remove (request-response) ─────────────────────────────
@@ -156,15 +155,12 @@ struct RepoRemoveRequest {
     id @0 :UInt64;
 }
 
+# The response of a removal whose configuration edit landed. A failed
+# removal is an error reply, with a failure kind and a message.
 struct RepoRemoveResponse {
-    # Whether the removal was successful
-    success @0 :Bool;
-    # Error message if failed (optional)
-    errorMessage @1 :Text;
-    # Problems from the re-index that follows the change. `success` covers
-    # the configuration edit alone; this reports whether the re-read that
-    # made it take effect worked. Empty when it did.
-    refreshReport @2 :Text;
+    # Problems from the re-index that follows the change: whether the
+    # re-read that made it take effect worked. Empty when it did.
+    refreshReport @0 :Text;
 }
 
 # ── Repo Exclude (request-response) ───────────────────────────
@@ -179,15 +175,13 @@ struct RepoExcludeRequest {
     }
 }
 
+# The response of an exclusion whose configuration edit landed. A failed
+# exclusion is an error reply, with a failure kind and a message.
 struct RepoExcludeResponse {
-    # Whether the exclude was successful
-    success @0 :Bool;
-    # Error message if failed (optional)
-    errorMessage @1 :Text;
-    # Problems from the re-index that follows the change. `success` covers
-    # the configuration edit alone; this reports whether the re-read that
-    # made it take effect worked. Empty when it did. This matters most on
-    # the recovery path, where the user excluded a repository precisely to
-    # unblock themselves and needs to know whether it worked.
-    refreshReport @2 :Text;
+    # Problems from the re-index that follows the change: whether the
+    # re-read that made it take effect worked. Empty when it did. This
+    # matters most on the recovery path, where the user excluded a
+    # repository precisely to unblock themselves and needs to know whether
+    # it worked.
+    refreshReport @0 :Text;
 }

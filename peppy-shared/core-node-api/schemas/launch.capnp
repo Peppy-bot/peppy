@@ -186,13 +186,11 @@ struct StackRemoveGoal {
     name @0 :Text;
 }
 
+# The goal response of an accepted stack goal. The daemon refuses a goal in
+# the goal envelope, with a failure kind and a message.
 struct LaunchGoalResponse {
-    # Whether the goal was accepted
-    accepted @0 :Bool;
-    # Path to the log file for this launch action
-    logPath @1 :Text;
-    # Rejection reason if not accepted (empty if accepted)
-    rejectionReason @2 :Text;
+    # Path to the log file of the goal, on the daemon's machine.
+    logPath @0 :Text;
 }
 
 enum LaunchFeedbackStep {
@@ -203,12 +201,29 @@ enum LaunchFeedbackStep {
 }
 
 struct LaunchFeedback {
-    # The stream type: "stdout" or "stderr"
-    stream @0 :Text;
-    # The line of output
-    line @1 :Text;
-    # The step in the launch process this feedback is from
-    step @2 :LaunchFeedbackStep;
+    union {
+        # One line of the goal's output.
+        output :group {
+            # The stream type: "stdout" or "stderr"
+            stream @0 :Text;
+            # The line of output
+            line @1 :Text;
+            # The step in the launch process this feedback is from
+            step @2 :LaunchFeedbackStep;
+        }
+        # The log file of each node phase the goal ran. The daemon sends it
+        # once, as the last feedback of the goal, whichever way the goal
+        # ends.
+        nodeLogs @3 :NodeLogs;
+    }
+}
+
+# The log file of each node phase a stack goal ran, with `failed` set on
+# the phase that failed.
+struct NodeLogs {
+    nodeAddLogs @0 :List(NodeAddLog);
+    nodeRunLogs @1 :List(NodeRunLog);
+    nodeBuildLogs @2 :List(NodeBuildLog);
 }
 
 struct NodeAddLog {
@@ -275,19 +290,10 @@ struct InstanceEndpoints {
     endpoints @3 :List(LaunchEndpoint);
 }
 
+# The result of a completed stack goal. A failed goal gives a failure kind
+# and a message, and no result; a cancelled goal gives its reason, and no
+# result.
 struct LaunchResult {
-    # Whether the launch was successful
-    success @0 :Bool;
-    # Path to the log file for this launch action
-    logPath @1 :Text;
-    # Error message if failed (empty if successful)
-    errorMessage @2 :Text;
-    # Per-node add log entries
-    nodeAddLogs @3 :List(NodeAddLog);
-    # Per-node run log entries
-    nodeRunLogs @4 :List(NodeRunLog);
-    # Per-node build log entries
-    nodeBuildLogs @5 :List(NodeBuildLog);
     # The endpoints of every started instance that serves one, in start order.
-    instanceEndpoints @6 :List(InstanceEndpoints);
+    instanceEndpoints @0 :List(InstanceEndpoints);
 }

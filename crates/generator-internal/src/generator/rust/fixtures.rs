@@ -315,11 +315,14 @@ fn render_exposed_service(
         #![doc = #doc]
 
         #( #reexports )*
+        pub use #production::{Failure, FailureKind};
         #[allow(unused_imports)]
         use #production::*;
 
         /// Polls the node's service once and decodes the reply. `timeout`
-        /// bounds the reachability gate and the poll individually.
+        /// bounds the reachability gate and the poll individually. An error
+        /// reply of the node is `Error::ServiceFailed`: `Failure::of` reads
+        /// its failure.
         pub async fn poll(
             harness: &crate::fixtures::harness::Harness,
             #request_param
@@ -346,7 +349,8 @@ fn render_exposed_service(
                 #request_payload,
                 timeout,
             )
-            .await?;
+            .await
+            .map_err(Failure::reject_undeclared_kind)?;
             #decode_response
         }
 
@@ -438,15 +442,16 @@ fn render_exposed_action(
             )?);
             (
                 quote! {
-                    /// The declared goal response; `None` when a rejection
-                    /// carried no payload.
+                    /// The declared goal response of an accepted goal;
+                    /// `None` for a refused goal.
                     pub data: Option<GoalResponse>,
                 },
                 quote! {
-                    let data = if reply.body.is_empty() {
-                        None
-                    } else {
-                        Some(deserialize_goal_response(reply.body.as_ref())?)
+                    let data = match &reply.answer {
+                        peppylib::messaging::GoalAnswer::Accepted(response) => {
+                            Some(deserialize_goal_response(response.as_ref())?)
+                        }
+                        peppylib::messaging::GoalAnswer::Refused(_) => None,
                     };
                 },
                 quote!(data,),
@@ -475,9 +480,11 @@ fn render_exposed_action(
                 /// Receives the next decoded feedback message for this goal.
                 ///
                 /// Terminal errors that end a drain loop:
-                /// `Error::ActionFeedbackChannelClosed` on a clean close and
+                /// `Error::ActionFeedbackChannelClosed` on a clean close,
                 /// `Error::ActionFeedbackProducerGone` when the node instance
-                /// disappeared without closing the stream.
+                /// disappeared without closing the stream, and
+                /// `Error::ActionFeedbackOverflow` when this caller fell
+                /// behind by more unread messages than its bound.
                 pub async fn on_next_feedback(&mut self) -> crate::Result<Feedback> {
                     let feedback = self.inner.on_next_feedback().await?;
                     let payload = feedback.payload_bytes();
@@ -530,6 +537,7 @@ fn render_exposed_action(
         #![doc = #doc]
 
         #( #reexports )*
+        pub use #production::{Failure, FailureKind};
         #[allow(unused_imports)]
         use #production::*;
 
@@ -539,18 +547,20 @@ fn render_exposed_action(
         pub struct GoalHandle {
             messenger: peppylib::MessengerHandle,
             inner: peppylib::messaging::ActionGoalHandle,
-            /// Whether the node admitted the goal.
+            /// Whether the node accepted the goal: `refusal` is `None`.
             pub accepted: bool,
-            /// Optional human-readable rejection reason.
-            pub reason: Option<String>,
+            /// The failure the node refused the goal with; `None` for an
+            /// accepted goal.
+            pub refusal: Option<Failure>,
             #data_field
         }
 
-        /// Sends a goal to the node and decodes the admission reply.
+        /// Sends a goal to the node and decodes the admission reply. The
+        /// handle keeps up to `feedback_bound` unread feedback messages.
         pub async fn send_goal(
             harness: &crate::fixtures::harness::Harness,
             #goal_param
-            feedback_qos: peppylib::config::QoSProfile,
+            feedback_bound: peppylib::messaging::FeedbackBound,
             timeout: std::time::Duration,
         ) -> crate::Result<GoalHandle> {
             let producer = harness.node_producer_ref();
@@ -572,20 +582,18 @@ fn render_exposed_action(
                 #action_name,
                 Some(&producer),
                 #goal_payload,
-                feedback_qos,
-                peppylib::messaging::FeedbackBuffer::KeepLatest,
+                feedback_bound,
                 timeout,
             )
             .await?;
             let reply = inner.goal_reply();
-            let accepted = reply.accepted;
-            let reason = reply.reason.clone();
+            let refusal = reply.refusal().map(Failure::from_wire).transpose()?;
             #decode_goal_response
             Ok(GoalHandle {
                 messenger: harness.session().clone(),
+                accepted: refusal.is_none(),
                 inner,
-                accepted,
-                reason,
+                refusal,
                 #data_init
             })
         }

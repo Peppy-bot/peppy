@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use super::builder::FeedbackStream;
 use crate::encoding::{
     capnp_list_len, decode_message, encode_fs_path, encode_message, encode_message_non_empty,
-    optional_text,
+    optional_text, required_text,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,28 +388,18 @@ impl NodeAddGoal {
     }
 }
 
-/// Response to the NodeAdd goal request.
+/// The goal response of an accepted node add: where the daemon writes the
+/// add's log. The daemon refuses a goal in the goal envelope, with a
+/// failure kind and a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddGoalResponse {
-    pub accepted: bool,
     pub log_path: PathBuf,
-    pub rejection_reason: Option<String>,
 }
 
 impl NodeAddGoalResponse {
-    pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
+    pub fn new(log_path: impl Into<PathBuf>) -> Self {
         Self {
-            accepted: true,
             log_path: log_path.into(),
-            rejection_reason: None,
-        }
-    }
-
-    pub fn rejected(reason: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            log_path: PathBuf::new(),
-            rejection_reason: Some(reason.into()),
         }
     }
 
@@ -417,11 +407,7 @@ impl NodeAddGoalResponse {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_add_goal_response::Builder>();
-            response.set_accepted(self.accepted);
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
-            if let Some(ref reason) = self.rejection_reason {
-                response.set_rejection_reason(reason);
-            }
         }
         encode_message(&builder)
     }
@@ -430,9 +416,7 @@ impl NodeAddGoalResponse {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_add_goal_response::Reader>()?;
         Ok(Self {
-            accepted: response.get_accepted(),
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
         })
     }
 }
@@ -498,42 +482,23 @@ impl NodeAddFeedback {
     }
 }
 
-/// Result message for the NodeAdd action.
+/// The result of a completed node add: the node it added. A failed add
+/// gives a failure kind and a message, and no result.
 ///
 /// Note: `node add` only registers the node config and stages a working
 /// directory; the build artifact is produced by a separate `node build`
 /// action and is therefore not part of this result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddResult {
-    pub log_path: PathBuf,
-    pub success: bool,
-    pub error_message: Option<String>,
-    pub node_name: Option<String>,
-    pub node_tag: Option<String>,
+    pub node_name: String,
+    pub node_tag: String,
 }
 
 impl NodeAddResult {
-    pub fn success(
-        log_path: impl Into<PathBuf>,
-        node_name: impl Into<String>,
-        node_tag: impl Into<String>,
-    ) -> Self {
+    pub fn new(node_name: impl Into<String>, node_tag: impl Into<String>) -> Self {
         Self {
-            log_path: log_path.into(),
-            success: true,
-            error_message: None,
-            node_name: Some(node_name.into()),
-            node_tag: Some(node_tag.into()),
-        }
-    }
-
-    pub fn failure(log_path: impl Into<PathBuf>, error_message: impl Into<String>) -> Self {
-        Self {
-            log_path: log_path.into(),
-            success: false,
-            error_message: Some(error_message.into()),
-            node_name: None,
-            node_tag: None,
+            node_name: node_name.into(),
+            node_tag: node_tag.into(),
         }
     }
 
@@ -541,17 +506,8 @@ impl NodeAddResult {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_add_result::Builder>();
-            result.set_success(self.success);
-            if let Some(ref error_message) = self.error_message {
-                result.set_error_message(error_message);
-            }
-            result.set_log_path(self.log_path.to_string_lossy().as_ref());
-            if let Some(ref node_name) = self.node_name {
-                result.set_node_name(node_name);
-            }
-            if let Some(ref node_tag) = self.node_tag {
-                result.set_node_tag(node_tag);
-            }
+            result.set_node_name(&self.node_name);
+            result.set_node_tag(&self.node_tag);
         }
         encode_message(&builder)
     }
@@ -559,13 +515,9 @@ impl NodeAddResult {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let result = reader.get_root::<node_capnp::node_add_result::Reader>()?;
-        let log_path = PathBuf::from(result.get_log_path()?.to_str()?);
         Ok(Self {
-            log_path,
-            success: result.get_success(),
-            error_message: optional_text(result.get_error_message()?.to_str()?),
-            node_name: optional_text(result.get_node_name()?.to_str()?),
-            node_tag: optional_text(result.get_node_tag()?.to_str()?),
+            node_name: required_text(result.get_node_name()?.to_str()?, "NodeAddResult.node_name")?,
+            node_tag: required_text(result.get_node_tag()?.to_str()?, "NodeAddResult.node_tag")?,
         })
     }
 }
@@ -839,22 +791,9 @@ mod tests {
     // --- NodeAddGoalResponse ---
 
     #[test]
-    fn node_add_goal_response_accepted_roundtrip() {
-        let response = NodeAddGoalResponse::accepted("/var/log/add.log");
-        assert!(response.accepted);
+    fn node_add_goal_response_roundtrip() {
+        let response = NodeAddGoalResponse::new("/var/log/add.log");
         assert_eq!(response.log_path, PathBuf::from("/var/log/add.log"));
-        assert_eq!(response.rejection_reason, None);
-        let encoded = response.encode().expect("encode");
-        let decoded = NodeAddGoalResponse::decode(&encoded).expect("decode");
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn node_add_goal_response_rejected_roundtrip() {
-        let response = NodeAddGoalResponse::rejected("busy");
-        assert!(!response.accepted);
-        assert_eq!(response.log_path, PathBuf::new());
-        assert_eq!(response.rejection_reason, Some("busy".to_owned()));
         let encoded = response.encode().expect("encode");
         let decoded = NodeAddGoalResponse::decode(&encoded).expect("decode");
         assert_eq!(decoded, response);
@@ -903,29 +842,21 @@ mod tests {
     // --- NodeAddResult ---
 
     #[test]
-    fn node_add_result_success_roundtrip() {
-        let result = NodeAddResult::success("/var/log/add.log", "sensor_node", "v1");
-        assert!(result.success);
-        assert_eq!(result.log_path, PathBuf::from("/var/log/add.log"));
-        assert_eq!(result.error_message, None);
-        assert_eq!(result.node_name, Some("sensor_node".to_owned()));
-        assert_eq!(result.node_tag, Some("v1".to_owned()));
+    fn node_add_result_roundtrip() {
+        let result = NodeAddResult::new("sensor_node", "v1");
         let encoded = result.encode().expect("encode");
         let decoded = NodeAddResult::decode(&encoded).expect("decode");
         assert_eq!(decoded, result);
     }
 
+    /// A completed add always names its node: a result without one does
+    /// not decode.
     #[test]
-    fn node_add_result_failure_roundtrip() {
-        let result = NodeAddResult::failure("/var/log/add.log", "boom");
-        assert!(!result.success);
-        assert_eq!(result.log_path, PathBuf::from("/var/log/add.log"));
-        assert_eq!(result.error_message, Some("boom".to_owned()));
-        assert_eq!(result.node_name, None);
-        assert_eq!(result.node_tag, None);
+    fn node_add_result_decode_refuses_a_missing_node() {
+        let result = NodeAddResult::new("", "v1");
         let encoded = result.encode().expect("encode");
-        let decoded = NodeAddResult::decode(&encoded).expect("decode");
-        assert_eq!(decoded, result);
+        let refusal = crate::encoding::decoding_error(NodeAddResult::decode(&encoded));
+        assert!(refusal.contains("NodeAddResult.node_name"), "{refusal}");
     }
 
     #[test]

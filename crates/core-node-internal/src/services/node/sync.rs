@@ -11,8 +11,9 @@ use self::codegen::remove_previous_peppy_dir;
 pub(crate) use self::deps::{DepClosure, MaterializedDeps, materialize_repo_deps};
 use super::trace_interface_step;
 use crate::Result;
-use crate::services::response::into_service_response;
+use crate::services::response::{failure, into_service_answer};
 use config::ParsingError;
+use config::failure_kind::PeppyFailureKind;
 use config::node::{
     Manifest, MissingDependencyPolicy, NodeConfig, NodeConfigParser, validate_dependency_specs,
 };
@@ -22,9 +23,8 @@ use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::ServiceRequestContext;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::messaging::{Failure, ServiceAnswer, ServiceRequestContext};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -64,39 +64,31 @@ async fn handle_node_sync_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
-) -> PeppyResult<Payload> {
-    into_service_response(
-        &context,
-        handle_node_sync_request_inner(&context, &node_stack, peppy_dirs).await,
-    )
-}
-
-async fn handle_node_sync_request_inner(
-    context: &ServiceRequestContext,
-    node_stack: &NodeStack,
-    peppy_dirs: PeppyDirs,
-) -> Result<Payload> {
+) -> ServiceAnswer {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload_bytes();
 
-    let request = NodeSyncRequest::decode(payload.as_ref())?;
+    let request = NodeSyncRequest::decode(payload.as_ref())
+        .map_err(|error| failure(PeppyFailureKind::Rejected, error))?;
 
     debug!("Received `node_sync` request from {sender_instance_id}");
 
-    let response = match sync_node(request, node_stack, peppy_dirs).await {
-        Ok(response) => response,
-        Err(reason) => NodeSyncResponse::failure(reason),
-    };
-    response.encode().map_err(Into::into)
+    let response = sync_node(request, &node_stack, peppy_dirs).await?;
+    into_service_answer(response.encode().map_err(Into::into))
 }
 
 /// Generates peppygen for the node of `request`. Returns the response that
-/// lists where its dependencies resolved from, or the reason the sync fails.
+/// lists where its dependencies resolved from, or the failure of the sync:
+/// `rejected` for a node directory or a `peppy.json5` the daemon cannot
+/// read, `precondition_failed` for a dependency it cannot resolve, and
+/// `attempt_failed` for a step that fails.
 async fn sync_node(
     request: NodeSyncRequest,
     node_stack: &NodeStack,
     peppy_dirs: PeppyDirs,
-) -> std::result::Result<NodeSyncResponse, String> {
+) -> std::result::Result<NodeSyncResponse, Failure> {
+    let rejected = |message: String| failure(PeppyFailureKind::Rejected, message);
+    let attempt_failed = |message: String| failure(PeppyFailureKind::AttemptFailed, message);
     let NodeSyncRequest {
         node_root_dir,
         git_hash,
@@ -104,22 +96,25 @@ async fn sync_node(
     } = request;
 
     if node_root_dir.as_os_str().is_empty() {
-        return Err("Missing `node_root_dir` in node_sync request".to_owned());
+        return Err(rejected(
+            "Missing `node_root_dir` in node_sync request".to_owned(),
+        ));
     }
     if !node_root_dir.exists() {
-        return Err(format!(
+        return Err(rejected(format!(
             "`node_root_dir` does not exist: {}",
             node_root_dir.display()
-        ));
+        )));
     }
     if !node_root_dir.is_dir() {
-        return Err(format!(
+        return Err(rejected(format!(
             "`node_root_dir` is not a directory: {}",
             node_root_dir.display()
-        ));
+        )));
     }
 
-    let node_config = parse_node_config(&node_root_dir.join(config::consts::NODE_CONFIG_FILE))?;
+    let node_config = parse_node_config(&node_root_dir.join(config::consts::NODE_CONFIG_FILE))
+        .map_err(rejected)?;
 
     // Optional repository fallback. When `include_repositories` is set, walk
     // the dependency tree, fetch every dep absent from the node stack through
@@ -133,7 +128,8 @@ async fn sync_node(
             &peppy_dirs,
             DepClosure::Transitive,
         )
-        .await?;
+        .await
+        .map_err(attempt_failed)?;
         (deps.configs, deps.provenance, Some(deps.stack_hits))
     } else {
         (HashMap::new(), Vec::new(), None)
@@ -153,7 +149,7 @@ async fn sync_node(
         &resolve_dep,
     );
     if let Some(message) = describe_unresolved_dependencies(&node_config.manifest, &dep_errors) {
-        return Err(message);
+        return Err(failure(PeppyFailureKind::PreconditionFailed, message));
     }
 
     // Collect consumed interfaces with resolved message formats
@@ -164,7 +160,8 @@ async fn sync_node(
         &peppy_dirs,
         None,
         &trace_interface_step,
-    )?;
+    )
+    .map_err(attempt_failed)?;
 
     // Provenance: record every dep that resolves through the stack so the
     // response can list them under "Synchronized from node stack:" in the
@@ -193,10 +190,15 @@ async fn sync_node(
         )
     })
     .await
-    .map_err(|e| format!("Failed to generate peppygen (generate task failed): {}", e))?;
-    generation.map_err(|e| format!("Failed to generate peppygen: {}", e))?;
+    .map_err(|e| {
+        attempt_failed(format!(
+            "Failed to generate peppygen (generate task failed): {}",
+            e
+        ))
+    })?;
+    generation.map_err(|e| attempt_failed(format!("Failed to generate peppygen: {}", e)))?;
 
-    Ok(NodeSyncResponse::success_with_provenance(
+    Ok(NodeSyncResponse::new(
         resolved_from_stack,
         repo_resolved_provenance,
     ))

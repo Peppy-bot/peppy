@@ -107,14 +107,11 @@ async fn reset_async(ctx: &Arc<AppContext>, federated: bool) -> Result<()> {
             )
             .await
             {
-                Ok(response) if response.success => None,
-                Ok(response) => Some(format!(
-                    "{core_node}: {}",
-                    response
-                        .error_message
-                        .unwrap_or_else(|| "stack reset failed".to_owned())
-                )),
-                Err(e) => Some(format!("{core_node}: {e}")),
+                Ok(_) => None,
+                Err(error) => Some(match error.failure() {
+                    Some(failure) => crate::commands::reply_failure_text(core_node, failure),
+                    None => format!("{core_node}: {error}"),
+                }),
             }
         }
     }))

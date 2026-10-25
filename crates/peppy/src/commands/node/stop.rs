@@ -58,15 +58,7 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
         request_timeout,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_stop service: {}", e)))?;
-
-    if !stop_response.success {
-        return Err(Error::ExecutionFailed(
-            stop_response
-                .error_message
-                .unwrap_or_else(|| "node_stop failed with no error message".to_string()),
-        ));
-    }
+    .map_err(|e| crate::commands::request_error("Failed to stop the node instance", e))?;
 
     if stop_response.force_killed {
         warn_force_killed(&instance_id);

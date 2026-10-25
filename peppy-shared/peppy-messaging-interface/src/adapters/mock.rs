@@ -4,8 +4,8 @@ use super::super::subscription_buffer::{
     Buffering, SubscriptionSink, queue_capacity, subscription_channel,
 };
 use super::super::types::{
-    AbortOnDrop, ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer,
-    IncomingRequest, LivelinessEvent, LivelinessToken, LivelinessWatch, Messenger,
+    AbortOnDrop, ClientPresence, CoreNodePresence, CoreNodePresenceList, FeedbackBuffer,
+    IncomingRequest, LivelinessEvent, LivelinessProbe, LivelinessToken, LivelinessWatch, Messenger,
     MessengerAdapter, MessengerBackend, MockResponseToken, Payload, PresenceScope, PublisherQoS,
     ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
     SubscriberQoS, Subscription, TopicBuffer, TopicMessage, service_query_lifetime,
@@ -369,7 +369,6 @@ impl MessengerBackend for MockAdapter {
         &self,
         sender: &ActionWireSender,
         goal_id: &str,
-        qos: SubscriberQoS,
         buffer: FeedbackBuffer,
     ) -> Result<Subscription> {
         // Action feedback publishes exactly once per goal (see the wire
@@ -378,7 +377,9 @@ impl MessengerBackend for MockAdapter {
         // slot. See the matching note in `ZenohAdapter::subscribe_action_feedback`.
         self.subscribe_keyexpr(
             &ZenohWireFormat::action_feedback_subscribe(sender, goal_id),
-            qos,
+            // A feedback buffer takes its own bound, so the QoS tier, which
+            // only sizes a topic's queue, plays no part.
+            SubscriberQoS::Standard,
             Buffering::Feedback(buffer),
             false,
             TopicRetention::LiveOnly,
@@ -394,53 +395,31 @@ impl MessengerBackend for MockAdapter {
     }
 
     async fn watch_action_producer(&self, sender: &ActionWireSender) -> Result<LivelinessWatch> {
-        self.require_session()?;
-        let pattern = ZenohWireFormat::action_liveliness_watch(sender);
-        let (tx, rx) = flume::unbounded::<LivelinessEvent>();
-        {
-            let mut liveliness = self.liveliness.lock().unwrap();
-            // History emulation: a token that already exists is replayed as
-            // an initial Alive, matching the Zenoh watch's `history(true)`.
-            if Self::live_keys_matching(&liveliness, &pattern)
-                .next()
-                .is_some()
-            {
-                let _ = tx.send(LivelinessEvent::Alive(()));
-            }
-            liveliness
-                .watchers
-                .entry(pattern)
-                .or_default()
-                .push(Box::new(move |_keyexpr, event| {
-                    let _ = tx.send(event);
-                }));
-        }
-        // Stale watcher callbacks in the map are benign (they ignore send
-        // errors), mirroring the topic SubscriptionMap convention.
-        Ok(LivelinessWatch::new(rx, Box::new(())))
+        self.watch_liveliness(ZenohWireFormat::action_liveliness_watch(sender))
     }
 
     async fn probe_action_producer(
         &self,
         sender: &ActionWireSender,
         _timeout: std::time::Duration,
-    ) -> Result<ActionLivelinessProbe> {
-        self.require_session()?;
-        let pattern = ZenohWireFormat::action_liveliness_watch(sender);
-        let alive = {
-            let liveliness = self.liveliness.lock().unwrap();
-            Self::live_keys_matching(&liveliness, &pattern)
-                .next()
-                .is_some()
-        };
-        // The mock answers instantly: send the alive marker (or don't) and
-        // drop the sender so `resolve` returns without waiting.
-        let (tx, rx) = flume::bounded::<()>(1);
-        if alive {
-            let _ = tx.try_send(());
-        }
-        drop(tx);
-        Ok(ActionLivelinessProbe::new(rx))
+    ) -> Result<LivelinessProbe> {
+        self.probe_liveliness(&ZenohWireFormat::action_liveliness_watch(sender))
+    }
+
+    async fn declare_client_presence(&self, client: &ClientPresence) -> Result<LivelinessToken> {
+        self.declare_liveliness(ZenohWireFormat::client_presence_token(client))
+    }
+
+    async fn watch_client_presence(&self, client: &ClientPresence) -> Result<LivelinessWatch> {
+        self.watch_liveliness(ZenohWireFormat::client_presence_token(client))
+    }
+
+    async fn probe_client_presence(
+        &self,
+        client: &ClientPresence,
+        _timeout: std::time::Duration,
+    ) -> Result<LivelinessProbe> {
+        self.probe_liveliness(&ZenohWireFormat::client_presence_token(client))
     }
 
     async fn declare_core_node_presence(
@@ -594,6 +573,53 @@ impl MockAdapter {
                 watcher(keyexpr, event);
             }
         }
+    }
+
+    /// Shared body of the liveliness watches that carry no value: a token
+    /// that already exists is replayed as an initial Alive, matching the
+    /// Zenoh watch's `history(true)`, then each transition of a token that
+    /// intersects `pattern` is streamed.
+    fn watch_liveliness(&self, pattern: String) -> Result<LivelinessWatch> {
+        self.require_session()?;
+        let (tx, rx) = flume::unbounded::<LivelinessEvent>();
+        {
+            let mut liveliness = self.liveliness.lock().unwrap();
+            if Self::live_keys_matching(&liveliness, &pattern)
+                .next()
+                .is_some()
+            {
+                let _ = tx.send(LivelinessEvent::Alive(()));
+            }
+            liveliness
+                .watchers
+                .entry(pattern)
+                .or_default()
+                .push(Box::new(move |_keyexpr, event| {
+                    let _ = tx.send(event);
+                }));
+        }
+        // Stale watcher callbacks in the map are benign (they ignore send
+        // errors), mirroring the topic SubscriptionMap convention.
+        Ok(LivelinessWatch::new(rx, Box::new(())))
+    }
+
+    /// Shared body of the liveliness probes. The mock answers at once: it
+    /// sends the alive marker (or does not) and drops the sender, so
+    /// `resolve` returns without waiting.
+    fn probe_liveliness(&self, pattern: &str) -> Result<LivelinessProbe> {
+        self.require_session()?;
+        let alive = {
+            let liveliness = self.liveliness.lock().unwrap();
+            Self::live_keys_matching(&liveliness, pattern)
+                .next()
+                .is_some()
+        };
+        let (tx, rx) = flume::bounded::<()>(1);
+        if alive {
+            let _ = tx.try_send(());
+        }
+        drop(tx);
+        Ok(LivelinessProbe::new(rx))
     }
 
     /// Shared body of the liveliness declaration methods: bumps the live
@@ -1223,10 +1249,10 @@ mod tests {
     }
 
     /// A producer acks a request, then fails it: the caller reads an empty
-    /// Ack reply, then a HandlerError reply that carries the reason, and the
+    /// Ack reply, then a Failure reply that carries the failure, and the
     /// reply stream ends once the consumed token is gone.
     #[tokio::test]
-    async fn mock_service_reply_stream_carries_an_ack_then_a_handler_error() {
+    async fn mock_service_reply_stream_carries_an_ack_then_a_failure() {
         use crate::wire::{
             SenderTarget, ServiceKind, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
             ServiceWireSender,
@@ -1272,11 +1298,15 @@ mod tests {
             .await
             .expect("producer should receive the query");
         incoming.token.respond_ack().await.expect("ack should send");
+        let sent = crate::Failure::new(
+            config::failure_kind::PeppyFailureKind::AttemptFailed,
+            "handler failed",
+        );
         incoming
             .token
-            .respond_handler_error("handler failed".to_string())
+            .respond_failure(&sent)
             .await
-            .expect("handler error should send");
+            .expect("failure should send");
 
         let ack = reply_stream
             .rx
@@ -1289,11 +1319,11 @@ mod tests {
             .rx
             .recv()
             .await
-            .expect("caller should read the handler error");
-        assert_eq!(failure.kind(), ServiceReplyKind::HandlerError);
+            .expect("caller should read the failure");
+        assert_eq!(failure.kind(), ServiceReplyKind::Failure);
         assert_eq!(
-            failure.message().payload().to_bytes().as_ref(),
-            b"handler failed"
+            crate::Failure::decode(failure.message().payload().to_bytes().as_ref()),
+            Ok(sent)
         );
         assert!(reply_stream.rx.recv().await.is_none());
     }
@@ -1446,6 +1476,60 @@ mod tests {
             .await
             .expect("probe should issue");
         assert!(!probe.resolve().await, "token is gone");
+    }
+
+    /// A provider watches one process that sends goals: the generation in
+    /// the key keeps a process that starts again under the same identity
+    /// apart from the one that ended.
+    #[tokio::test]
+    async fn mock_client_presence_tells_one_process_from_the_next() {
+        use crate::wire::Segment;
+
+        let mut adapter = MockAdapter::default();
+        adapter.start_session().await.expect("session should start");
+        let process = |generation: &str| ClientPresence {
+            core_node: Segment::try_from("robot_a").unwrap(),
+            instance_id: Segment::try_from("brain").unwrap(),
+            generation: Segment::try_from(generation).unwrap(),
+        };
+        let (first, second) = (process("gen1"), process("gen2"));
+        let probe = |client: ClientPresence| {
+            let adapter = &adapter;
+            async move {
+                adapter
+                    .probe_client_presence(&client, std::time::Duration::from_secs(1))
+                    .await
+                    .expect("probe should issue")
+                    .resolve()
+                    .await
+            }
+        };
+
+        let first_token = adapter
+            .declare_client_presence(&first)
+            .await
+            .expect("token should declare");
+        let watch = adapter
+            .watch_client_presence(&first)
+            .await
+            .expect("watch should declare");
+        assert_eq!(
+            watch.rx.recv_async().await.expect("initial event"),
+            LivelinessEvent::Alive(())
+        );
+
+        let _second_token = adapter
+            .declare_client_presence(&second)
+            .await
+            .expect("token should declare");
+        drop(first_token);
+        assert_eq!(
+            watch.rx.recv_async().await.expect("gone event"),
+            LivelinessEvent::Gone(()),
+            "the next process does not hide the end of the first one"
+        );
+        assert!(!probe(first).await);
+        assert!(probe(second).await);
     }
 
     #[tokio::test]
@@ -1913,8 +1997,9 @@ mod tests {
             .subscribe_action_feedback(
                 &sender,
                 "g7",
-                SubscriberQoS::Standard,
-                FeedbackBuffer::KeepLatest,
+                FeedbackBuffer::new(crate::FeedbackBound::new(
+                    std::num::NonZeroUsize::new(8).expect("a bound above zero"),
+                )),
             )
             .await
             .expect("subscribe feedback");

@@ -1,5 +1,6 @@
 use super::adapters::mock::{MockAdapter, MockPublisher};
 use super::error::Result;
+use super::failure::Failure;
 use super::wire::zenoh_format::{ServiceReplyAttachment, ZenohWireFormat};
 use super::wire::{
     ActionWireReceiver, ActionWireSender, Segment, ServiceQueryKind, ServiceReplyKind,
@@ -125,21 +126,93 @@ pub enum TopicBuffer {
     KeepLatest,
 }
 
-/// How a goal's feedback subscription holds the messages its reader has not
-/// taken yet. Neither choice makes the transport wait for the reader, so an
-/// unread feedback stream never holds up the other messages to the same
-/// session, such as the goal's result. The end of the stream is always kept.
+/// How many unread feedback messages a goal's caller keeps. A caller that
+/// falls behind by more unread messages than its bound loses the stream: see
+/// [`FeedbackBuffer`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FeedbackBuffer {
-    /// Keep the newest messages, up to the subscriber buffer size of the
-    /// feedback's QoS tier. A message that arrives while the buffer is full
-    /// drops the oldest unread one. For feedback that reports progress, where
-    /// the newest message is what counts.
-    KeepLatest,
-    /// Keep every message until the reader takes it. Memory grows with the
-    /// messages not read yet, so this is for a reader that drains the stream
-    /// without pause and must not miss a message, such as a log it prints.
-    KeepAll,
+pub struct FeedbackBound(std::num::NonZeroUsize);
+
+impl FeedbackBound {
+    pub const fn new(unread_messages: std::num::NonZeroUsize) -> Self {
+        Self(unread_messages)
+    }
+
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
+/// How a goal's feedback subscription holds the messages its reader has not
+/// taken yet: every message, until the reader takes it, up to the bound of
+/// unread messages. The buffer never makes the transport wait for the
+/// reader, so an unread feedback stream never holds up the other messages to
+/// the same session, such as the goal's result. The end of the stream is
+/// always kept.
+///
+/// A message that arrives while the reader is behind by the bound overflows
+/// the buffer: the buffer drops every unread message, takes no message after
+/// it, and raises its [`FeedbackOverflow`], so the reader learns of the loss
+/// instead of missing a message without notice.
+#[derive(Debug, Clone)]
+pub struct FeedbackBuffer {
+    bound: FeedbackBound,
+    overflow: FeedbackOverflow,
+}
+
+impl FeedbackBuffer {
+    pub fn new(bound: FeedbackBound) -> Self {
+        Self {
+            bound,
+            overflow: FeedbackOverflow::default(),
+        }
+    }
+
+    pub fn bound(&self) -> FeedbackBound {
+        self.bound
+    }
+
+    /// The signal the buffer raises when it overflows.
+    pub fn overflow(&self) -> FeedbackOverflow {
+        self.overflow.clone()
+    }
+}
+
+/// Raised once, when a goal's feedback buffer overflows. Clones share the
+/// same signal.
+#[derive(Debug, Clone, Default)]
+pub struct FeedbackOverflow(std::sync::Arc<FeedbackOverflowState>);
+
+#[derive(Debug, Default)]
+struct FeedbackOverflowState {
+    raised: std::sync::atomic::AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl FeedbackOverflow {
+    pub fn is_raised(&self) -> bool {
+        self.0.raised.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Resolves once the buffer overflowed; pends while it has not.
+    pub async fn raised(&self) {
+        loop {
+            let mut notified = std::pin::pin!(self.0.notify.notified());
+            // Register interest before the check, so a raise between the
+            // check and the wait is not missed.
+            notified.as_mut().enable();
+            if self.is_raised() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    pub(crate) fn raise(&self) {
+        self.0
+            .raised
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.0.notify.notify_waiters();
+    }
 }
 
 // The daemon resolves buffer sizes as config types (config must not
@@ -292,7 +365,6 @@ pub trait MessengerBackend {
         &self,
         sender: &ActionWireSender,
         goal_id: &str,
-        qos: SubscriberQoS,
         buffer: FeedbackBuffer,
     ) -> impl Future<Output = Result<Subscription>> + Send;
 
@@ -320,13 +392,40 @@ pub trait MessengerBackend {
     /// One-shot probe: is the liveliness token of the producer instance
     /// `sender` targets currently present? Issuing the query is fast (the
     /// returned future only awaits declaration); the answer is awaited via
-    /// [`ActionLivelinessProbe::resolve`], so callers can release any
+    /// [`LivelinessProbe::resolve`], so callers can release any
     /// shared lock before waiting out the probe `timeout`.
     fn probe_action_producer(
         &self,
         sender: &ActionWireSender,
         timeout: std::time::Duration,
-    ) -> impl Future<Output = Result<ActionLivelinessProbe>> + Send;
+    ) -> impl Future<Output = Result<LivelinessProbe>> + Send;
+
+    // ─── Client presence ─────────────────────────────────────────
+
+    /// Declares the liveliness token of one process that sends goals.
+    /// Holding the returned token advertises `client` until the token is
+    /// dropped or the declaring session disappears.
+    fn declare_client_presence(
+        &self,
+        client: &ClientPresence,
+    ) -> impl Future<Output = Result<LivelinessToken>> + Send;
+
+    /// Watches the liveliness token of one process that sends goals. A
+    /// token that already exists is replayed as [`LivelinessEvent::Alive`]
+    /// before live transitions are streamed.
+    fn watch_client_presence(
+        &self,
+        client: &ClientPresence,
+    ) -> impl Future<Output = Result<LivelinessWatch>> + Send;
+
+    /// One-shot probe: is the liveliness token of `client` present? Issuing
+    /// the query is fast; the answer is awaited via
+    /// [`LivelinessProbe::resolve`].
+    fn probe_client_presence(
+        &self,
+        client: &ClientPresence,
+        timeout: std::time::Duration,
+    ) -> impl Future<Output = Result<LivelinessProbe>> + Send;
 
     // ─── Core-node presence ──────────────────────────────────────
 
@@ -467,6 +566,17 @@ impl CoreNodePresence {
     }
 }
 
+/// One process that sends goals: the core node and instance id it sends as,
+/// and a generation unique to the process. A provider watches the
+/// liveliness token of each sender of its goals, to cancel the goals of a
+/// sender that is gone.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ClientPresence {
+    pub core_node: Segment,
+    pub instance_id: Segment,
+    pub generation: Segment,
+}
+
 /// Which workspace a presence query enumerates.
 ///
 /// The two variants are genuinely different observations, not one observation
@@ -541,11 +651,11 @@ impl<T> LivelinessWatch<T> {
 /// when a matching token is found and drops its sender when the query
 /// finalizes, so [`resolve`](Self::resolve) maps "channel yielded" to
 /// alive and "channel disconnected" to gone.
-pub struct ActionLivelinessProbe {
+pub struct LivelinessProbe {
     rx: flume::Receiver<()>,
 }
 
-impl ActionLivelinessProbe {
+impl LivelinessProbe {
     pub(crate) fn new(rx: flume::Receiver<()>) -> Self {
         Self { rx }
     }
@@ -664,7 +774,7 @@ impl ReplyStream {
 /// A single service request delivered to the responder. `token` is the
 /// only legal way to send replies: peppylib calls `respond_ack` first
 /// (lets the consumer distinguish ServiceUnreachable from ServiceTimeout),
-/// then exactly one terminal `respond_response` / `respond_handler_error`.
+/// then exactly one terminal `respond_response` / `respond_failure`.
 pub struct IncomingRequest {
     pub payload: Payload,
     /// Whether this is a user request (handler should run) or a discovery
@@ -690,7 +800,7 @@ pub struct IncomingRequest {
 ///
 /// The reply protocol is two-step: `respond_ack` is non-consuming and runs
 /// first, then exactly one terminal `respond_response` or
-/// `respond_handler_error` consumes the token. Consuming the token drops
+/// `respond_failure` consumes the token. Consuming the token drops
 /// the underlying Zenoh `Query` (or mock reply channel), closing the
 /// consumer's reply stream after the final reply is observed.
 pub enum ResponseToken {
@@ -721,14 +831,13 @@ impl ResponseToken {
             .await
     }
 
-    /// Sends a handler-error reply: the reason rides in the payload as
-    /// UTF-8, with `ServiceReplyKind::HandlerError` on the attachment so
-    /// the consumer's poll loop surfaces `Error::ServiceError { reason }`
-    /// instead of returning the bytes as a normal response. Consumes the
-    /// token.
-    pub async fn respond_handler_error(self, reason: String) -> Result<()> {
-        let payload = Payload::from_bytes(bytes::Bytes::from(reason.into_bytes()));
-        self.respond_with_kind(payload, ServiceReplyKind::HandlerError)
+    /// Sends an error reply: the wire form of `failure` rides in the
+    /// payload, with `ServiceReplyKind::Failure` on the attachment so the
+    /// consumer's poll loop surfaces the failure instead of returning the
+    /// bytes as a normal response. Consumes the token.
+    pub async fn respond_failure(self, failure: &Failure) -> Result<()> {
+        let payload = Payload::from_bytes(failure.encode());
+        self.respond_with_kind(payload, ServiceReplyKind::Failure)
             .await
     }
 
@@ -1232,7 +1341,6 @@ impl MessengerBackend for Messenger {
         &self,
         sender: &ActionWireSender,
         goal_id: &str,
-        qos: SubscriberQoS,
         buffer: FeedbackBuffer,
     ) -> Result<Subscription> {
         dispatch!(
@@ -1240,7 +1348,6 @@ impl MessengerBackend for Messenger {
             subscribe_action_feedback,
             sender,
             goal_id,
-            qos,
             buffer
         )
     }
@@ -1260,8 +1367,24 @@ impl MessengerBackend for Messenger {
         &self,
         sender: &ActionWireSender,
         timeout: std::time::Duration,
-    ) -> Result<ActionLivelinessProbe> {
+    ) -> Result<LivelinessProbe> {
         dispatch!(&self.adapter, probe_action_producer, sender, timeout)
+    }
+
+    async fn declare_client_presence(&self, client: &ClientPresence) -> Result<LivelinessToken> {
+        dispatch!(&self.adapter, declare_client_presence, client)
+    }
+
+    async fn watch_client_presence(&self, client: &ClientPresence) -> Result<LivelinessWatch> {
+        dispatch!(&self.adapter, watch_client_presence, client)
+    }
+
+    async fn probe_client_presence(
+        &self,
+        client: &ClientPresence,
+        timeout: std::time::Duration,
+    ) -> Result<LivelinessProbe> {
+        dispatch!(&self.adapter, probe_client_presence, client, timeout)
     }
 
     async fn declare_core_node_presence(

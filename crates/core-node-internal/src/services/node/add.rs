@@ -2,10 +2,11 @@ mod staged;
 
 use self::staged::{StagedJob, run_staged_job};
 use super::super::action_loop::{
-    GoalHandler, accept_goal, reject_goal, run_action_loop, under_goal_cancel,
+    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, expose_daemon_action,
+    invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
 };
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
-use super::gate::ConcurrencyGate;
+use super::gate::{COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use super::git_utils::install_credentials;
 use super::sync::{
     self, AutoSyncParams, DepClosure, MaterializedDeps, collect_all_deployment_interfaces,
@@ -20,21 +21,21 @@ use crate::Result;
 use crate::source_url::SourceUrl;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::failure_kind::PeppyFailureKind;
 use config::node::{MissingDependencyPolicy, validate_dependency_specs};
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::ActionId;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
-use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
 use node_stack::build_io::format_bytes;
-use node_stack::{ActionLog, Announcer, InstanceState, NodeStack, WorkingDirGuard};
-use peppylib::messaging::{ConcurrentAction, PendingGoal};
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult};
+use node_stack::{ActionLog, Announcer, InstanceState, NodeStack, NodeStackError, WorkingDirGuard};
+use peppylib::MessengerHandle;
+use peppylib::messaging::{Failure, PendingGoal};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::panic::AssertUnwindSafe;
@@ -47,7 +48,6 @@ use tracing::debug;
 use ureq::Error as HttpError;
 
 use super::{FeedbackLine, interface_step_sink};
-use peppylib::messaging::SenderTarget;
 
 #[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
 pub async fn listen_for_node_add(
@@ -60,13 +60,12 @@ pub async fn listen_for_node_add(
     relationships: super::RelationshipCoordinators,
     slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ConcurrentAction::expose(
+    let action = expose_daemon_action(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ActionId::NodeAdd.name(),
-        true,
+        node_name,
+        ActionId::NodeAdd,
     )
     .await?;
 
@@ -881,19 +880,11 @@ async fn resolve_node_add_source(
     }
 }
 
-/// Encodes a rejected goal response, mapping encoding errors to `PeppyError`.
-fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
-    super::encode_response_or_err(
-        "node_add_goal",
-        NodeAddGoalResponse::rejected(reason).encode(),
-    )
-}
-
-/// Writes `message` to the add log and returns the failure result that
-/// names that log, so the reason is in the file the client is pointed at.
-pub(crate) fn record_add_failure(announcer: &Announcer, message: String) -> NodeAddResult {
-    announcer.log().error(&message);
-    NodeAddResult::failure(announcer.log().path(), message)
+/// Writes the message of `failure` to the add log and returns the failure,
+/// so the reason is in the file the client is pointed at.
+pub(crate) fn record_add_failure(announcer: &Announcer, failure: Failure) -> Failure {
+    announcer.log().error(failure.message());
+    failure
 }
 
 /// The one place a node-add goal picks its pipeline: an exposures source
@@ -909,7 +900,7 @@ pub(crate) async fn dispatch_node_add(
     goal: NodeAddGoal,
     action_context: NodeAddActionContext,
     announcer: Announcer,
-) -> NodeAddResult {
+) -> std::result::Result<NodeAddResult, Failure> {
     match goal.source {
         NodeSource::Exposures { .. } => {
             crate::services::mcp::built_in::run_built_in_add(goal, action_context, announcer).await
@@ -924,8 +915,8 @@ pub(crate) async fn dispatch_node_add(
 }
 
 /// Runs the full single-source node-add pipeline: resolves the source,
-/// renames the log file to its canonical form, calls [`process_node_add`],
-/// and catches panics.
+/// names the node of the log, calls [`process_node_add`], and catches
+/// panics.
 ///
 /// The caller is responsible for creating the log file (so the action-server
 /// path can include its path in the goal response before spawning this).
@@ -936,7 +927,7 @@ pub(crate) async fn run_node_add(
     goal: NodeAddGoal,
     action_context: NodeAddActionContext,
     announcer: Announcer,
-) -> NodeAddResult {
+) -> std::result::Result<NodeAddResult, Failure> {
     // The async block takes `announcer`, so the panic arm keeps its own
     // handle on the same log.
     let log = announcer.log().clone();
@@ -946,7 +937,12 @@ pub(crate) async fn run_node_add(
         let mut resolved =
             match resolve_node_add_source(&goal, &action_context.peppy_dirs, &announcer).await {
                 Ok(r) => r,
-                Err(error_msg) => return record_add_failure(&announcer, error_msg),
+                Err(error_msg) => {
+                    return Err(record_add_failure(
+                        &announcer,
+                        Failure::new(PeppyFailureKind::AttemptFailed, error_msg),
+                    ));
+                }
             };
 
         // RAII guard: ensures resolved.cleanup_dir is removed on any early return
@@ -998,10 +994,22 @@ pub(crate) async fn run_node_add(
             match sync_result {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    return record_add_failure(&announcer, format!("Auto-sync failed: {}", e));
+                    return Err(record_add_failure(
+                        &announcer,
+                        Failure::new(
+                            PeppyFailureKind::AttemptFailed,
+                            format!("Auto-sync failed: {}", e),
+                        ),
+                    ));
                 }
                 Err(e) => {
-                    return record_add_failure(&announcer, format!("Auto-sync task failed: {}", e));
+                    return Err(record_add_failure(
+                        &announcer,
+                        Failure::new(
+                            PeppyFailureKind::AttemptFailed,
+                            format!("Auto-sync task failed: {}", e),
+                        ),
+                    ));
                 }
             }
         }
@@ -1013,7 +1021,12 @@ pub(crate) async fn run_node_add(
         if is_synced_local_directory
             && let Err(error_msg) = verify_git_hash(&root_source_path, &goal.git_hash)
         {
-            return record_add_failure(&announcer, error_msg);
+            // The node's generated code is from another commit: a sync
+            // brings it up to date.
+            return Err(record_add_failure(
+                &announcer,
+                Failure::new(PeppyFailureKind::PreconditionFailed, error_msg),
+            ));
         }
 
         let cleanup_dir = resolved_cleanup_guard.take();
@@ -1024,9 +1037,9 @@ pub(crate) async fn run_node_add(
         let verify_codegen_fingerprint =
             matches!(&goal.source, NodeSource::Fs(_)) && goal.git_hash != STACK_LAUNCH_GIT_HASH;
 
-        // The resolved config names the node: the log takes its canonical
-        // {name}_{tag}_{timestamp}.log name.
-        announcer.log().rename_for_node(
+        // The resolved config names the node: every later line of the log
+        // belongs to it. The file keeps the path the goal response gave.
+        announcer.log().name_node(
             node_config.manifest.name.as_str(),
             &node_config.manifest.tag,
         );
@@ -1056,40 +1069,48 @@ pub(crate) async fn run_node_add(
             );
             tracing::error!("{}", msg);
             log.error(&msg);
-            NodeAddResult::failure(log.path(), msg)
+            Err(Failure::new(PeppyFailureKind::AttemptFailed, msg))
         }
     }
 }
 
-/// Admits a `node_add` goal through the concurrency gate, aborting any
-/// superseded task. Returns the admitted generation, or the rejection
-/// message when another action is already running (and `--force` was not
-/// set).
-fn admit_node_add_goal(
+/// Admits a `node_add` goal through the concurrency gate. Returns the
+/// admitted generation, or the refusal, of the kind `busy`, when another
+/// add is already running (and `--force` was not set).
+///
+/// A forced admission cancels the add it supersedes, which then ends
+/// cancelled, "superseded by a forced node add". The admission waits for
+/// that end within [`COOPERATIVE_TEARDOWN_BUDGET`], and aborts a task that
+/// outlasts the budget.
+async fn admit_node_add_goal(
     gate: &ConcurrencyGate,
     goal: &NodeAddGoal,
-) -> std::result::Result<u64, String> {
+) -> std::result::Result<u64, Failure> {
     if goal.force {
-        debug!("Force flag set: aborting any previous node_add task");
+        debug!("Force flag set: cancelling any previous node_add task");
     }
     match gate.try_admit(goal.timeout_secs, goal.force) {
         super::gate::Admission::Admitted {
             generation,
             superseded,
         } => {
-            // `node_add` keeps the hard-abort semantics: it overwrites the
-            // entity wholesale via `push_config`, so it does not need the old
-            // task's cooperative teardown the way `node_build` does (which
-            // awaits it to reuse the staged working dir). The gate already
-            // signaled the cancel token; abort drops the superseded future.
             if let Some(old_task) = superseded {
-                old_task.abort();
+                let abort = old_task.abort_handle();
+                if tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, old_task)
+                    .await
+                    .is_err()
+                {
+                    abort.abort();
+                }
             }
             Ok(generation)
         }
-        super::gate::Admission::AlreadyRunning { remaining_secs } => Err(format!(
-            "action already in progress (times out in {remaining_secs}s), \
-             use `--force` to force adding the node"
+        super::gate::Admission::AlreadyRunning { remaining_secs } => Err(Failure::new(
+            DaemonFailureKind::Busy,
+            format!(
+                "action already in progress (times out in {remaining_secs}s), use `--force` to \
+                 force adding the node"
+            ),
         )),
     }
 }
@@ -1105,11 +1126,7 @@ async fn handle_goal_request(
     let goal = match NodeAddGoal::decode(pending.request_bytes()) {
         Ok(g) => g,
         Err(e) => {
-            reject_goal(
-                pending,
-                encode_rejected_goal(format!("invalid payload: {e}")),
-            )
-            .await;
+            refuse_goal(pending, invalid_payload(e)).await;
             return;
         }
     };
@@ -1119,16 +1136,16 @@ async fn handle_goal_request(
     // race a locally-typed `peppy node add`.
     let admission = match slice_ownership.admit_node_goal(&goal) {
         Ok(admission) => admission,
-        Err(reason) => {
-            reject_goal(pending, encode_rejected_goal(reason)).await;
+        Err(refusal) => {
+            refuse_goal(pending, refusal).await;
             return;
         }
     };
 
-    let generation = match admit_node_add_goal(&gate, &goal) {
+    let generation = match admit_node_add_goal(&gate, &goal).await {
         Ok(generation) => generation,
-        Err(rejection) => {
-            reject_goal(pending, encode_rejected_goal(rejection)).await;
+        Err(refusal) => {
+            refuse_goal(pending, refusal).await;
             return;
         }
     };
@@ -1174,7 +1191,11 @@ async fn handle_goal_request(
         Err(error_msg) => {
             debug!("{}", error_msg);
             gate.clear_running();
-            reject_goal(pending, encode_rejected_goal(error_msg)).await;
+            refuse_goal(
+                pending,
+                Failure::new(PeppyFailureKind::AttemptFailed, error_msg),
+            )
+            .await;
             return;
         }
     };
@@ -1188,7 +1209,7 @@ async fn handle_goal_request(
         pending,
         super::encode_response_or_err(
             "node_add_goal",
-            NodeAddGoalResponse::accepted(&log_path).encode(),
+            NodeAddGoalResponse::new(&log_path).encode(),
         ),
     )
     .await
@@ -1208,8 +1229,8 @@ async fn handle_goal_request(
     let log_for_cancel = log.clone();
     let gate_for_task = gate.clone();
     let task_handle = tokio::spawn(async move {
-        // Frees the gate slot on every exit: explicitly before completion on the
-        // normal path (via `release_then_complete` below), or on unwind for a
+        // Frees the gate slot on every exit: explicitly before the end on the
+        // normal path (via `release_then_end` below), or on unwind for a
         // panic / `--force` abort. A no-op if a later `--force` goal took over.
         let slot = gate_for_task.into_slot_guard(generation);
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
@@ -1218,35 +1239,47 @@ async fn handle_goal_request(
                 NodeAddFeedback::from_stream(line.stream, &line.line).encode()
             });
 
+        // A cancel drops the add at its next step: the goal's caller or its
+        // gone sender, a stack reset, or a forced node add that supersedes
+        // it. The goal then ends cancelled, with the reason of the cancel.
         let work = async {
             tokio::select! {
                 biased;
+                _ = cancel_token_clone.cancelled() => {
+                    let reason = cancel_reason(&goal_ctx, &reset_token)
+                        .unwrap_or_else(|| "superseded by a forced node add".to_owned());
+                    log_for_cancel.error(&format!("node add {reason}"));
+                    Err(reason)
+                }
                 result = dispatch_node_add(
                     goal,
                     action_context,
                     Announcer::new(log, feedback_tx),
-                ) => result,
-                _ = cancel_token_clone.cancelled() => {
-                    let reason = if reset_token.is_cancelled() {
-                        "node add cancelled by stack reset"
-                    } else if goal_ctx.is_cancelled() {
-                        "node add cancelled by its caller"
-                    } else {
-                        "node add superseded by a forced node add"
-                    };
-                    NodeAddResult::failure(log_for_cancel.path(), reason.to_string())
-                }
+                ) => Ok(result),
             }
         };
-        let result = under_goal_cancel(&goal_ctx, &cancel_token_clone, work).await;
-
-        // Drain the feedback consumer before completing so the end-of-stream
-        // sentinel never races ahead of the last feedback line.
-        let _ = consumer_handle.await;
+        let ending = match under_goal_cancel(&goal_ctx, &cancel_token_clone, work).await {
+            Ok(result) => {
+                // Drain the feedback consumer before ending so the
+                // end-of-stream sentinel never races ahead of the last
+                // feedback line.
+                let _ = consumer_handle.await;
+                GoalEnding::of(
+                    result.map(|added| added.encode()).map_err(WorkStop::Failed),
+                    None,
+                )
+            }
+            Err(reason) => {
+                // A blocking step of the dropped add (a clone or a download)
+                // keeps a sender of its feedback until the step returns, so
+                // the consumer stops here and the add ends now.
+                consumer_handle.abort();
+                let _ = consumer_handle.await;
+                GoalEnding::Cancelled(reason)
+            }
+        };
         drop(admission);
-        if let Ok(payload) = result.encode() {
-            slot.release_then_complete(&goal_ctx, payload).await;
-        }
+        slot.release_then_end(&goal_ctx, ending).await;
     });
 
     gate.set_task(task_handle, cancel_token);
@@ -1348,8 +1381,8 @@ async fn process_node_add(
     verify_codegen_fingerprint: bool,
     cleanup_dir: Option<PathBuf>,
     ctx: ProcessNodeAddContext,
-) -> NodeAddResult {
-    match process_node_add_inner(
+) -> std::result::Result<NodeAddResult, Failure> {
+    process_node_add_inner(
         goal,
         node_config,
         source_path,
@@ -1358,15 +1391,16 @@ async fn process_node_add(
         &ctx,
     )
     .await
-    {
-        Ok(result) => result,
-        Err(msg) => record_add_failure(&ctx.announcer, msg),
-    }
+    .map_err(|failure| {
+        record_add_failure(&ctx.announcer, Failure::new(failure.kind, failure.message))
+    })
 }
 
 /// Fallible body of [`process_node_add`]. Every failure funnels through the
-/// wrapper's single error sink (log write + `NodeAddResult::failure`), so
-/// failure sites here just return the message via `?`.
+/// wrapper's single error sink (log write + the failure of the add), so
+/// failure sites here return the kind and the message via `?`: the
+/// `From<String>` of [`AddStepFailure`] makes a plain message
+/// `attempt_failed`.
 async fn process_node_add_inner(
     goal: NodeAddGoal,
     node_config: NodeConfig,
@@ -1374,11 +1408,12 @@ async fn process_node_add_inner(
     verify_codegen_fingerprint: bool,
     cleanup_dir: Option<PathBuf>,
     ctx: &ProcessNodeAddContext,
-) -> std::result::Result<NodeAddResult, String> {
+) -> std::result::Result<NodeAddResult, AddStepFailure> {
     // Reject any forbidden env vars early so the user gets a fast failure;
     // the values themselves are not used by the add path (env vars are
     // consumed by `node_build`'s `build_cmd` execution).
-    super::validate_goal_env_vars(&goal.env_vars).map_err(|e| e.to_string())?;
+    super::validate_goal_env_vars(&goal.env_vars)
+        .map_err(|e| AddStepFailure::new(PeppyFailureKind::Rejected, e.to_string()))?;
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
@@ -1389,7 +1424,12 @@ async fn process_node_add_inner(
         // the user has written for their node matches the current interface version.
         let config_path = source_path.join(NODE_CONFIG_FILE);
         config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
-            .map_err(|e| format!("Codegen fingerprint verification failed: {}", e))?;
+            .map_err(|e| {
+                AddStepFailure::new(
+                    PeppyFailureKind::PreconditionFailed,
+                    format!("Codegen fingerprint verification failed: {}", e),
+                )
+            })?;
     }
 
     // Copy the node folder to a temporary working directory. That copy is
@@ -1419,7 +1459,10 @@ async fn process_node_add_inner(
         stack_resolver(&ctx.action.node_stack),
     );
     if let Some(err) = dep_errors.into_iter().next() {
-        return Err(format!("Failed to add node config: {}", err));
+        return Err(AddStepFailure::new(
+            PeppyFailureKind::PreconditionFailed,
+            format!("Failed to add node config: {}", err),
+        ));
     }
 
     // Resolvability pass: an admitted-absent dependency still feeds the
@@ -1456,7 +1499,10 @@ async fn process_node_add_inner(
         &resolve_dep,
     );
     if let Some(err) = dep_errors.into_iter().next() {
-        return Err(format!("Failed to add node config: {}", err));
+        return Err(AddStepFailure::new(
+            PeppyFailureKind::PreconditionFailed,
+            format!("Failed to add node config: {}", err),
+        ));
     }
 
     // Generate the peppygen library in the working directory.
@@ -1518,9 +1564,16 @@ async fn process_node_add_inner(
     // config. `push_config` rejects replacements that still have live
     // instances (it would otherwise orphan them), so we shut them down
     // first to satisfy that precondition.
+    // The one failure of the shutdown is a start in flight, which the
+    // caller waits out.
     shutdown_existing_instances(&node_name, &node_tag, ctx)
         .await
-        .map_err(|e| format!("Failed to shutdown existing node instances: {}", e))?;
+        .map_err(|refusal| {
+            AddStepFailure::new(
+                PeppyFailureKind::PreconditionFailed,
+                format!("Failed to shutdown existing node instances: {refusal}"),
+            )
+        })?;
 
     // Push the node config into the stack as an `Added` entity. Use the
     // staged copy of peppy.json5 rather than source_path because
@@ -1531,7 +1584,12 @@ async fn process_node_add_inner(
     ctx.action
         .node_stack
         .push_config(node_config.clone(), false, &config_path_for_stack)
-        .map_err(|e| format!("Failed to add node config: {}", e))?;
+        .map_err(|error| {
+            AddStepFailure::new(
+                push_failure_kind(&error),
+                format!("Failed to add node config: {error}"),
+            )
+        })?;
 
     let entity_handle = ctx
         .action
@@ -1558,11 +1616,42 @@ async fn process_node_add_inner(
 
     debug!("Added node {}:{} (pending build)", node_name, node_tag);
 
-    Ok(NodeAddResult::success(
-        ctx.announcer.log().path(),
-        node_name,
-        node_tag,
-    ))
+    Ok(NodeAddResult::new(node_name, node_tag))
+}
+
+/// The kind of a failed `push_config`: the root node is not a node a goal
+/// can name, and a node with live instances or with dependents is in a
+/// state that forbids the overwrite.
+fn push_failure_kind(error: &NodeStackError) -> PeppyFailureKind {
+    match error {
+        NodeStackError::CannotModifyRootNode => PeppyFailureKind::Rejected,
+        NodeStackError::CannotOverwriteNodeWithLiveInstances { .. }
+        | NodeStackError::CannotOverwriteNodeWithDependents { .. } => {
+            PeppyFailureKind::PreconditionFailed
+        }
+        _ => PeppyFailureKind::AttemptFailed,
+    }
+}
+
+/// The failure of one step of [`process_node_add_inner`]: its kind and its
+/// message.
+struct AddStepFailure {
+    kind: PeppyFailureKind,
+    message: String,
+}
+
+impl AddStepFailure {
+    fn new(kind: PeppyFailureKind, message: String) -> Self {
+        Self { kind, message }
+    }
+}
+
+/// A step that fails with a plain message is an attempt that gave no
+/// result.
+impl From<String> for AddStepFailure {
+    fn from(message: String) -> Self {
+        Self::new(PeppyFailureKind::AttemptFailed, message)
+    }
 }
 
 #[cfg(test)]

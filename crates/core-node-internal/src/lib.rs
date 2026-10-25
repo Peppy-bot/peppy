@@ -30,11 +30,11 @@ pub use services::repo::{
     ensure_default_repos, search_repo_items, show_repo_items,
 };
 pub use services::{
-    CoreNode, CoreNodeArguments, CoreNodeConfig, ExportDiscardLog, HealthMonitorPolicy,
-    HostAddressSource, NAME_CLAIM_LINKED_SETTLE, Report, RestartBackoff, TEARDOWN_REAP_BUDGET,
-    check_runtime_prerequisites, checkout_dir_for, copy_removal_budget, current_host_name,
-    force_kill_deadline, idle_timeout_flag, materialized_checkout, node_remove_bound,
-    node_stop_bound, slow_connection_hint, stack_reset_timeout, teardown_all_instances,
-    test_host_addresses,
+    CoreNode, CoreNodeArguments, CoreNodeConfig, DAEMON_SENDER_GRACE, ExportDiscardLog,
+    HealthMonitorPolicy, HostAddressSource, NAME_CLAIM_LINKED_SETTLE, Report, RestartBackoff,
+    TEARDOWN_REAP_BUDGET, check_runtime_prerequisites, checkout_dir_for, copy_removal_budget,
+    current_host_name, force_kill_deadline, idle_timeout_flag, materialized_checkout,
+    node_remove_bound, node_stop_bound, slow_connection_hint, stack_reset_timeout,
+    teardown_all_instances, test_host_addresses,
 };
 pub use ssh_config::{IdentityAgent, SshHostConfig, SshTarget, resolve_host_config};

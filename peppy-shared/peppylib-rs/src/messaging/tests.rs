@@ -16,9 +16,19 @@ use tokio::sync::oneshot;
 
 use crate::error::Error;
 use crate::messaging::{
-    ActionMessenger, FeedbackBuffer, MessengerHandle, ProducerRef, ResultStatus, SenderTarget,
-    ServiceMessenger, ServiceTarget, TopicBuffer, TopicMessenger,
+    ActionGoalReply, ActionMessenger, DEFAULT_FEEDBACK_BOUND, GoalAnswer, GoalOutcome,
+    MessengerHandle, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, TopicBuffer,
+    TopicMessenger,
 };
+
+/// The goal response of an accepted goal. Panics on a refusal: these tests
+/// drive providers that accept every goal.
+fn accepted_response(reply: &ActionGoalReply) -> Payload {
+    match &reply.answer {
+        GoalAnswer::Accepted(response) => response.clone(),
+        GoalAnswer::Refused(failure) => panic!("expected an accepted goal, got {failure}"),
+    }
+}
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
 /// invalid names; tests use known-good values only.
@@ -2280,11 +2290,9 @@ impl OneGoalExchange {
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
                         let _ = tx.send(declared.publisher);
                     }
-                    super::actions::wrap_goal_ack(
-                        true,
-                        None,
+                    Ok(super::actions::wrap_goal_accepted(
                         expected_goal_response_payload.as_ref(),
-                    )
+                    ))
                 }
             });
 
@@ -2307,8 +2315,7 @@ impl OneGoalExchange {
                     // This test drives the result service directly, so it frames
                     // the reply with the engine's result-outcome envelope itself.
                     Ok(super::actions::wrap_result_outcome(
-                        ResultStatus::Completed,
-                        response_payload.as_ref(),
+                        &GoalOutcome::Completed(response_payload),
                     ))
                 }
             });
@@ -2371,8 +2378,7 @@ impl OneGoalExchange {
             self.action_name,
             target,
             self.goal.clone(),
-            QoSProfile::Reliable,
-            FeedbackBuffer::KeepLatest,
+            DEFAULT_FEEDBACK_BOUND,
             Duration::from_millis(1000),
         )
         .await
@@ -2383,7 +2389,10 @@ impl OneGoalExchange {
             goal_handle.goal_reply().instance_id,
             self.listener.instance_id
         );
-        assert_eq!(goal_handle.goal_reply().body, self.goal_response);
+        assert_eq!(
+            accepted_response(goal_handle.goal_reply()),
+            self.goal_response
+        );
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
@@ -2404,8 +2413,10 @@ impl OneGoalExchange {
         .await
         .expect("caller should receive result");
 
-        assert_eq!(result_response.status, ResultStatus::Completed);
-        assert_eq!(result_response.body, self.result);
+        assert_eq!(
+            result_response.outcome,
+            GoalOutcome::Completed(self.result.clone())
+        );
         assert_eq!(result_response.core_node, self.listener.core_node);
         assert_eq!(result_response.instance_id, self.listener.instance_id);
     }
@@ -2482,11 +2493,9 @@ async fn action_communication_with_instance_id_target() {
                     .handle_next_request(move |_request| async move {
                         // This should never be reached
                         call_count_for_closure.fetch_add(1, Ordering::SeqCst);
-                        super::actions::wrap_goal_ack(
-                            true,
-                            None,
+                        Ok(super::actions::wrap_goal_accepted(
                             expected_goal_response_payload.as_ref(),
-                        )
+                        ))
                     });
 
             let handled_goal = tokio::time::timeout(Duration::from_secs(5), goal_handler).await;
@@ -2594,11 +2603,9 @@ async fn action_communication_goal_cancelled() {
                         let _ = tx.send(declared.publisher);
                     }
                     goal_call_count.fetch_add(1, Ordering::SeqCst);
-                    super::actions::wrap_goal_ack(
-                        true,
-                        None,
+                    Ok(super::actions::wrap_goal_accepted(
                         expected_goal_response_payload.as_ref(),
-                    )
+                    ))
                 }
             });
 
@@ -2696,8 +2703,7 @@ async fn action_communication_goal_cancelled() {
         listener_action_name,
         Some(&ProducerRef::new(LISTENER_CORE_NODE, LISTENER_INSTANCE_ID)),
         goal_payload,
-        QoSProfile::Reliable,
-        FeedbackBuffer::KeepLatest,
+        DEFAULT_FEEDBACK_BOUND,
         Duration::from_millis(1000),
     )
     .await
@@ -2705,7 +2711,10 @@ async fn action_communication_goal_cancelled() {
 
     assert_eq!(goal_handle.goal_reply().core_node, LISTENER_CORE_NODE);
     assert_eq!(goal_handle.goal_reply().instance_id, LISTENER_INSTANCE_ID);
-    assert_eq!(goal_handle.goal_reply().body, goal_response_payload);
+    assert_eq!(
+        accepted_response(goal_handle.goal_reply()),
+        goal_response_payload
+    );
 
     let first_feedback = goal_handle
         .on_next_feedback()
@@ -2889,9 +2898,12 @@ async fn single_action_communication_multiple_polls() {
                                     )
                                     .expect("test case feedback payload is non-empty"),
                                 )
-                                .await?;
+                                .await
+                                .expect("feedback publishes");
 
-                            super::actions::wrap_goal_ack(true, None, case.goal_response.as_ref())
+                            Ok(super::actions::wrap_goal_accepted(
+                                case.goal_response.as_ref(),
+                            ))
                         }
                     })
                     .await
@@ -2921,8 +2933,7 @@ async fn single_action_communication_multiple_polls() {
 
                         // Driven directly: frame the reply like the engine does.
                         Ok(super::actions::wrap_result_outcome(
-                            ResultStatus::Completed,
-                            b"result=done",
+                            &GoalOutcome::Completed(Payload::from_static(b"result=done")),
                         ))
                     })
                     .await
@@ -2971,15 +2982,14 @@ async fn single_action_communication_multiple_polls() {
                 listener_action_name,
                 None,
                 case.goal.clone(),
-                QoSProfile::Reliable,
-                FeedbackBuffer::KeepLatest,
+                DEFAULT_FEEDBACK_BOUND,
                 Duration::from_millis(1000),
             )
             .await
             .expect("caller should send goal");
 
             assert_eq!(
-                goal_handle.goal_reply().body,
+                accepted_response(goal_handle.goal_reply()),
                 case.goal_response.clone(),
                 "goal response should match expected payload for `{}`",
                 case.client_id
@@ -3012,10 +3022,9 @@ async fn single_action_communication_multiple_polls() {
             .await
             .expect("caller should receive result response");
 
-            assert_eq!(result_response.status, ResultStatus::Completed);
             assert_eq!(
-                result_response.body,
-                Payload::from_static(b"result=done"),
+                result_response.outcome,
+                GoalOutcome::Completed(Payload::from_static(b"result=done")),
                 "result response should match expected payload for `{}`",
                 case.client_id
             );
@@ -3096,10 +3105,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
                 Ok(Ok(Some((_ctx, goal_responder)))) => {
                     counters.goal.fetch_add(1, Ordering::SeqCst);
                     goal_responder
-                        .respond(
-                            super::actions::wrap_goal_ack(true, None, spec.inst.as_bytes())
-                                .expect("wrap goal ack"),
-                        )
+                        .respond(super::actions::wrap_goal_accepted(spec.inst.as_bytes()))
                         .await
                         .expect("goal respond");
                 }
@@ -3174,8 +3180,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
         action_name,
         None, // wildcard target producer
         Payload::from_static(b"go"),
-        QoSProfile::Reliable,
-        FeedbackBuffer::KeepLatest,
+        DEFAULT_FEEDBACK_BOUND,
         Duration::from_secs(2),
     )
     .await
@@ -3431,10 +3436,7 @@ async fn action_send_goal_full_wildcard_discovers() {
             {
                 goal_count.fetch_add(1, Ordering::SeqCst);
                 goal_responder
-                    .respond(
-                        super::actions::wrap_goal_ack(true, None, spec.core.as_bytes())
-                            .expect("wrap goal ack"),
-                    )
+                    .respond(super::actions::wrap_goal_accepted(spec.core.as_bytes()))
                     .await
                     .expect("goal respond");
             }
@@ -3483,8 +3485,7 @@ async fn action_send_goal_full_wildcard_discovers() {
         action_name,
         None, // full-wildcard target: must trigger discovery
         Payload::from_static(b"go"),
-        QoSProfile::Reliable,
-        FeedbackBuffer::KeepLatest,
+        DEFAULT_FEEDBACK_BOUND,
         Duration::from_secs(2),
     )
     .await
@@ -3754,10 +3755,7 @@ async fn action_send_goal_same_core_distinct_instances_pinned_routes_to_pinned()
             {
                 goal_count.fetch_add(1, Ordering::SeqCst);
                 goal_responder
-                    .respond(
-                        super::actions::wrap_goal_ack(true, None, inst.as_bytes())
-                            .expect("wrap goal ack"),
-                    )
+                    .respond(super::actions::wrap_goal_accepted(inst.as_bytes()))
                     .await
                     .expect("goal respond");
             }
@@ -3802,8 +3800,7 @@ async fn action_send_goal_same_core_distinct_instances_pinned_routes_to_pinned()
             // fully pinned: no discovery probe is issued
             Some(&ProducerRef::new(shared_core, pinned_inst)),
             Payload::from_static(b"go"),
-            QoSProfile::Reliable,
-            FeedbackBuffer::KeepLatest,
+            DEFAULT_FEEDBACK_BOUND,
             Duration::from_secs(2),
         )
         .await
@@ -3877,9 +3874,7 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
             {
                 goal_count.fetch_add(1, Ordering::SeqCst);
                 goal_responder
-                    .respond(
-                        super::actions::wrap_goal_ack(true, None, b"done").expect("wrap goal ack"),
-                    )
+                    .respond(super::actions::wrap_goal_accepted(b"done"))
                     .await
                     .expect("goal respond");
             }
@@ -3899,8 +3894,7 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
         // fully pinned: no discovery probe is issued
         Some(&ProducerRef::new(shared_core, left_inst)),
         Payload::from_static(b"go"),
-        QoSProfile::Reliable,
-        FeedbackBuffer::KeepLatest,
+        DEFAULT_FEEDBACK_BOUND,
         caller_budget,
     )
     .await;
@@ -4037,9 +4031,7 @@ async fn pinned_calls_issue_zero_probes() {
                     .expect("goal subscription closed before the pinned goal");
             act_goal_count.fetch_add(1, Ordering::SeqCst);
             goal_responder
-                .respond(
-                    super::actions::wrap_goal_ack(true, None, b"accepted").expect("wrap goal ack"),
-                )
+                .respond(super::actions::wrap_goal_accepted(b"accepted"))
                 .await
                 .expect("goal respond");
         })
@@ -4145,8 +4137,7 @@ async fn pinned_calls_issue_zero_probes() {
         // fully pinned: must issue zero discovery probes
         Some(&pinned),
         Payload::from_static(b"go"),
-        QoSProfile::Reliable,
-        FeedbackBuffer::KeepLatest,
+        DEFAULT_FEEDBACK_BOUND,
         Duration::from_secs(5),
     )
     .await

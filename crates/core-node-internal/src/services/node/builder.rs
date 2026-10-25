@@ -1,21 +1,21 @@
 use super::super::action_loop::{
-    GoalHandler, accept_goal, reject_goal, run_action_loop, under_goal_cancel,
+    GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, expose_daemon_action,
+    invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
 };
 use super::FeedbackLine;
 use super::gate::{COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use crate::Result;
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::ActionId;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
 };
-use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
 use futures::FutureExt;
 use node_stack::{ActionLog, Announcer, BuildContext, NodeStack};
-use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{ConcurrentAction, PendingGoal};
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult};
+use peppylib::MessengerHandle;
+use peppylib::messaging::{Failure, PendingGoal};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -32,13 +32,12 @@ pub async fn listen_for_node_build(
     peppy_dirs: PeppyDirs,
     slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
-    let action = ConcurrentAction::expose(
+    let action = expose_daemon_action(
         messenger,
         core_node_name,
         instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        ActionId::NodeBuild.name(),
-        true,
+        node_name,
+        ActionId::NodeBuild,
     )
     .await?;
 
@@ -99,9 +98,19 @@ struct NodeBuildRun {
     rebuild: bool,
 }
 
+/// Writes the message of a failure of `kind` to the build log and returns
+/// the failure, so the reason is in the file the client is pointed at.
+fn record_build_failure(log: &ActionLog, kind: PeppyFailureKind, message: String) -> Failure {
+    log.error(&message);
+    Failure::new(kind, message)
+}
+
 /// Drives a build for the entity named `(node_name, node_tag)` that is
 /// currently in `Added`. The caller supplies the log file/path and the
 /// feedback channel; everything else is recovered from the entity itself.
+///
+/// A node the stack does not hold is `rejected`; a node in another stage, or
+/// without the working directory an add stages, is `precondition_failed`.
 pub(crate) async fn run_node_build_for_entity(
     node_name: String,
     node_tag: String,
@@ -109,15 +118,16 @@ pub(crate) async fn run_node_build_for_entity(
     rebuild: bool,
     action_context: NodeBuildActionContext,
     announcer: Announcer,
-) -> NodeBuildResult {
+) -> std::result::Result<NodeBuildResult, WorkStop> {
     let log = announcer.log().clone();
-    let log_path = log.path();
     let entity_handle = match action_context.node_stack.find(&node_name, &node_tag) {
         Some(handle) => handle,
         None => {
-            let msg = format!("node `{}:{}` is not in the node stack", node_name, node_tag);
-            log.error(&msg);
-            return NodeBuildResult::failure(&log_path, msg);
+            return Err(WorkStop::Failed(record_build_failure(
+                &log,
+                PeppyFailureKind::Rejected,
+                format!("node `{}:{}` is not in the node stack", node_name, node_tag),
+            )));
         }
     };
 
@@ -134,8 +144,11 @@ pub(crate) async fn run_node_build_for_entity(
                     node_name, node_tag
                 ),
             };
-            log.error(&msg);
-            return NodeBuildResult::failure(&log_path, msg);
+            return Err(WorkStop::Failed(record_build_failure(
+                &log,
+                PeppyFailureKind::PreconditionFailed,
+                msg,
+            )));
         }
     };
 
@@ -175,13 +188,6 @@ impl GoalHandler for NodeBuildGoalHandler {
     }
 }
 
-fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
-    super::encode_response_or_err(
-        "node_build_goal",
-        NodeBuildGoalResponse::rejected(reason).encode(),
-    )
-}
-
 impl NodeBuildGoalHandler {
     async fn handle_goal_request(&self, pending: PendingGoal) {
         let sender_instance_id = pending.instance_id().to_string();
@@ -189,11 +195,7 @@ impl NodeBuildGoalHandler {
         let goal = match NodeBuildGoal::decode(pending.request_bytes()) {
             Ok(g) => g,
             Err(e) => {
-                reject_goal(
-                    pending,
-                    encode_rejected_goal(format!("invalid payload: {e}")),
-                )
-                .await;
+                refuse_goal(pending, invalid_payload(e)).await;
                 return;
             }
         };
@@ -203,8 +205,8 @@ impl NodeBuildGoalHandler {
         // not race a locally-typed `peppy node build`.
         let admission = match self.slice_ownership.admit_node_goal(&goal) {
             Ok(admission) => admission,
-            Err(reason) => {
-                reject_goal(pending, encode_rejected_goal(reason)).await;
+            Err(refusal) => {
+                refuse_goal(pending, refusal).await;
                 return;
             }
         };
@@ -218,12 +220,15 @@ impl NodeBuildGoalHandler {
                 superseded,
             } => (generation, superseded),
             super::gate::Admission::AlreadyRunning { remaining_secs } => {
-                reject_goal(
+                refuse_goal(
                     pending,
-                    encode_rejected_goal(format!(
-                        "action already in progress (times out in {remaining_secs}s), \
-                         use `--force` to force building the node"
-                    )),
+                    Failure::new(
+                        DaemonFailureKind::Busy,
+                        format!(
+                            "action already in progress (times out in {remaining_secs}s), \
+                             use `--force` to force building the node"
+                        ),
+                    ),
                 )
                 .await;
                 return;
@@ -254,12 +259,15 @@ impl NodeBuildGoalHandler {
             Some(handle) => handle,
             None => {
                 self.gate.clear_running();
-                reject_goal(
+                refuse_goal(
                     pending,
-                    encode_rejected_goal(format!(
-                        "node `{}:{}` is not in the node stack: run `peppy node add` first",
-                        goal.node_name, goal.node_tag
-                    )),
+                    Failure::new(
+                        PeppyFailureKind::Rejected,
+                        format!(
+                            "node `{}:{}` is not in the node stack: run `peppy node add` first",
+                            goal.node_name, goal.node_tag
+                        ),
+                    ),
                 )
                 .await;
                 return;
@@ -281,7 +289,11 @@ impl NodeBuildGoalHandler {
                     ),
                 };
                 self.gate.clear_running();
-                reject_goal(pending, encode_rejected_goal(reason)).await;
+                refuse_goal(
+                    pending,
+                    Failure::new(PeppyFailureKind::PreconditionFailed, reason),
+                )
+                .await;
                 return;
             }
         };
@@ -297,7 +309,11 @@ impl NodeBuildGoalHandler {
             Err(error_msg) => {
                 debug!("{}", error_msg);
                 self.gate.clear_running();
-                reject_goal(pending, encode_rejected_goal(error_msg)).await;
+                refuse_goal(
+                    pending,
+                    Failure::new(PeppyFailureKind::AttemptFailed, error_msg),
+                )
+                .await;
                 return;
             }
         };
@@ -309,7 +325,7 @@ impl NodeBuildGoalHandler {
             pending,
             super::encode_response_or_err(
                 "node_build_goal",
-                NodeBuildGoalResponse::accepted(&log_path).encode(),
+                NodeBuildGoalResponse::new(&log_path).encode(),
             ),
         )
         .await
@@ -322,7 +338,6 @@ impl NodeBuildGoalHandler {
             .feedback_publisher()
             .expect("node_build declares a feedback topic");
         let action_context = self.context.clone();
-        let log_path_clone = log_path.clone();
         // Stored in the gate so a later `--force` goal can signal it, signalled
         // by the goal's caller through its cancel request, and threaded into
         // the build so `run_node_build` owns cancellation end-to-end: it
@@ -334,8 +349,8 @@ impl NodeBuildGoalHandler {
         let gate_for_task = self.gate.clone();
 
         let task_handle = tokio::spawn(async move {
-            // Frees the gate slot on every exit: explicitly before completion on
-            // the normal path (via `release_then_complete` below), or on unwind
+            // Frees the gate slot on every exit: explicitly before the end on
+            // the normal path (via `release_then_end` below), or on unwind
             // for a panic. A no-op if a later `--force` goal already took over.
             let slot = gate_for_task.into_slot_guard(generation);
             let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
@@ -364,26 +379,35 @@ impl NodeBuildGoalHandler {
                 &reset_cancellation,
                 COOPERATIVE_TEARDOWN_BUDGET,
                 || {
-                    NodeBuildResult::failure(
-                        &log_path_clone,
-                        "node build cancelled by stack reset".to_owned(),
-                    )
+                    Err(WorkStop::Cancelled(Failure::new(
+                        PeppyFailureKind::AttemptFailed,
+                        "node build cancelled by stack reset",
+                    )))
                 },
             )
             .await;
+            // A build that a cancel stopped ends cancelled, with the reason
+            // of the cancel: the goal's caller or its gone sender, a stack
+            // reset, or a forced node build that supersedes it.
+            let reason = cancel_reason(&goal_ctx, &reset_cancellation)
+                .unwrap_or_else(|| "superseded by a forced node build".to_owned());
+            let ending = GoalEnding::of(result.map(|built| built.encode()), Some(reason));
 
             let _ = consumer_handle.await;
             drop(admission);
-            if let Ok(payload) = result.encode() {
-                slot.release_then_complete(&goal_ctx, payload).await;
-            }
+            slot.release_then_end(&goal_ctx, ending).await;
         });
 
         self.gate.set_task(task_handle, cancel_token);
     }
 }
 
-async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
+/// Builds the entity of `run`, or gives the stop of the build: invalid
+/// environment variables are `rejected`, an entity that a concurrent add
+/// replaced is `precondition_failed`, and a build that fails is
+/// `attempt_failed`. A build that the cancel of `run` stops is
+/// [`WorkStop::Cancelled`].
+async fn run_node_build(run: NodeBuildRun) -> std::result::Result<NodeBuildResult, WorkStop> {
     let NodeBuildRun {
         node_name,
         node_tag,
@@ -398,7 +422,6 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
     } = run;
 
     let log = announcer.log().clone();
-    let log_path = log.path();
 
     // Set once the entity's working dir is detached, which leaves the entity
     // in `Building`: a panic after that point rolls the entity out of the
@@ -409,9 +432,11 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         let mut env_vars = match super::validate_goal_env_vars(&goal_env_vars) {
             Ok(v) => v,
             Err(e) => {
-                let msg = e.to_string();
-                log.error(&msg);
-                return NodeBuildResult::failure(&log_path, msg);
+                return Err(WorkStop::Failed(record_build_failure(
+                    &log,
+                    PeppyFailureKind::Rejected,
+                    e.to_string(),
+                )));
             }
         };
 
@@ -434,13 +459,15 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     working_dir_detached.store(true, std::sync::atomic::Ordering::Release);
                 }
                 Err(current_gen) => {
-                    let msg = format!(
-                        "node `{}:{}` was replaced by a concurrent push \
-                         (generation {} -> {}); aborting build",
-                        node_name, node_tag, captured_generation, current_gen
-                    );
-                    log.error(&msg);
-                    return NodeBuildResult::failure(&log_path, msg);
+                    return Err(WorkStop::Failed(record_build_failure(
+                        &log,
+                        PeppyFailureKind::PreconditionFailed,
+                        format!(
+                            "node `{}:{}` was replaced by a concurrent push \
+                             (generation {} -> {}); aborting build",
+                            node_name, node_tag, captured_generation, current_gen
+                        ),
+                    )));
                 }
             }
         }
@@ -469,7 +496,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     node_tag,
                     artifact_path.display()
                 );
-                NodeBuildResult::success(artifact_path, &log_path)
+                Ok(NodeBuildResult::new(artifact_path))
             }
             Err(_) if cancel_token.is_cancelled() => {
                 // Cancelled: superseded by a `--force` build or cancelled by
@@ -485,7 +512,11 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     captured_generation,
                     Arc::clone(&working_dir_guard),
                 );
-                NodeBuildResult::failure(&log_path, "build cancelled".to_string())
+                Err(WorkStop::Cancelled(record_build_failure(
+                    &log,
+                    PeppyFailureKind::AttemptFailed,
+                    "build cancelled".to_owned(),
+                )))
             }
             Err(e) => {
                 // `NodeEntity::build` leaves the entity in `Building` on
@@ -496,9 +527,11 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     &entity_handle,
                     captured_generation,
                 );
-                let msg = format!("Failed to build node: {}", e);
-                log.error(&msg);
-                NodeBuildResult::failure(&log_path, msg)
+                Err(WorkStop::Failed(record_build_failure(
+                    &log,
+                    PeppyFailureKind::AttemptFailed,
+                    format!("Failed to build node: {}", e),
+                )))
             }
         }
     })
@@ -523,7 +556,10 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     captured_generation,
                 );
             }
-            NodeBuildResult::failure(log.path(), msg)
+            Err(WorkStop::Failed(Failure::new(
+                PeppyFailureKind::AttemptFailed,
+                msg,
+            )))
         }
     }
 }
@@ -548,7 +584,7 @@ mod tests {
     /// Runs a build of `name:tag` in a stack rooted at `core_root:v1` that
     /// also holds `unstaged:v1`, pushed without the working dir an add
     /// stages for it.
-    async fn build_entity(name: &str, tag: &str) -> NodeBuildResult {
+    async fn build_entity(name: &str, tag: &str) -> std::result::Result<NodeBuildResult, Failure> {
         let dir = tempfile::tempdir().expect("temp dir");
         let root_config =
             config::node::NodeConfigParser::from_content(ROOT_CONFIG).expect("root config parses");
@@ -575,25 +611,33 @@ mod tests {
             Announcer::new(log, feedback_tx),
         )
         .await
+        .map_err(|stop| match stop {
+            WorkStop::Failed(failure) => failure,
+            WorkStop::Cancelled(failure) => panic!("nothing cancels the build: {failure}"),
+        })
     }
 
     #[tokio::test]
     async fn a_node_in_another_stage_than_added_is_not_built() {
-        let result = build_entity("core_root", "v1").await;
-        assert!(!result.success);
+        let failure = build_entity("core_root", "v1")
+            .await
+            .expect_err("a root node is not built");
+        assert_eq!(failure.kind().as_str(), "precondition_failed");
         assert_eq!(
-            result.error_message.as_deref(),
-            Some("node `core_root:v1` is in stage `Root`; cannot build")
+            failure.message(),
+            "node `core_root:v1` is in stage `Root`; cannot build"
         );
     }
 
     #[tokio::test]
     async fn a_node_without_a_staged_working_dir_is_not_built() {
-        let result = build_entity("unstaged", "v1").await;
-        assert!(!result.success);
+        let failure = build_entity("unstaged", "v1")
+            .await
+            .expect_err("an unstaged node is not built");
+        assert_eq!(failure.kind().as_str(), "precondition_failed");
         assert_eq!(
-            result.error_message.as_deref(),
-            Some("node `unstaged:v1` has no staged working directory")
+            failure.message(),
+            "node `unstaged:v1` has no staged working directory"
         );
     }
 }

@@ -35,11 +35,7 @@ async fn listen_for_node_fs_add_success() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        add_result.success,
-        "node_add should succeed, got error: {:?}",
-        add_result.error_message
-    );
+    add_result.completed();
 
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
@@ -52,7 +48,6 @@ async fn listen_for_node_fs_add_success() {
 
     // Add staged the node into the stack but did not produce an artifact;
     // artifact-related assertions live in `listen_for_node_build.rs`.
-    let _ = add_result.log_path;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_git_add_success() {
@@ -83,11 +78,7 @@ async fn listen_for_node_git_add_success() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        add_result.success,
-        "node_add should succeed, got error: {:?}",
-        add_result.error_message
-    );
+    add_result.completed();
 
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
@@ -98,7 +89,6 @@ async fn listen_for_node_git_add_success() {
     );
 
     // Artifact assertions live in `listen_for_node_build.rs`.
-    let _ = add_result.log_path;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_git_add_with_ref_success() {
@@ -128,11 +118,7 @@ async fn listen_for_node_git_add_with_ref_success() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        add_result_head.success,
-        "node_add should succeed, got error: {:?}",
-        add_result_head.error_message
-    );
+    add_result_head.completed();
     assert!(node_stack.contains(TARGET_NODE_NAME, "v2"));
 
     let add_result_ref = send_node_add_and_wait(
@@ -150,11 +136,7 @@ async fn listen_for_node_git_add_with_ref_success() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        add_result_ref.success,
-        "node_add should succeed, got error: {:?}",
-        add_result_ref.error_message
-    );
+    add_result_ref.completed();
     assert!(node_stack.contains(TARGET_NODE_NAME, "v1"));
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -234,11 +216,7 @@ async fn listen_for_node_http_add_success() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        add_result.success,
-        "node_add should succeed, got error: {:?}",
-        add_result.error_message
-    );
+    add_result.completed();
 
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
@@ -249,7 +227,6 @@ async fn listen_for_node_http_add_success() {
     );
 
     // Artifact assertions live in `listen_for_node_build.rs`.
-    let _ = (add_result.log_path, test_file_content);
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_http_add_rejects_wrong_sha256() {
@@ -277,17 +254,10 @@ async fn listen_for_node_http_add_rejects_wrong_sha256() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        !add_result.success,
-        "node_add should fail with wrong sha256"
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_deref()
-            .is_some_and(|msg| msg.contains("checksum mismatch")),
-        "error should mention checksum mismatch, got: {:?}",
-        add_result.error_message
+    assert_failure(
+        add_result.failed(),
+        PeppyFailureKind::AttemptFailed,
+        "checksum mismatch",
     );
     assert!(!node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
 }
@@ -323,11 +293,7 @@ async fn listen_for_node_http_add_accepts_correct_sha256() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        add_result.success,
-        "node_add should succeed with correct sha256, got error: {:?}",
-        add_result.error_message
-    );
+    add_result.completed();
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -357,11 +323,7 @@ async fn listen_for_node_git_add_emits_clone_feedback() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        add_result.success,
-        "node_add should succeed, got error: {:?}",
-        add_result.error_message
-    );
+    add_result.completed();
 
     let mut feedback = Vec::new();
     while let Ok(entry) = feedback_rx.try_recv() {
@@ -411,11 +373,7 @@ async fn listen_for_node_http_add_emits_download_feedback() {
     .await
     .expect("node_add request should succeed");
 
-    assert!(
-        add_result.success,
-        "node_add should succeed, got error: {:?}",
-        add_result.error_message
-    );
+    add_result.completed();
 
     let mut feedback = Vec::new();
     while let Ok(entry) = feedback_rx.try_recv() {
@@ -451,17 +409,13 @@ async fn an_add_log_holds_each_reported_step_and_exports_each_of_its_lines() {
     );
 
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Some(feedback_tx),
+    let add = send_logged_node_add(
+        &started_core_node,
+        &fs_add_goal(source_dir.path()),
+        &feedback_tx,
     )
-    .await
-    .expect("node_add request should succeed");
-    assert!(add_result.success, "{:?}", add_result.error_message);
+    .await;
+    add.end.completed();
 
     let steps: Vec<String> = std::iter::from_fn(|| feedback_rx.try_recv().ok())
         .filter(NodeAddFeedback::is_stdout)
@@ -474,7 +428,7 @@ async fn an_add_log_holds_each_reported_step_and_exports_each_of_its_lines() {
         "the add should report its steps: {steps:?}"
     );
 
-    let log = std::fs::read_to_string(&add_result.log_path).expect("the add log should exist");
+    let log = std::fs::read_to_string(&add.log_path).expect("the add log should exist");
     let lines = node_stack::action_log::test_support::log_entries(&log);
     assert_eq!(lines, steps, "the log holds the steps the add reported");
 
@@ -483,7 +437,7 @@ async fn an_add_log_holds_each_reported_step_and_exports_each_of_its_lines() {
     assert_eq!(bodies, lines, "each line of the log is one record");
     for record in &records {
         assert_eq!(record.identity.kind, log_export::LogKind::Add);
-        assert_eq!(record.identity.file_path, add_result.log_path);
+        assert_eq!(record.identity.file_path, add.log_path);
         assert_eq!(
             record.severity,
             Some(daemon_config::peppy_config::Severity::Info)

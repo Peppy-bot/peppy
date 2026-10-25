@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::commands::repo::REQUEST_TIMEOUT;
 use crate::context::AppContext;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use peppylib::core_node::transport::poll;
 
 pub(super) fn remove_repo(ctx: &Arc<AppContext>, id: u64) -> Result<()> {
@@ -28,20 +28,13 @@ async fn remove_repo_async(ctx: &Arc<AppContext>, id: u64) -> Result<()> {
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to remove repository: {}", e)))?;
+    .map_err(|e| crate::commands::request_error("Failed to remove repository", e))?;
 
-    if response.success {
-        info!("Repository with id {id} removed successfully");
-        // The removal landed, but the re-index that makes it take effect
-        // may not have.
-        if !response.refresh_report.is_empty() {
-            warn!("Re-indexing after the removal: {}", response.refresh_report);
-        }
-        Ok(())
-    } else {
-        Err(Error::ExecutionFailed(format!(
-            "Failed to remove repository: {}",
-            response.error_message
-        )))
+    info!("Repository with id {id} removed successfully");
+    // The removal landed, but the re-index that makes it take effect may not
+    // have.
+    if !response.refresh_report.is_empty() {
+        warn!("Re-indexing after the removal: {}", response.refresh_report);
     }
+    Ok(())
 }

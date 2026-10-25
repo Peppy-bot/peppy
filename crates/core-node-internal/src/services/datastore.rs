@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::error::Error;
-use crate::services::response::into_service_response;
+use crate::services::response::into_service_answer;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
     DatastoreGetRequest, DatastoreGetResponse, DatastoreListEntry, DatastoreListRequest,
@@ -307,9 +307,7 @@ macro_rules! datastore_endpoint {
                 endpoint
                     .handle_requests(move |context| {
                         let store = Arc::clone(&store);
-                        async move {
-                            into_service_response(&context, $handler(store.as_ref(), &context))
-                        }
+                        async move { into_service_answer($handler(store.as_ref(), &context)) }
                     })
                     .await
                     .map_err(Into::into)

@@ -7,7 +7,7 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::commands::repo::add::parse_repo_source;
 use crate::commands::repo::{REQUEST_TIMEOUT, repo_source_label};
 use crate::context::AppContext;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use peppylib::core_node::transport::poll;
 
 pub(super) fn exclude_repo(
@@ -41,25 +41,17 @@ async fn exclude_repo_async(
         REQUEST_TIMEOUT,
     )
     .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to exclude repository: {}", e)))?;
+    .map_err(|e| crate::commands::request_error("Failed to exclude repository", e))?;
 
-    if response.success {
-        info!("Repository '{label}' excluded successfully");
-        // The exclusion landed, but the re-index that makes it take
-        // effect may not have. Saying so matters most here: excluding is
-        // what a blocked user reaches for, and they need to know whether
-        // it unblocked them.
-        if !response.refresh_report.is_empty() {
-            warn!(
-                "Re-indexing after the exclusion: {}",
-                response.refresh_report
-            );
-        }
-        Ok(())
-    } else {
-        Err(Error::ExecutionFailed(format!(
-            "Failed to exclude repository: {}",
-            response.error_message
-        )))
+    info!("Repository '{label}' excluded successfully");
+    // The exclusion landed, but the re-index that makes it take effect may
+    // not have. Saying so matters most here: excluding is what a blocked
+    // user reaches for, and they need to know whether it unblocked them.
+    if !response.refresh_report.is_empty() {
+        warn!(
+            "Re-indexing after the exclusion: {}",
+            response.refresh_report
+        );
     }
+    Ok(())
 }

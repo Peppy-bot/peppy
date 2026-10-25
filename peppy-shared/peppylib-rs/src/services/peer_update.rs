@@ -92,6 +92,7 @@ pub async fn listen_for_peer_update(
 mod tests {
     use super::*;
     use crate::encoding::slot_update::SlotUpdateResponse;
+    use crate::messaging::Failure;
     use crate::messaging::{PeerInfo, PeerMember, ProducerRef};
     use crate::services::slot_update::{SlotChannel, apply_slot_update};
     use std::collections::BTreeMap;
@@ -100,7 +101,7 @@ mod tests {
     fn apply(
         slots: &BTreeMap<String, SlotChannel<PeerSetState>>,
         request: &PeerUpdateRequest,
-    ) -> SlotUpdateResponse {
+    ) -> Result<SlotUpdateResponse, Failure> {
         apply_slot_update::<PeerUpdateRequest>(slots, request)
     }
 
@@ -146,11 +147,11 @@ mod tests {
             &slots,
             &request("arm", 10, Some(pin("core_a", "arm_1", "controller"))),
         );
-        assert!(paired.accepted);
+        assert_eq!(paired, Ok(SlotUpdateResponse::taken()));
         assert_eq!(held(&watched), Some(pin("core_a", "arm_1", "controller")));
 
         let cleared = apply(&slots, &request("arm", 11, None));
-        assert!(cleared.accepted);
+        assert_eq!(cleared, Ok(SlotUpdateResponse::taken()));
         assert_eq!(held(&watched), None);
         assert_eq!(watched.borrow().sequence, 11);
     }
@@ -163,14 +164,14 @@ mod tests {
         apply(
             &slots,
             &request("arm", 20, Some(pin("core_a", "arm_2", "controller"))),
-        );
+        )
+        .expect("the slot takes the delivery");
         // A delayed earlier delivery arrives after the newer one.
         let response = apply(
             &slots,
             &request("arm", 19, Some(pin("core_a", "arm_1", "controller"))),
         );
-        assert!(!response.accepted);
-        assert!(response.stale_sequence);
+        assert_eq!(response, Ok(SlotUpdateResponse::stale()));
         assert_eq!(
             held(&watched),
             Some(pin("core_a", "arm_2", "controller")),
@@ -186,7 +187,8 @@ mod tests {
         apply(
             &slots,
             &request("arm", 5, Some(pin("core_a", "arm_1", "controller"))),
-        );
+        )
+        .expect("the slot takes the delivery");
         assert!(watched.has_changed().unwrap());
         watched.mark_unchanged();
 
@@ -194,7 +196,7 @@ mod tests {
             &slots,
             &request("arm", 5, Some(pin("core_a", "arm_1", "controller"))),
         );
-        assert!(retry.accepted);
+        assert_eq!(retry, Ok(SlotUpdateResponse::taken()));
         assert!(
             !watched.has_changed().unwrap(),
             "an identical retry must not re-notify watchers"
@@ -212,13 +214,14 @@ mod tests {
         apply(
             &slots,
             &request("arm", 7, Some(pin("core_a", "arm_1", "controller"))),
-        );
+        )
+        .expect("the slot takes the delivery");
         let response = apply(
             &slots,
             &request("arm", 7, Some(pin("core_a", "arm_2", "controller"))),
         );
-        assert!(!response.accepted);
-        assert!(!response.stale_sequence);
+        let response = response.expect_err("a refused delivery");
+        assert_eq!(response.kind().as_str(), "rejected");
         assert_eq!(
             held(&watched),
             Some(pin("core_a", "arm_1", "controller")),
@@ -235,7 +238,8 @@ mod tests {
         apply(
             &slots,
             &request("arm", 1, Some(pin("core_a", "arm_1", "controller"))),
-        );
+        )
+        .expect("the slot takes the delivery");
 
         let response = apply(
             &slots,
@@ -248,10 +252,10 @@ mod tests {
                 ],
             },
         );
-        assert!(!response.accepted, "{response:?}");
+        let response = response.expect_err("a refused delivery");
         assert!(
             response
-                .message
+                .message()
                 .contains("`zero_or_one` admits no set of 2 members"),
             "{response:?}"
         );
@@ -269,17 +273,18 @@ mod tests {
         apply(
             &slots,
             &request("arm", 1, Some(pin("core_a", "arm_1", "controller"))),
-        );
+        )
+        .expect("the slot takes the delivery");
 
         let unpaired = apply(&slots, &request("arm", 2, None));
-        assert!(unpaired.accepted, "{unpaired:?}");
+        assert_eq!(unpaired, Ok(SlotUpdateResponse::taken()));
         assert_eq!(held(&watched), None);
 
         let repaired = apply(
             &slots,
             &request("arm", 3, Some(pin("core_a", "arm_1", "controller"))),
         );
-        assert!(repaired.accepted, "{repaired:?}");
+        assert_eq!(repaired, Ok(SlotUpdateResponse::taken()));
         assert_eq!(held(&watched), Some(pin("core_a", "arm_1", "controller")));
     }
 
@@ -290,9 +295,9 @@ mod tests {
             &slots,
             &request("gripper", 1, Some(pin("core_a", "g_1", "controller"))),
         );
-        assert!(!response.accepted);
-        assert!(!response.stale_sequence);
-        assert!(response.message.contains("gripper"));
+        let response = response.expect_err("a refused delivery");
+        assert_eq!(response.kind().as_str(), "rejected");
+        assert!(response.message().contains("gripper"));
     }
 
     #[test]
@@ -307,7 +312,7 @@ mod tests {
                 pin("core_b", "arm_1", "controller"),
             ],
         };
-        assert!(apply(&slots, &two).accepted);
+        assert_eq!(apply(&slots, &two), Ok(SlotUpdateResponse::taken()));
         assert_eq!(watched.borrow().members, two.members);
 
         let one = PeerUpdateRequest {
@@ -315,7 +320,7 @@ mod tests {
             sequence: 4,
             members: vec![pin("core_b", "arm_1", "controller")],
         };
-        assert!(apply(&slots, &one).accepted);
+        assert_eq!(apply(&slots, &one), Ok(SlotUpdateResponse::taken()));
         assert_eq!(
             watched.borrow().members,
             one.members,

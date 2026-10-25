@@ -13,18 +13,21 @@
 
 mod support;
 
+use peppy_mcp_runtime::{ActionContext, ActionExit, CancelledGoal, ToolCall};
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ErrorCode,
     ReadResourceRequestParams, ResourceContents, ServerNotification, SubscriptionFilter,
     TaskStatus, object,
 };
 use serde_json::{Value, json};
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use support::{
     Client, FRAME_URI, GUARD, STATUS_URI, Streaming, assert_ended_cancelled, confirmation_accept,
     connect, connect_logging_progress, connect_named, connect_with_tasks, next_notification,
     poll_task_until, protocol_error, sample_rgb8_frame, start_set, start_set_with,
 };
+use tokio::sync::Notify;
 
 const MS: u64 = 1_000_000;
 
@@ -305,8 +308,8 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
         );
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
 
-        // A bridge failure comes back as a readable tool error, not a protocol
-        // error.
+        // An error reply comes back as a tool error, not a protocol error,
+        // with its failure kind and message as structured content.
         let called = client
             .call_tool(
                 CallToolRequestParams::new("front_camera.set_brightness")
@@ -315,6 +318,22 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
             .await
             .expect("bridge failures are tool errors");
         assert_eq!(called.is_error, Some(true));
+        assert_eq!(
+            called.structured_content,
+            Some(json!({
+                "outcome": "failed",
+                "failure_kind": "reserved_value",
+                "message": "13 is reserved",
+            }))
+        );
+        assert_eq!(
+            called
+                .content
+                .first()
+                .and_then(|block| block.as_text())
+                .map(|text| text.text.as_str()),
+            Some("the provider gave an error reply: reserved_value: 13 is reserved")
+        );
 
         // The record lists the three state-changing calls, newest first,
         // under the identity the client declared; the read-only calls, the
@@ -352,7 +371,8 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
                 json!({ "name": "loopback-test", "version": "1.0" })
             );
         }
-        assert_eq!(calls[0]["message"], "call failed: 13 is reserved");
+        assert_eq!(calls[0]["failure_kind"], "reserved_value");
+        assert_eq!(calls[0]["message"], "13 is reserved");
 
         status.stop().await;
         frames.stop().await;
@@ -628,44 +648,90 @@ async fn a_client_without_the_tasks_capability_runs_an_action_inside_the_call() 
     set.stop().await;
 }
 
-/// Reports through `signal` when the call's goal sees the cancel request,
-/// parking until then.
-async fn signal_on_cancel(
-    signal: tokio::sync::mpsc::UnboundedSender<()>,
-    context: peppy_mcp_runtime::ActionContext,
-) -> Result<Value, peppy_mcp_runtime::ActionExit> {
-    context.report_feedback("parked");
-    context.cancel_requested().await;
-    signal.send(()).expect("the test holds the receiver");
-    Err(peppy_mcp_runtime::ActionExit::Cancelled(
-        peppy_mcp_runtime::CancelledGoal {
+/// The goal behind `recorder.replay_episode` in the walks of a closed
+/// connection: it reports `parked`, then completes with 120 frames once
+/// the test releases it. A cancel request ends it cancelled at once, so a
+/// completed goal is one that no one asked to cancel, and a goal the test
+/// never releases ends only through a cancel.
+async fn parked_until_released(
+    release: Arc<Notify>,
+    context: ActionContext,
+) -> Result<Value, ActionExit> {
+    context.report_feedback("parked").await;
+    tokio::select! {
+        biased;
+        () = context.cancel_requested() => Err(ActionExit::Cancelled(CancelledGoal {
             result: support::cancelled_episode(),
-            reason: None,
-        },
-    ))
+            reason: support::CANCELLED_BY_ITS_CALLER.to_owned(),
+        })),
+        () = release.notified() => Ok(json!({ "frames": 120 })),
+    }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn closing_the_call_cancels_the_goal_running_inside_it() {
-    let (signal, mut cancelled) = tokio::sync::mpsc::unbounded_channel();
-    let set = start_set_with(|builder| {
-        let signal = signal.clone();
+/// Serves the fixture set with [`parked_until_released`] behind
+/// `recorder.replay_episode`, released through `release`.
+async fn start_set_with_parked_replay(release: &Arc<Notify>) -> support::ServedSet {
+    start_set_with(|builder| {
+        let release = Arc::clone(release);
         builder
             .with_task("recorder.record_episode", support::record_episode)
             .with_task(
                 "recorder.replay_episode",
-                move |_call: peppy_mcp_runtime::ToolCall,
-                      context: peppy_mcp_runtime::ActionContext| {
-                    signal_on_cancel(signal.clone(), context)
+                move |_call: ToolCall, context: ActionContext| {
+                    parked_until_released(Arc::clone(&release), context)
                 },
             )
     })
-    .await;
+    .await
+}
+
+/// The entry of the newest call of `tool` in the record that `client`
+/// reads, if the record holds a call of `tool`.
+async fn newest_entry(client: &Client, tool: &str) -> Option<Value> {
+    let recorded = client
+        .call_tool(CallToolRequestParams::new("camera.recent_calls"))
+        .await
+        .expect("the record answers");
+    let calls = recorded.structured_content.expect("structured")["calls"].clone();
+    calls
+        .as_array()
+        .expect("the calls")
+        .iter()
+        .find(|call| call["tool"] == tool)
+        .cloned()
+}
+
+/// The entry of the newest call of `tool` in the record of the endpoint at
+/// `url`, once that call is no longer running. The wait is bounded by
+/// [`GUARD`] and driven by the endpoint's answers.
+async fn ended_entry(url: &str, tool: &str) -> Value {
+    let client = connect(url).await;
+    let entry = tokio::time::timeout(GUARD, async {
+        loop {
+            let newest = newest_entry(&client, tool).await;
+            if let Some(entry) = newest.filter(|entry| entry["outcome"] != "running") {
+                return entry;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the call of `{tool}` never ended"));
+    client.cancel().await.expect("client disconnects");
+    entry
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_the_call_cancels_the_goal_inside_it() {
+    let release = Arc::new(Notify::new());
+    let set = start_set_with_parked_replay(&release).await;
     let http = reqwest::Client::new();
     for endpoint in &set.endpoints {
         // A raw call, so the test owns the response stream: once the first
         // event (the goal's feedback) proves the goal is parked, dropping
-        // the response is the client going away mid-call.
+        // the response closes the call. In Streamable HTTP that is how a
+        // client cancels a call, and also what a client that goes away
+        // does: the endpoint takes both as a cancel.
         let response = http
             .post(&endpoint.url)
             .header("content-type", "application/json")
@@ -679,7 +745,7 @@ async fn closing_the_call_cancels_the_goal_running_inside_it() {
                 "method": "tools/call",
                 "params": {
                     "name": "recorder.replay_episode",
-                    "arguments": { "episode_name": "wait_for_cancel" },
+                    "arguments": { "episode_name": "demo" },
                     "_meta": {
                         "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                         "io.modelcontextprotocol/clientInfo": { "name": "raw", "version": "0" },
@@ -703,16 +769,80 @@ async fn closing_the_call_cancels_the_goal_running_inside_it() {
             first.contains("notifications/progress") && first.contains("parked"),
             "the goal's feedback is the call's first event: {first}"
         );
-        assert!(
-            cancelled.try_recv().is_err(),
-            "the goal is parked while the call is open"
-        );
-
         drop(response);
-        tokio::time::timeout(GUARD, cancelled.recv())
-            .await
-            .expect("closing the call reaches the goal as a cancel request")
-            .expect("the signal sender lives in the server");
+
+        // The goal is never released: the cancel is the one way it can
+        // end, and the record keeps that end.
+        let entry = ended_entry(&endpoint.url, "recorder.replay_episode").await;
+        assert_eq!(entry["outcome"], "cancelled", "{entry}");
+        assert_eq!(entry["message"], support::CANCELLED_BY_ITS_CALLER);
+        assert_eq!(entry["client"], json!({ "name": "raw", "version": "0" }));
     }
     set.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_task_outlives_the_connection_of_its_client_and_only_tasks_cancel_ends_it() {
+    let release = Arc::new(Notify::new());
+    let set = start_set_with_parked_replay(&release).await;
+    for endpoint in &set.endpoints {
+        // The client starts the goal as a task, sees it run, and
+        // disconnects.
+        let client = connect_with_tasks(&endpoint.url).await;
+        let task_id = start_replay_task(&client).await;
+        poll_task_until(&client, &task_id, "the goal running", |task| {
+            task.task.status_message.as_deref() == Some("parked")
+        })
+        .await;
+        client.cancel().await.expect("client disconnects mid-goal");
+
+        // The goal still runs: no cancel reached it, and a client that
+        // reconnects reads it run on to its end.
+        let reconnected = connect_with_tasks(&endpoint.url).await;
+        let running = reconnected
+            .get_task(rmcp::model::GetTaskParams::new(&*task_id))
+            .await
+            .expect("tasks/get answers");
+        assert_eq!(running.task.status(), TaskStatus::Working);
+        release.notify_one();
+        let completed = poll_task_until(&reconnected, &task_id, "a terminal status", |task| {
+            task.status().is_terminal()
+        })
+        .await;
+        assert_eq!(completed.status(), TaskStatus::Completed);
+
+        // `tasks/cancel` is the one cancel a client gives.
+        let task_id = start_replay_task(&reconnected).await;
+        poll_task_until(&reconnected, &task_id, "the goal running", |task| {
+            task.task.status_message.as_deref() == Some("parked")
+        })
+        .await;
+        reconnected
+            .cancel_task(CancelTaskParams::new(&*task_id))
+            .await
+            .expect("tasks/cancel acknowledges");
+        let cancelled = poll_task_until(&reconnected, &task_id, "a terminal status", |task| {
+            task.status().is_terminal()
+        })
+        .await;
+        assert_ended_cancelled(&cancelled);
+        reconnected.cancel().await.expect("client disconnects");
+    }
+    set.stop().await;
+}
+
+/// Starts `recorder.replay_episode` as a task of `client`, which declares
+/// the tasks extension, and returns its id.
+async fn start_replay_task(client: &Client) -> String {
+    let response = client
+        .call_tool_once(
+            CallToolRequestParams::new("recorder.replay_episode")
+                .with_arguments(object(json!({ "episode_name": "demo" }))),
+        )
+        .await
+        .expect("the task-backed tool answers");
+    let CallToolResponse::Task(created) = response else {
+        panic!("expected a task handle, got {response:?}");
+    };
+    created.task.task_id
 }

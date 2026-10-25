@@ -268,11 +268,13 @@ This is also what lets the [installer](/guides/installation/) finish on a machin
 
 With `--strict`, the same report fails the command: `peppy repo refresh --strict` prints it and exits with an error. The repositories that read cleanly are still indexed and the failed ones still keep their entries; only the exit status differs. Use it where a repository that cannot be read must stop what comes next, as in CI, where a later step would otherwise fail with an error that does not name the repository.
 
-Only a refresh that could not run at all fails: a `repositories.json5` that does not parse or that lists the same `id` twice, or caches that cannot be written. Nothing was read in that case, so there is nothing to contain.
+Only a refresh that could not run at all fails: a `repositories.json5` that does not parse or that lists the same `id` twice, or caches that cannot be written. Nothing was read in that case, so there is nothing to contain. The command then prints the failure kind and the reason, `Repository refresh failed (attempt_failed): …`, and exits with code 1.
 
-Two kinds of failure are reported, and the distinction matters because they send you to different places:
+A Ctrl+C sends the daemon a cancel of the refresh. The read of each repository that runs ends first, no other read starts, and the refresh publishes nothing, as a refresh that fails: the caches keep what they held. The command prints `Repository refresh was cancelled by its caller.` and exits with code 130. A second Ctrl+C stops the wait for the end once the cancel reached the daemon, and a third one ends the command at once.
 
-| Kind | Meaning | Typical cause |
+Two read failures are reported, and the distinction matters because they send you to different places:
+
+| Read failure | Meaning | Typical cause |
 | --- | --- | --- |
 | `unreachable` | The repository could not be read at all. | Network outage, a bad git ref, a `peppy-release/<version>` tag that the hub does not carry, a local path that is not mounted, a root with no committed `peppy_repository.json5`, an unrecognized entry in `repositories.json5`. |
 | `conflict` | The repository was read fine, but its committed index contradicts itself or the tree. | An index that fails to parse (a duplicate key, an unknown field, an illegal path), or a listed path that is missing, is of another kind, or declares another identity. |
@@ -318,7 +320,7 @@ peppy repo add /path/to/my/nodes --id 2000
 
 The `--ref` flag is only valid for git sources. By default the new repository is appended with `id = max(existing ids) + 1`, so it has the lowest priority among configured repositories; pass `--top` to assign it an `id` just below the current minimum, giving it the highest priority. The priority `id` decides which repository wins when several of them provide the same `name:tag` (see [Refresh the index](#refresh-the-index)).
 
-Pass `--id <id>` to pin the new repository under that exact id instead of a derived one. Take ids from the reserved band `>= 2000`: Peppy's bundled defaults stay below 2000, so a pinned id never collides with a default. `--id` conflicts with `--top`, since both decide which id the entry takes. Pinning an id another entry already holds is refused, naming the id (for example `repository id 2000 is already in use`).
+Pass `--id <id>` to pin the new repository under that exact id instead of a derived one. Take ids from the reserved band `>= 2000`: Peppy's bundled defaults stay below 2000, so a pinned id never collides with a default. `--id` conflicts with `--top`, since both decide which id the entry takes. Pinning an id another entry already holds is refused, naming the id: `Failed to add repository (precondition_failed): repository id 2000 is already in use; …`. Each refusal of `peppy repo add`, `peppy repo remove` and `peppy repo exclude` names its [failure kind](/guides/launch_files/#how-a-stack-command-ends): `rejected` for a value that is not valid or an id that the list does not hold, `precondition_failed` for a repository that the list already holds, and `attempt_failed` for a list that the daemon cannot read or write.
 
 ### Remove a repository
 

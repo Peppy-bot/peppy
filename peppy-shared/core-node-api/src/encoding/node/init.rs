@@ -61,45 +61,28 @@ impl NodeInitRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeInitResponse {
-    pub success: bool,
-    pub error_message: String,
-}
+/// The response of a node init that succeeded. Carries no fields: a failed
+/// init is an error reply, with a failure kind and a message.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NodeInitResponse;
 
 impl NodeInitResponse {
-    pub fn new(success: bool, error_message: impl Into<String>) -> Self {
-        Self {
-            success,
-            error_message: error_message.into(),
-        }
-    }
-
-    pub fn success() -> Self {
-        Self::new(true, "")
-    }
-
-    pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(false, error_message)
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_init_response::Builder>();
-            response.set_success(self.success);
-            response.set_error_message(&self.error_message);
+            builder.init_root::<node_capnp::node_init_response::Builder>();
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_init_response::Reader>()?;
-        Ok(Self {
-            success: response.get_success(),
-            error_message: response.get_error_message()?.to_str()?.to_owned(),
-        })
+        reader.get_root::<node_capnp::node_init_response::Reader>()?;
+        Ok(Self)
     }
 }
 
@@ -172,35 +155,10 @@ mod tests {
     }
 
     #[test]
-    fn init_response_round_trips_success() {
-        let response = NodeInitResponse::success();
-        assert!(response.success);
-        assert_eq!(response.error_message, "");
-        let payload = response.encode().expect("encode");
+    fn init_response_round_trips() {
+        let payload = NodeInitResponse::new().encode().expect("encode");
         let decoded = NodeInitResponse::decode(payload.as_ref()).expect("decode");
-        assert!(decoded.success);
-        assert!(decoded.error_message.is_empty());
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn init_response_round_trips_failure() {
-        let response = NodeInitResponse::failure("boom");
-        assert!(!response.success);
-        assert_eq!(response.error_message, "boom");
-        let payload = response.encode().expect("encode");
-        let decoded = NodeInitResponse::decode(payload.as_ref()).expect("decode");
-        assert!(!decoded.success);
-        assert_eq!(decoded.error_message, "boom");
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn init_response_new_round_trips() {
-        let response = NodeInitResponse::new(true, "partial");
-        let payload = response.encode().expect("encode");
-        let decoded = NodeInitResponse::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, response);
+        assert_eq!(decoded, NodeInitResponse);
     }
 
     #[test]

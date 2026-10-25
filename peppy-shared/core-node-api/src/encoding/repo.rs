@@ -11,7 +11,7 @@ pub use git_ref::{
     GitRepoRef, GitRepoRefError, PEPPY_RELEASE_REF, PEPPY_RELEASE_TAG_PREFIX, PeppyBuild, ReadRef,
 };
 pub use list::{
-    RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailure, RepoListRepoFailureKind,
+    RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailedRead, RepoListRepoReadFailure,
     RepoListRequest, RepoListResponse,
 };
 pub use refresh::{

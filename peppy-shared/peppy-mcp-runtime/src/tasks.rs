@@ -2,14 +2,21 @@
 //! and the context the runtime hands it while a goal runs.
 //!
 //! The runtime owns the whole MCP side of an action (the task or the call
-//! it runs in, confirmation, feedback delivery, cancellation intent, a
-//! whole-goal deadline, terminal mapping); the bridge owns the whole Peppy
-//! side (firing the goal, draining feedback, forwarding the cancel,
-//! awaiting the result, and the progress window of a progress-bound goal,
-//! which only the bridge sees the signs of). [`ActionContext`] is the seam
-//! between the two, and it hides which of the two MCP surfaces the goal
-//! runs on.
+//! it runs in, confirmation, feedback delivery, the client's cancel, a
+//! whole-goal deadline, terminal mapping); the bridge owns the
+//! whole Peppy side (firing the goal, draining feedback, forwarding the
+//! cancel, awaiting the result, and the progress window of a
+//! progress-bound goal, which only the bridge sees the signs of).
+//! [`ActionContext`] is the seam between the two, and it hides which of the
+//! two MCP surfaces the goal runs on.
+//!
+//! A client cancels a task with `tasks/cancel`, and a task outlives the
+//! connection that started it. A client cancels a call by closing it, which
+//! a client that disconnects does too: a goal that runs inside a call is
+//! cancelled when its call closes. Stopping the set ends every task (see
+//! [`ExposureSet::serve`](crate::ExposureSet::serve)).
 
+use crate::failure::{CallFailure, FailureOutcome, ProviderFailure};
 use crate::server::ToolCall;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::task_manager::TaskContext;
@@ -24,45 +31,71 @@ use tokio_util::sync::CancellationToken;
 /// the call the goal ran in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionExit {
+    /// The provider refused the goal, with a failure kind and a message:
+    /// the goal never ran. A call answers with the tool error of the
+    /// failure; a task ends `failed`, with the failure in its error.
+    Refused(ProviderFailure),
+    /// The goal ran and failed, with a failure kind and a message. It ends
+    /// as a refused goal does.
+    Failed(ProviderFailure),
     /// The Peppy action ended cancelled, whoever cancelled it: the client,
-    /// the bridge, or the provider on its own. A call answers with a tool
-    /// error that carries the provider's result; a task ends `cancelled`,
-    /// and its status message carries the reason and that result.
+    /// or the provider on its own. A call answers with a tool error that
+    /// carries the provider's result; a task ends `cancelled`, and its
+    /// status message carries the reason and that result.
     Cancelled(CancelledGoal),
-    /// The goal could not run to completion (rejected, abandoned, expired,
-    /// or a transport failure); an MCP task settles as `failed` with this
-    /// message.
-    Failed(String),
+    /// The goal ended in no completion, refusal, failure or cancel that
+    /// the provider gave: the goal could not be sent, its feedback
+    /// overflowed, its provider abandoned it or gave a failure kind that
+    /// the member does not declare, its result expired, or a progress
+    /// window went by without a sign of progress. The message says which.
+    /// A call answers with a tool error of this text; a task ends `failed`
+    /// with it.
+    Error(String),
+}
+
+impl ActionExit {
+    /// The failure the provider gave, with how the call ended, for a goal
+    /// that the provider refused or failed.
+    pub(crate) fn call_failure(&self) -> Option<CallFailure<'_>> {
+        let (outcome, failure) = match self {
+            Self::Refused(failure) => (FailureOutcome::Refused, failure),
+            Self::Failed(failure) => (FailureOutcome::Failed, failure),
+            Self::Cancelled(_) | Self::Error(_) => return None,
+        };
+        Some(CallFailure {
+            outcome,
+            failure,
+            summary: self.to_string(),
+        })
+    }
 }
 
 impl std::fmt::Display for ActionExit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Refused(failure) => write!(f, "the provider refused the goal: {failure}"),
+            Self::Failed(failure) => write!(f, "the provider failed the goal: {failure}"),
             Self::Cancelled(goal) => write!(f, "{goal}"),
-            Self::Failed(detail) => write!(f, "the action failed: {detail}"),
+            Self::Error(detail) => write!(f, "the action failed: {detail}"),
         }
     }
 }
 
 /// A goal that ended cancelled, with the result its provider ended it
-/// with. A provider that cancels a goal on its own says why in that result.
+/// with and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CancelledGoal {
     /// The canonical JSON of the result the provider ended the goal with.
     pub result: Value,
-    /// Why the goal was cancelled, when the bridge cancelled it for a
-    /// reason of its own, which the result cannot say: for example a
-    /// progress window that went by without a sign of progress. `None` for
-    /// a cancel the client asked for or the provider made.
-    pub reason: Option<String>,
+    /// Why the goal was cancelled: the reason the provider ended it with.
+    pub reason: String,
 }
 
 impl CancelledGoal {
     /// The tool result of the goal, for a call that runs it: a tool error
-    /// that says the goal was cancelled (and why, when the bridge knows),
-    /// and carries the provider's result as structured content and as its
-    /// JSON text. It is an error whatever the result says: the goal did not
-    /// run to its end.
+    /// that says the goal was cancelled and why, and carries the provider's
+    /// result as structured content and as its JSON text. It is an error
+    /// whatever the result says: the goal did not run to its end.
     pub(crate) fn into_tool_result(self) -> CallToolResult {
         let summary = self.to_string();
         let mut result = CallToolResult::structured_error(self.result);
@@ -81,10 +114,7 @@ impl CancelledGoal {
 
 impl std::fmt::Display for CancelledGoal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.reason {
-            Some(reason) => write!(f, "the action was cancelled: {reason}"),
-            None => write!(f, "the action was cancelled"),
-        }
+        write!(f, "the action was cancelled: {}", self.reason)
     }
 }
 
@@ -98,10 +128,18 @@ pub(crate) enum ActionSurface {
     Task(TaskContext),
     /// The `tools/call` that started the goal, for a client without the
     /// extension: feedback is relayed as progress notifications on that
-    /// call, and the client closing the call is the cancel signal.
+    /// call, and `closed`, which the transport cancels when the call
+    /// closes, is the cancel signal. In Streamable HTTP a client cancels a
+    /// call by closing it, and a client that disconnects closes it too: the
+    /// endpoint cannot tell the two apart, and takes both as a cancel.
+    ///
+    /// `feedback` is the relay to the client, which holds one message: a
+    /// report waits while the client has not taken the message before it.
+    /// The relay stops when the call closes, and a report after that drops
+    /// its message at once.
     Call {
-        feedback: mpsc::UnboundedSender<String>,
-        cancel: CancellationToken,
+        feedback: mpsc::Sender<String>,
+        closed: CancellationToken,
     },
 }
 
@@ -115,34 +153,42 @@ impl ActionContext {
     /// Publishes a feedback message to the client: as the task's status
     /// message, which `tasks/get` reports, or as a progress notification on
     /// the call the goal runs in.
-    pub fn report_feedback(&self, message: impl Into<String>) {
+    ///
+    /// On a task it returns at once. On a call it returns once the relay to
+    /// the client takes the message, and the relay holds one message: a
+    /// bridge that reads its goal's feedback only after this returns keeps
+    /// the messages that the client is not ready for in the goal's feedback
+    /// buffer, whose bound holds a client that falls behind. On a call that
+    /// closed it returns at once and drops the message, which has no
+    /// reader.
+    pub async fn report_feedback(&self, message: impl Into<String>) {
         match &self.surface {
             ActionSurface::Task(task) => task.set_status_message(message),
-            // A closed receiver means the call already settled; feedback
-            // after that has no reader.
             ActionSurface::Call { feedback, .. } => {
-                let _ = feedback.send(message.into());
+                let _ = feedback.send(message.into()).await;
             }
         }
     }
 
-    /// Resolves once the client has requested cancellation (immediately, if
-    /// it already has): through `tasks/cancel` on a task, by closing the
-    /// call otherwise. Cancellation is cooperative on both sides: the bridge
-    /// forwards it to the Peppy action's cancel path and keeps awaiting the
-    /// terminal result, which decides the terminal state.
+    /// Resolves once the client has asked to cancel the goal (immediately,
+    /// if it already has): through `tasks/cancel` on a task, by closing the
+    /// call otherwise. A task's connection closing is no cancel. Cancellation
+    /// is cooperative: the bridge forwards it to the Peppy action's cancel
+    /// path and keeps awaiting the terminal result, which decides the
+    /// terminal state.
     pub async fn cancel_requested(&self) {
         match &self.surface {
             ActionSurface::Task(task) => task.cancelled().await,
-            ActionSurface::Call { cancel, .. } => cancel.cancelled().await,
+            ActionSurface::Call { closed, .. } => closed.cancelled().await,
         }
     }
 
-    /// Whether the client has requested cancellation of this goal.
+    /// Whether the client has asked to cancel the goal: through
+    /// `tasks/cancel` on a task, by closing the call otherwise.
     pub fn is_cancel_requested(&self) -> bool {
         match &self.surface {
             ActionSurface::Task(task) => task.is_cancel_requested(),
-            ActionSurface::Call { cancel, .. } => cancel.is_cancelled(),
+            ActionSurface::Call { closed, .. } => closed.is_cancelled(),
         }
     }
 }
@@ -153,6 +199,12 @@ impl ActionContext {
 /// describing the non-completed terminal state. Any
 /// `Fn(ToolCall, ActionContext) -> impl Future` with those shapes implements
 /// it.
+///
+/// The runtime drops the future of a bridge whose goal outlasts its
+/// whole-goal deadline or the TTL of its task, and the futures of every
+/// bridge when the endpoint stops. A bridge whose future is dropped before
+/// its goal ended stops following the goal and sends its provider a
+/// cancel, so no goal runs on with no one following it.
 pub trait TaskHandler: Send + Sync + 'static {
     fn start(
         &self,

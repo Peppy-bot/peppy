@@ -21,9 +21,9 @@ use super::*;
 use crate::generator::golden_support::{
     CONSUMED_ACTION, CONSUMED_SERVICE, CONSUMED_SERVICE_REQUEST, CONSUMED_SERVICE_RESPONSE,
     CONSUMED_TOPIC, CONSUMED_TOPIC_FORMAT, EMITTED, EXPOSED_ACTION_FEEDBACK_ONLY,
-    EXPOSED_SERVICE_FULL, GoldenDocument, PEER_TOPIC, assert_matches_golden, full_action_messages,
-    parse, peer, push_artifact_section, push_section, register_bodyless_dependency,
-    register_own_emitted_topics, register_own_services_and_actions,
+    EXPOSED_SERVICE_FULL, GoldenDocument, PEER_TOPIC, arm_control_dependency,
+    assert_matches_golden, full_action_messages, parse, peer, push_artifact_section, push_section,
+    register_bodyless_dependency, register_own_emitted_topics, register_own_services_and_actions,
 };
 use crate::generator::types::ConsumedActionMessage;
 use config::node::{
@@ -167,8 +167,7 @@ fn render_everything() -> RenderedSurface {
 
     // A contract-routed dependency with a retaining topic and an action,
     // exercising the other target flavour on the mock side.
-    let contract_dependency =
-        DependencyContext::contract("arm_control", "v1", "left_arm", Cardinality::One);
+    let contract_dependency = arm_control_dependency();
     let mut topic: ConsumedTopic = parse(CONSUMED_TOPIC);
     topic.link_id = "left_arm".to_string();
     generator

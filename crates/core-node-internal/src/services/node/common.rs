@@ -119,18 +119,19 @@ impl SlotUpdateClient {
             timeout,
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| match error.failure() {
+            // The instance refused the delivery: its error reply says why.
+            Some(failure) if failure.message().is_empty() => rejection_message.to_string(),
+            Some(failure) => failure.message().to_owned(),
+            None => error.to_string(),
+        })?;
 
         let response = SlotUpdateResponse::decode(&reply.payload_bytes())
             .map_err(|error| error.to_string())?;
-        if response.accepted {
-            Ok(SlotDelivery::Taken)
-        } else if response.stale_sequence {
+        if response.stale_sequence {
             Ok(SlotDelivery::HeldNewer)
-        } else if response.message.is_empty() {
-            Err(rejection_message.to_string())
         } else {
-            Err(response.message)
+            Ok(SlotDelivery::Taken)
         }
     }
 }

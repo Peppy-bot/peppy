@@ -283,7 +283,7 @@ fn main() -> Result<()> {
             loop {
                 enable_camera::handle_next_request(
                     &service_runner,
-                    |request| -> Result<enable_camera::Response> {
+                    |request| -> std::result::Result<enable_camera::Response, enable_camera::Failure> {
                         Ok(enable_camera::Response::new(
                             request.data.enable,
                             Some("handled".to_owned()),

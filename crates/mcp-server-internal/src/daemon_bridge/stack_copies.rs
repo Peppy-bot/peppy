@@ -23,9 +23,11 @@
 //!
 //! The bridge runs one `join` at a time. A `join` takes the lock before it
 //! reads the stack and holds it until the daemon's work ends, also after its
-//! call ended; a `join` that finds it held is refused with the daemon's busy
-//! text. A `remove` takes no lock: the daemon refuses it while another stack
-//! change runs. How a call follows the change it sent is in [`change`].
+//! call ended; a `join` that finds it held is refused with the kind `busy`,
+//! as the daemon refuses a change while other work holds its stack. A
+//! `remove` takes no lock: the daemon refuses it with the kind `busy` while
+//! another stack change runs. How a call follows the change it sent is in
+//! [`change`].
 //!
 //! The daemon reports a join in its list from the moment it admits the
 //! goal. A `join` also holds the admission lock of the bridge until the
@@ -37,12 +39,14 @@ mod change;
 
 use super::OwnDaemon;
 use change::{Change, JoinLocks, start_change, wait_for_change};
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::{CopyName, CoreNodeName, CoreNodeTarget};
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     CopyChange, CopyInfo, CopyReference, SelectionWord, StackJoinGoal, StackRemoveGoal,
 };
 use daemon_config::daemon_interface::{ScopedOption, StackCopiesScope};
-use peppy_mcp_runtime::{ActionExit, ToolCallError};
+use peppy_mcp_runtime::{ActionExit, ProviderFailure, ToolCallError};
 use peppylib::CoreNodePresenceMessenger;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -57,8 +61,8 @@ use crate::bridges::TaskSurface;
 /// before it refuses. The daemon answers at once.
 const STACK_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The reason the bridge gives when it refuses a `join` while one it started
-/// is still in progress.
+/// The reason the bridge gives, with the kind `busy`, when it refuses a
+/// `join` while one it started is still in progress.
 pub(crate) const STACK_BUSY_REASON: &str =
     "a `join` started through this server is still in progress; wait for it to finish";
 
@@ -157,7 +161,7 @@ impl ScopedStackCopies {
             ),
         );
         let listed = listed.map_err(|error| {
-            ToolCallError::Failed(format!("the daemon did not list the stack: {error}"))
+            ToolCallError::Error(format!("the daemon did not list the stack: {error}"))
         })?;
         let machines = live_machines_or_refusal(machines)?;
         let options: Vec<Value> = self
@@ -213,10 +217,12 @@ impl ScopedStackCopies {
         window: Option<Duration>,
     ) -> Result<Value, ActionExit> {
         let input: JoinInput = parse_input(input)?;
-        let TypedJoin { copy, words } = self.typed_join(&input).map_err(ActionExit::Failed)?;
+        let TypedJoin { copy, words } = self
+            .typed_join(&input)
+            .map_err(|reason| refusal(PeppyFailureKind::Rejected, reason))?;
         let join = Arc::clone(&self.bridge.joins)
             .try_lock_owned()
-            .map_err(|_| ActionExit::Failed(STACK_BUSY_REASON.to_owned()))?;
+            .map_err(|_| refusal(DaemonFailureKind::Busy, STACK_BUSY_REASON))?;
         let admission = Arc::clone(&self.bridge.admission).lock_owned().await;
         let change = Change::Addition {
             name: copy.name.clone(),
@@ -225,8 +231,9 @@ impl ScopedStackCopies {
         let daemon = self.bridge.daemon.clone();
         let scope = Arc::clone(&self.scope);
         let goal = async move {
-            let copies = read_copies(&daemon).await?;
-            refuse_join(&scope, &copies, &copy.name)?;
+            let copies = read_copies(&daemon).await.map_err(ActionExit::Error)?;
+            refuse_join(&scope, &copies, &copy.name)
+                .map_err(|reason| refusal(PeppyFailureKind::PreconditionFailed, reason))?;
             Ok(StackJoinGoal {
                 selections: words,
                 ..StackJoinGoal::new(copy, DEFAULT_BUDGETS)
@@ -252,13 +259,14 @@ impl ScopedStackCopies {
     ) -> Result<Value, ActionExit> {
         let input: RemoveInput = parse_input(input)?;
         let name = CopyName::new(input.name.as_str())
-            .map_err(|error| ActionExit::Failed(error.to_string()))?;
+            .map_err(|error| refusal(PeppyFailureKind::Rejected, error.to_string()))?;
         let change = Change::Removal { name: name.clone() };
         let daemon = self.bridge.daemon.clone();
         let scope = Arc::clone(&self.scope);
         let goal = async move {
-            let copies = read_copies(&daemon).await?;
-            refuse_removal(&scope, &copies, &name)?;
+            let copies = read_copies(&daemon).await.map_err(ActionExit::Error)?;
+            refuse_removal(&scope, &copies, &name)
+                .map_err(|reason| refusal(PeppyFailureKind::Rejected, reason))?;
             Ok(StackRemoveGoal::new(name))
         };
         let started = start_change(self.bridge.daemon.clone(), None, change.clone(), goal);
@@ -323,10 +331,19 @@ impl ScopedStackCopies {
     }
 }
 
+/// The refusal of a change that the bridge gives before any goal reaches the
+/// daemon, with `kind`, a kind of the daemon: `rejected` for an input that
+/// names what the scope does not hold, `precondition_failed` for a stack
+/// that does not allow the change, and `busy` for a `join` of the bridge
+/// that still runs.
+fn refusal(kind: impl Into<DaemonFailureKind>, reason: impl Into<String>) -> ActionExit {
+    ActionExit::Refused(ProviderFailure::new(kind.into(), reason))
+}
+
 /// The goal of a call, which the narrowed schema already checked.
 fn parse_input<T: serde::de::DeserializeOwned>(input: &Value) -> Result<T, ActionExit> {
     T::deserialize(input)
-        .map_err(|error| ActionExit::Failed(format!("the goal does not parse: {error}")))
+        .map_err(|error| ActionExit::Error(format!("the goal does not parse: {error}")))
 }
 
 /// The copies on the stack, or the refusal of a change that cannot read
@@ -349,7 +366,7 @@ pub(super) fn live_machines_or_refusal(
     read: peppylib::PeppyResult<std::collections::BTreeSet<String>>,
 ) -> Result<std::collections::BTreeSet<String>, ToolCallError> {
     read.map_err(|error| {
-        ToolCallError::Failed(format!(
+        ToolCallError::Error(format!(
             "the live machines of the federation could not be read: {error}"
         ))
     })

@@ -1,12 +1,14 @@
 use crate::Result;
+use crate::services::response::failure;
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo};
 use core_node_api::names;
 use node_stack::NodeStack;
 use peppylib::messaging::SenderTarget;
+use peppylib::messaging::ServiceAnswer;
 use peppylib::messaging::ServiceRequestContext;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use std::path::{Path, PathBuf};
 use std::{sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
@@ -41,63 +43,39 @@ pub async fn listen_for_node_info(
     Ok(handle)
 }
 
-/// Failure mode of `handle_node_info_request_inner`. Routed to a different
-/// `PeppyError` variant by the outer wrapper so that internal faults
-/// (serializer/encoder errors) are not classified as caller-fault
-/// `InvalidServiceRequest`.
-enum InfoError {
-    Invalid(String),
-    Internal(String),
-}
-
-// Only `String` converts into `InfoError` through `?`, and only as the
-// `Invalid` (caller-fault) variant. An internal fault, such as a serializer
-// or encoder error, is wrapped in `InfoError::Internal` explicitly, so it is
-// reported as `ServiceError` rather than `InvalidServiceRequest`.
-impl From<String> for InfoError {
-    fn from(reason: String) -> Self {
-        InfoError::Invalid(reason)
-    }
-}
-
+/// Answers one `node_info` request within `timeout`: a request that does not
+/// decode is `rejected`, an internal fault (a serializer or encoder error)
+/// is `attempt_failed`, and a lookup that outlasts `timeout` is `timeout`.
 async fn handle_node_info_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
     timeout: Duration,
-) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id().to_string();
-
-    match tokio::time::timeout(
+) -> ServiceAnswer {
+    tokio::time::timeout(
         timeout,
         handle_node_info_request_inner(&context, node_stack),
     )
     .await
-    {
-        Ok(Ok(bytes)) => Ok(bytes),
-        Ok(Err(InfoError::Invalid(reason))) => Err(PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id,
-            reason,
-        }),
-        Ok(Err(InfoError::Internal(reason))) => Err(PeppyError::ServiceError {
-            instance_id: Some(sender_instance_id),
-            service_name: ServiceId::NodeInfo.name().to_string(),
-            reason,
-        }),
-        Err(_) => Err(PeppyError::ServiceTimeout {
-            instance_id: None,
-            service_name: ServiceId::NodeInfo.name().to_string(),
-        }),
-    }
+    .unwrap_or_else(|_| {
+        Err(failure(
+            PeppyFailureKind::Timeout,
+            format!(
+                "the node lookup took longer than {}s",
+                timeout.as_secs_f64()
+            ),
+        ))
+    })
 }
 
 async fn handle_node_info_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
-) -> std::result::Result<Payload, InfoError> {
+) -> ServiceAnswer {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload_bytes();
 
-    let request = NodeInfoRequest::decode(payload.as_ref()).map_err(|e| format!("{}", e))?;
+    let request = NodeInfoRequest::decode(payload.as_ref())
+        .map_err(|e| failure(PeppyFailureKind::Rejected, e))?;
 
     debug!(
         "Received `node_info` request from {sender_instance_id} for {}:{}",
@@ -108,12 +86,12 @@ async fn handle_node_info_request_inner(
     // malformed request. Encode it as `NodeInfoResponse::NotInStack` so
     // callers (e.g. the `peppy node add` preflight) can handle it without
     // provoking the generic service-handler error log. Malformed requests
-    // (decode failures above) still route to `InfoError::Invalid` and are
-    // the only legitimate caller-fault path through this handler.
+    // (decode failures above) are the only caller-fault path through this
+    // handler.
     let Some(entity) = node_stack.find(&request.node_name, &request.node_tag) else {
         return NodeInfoResponse::NotInStack
             .encode()
-            .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)));
+            .map_err(encode_failure);
     };
 
     // Live pairs, read before the entity lock (`live_pairs` filters dead
@@ -169,8 +147,8 @@ async fn handle_node_info_request_inner(
 
     let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
 
-    let config_integrity =
-        super::manifest_fingerprint(&node_config).map_err(InfoError::Internal)?;
+    let config_integrity = super::manifest_fingerprint(&node_config)
+        .map_err(|reason| failure(PeppyFailureKind::AttemptFailed, reason))?;
 
     NodeInfoResponse::Found(Box::new(NodeInfo {
         config: node_config,
@@ -182,5 +160,12 @@ async fn handle_node_info_request_inner(
         reported_at_ms: core_node_api::unix_ms(std::time::SystemTime::now()),
     }))
     .encode()
-    .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))
+    .map_err(encode_failure)
+}
+
+fn encode_failure(error: core_node_api::Error) -> peppylib::messaging::Failure {
+    failure(
+        PeppyFailureKind::AttemptFailed,
+        format!("failed to encode NodeInfoResponse: {error}"),
+    )
 }

@@ -94,10 +94,14 @@ fn tracked_instances(
         .collect()
 }
 
-/// Idle + absolute-max timeout pair used by `node add` and `node run` polling loops.
+/// Idle + absolute-max timeout pair of the watchdog of a command that follows
+/// a daemon goal.
 pub struct TimeoutConfig {
     pub idle_secs: u64,
     pub max_secs: u64,
+    /// Whether the command takes `--idle-timeout` and `--max-timeout`, which
+    /// a timeout then names as the way to raise its budget.
+    pub flags: bool,
 }
 
 /// Parses a node_name:tag argument string into a tuple
@@ -633,6 +637,7 @@ impl Command for NodeCommand {
                 let timeouts = TimeoutConfig {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
+                    flags: true,
                 };
                 let source = source.unwrap_or_else(|| ".".to_string());
                 // `--run` implies `--build`: you can't run an instance of
@@ -663,6 +668,7 @@ impl Command for NodeCommand {
                 let timeouts = TimeoutConfig {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
+                    flags: true,
                 };
                 builder::build_node(
                     ctx,
@@ -704,6 +710,7 @@ impl Command for NodeCommand {
                 let timeouts = TimeoutConfig {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
+                    flags: true,
                 };
                 run::run_node(
                     ctx,

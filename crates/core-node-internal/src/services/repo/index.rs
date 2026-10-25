@@ -19,7 +19,7 @@ use crate::services::repo::cache::{
     ContractCacheEntry, DeclaredLinks, EntryOrigin, LauncherCacheEntry, McpExposureCacheEntry,
     NodeCacheEntry, PairingCacheEntry, RepoItems,
 };
-use crate::services::repo::refresh::RepoFailureKind;
+use crate::services::repo::refresh::RepoReadFailure;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
 use core_node_api::encoding::{ReadRef, RepoItemKind};
@@ -275,9 +275,9 @@ impl ReadSource {
 pub(crate) fn read_published_items(
     root: &Path,
     source: &ReadSource,
-) -> std::result::Result<Vec<PublishedItem>, (RepoFailureKind, String)> {
-    let unreachable = |detail: String| (RepoFailureKind::Unreachable, detail);
-    let contradictory = |detail: String| (RepoFailureKind::Conflict, detail);
+) -> std::result::Result<Vec<PublishedItem>, (RepoReadFailure, String)> {
+    let unreachable = |detail: String| (RepoReadFailure::Unreachable, detail);
+    let contradictory = |detail: String| (RepoReadFailure::Conflict, detail);
 
     let root = std::fs::canonicalize(root)
         .map_err(|e| unreachable(format!("{} cannot be read: {e}", root.display())))?;
@@ -1498,7 +1498,7 @@ mod tests {
         .expect_err("an unpublished repository contributes nothing");
         assert_eq!(
             kind,
-            RepoFailureKind::Unreachable,
+            RepoReadFailure::Unreachable,
             "nothing was read, which is not the same as reading something wrong"
         );
         assert!(
@@ -1529,7 +1529,7 @@ mod tests {
         .expect_err("a listed path that is not there is a refusal");
         assert_eq!(
             kind,
-            RepoFailureKind::Conflict,
+            RepoReadFailure::Conflict,
             "the index states something the tree does not hold"
         );
         assert!(detail.contains("a:v1"), "got: {detail}");

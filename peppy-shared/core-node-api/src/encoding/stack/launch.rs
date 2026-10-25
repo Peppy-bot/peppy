@@ -11,7 +11,7 @@ use crate::{NonEmptyPayload, Payload, Result};
 use crate::encoding::endpoints::{read_launch_endpoints, write_launch_endpoints};
 use crate::encoding::{
     capnp_list_len, decode_message, encode_fs_path, encode_message, encode_message_non_empty,
-    optional_text, read_name, required_text,
+    read_name, required_text,
 };
 use crate::graph::InstanceEndpoint;
 use config::runtime::{CoreNodeTarget, Name};
@@ -417,28 +417,18 @@ impl crate::encoding::Wire for StackBuildGoal {
     type Root = crate::launch_capnp::launch_goal::Owned;
 }
 
-/// Response to the Launch goal request.
+/// The goal response of an accepted stack goal: where the daemon writes the
+/// goal's log. The daemon refuses a goal in the goal envelope, with a
+/// failure kind and a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchGoalResponse {
-    pub accepted: bool,
     pub log_path: PathBuf,
-    pub rejection_reason: Option<String>,
 }
 
 impl LaunchGoalResponse {
-    pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
+    pub fn new(log_path: impl Into<PathBuf>) -> Self {
         Self {
-            accepted: true,
             log_path: log_path.into(),
-            rejection_reason: None,
-        }
-    }
-
-    pub fn rejected(reason: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            log_path: PathBuf::new(),
-            rejection_reason: Some(reason.into()),
         }
     }
 
@@ -446,11 +436,7 @@ impl LaunchGoalResponse {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<launch_capnp::launch_goal_response::Builder>();
-            response.set_accepted(self.accepted);
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
-            if let Some(ref reason) = self.rejection_reason {
-                response.set_rejection_reason(reason);
-            }
         }
         encode_message(&builder)
     }
@@ -459,9 +445,7 @@ impl LaunchGoalResponse {
         let reader = decode_message(data)?;
         let response = reader.get_root::<launch_capnp::launch_goal_response::Reader>()?;
         Ok(Self {
-            accepted: response.get_accepted(),
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
         })
     }
 }
@@ -485,11 +469,29 @@ impl LaunchFeedbackStep {
             Self::RunningNode => "run",
         }
     }
+
+    fn to_wire(self) -> launch_capnp::LaunchFeedbackStep {
+        match self {
+            Self::LauncherStep => launch_capnp::LaunchFeedbackStep::LauncherStep,
+            Self::AddingNode => launch_capnp::LaunchFeedbackStep::AddingNode,
+            Self::RunningNode => launch_capnp::LaunchFeedbackStep::RunningNode,
+            Self::BuildingNode => launch_capnp::LaunchFeedbackStep::BuildingNode,
+        }
+    }
+
+    fn from_wire(step: launch_capnp::LaunchFeedbackStep) -> Self {
+        match step {
+            launch_capnp::LaunchFeedbackStep::LauncherStep => Self::LauncherStep,
+            launch_capnp::LaunchFeedbackStep::AddingNode => Self::AddingNode,
+            launch_capnp::LaunchFeedbackStep::RunningNode => Self::RunningNode,
+            launch_capnp::LaunchFeedbackStep::BuildingNode => Self::BuildingNode,
+        }
+    }
 }
-/// Feedback message for the Launch action.
-/// Represents a single line of output from the launch process.
+
+/// One line of output of a stack goal.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaunchFeedback {
+pub struct LaunchOutput {
     /// The stream type: "stdout" or "stderr"
     pub stream: String,
     /// The line of output
@@ -498,7 +500,7 @@ pub struct LaunchFeedback {
     pub step: LaunchFeedbackStep,
 }
 
-impl LaunchFeedback {
+impl LaunchOutput {
     pub fn stdout(line: impl Into<String>, step: LaunchFeedbackStep) -> Self {
         Self {
             stream: "stdout".to_string(),
@@ -522,19 +524,41 @@ impl LaunchFeedback {
     pub fn is_stderr(&self) -> bool {
         self.stream == "stderr"
     }
+}
+
+/// Feedback message of a stack goal: one line of its output, or the log
+/// file of each node phase it ran, which the daemon sends once, as the last
+/// feedback of the goal, whichever way the goal ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchFeedback {
+    Output(LaunchOutput),
+    NodeLogs(NodeLogs),
+}
+
+impl LaunchFeedback {
+    /// One line of output on stdout.
+    pub fn stdout(line: impl Into<String>, step: LaunchFeedbackStep) -> Self {
+        Self::Output(LaunchOutput::stdout(line, step))
+    }
+
+    /// One line of output on stderr.
+    pub fn stderr(line: impl Into<String>, step: LaunchFeedbackStep) -> Self {
+        Self::Output(LaunchOutput::stderr(line, step))
+    }
 
     pub fn encode(&self) -> Result<NonEmptyPayload> {
         let mut builder = Builder::new_default();
         {
-            let mut feedback = builder.init_root::<launch_capnp::launch_feedback::Builder>();
-            feedback.set_stream(&self.stream);
-            feedback.set_line(&self.line);
-            feedback.set_step(match self.step {
-                LaunchFeedbackStep::LauncherStep => launch_capnp::LaunchFeedbackStep::LauncherStep,
-                LaunchFeedbackStep::AddingNode => launch_capnp::LaunchFeedbackStep::AddingNode,
-                LaunchFeedbackStep::RunningNode => launch_capnp::LaunchFeedbackStep::RunningNode,
-                LaunchFeedbackStep::BuildingNode => launch_capnp::LaunchFeedbackStep::BuildingNode,
-            });
+            let feedback = builder.init_root::<launch_capnp::launch_feedback::Builder>();
+            match self {
+                Self::Output(output) => {
+                    let mut wire = feedback.init_output();
+                    wire.set_stream(&output.stream);
+                    wire.set_line(&output.line);
+                    wire.set_step(output.step.to_wire());
+                }
+                Self::NodeLogs(logs) => logs.write(feedback.init_node_logs())?,
+            }
         }
         encode_message_non_empty(&builder)
     }
@@ -542,21 +566,135 @@ impl LaunchFeedback {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let feedback = reader.get_root::<launch_capnp::launch_feedback::Reader>()?;
-        let step = match feedback.get_step()? {
-            launch_capnp::LaunchFeedbackStep::LauncherStep => LaunchFeedbackStep::LauncherStep,
-            launch_capnp::LaunchFeedbackStep::AddingNode => LaunchFeedbackStep::AddingNode,
-            launch_capnp::LaunchFeedbackStep::RunningNode => LaunchFeedbackStep::RunningNode,
-            launch_capnp::LaunchFeedbackStep::BuildingNode => LaunchFeedbackStep::BuildingNode,
-        };
+        match feedback.which()? {
+            launch_capnp::launch_feedback::Output(output) => Ok(Self::Output(LaunchOutput {
+                stream: output.get_stream()?.to_str()?.to_owned(),
+                line: output.get_line()?.to_str()?.to_owned(),
+                step: LaunchFeedbackStep::from_wire(output.get_step()?),
+            })),
+            launch_capnp::launch_feedback::NodeLogs(logs) => {
+                Ok(Self::NodeLogs(NodeLogs::read(logs?)?))
+            }
+        }
+    }
+}
+
+/// The log file of each node phase a stack goal ran, with `failed` set on
+/// the phase that failed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NodeLogs {
+    pub node_add_logs: Vec<NodeAddLogEntry>,
+    pub node_build_logs: Vec<NodeBuildLogEntry>,
+    pub node_run_logs: Vec<NodeRunLogEntry>,
+}
+
+impl NodeLogs {
+    pub fn is_empty(&self) -> bool {
+        self.node_add_logs.is_empty()
+            && self.node_build_logs.is_empty()
+            && self.node_run_logs.is_empty()
+    }
+
+    /// The log file of each node phase that failed: add, then build, then
+    /// run.
+    pub fn failed(&self) -> impl Iterator<Item = &std::path::Path> {
+        let add = self
+            .node_add_logs
+            .iter()
+            .filter(|entry| entry.failed)
+            .map(|entry| entry.log_path.as_path());
+        let build = self
+            .node_build_logs
+            .iter()
+            .filter(|entry| entry.failed)
+            .map(|entry| entry.log_path.as_path());
+        let run = self
+            .node_run_logs
+            .iter()
+            .filter(|entry| entry.failed)
+            .map(|entry| entry.log_path.as_path());
+        add.chain(build).chain(run)
+    }
+
+    fn write(&self, mut wire: launch_capnp::node_logs::Builder<'_>) -> Result<()> {
+        let add_log_count = capnp_list_len(self.node_add_logs.len(), "NodeLogs.node_add_logs")?;
+        let mut add_logs = wire.reborrow().init_node_add_logs(add_log_count);
+        for (i, entry) in self.node_add_logs.iter().enumerate() {
+            let mut e = add_logs.reborrow().get(i as u32);
+            e.set_node_label(&entry.node_label);
+            e.set_log_path(entry.log_path.to_string_lossy().as_ref());
+            e.set_failed(entry.failed);
+            e.set_core_node(&entry.core_node);
+        }
+
+        let build_log_count =
+            capnp_list_len(self.node_build_logs.len(), "NodeLogs.node_build_logs")?;
+        let mut build_logs = wire.reborrow().init_node_build_logs(build_log_count);
+        for (i, entry) in self.node_build_logs.iter().enumerate() {
+            let mut e = build_logs.reborrow().get(i as u32);
+            e.set_node_label(&entry.node_label);
+            e.set_log_path(entry.log_path.to_string_lossy().as_ref());
+            e.set_failed(entry.failed);
+            e.set_core_node(&entry.core_node);
+        }
+
+        let run_log_count = capnp_list_len(self.node_run_logs.len(), "NodeLogs.node_run_logs")?;
+        let mut run_logs = wire.reborrow().init_node_run_logs(run_log_count);
+        for (i, entry) in self.node_run_logs.iter().enumerate() {
+            let mut e = run_logs.reborrow().get(i as u32);
+            e.set_instance_id(&entry.instance_id);
+            e.set_node_label(&entry.node_label);
+            e.set_log_path(entry.log_path.to_string_lossy().as_ref());
+            e.set_failed(entry.failed);
+            e.set_core_node(&entry.core_node);
+        }
+        Ok(())
+    }
+
+    fn read(wire: launch_capnp::node_logs::Reader<'_>) -> Result<Self> {
+        let add_logs_reader = wire.get_node_add_logs()?;
+        let mut node_add_logs = Vec::with_capacity(add_logs_reader.len() as usize);
+        for e in add_logs_reader.iter() {
+            node_add_logs.push(NodeAddLogEntry {
+                node_label: e.get_node_label()?.to_str()?.to_owned(),
+                log_path: PathBuf::from(e.get_log_path()?.to_str()?),
+                failed: e.get_failed(),
+                core_node: e.get_core_node()?.to_str()?.to_owned(),
+            });
+        }
+
+        let build_logs_reader = wire.get_node_build_logs()?;
+        let mut node_build_logs = Vec::with_capacity(build_logs_reader.len() as usize);
+        for e in build_logs_reader.iter() {
+            node_build_logs.push(NodeBuildLogEntry {
+                node_label: e.get_node_label()?.to_str()?.to_owned(),
+                log_path: PathBuf::from(e.get_log_path()?.to_str()?),
+                failed: e.get_failed(),
+                core_node: e.get_core_node()?.to_str()?.to_owned(),
+            });
+        }
+
+        let run_logs_reader = wire.get_node_run_logs()?;
+        let mut node_run_logs = Vec::with_capacity(run_logs_reader.len() as usize);
+        for e in run_logs_reader.iter() {
+            node_run_logs.push(NodeRunLogEntry {
+                instance_id: e.get_instance_id()?.to_str()?.to_owned(),
+                node_label: e.get_node_label()?.to_str()?.to_owned(),
+                log_path: PathBuf::from(e.get_log_path()?.to_str()?),
+                failed: e.get_failed(),
+                core_node: e.get_core_node()?.to_str()?.to_owned(),
+            });
+        }
+
         Ok(Self {
-            stream: feedback.get_stream()?.to_str()?.to_owned(),
-            line: feedback.get_line()?.to_str()?.to_owned(),
-            step,
+            node_add_logs,
+            node_build_logs,
+            node_run_logs,
         })
     }
 }
 
-/// Per-node add log entry carried in `LaunchResult`.
+/// Per-node add log entry carried in [`NodeLogs`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddLogEntry {
     /// Node label in "name:tag" format.
@@ -567,7 +705,7 @@ pub struct NodeAddLogEntry {
     pub core_node: String,
 }
 
-/// Per-node build log entry carried in `LaunchResult`.
+/// Per-node build log entry carried in [`NodeLogs`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildLogEntry {
     /// Node label in "name:tag" format.
@@ -578,7 +716,7 @@ pub struct NodeBuildLogEntry {
     pub core_node: String,
 }
 
-/// Per-node start log entry carried in `LaunchResult`.
+/// Per-node start log entry carried in [`NodeLogs`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRunLogEntry {
     pub instance_id: String,
@@ -590,15 +728,11 @@ pub struct NodeRunLogEntry {
     pub core_node: String,
 }
 
-/// Result message for the Launch action.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The result of a completed stack goal. A failed goal gives a failure kind
+/// and a message, and no result; a cancelled goal gives its reason, and no
+/// result.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaunchResult {
-    pub success: bool,
-    pub log_path: PathBuf,
-    pub error_message: Option<String>,
-    pub node_add_logs: Vec<NodeAddLogEntry>,
-    pub node_build_logs: Vec<NodeBuildLogEntry>,
-    pub node_run_logs: Vec<NodeRunLogEntry>,
     /// The endpoints of every started instance that serves one, in start
     /// order, each stamped with the core node hosting it.
     pub instance_endpoints: Vec<InstanceEndpoints>,
@@ -618,88 +752,15 @@ pub struct InstanceEndpoints {
 }
 
 impl LaunchResult {
-    pub fn new(success: bool, log_path: impl Into<PathBuf>, error_message: Option<String>) -> Self {
-        Self {
-            success,
-            log_path: log_path.into(),
-            error_message,
-            node_add_logs: Vec::new(),
-            node_build_logs: Vec::new(),
-            node_run_logs: Vec::new(),
-            instance_endpoints: Vec::new(),
-        }
-    }
-
-    pub fn success(log_path: impl Into<PathBuf>) -> Self {
-        Self::new(true, log_path, None)
-    }
-
-    pub fn failure(log_path: impl Into<PathBuf>, error_message: impl Into<String>) -> Self {
-        Self::new(false, log_path, Some(error_message.into()))
-    }
-
-    pub fn with_node_logs(
-        mut self,
-        add_logs: Vec<NodeAddLogEntry>,
-        build_logs: Vec<NodeBuildLogEntry>,
-        run_logs: Vec<NodeRunLogEntry>,
-    ) -> Self {
-        self.node_add_logs = add_logs;
-        self.node_build_logs = build_logs;
-        self.node_run_logs = run_logs;
-        self
-    }
-
-    /// The endpoints of the instances the operation started.
-    pub fn with_instance_endpoints(mut self, instance_endpoints: Vec<InstanceEndpoints>) -> Self {
-        self.instance_endpoints = instance_endpoints;
-        self
+    /// The result of a goal whose started instances serve `instance_endpoints`.
+    pub fn new(instance_endpoints: Vec<InstanceEndpoints>) -> Self {
+        Self { instance_endpoints }
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<launch_capnp::launch_result::Builder>();
-            result.set_success(self.success);
-            result.set_log_path(self.log_path.to_string_lossy().as_ref());
-            if let Some(ref error_message) = self.error_message {
-                result.set_error_message(error_message);
-            }
-
-            let add_log_count =
-                capnp_list_len(self.node_add_logs.len(), "LaunchResult.node_add_logs")?;
-            let mut add_logs = result.reborrow().init_node_add_logs(add_log_count);
-            for (i, entry) in self.node_add_logs.iter().enumerate() {
-                let mut e = add_logs.reborrow().get(i as u32);
-                e.set_node_label(&entry.node_label);
-                e.set_log_path(entry.log_path.to_string_lossy().as_ref());
-                e.set_failed(entry.failed);
-                e.set_core_node(&entry.core_node);
-            }
-
-            let build_log_count =
-                capnp_list_len(self.node_build_logs.len(), "LaunchResult.node_build_logs")?;
-            let mut build_logs = result.reborrow().init_node_build_logs(build_log_count);
-            for (i, entry) in self.node_build_logs.iter().enumerate() {
-                let mut e = build_logs.reborrow().get(i as u32);
-                e.set_node_label(&entry.node_label);
-                e.set_log_path(entry.log_path.to_string_lossy().as_ref());
-                e.set_failed(entry.failed);
-                e.set_core_node(&entry.core_node);
-            }
-
-            let run_log_count =
-                capnp_list_len(self.node_run_logs.len(), "LaunchResult.node_run_logs")?;
-            let mut run_logs = result.reborrow().init_node_run_logs(run_log_count);
-            for (i, entry) in self.node_run_logs.iter().enumerate() {
-                let mut e = run_logs.reborrow().get(i as u32);
-                e.set_instance_id(&entry.instance_id);
-                e.set_node_label(&entry.node_label);
-                e.set_log_path(entry.log_path.to_string_lossy().as_ref());
-                e.set_failed(entry.failed);
-                e.set_core_node(&entry.core_node);
-            }
-
             let instance_count = capnp_list_len(
                 self.instance_endpoints.len(),
                 "LaunchResult.instance_endpoints",
@@ -721,50 +782,9 @@ impl LaunchResult {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let result = reader.get_root::<launch_capnp::launch_result::Reader>()?;
-        let error_message = optional_text(result.get_error_message()?.to_str()?);
-        let log_path = PathBuf::from(result.get_log_path()?.to_str()?);
-
-        let add_logs_reader = result.get_node_add_logs()?;
-        let mut node_add_logs = Vec::with_capacity(add_logs_reader.len() as usize);
-        for i in 0..add_logs_reader.len() {
-            let e = add_logs_reader.get(i);
-            node_add_logs.push(NodeAddLogEntry {
-                node_label: e.get_node_label()?.to_str()?.to_owned(),
-                log_path: PathBuf::from(e.get_log_path()?.to_str()?),
-                failed: e.get_failed(),
-                core_node: e.get_core_node()?.to_str()?.to_owned(),
-            });
-        }
-
-        let build_logs_reader = result.get_node_build_logs()?;
-        let mut node_build_logs = Vec::with_capacity(build_logs_reader.len() as usize);
-        for i in 0..build_logs_reader.len() {
-            let e = build_logs_reader.get(i);
-            node_build_logs.push(NodeBuildLogEntry {
-                node_label: e.get_node_label()?.to_str()?.to_owned(),
-                log_path: PathBuf::from(e.get_log_path()?.to_str()?),
-                failed: e.get_failed(),
-                core_node: e.get_core_node()?.to_str()?.to_owned(),
-            });
-        }
-
-        let run_logs_reader = result.get_node_run_logs()?;
-        let mut node_run_logs = Vec::with_capacity(run_logs_reader.len() as usize);
-        for i in 0..run_logs_reader.len() {
-            let e = run_logs_reader.get(i);
-            node_run_logs.push(NodeRunLogEntry {
-                instance_id: e.get_instance_id()?.to_str()?.to_owned(),
-                node_label: e.get_node_label()?.to_str()?.to_owned(),
-                log_path: PathBuf::from(e.get_log_path()?.to_str()?),
-                failed: e.get_failed(),
-                core_node: e.get_core_node()?.to_str()?.to_owned(),
-            });
-        }
-
         let instances_reader = result.get_instance_endpoints()?;
         let mut instance_endpoints = Vec::with_capacity(instances_reader.len() as usize);
-        for i in 0..instances_reader.len() {
-            let e = instances_reader.get(i);
+        for e in instances_reader.iter() {
             instance_endpoints.push(InstanceEndpoints {
                 instance_id: required_text(
                     e.get_instance_id()?.to_str()?,
@@ -775,16 +795,7 @@ impl LaunchResult {
                 endpoints: read_launch_endpoints(e.get_endpoints()?)?,
             });
         }
-
-        Ok(Self {
-            success: result.get_success(),
-            log_path,
-            error_message,
-            node_add_logs,
-            node_build_logs,
-            node_run_logs,
-            instance_endpoints,
-        })
+        Ok(Self { instance_endpoints })
     }
 }
 
@@ -1318,27 +1329,30 @@ mod tests {
             LaunchFeedbackStep::BuildingNode,
             LaunchFeedbackStep::RunningNode,
         ] {
-            let fb = LaunchFeedback::stdout("a line of output", step);
-            assert!(fb.is_stdout());
-            assert!(!fb.is_stderr());
-            assert_eq!(fb.step, step);
+            let output = LaunchOutput::stdout("a line of output", step);
+            assert!(output.is_stdout());
+            assert!(!output.is_stderr());
+            assert_eq!(output.step, step);
+            let fb = LaunchFeedback::Output(output);
             let bytes = fb.encode().expect("encode").into_inner();
             let decoded = LaunchFeedback::decode(bytes.as_ref()).expect("decode");
             assert_eq!(decoded, fb);
-            assert!(decoded.is_stdout());
+            assert_eq!(decoded, LaunchFeedback::stdout("a line of output", step));
         }
     }
 
     #[test]
     fn launch_feedback_stderr_roundtrips() {
         let fb = LaunchFeedback::stderr("something failed", LaunchFeedbackStep::BuildingNode);
-        assert!(fb.is_stderr());
-        assert!(!fb.is_stdout());
         let bytes = fb.encode().expect("encode").into_inner();
         let decoded = LaunchFeedback::decode(bytes.as_ref()).expect("decode");
         assert_eq!(decoded, fb);
-        assert!(decoded.is_stderr());
-        assert_eq!(decoded.line, "something failed");
+        let LaunchFeedback::Output(output) = decoded else {
+            panic!("a line of output decodes as one: {decoded:?}");
+        };
+        assert!(output.is_stderr());
+        assert!(!output.is_stdout());
+        assert_eq!(output.line, "something failed");
     }
 
     #[test]
@@ -1346,71 +1360,57 @@ mod tests {
         assert!(LaunchFeedback::decode(b"not capnp").is_err());
     }
 
-    /// Every constructor sets the outcome it names, starts with no node log,
-    /// and round-trips.
+    /// The node logs of a goal ride its feedback, with the phase that
+    /// failed, the core node that holds each file and the instance of each
+    /// start.
     #[test]
-    fn launch_result_constructors_roundtrip() {
-        let log_path = "/var/log/launch.log";
-        for (result, success, error_message) in [
-            (LaunchResult::new(true, log_path, None), true, None),
-            (LaunchResult::success(log_path), true, None),
-            (
-                LaunchResult::failure(log_path, "node build failed"),
-                false,
-                Some("node build failed"),
-            ),
-            (
-                LaunchResult::success(log_path).with_node_logs(Vec::new(), Vec::new(), Vec::new()),
-                true,
-                None,
-            ),
-        ] {
-            assert_eq!(result.success, success, "{result:?}");
-            assert_eq!(result.error_message.as_deref(), error_message, "{result:?}");
-            let bytes = result.encode().expect("encode");
-            let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
-            assert_eq!(decoded, result);
-            assert!(decoded.node_add_logs.is_empty());
-            assert!(decoded.node_build_logs.is_empty());
-            assert!(decoded.node_run_logs.is_empty());
-        }
+    fn launch_feedback_node_logs_roundtrip() {
+        let logs = NodeLogs {
+            node_add_logs: vec![NodeAddLogEntry {
+                node_label: "camera:v1".to_string(),
+                log_path: PathBuf::from("/var/log/add/camera.log"),
+                failed: false,
+                core_node: "cn-coordinator".to_string(),
+            }],
+            node_build_logs: vec![NodeBuildLogEntry {
+                node_label: "planner:v2".to_string(),
+                log_path: PathBuf::from("/var/log/build/planner.log"),
+                failed: true,
+                core_node: "cn-gpu-box".to_string(),
+            }],
+            node_run_logs: vec![NodeRunLogEntry {
+                instance_id: "inst-001".to_string(),
+                node_label: "driver:v3".to_string(),
+                log_path: PathBuf::from("/var/log/run/driver.log"),
+                failed: false,
+                core_node: "cn-robot-arm".to_string(),
+            }],
+        };
+        let fb = LaunchFeedback::NodeLogs(logs.clone());
+        let bytes = fb.encode().expect("encode").into_inner();
+        assert_eq!(LaunchFeedback::decode(bytes.as_ref()).expect("decode"), fb);
+        assert!(!logs.is_empty());
+        assert_eq!(
+            logs.failed().collect::<Vec<_>>(),
+            [std::path::Path::new("/var/log/build/planner.log")]
+        );
+
+        let empty = LaunchFeedback::NodeLogs(NodeLogs::default());
+        let bytes = empty.encode().expect("encode").into_inner();
+        assert_eq!(
+            LaunchFeedback::decode(bytes.as_ref()).expect("decode"),
+            empty
+        );
     }
 
     #[test]
-    fn launch_result_with_populated_node_logs_roundtrips() {
-        let result = LaunchResult::failure("/var/log/launch.log", "one node failed")
-            .with_node_logs(
-                vec![NodeAddLogEntry {
-                    node_label: "camera:v1".to_string(),
-                    log_path: PathBuf::from("/var/log/add/camera.log"),
-                    failed: false,
-                    core_node: "cn-coordinator".to_string(),
-                }],
-                vec![NodeBuildLogEntry {
-                    node_label: "planner:v2".to_string(),
-                    log_path: PathBuf::from("/var/log/build/planner.log"),
-                    failed: true,
-                    core_node: "cn-gpu-box".to_string(),
-                }],
-                vec![NodeRunLogEntry {
-                    instance_id: "inst-001".to_string(),
-                    node_label: "driver:v3".to_string(),
-                    log_path: PathBuf::from("/var/log/run/driver.log"),
-                    failed: false,
-                    core_node: "cn-robot-arm".to_string(),
-                }],
-            );
-        let bytes = result.encode().expect("encode");
-        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
-        assert_eq!(decoded, result);
-        assert_eq!(decoded.node_add_logs.len(), 1);
-        assert_eq!(decoded.node_build_logs.len(), 1);
-        assert_eq!(decoded.node_run_logs.len(), 1);
-        assert!(decoded.node_build_logs[0].failed);
-        assert_eq!(decoded.node_run_logs[0].instance_id, "inst-001");
-        assert_eq!(decoded.node_add_logs[0].core_node, "cn-coordinator");
-        assert_eq!(decoded.node_build_logs[0].core_node, "cn-gpu-box");
-        assert_eq!(decoded.node_run_logs[0].core_node, "cn-robot-arm");
+    fn launch_goal_response_roundtrips() {
+        let response = LaunchGoalResponse::new("/var/log/launch.log");
+        let bytes = response.encode().expect("encode");
+        assert_eq!(
+            LaunchGoalResponse::decode(bytes.as_ref()).expect("decode"),
+            response
+        );
     }
 
     #[test]
@@ -1423,7 +1423,7 @@ mod tests {
     /// carries the empty list.
     #[test]
     fn launch_result_roundtrips_instance_endpoints() {
-        let result = LaunchResult::success("/var/log/launch.log").with_instance_endpoints(vec![
+        let result = LaunchResult::new(vec![
             InstanceEndpoints {
                 instance_id: "panel_inst".to_string(),
                 node_label: "openarm_web_commander:v1".to_string(),
@@ -1446,7 +1446,7 @@ mod tests {
         assert_eq!(decoded, result);
         assert_eq!(decoded.instance_endpoints[1].core_node, "cn-gpu-box");
 
-        let empty = LaunchResult::success("/var/log/launch.log");
+        let empty = LaunchResult::default();
         let decoded =
             LaunchResult::decode(empty.encode().expect("encode").as_ref()).expect("decode");
         assert!(decoded.instance_endpoints.is_empty());

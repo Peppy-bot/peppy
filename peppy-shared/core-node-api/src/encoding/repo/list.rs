@@ -3,7 +3,7 @@ use std::fmt;
 use capnp::message::Builder;
 
 use crate::encoding::repo::add::{RepoSourceKind, decode_source_kind};
-use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
+use crate::encoding::{capnp_list_len, decode_message, encode_message};
 use crate::repo_capnp;
 use crate::{Payload, Result};
 
@@ -65,88 +65,72 @@ pub struct RepoListRepoEntry {
     /// `true` when the entries listed for this repository come from an
     /// earlier read because its most recent one failed.
     pub retained: bool,
-    /// `None` when the last read succeeded, otherwise the failure kind
+    /// `None` when the last read succeeded, otherwise its read failure
     /// with its detail. An outage and a content bug are never collapsed
     /// into one label.
-    pub failure: Option<RepoListRepoFailure>,
+    pub failed_read: Option<RepoListRepoFailedRead>,
 }
 
-/// Why a repository's last read failed. Closed on purpose: an outage and
-/// a content bug send the user to completely different places, and a
-/// third kind would have to earn its own recovery path first.
+/// Why a repository's last read failed: its read failure. Closed on
+/// purpose: an outage and a content bug send the user to completely
+/// different places, and a third one would have to earn its own recovery
+/// path first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RepoListRepoFailureKind {
+pub enum RepoListRepoReadFailure {
     /// The repository could not be reached (network, auth, missing path).
     Unreachable,
     /// The repository was read, but its contents do not resolve.
     Conflict,
 }
 
-impl RepoListRepoFailureKind {
+impl RepoListRepoReadFailure {
     pub fn as_str(self) -> &'static str {
         match self {
-            RepoListRepoFailureKind::Unreachable => "unreachable",
-            RepoListRepoFailureKind::Conflict => "conflict",
+            RepoListRepoReadFailure::Unreachable => "unreachable",
+            RepoListRepoReadFailure::Conflict => "conflict",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "unreachable" => Some(RepoListRepoFailureKind::Unreachable),
-            "conflict" => Some(RepoListRepoFailureKind::Conflict),
+            "unreachable" => Some(RepoListRepoReadFailure::Unreachable),
+            "conflict" => Some(RepoListRepoReadFailure::Conflict),
             _ => None,
         }
     }
 }
 
-impl fmt::Display for RepoListRepoFailureKind {
+impl fmt::Display for RepoListRepoReadFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
+/// The last read of a repository that failed: its read failure and its
+/// detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepoListRepoFailure {
-    pub kind: RepoListRepoFailureKind,
+pub struct RepoListRepoFailedRead {
+    pub read_failure: RepoListRepoReadFailure,
     pub detail: String,
 }
 
-/// Response message for the RepoList service.
+/// The response of a repository listing that succeeded. A failed listing is
+/// an error reply, with a failure kind and a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoListResponse {
-    pub success: bool,
-    pub error_message: Option<String>,
     pub nodes: Vec<RepoListNodeEntry>,
     pub repos: Vec<RepoListRepoEntry>,
 }
 
 impl RepoListResponse {
-    pub fn success(nodes: Vec<RepoListNodeEntry>, repos: Vec<RepoListRepoEntry>) -> Self {
-        Self {
-            success: true,
-            error_message: None,
-            nodes,
-            repos,
-        }
-    }
-
-    pub fn failure(message: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            error_message: Some(message.into()),
-            nodes: Vec::new(),
-            repos: Vec::new(),
-        }
+    pub fn new(nodes: Vec<RepoListNodeEntry>, repos: Vec<RepoListRepoEntry>) -> Self {
+        Self { nodes, repos }
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
-            response.set_success(self.success);
-            if let Some(ref msg) = self.error_message {
-                response.set_error_message(msg);
-            }
             let node_count = capnp_list_len(self.nodes.len(), "RepoListResponse.nodes")?;
             let mut nodes_builder = response.reborrow().init_nodes(node_count);
             for (i, node) in self.nodes.iter().enumerate() {
@@ -170,9 +154,9 @@ impl RepoListResponse {
                 // read at the epoch is not a case worth modelling.
                 entry.set_last_read_unix_secs(repo.last_read_unix_secs.unwrap_or(0));
                 entry.set_retained(repo.retained);
-                if let Some(ref failure) = repo.failure {
-                    entry.set_failure_kind(failure.kind.as_str());
-                    entry.set_failure_detail(&failure.detail);
+                if let Some(ref failed_read) = repo.failed_read {
+                    entry.set_read_failure(failed_read.read_failure.as_str());
+                    entry.set_read_failure_detail(&failed_read.detail);
                 }
             }
         }
@@ -202,15 +186,19 @@ impl RepoListResponse {
         for i in 0..repos_reader.len() {
             let entry = repos_reader.get(i);
             let source_type = decode_source_kind(entry.get_source_type()?.to_str()?)?;
-            // The empty kind is the "read succeeded" sentinel; anything
-            // else has to be one of the two kinds we know how to route.
-            let failure = match entry.get_failure_kind()?.to_str()? {
+            // The empty read failure is the "read succeeded" sentinel;
+            // anything else has to be one of the two we know how to route.
+            let failed_read = match entry.get_read_failure()?.to_str()? {
                 "" => None,
-                kind => Some(RepoListRepoFailure {
-                    kind: RepoListRepoFailureKind::parse(kind).ok_or_else(|| {
-                        crate::Error::Decoding(format!("unknown repo failure kind: {kind}"))
-                    })?,
-                    detail: entry.get_failure_detail()?.to_str()?.to_owned(),
+                read_failure => Some(RepoListRepoFailedRead {
+                    read_failure: RepoListRepoReadFailure::parse(read_failure).ok_or_else(
+                        || {
+                            crate::Error::Decoding(format!(
+                                "unknown repo read failure: {read_failure}"
+                            ))
+                        },
+                    )?,
+                    detail: entry.get_read_failure_detail()?.to_str()?.to_owned(),
                 }),
             };
             let last_read = entry.get_last_read_unix_secs();
@@ -220,15 +208,10 @@ impl RepoListResponse {
                 source_type,
                 last_read_unix_secs: (last_read != 0).then_some(last_read),
                 retained: entry.get_retained(),
-                failure,
+                failed_read,
             });
         }
-        Ok(Self {
-            success: response.get_success(),
-            error_message: optional_text(response.get_error_message()?.to_str()?),
-            nodes,
-            repos,
-        })
+        Ok(Self { nodes, repos })
     }
 }
 
@@ -264,7 +247,7 @@ mod tests {
             source_type: RepoSourceKind::Fs,
             last_read_unix_secs: Some(1_753_900_000),
             retained: false,
-            failure: None,
+            failed_read: None,
         }
     }
 
@@ -278,19 +261,17 @@ mod tests {
 
     #[test]
     fn list_response_success_round_trips_empty() {
-        let response = RepoListResponse::success(Vec::new(), Vec::new());
+        let response = RepoListResponse::new(Vec::new(), Vec::new());
         let payload = response.encode().expect("encode");
         let decoded = RepoListResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
-        assert!(decoded.success);
-        assert!(decoded.error_message.is_none());
         assert!(decoded.nodes.is_empty());
         assert!(decoded.repos.is_empty());
     }
 
     #[test]
     fn list_response_success_round_trips_multiple_entries() {
-        let response = RepoListResponse::success(
+        let response = RepoListResponse::new(
             vec![
                 sample_entry(),
                 RepoListNodeEntry {
@@ -320,8 +301,8 @@ mod tests {
                     source_type: RepoSourceKind::Git,
                     last_read_unix_secs: Some(1_753_900_000),
                     retained: true,
-                    failure: Some(RepoListRepoFailure {
-                        kind: RepoListRepoFailureKind::Unreachable,
+                    failed_read: Some(RepoListRepoFailedRead {
+                        read_failure: RepoListRepoReadFailure::Unreachable,
                         detail: "network is unreachable".to_owned(),
                     }),
                 },
@@ -331,7 +312,7 @@ mod tests {
                     source_type: RepoSourceKind::Fs,
                     last_read_unix_secs: None,
                     retained: false,
-                    failure: None,
+                    failed_read: None,
                 },
                 RepoListRepoEntry {
                     id: 9,
@@ -339,8 +320,8 @@ mod tests {
                     source_type: RepoSourceKind::Fs,
                     last_read_unix_secs: Some(1_753_900_001),
                     retained: true,
-                    failure: Some(RepoListRepoFailure {
-                        kind: RepoListRepoFailureKind::Conflict,
+                    failed_read: Some(RepoListRepoFailedRead {
+                        read_failure: RepoListRepoReadFailure::Conflict,
                         detail: "robot:v1 claimed twice".to_owned(),
                     }),
                 },
@@ -352,24 +333,11 @@ mod tests {
     }
 
     #[test]
-    fn list_response_failure_round_trips() {
-        let response = RepoListResponse::failure("boom");
-        let payload = response.encode().expect("encode");
-        let decoded = RepoListResponse::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, response);
-        assert!(!decoded.success);
-        assert_eq!(decoded.error_message.as_deref(), Some("boom"));
-        assert!(decoded.nodes.is_empty());
-        assert!(decoded.repos.is_empty());
-    }
-
-    #[test]
     fn list_response_decode_rejects_unknown_source_type() {
         // A peer that puts an unrecognized source type on the wire is rejected.
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
-            response.set_success(true);
+            let response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
             let mut nodes = response.init_nodes(1);
             let mut entry = nodes.reborrow().get(0);
             entry.set_node_name("robot");
@@ -393,8 +361,7 @@ mod tests {
     fn list_response_decode_rejects_unknown_repo_source_type() {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
-            response.set_success(true);
+            let response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
             let mut entry = response.init_repos(1).get(0);
             entry.set_id(1);
             entry.set_label("/abs/repo");
@@ -408,35 +375,37 @@ mod tests {
     }
 
     #[test]
-    fn repo_failure_kind_as_str_parse_round_trip() {
-        for kind in [
-            RepoListRepoFailureKind::Unreachable,
-            RepoListRepoFailureKind::Conflict,
+    fn repo_read_failure_as_str_parse_round_trip() {
+        for read_failure in [
+            RepoListRepoReadFailure::Unreachable,
+            RepoListRepoReadFailure::Conflict,
         ] {
-            assert_eq!(RepoListRepoFailureKind::parse(kind.as_str()), Some(kind));
+            assert_eq!(
+                RepoListRepoReadFailure::parse(read_failure.as_str()),
+                Some(read_failure)
+            );
         }
-        assert_eq!(RepoListRepoFailureKind::Unreachable.as_str(), "unreachable");
-        assert_eq!(RepoListRepoFailureKind::Conflict.as_str(), "conflict");
-        assert_eq!(RepoListRepoFailureKind::Conflict.to_string(), "conflict");
+        assert_eq!(RepoListRepoReadFailure::Unreachable.as_str(), "unreachable");
+        assert_eq!(RepoListRepoReadFailure::Conflict.as_str(), "conflict");
+        assert_eq!(RepoListRepoReadFailure::Conflict.to_string(), "conflict");
     }
 
     #[test]
-    fn repo_failure_kind_parse_rejects_unknown() {
-        // The empty kind is the "read succeeded" sentinel, handled by the
-        // decoder rather than by this mapping.
-        assert_eq!(RepoListRepoFailureKind::parse(""), None);
-        assert_eq!(RepoListRepoFailureKind::parse("timeout"), None);
-        assert_eq!(RepoListRepoFailureKind::parse("Unreachable"), None);
+    fn repo_read_failure_parse_rejects_unknown() {
+        // The empty read failure is the "read succeeded" sentinel, handled
+        // by the decoder rather than by this mapping.
+        assert_eq!(RepoListRepoReadFailure::parse(""), None);
+        assert_eq!(RepoListRepoReadFailure::parse("timeout"), None);
+        assert_eq!(RepoListRepoReadFailure::parse("Unreachable"), None);
     }
 
     #[test]
-    fn list_response_decode_rejects_unknown_failure_kind() {
-        // A peer that invents a failure kind is rejected rather than
+    fn list_response_decode_rejects_unknown_read_failure() {
+        // A peer that invents a read failure is rejected rather than
         // silently handed to a caller that has no recovery path for it.
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
-            response.set_success(true);
+            let response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
             let mut repos = response.init_repos(1);
             let mut entry = repos.reborrow().get(0);
             entry.set_id(1);
@@ -444,12 +413,12 @@ mod tests {
             entry.set_source_type("fs");
             entry.set_last_read_unix_secs(0);
             entry.set_retained(false);
-            entry.set_failure_kind("timeout");
-            entry.set_failure_detail("took too long");
+            entry.set_read_failure("timeout");
+            entry.set_read_failure_detail("took too long");
         }
         let payload = encode_message(&builder).expect("encode raw response");
         let err = RepoListResponse::decode(payload.as_ref())
-            .expect_err("unknown failure kind must be rejected");
+            .expect_err("unknown read failure must be rejected");
         assert!(
             matches!(err, crate::Error::Decoding(_)),
             "expected Decoding error, got {err:?}"

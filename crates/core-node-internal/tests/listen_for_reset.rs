@@ -71,11 +71,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     .await
     .expect("node_add should complete");
 
-    assert!(
-        add_response_a.success,
-        "node_add should succeed, got error: {:?}",
-        add_response_a.error_message
-    );
+    add_response_a.completed();
 
     let peppy_json5_b = r#"{
             peppy_schema: "node/v1",
@@ -103,11 +99,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     .await
     .expect("node_add should complete");
 
-    assert!(
-        add_response_b.success,
-        "node_add should succeed, got error: {:?}",
-        add_response_b.error_message
-    );
+    add_response_b.completed();
 
     assert!(node_stack.contains(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG));
     assert!(node_stack.contains(TARGET_NODE_B_NAME, TARGET_NODE_B_TAG));
@@ -140,18 +132,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     );
     drop(entity_a);
 
-    let reset_response = poll_core_node(&started_core_node, &StackResetRequest::new()).await;
-
-    assert!(
-        reset_response.success,
-        "node_reset should succeed, got error: {:?}",
-        reset_response.error_message
-    );
-    assert!(
-        reset_response.error_message.is_none(),
-        "success response should not include error_message, got: {:?}",
-        reset_response.error_message
-    );
+    poll_core_node(&started_core_node, &StackResetRequest::new()).await;
 
     assert_eq!(node_stack.len(), 1, "only root should remain");
     assert!(
@@ -236,17 +217,12 @@ async fn node_reset_force_kills_whole_process_group() {
     // The reset request waits out the stuck node's cooperative window, then
     // force-kills its group, so the client timeout must exceed
     // force_kill_deadline(grace) + reap. Default grace is 5s.
-    let reset_response = poll_core_node_with_timeout(
+    poll_core_node_with_timeout(
         &started_core_node,
         &StackResetRequest::new(),
         Duration::from_secs(30),
     )
     .await;
-    assert!(
-        reset_response.success,
-        "node_reset should succeed, got error: {:?}",
-        reset_response.error_message
-    );
 
     assert_eq!(node_stack.len(), 1, "only root should remain after reset");
 
@@ -274,9 +250,8 @@ async fn listen_for_node_reset_is_idempotent() {
 
     let root_instance_id_before = root_instance_id(&node_stack);
 
-    let response = poll_core_node(&started_core_node, &StackResetRequest::new()).await;
+    poll_core_node(&started_core_node, &StackResetRequest::new()).await;
 
-    assert!(response.success, "node_reset should succeed");
     assert_eq!(node_stack.len(), 1, "only root should remain after reset");
 
     let root_instance_id_after = root_instance_id(&node_stack);
@@ -348,13 +323,9 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     )
     .await
     .expect("node_run action should complete");
-    assert!(
-        start_response.result.success,
-        "node_run should succeed, got error: {:?}",
-        start_response.result.error_message
-    );
     let pid = start_response
-        .result
+        .end
+        .completed()
         .pid
         .expect("should have a PID on success");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
@@ -365,14 +336,7 @@ async fn node_reset_with_live_exit_watcher_clears_without_recording_a_crash() {
     let _kill_on_shutdown =
         install_kill_on_shutdown_listener(&started, TARGET_NODE_NAME, &instance_id, pid).await;
 
-    let reset_response =
-        poll_core_node_with_timeout(&started, &StackResetRequest::new(), Duration::from_secs(30))
-            .await;
-    assert!(
-        reset_response.success,
-        "node_reset should succeed, got error: {:?}",
-        reset_response.error_message
-    );
+    poll_core_node_with_timeout(&started, &StackResetRequest::new(), Duration::from_secs(30)).await;
 
     assert_eq!(
         started.node_stack.len(),
@@ -547,17 +511,12 @@ async fn a_start_stopped_by_a_reset_runs_the_node_s_shutdown_hook() {
         "the setup still waits, and the hook has not run"
     );
 
-    let reset_response = poll_core_node_with_timeout(
+    poll_core_node_with_timeout(
         &started,
         &StackResetRequest::new(),
         core_node::stack_reset_timeout(started.node_stack.shutdown_grace().as_secs()),
     )
     .await;
-    assert!(
-        reset_response.success,
-        "the reset should succeed: {:?}",
-        reset_response.error_message
-    );
 
     assert_eq!(
         std::fs::read_to_string(&marker).expect("the shutdown hook should have left its marker"),
@@ -567,10 +526,10 @@ async fn a_start_stopped_by_a_reset_runs_the_node_s_shutdown_hook() {
         .await
         .expect("the start task should not panic")
         .expect("the start should complete");
-    assert!(
-        !start.result.success,
-        "the reset cancels the start: {:?}",
-        start.result
+    assert_eq!(
+        start.end.cancel_reason(),
+        "cancelled by a stack reset",
+        "the reset cancels the start"
     );
     assert!(
         !is_process_running(pid),

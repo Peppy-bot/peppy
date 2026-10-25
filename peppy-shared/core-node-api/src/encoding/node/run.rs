@@ -897,28 +897,18 @@ fn read_observation_member(
     })
 }
 
-/// Response to the NodeRun goal request.
+/// The goal response of an accepted node run: where the daemon writes the
+/// run's log. The daemon refuses a goal in the goal envelope, with a failure
+/// kind and a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRunGoalResponse {
-    pub accepted: bool,
     pub log_path: PathBuf,
-    pub rejection_reason: Option<String>,
 }
 
 impl NodeRunGoalResponse {
-    pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
+    pub fn new(log_path: impl Into<PathBuf>) -> Self {
         Self {
-            accepted: true,
             log_path: log_path.into(),
-            rejection_reason: None,
-        }
-    }
-
-    pub fn rejected(reason: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            log_path: PathBuf::new(),
-            rejection_reason: Some(reason.into()),
         }
     }
 
@@ -926,11 +916,7 @@ impl NodeRunGoalResponse {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_run_goal_response::Builder>();
-            response.set_accepted(self.accepted);
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
-            if let Some(ref reason) = self.rejection_reason {
-                response.set_rejection_reason(reason);
-            }
         }
         encode_message(&builder)
     }
@@ -939,9 +925,7 @@ impl NodeRunGoalResponse {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_run_goal_response::Reader>()?;
         Ok(Self {
-            accepted: response.get_accepted(),
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
         })
     }
 }
@@ -1007,35 +991,25 @@ impl NodeRunFeedback {
     }
 }
 
-/// Result message for the NodeRun action.
+/// The result of a completed node run: the started process and the
+/// endpoints it serves. A failed run gives a failure kind and a message, and
+/// no result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRunResult {
-    pub success: bool,
-    pub error_message: Option<String>,
-    /// Process ID of the started node (None if not available or failed).
+    /// Process ID of the started node (None if not available).
     pub pid: Option<u32>,
     /// The endpoints the started instance serves, in label order, as the
-    /// daemon hosting it expanded them; empty for a node that declares none
-    /// and for a failed run.
+    /// daemon hosting it expanded them; empty for a node that declares none.
     pub endpoints: Vec<InstanceEndpoint>,
 }
 
 impl NodeRunResult {
-    pub fn new(success: bool, error_message: Option<String>, pid: Option<u32>) -> Self {
+    /// The result of a start whose process is `pid`.
+    pub fn started(pid: u32) -> Self {
         Self {
-            success,
-            error_message,
-            pid,
+            pid: Some(pid),
             endpoints: Vec::new(),
         }
-    }
-
-    pub fn success(pid: u32) -> Self {
-        Self::new(true, None, Some(pid))
-    }
-
-    pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(false, Some(error_message.into()), None)
     }
 
     /// The endpoints the started instance serves.
@@ -1048,10 +1022,6 @@ impl NodeRunResult {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_run_result::Builder>();
-            result.set_success(self.success);
-            if let Some(ref error_message) = self.error_message {
-                result.set_error_message(error_message);
-            }
             result.set_pid(self.pid.unwrap_or(0));
             let endpoint_count = capnp_list_len(self.endpoints.len(), "NodeRunResult.endpoints")?;
             write_node_endpoints(result.init_endpoints(endpoint_count), &self.endpoints)?;
@@ -1062,16 +1032,8 @@ impl NodeRunResult {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let result = reader.get_root::<node_capnp::node_run_result::Reader>()?;
-        let error_message = optional_text(result.get_error_message()?.to_str()?);
-        let pid_value = result.get_pid();
-        let pid = if pid_value == 0 {
-            None
-        } else {
-            Some(pid_value)
-        };
+        let pid = Some(result.get_pid()).filter(|pid| *pid != 0);
         Ok(Self {
-            success: result.get_success(),
-            error_message,
             pid,
             endpoints: read_node_endpoints(result.get_endpoints()?)?,
         })
@@ -1893,22 +1855,9 @@ mod tests {
     // --- NodeRunGoalResponse ---
 
     #[test]
-    fn node_run_goal_response_accepted_roundtrip() {
-        let response = NodeRunGoalResponse::accepted("/var/log/run.log");
-        assert!(response.accepted);
+    fn node_run_goal_response_roundtrip() {
+        let response = NodeRunGoalResponse::new("/var/log/run.log");
         assert_eq!(response.log_path, PathBuf::from("/var/log/run.log"));
-        assert_eq!(response.rejection_reason, None);
-        let encoded = response.encode().expect("encode");
-        let decoded = NodeRunGoalResponse::decode(&encoded).expect("decode");
-        assert_eq!(decoded, response);
-    }
-
-    #[test]
-    fn node_run_goal_response_rejected_roundtrip() {
-        let response = NodeRunGoalResponse::rejected("busy");
-        assert!(!response.accepted);
-        assert_eq!(response.log_path, PathBuf::new());
-        assert_eq!(response.rejection_reason, Some("busy".to_owned()));
         let encoded = response.encode().expect("encode");
         let decoded = NodeRunGoalResponse::decode(&encoded).expect("decode");
         assert_eq!(decoded, response);
@@ -1957,33 +1906,9 @@ mod tests {
     // --- NodeRunResult ---
 
     #[test]
-    fn node_run_result_new_roundtrip() {
-        let result = NodeRunResult::new(true, Some("warn".to_owned()), Some(7));
-        assert!(result.success);
-        assert_eq!(result.error_message, Some("warn".to_owned()));
-        assert_eq!(result.pid, Some(7));
-        let encoded = result.encode().expect("encode");
-        let decoded = NodeRunResult::decode(&encoded).expect("decode");
-        assert_eq!(decoded, result);
-    }
-
-    #[test]
-    fn node_run_result_success_roundtrip() {
-        let result = NodeRunResult::success(1234);
-        assert!(result.success);
-        assert_eq!(result.error_message, None);
+    fn node_run_result_roundtrip() {
+        let result = NodeRunResult::started(1234);
         assert_eq!(result.pid, Some(1234));
-        let encoded = result.encode().expect("encode");
-        let decoded = NodeRunResult::decode(&encoded).expect("decode");
-        assert_eq!(decoded, result);
-    }
-
-    #[test]
-    fn node_run_result_failure_roundtrip() {
-        let result = NodeRunResult::failure("boom");
-        assert!(!result.success);
-        assert_eq!(result.error_message, Some("boom".to_owned()));
-        assert_eq!(result.pid, None);
         let encoded = result.encode().expect("encode");
         let decoded = NodeRunResult::decode(&encoded).expect("decode");
         assert_eq!(decoded, result);
@@ -1999,12 +1924,12 @@ mod tests {
     #[test]
     fn node_run_result_roundtrips_endpoints() {
         let endpoints = crate::encoding::endpoints::sample_endpoints();
-        let result = NodeRunResult::success(42).with_endpoints(endpoints.clone());
+        let result = NodeRunResult::started(42).with_endpoints(endpoints.clone());
         let decoded = NodeRunResult::decode(&result.encode().expect("encode")).expect("decode");
         assert_eq!(decoded.endpoints, endpoints);
         assert_eq!(decoded, result);
 
-        let plain = NodeRunResult::success(42);
+        let plain = NodeRunResult::started(42);
         let decoded = NodeRunResult::decode(&plain.encode().expect("encode")).expect("decode");
         assert!(decoded.endpoints.is_empty());
     }

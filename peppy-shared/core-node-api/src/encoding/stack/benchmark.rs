@@ -73,49 +73,27 @@ impl StackBenchmarkGoal {
 // Goal response
 // ---------------------------------------------------------------------------
 
-/// Response to the benchmark goal request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StackBenchmarkGoalResponse {
-    pub accepted: bool,
-    pub rejection_reason: Option<String>,
-}
+/// The goal response of an accepted benchmark. Carries no fields: the
+/// daemon refuses a goal in the goal envelope, with a failure kind and a
+/// message.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StackBenchmarkGoalResponse;
 
 impl StackBenchmarkGoalResponse {
-    pub fn accepted() -> Self {
-        Self {
-            accepted: true,
-            rejection_reason: None,
-        }
-    }
-
-    pub fn rejected(reason: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            rejection_reason: Some(reason.into()),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        {
-            let mut response =
-                builder.init_root::<benchmark_capnp::stack_benchmark_goal_response::Builder>();
-            response.set_accepted(self.accepted);
-            if let Some(ref reason) = self.rejection_reason {
-                response.set_rejection_reason(reason);
-            }
-        }
+        builder.init_root::<benchmark_capnp::stack_benchmark_goal_response::Builder>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response =
-            reader.get_root::<benchmark_capnp::stack_benchmark_goal_response::Reader>()?;
-        Ok(Self {
-            accepted: response.get_accepted(),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
-        })
+        reader.get_root::<benchmark_capnp::stack_benchmark_goal_response::Reader>()?;
+        Ok(Self)
     }
 }
 
@@ -385,29 +363,18 @@ impl InterfaceLatency {
     }
 }
 
-/// Result message for the `stack_benchmark` action.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The result of a completed `stack_benchmark` goal: one row per measured
+/// interface, a failed measurement of one interface included. A failed
+/// benchmark gives a failure kind and a message, and no result; a cancelled
+/// benchmark gives its reason, and no result.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StackBenchmarkResult {
-    pub success: bool,
-    pub error_message: Option<String>,
     pub rows: Vec<InterfaceLatency>,
 }
 
 impl StackBenchmarkResult {
-    pub fn success(rows: Vec<InterfaceLatency>) -> Self {
-        Self {
-            success: true,
-            error_message: None,
-            rows,
-        }
-    }
-
-    pub fn failure(error_message: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            error_message: Some(error_message.into()),
-            rows: Vec::new(),
-        }
+    pub fn new(rows: Vec<InterfaceLatency>) -> Self {
+        Self { rows }
     }
 
     pub fn encode(&self) -> Result<Payload> {
@@ -415,11 +382,6 @@ impl StackBenchmarkResult {
         {
             let mut result =
                 builder.init_root::<benchmark_capnp::stack_benchmark_result::Builder>();
-            result.set_success(self.success);
-            if let Some(ref error_message) = self.error_message {
-                result.set_error_message(error_message);
-            }
-
             let row_count = capnp_list_len(self.rows.len(), "StackBenchmarkResult.rows")?;
             let mut rows = result.reborrow().init_rows(row_count);
             for (i, row) in self.rows.iter().enumerate() {
@@ -487,11 +449,7 @@ impl StackBenchmarkResult {
             });
         }
 
-        Ok(Self {
-            success: result.get_success(),
-            error_message: optional_text(result.get_error_message()?.to_str()?),
-            rows,
-        })
+        Ok(Self { rows })
     }
 }
 
@@ -534,18 +492,10 @@ mod tests {
 
     #[test]
     fn goal_response_roundtrips() {
-        let accepted = StackBenchmarkGoalResponse::accepted();
-        let bytes = accepted.encode().expect("encode");
+        let bytes = StackBenchmarkGoalResponse::new().encode().expect("encode");
         assert_eq!(
             StackBenchmarkGoalResponse::decode(&bytes).expect("decode"),
-            accepted
-        );
-
-        let rejected = StackBenchmarkGoalResponse::rejected("already running");
-        let bytes = rejected.encode().expect("encode");
-        assert_eq!(
-            StackBenchmarkGoalResponse::decode(&bytes).expect("decode"),
-            rejected
+            StackBenchmarkGoalResponse
         );
     }
 
@@ -591,7 +541,7 @@ mod tests {
 
     #[test]
     fn result_roundtrips_with_rows_and_samples() {
-        let result = StackBenchmarkResult::success(vec![
+        let result = StackBenchmarkResult::new(vec![
             sample_row(),
             InterfaceLatency {
                 kind: InterfaceKind::Service,
@@ -625,20 +575,10 @@ mod tests {
 
     #[test]
     fn result_empty_roundtrips() {
-        let result = StackBenchmarkResult::success(vec![]);
+        let result = StackBenchmarkResult::new(vec![]);
         let bytes = result.encode().expect("encode");
         let decoded = StackBenchmarkResult::decode(&bytes).expect("decode");
-        assert!(decoded.success);
         assert!(decoded.rows.is_empty());
-    }
-
-    #[test]
-    fn result_failure_roundtrips() {
-        let result = StackBenchmarkResult::failure("no running stack");
-        let bytes = result.encode().expect("encode");
-        let decoded = StackBenchmarkResult::decode(&bytes).expect("decode");
-        assert!(!decoded.success);
-        assert_eq!(decoded.error_message.as_deref(), Some("no running stack"));
     }
 
     #[test]

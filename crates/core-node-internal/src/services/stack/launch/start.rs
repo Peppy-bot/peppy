@@ -5,7 +5,9 @@ use super::feedback::publish_stdout;
 use super::orchestrate::start_node_directly;
 use super::watchers::LifecycleWatchers;
 use super::{NodeKey, PhaseChange, PhaseGoal, PlannedDeployment, federated};
+use crate::services::action_loop::WorkStop;
 use crate::services::stack::action::StackChangeContext;
+use crate::services::stack::{ChangeResult, attempt_failed};
 use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, NodeRunGoal, NodeRunLogEntry, NodeRunResult,
     ObservationTarget, ObservationTargets, PairTarget, RemotePeerPairing,
@@ -72,7 +74,7 @@ pub(in crate::services::stack) async fn start_node_instances(
     // The launcher root's restart policy, which rides each goal with the
     // instance entry's own say for the spawning daemon to resolve.
     root_restart: Option<config::node::RestartDeclaration>,
-) -> std::result::Result<(), String> {
+) -> ChangeResult<()> {
     // Register the planned observations whose OBSERVER runs on this daemon,
     // keyed by observer instance. As each instance reaches Running its
     // `node_run` notifies the coordinator, which delivers the source pin to
@@ -321,11 +323,13 @@ pub(in crate::services::stack) async fn start_node_instances(
 
             let result = match outcome {
                 Ok(result) => result,
-                Err(reason) => {
-                    return Err(format!(
-                        "failed to start node {} instance {instance_id} on `{core_node}`: {reason}",
-                        key.label()
-                    ));
+                Err(stop) => {
+                    let message = format!(
+                        "failed to start node {} instance {instance_id} on `{core_node}`: {}",
+                        key.label(),
+                        stop.failure().message()
+                    );
+                    return Err(stop.rephrased(message));
                 }
             };
             // The daemon hosting the instance expanded the URLs against its
@@ -353,7 +357,7 @@ async fn start_locally(
     instance_id: &str,
     node_run_goal: NodeRunGoal,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
-) -> std::result::Result<NodeRunResult, String> {
+) -> ChangeResult<NodeRunResult> {
     let log = ActionLog::for_run(
         &ctx.peppy_dirs,
         ctx.node_stack.log_exporter().clone(),
@@ -361,7 +365,8 @@ async fn start_locally(
         &node_run_goal.tag,
         instance_id,
         node_run_goal.launch_id.as_deref(),
-    )?;
+    )
+    .map_err(attempt_failed)?;
     let (result, log_path) = start_node_directly(ctx, node_run_goal, log).await;
 
     if let Some(path) = log_path {
@@ -396,7 +401,7 @@ async fn start_remotely(
     node_run_goal: NodeRunGoal,
     config_sha256: &str,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
-) -> std::result::Result<NodeRunResult, String> {
+) -> ChangeResult<NodeRunResult> {
     let node_run_goal = node_run_goal.with_manifest_sha256(config_sha256);
     match federated::run_remote_goal(ctx, core_node, &node_run_goal, ctx.idle_timeouts.run).await {
         Ok(run) => {
@@ -407,9 +412,9 @@ async fn start_remotely(
                 failed: run.outcome.is_err(),
                 core_node: core_node.to_owned(),
             });
-            run.outcome.map_err(|failure| failure.to_string())
+            run.outcome.map_err(federated::RemoteGoalFailure::into_stop)
         }
-        Err(reason) => Err(reason),
+        Err(failure) => Err(WorkStop::Failed(failure)),
     }
 }
 

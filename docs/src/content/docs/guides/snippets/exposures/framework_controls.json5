@@ -14,7 +14,7 @@
 
   call_record: {
     tool: "stack.recent_calls",
-    description: "List the last calls of this endpoint that could change the stack, newest first.",
+    description: "List the last calls of this endpoint that could change the stack, newest first, each with its outcome, and the failure kind and message of a refused or failed call.",
     keep: 200,
   },
 

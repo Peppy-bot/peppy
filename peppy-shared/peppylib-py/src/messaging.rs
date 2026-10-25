@@ -15,9 +15,10 @@ pub(crate) use pairing::{
 };
 pub(crate) use target::{PyProducerRef, PySenderTarget};
 
+use config::failure_kind::{FailureKindName, PeppyFailureKind};
 use config::namespace::Namespace;
 use peppylib::PeppyError;
-use peppylib::messaging::{MessengerHandle, PeerInfo, ProducerRef, SessionScope};
+use peppylib::messaging::{Failure, MessengerHandle, PeerInfo, ProducerRef, SessionScope};
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -54,6 +55,52 @@ pub(crate) fn repr_peer_info(peer: &PeerInfo) -> String {
     )
 }
 
+pyo3::create_exception!(
+    peppylib,
+    FailureError,
+    pyo3::exceptions::PyRuntimeError,
+    "A provider refused or failed a goal, or gave an error reply: `args` is \
+     `(kind, message)`, the failure kind and the message. A service handler \
+     raises it to give an error reply with that kind."
+);
+
+pyo3::create_exception!(
+    peppylib,
+    FeedbackOverflowError,
+    pyo3::exceptions::PyRuntimeError,
+    "The caller of a goal fell behind its feedback by more unread messages \
+     than its bound, so it cancelled the goal."
+);
+
+/// The failure of the kind named `kind`, with `message`. Raises `ValueError`
+/// for a text that is not a failure kind name.
+pub(crate) fn failure_from_py(kind: &str, message: String) -> PyResult<Failure> {
+    let kind =
+        FailureKindName::parse(kind).map_err(|err| PyValueError::new_err(err.to_string()))?;
+    Ok(Failure::new(kind, message))
+}
+
+/// The failure a Python service handler raised: the kind and message of a
+/// `FailureError`, or `attempt_failed` with the text of any other exception.
+pub(crate) fn failure_of_py_err(err: PyErr) -> Failure {
+    let raised = crate::py_future::try_attach_gated(|py| {
+        if !err.is_instance_of::<FailureError>(py) {
+            return None;
+        }
+        err.value(py)
+            .getattr("args")
+            .and_then(|args| args.extract::<(String, String)>())
+            .ok()
+    })
+    .flatten();
+    match raised {
+        Some((kind, message)) => failure_from_py(&kind, message).unwrap_or_else(|invalid| {
+            Failure::new(PeppyFailureKind::AttemptFailed, invalid.to_string())
+        }),
+        None => Failure::new(PeppyFailureKind::AttemptFailed, err.to_string()),
+    }
+}
+
 /// Convert a `peppylib::error::Error` into an appropriate Python exception.
 ///
 /// Maps timeout and unreachable variants to their natural Python counterparts
@@ -65,9 +112,18 @@ pub(crate) fn repr_peer_info(peer: &PeerInfo) -> String {
 /// `TargetNotBound` are caller misuse (a link_id the manifest never declared as
 /// a pairing, observer or consumer slot, or a producer outside the slot's bound
 /// set), so they map to `ValueError`, the same type `peer()` and
-/// `observation_slot()` raise for the same kind of input.
+/// `observation_slot()` raise for the same kind of input. A failure a
+/// provider gave (an error reply, or a failed goal) is a `FailureError` that
+/// carries its kind and message, and a feedback overflow is a
+/// `FeedbackOverflowError`.
 pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
+    if let Some(failure) = err.failure() {
+        return FailureError::new_err((failure.kind().to_string(), failure.message().to_string()));
+    }
     match &err {
+        PeppyError::ActionFeedbackOverflow { .. } => {
+            FeedbackOverflowError::new_err(err.to_string())
+        }
         PeppyError::ServiceTimeout { .. } | PeppyError::ActionResultTimeout { .. } => {
             PyErr::new::<pyo3::exceptions::PyTimeoutError, _>(err.to_string())
         }
@@ -310,6 +366,14 @@ impl PyMessengerHandle {
 /// Register the messaging submodule
 pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let messaging_module = PyModule::new(parent_module.py(), "messaging")?;
+    messaging_module.add(
+        "FailureError",
+        parent_module.py().get_type::<FailureError>(),
+    )?;
+    messaging_module.add(
+        "FeedbackOverflowError",
+        parent_module.py().get_type::<FeedbackOverflowError>(),
+    )?;
     messaging_module.add_class::<PyZenohdInstance>()?;
     messaging_module.add_class::<PyMessengerHandle>()?;
     messaging_module.add_class::<PyTopicMessage>()?;

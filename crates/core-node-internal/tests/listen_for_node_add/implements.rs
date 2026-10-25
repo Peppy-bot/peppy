@@ -88,11 +88,7 @@ async fn node_add_generates_contract_backed_modules_in_working_dir() {
     .await
     .expect("node_add request should complete");
 
-    assert!(
-        add_result.success,
-        "node_add should resolve implements and succeed, got error: {:?}",
-        add_result.error_message
-    );
+    add_result.completed();
 
     // The add path stashes its temp working dir on the entity so a
     // later `node_build` can reuse the prepared sources. Inspect that

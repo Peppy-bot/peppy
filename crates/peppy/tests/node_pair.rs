@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use config::failure_kind::PeppyFailureKind;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::test_support::{InstanceLifetime, ServeCommandEmulation};
@@ -23,7 +24,7 @@ use peppylib::messaging::PeerSetState;
 use tokio::sync::watch;
 
 use super::common::{
-    add_built_node, emulate_cooperative_shutdown, emulate_pairing_instance,
+    add_built_node, assert_daemon_failure, emulate_cooperative_shutdown, emulate_pairing_instance,
     emulate_startup_services, node_run_command, pairing_node_config, seed_pairing_repo,
     serve_app_context,
 };
@@ -236,9 +237,10 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     )
     .execute(&ctx)
     .expect_err("an undeliverable peer_update must fail the run");
-    assert!(
-        err.to_string().contains("pairing"),
-        "delivery failure should mention pairing: {err}"
+    assert_daemon_failure(
+        &err,
+        PeppyFailureKind::AttemptFailed,
+        "pairing delivery failed",
     );
     // The failed delivery reverted the pair: the survivor stays unpaired.
     assert!(arm_rx.borrow_and_update().members.is_empty());

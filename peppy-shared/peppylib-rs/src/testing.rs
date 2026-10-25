@@ -817,7 +817,7 @@ impl MockActionServerCore {
     /// `grace` after its terminal transition, as
     /// [`ConcurrentAction::with_result_retention_grace`] does. A zero grace
     /// makes every later result request of a settled goal read
-    /// [`ResultStatus::Expired`](crate::messaging::ResultStatus::Expired).
+    /// [`GoalOutcome::Expired`](crate::messaging::GoalOutcome::Expired).
     pub fn with_result_retention_grace(mut self, grace: Duration) -> Self {
         self.engine = self.engine.with_result_retention_grace(grace);
         self
@@ -884,9 +884,9 @@ impl MockPendingGoal {
         Ok(context)
     }
 
-    /// Reject the goal with an optional human-readable reason.
-    pub async fn reject(self, reason: Option<&str>, response: Payload) -> Result<()> {
-        self.pending.reject(reason, response).await
+    /// Refuse the goal with `failure`.
+    pub async fn refuse(self, failure: crate::messaging::Failure) -> Result<()> {
+        self.pending.refuse(failure).await
     }
 }
 

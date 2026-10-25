@@ -11,7 +11,7 @@ use core_node_api::encoding::{
 };
 use core_node_api::{ServiceRequest, TopicId};
 use peppylib::clock::wall_now_ns;
-use peppylib::messaging::TopicMessenger;
+use peppylib::messaging::{Failure, TopicMessenger};
 use std::time::Duration;
 
 /// Sends a `NODE_INFO` poll request and unwraps the `Found` body; a node the
@@ -71,6 +71,37 @@ pub async fn poll_core_node_as<R: ServiceRequest>(
         timeout,
     )
     .await
+}
+
+/// The failure of the error reply that `error` carries. Panics when the
+/// request failed without an error reply.
+#[track_caller]
+pub fn error_reply(error: &peppylib::PeppyError) -> Failure {
+    error
+        .failure()
+        .cloned()
+        .unwrap_or_else(|| panic!("the request failed without an error reply: {error}"))
+}
+
+/// Polls the core-node service that `request` belongs to and returns the
+/// failure of the daemon's error reply. Panics when the daemon answers the
+/// request, and when the poll fails without an error reply.
+pub async fn poll_core_node_failure<R: ServiceRequest>(
+    started: &StartedCoreNode,
+    request: &R,
+) -> Failure
+where
+    R::Response: std::fmt::Debug,
+{
+    let error = poll_core_node_as(started, CALLER_INSTANCE_ID, request, Duration::from_secs(5))
+        .await
+        .expect_err("the daemon gives an error reply");
+    error.failure().cloned().unwrap_or_else(|| {
+        panic!(
+            "{} poll failed without an error reply: {error}",
+            R::ID.name()
+        )
+    })
 }
 
 /// Sends a `datastore_store_exclusive` request for `key` as the instance

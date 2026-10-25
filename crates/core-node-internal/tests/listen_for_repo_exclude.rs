@@ -4,6 +4,7 @@ use common::{
     StartedCoreNode, excluded_repositories_path, poll_core_node, read_json5_array,
     start_core_node_with_mock_messenger, write_excluded_repositories_json5,
 };
+use config::failure_kind::PeppyFailureKind;
 use core_node_api::encoding::{GitRepoRef, RepoExcludeRequest};
 
 /// Overwrites the default entries the daemon wrote at start with an empty
@@ -19,13 +20,11 @@ async fn exclude_git_without_ref_succeed() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
-    let resp = poll_core_node(
+    poll_core_node(
         &started,
         &RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
     .await;
-    assert!(resp.success, "repo_exclude should succeed");
-    assert!(resp.error_message.is_empty());
 
     // Verify the file was created with the new entry
     let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
@@ -46,7 +45,7 @@ async fn exclude_git_succeed() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
-    let resp = poll_core_node(
+    poll_core_node(
         &started,
         &RepoExcludeRequest::new_git(
             "https://github.com/example/repo.git",
@@ -54,7 +53,6 @@ async fn exclude_git_succeed() {
         ),
     )
     .await;
-    assert!(resp.success, "repo_exclude should succeed");
 
     let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
 
@@ -71,8 +69,7 @@ async fn exclude_fs_succeed() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
-    let resp = poll_core_node(&started, &RepoExcludeRequest::new_fs("/tmp/my-local-repo")).await;
-    assert!(resp.success, "repo_exclude should succeed");
+    poll_core_node(&started, &RepoExcludeRequest::new_fs("/tmp/my-local-repo")).await;
 
     let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
 
@@ -92,16 +89,15 @@ async fn exclude_duplicate_fails() {
         RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead);
 
     // First exclude should succeed
-    let resp = poll_core_node(&started, &request).await;
-    assert!(resp.success);
+    poll_core_node(&started, &request).await;
 
     // Second exclude of the same URL should fail
-    let resp = poll_core_node(&started, &request).await;
-    assert!(!resp.success, "duplicate exclude should fail");
+    let failure = common::poll_core_node_failure(&started, &request).await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::PreconditionFailed);
     assert!(
-        resp.error_message.contains("already exists"),
+        failure.message().contains("already exists"),
         "error should mention 'already exists', got: {}",
-        resp.error_message
+        failure.message()
     );
 }
 
@@ -118,19 +114,16 @@ async fn exclude_fails_when_duplicate_ids_in_file() {
         ]"#,
     );
 
-    let resp = poll_core_node(
+    let failure = common::poll_core_node_failure(
         &started,
         &RepoExcludeRequest::new_git("https://example.com/new.git", GitRepoRef::RemoteHead),
     )
     .await;
+    common::assert_failure_kind(&failure, PeppyFailureKind::AttemptFailed);
     assert!(
-        !resp.success,
-        "repo_exclude should fail when duplicate ids exist"
-    );
-    assert!(
-        resp.error_message.contains("duplicate repository id"),
+        failure.message().contains("duplicate repository id"),
         "error should mention duplicate id, got: {}",
-        resp.error_message
+        failure.message()
     );
 }
 
@@ -145,12 +138,11 @@ async fn exclude_assigns_id_after_manual_entry() {
         r#"[{ "id": 42, "type": "fs", "path": "/manual-repo" }]"#,
     );
 
-    let resp = poll_core_node(
+    poll_core_node(
         &started,
         &RepoExcludeRequest::new_git("https://example.com/packages.git", GitRepoRef::RemoteHead),
     )
     .await;
-    assert!(resp.success, "repo_exclude should succeed");
 
     let repos = read_json5_array(&excluded_repositories_path(&started.peppy_dirs));
 

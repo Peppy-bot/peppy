@@ -3,11 +3,11 @@
 //! source the launch already resolved keeps the node and pins the launch
 //! ran, so only what the copy brings is resolved here.
 
-use super::super::ChangeResult;
 use super::super::action::StackChangeContext;
 use super::super::launch::PlannedDeployment;
 use super::super::launch::resolve::{self, resolve_deployments};
 use super::super::state::ActiveLaunch;
+use super::super::{ChangeResult, attempt_failed, rejected};
 use config::runtime::{CoreNodeName, Name};
 use core_node_api::encoding::StackJoinGoal;
 use daemon_config::launcher::{CopyRecord, JoinRequest, PeppyLauncher, Placements, RunningStack};
@@ -35,7 +35,7 @@ impl ResolvedJoin {
         goal: &StackJoinGoal,
     ) -> ChangeResult<Self> {
         active.check_name(&goal.copy.name)?;
-        let coordinator = CoreNodeName::new(&ctx.bound_core_node).map_err(|e| e.to_string())?;
+        let coordinator = CoreNodeName::new(&ctx.bound_core_node).map_err(attempt_failed)?;
         let copy_core_node = goal.copy.core_node.resolve(&coordinator);
         let composed = active
             .prepared
@@ -51,7 +51,7 @@ impl ResolvedJoin {
                     launcher: &active.flat,
                 },
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(rejected)?;
         // Each instance of a placed part runs on its word's machine, every
         // other new instance on the copy's machine.
         let part_machines: BTreeMap<String, CoreNodeName> = composed
@@ -111,8 +111,12 @@ impl ResolvedJoin {
             })
             .cloned()
             .collect();
-        let mut resolved = resolve_deployments(ctx, missing, &placements).await?;
-        resolve::mint_doc_pins(ctx, &mut resolved, &placements).await?;
+        let mut resolved = resolve_deployments(ctx, missing, &placements)
+            .await
+            .map_err(rejected)?;
+        resolve::mint_doc_pins(ctx, &mut resolved, &placements)
+            .await
+            .map_err(rejected)?;
         let planned = planned_from(&combined, active.resolved.iter().chain(&resolved));
 
         Ok(Self {

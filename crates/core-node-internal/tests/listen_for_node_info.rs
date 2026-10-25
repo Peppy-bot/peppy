@@ -203,11 +203,7 @@ async fn node_info_has_instance_ids() {
     )
     .await
     .expect("node_run (instance 1) should complete");
-    assert!(
-        start_response_1.result.success,
-        "node_run (instance 1) should succeed, got error: {:?}",
-        start_response_1.result.error_message
-    );
+    start_response_1.end.completed();
 
     let instance_plan_2 = common::default_instance_plan(TARGET_INSTANCE_ID_2);
     let start_response_2 = send_node_run_and_wait(
@@ -224,11 +220,7 @@ async fn node_info_has_instance_ids() {
     )
     .await
     .expect("node_run (instance 2) should complete");
-    assert!(
-        start_response_2.result.success,
-        "node_run (instance 2) should succeed, got error: {:?}",
-        start_response_2.result.error_message
-    );
+    start_response_2.end.completed();
 
     let info_response = poll_node_info(
         &started_core_node,
@@ -390,11 +382,7 @@ async fn node_info_carries_the_endpoints_of_a_running_instance() {
     )
     .await
     .expect("node_run action should complete");
-    assert!(
-        start_response.result.success,
-        "{:?}",
-        start_response.result.error_message
-    );
+    start_response.end.completed();
 
     let info = poll_node_info(
         &started_core_node,

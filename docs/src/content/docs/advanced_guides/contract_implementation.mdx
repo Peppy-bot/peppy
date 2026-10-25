@@ -54,6 +54,44 @@ A contract lives in its own file under a repository Peppy scans (see [Repositori
 }
 ```
 
+#### Failure kinds
+
+A refused or failed goal, and the error reply of a service, give a **failure kind**: why the provider refused or failed, from a closed set. Every provider can give the kinds of peppy:
+
+| `failure_kind` | Meaning |
+| --- | --- |
+| `attempt_failed` | The attempt gave no result |
+| `timeout` | The bound of the provider passed |
+| `precondition_failed` | A precondition failed |
+| `resource_unavailable` | A robot, limb or host is gone |
+| `rejected` | The provider refused the goal, and no other kind says why |
+
+A contract declares the kinds of its own in its `failure_kinds` block, between `manifest` and `interfaces`: each name with its meaning, a short sentence. Each service and action then lists in a `failure_kinds` list of its own the kinds of the block that it gives. A member gives a kind of peppy or a kind that it lists, and no other:
+
+```json5
+{
+  peppy_schema: "contract/v1",
+  manifest: { name: "limb_motion", tag: "v1" },
+  failure_kinds: {
+    unreachable: "No plan to the target",
+    leader_streaming: "A leader streams a limb of the goal",
+  },
+  interfaces: {
+    actions: [
+      { name: "move_arm", /* ... */ failure_kinds: ["unreachable", "leader_streaming"] },
+      { name: "move_gripper", /* ... */ failure_kinds: ["leader_streaming"] },
+    ],
+    services: [
+      { name: "stop", /* ... */ },
+    ],
+  },
+}
+```
+
+A kind name is 1 to 64 lowercase ASCII letters, digits and `_`, and starts with a letter. A contract does not declare a kind of peppy, and no meaning is blank. A member lists only kinds that the block declares, each once, and each declared kind is listed by at least one member: the parser refuses the contract otherwise. The block and the lists are optional; a member that lists no kind, such as `stop` above, gives the kinds of peppy only.
+
+The generated code of each action and service declares the kinds of its member, the kinds of peppy first and then the kinds it lists, as a `FailureKind` enum with a `Failure` type: the generated provider can give no other kind, and the generated client and the [MCP server](/advanced_guides/mcp/) refuse any other kind from the wire. So a new kind of a node changes that node and its contract, never peppy. See [How a goal ends](/advanced_guides/actions/#how-a-goal-ends) and [Error replies](/advanced_guides/services/#error-replies).
+
 After `peppy repo refresh`, the contract is cached and addressable by `(name, tag)`. Files use whatever filename you like as long as it ends in `.json5`; Peppy identifies a `contract/v1` document by its `peppy_schema` field. `peppy repo show <name>:<tag>` lists the indexed nodes that implement or consume it (see [Show what a query matches](/advanced_guides/repositories/#show-what-a-query-matches)).
 
 ### 2. A producer that implements the contract

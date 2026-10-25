@@ -1,12 +1,13 @@
 use crate::Result;
-use crate::services::response::into_service_response;
+use crate::services::response::into_service_answer;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{HealthRequest, HealthResponse};
 use core_node_api::names;
 use peppylib::messaging::SenderTarget;
+use peppylib::messaging::ServiceAnswer;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, ServiceMessenger};
 use std::time::Instant;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -46,8 +47,8 @@ pub async fn listen_for_health(
 async fn handle_health_request(
     context: ServiceRequestContext,
     start_time: Instant,
-) -> PeppyResult<Payload> {
-    into_service_response(&context, handle_health_request_inner(&context, start_time))
+) -> ServiceAnswer {
+    into_service_answer(handle_health_request_inner(&context, start_time))
 }
 
 fn handle_health_request_inner(

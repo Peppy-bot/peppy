@@ -35,9 +35,15 @@ pub fn native_dep(node_name: &str, node_tag: &str, link_id: &str) -> DependencyC
 }
 
 /// Contract twin of [`native_dep`]: a `depends_on.contracts` slot at the
-/// default `one` cardinality.
+/// default `one` cardinality, whose contract declares no failure kinds.
 pub fn contract_dep(contract_name: &str, contract_tag: &str, link_id: &str) -> DependencyContext {
-    DependencyContext::contract(contract_name, contract_tag, link_id, Cardinality::One)
+    DependencyContext::contract(
+        contract_name,
+        contract_tag,
+        link_id,
+        Cardinality::One,
+        Default::default(),
+    )
 }
 
 pub const STUB_NODE_CONFIG: &str = r#"{

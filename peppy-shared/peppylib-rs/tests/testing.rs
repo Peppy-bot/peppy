@@ -12,7 +12,7 @@ use std::time::Duration;
 use config::node::{QoSProfile, TopicRetention};
 use peppylib::PeppyError;
 use peppylib::messaging::{
-    ActionMessenger, FeedbackBuffer, NonEmptyPayload, PeerInfo, ProducerRef, SenderTarget,
+    ActionMessenger, DEFAULT_FEEDBACK_BOUND, NonEmptyPayload, PeerInfo, ProducerRef, SenderTarget,
     ServiceMessenger, ServiceTarget, TopicBuffer, TopicMessenger,
 };
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
@@ -197,8 +197,7 @@ async fn mock_action_stop_yields_producer_gone_deterministically() {
             "move_arm",
             Some(&ProducerRef::new(MOCK_CORE, MOCK_INSTANCE)),
             Payload::from_static(b"goal"),
-            QoSProfile::Reliable,
-            FeedbackBuffer::KeepLatest,
+            DEFAULT_FEEDBACK_BOUND,
             Duration::from_secs(5),
         )
         .await

@@ -5,6 +5,7 @@ use super::fixtures::write_peppy_json5;
 use super::poll::AbortOnDrop;
 use super::{CALLER_INSTANCE_ID, TEST_GIT_HASH, test_node_target};
 use config::node::{RestartDeclaration, RestartPolicy, RestartRequest};
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
     NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback, NodeRunGoal,
@@ -13,10 +14,10 @@ use core_node_api::encoding::{
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use gix_url::Url as GitUrl;
 use peppylib::core_node::transport::send_goal;
-use peppylib::messaging::{ActionGoalHandle, MessengerHandle};
+use peppylib::messaging::{ActionGoalHandle, Failure, GoalAnswer, GoalOutcome, MessengerHandle};
 use peppylib::services::health::listen_for_node_health;
 use peppylib::{ActionMessenger, PeppyError};
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -62,10 +63,120 @@ pub struct NodeRunTestTimeouts {
     pub result: Duration,
 }
 
-/// Combined response from send_node_run_and_wait containing both goal and result responses.
+/// How a `node_run` goal that a test sends ends, with the goal response of
+/// an accepted goal.
 pub struct NodeRunTestResponse {
-    pub goal_response: NodeRunGoalResponse,
-    pub result: NodeRunResult,
+    /// The goal response of an accepted goal; `None` when the daemon refused
+    /// the goal.
+    pub goal_response: Option<NodeRunGoalResponse>,
+    pub end: GoalEnd<NodeRunResult>,
+}
+
+impl NodeRunTestResponse {
+    /// The goal response of an accepted goal. Panics when the daemon refused
+    /// the goal.
+    #[track_caller]
+    pub fn accepted(&self) -> &NodeRunGoalResponse {
+        self.goal_response
+            .as_ref()
+            .unwrap_or_else(|| panic!("the daemon refused the node_run goal: {:?}", self.end))
+    }
+}
+
+/// How a daemon goal that a test sends ends, as its client sees it.
+#[derive(Debug)]
+pub enum GoalEnd<R> {
+    /// The daemon refused the goal.
+    Refused(Failure),
+    /// The goal completed with this result.
+    Completed(R),
+    /// The daemon accepted the goal, and the goal failed.
+    Failed(Failure),
+    /// The goal was cancelled for this reason.
+    Cancelled(String),
+}
+
+impl<R: Debug> GoalEnd<R> {
+    /// The result of a completed goal. Panics with the ending of any other
+    /// goal.
+    #[track_caller]
+    pub fn completed(self) -> R {
+        match self {
+            GoalEnd::Completed(result) => result,
+            other => panic!("the goal did not complete: {other:?}"),
+        }
+    }
+
+    pub fn is_completed(&self) -> bool {
+        matches!(self, GoalEnd::Completed(_))
+    }
+
+    /// The failure of a refused or failed goal. Panics with the ending of
+    /// any other goal.
+    #[track_caller]
+    pub fn failure(&self) -> &Failure {
+        match self {
+            GoalEnd::Refused(failure) | GoalEnd::Failed(failure) => failure,
+            other => panic!("the goal did not fail: {other:?}"),
+        }
+    }
+
+    /// The message of the failure of a refused or failed goal. Panics with
+    /// the ending of any other goal.
+    #[track_caller]
+    pub fn failure_message(&self) -> &str {
+        self.failure().message()
+    }
+
+    /// The failure of a refused goal. Panics with the ending of any other
+    /// goal.
+    #[track_caller]
+    pub fn refusal(&self) -> &Failure {
+        match self {
+            GoalEnd::Refused(failure) => failure,
+            other => panic!("the daemon did not refuse the goal: {other:?}"),
+        }
+    }
+
+    /// The failure of a goal that the daemon accepted and that then failed.
+    /// Panics with the ending of any other goal.
+    #[track_caller]
+    pub fn failed(&self) -> &Failure {
+        match self {
+            GoalEnd::Failed(failure) => failure,
+            other => panic!("the goal did not fail after its acceptance: {other:?}"),
+        }
+    }
+
+    /// The reason of a cancelled goal. Panics with the ending of any other
+    /// goal.
+    #[track_caller]
+    pub fn cancel_reason(&self) -> &str {
+        match self {
+            GoalEnd::Cancelled(reason) => reason,
+            other => panic!("the goal was not cancelled: {other:?}"),
+        }
+    }
+}
+
+/// Asserts that `failure` has `kind`, a kind of the daemon.
+#[track_caller]
+pub fn assert_failure_kind(failure: &Failure, kind: impl Into<DaemonFailureKind>) {
+    assert_eq!(
+        failure.kind().as_str(),
+        kind.into().name(),
+        "the failure has another kind: {failure}"
+    );
+}
+
+/// Asserts that `failure` has `kind` and that its message contains `text`.
+#[track_caller]
+pub fn assert_failure(failure: &Failure, kind: impl Into<DaemonFailureKind>, text: &str) {
+    assert_failure_kind(failure, kind);
+    assert!(
+        failure.message().contains(text),
+        "the failure message does not contain {text:?}: {failure}"
+    );
 }
 
 /// Builds the instance plan a `node_run` goal carries.
@@ -141,20 +252,43 @@ fn forward_until_closed<F>(
     }
 }
 
-/// Fetches the buffered result of a completed action and decodes it with
-/// `decode`. `what` names the result in the errors. A goal that ends without
-/// a result body (abandoned or expired) is an error.
-pub async fn fetch_result<R, E: Display>(
+/// The goal response of an accepted goal, decoded with `decode`, or the
+/// failure of a refused goal. `what` names the goal response in the errors.
+pub fn goal_answer<T, E: Display>(
+    action_handle: &ActionGoalHandle,
+    decode: impl Fn(&[u8]) -> Result<T, E>,
+    what: &str,
+) -> Result<Result<T, Failure>, String> {
+    match &action_handle.goal_reply().answer {
+        GoalAnswer::Accepted(response) => decode(response.as_ref())
+            .map(Ok)
+            .map_err(|err| format!("Failed to decode {what}: {err}")),
+        GoalAnswer::Refused(failure) => Ok(Err(failure.clone())),
+    }
+}
+
+/// Fetches how an action ended, and decodes the result of a completed one
+/// with `decode`. `what` names the result in the errors. A goal that ends
+/// without an outcome for its client (abandoned or expired) is an error.
+pub async fn fetch_end<R, E: Display>(
     messenger: &MessengerHandle,
     action_handle: &ActionGoalHandle,
     fetch_timeout: Duration,
     decode: impl Fn(&[u8]) -> Result<R, E>,
     what: &str,
-) -> Result<R, String> {
-    let body = ActionMessenger::request_result_body(messenger, action_handle, fetch_timeout)
+) -> Result<GoalEnd<R>, String> {
+    let reply = ActionMessenger::request_result(messenger, action_handle, fetch_timeout)
         .await
         .map_err(|err| format!("Failed to get {what}: {err}"))?;
-    decode(body.as_ref()).map_err(|err| format!("Failed to decode {what}: {err}"))
+    match reply.outcome {
+        GoalOutcome::Completed(body) => decode(body.as_ref())
+            .map(GoalEnd::Completed)
+            .map_err(|err| format!("Failed to decode {what}: {err}")),
+        GoalOutcome::Failed(failure) => Ok(GoalEnd::Failed(failure)),
+        GoalOutcome::Cancelled { reason, .. } => Ok(GoalEnd::Cancelled(reason)),
+        GoalOutcome::Abandoned => Err(format!("The goal of the {what} was abandoned")),
+        GoalOutcome::Expired => Err(format!("The {what} expired")),
+    }
 }
 
 /// Sends `goal` to the daemon action it belongs to on `core_node_name`, from
@@ -213,38 +347,39 @@ pub async fn send_node_run_goal_and_wait(
     send_node_run_and_wait_internal(messenger, core_node_name, goal, timeouts, None).await
 }
 
+/// Sends a `node_run` goal and returns the live action handle with the
+/// daemon's answer: the decoded goal response, or the refusal.
+async fn send_node_run_goal_answered(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    goal: NodeRunGoal,
+    goal_timeout: Duration,
+) -> Result<(ActionGoalHandle, Result<NodeRunGoalResponse, Failure>), String> {
+    let action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
+        .await
+        .map_err(|e| format!("Failed to send goal: {}", e))?;
+    let answer = goal_answer(&action_handle, NodeRunGoalResponse::decode, "goal response")?;
+    Ok((action_handle, answer))
+}
+
 /// Sends a `node_run` goal and returns the live action handle plus its decoded
-/// goal response, or an error when the goal is not accepted. The wait helpers
-/// build on it, and a test calls it directly when it does work between the
-/// goal and the result (e.g. bringing up a delayed health responder once
-/// startup output has streamed) or never fetches the result at all.
+/// goal response, or an error when the daemon refuses the goal. A test calls
+/// it directly when it does work between the goal and the result (e.g.
+/// bringing up a delayed health responder once startup output has streamed)
+/// or never fetches the result at all.
 pub async fn send_node_run_goal(
     messenger: &MessengerHandle,
     core_node_name: &str,
     goal: NodeRunGoal,
     goal_timeout: Duration,
 ) -> Result<(ActionGoalHandle, NodeRunGoalResponse), String> {
-    let action_handle = send_daemon_goal(messenger, core_node_name, &goal, goal_timeout)
-        .await
-        .map_err(|e| format!("Failed to send goal: {}", e))?;
-
-    let goal_response = NodeRunGoalResponse::decode(&action_handle.goal_reply().body)
-        .map_err(|e| format!("Failed to decode goal response: {}", e))?;
-
-    // A rejected goal never streams feedback or produces a result, so callers
+    // A refused goal never streams feedback or produces a result, so callers
     // must not proceed to drain; they would just burn the full result budget
-    // and surface a generic timeout instead of the actual rejection reason.
-    if !goal_response.accepted {
-        return Err(format!(
-            "node_run goal rejected: {}",
-            goal_response
-                .rejection_reason
-                .as_deref()
-                .unwrap_or("rejected without reason")
-        ));
+    // and surface a generic timeout instead of the actual refusal.
+    match send_node_run_goal_answered(messenger, core_node_name, goal, goal_timeout).await? {
+        (action_handle, Ok(goal_response)) => Ok((action_handle, goal_response)),
+        (_, Err(refusal)) => Err(format!("the daemon refused the node_run goal: {refusal}")),
     }
-
-    Ok((action_handle, goal_response))
 }
 
 /// Drains feedback from a live `node_run` action handle, appending each decoded
@@ -308,13 +443,22 @@ async fn send_node_run_and_wait_internal(
     timeouts: &NodeRunTestTimeouts,
     feedback_tx: Option<UnboundedSender<NodeRunFeedback>>,
 ) -> Result<NodeRunTestResponse, String> {
-    let (mut action_handle, goal_response) =
-        send_node_run_goal(messenger, core_node_name, goal, timeouts.goal).await?;
+    let (mut action_handle, answer) =
+        send_node_run_goal_answered(messenger, core_node_name, goal, timeouts.goal).await?;
+    let goal_response = match answer {
+        Ok(goal_response) => goal_response,
+        Err(refusal) => {
+            return Ok(NodeRunTestResponse {
+                goal_response: None,
+                end: GoalEnd::Refused(refusal),
+            });
+        }
+    };
 
     let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
     let mut collected = Vec::new();
     // Drain feedback until the server closes the stream on completion, within
-    // the result budget, then fetch the buffered result once.
+    // the result budget, then fetch how the goal ended once.
     let drained = drain_node_run_feedback(
         &mut action_handle,
         feedback_tx.as_ref(),
@@ -328,7 +472,7 @@ async fn send_node_run_and_wait_internal(
     }
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
-    let result = fetch_result(
+    let end = fetch_end(
         messenger,
         &action_handle,
         fetch_timeout,
@@ -337,13 +481,13 @@ async fn send_node_run_and_wait_internal(
     )
     .await?;
     Ok(NodeRunTestResponse {
-        goal_response,
-        result,
+        goal_response: Some(goal_response),
+        end,
     })
 }
 
 /// Sends a `node_run` goal, runs `before_cancel`, cancels the goal as its
-/// client would, and returns the run's result.
+/// client would, and returns how the run ended.
 pub async fn send_node_run_then_cancel(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -352,7 +496,7 @@ pub async fn send_node_run_then_cancel(
     tag: &str,
     timeouts: &NodeRunTestTimeouts,
     before_cancel: impl std::future::Future<Output = ()>,
-) -> Result<NodeRunResult, String> {
+) -> Result<GoalEnd<NodeRunResult>, String> {
     let (mut action_handle, _) = send_node_run_goal(
         messenger,
         core_node_name,
@@ -378,7 +522,7 @@ pub async fn send_node_run_then_cancel(
         return Err("Timeout waiting for node_run result".to_string());
     }
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
-    fetch_result(
+    fetch_end(
         messenger,
         &action_handle,
         fetch_timeout,
@@ -465,7 +609,7 @@ pub async fn send_node_run_with_delayed_health(
     .await;
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
-    let result = fetch_result(
+    let end = fetch_end(
         caller_messenger,
         &action_handle,
         fetch_timeout,
@@ -475,8 +619,8 @@ pub async fn send_node_run_with_delayed_health(
     .await?;
     Ok((
         NodeRunTestResponse {
-            goal_response,
-            result,
+            goal_response: Some(goal_response),
+            end,
         },
         feedback,
     ))
@@ -490,7 +634,7 @@ async fn send_node_add_and_wait_internal<'a>(
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
     force: bool,
-) -> Result<NodeAddResult, String> {
+) -> Result<GoalEnd<NodeAddResult>, String> {
     let source = source.into();
 
     let goal = match &source {
@@ -548,19 +692,11 @@ async fn send_node_add_and_wait_internal<'a>(
         .await
         .map_err(|e| format!("Failed to send goal: {}", e))?;
 
-    // Check if the goal was rejected - if so, return a failure result immediately.
-    // This matches the behavior of the CLI client which doesn't poll for results
-    // when the goal is rejected.
-    let goal_response = NodeAddGoalResponse::decode(&action_handle.goal_reply().body)
-        .map_err(|e| format!("Failed to decode goal response: {}", e))?;
-
-    if !goal_response.accepted {
-        return Ok(NodeAddResult::failure(
-            PathBuf::new(),
-            goal_response
-                .rejection_reason
-                .unwrap_or_else(|| "Goal rejected without reason".to_string()),
-        ));
+    // A refused goal ends here, as it does for the CLI, which polls no
+    // result of a refused goal.
+    if let Err(refusal) = goal_answer(&action_handle, NodeAddGoalResponse::decode, "goal response")?
+    {
+        return Ok(GoalEnd::Refused(refusal));
     }
 
     let absolute_deadline = tokio::time::Instant::now() + result_timeout;
@@ -582,7 +718,7 @@ async fn send_node_add_and_wait_internal<'a>(
     }
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
-    fetch_result(
+    fetch_end(
         messenger,
         &action_handle,
         fetch_timeout,
@@ -602,7 +738,7 @@ pub async fn send_node_build_and_wait(
     result_timeout: Duration,
     env_vars: Vec<(String, String)>,
     feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
-) -> Result<NodeBuildResult, String> {
+) -> Result<GoalEnd<NodeBuildResult>, String> {
     send_node_build_and_wait_internal(
         messenger,
         core_node_name,
@@ -629,7 +765,7 @@ pub async fn send_node_build_and_wait_forced(
     result_timeout: Duration,
     env_vars: Vec<(String, String)>,
     feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
-) -> Result<NodeBuildResult, String> {
+) -> Result<GoalEnd<NodeBuildResult>, String> {
     send_node_build_and_wait_internal(
         messenger,
         core_node_name,
@@ -655,7 +791,7 @@ async fn send_node_build_and_wait_internal(
     env_vars: Vec<(String, String)>,
     feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
     force: bool,
-) -> Result<NodeBuildResult, String> {
+) -> Result<GoalEnd<NodeBuildResult>, String> {
     let goal = NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs())
         .with_env_vars(env_vars)
         .with_force(force);
@@ -663,16 +799,12 @@ async fn send_node_build_and_wait_internal(
         .await
         .map_err(|e| format!("Failed to send build goal: {}", e))?;
 
-    let goal_response = NodeBuildGoalResponse::decode(&action_handle.goal_reply().body)
-        .map_err(|e| format!("Failed to decode build goal response: {}", e))?;
-
-    if !goal_response.accepted {
-        return Ok(NodeBuildResult::failure(
-            PathBuf::new(),
-            goal_response
-                .rejection_reason
-                .unwrap_or_else(|| "Build goal rejected without reason".to_string()),
-        ));
+    if let Err(refusal) = goal_answer(
+        &action_handle,
+        NodeBuildGoalResponse::decode,
+        "build goal response",
+    )? {
+        return Ok(GoalEnd::Refused(refusal));
     }
     let absolute_deadline = tokio::time::Instant::now() + result_timeout;
 
@@ -693,7 +825,7 @@ async fn send_node_build_and_wait_internal(
     }
 
     let fetch_timeout = absolute_deadline.saturating_duration_since(tokio::time::Instant::now());
-    fetch_result(
+    fetch_end(
         messenger,
         &action_handle,
         fetch_timeout,
@@ -701,6 +833,68 @@ async fn send_node_build_and_wait_internal(
         "build result",
     )
     .await
+}
+
+/// A build that [`send_logged_node_build`] sent: the log path that the goal
+/// response of the accepted goal names, and how the build ended.
+pub struct LoggedBuild {
+    pub log_path: PathBuf,
+    pub end: GoalEnd<NodeBuildResult>,
+}
+
+/// Sends the build goal of the staged node `(node_name, node_tag)` with no
+/// env overrides, forwards each feedback line of the build to `feedback_tx`
+/// when there is one, and returns the log path of the accepted goal with how
+/// the build ended. Panics when the daemon refuses the goal.
+pub async fn send_logged_node_build(
+    started: &StartedCoreNode,
+    node_name: &str,
+    node_tag: &str,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    feedback_tx: Option<&UnboundedSender<NodeBuildFeedback>>,
+) -> LoggedBuild {
+    let goal = NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs());
+    let mut action_handle = send_daemon_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        &goal,
+        goal_timeout,
+    )
+    .await
+    .expect("the node_build goal should be sent");
+    let goal_response = goal_answer(
+        &action_handle,
+        NodeBuildGoalResponse::decode,
+        "build goal response",
+    )
+    .expect("the goal answer should decode")
+    .unwrap_or_else(|refusal| panic!("the daemon refused the node_build goal: {refusal}"));
+    let deadline = tokio::time::Instant::now() + result_timeout;
+    let drained = drain_feedback(
+        &mut action_handle,
+        |payload| NodeBuildFeedback::decode(payload).expect("failed to decode NodeBuildFeedback"),
+        forward_until_closed(feedback_tx),
+        deadline,
+    )
+    .await;
+    assert!(
+        !matches!(drained, FeedbackDrainOutcome::TimedOut),
+        "the build did not end within {result_timeout:?}"
+    );
+    let end = fetch_end(
+        &started.caller_handle,
+        &action_handle,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+        NodeBuildResult::decode,
+        "build result",
+    )
+    .await
+    .expect("the end of the build should be fetched");
+    LoggedBuild {
+        log_path: goal_response.log_path,
+        end,
+    }
 }
 
 /// Helper function to send a node_add goal and wait for the result.
@@ -712,7 +906,7 @@ pub async fn send_node_add_and_wait<'a>(
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-) -> Result<NodeAddResult, String> {
+) -> Result<GoalEnd<NodeAddResult>, String> {
     send_node_add_and_wait_internal(
         messenger,
         core_node_name,
@@ -741,11 +935,9 @@ pub async fn build_staged_node(started: &StartedCoreNode, node_name: &str, node_
     )
     .await
     .expect("node_build request should complete");
-    assert!(
-        result.success,
-        "build_staged_node failed: {:?}",
-        result.error_message
-    );
+    if !result.is_completed() {
+        panic!("build_staged_node failed: {result:?}");
+    }
 }
 
 /// Convenience helper for tests that need a node to be both added AND built
@@ -768,14 +960,13 @@ pub async fn send_node_add_then_build<'a>(
         false,
     )
     .await?;
-    if !add.success {
-        return Err(format!(
-            "node_add failed: {}",
-            add.error_message.unwrap_or_default()
-        ));
-    }
-    let node_name = add.node_name.expect("node_name on successful add");
-    let node_tag = add.node_tag.expect("node_tag on successful add");
+    let NodeAddResult {
+        node_name,
+        node_tag,
+    } = match add {
+        GoalEnd::Completed(result) => result,
+        other => return Err(format!("node_add did not complete: {other:?}")),
+    };
     let result = send_node_build_and_wait(
         messenger,
         core_node_name,
@@ -787,13 +978,10 @@ pub async fn send_node_add_then_build<'a>(
         None,
     )
     .await?;
-    if !result.success {
-        return Err(format!(
-            "node_build failed: {}",
-            result.error_message.unwrap_or_default()
-        ));
+    match result {
+        GoalEnd::Completed(result) => Ok(result),
+        other => Err(format!("node_build did not complete: {other:?}")),
     }
-    Ok(result)
 }
 
 /// Adds and builds a node whose `run_cmd` forks two grandchild `sleep`s and
@@ -849,7 +1037,7 @@ pub async fn add_and_build_process_node(
     )
     .await
     .expect("node_add should complete");
-    assert!(add_response.success, "node_add failed: {add_response:?}");
+    add_response.completed();
     build_staged_node(started, node_name, node_tag).await;
     source_dir
 }
@@ -861,7 +1049,7 @@ pub async fn send_node_add_and_wait_with_force<'a>(
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-) -> Result<NodeAddResult, String> {
+) -> Result<GoalEnd<NodeAddResult>, String> {
     send_node_add_and_wait_internal(
         messenger,
         core_node_name,

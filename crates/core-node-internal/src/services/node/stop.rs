@@ -1,5 +1,6 @@
 use crate::Result;
-use crate::services::response::into_service_response;
+use crate::services::response::{failure, into_service_answer};
+use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
@@ -9,12 +10,13 @@ use node_stack::{
     ProcessClaim, SlotRemoval, StartingClaim, TrackedNodeInstance, kill_guest_groups,
     kill_process_group, terminate_process_group,
 };
+use peppylib::MessengerHandle;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
-    SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, ServiceTarget,
+    Failure, SHUTDOWN_SERVICE, ServiceAnswer, ServiceMessenger, ServiceRequestContext,
+    ServiceTarget,
 };
 use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyResult};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -77,46 +79,37 @@ async fn handle_node_stop_request(
     node_stack: Arc<NodeStack>,
     relationships: RelationshipCoordinators,
     ownership: Arc<crate::services::federation::SliceOwnership>,
-) -> PeppyResult<Payload> {
-    let _admission = match ownership.admit_node_change(None) {
-        Ok(admission) => admission,
-        Err(reason) => {
-            return into_service_response(
+) -> ServiceAnswer {
+    let _admission = ownership.admit_node_change(None)?;
+    crate::services::node::gate::finish_on_reset(
+        async {
+            let response = handle_node_stop_request_inner(
                 &context,
-                NodeStopResponse::failure(reason)
-                    .encode()
-                    .map_err(Into::into),
-            );
-        }
-    };
-    into_service_response(
-        &context,
-        crate::services::node::gate::finish_on_reset(
-            async {
-                handle_node_stop_request_inner(
-                    &context,
-                    &messenger,
-                    &core_node_node,
-                    &core_instance_id,
-                    Arc::clone(&node_stack),
-                    &relationships,
-                )
-                .await?
-                .encode()
-                .map_err(Into::into)
-            },
-            &ownership.stack.cancellation(),
-            crate::services::node::gate::reset_drain_budget(node_stack.shutdown_grace()),
-            || {
-                NodeStopResponse::failure("node stop cancelled by stack reset")
-                    .encode()
-                    .map_err(Into::into)
-            },
-        )
-        .await,
+                &messenger,
+                &core_node_node,
+                &core_instance_id,
+                Arc::clone(&node_stack),
+                &relationships,
+            )
+            .await?;
+            into_service_answer(response.encode().map_err(Into::into))
+        },
+        &ownership.stack.cancellation(),
+        crate::services::node::gate::reset_drain_budget(node_stack.shutdown_grace()),
+        || {
+            Err(failure(
+                PeppyFailureKind::PreconditionFailed,
+                "node stop cancelled by stack reset",
+            ))
+        },
     )
+    .await
 }
 
+/// Stops the instance the request names, or gives the failure of the stop:
+/// `rejected` for an instance id that is not a name, an instance the stack
+/// does not hold or the core node's own instance, `precondition_failed` for
+/// an instance in its first start or already being stopped.
 async fn handle_node_stop_request_inner(
     context: &ServiceRequestContext,
     messenger: &MessengerHandle,
@@ -124,11 +117,12 @@ async fn handle_node_stop_request_inner(
     core_instance_id: &str,
     node_stack: Arc<NodeStack>,
     relationships: &RelationshipCoordinators,
-) -> Result<NodeStopResponse> {
+) -> std::result::Result<NodeStopResponse, Failure> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload_bytes();
 
-    let request = NodeStopRequest::decode(payload.as_ref())?;
+    let request = NodeStopRequest::decode(payload.as_ref())
+        .map_err(|error| failure(PeppyFailureKind::Rejected, error))?;
 
     debug!(
         "Received `node_stop` request from {sender_instance_id}, instance_id={}",
@@ -139,17 +133,17 @@ async fn handle_node_stop_request_inner(
     let instance_id = match Name::new(&request.instance_id) {
         Ok(name) => name,
         Err(e) => {
-            return Ok(NodeStopResponse::failure(format!(
-                "Invalid instance_id: {}",
-                e
-            )));
+            return Err(failure(
+                PeppyFailureKind::Rejected,
+                format!("Invalid instance_id: {}", e),
+            ));
         }
     };
 
     let (kept, response) = loop {
         match act_on_slot(&node_stack, &instance_id).await {
-            SlotStep::Refused(refusal) => return Ok(refusal.response(&instance_id)),
-            SlotStep::Cleared(kept) => break (Some(kept), NodeStopResponse::success()),
+            SlotStep::Refused(refusal) => return Err(refusal.failure(&instance_id)),
+            SlotStep::Cleared(kept) => break (Some(kept), NodeStopResponse::graceful()),
             SlotStep::Stop { pid, entity } => {
                 break stop_process(
                     messenger,
@@ -222,8 +216,8 @@ async fn stop_process(
     // Tell the caller whether the node exited gracefully or had to be
     // force-killed, so the CLI can warn the user about the latter.
     let response = match outcome {
-        StopOutcome::ForceKilled => NodeStopResponse::success_force_killed(),
-        StopOutcome::Graceful | StopOutcome::NoProcess => NodeStopResponse::success(),
+        StopOutcome::ForceKilled => NodeStopResponse::forced(),
+        StopOutcome::Graceful | StopOutcome::NoProcess => NodeStopResponse::graceful(),
     };
     (kept, response)
 }
@@ -366,19 +360,26 @@ enum Refusal {
 }
 
 impl Refusal {
-    /// The answer that refuses the stop of `instance_id`.
-    fn response(self, instance_id: &Name) -> NodeStopResponse {
-        NodeStopResponse::failure(match self {
-            Refusal::NotFound => format!("Node instance '{instance_id}' not found in node stack"),
-            Refusal::CoreNode => "Cannot stop the core node".to_owned(),
-            Refusal::FirstStart => format!(
-                "Node instance '{instance_id}' is in Starting state; retry after the start \
-                 completes"
+    /// The failure that refuses the stop of `instance_id`.
+    fn failure(self, instance_id: &Name) -> Failure {
+        match self {
+            Refusal::NotFound => failure(
+                PeppyFailureKind::Rejected,
+                format!("Node instance '{instance_id}' not found in node stack"),
             ),
-            Refusal::AlreadyBeingStopped => {
-                format!("Node instance '{instance_id}' is already being stopped")
-            }
-        })
+            Refusal::CoreNode => failure(PeppyFailureKind::Rejected, "Cannot stop the core node"),
+            Refusal::FirstStart => failure(
+                PeppyFailureKind::PreconditionFailed,
+                format!(
+                    "Node instance '{instance_id}' is in Starting state; retry after the start \
+                     completes"
+                ),
+            ),
+            Refusal::AlreadyBeingStopped => failure(
+                PeppyFailureKind::PreconditionFailed,
+                format!("Node instance '{instance_id}' is already being stopped"),
+            ),
+        }
     }
 }
 
@@ -1179,22 +1180,29 @@ mod tests {
         let cases = [
             (
                 Refusal::FirstStart,
+                PeppyFailureKind::PreconditionFailed,
                 "Node instance 'arm_inst' is in Starting state; retry after the start completes",
             ),
             (
                 Refusal::AlreadyBeingStopped,
+                PeppyFailureKind::PreconditionFailed,
                 "Node instance 'arm_inst' is already being stopped",
             ),
             (
                 Refusal::NotFound,
+                PeppyFailureKind::Rejected,
                 "Node instance 'arm_inst' not found in node stack",
             ),
-            (Refusal::CoreNode, "Cannot stop the core node"),
+            (
+                Refusal::CoreNode,
+                PeppyFailureKind::Rejected,
+                "Cannot stop the core node",
+            ),
         ];
-        for (refusal, text) in cases {
-            let response = refusal.response(&id);
-            assert!(!response.success);
-            assert_eq!(response.error_message.as_deref(), Some(text));
+        for (refusal, kind, text) in cases {
+            let failure = refusal.failure(&id);
+            assert_eq!(failure.kind().as_str(), kind.name());
+            assert_eq!(failure.message(), text);
         }
     }
 

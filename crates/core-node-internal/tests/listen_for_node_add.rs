@@ -1,24 +1,29 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeAddSource, TEST_GIT_HASH, add_and_build_forking_node, build_staged_node,
-    commit_path, create_tar_zst_from_dir, entity_artifact_path, is_process_running,
-    send_node_add_and_wait, send_node_add_and_wait_with_force, spawn_real_stuck_instance,
+    AbortOnDrop, FeedbackDrainOutcome, GoalEnd, NodeAddSource, StartedCoreNode, TEST_GIT_HASH,
+    add_and_build_forking_node, assert_failure, build_staged_node, commit_path,
+    create_tar_zst_from_dir, entity_artifact_path, is_process_running, send_node_add_and_wait,
+    send_node_add_and_wait_with_force, spawn_real_stuck_instance,
     start_core_node_with_mock_messenger, wait_until_action_completes, wait_until_process_exits,
     wait_until_service_reachable, write_peppy_json5,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::failure_kind::PeppyFailureKind;
 use config_test_support as test_helpers;
+use core_node_api::DaemonFailureKind;
 use core_node_api::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeRemoveRequest,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeRemoveRequest,
 };
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
 use gix_url::Url as GitUrl;
 use std::io::Write;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::TempDir;
+use tokio::sync::mpsc::UnboundedSender;
 use {
     httptest::Expectation, httptest::Server, httptest::matchers::request,
     httptest::responders::status_code,
@@ -26,6 +31,73 @@ use {
 
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The `node_add` goal of the local directory `source_dir`. The directory
+/// records the test git hash, as `peppy node sync` records it, so the add
+/// verifies the hash and runs no sync of its own.
+fn fs_add_goal(source_dir: &Path) -> NodeAddGoal {
+    let peppy_dir = source_dir.join(PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
+    std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
+    NodeAddGoal::new(source_dir, TEST_GIT_HASH, RESULT_TIMEOUT.as_secs())
+}
+
+/// An add that [`send_logged_node_add`] sent: the log path that the goal
+/// response of the accepted goal names, and how the add ended.
+struct LoggedAdd {
+    log_path: PathBuf,
+    end: GoalEnd<NodeAddResult>,
+}
+
+/// Sends `goal`, forwards each feedback line of the add to `feedback_tx`,
+/// and returns the log path of the accepted goal with how the add ended.
+/// Panics when the daemon refuses the goal.
+async fn send_logged_node_add(
+    started: &StartedCoreNode,
+    goal: &NodeAddGoal,
+    feedback_tx: &UnboundedSender<NodeAddFeedback>,
+) -> LoggedAdd {
+    let mut action_handle = common::send_daemon_goal(
+        &started.caller_handle,
+        &started.core_node_name,
+        goal,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect("the node_add goal should be sent");
+    let goal_response =
+        common::goal_answer(&action_handle, NodeAddGoalResponse::decode, "goal response")
+            .expect("the goal answer should decode")
+            .unwrap_or_else(|refusal| panic!("the daemon refused the node_add goal: {refusal}"));
+    let deadline = tokio::time::Instant::now() + RESULT_TIMEOUT;
+    let drained = common::drain_feedback(
+        &mut action_handle,
+        |payload| NodeAddFeedback::decode(payload).expect("failed to decode NodeAddFeedback"),
+        |feedback| {
+            let _ = feedback_tx.send(feedback);
+            ControlFlow::Continue(())
+        },
+        deadline,
+    )
+    .await;
+    assert!(
+        !matches!(drained, FeedbackDrainOutcome::TimedOut),
+        "the add did not end within {RESULT_TIMEOUT:?}"
+    );
+    let end = common::fetch_end(
+        &started.caller_handle,
+        &action_handle,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+        NodeAddResult::decode,
+        "result",
+    )
+    .await
+    .expect("the end of the add should be fetched");
+    LoggedAdd {
+        log_path: goal_response.log_path,
+        end,
+    }
+}
 
 /// Returns the number of tracked instances for the entity at `(name, tag)`.
 fn entity_instance_count(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> usize {

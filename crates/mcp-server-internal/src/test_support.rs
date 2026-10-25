@@ -58,7 +58,7 @@ impl ScriptedSurface {
 }
 
 impl TaskSurface for ScriptedSurface {
-    fn report_feedback(&self, message: String) {
+    async fn report_feedback(&self, message: String) {
         self.feedback.send_modify(|messages| messages.push(message));
     }
 

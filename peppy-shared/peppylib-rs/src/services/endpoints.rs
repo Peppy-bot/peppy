@@ -9,10 +9,13 @@
 use tracing::debug;
 
 use crate::encoding::endpoints::{NodeEndpointsRequest, NodeEndpointsResponse};
-use crate::messaging::{NODE_ENDPOINTS_SERVICE, SenderTarget, ServiceRequestContext};
+use crate::messaging::{
+    Failure, NODE_ENDPOINTS_SERVICE, SenderTarget, ServiceAnswer, ServiceRequestContext,
+};
 use crate::runtime::{AnnouncedEndpoint, TaskHandle};
 use crate::types::Payload;
-use crate::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use crate::{MessengerHandle, PeppyResult, ServiceMessenger};
+use config::failure_kind::PeppyFailureKind;
 
 /// Answers every `node_endpoints` request with `endpoints`, the sealed set
 /// of the instance at `(core_node, instance_id)`.
@@ -44,18 +47,15 @@ pub async fn listen_for_node_endpoints(
     Ok(handle)
 }
 
-fn handle_endpoints_request(
-    context: ServiceRequestContext,
-    response: Payload,
-) -> PeppyResult<Payload> {
+fn handle_endpoints_request(context: ServiceRequestContext, response: Payload) -> ServiceAnswer {
     let sender_instance_id = context.message().instance_id().to_string();
     // The request carries nothing; decoding it still catches wire-schema skew
     // instead of answering a request that was never one.
     NodeEndpointsRequest::decode(context.message().payload_bytes().as_ref()).map_err(|err| {
-        PeppyError::InvalidServiceRequest {
-            identifier: sender_instance_id.clone(),
-            reason: format!("invalid node_endpoints request: {err}"),
-        }
+        Failure::new(
+            PeppyFailureKind::Rejected,
+            format!("invalid node_endpoints request from {sender_instance_id}: {err}"),
+        )
     })?;
     debug!("Received `node_endpoints` request from {sender_instance_id}");
     Ok(response)

@@ -8,7 +8,7 @@ use core_node_api::encoding::{
     NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, ObservationTarget,
     ObservationTargets, PairTarget, StackListRequest,
 };
-use core_node_api::{ActionId, InstanceState, NodeStage};
+use core_node_api::{InstanceState, NodeStage};
 use daemon_config::launcher::{
     BindingValidationItem, CopyMembership, DeploymentInstance, LinkValue, PairingValidationItem,
     Placements, SETS_READ_WHOLE, Selection, WALL_CLOCK, split_link_target, validate_link_plan,
@@ -88,6 +88,7 @@ fn remaining_timeouts(
     Ok(TimeoutConfig {
         idle_secs: timeouts.idle_secs,
         max_secs,
+        flags: timeouts.flags,
     })
 }
 
@@ -1103,12 +1104,7 @@ pub async fn run_instance_async(
         NodeRunGoalResponse,
         NodeRunFeedback,
         NodeRunResult,
-    >(
-        messenger_handle,
-        &mut action_handle,
-        timeouts,
-        ActionId::NodeRun.name(),
-    )
+    >(messenger_handle, &mut action_handle, timeouts, "Node run")
     .await?;
 
     if let Some(pid) = start_result.pid {
