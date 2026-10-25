@@ -12,8 +12,8 @@ mod common;
 use common::{
     CALLER_INSTANCE_ID, StartedCoreNode, TEST_NODE_TAG, WAIT, add_and_build_process_node,
     datastore_get, datastore_list, datastore_remove, datastore_store, datastore_store_exclusive_as,
-    fast_health_monitor, install_kill_on_shutdown_listener, mocks, name, never, on_failure,
-    poll_core_node_as, poll_until, run, spawn_real_stuck_instance,
+    fast_health_monitor, install_kill_on_shutdown_listener, mocks, name, never, node_stop_timeout,
+    on_failure, poll_core_node_as, poll_until, run, spawn_real_stuck_instance,
     start_core_node_with_mock_messenger, start_core_node_with_supervision, wait_for_state,
 };
 use config::node::RestartRequest;
@@ -26,11 +26,7 @@ use core_node_api::encoding::{
 };
 use core_node_api::{InstanceState, stop_command};
 use peppylib::core_node::transport::poll_node_stop;
-use std::time::Duration;
 use tempfile::TempDir;
-
-/// The timeout of a request the daemon answers without long work.
-const REQUEST: Duration = Duration::from_secs(5);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn store_then_get_returns_text_value() {
@@ -265,7 +261,7 @@ async fn one_running_instance_owns_a_key_and_another_cannot_write_it() {
     let store =
         DatastoreStoreRequest::new(DRIVER_KEY, b"other".to_vec(), "text/plain").expect("valid key");
     assert_refused_naming(
-        poll_core_node_as(&started, other, &store, REQUEST)
+        poll_core_node_as(&started, other, &store, WAIT)
             .await
             .expect_err("another instance owns the key"),
         &started,
@@ -273,7 +269,7 @@ async fn one_running_instance_owns_a_key_and_another_cannot_write_it() {
     );
     let remove = DatastoreRemoveRequest::new(DRIVER_KEY).expect("valid key");
     assert_refused_naming(
-        poll_core_node_as(&started, other, &remove, REQUEST)
+        poll_core_node_as(&started, other, &remove, WAIT)
             .await
             .expect_err("another instance owns the key"),
         &started,
@@ -283,7 +279,7 @@ async fn one_running_instance_owns_a_key_and_another_cannot_write_it() {
     assert_eq!(stored.last_modified_by, owner);
     assert_eq!(stored.value, owner.as_bytes());
 
-    let removed = poll_core_node_as(&started, owner, &remove, REQUEST)
+    let removed = poll_core_node_as(&started, owner, &remove, WAIT)
         .await
         .expect("the owner removes its key");
     assert!(removed.removed);
@@ -304,7 +300,7 @@ async fn stopping_the_owner_removes_its_owned_key_and_keeps_its_unowned_keys() {
     );
     let calibration =
         DatastoreStoreRequest::new("calibration", b"c".to_vec(), "text/plain").expect("key");
-    poll_core_node_as(&started, OWNER, &calibration, REQUEST)
+    poll_core_node_as(&started, OWNER, &calibration, WAIT)
         .await
         .expect("the owner stores a key no instance owns");
 
@@ -320,7 +316,7 @@ async fn stopping_the_owner_removes_its_owned_key_and_keeps_its_unowned_keys() {
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
         &started.core_node_name,
-        Duration::from_secs(30),
+        node_stop_timeout(&started),
     )
     .await
     .expect("node_stop completes");

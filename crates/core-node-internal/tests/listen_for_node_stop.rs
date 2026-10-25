@@ -1,11 +1,11 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, GOAL_TIMEOUT, NodeRunTestTimeouts, RESULT_TIMEOUT,
+    AbortOnDrop, CALLER_INSTANCE_ID, GOAL_TIMEOUT, RESULT_TIMEOUT, TIMEOUTS, WAIT,
     add_and_build_forking_node, answer_readiness, assert_failure, build_staged_node,
     create_test_node_with_name, error_reply, install_kill_on_shutdown_listener, is_process_running,
-    poll_until, send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
-    spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    node_stop_timeout, poll_until, send_node_add_and_wait, send_node_add_then_build,
+    send_node_run_and_wait, spawn_real_stuck_instance, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, wait_for_forked_grandchildren,
     wait_until_grandchildren_exit, wait_until_process_exits, write_peppy_json5,
 };
@@ -110,7 +110,6 @@ async fn listen_for_node_stop_success() {
         peppylib::messaging::SHUTDOWN_SERVICE,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
-        Duration::from_secs(5),
     )
     .await;
 
@@ -138,7 +137,7 @@ async fn listen_for_node_stop_success() {
         CALLER_INSTANCE_ID,
         common::core_node_target(&started_core_node.core_node_name),
         &started_core_node.core_node_name,
-        Duration::from_secs(10),
+        node_stop_timeout(&started_core_node),
     )
     .await
     .expect("node_stop request should complete");
@@ -258,7 +257,6 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
         peppylib::messaging::SHUTDOWN_SERVICE,
         &started_core_node.core_node_name,
         TARGET_INSTANCE_ID,
-        Duration::from_secs(5),
     )
     .await;
 
@@ -283,7 +281,7 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
         CALLER_INSTANCE_ID,
         common::core_node_target(&started_core_node.core_node_name),
         &started_core_node.core_node_name,
-        deadline + Duration::from_secs(5),
+        node_stop_timeout(&started_core_node),
     )
     .await
     .expect("node_stop request should complete");
@@ -324,7 +322,7 @@ async fn node_stop_of_the_core_nodes_instance_is_refused() {
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
         &started.core_node_name,
-        Duration::from_secs(5),
+        WAIT,
     )
     .await
     .expect_err("the daemon refuses the stop");
@@ -357,7 +355,7 @@ async fn listen_for_node_stop_fails_when_instance_id_not_found() {
         CALLER_INSTANCE_ID,
         common::core_node_target(&started_core_node.core_node_name),
         &started_core_node.core_node_name,
-        Duration::from_secs(5),
+        WAIT,
     )
     .await
     .expect_err("node_stop should fail");
@@ -416,10 +414,8 @@ async fn node_stop_force_kills_whole_process_group() {
     }
 
     // System under test: cooperative phase times out (stuck node), then the
-    // force phase SIGKILLs the whole group. The timeout must exceed the
-    // handler's full force-kill deadline (grace + runtime teardown) plus the
-    // reap budget and messaging round-trips.
-    let stop_timeout = force_kill_deadline(node_stack.shutdown_grace()) + Duration::from_secs(8);
+    // force phase SIGKILLs the whole group, within the bound of the daemon on
+    // a stop.
     let response = poll_node_stop(
         &NodeStopRequest::new(INSTANCE_ID),
         &started.caller_handle,
@@ -427,7 +423,7 @@ async fn node_stop_force_kills_whole_process_group() {
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
         &started.core_node_name,
-        stop_timeout,
+        node_stop_timeout(&started),
     )
     .await
     .expect("node_stop request should complete");
@@ -445,7 +441,7 @@ async fn node_stop_force_kills_whole_process_group() {
     // success may be reported a beat before the kernel finishes the teardown.
     wait_until_process_exits(
         node_pid,
-        Duration::from_secs(5),
+        WAIT,
         &format!("node process {node_pid} should be gone after node_stop"),
     )
     .await;
@@ -493,10 +489,6 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
         &started.caller_handle,
         &started.core_node_name,
         node_dir.path(),
-        Duration::from_secs(30),
-        // Longer timeout to account for copying the test node folder, which
-        // includes build artifacts.
-        Duration::from_secs(120),
     )
     .await
     .expect("node_add should complete");
@@ -511,10 +503,7 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(30),
-            result: Duration::from_secs(60),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -531,9 +520,6 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
 
     // System under test: the real stop handler sends SHUTDOWN_SERVICE, the
     // node's NodeBuilder runtime cancels its cancellation token and exits.
-    // The timeout must exceed the handler's full force-kill deadline (grace +
-    // runtime teardown) plus the reap budget and messaging round-trips.
-    let stop_timeout = force_kill_deadline(node_stack.shutdown_grace()) + Duration::from_secs(8);
     let response = poll_node_stop(
         &NodeStopRequest::new(TARGET_INSTANCE_ID),
         &started.caller_handle,
@@ -541,7 +527,7 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
         &started.core_node_name,
-        stop_timeout,
+        node_stop_timeout(&started),
     )
     .await
     .expect("node_stop request should complete");
@@ -557,7 +543,7 @@ async fn node_stop_reports_graceful_for_real_node_builder_node() {
     // reap is best-effort under a bounded timeout.
     wait_until_process_exits(
         pid,
-        Duration::from_secs(5),
+        WAIT,
         &format!("node process {pid} should be gone after node_stop"),
     )
     .await;
@@ -663,7 +649,6 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
             ServiceId::NodeStop.name(),
             core_node,
             listener_instance_id,
-            Duration::from_secs(5),
         )
         .await;
     }
@@ -678,7 +663,7 @@ async fn node_stop_scoped_to_bound_core_node_ignores_foreign_listener() {
             CALLER_INSTANCE_ID,
             common::test_node_target(NODE_NAME),
             LOCAL_CORE_NODE,
-            Duration::from_secs(5),
+            WAIT,
         )
         .await
         .unwrap_or_else(|error| {
@@ -729,8 +714,6 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -747,10 +730,7 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(10),
-            result: Duration::from_secs(30),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -776,23 +756,18 @@ async fn node_stop_with_live_exit_watcher_removes_without_recording_a_crash() {
         CALLER_INSTANCE_ID,
         common::core_node_target(&started.core_node_name),
         &started.core_node_name,
-        Duration::from_secs(30),
+        node_stop_timeout(&started),
     )
     .await
     .expect("node_stop request should complete");
 
-    wait_until_process_exits(
-        pid,
-        Duration::from_secs(5),
-        "node process should be gone after stop",
-    )
-    .await;
+    wait_until_process_exits(pid, WAIT, "node process should be gone after stop").await;
 
     // The instance is removed from EVERY state, not left as a terminal record.
     // (The Running-only `find_by_instance_id` would also return None for a
     // lingering `Failed`, so this must check across all states to be meaningful.)
     poll_until(
-        Duration::from_secs(5),
+        WAIT,
         "instance should be fully removed from the stack after stop, not lingering as terminal",
         || {
             started

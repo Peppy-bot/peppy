@@ -72,6 +72,13 @@ pub struct NodeRunTestTimeouts {
     pub result: Duration,
 }
 
+/// The goal and result bounds of a test's `node_run`: [`GOAL_TIMEOUT`] and
+/// [`RESULT_TIMEOUT`].
+pub const TIMEOUTS: NodeRunTestTimeouts = NodeRunTestTimeouts {
+    goal: GOAL_TIMEOUT,
+    result: RESULT_TIMEOUT,
+};
+
 /// How a `node_run` goal that a test sends ends, with the goal response of
 /// an accepted goal.
 pub struct NodeRunTestResponse {
@@ -951,20 +958,19 @@ pub async fn build_staged_node(started: &StartedCoreNode, node_name: &str, node_
 
 /// Convenience helper for tests that need a node to be both added AND built
 /// (e.g. start/info/stop tests). Performs `send_node_add_and_wait` followed by
-/// `send_node_build_and_wait` and returns the build result.
+/// `send_node_build_and_wait` and returns the build result. Each goal waits
+/// [`GOAL_TIMEOUT`] for its answer and [`RESULT_TIMEOUT`] for its end.
 pub async fn send_node_add_then_build<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
-    goal_timeout: Duration,
-    result_timeout: Duration,
 ) -> Result<NodeBuildResult, String> {
     let add = send_node_add_and_wait_internal(
         messenger,
         core_node_name,
         source,
-        goal_timeout,
-        result_timeout,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
         false,
     )
@@ -981,8 +987,8 @@ pub async fn send_node_add_then_build<'a>(
         core_node_name,
         &node_name,
         &node_tag,
-        goal_timeout,
-        result_timeout,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         Vec::new(),
         None,
     )

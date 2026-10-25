@@ -20,7 +20,8 @@ use common::{
     TEST_NODE_TAG, TIMEOUTS, WAIT, always, assert_failure, mocks, name, never, node_service_mock,
     on_failure, peer_daemon_service, poll_until, poll_until_explained, run, run_plan,
     run_plan_with_env, send_node_add_and_wait_with_force, send_node_add_then_build, stack_log,
-    start_core_node_on_manual_time, state_of, wait_for_state, write_peppy_json5,
+    start_core_node_on_manual_time, state_of, wait_for_state, wait_for_supervision_end,
+    write_peppy_json5,
 };
 use config::failure_kind::PeppyFailureKind;
 use config::node::{Cardinality, RestartDeclaration, RestartOrigin, RestartPolicy, RestartRequest};
@@ -296,22 +297,6 @@ fn deadline_of(grace_secs: u64) -> Duration {
     core_node::force_kill_deadline(Duration::from_secs(grace_secs))
 }
 
-/// Waits until no background task of `instance_id` is live: its exit
-/// watcher, the wait of its restart and its health monitor have ended, so
-/// nothing but a request acts on the instance any more.
-async fn wait_for_supervision_end(started: &StartedCoreNode, instance_id: &str) {
-    let tasks = started.node_stack.instance_tasks();
-    tokio::time::timeout(WAIT, tasks.ended(&name(instance_id)))
-        .await
-        .unwrap_or_else(|_| {
-            panic!(
-                "the supervision of `{instance_id}` ends, {} tasks live; stack log:\n{}",
-                tasks.live(&name(instance_id)),
-                stack_log(started)
-            )
-        });
-}
-
 /// What lets the waits of a mock go on: each wait takes one release, which
 /// the test gives.
 #[derive(Clone)]
@@ -391,15 +376,9 @@ async fn add_node_with_manifest(started: &StartedCoreNode, peppy_json5: &str) ->
 
 /// Adds and builds the node whose manifest is in `dir`.
 async fn add_and_build(started: &StartedCoreNode, dir: &std::path::Path) {
-    send_node_add_then_build(
-        &started.caller_handle,
-        &started.core_node_name,
-        dir,
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-    )
-    .await
-    .expect("node_add and node_build complete");
+    send_node_add_then_build(&started.caller_handle, &started.core_node_name, dir)
+        .await
+        .expect("node_add and node_build complete");
 }
 
 /// The `run_cmd` of a node whose process runs the shell `body`.
@@ -457,7 +436,7 @@ fn nth_run_log_path(started: &StartedCoreNode, instance_id: &str, n: usize) -> P
 
 /// The run logs `peppy node info` lists for the node `name`.
 async fn run_log_paths(started: &StartedCoreNode, name: &str) -> Vec<PathBuf> {
-    common::poll_node_info(started, &NodeInfoRequest::new(name, TEST_NODE_TAG), WAIT)
+    common::poll_node_info(started, &NodeInfoRequest::new(name, TEST_NODE_TAG))
         .await
         .run_log_paths
 }

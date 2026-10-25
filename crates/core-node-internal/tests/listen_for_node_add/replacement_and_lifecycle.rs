@@ -138,7 +138,6 @@ async fn serve_gated_shutdown(
         SHUTDOWN_SERVICE,
         &started.core_node_name,
         instance_id,
-        Duration::from_secs(5),
     )
     .await;
     GatedShutdownResponder {
@@ -864,7 +863,6 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         SHUTDOWN_SERVICE,
         &started_core_node.core_node_name,
         INSTANCE_ID,
-        Duration::from_secs(5),
     )
     .await;
 
@@ -1036,7 +1034,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_force_kills_stu
     // best-effort, so the OS may finish teardown a beat after the add returns.
     wait_until_process_exits(
         stuck_pid,
-        Duration::from_secs(5),
+        WAIT,
         &format!("stuck instance process {stuck_pid} should be force-killed, not orphaned"),
     )
     .await;
@@ -1136,7 +1134,7 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
     for pid in [pid_a, pid_b] {
         wait_until_process_exits(
             pid,
-            Duration::from_secs(5),
+            WAIT,
             &format!("stuck instance process {pid} should be force-killed, not orphaned"),
         )
         .await;

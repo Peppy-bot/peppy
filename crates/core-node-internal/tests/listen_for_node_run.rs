@@ -1,21 +1,22 @@
 mod common;
 
 use common::{
-    AbortOnDrop, GoalEnd, NodeRunTestResponse, NodeRunTestTimeouts, acquire_container_test_guard,
-    answer_health_probes, answer_readiness, answer_ready_probe, assert_failure,
-    create_test_node_with_name, fast_health_monitor, never, path_env_with_dir_first, poll_until,
-    send_node_add_then_build, send_node_run_and_wait, send_node_run_and_wait_with_env,
-    start_core_node_with_health_monitor, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger, wait_until_action_completes, wait_until_process_exits,
+    AbortOnDrop, GOAL_TIMEOUT, GoalEnd, NodeRunTestResponse, RESULT_TIMEOUT, TIMEOUTS, WAIT,
+    acquire_container_test_guard, answer_health_probes, answer_readiness, answer_ready_probe,
+    assert_failure, create_test_node_with_name, fast_health_monitor, never,
+    path_env_with_dir_first, poll_until, send_node_add_then_build, send_node_run_and_wait,
+    send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
+    start_core_node_with_mock_messenger, start_core_node_with_real_messenger, wait_for_state,
+    wait_for_supervision_end, wait_until_action_completes, wait_until_process_exits,
     write_executable_script, write_peppy_json5,
 };
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name as NodeName;
+use core_node_api::InstanceState;
 use core_node_api::encoding::{NodeRunFeedback, NodeRunResult};
 use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use peppylib::messaging::MessengerHandle;
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::TempDir;
 
 /// Creates a temp directory with a peppy.json5 file
@@ -67,10 +68,6 @@ async fn listen_for_node_run_success() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         node_dir.path(),
-        Duration::from_secs(30),
-        // Longer timeout to account for build_cmd execution and copying the test node folder,
-        // which may include build artifacts.
-        Duration::from_secs(120),
     )
     .await
     .expect("node_add should succeed");
@@ -84,10 +81,7 @@ async fn listen_for_node_run_success() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(30),
-            result: Duration::from_secs(60),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -148,8 +142,6 @@ async fn listen_for_node_run_timeout() {
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -176,10 +168,7 @@ async fn listen_for_node_run_timeout() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(5),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -226,10 +215,7 @@ async fn listen_for_node_run_not_found() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(5),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -255,8 +241,9 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     // The node prints both markers immediately, then sleeps so it stays alive
-    // while the gated start waits on the delayed health responder. The sleep just
-    // needs to outlast that wait; teardown kills the node well before it elapses.
+    // while the gated start waits on the delayed health responder. The sleep
+    // outlasts the start on a host of any speed; the node stack kills the node
+    // when the test ends.
     let peppy_json5 = r#"{
             peppy_schema: "node/v1",
             manifest: {
@@ -265,7 +252,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
             },
             execution: {
                 language: "rust",
-                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 30"]
+                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 300"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -278,8 +265,6 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -312,10 +297,7 @@ async fn listen_for_node_run_streams_stdout_and_stderr() {
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         TARGET_INSTANCE_ID,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(30),
-        },
+        &TIMEOUTS,
         markers_present,
     )
     .await
@@ -353,7 +335,7 @@ async fn listen_for_node_run_writes_log_file() {
             },
             execution: {
                 language: "rust",
-                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
+                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 300"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -366,8 +348,6 @@ async fn listen_for_node_run_writes_log_file() {
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -382,10 +362,7 @@ async fn listen_for_node_run_writes_log_file() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(10),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -466,8 +443,6 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -482,10 +457,7 @@ async fn listen_for_node_run_reports_all_missing_parameters() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(5),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -561,8 +533,6 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -594,10 +564,7 @@ async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided(
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(5),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -657,7 +624,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             },
             execution: {
                 language: "rust",
-                run_cmd: ["sleep", "30"]
+                run_cmd: ["sleep", "300"]
             }
         }"#
     .replace("{FIRST_NODE_NAME}", FIRST_NODE_NAME)
@@ -668,8 +635,6 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         &started.caller_handle,
         &started.core_node_name,
         first_source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("first node_add should succeed");
@@ -684,7 +649,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             },
             execution: {
                 language: "rust",
-                run_cmd: ["sleep", "30"]
+                run_cmd: ["sleep", "300"]
             }
         }"#
     .replace("{SECOND_NODE_NAME}", SECOND_NODE_NAME)
@@ -695,8 +660,6 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         &started.caller_handle,
         &started.core_node_name,
         second_source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("second node_add should succeed");
@@ -706,10 +669,6 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     responders.extend(answer_readiness(&started, SECOND_NODE_NAME, SECOND_INSTANCE_ID).await);
 
     // Send first goal but DON'T wait for result (simulating abandoned action)
-    let timeouts = common::NodeRunTestTimeouts {
-        goal: Duration::from_secs(5),
-        result: Duration::from_secs(60),
-    };
     let (mut first_action_handle, _) = common::send_node_run_goal(
         &started.caller_handle,
         &started.core_node_name,
@@ -717,9 +676,9 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
             common::default_instance_plan(FIRST_INSTANCE_ID),
             FIRST_NODE_NAME,
             FIRST_NODE_TAG,
-            &timeouts,
+            &TIMEOUTS,
         ),
-        timeouts.goal,
+        TIMEOUTS.goal,
     )
     .await
     .expect("first goal should be accepted");
@@ -727,7 +686,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     // Settle the first action without ever fetching its result, the whole
     // point of this test: the daemon closes the feedback stream only after
     // freeing the action slot, so the second goal cannot be refused.
-    wait_until_action_completes(&mut first_action_handle, Duration::from_secs(10)).await;
+    wait_until_action_completes(&mut first_action_handle, RESULT_TIMEOUT).await;
 
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result
@@ -739,10 +698,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         second_instance_plan,
         SECOND_NODE_NAME,
         SECOND_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(10),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -783,7 +739,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
             },
             execution: {
                 language: "rust",
-                run_cmd: ["printout", "3"]
+                run_cmd: ["printout", "300"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -794,8 +750,6 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(30),
-        Duration::from_secs(120),
     )
     .await
     .expect("node_add should succeed");
@@ -811,10 +765,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
         instance_plan.clone(),
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(10),
-            result: Duration::from_secs(10),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -833,7 +784,7 @@ async fn listen_for_node_run_uses_env_overrides_for_path() {
         bin_dir.path(),
         "printout",
         "#!/bin/sh
-sleep \"${1:-3}\"
+sleep \"$1\"
 ",
     );
     let env_vars = vec![path_env_with_dir_first(bin_dir.path())];
@@ -845,10 +796,7 @@ sleep \"${1:-3}\"
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(10),
-            result: Duration::from_secs(10),
-        },
+        &TIMEOUTS,
         None,
         env_vars,
     )
@@ -879,7 +827,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
                 run_cmd: [
                     "sh",
                     "-c",
-                    "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\" && sleep 10"
+                    "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\" && sleep 300"
                 ]
             }
         }"#
@@ -891,8 +839,6 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(30),
-        Duration::from_secs(120),
     )
     .await
     .expect("node_add should succeed");
@@ -907,10 +853,7 @@ async fn listen_for_node_run_injects_runtime_env_vars() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(10),
-            result: Duration::from_secs(10),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -984,8 +927,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(30),
-        Duration::from_secs(120),
     )
     .await
     .expect("node_add should succeed");
@@ -1004,10 +945,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(30),
-            result: Duration::from_secs(60),
-        },
+        &TIMEOUTS,
         None,
         env_vars,
     )
@@ -1146,8 +1084,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(30),
-        Duration::from_secs(120),
     )
     .await
     .expect("node_add should succeed");
@@ -1164,10 +1100,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(30),
-            result: Duration::from_secs(60),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -1266,8 +1199,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(30),
-        Duration::from_secs(120),
     )
     .await
     .expect("node_add should succeed");
@@ -1283,10 +1214,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(30),
-            result: Duration::from_secs(60),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -1349,8 +1277,6 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -1363,10 +1289,7 @@ async fn listen_for_node_run_logs_error_on_spawn_failure() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(10),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -1446,8 +1369,6 @@ async fn listen_for_node_run_logs_why_a_node_that_exits_before_ready_never_start
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -1458,10 +1379,7 @@ async fn listen_for_node_run_logs_why_a_node_that_exits_before_ready_never_start
         common::default_instance_plan(TARGET_INSTANCE_ID),
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(20),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -1516,8 +1434,6 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -1534,10 +1450,7 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(10),
-            result: Duration::from_secs(30),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -1567,11 +1480,12 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     drop(health_task);
 
     // Wait for the health monitor to detect the failure and mark the instance
-    // unhealthy. With interval=200ms, timeout=100ms and a threshold of three
-    // misses the flag flips within ~1s; give it 5 seconds for CI safety. The
-    // instance must stay in the stack the whole time, only its health flag flips.
+    // unhealthy. No health service answers, so each probe fails at its 100 ms
+    // bound, and the third miss in a row flips the flag on a host of any speed.
+    // The instance must stay in the stack the whole time, only its health flag
+    // flips.
     poll_until(
-        Duration::from_secs(5),
+        WAIT,
         "instance was not marked unhealthy within timeout",
         || {
             let instance = started
@@ -1601,7 +1515,7 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
          unhealthy: 3 consecutive health checks failed, last: "
     );
     poll_until(
-        Duration::from_secs(5),
+        WAIT,
         "stack log should record three consecutive failed health checks for the unhealthy instance",
         || {
             let content = std::fs::read_to_string(&stack_log_path).ok()?;
@@ -1654,8 +1568,6 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -1666,22 +1578,18 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     let instance_plan = common::default_instance_plan(TARGET_INSTANCE_ID);
 
     // Under `never` the exit watcher leaves the crashed instance `failed`.
-    let timeouts = NodeRunTestTimeouts {
-        goal: Duration::from_secs(10),
-        result: Duration::from_secs(30),
-    };
     let goal = common::node_run_goal(
         instance_plan.clone(),
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &timeouts,
+        &TIMEOUTS,
     )
     .with_restart(never());
     let start_response = common::send_node_run_goal_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         goal,
-        &timeouts,
+        &TIMEOUTS,
     )
     .await
     .expect("node_run action should complete");
@@ -1706,23 +1614,8 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
         .status();
 
     // The exit watcher observes the exit and transitions the instance to a
-    // terminal `Failed` state. The watcher reaps the process within a few
-    // milliseconds; give it 5 seconds for CI safety.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if started.node_stack.instance_state(instance_id.as_str())
-            == Some(core_node_api::InstanceState::Failed)
-        {
-            break;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!(
-                "instance was not marked Failed within timeout (state: {:?})",
-                started.node_stack.instance_state(instance_id.as_str())
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // terminal `Failed` state.
+    wait_for_state(&started, TARGET_INSTANCE_ID, InstanceState::Failed).await;
 
     // A terminal instance is not `Running`, so the Running-only lookup stops
     // returning it, but it stays tracked, visible as `Failed`, rather than
@@ -1742,11 +1635,11 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
 
     // The stack log records the failure. The exit watcher appends it just after
     // it flips the instance to `Failed` (see spawn_exit_watcher), so the append
-    // lands a beat after the state the loop above polled for. Race the log write
+    // lands a beat after the state the test waited for above. Race the log write
     // as its own event instead of reading once and losing to it.
     let stack_log_path = started.peppy_dirs.stack_log_path();
     poll_until(
-        Duration::from_secs(5),
+        WAIT,
         "stack log should record the failed transition for the crashed instance",
         || {
             let content = std::fs::read_to_string(&stack_log_path).ok()?;
@@ -1799,8 +1692,6 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -1816,10 +1707,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(10),
-            result: Duration::from_secs(30),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -1845,16 +1733,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
         .status();
 
     // The exit watcher observes the clean exit and transitions to `Finished`.
-    poll_until(
-        Duration::from_secs(5),
-        "instance should be marked Finished after a clean self-exit",
-        || {
-            (started.node_stack.instance_state(instance_id.as_str())
-                == Some(core_node_api::InstanceState::Finished))
-            .then_some(())
-        },
-    )
-    .await;
+    wait_for_state(&started, TARGET_INSTANCE_ID, InstanceState::Finished).await;
 
     // Terminal, so the Running-only lookup stops returning it, but it stays
     // tracked as `Finished` rather than vanishing or reading as "running".
@@ -1870,7 +1749,7 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
     // after the state flip, so race the append as its own event.
     let stack_log_path = started.peppy_dirs.stack_log_path();
     poll_until(
-        Duration::from_secs(5),
+        WAIT,
         "stack log should record the finished transition for the clean exit",
         || {
             let content = std::fs::read_to_string(&stack_log_path).ok()?;
@@ -1889,11 +1768,12 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
 
     // The health monitor stops the moment the instance goes terminal, so a node
     // that simply finished never trails a "became unhealthy". Drop the health
-    // mock now (so any further probe would fail) and give the monitor several
-    // intervals: a monitor that kept probing a finished node would log unhealthy
-    // within ~300ms; it must not.
+    // mock now, so any further probe fails, and wait until no background task
+    // of the instance is live: a monitor that kept probing a finished node
+    // never ends, and a monitor that probed once more logged its miss before it
+    // ended.
     drop(health_task);
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    wait_for_supervision_end(&started, TARGET_INSTANCE_ID).await;
     let log_content =
         std::fs::read_to_string(&stack_log_path).expect("should be able to read stack log");
     assert!(
@@ -1942,8 +1822,6 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -1959,10 +1837,7 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
         instance_plan,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(10),
-            result: Duration::from_secs(30),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -1992,38 +1867,27 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
         .arg(pid.to_string())
         .status();
 
-    // Sync on the process actually being gone (a zombie counts as gone): by now
-    // the watcher's `child.wait()` would have fired had the token not pre-empted
-    // it, so any (wrong) terminal transition would already have happened.
+    // Sync on the process actually being gone (a zombie counts as gone), so an
+    // exit watcher that the token did not stop sees the exit.
     wait_until_process_exits(
         pid,
-        Duration::from_secs(5),
+        WAIT,
         "node process should be gone after the force-kill",
     )
     .await;
 
+    // Wait until no background task of the instance is live. An exit watcher
+    // that did not stop on the token marks the instance terminal before it
+    // ends, and a health monitor that did not stop on it logs its miss before
+    // it ends, or never ends.
+    wait_for_supervision_end(&started, TARGET_INSTANCE_ID).await;
+
     // The exit watcher bailed on the shutdown token, so the intentional kill is
     // never relabeled a crash: the instance stays `Running` (teardown owns its
-    // removal). Give the watcher a generous window to (wrongly) act.
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
-    loop {
-        let state = started.node_stack.instance_state(instance_id.as_str());
-        assert!(
-            !matches!(
-                state,
-                Some(core_node_api::InstanceState::Finished)
-                    | Some(core_node_api::InstanceState::Failed)
-            ),
-            "a node force-killed during shutdown must not be relabeled terminal, got {state:?}"
-        );
-        if tokio::time::Instant::now() >= deadline {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // removal).
     assert_eq!(
         started.node_stack.instance_state(instance_id.as_str()),
-        Some(core_node_api::InstanceState::Running),
+        Some(InstanceState::Running),
         "the instance stays Running during shutdown; teardown, not the watcher, owns removal"
     );
 
@@ -2046,7 +1910,7 @@ fn panel_node_json5(node_name: &str) -> String {
         manifest: { name: "{NODE_NAME}", tag: "v1" },
         execution: {
             language: "rust",
-            run_cmd: ["sleep", "30"],
+            run_cmd: ["sleep", "300"],
             endpoints: {
                 panel: { kind: "page", description: "The operator panel." },
             },
@@ -2080,8 +1944,6 @@ async fn add_panel_node_with_services(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -2116,10 +1978,7 @@ async fn run_panel_node(
         common::default_instance_plan(instance_id),
         node_name,
         "v1",
-        &NodeRunTestTimeouts {
-            goal: Duration::from_secs(5),
-            result: Duration::from_secs(15),
-        },
+        &TIMEOUTS,
         None,
     )
     .await
@@ -2240,8 +2099,6 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
     const TARGET_NODE_NAME: &str = "failing_exit_node";
     const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "failing_exit_instance";
-    /// Bounds a hang only: the outcome never depends on how fast the host is.
-    const HANG_GUARD: Duration = Duration::from_secs(60);
 
     let (started, mut exported) = common::start_core_node_with_log_export(None).await;
 
@@ -2265,8 +2122,6 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
     )
     .await
     .expect("node_add should succeed");
@@ -2275,22 +2130,18 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
 
     // Under `never` the exit leaves the instance `failed`, with no restart
     // behind the assertions.
-    let timeouts = NodeRunTestTimeouts {
-        goal: Duration::from_secs(10),
-        result: Duration::from_secs(30),
-    };
     let goal = common::node_run_goal(
         common::default_instance_plan(TARGET_INSTANCE_ID),
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &timeouts,
+        &TIMEOUTS,
     )
     .with_restart(never());
     let start_response = common::send_node_run_goal_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         goal,
-        &timeouts,
+        &TIMEOUTS,
     )
     .await
     .expect("node_run action should complete");
@@ -2299,7 +2150,7 @@ async fn a_failed_instance_exports_an_error_record_of_the_stack_log() {
     std::fs::write(&exit_flag, b"").expect("failed to create the exit flag");
 
     let mut records: Vec<LogRecord> = Vec::new();
-    let failed = tokio::time::timeout(HANG_GUARD, async {
+    let failed = tokio::time::timeout(WAIT, async {
         loop {
             let queued = exported.recv().await.expect("the exporter is alive");
             let record = queued.record().clone();
@@ -2365,10 +2216,6 @@ async fn a_start_that_fails_before_its_ready_signal_leaves_no_process_of_its_gro
     let _source = common::add_and_build_forking_node(&started, NODE_NAME, NODE_TAG).await;
 
     // Nothing answers the ready signal of the instance.
-    let timeouts = common::NodeRunTestTimeouts {
-        goal: Duration::from_secs(10),
-        result: Duration::from_secs(60),
-    };
     let (mut goal, _accepted) = common::send_node_run_goal(
         &started.caller_handle,
         &started.core_node_name,
@@ -2376,42 +2223,34 @@ async fn a_start_that_fails_before_its_ready_signal_leaves_no_process_of_its_gro
             common::default_instance_plan(INSTANCE_ID),
             NODE_NAME,
             NODE_TAG,
-            &timeouts,
+            &TIMEOUTS,
         ),
-        timeouts.goal,
+        TIMEOUTS.goal,
     )
     .await
     .expect("the daemon accepts the start");
 
-    let pid = poll_until(
-        Duration::from_secs(10),
-        "the daemon should spawn the instance",
-        || {
-            started
-                .node_stack
-                .find(NODE_NAME, NODE_TAG)
-                .and_then(|handle| handle.read().instances().first().and_then(|i| i.pid()))
-        },
-    )
+    let pid = poll_until(WAIT, "the daemon should spawn the instance", || {
+        started
+            .node_stack
+            .find(NODE_NAME, NODE_TAG)
+            .and_then(|handle| handle.read().instances().first().and_then(|i| i.pid()))
+    })
     .await;
-    let children = poll_until(
-        Duration::from_secs(10),
-        "the instance should fork two children",
-        || {
-            let children = common::children_of(pid);
-            (children.len() >= 2).then_some(children)
-        },
-    )
+    let children = poll_until(WAIT, "the instance should fork two children", || {
+        let children = common::children_of(pid);
+        (children.len() >= 2).then_some(children)
+    })
     .await;
 
-    peppylib::ActionMessenger::cancel_goal(&started.caller_handle, &goal, Duration::from_secs(5))
+    peppylib::ActionMessenger::cancel_goal(&started.caller_handle, &goal, GOAL_TIMEOUT)
         .await
         .expect("the daemon takes the cancel");
-    wait_until_action_completes(&mut goal, Duration::from_secs(60)).await;
+    wait_until_action_completes(&mut goal, RESULT_TIMEOUT).await;
     let end = common::fetch_end(
         &started.caller_handle,
         &goal,
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
         NodeRunResult::decode,
         "result",
     )
@@ -2424,7 +2263,7 @@ async fn a_start_that_fails_before_its_ready_signal_leaves_no_process_of_its_gro
     for process in std::iter::once(pid).chain(children) {
         wait_until_process_exits(
             process,
-            Duration::from_secs(5),
+            WAIT,
             &format!("process {process} of the instance's group should be gone"),
         )
         .await;
@@ -2440,7 +2279,7 @@ fn forking_leader(then: &str) -> String {
 
 /// Reads the feedback of `goal` until a line contains `text`.
 async fn wait_for_feedback_line(goal: &mut peppylib::messaging::ActionGoalHandle, text: &str) {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(WAIT, async {
         loop {
             let message = goal
                 .on_next_feedback()
@@ -2462,11 +2301,11 @@ async fn start_end(
     started: &common::StartedCoreNode,
     goal: &mut peppylib::messaging::ActionGoalHandle,
 ) -> GoalEnd<NodeRunResult> {
-    wait_until_action_completes(goal, Duration::from_secs(60)).await;
+    wait_until_action_completes(goal, RESULT_TIMEOUT).await;
     common::fetch_end(
         &started.caller_handle,
         goal,
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
         NodeRunResult::decode,
         "result",
     )
@@ -2483,9 +2322,9 @@ async fn assert_forked_process_ends(pid_file: &std::path::Path) {
         .trim()
         .parse()
         .expect("a pid");
-    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+    let ended = tokio::time::timeout(WAIT, async {
         while common::is_process_running(pid) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await
@@ -2523,10 +2362,6 @@ async fn a_start_whose_leader_exits_before_its_ready_signal_leaves_no_process_of
     )
     .await;
 
-    let timeouts = common::NodeRunTestTimeouts {
-        goal: Duration::from_secs(10),
-        result: Duration::from_secs(60),
-    };
     let (mut goal, _accepted) = common::send_node_run_goal(
         &started.caller_handle,
         &started.core_node_name,
@@ -2534,9 +2369,9 @@ async fn a_start_whose_leader_exits_before_its_ready_signal_leaves_no_process_of
             common::default_instance_plan(INSTANCE_ID),
             NODE_NAME,
             NODE_TAG,
-            &timeouts,
+            &TIMEOUTS,
         ),
-        timeouts.goal,
+        TIMEOUTS.goal,
     )
     .await
     .expect("the daemon accepts the start");
@@ -2578,10 +2413,6 @@ async fn a_start_whose_leader_exits_during_its_setup_leaves_no_process_of_its_gr
     // answers its health signal: its setup does not end.
     let _ready_task = answer_ready_probe(&started, NODE_NAME, INSTANCE_ID).await;
 
-    let timeouts = common::NodeRunTestTimeouts {
-        goal: Duration::from_secs(10),
-        result: Duration::from_secs(60),
-    };
     let (mut goal, _accepted) = common::send_node_run_goal(
         &started.caller_handle,
         &started.core_node_name,
@@ -2589,9 +2420,9 @@ async fn a_start_whose_leader_exits_during_its_setup_leaves_no_process_of_its_gr
             common::default_instance_plan(INSTANCE_ID),
             NODE_NAME,
             NODE_TAG,
-            &timeouts,
+            &TIMEOUTS,
         ),
-        timeouts.goal,
+        TIMEOUTS.goal,
     )
     .await
     .expect("the daemon accepts the start");
