@@ -48,6 +48,7 @@ pub struct PythonGenerator {
     peppylib_platform: scaffold::PeppylibPlatform,
     node_tree: NodeTree,
     testgen: crate::generator::testgen::TestGenRegistry,
+    codec_api: crate::generator::common::CodecApi,
 }
 
 impl PythonGenerator {
@@ -82,6 +83,12 @@ impl PythonGenerator {
     /// whether a path into it is worth baking (see [`NodeTree`]).
     pub fn set_node_tree(&mut self, node_tree: NodeTree) {
         self.node_tree = node_tree;
+    }
+
+    /// Sets whether the node asks for the codec API, whose module
+    /// `peppylib.codec` and compiler its peppylib then gets.
+    pub fn set_codec_api(&mut self, codec_api: crate::generator::common::CodecApi) {
+        self.codec_api = codec_api;
     }
 
     fn push_section(&mut self, section: InterfaceArtifact) {
@@ -495,7 +502,12 @@ impl LanguageGenerator for PythonGenerator {
         mock::render(&mut self, &registry)?;
         fixtures::render(&mut self, &registry, to_path)?;
 
-        scaffold::add_peppylib_dependencies(to_path, peppy_dirs, self.peppylib_platform)?;
+        scaffold::add_peppylib_dependencies(
+            to_path,
+            peppy_dirs,
+            self.peppylib_platform,
+            self.codec_api,
+        )?;
         scaffold::add_capnp_schemas(&self.schemas, to_path)?;
         scaffold::add_artifacts_to_lib(to_path, self.sections)?;
         scaffold::add_parameters_to_lib(&self.parameters, to_path)?;

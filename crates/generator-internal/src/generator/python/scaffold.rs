@@ -1,6 +1,8 @@
 use super::identifiers::is_python_keyword;
 use crate::error::Result;
-use crate::generator::common::{copy_dir_recursive, populate_cache_dir_once};
+use crate::generator::common::{
+    CodecApi, EmbeddedConfig, copy_dir_recursive, populate_cache_dir_once,
+};
 use crate::generator::naming::sanitize_component;
 use crate::generator::scaffold_tree::{
     ModuleEntry, TreeWriter, build_module_tree, group_artifacts_by_category, write_module_tree,
@@ -66,6 +68,13 @@ const fn build_state_records(build_state: &str, provenance: &str) -> bool {
 #[exclude = "__pycache__/*"]
 struct EmbeddedPeppylibPy;
 
+/// The module of the codec API in the peppylib package, which only a node
+/// that asks for the codec API gets: the shared cache leaves it out.
+const CODEC_MODULE_FILE: &str = "codec.py";
+/// The Cap'n Proto compiler that the codec API runs, beside the codec
+/// module. `peppylib/codec.py` names the same file.
+const CODEC_COMPILER_FILE: &str = "capnp_compiler";
+
 /// The filename prefix that all platform-suffixed native extensions share.
 const SO_PLATFORM_PREFIX: &str = "_peppylib.abi3.";
 /// The canonical filename Python uses to import the native extension.
@@ -96,12 +105,19 @@ impl PeppylibPlatform {
             Self::LinuxContainer => format!("linux-{}", std::env::consts::ARCH),
         }
     }
+
+    /// The path, in the embedded `peppy-config-model` crate, of the Cap'n
+    /// Proto compiler of the platform (e.g. `tools/capnp_linux_x86_64`).
+    fn capnp_tool(self) -> String {
+        format!("tools/capnp_{}", self.suffix().replace('-', "_"))
+    }
 }
 
 pub fn add_peppylib_dependencies(
     to_path: &Path,
     peppy_dirs: &daemon_config::consts::PeppyDirs,
     platform: PeppylibPlatform,
+    codec_api: CodecApi,
 ) -> Result<()> {
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
     crate::generator::common::copy_embedded_templates("peppygen/python", to_path, "")?;
@@ -146,7 +162,36 @@ pub fn add_peppylib_dependencies(
     let package_dir = project_dir.join("peppylib");
     copy_dir_recursive(&cache_dir, &package_dir)?;
     fs::remove_file(package_dir.join(".complete"))?;
+    if codec_api == CodecApi::Asked {
+        add_codec_api(&package_dir, platform)?;
+    }
 
+    Ok(())
+}
+
+/// Writes the codec API into the peppylib package at `package_dir`: the
+/// module `peppylib.codec`, and the Cap'n Proto compiler of `platform`,
+/// which the module hands to the codec.
+fn add_codec_api(package_dir: &Path, platform: PeppylibPlatform) -> Result<()> {
+    let module = EmbeddedPeppylibPy::get(CODEC_MODULE_FILE).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("embedded peppylib file not found: {CODEC_MODULE_FILE}"),
+        )
+    })?;
+    fs::write(package_dir.join(CODEC_MODULE_FILE), module.data.as_ref())?;
+
+    let tool = platform.capnp_tool();
+    let compiler = EmbeddedConfig::get(&tool).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no Cap'n Proto compiler is embedded for this platform (expected `{tool}`)"),
+        )
+    })?;
+    fs::write(
+        package_dir.join(CODEC_COMPILER_FILE),
+        compiler.data.as_ref(),
+    )?;
     Ok(())
 }
 
@@ -160,6 +205,9 @@ fn write_peppylib_package(
 ) -> Result<()> {
     for file_path in EmbeddedPeppylibPy::iter() {
         let file_path_str = file_path.as_ref();
+        if file_path_str == CODEC_MODULE_FILE {
+            continue;
+        }
         let destination = staging_dir.join(file_path_str);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
@@ -307,6 +355,63 @@ pub(super) fn sanitize_python_module_name(raw: &str) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Only the peppylib of a node that asks for the codec API gets the
+    /// module `peppylib.codec` and the compiler of its platform, which the
+    /// module finds by the name the generator gives it; a node that stops
+    /// asking loses both.
+    #[test]
+    fn the_codec_api_reaches_only_the_peppylib_of_a_node_that_asks() {
+        let root = TempDir::new().expect("temp dir should be created");
+        let peppy_dirs = daemon_config::consts::PeppyDirs::new(root.path().join("peppy"));
+        let libs = root.path().join("node").join(".peppy").join("libs");
+        let package = libs.join("peppylib").join("peppylib");
+        let platform = PeppylibPlatform::Host;
+        let compiler = EmbeddedConfig::get(&platform.capnp_tool())
+            .expect("the compiler of the host is embedded");
+
+        for (codec_api, given) in [(CodecApi::Asked, true), (CodecApi::NotAsked, false)] {
+            add_peppylib_dependencies(&libs.join("peppygen"), &peppy_dirs, platform, codec_api)
+                .expect("the peppylib deploys");
+            assert!(package.join("__init__.py").is_file());
+            assert_eq!(
+                package.join(CODEC_MODULE_FILE).is_file(),
+                given,
+                "{codec_api:?}"
+            );
+            assert_eq!(
+                package.join(CODEC_COMPILER_FILE).is_file(),
+                given,
+                "{codec_api:?}"
+            );
+        }
+
+        add_peppylib_dependencies(
+            &libs.join("peppygen"),
+            &peppy_dirs,
+            platform,
+            CodecApi::Asked,
+        )
+        .expect("the peppylib deploys");
+        assert_eq!(
+            fs::read(package.join(CODEC_COMPILER_FILE)).expect("the compiler is written"),
+            compiler.data.as_ref()
+        );
+        let module = fs::read_to_string(package.join(CODEC_MODULE_FILE)).expect("readable");
+        assert!(
+            module.contains(&format!("\"{CODEC_COMPILER_FILE}\"")),
+            "`peppylib/codec.py` names the compiler `{CODEC_COMPILER_FILE}`"
+        );
+    }
+
+    #[test]
+    fn the_compiler_of_a_container_node_is_the_linux_one_of_the_host_architecture() {
+        assert_eq!(
+            PeppylibPlatform::LinuxContainer.capnp_tool(),
+            format!("tools/capnp_linux_{}", std::env::consts::ARCH)
+        );
+        assert!(EmbeddedConfig::get(&PeppylibPlatform::LinuxContainer.capnp_tool()).is_some());
+    }
 
     #[test]
     fn sanitize_module_name_escapes_python_keywords() {

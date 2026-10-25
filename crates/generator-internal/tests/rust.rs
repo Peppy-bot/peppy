@@ -7,6 +7,8 @@ mod implements_fixtures;
 mod actions_communication;
 #[path = "rust/actions_implements.rs"]
 mod actions_implements;
+#[path = "rust/codec_api.rs"]
+mod codec_api;
 #[path = "rust/codec_wire.rs"]
 mod codec_wire;
 #[path = "rust/consumed_services_dedup.rs"]

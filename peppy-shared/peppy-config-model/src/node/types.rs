@@ -1711,6 +1711,14 @@ pub struct Execution {
     /// key does not change.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub setup_timeout_secs: Option<SetupTimeout>,
+    /// Whether the node asks for the codec API (`execution.codec_api`): the
+    /// parser of contracts, the run-time codec and its clients, with the
+    /// Cap'n Proto compiler that the codec runs. The code generator gives
+    /// them only to a node that asks, in the build of the node. Left out of
+    /// the serialized manifest when `false`, so the fingerprint of a
+    /// manifest without the key does not change.
+    #[serde(skip_serializing_if = "is_false")]
+    pub codec_api: bool,
 }
 
 impl Execution {
@@ -1762,6 +1770,8 @@ impl<'de> Deserialize<'de> for Execution {
             endpoints: EndpointDeclarations,
             #[serde(default, deserialize_with = "deserialize_setup_timeout")]
             setup_timeout_secs: Option<SetupTimeout>,
+            #[serde(default)]
+            codec_api: bool,
         }
 
         let raw = RawExecution::deserialize(deserializer)?;
@@ -1778,6 +1788,7 @@ impl<'de> Deserialize<'de> for Execution {
             container: raw.container,
             endpoints: raw.endpoints,
             setup_timeout_secs: raw.setup_timeout_secs,
+            codec_api: raw.codec_api,
         })
     }
 }

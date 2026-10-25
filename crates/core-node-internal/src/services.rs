@@ -370,6 +370,7 @@ impl CoreNode {
                 container: None,
                 endpoints: Default::default(),
                 setup_timeout_secs: None,
+                codec_api: false,
             },
             interfaces: Default::default(),
             framework: config::node::NodeFramework::default(),

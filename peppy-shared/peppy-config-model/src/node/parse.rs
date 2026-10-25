@@ -1663,6 +1663,31 @@ mod tests {
         assert!(!json.contains("setup_timeout_secs"), "{json}");
     }
 
+    /// A node asks for the codec API with `execution.codec_api: true`; a
+    /// node that writes nothing does not ask, and its serialized manifest
+    /// has no key, so its fingerprint does not change.
+    #[test]
+    fn a_node_asks_for_the_codec_api_in_its_execution_block() {
+        let asking = NodeConfigParser::from_content(&config_with_setup_key("codec_api: true,"))
+            .expect("parses");
+        assert!(asking.execution.codec_api);
+        let json = serde_json::to_string(&asking.execution).expect("serializes");
+        assert!(json.contains(r#""codec_api":true"#), "{json}");
+        let restored: Execution = serde_json::from_str(&json).expect("deserializes");
+        assert!(restored.codec_api);
+
+        for written in ["", "codec_api: false,"] {
+            let silent =
+                NodeConfigParser::from_content(&config_with_setup_key(written)).expect("parses");
+            assert!(!silent.execution.codec_api, "{written}");
+            let json = serde_json::to_string(&silent.execution).expect("serializes");
+            assert!(!json.contains("codec_api"), "{written}: {json}");
+        }
+
+        let error = parse_error(&config_with_setup_key(r#"codec_api: "yes","#));
+        assert!(error.to_string().contains("codec_api"), "{error}");
+    }
+
     #[test]
     fn test_parse_config_execution_without_language_rejected() {
         let json5 = r#"{

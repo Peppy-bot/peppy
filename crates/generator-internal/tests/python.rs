@@ -7,6 +7,8 @@ mod implements_fixtures;
 mod actions_communication;
 #[path = "python/actions_implements.rs"]
 mod actions_implements;
+#[path = "python/codec_api.rs"]
+mod codec_api;
 #[path = "python/consumed_services_dedup.rs"]
 mod consumed_services_dedup;
 #[path = "python/consumed_topics_dedup.rs"]

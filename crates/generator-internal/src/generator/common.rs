@@ -183,6 +183,28 @@ pub(crate) struct EmbeddedConfig;
 #[exclude = "tests/*"]
 pub(crate) struct EmbeddedBuildHelpers;
 
+/// The codec API, which a node gets when its manifest sets
+/// `execution.codec_api: true`. Its tests and benches stay out: a vendored
+/// crate never runs them.
+#[derive(Embed)]
+#[folder = "$PEPPY_SHARED_DIR/peppy-codec/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+#[exclude = "benches/*"]
+pub(crate) struct EmbeddedPeppyCodec;
+
+/// The MCP catalog, whose canonical forms of 64-bit integers the codec API
+/// applies.
+#[derive(Embed)]
+#[folder = "$PEPPY_SHARED_DIR/peppy-mcp-catalog/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+pub(crate) struct EmbeddedPeppyMcpCatalog;
+
 #[derive(Embed)]
 #[folder = "$PEPPY_SHARED_DIR/core-node-api/"]
 #[include = "*.rs"]
@@ -288,6 +310,22 @@ pub enum CrateDeployMode {
     #[default]
     Symlink,
     Copy,
+}
+
+/// Whether a node asks for the codec API in its manifest
+/// (`execution.codec_api`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CodecApi {
+    #[default]
+    NotAsked,
+    Asked,
+}
+
+impl CodecApi {
+    /// The ask of a manifest whose `execution.codec_api` is `asked`.
+    pub fn of_manifest(asked: bool) -> Self {
+        if asked { Self::Asked } else { Self::NotAsked }
+    }
 }
 
 /// What the tree a generation writes into is, which decides whether the

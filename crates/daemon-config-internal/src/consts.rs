@@ -4,6 +4,8 @@ use std::sync::OnceLock;
 /// The peppy output directory relative to node_dir (contains generated libraries).
 pub const PEPPY_OUTPUT_DIR: &str = ".peppy";
 pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppylib";
+/// The crate of the codec API in a Rust node that asks for it.
+pub const PEPPY_CODEC_OUTPUT_PATH: &str = ".peppy/libs/peppy-codec";
 /// Filename of the CLI's cached OAuth credentials, stored under `~/.peppy/conf`
 /// (i.e. `conf_dir().join(CREDENTIALS_FILE)`). Written `0600` by the `peppy
 /// login` flow; never committed and never world-readable.
