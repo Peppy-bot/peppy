@@ -953,11 +953,13 @@ async fn publish_node_run_feedback(publisher: &ActionFeedbackPublisher, line: Fe
 }
 
 /// Binds each daemon target of `manifest`, a `depends_on.daemon` entry, to
-/// `daemon`, the daemon that runs the instance under its per-boot instance
-/// id: the one producer of a daemon target. The daemon binds them itself on
-/// every path that starts an instance, a launch, a join, `peppy node run`
-/// and a restart, so a plan never names this producer, and a binding that a
-/// plan writes for a daemon target is replaced.
+/// `daemon` under its per-boot instance id: the one producer of a daemon
+/// target, the daemon of the coordinator of the launch that started the
+/// instance, or the daemon that runs an instance of no launch. The daemon
+/// binds them itself on every path that starts an instance, a launch, a
+/// join, `peppy node run` and a restart, so a plan never names this
+/// producer, and a binding that a plan writes for a daemon target is
+/// replaced.
 fn bind_daemon_targets(
     slot_bindings: &mut config::runtime::SlotBindings,
     manifest: &config::node::Manifest,
@@ -1377,13 +1379,21 @@ async fn process_node_run(
         return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
     }
 
+    // The daemon of the coordinator serves the daemon interfaces of a
+    // launch; an instance of no launch reaches the daemon that runs it.
+    let stack_daemon = launch_id
+        .as_deref()
+        .and_then(|launch_id| ctx.action.slice_ownership.daemon_of_launch(launch_id))
+        .unwrap_or_else(|| {
+            config::runtime::ProducerRef::new(
+                &ctx.action.core_node_name,
+                &ctx.action.caller_instance_id,
+            )
+        });
     bind_daemon_targets(
         &mut runtime_config.node_instance.slot_bindings,
         &node_config.manifest,
-        config::runtime::ProducerRef::new(
-            &ctx.action.core_node_name,
-            &ctx.action.caller_instance_id,
-        ),
+        stack_daemon,
     );
 
     // The policy of a new instance, resolved here for every path that starts

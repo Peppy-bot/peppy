@@ -11,6 +11,11 @@
 //! member; an instance of the launch calls what the scope of its daemon
 //! target of the interface gives; `check_move` answers every sender, and
 //! `changes` answers each MCP server of peppy.
+//!
+//! The daemon of the coordinator of a launch serves the interfaces of that
+//! launch: a daemon that holds the slice of a launch of another machine
+//! refuses every call and names the coordinator, whose daemon the daemon
+//! targets of the instances of the launch reach.
 
 mod caller;
 mod codecs;
@@ -72,6 +77,24 @@ impl InterfaceContext {
             codecs: Arc::default(),
             stack_copies: Arc::default(),
         }
+    }
+
+    /// The refusal of every call on this daemon while it holds the slice of
+    /// a launch that the daemon of another machine coordinates: that daemon
+    /// serves the fleet and the copies of the launch, and the daemon targets
+    /// of the instances of the launch reach it.
+    fn served_by_the_coordinator(&self) -> Option<Failure> {
+        let slice = self.slice_ownership.slice()?;
+        (slice.coordinator_core_node != self.core_node).then(|| {
+            failure(
+                PeppyFailureKind::PreconditionFailed,
+                format!(
+                    "this machine runs a slice of launch `{}`, which `{}` coordinates: call the \
+                     daemon of `{}`",
+                    slice.launch_id, slice.coordinator_core_node, slice.coordinator_core_node
+                ),
+            )
+        })
     }
 
     /// The sender of a request or a goal, as the scopes of the launch read
@@ -213,6 +236,9 @@ async fn answer_service(
     member: &str,
     request: &ServiceRequestContext,
 ) -> ServiceAnswer {
+    if let Some(refusal) = ctx.served_by_the_coordinator() {
+        return Err(refusal);
+    }
     match interface {
         DaemonInterface::Fleet => fleet_members::answer(ctx, member, request).await,
         DaemonInterface::StackCopies => stack_copies::answer(ctx, member, request).await,
@@ -251,6 +277,10 @@ async fn serve_action(
             let ctx = ctx.clone();
             let member = member.clone();
             tokio::spawn(async move {
+                if let Some(refusal) = ctx.served_by_the_coordinator() {
+                    refuse(pending, refusal).await;
+                    return;
+                }
                 match interface {
                     DaemonInterface::Fleet => fleet_members::run_goal(&ctx, &member, pending).await,
                     DaemonInterface::StackCopies => {

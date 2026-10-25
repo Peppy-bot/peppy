@@ -341,8 +341,10 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             .await;
             return ChangeEnd::without_node_logs(Ok(LaunchResult::default()));
         }
-        ctx.slice_ownership
-            .record_slice(LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node));
+        ctx.slice_ownership.record_slice(
+            LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node),
+            &ctx.core_instance_id,
+        );
         super::state::commit_active_launch(
             &ctx.slice_ownership,
             ActiveLaunch::new(
@@ -506,8 +508,10 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // self-describing from here on and `stack reset` / a relaunch can
     // rediscover the whole launch by query. Each participant recorded its own
     // when it began its slice.
-    ctx.slice_ownership
-        .record_slice(LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node));
+    ctx.slice_ownership.record_slice(
+        LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node),
+        &ctx.core_instance_id,
+    );
 
     let mut active = ActiveLaunch::new(
         &goal.launch_id,

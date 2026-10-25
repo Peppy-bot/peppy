@@ -509,9 +509,10 @@ async fn slice_begin_inner(
     // launch that dies halfway must still be findable by `stack reset
     // --federated`: recording only on success would leave exactly the wreckage
     // that needs cleaning up as the one state nobody can find.
-    context
-        .ownership
-        .record_slice(LaunchIdentity::new(decoded.launch_id.clone(), coordinator));
+    context.ownership.record_slice(
+        LaunchIdentity::new(decoded.launch_id.clone(), coordinator),
+        request.message().instance_id(),
+    );
 
     // Recorded first, prepared second: the slice is already this launch's, so a
     // machine that cannot provide a bind source is a refusal the coordinator

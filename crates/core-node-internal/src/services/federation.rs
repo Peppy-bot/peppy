@@ -59,6 +59,7 @@ pub(crate) use service::{
 use crate::services::response::failure;
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
+use config::runtime::ProducerRef;
 use core_node_api::encoding::LaunchIdentity;
 use core_node_api::{DaemonFailureKind, LaunchScoped};
 use parking_lot::Mutex;
@@ -120,6 +121,10 @@ struct OwnershipState {
     /// reservation: the reservation guards the launch, this describes its
     /// result.
     slice: Option<LaunchIdentity>,
+    /// The daemon of the coordinator of `slice`, under the per-boot instance
+    /// id that recorded the slice: the daemon that serves the daemon
+    /// interfaces of the launch.
+    slice_daemon: Option<ProducerRef>,
 }
 
 impl OwnershipState {
@@ -530,10 +535,29 @@ impl SliceOwnership {
         &self.stack
     }
 
-    /// Records that this daemon's stack slice came from `launch`. Called when a
-    /// federated launch finishes populating this participant.
-    pub fn record_slice(&self, launch: LaunchIdentity) {
-        self.state.lock().slice = Some(launch);
+    /// Records that this daemon's stack slice came from `launch`, whose
+    /// coordinator's daemon runs under the per-boot instance id
+    /// `coordinator_instance_id`. Called when a participant begins its slice,
+    /// and when the coordinator finishes populating its own.
+    pub fn record_slice(&self, launch: LaunchIdentity, coordinator_instance_id: &str) {
+        let mut state = self.state.lock();
+        state.slice_daemon = Some(ProducerRef::new(
+            &launch.coordinator_core_node,
+            coordinator_instance_id,
+        ));
+        state.slice = Some(launch);
+    }
+
+    /// The daemon that serves the daemon interfaces of the launch
+    /// `launch_id`, when this daemon holds a slice of it: the daemon of its
+    /// coordinator.
+    pub(crate) fn daemon_of_launch(&self, launch_id: &str) -> Option<ProducerRef> {
+        let state = self.state.lock();
+        state
+            .slice
+            .as_ref()
+            .filter(|slice| slice.launch_id == launch_id)
+            .and(state.slice_daemon.clone())
     }
 
     /// The launch this daemon's slice belongs to, reported on every
@@ -584,6 +608,7 @@ impl SliceOwnership {
         let mut state = self.state.lock();
         end_held_reservation(&mut state);
         state.slice = None;
+        state.slice_daemon = None;
     }
 }
 
@@ -896,7 +921,7 @@ mod tests {
             refusal.message().contains("holds no slice"),
             "got: {refusal}"
         );
-        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"), "boot-1");
         assert!(
             ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok(),
             "the reserving launch's own dispatch must pass once the slice is held"
@@ -909,12 +934,12 @@ mod tests {
     #[test]
     fn a_launch_scoped_goal_needs_the_slice_as_well_as_the_reservation() {
         let ownership = SliceOwnership::new("cn-held");
-        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"), "boot-1");
         ownership.try_reserve("launch-b", "cn-robot-7");
         assert!(ownership.admit_node_goal(&Goal(Some("launch-b"))).is_err());
 
         let ownership = SliceOwnership::new("cn-held");
-        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-8"));
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-8"), "boot-1");
         ownership.try_reserve("launch-a", "cn-robot-7");
         assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_err());
     }
@@ -930,19 +955,19 @@ mod tests {
         ownership.try_reserve("launch-a", "cn-robot-7");
         assert!(!ownership.holds_slice_of("launch-a"), "no slice has begun");
 
-        ownership.record_slice(LaunchIdentity::new("launch-b", "cn-robot-7"));
+        ownership.record_slice(LaunchIdentity::new("launch-b", "cn-robot-7"), "boot-1");
         assert!(
             !ownership.holds_slice_of("launch-a"),
             "the slice came from another launch"
         );
 
-        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-8"));
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-8"), "boot-1");
         assert!(
             !ownership.holds_slice_of("launch-a"),
             "the slice came from another coordinator"
         );
 
-        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"), "boot-1");
         assert!(ownership.holds_slice_of("launch-a"));
         assert!(
             !ownership.holds_slice_of("launch-b"),
@@ -975,7 +1000,7 @@ mod tests {
     fn the_slice_record_outlives_the_reservation() {
         let ownership = SliceOwnership::new("cn-held");
         ownership.try_reserve("launch-a", "cn-robot-7");
-        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"), "boot-1");
         ownership.release("launch-a");
 
         assert_eq!(ownership.held_reservation(), None);
@@ -984,6 +1009,24 @@ mod tests {
             Some(LaunchIdentity::new("launch-a", "cn-robot-7")),
             "a released reservation must leave the slice discoverable"
         );
+    }
+
+    /// The daemon interfaces of a launch are served by the daemon of its
+    /// coordinator, under the instance id that recorded the slice, and by no
+    /// daemon for another launch or once the slice is cleared.
+    #[test]
+    fn the_daemon_of_a_launch_is_the_coordinator_that_recorded_the_slice() {
+        let ownership = SliceOwnership::new("cn-held");
+        assert_eq!(ownership.daemon_of_launch("launch-a"), None);
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"), "boot-1");
+
+        assert_eq!(
+            ownership.daemon_of_launch("launch-a"),
+            Some(ProducerRef::new("cn-robot-7", "boot-1"))
+        );
+        assert_eq!(ownership.daemon_of_launch("launch-b"), None);
+        ownership.clear();
+        assert_eq!(ownership.daemon_of_launch("launch-a"), None);
     }
 
     #[test]
@@ -995,7 +1038,7 @@ mod tests {
     fn clearing_drops_both_the_reservation_and_the_slice() {
         let ownership = SliceOwnership::new("cn-held");
         ownership.try_reserve("launch-a", "cn-robot-7");
-        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"), "boot-1");
 
         ownership.clear();
 
@@ -1007,7 +1050,7 @@ mod tests {
     fn reset_rejects_late_dispatch_from_the_cleared_launch() {
         let ownership = SliceOwnership::new("robot-host");
         ownership.try_reserve("launch-a", "coordinator");
-        ownership.record_slice(LaunchIdentity::new("launch-a", "coordinator"));
+        ownership.record_slice(LaunchIdentity::new("launch-a", "coordinator"), "boot-1");
         assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok());
         ownership.clear();
         let refusal = ownership
