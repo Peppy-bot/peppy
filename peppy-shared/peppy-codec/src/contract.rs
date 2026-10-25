@@ -15,3 +15,9 @@ mod types;
 pub use comments::{ContractComments, MessageSide};
 pub use parse::{ContractError, PeppyContractParser};
 pub use types::{Interfaces, Manifest, PeppyContract, RefinedMember};
+
+// The types of the config model that the API of a contract names, so a node
+// that links this crate alone can name them.
+pub use config::failure_kind::{MemberFailureKinds, MemberSection};
+pub use config::mark::{EnumValues, MOVES_ROBOT, MarkName, Marks};
+pub use config::node::{InterfaceKind, MessageFormat, SchemaType};

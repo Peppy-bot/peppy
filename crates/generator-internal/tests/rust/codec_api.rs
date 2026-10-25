@@ -1,7 +1,9 @@
 //! A Rust node that asks for the codec API (`execution.codec_api: true`)
 //! gets `peppy-codec` with the Cap'n Proto compiler of its build target: its
 //! tests parse a contract that the node was not built with and lay out a
-//! message of it at run time, with no compiler from the environment.
+//! message of it at run time, with no compiler from the environment, and it
+//! builds the calls of the codec API as the guide of the codec API writes
+//! them.
 
 use config::consts::NODE_CONFIG_FILE;
 use config::node::PeppygenLanguage;
@@ -21,12 +23,86 @@ const NODE_CONFIG: &str = r#"{
   },
 }"#;
 
-const NODE_MAIN: &str = r##"fn main() {}
+const NODE_MAIN: &str = r##"use peppy_codec::consumer::{
+    ActionClient, ConsumerError, ConsumerIdentity, GoalOutcome, MemberBinding, MemberError,
+    ServiceClient,
+};
+use peppy_codec::contract::PeppyContract;
+use peppylib::messaging::{DEFAULT_FEEDBACK_BOUND, ProducerRef};
+use peppylib::runtime::NodeRunner;
+use serde_json::Value;
+use std::time::Duration;
+
+fn main() {}
+
+/// The calls of the codec API as a node makes them: a service, then the
+/// goal of an action, followed to its end.
+#[allow(dead_code)]
+async fn call_the_arm(
+    node_runner: &NodeRunner,
+    contract: &PeppyContract,
+    request: &Value,
+    goal_value: &Value,
+) -> Result<GoalOutcome, CallError> {
+    let processor = node_runner.processor();
+    let caller = ConsumerIdentity {
+        core_node: processor.bound_core_node().to_owned(),
+        instance_id: processor.bound_instance_id().to_owned(),
+    };
+    let robot = ProducerRef::new("robot-7", "arm_backbone");
+
+    let home = ServiceClient::of_contract(contract, "home")?;
+    let binding = MemberBinding::of_contract(contract, "home")?;
+    home.call(
+        node_runner.messenger(),
+        &caller,
+        &binding,
+        &robot,
+        request,
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    let grip = ActionClient::of_contract(contract, "grip")?;
+    let binding = MemberBinding::of_contract(contract, "grip")?;
+    let mut goal = grip
+        .fire_goal(
+            node_runner.messenger(),
+            &caller,
+            &binding,
+            &robot,
+            goal_value,
+            DEFAULT_FEEDBACK_BOUND,
+            Duration::from_secs(5),
+        )
+        .await?;
+    while let Some(_feedback) = goal.next_feedback().await? {}
+    Ok(goal.result(node_runner.messenger(), Duration::from_secs(5)).await?)
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+enum CallError {
+    Member(MemberError),
+    Consumer(ConsumerError),
+}
+
+impl From<MemberError> for CallError {
+    fn from(error: MemberError) -> Self {
+        Self::Member(error)
+    }
+}
+
+impl From<ConsumerError> for CallError {
+    fn from(error: ConsumerError) -> Self {
+        Self::Consumer(error)
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use peppy_codec::MessageCodec;
-    use peppy_codec::contract::PeppyContractParser;
+    use peppy_codec::contract::{InterfaceKind, MessageSide, PeppyContractParser};
 
     const CONTRACT: &str = r#"{
         peppy_schema: "contract/v1",
@@ -39,17 +115,21 @@ mod tests {
                     item: { $type: "string", $marks: ["item_id"] },
                 },
             }],
+            actions: [{ name: "grip", marks: ["moves_robot"] }],
         },
     }"#;
 
     #[test]
     fn the_codec_lays_out_a_message_of_a_contract() {
         let contract = PeppyContractParser::from_content(CONTRACT).expect("the contract parses");
+        let item = contract
+            .field(InterfaceKind::Service, "home", MessageSide::Request, &["item"])
+            .expect("the field `item`");
+        assert!(item.marks().contains("item_id"));
+        assert!(contract.marks.moves_robot(InterfaceKind::Action, "grip"));
         let format = contract
-            .service("home")
-            .and_then(|service| service.request_message_format.as_ref())
+            .message_format(InterfaceKind::Service, "home", MessageSide::Request)
             .expect("the request format");
-        assert!(format.0["item"].marks().contains("item_id"));
         let codec = MessageCodec::new("home_request", format).expect("the format lays out");
         let value = serde_json::json!({ "speed": 0.5, "item": "cup" });
         let bytes = codec.encode(&value).expect("encodes");

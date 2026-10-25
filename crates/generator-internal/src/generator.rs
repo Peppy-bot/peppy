@@ -213,7 +213,7 @@ where
 ///
 /// If the Cargo.toml doesn't exist, it creates a new one with the node name.
 /// If it exists, it ensures the dependencies are present while preserving formatting, and
-/// removes the peppy-codec dependency of a node that no longer asks for the codec API.
+/// removes the peppy-codec dependency of a node that does not ask for the codec API.
 fn ensure_node_cargo_toml(
     node_dir: &Path,
     node_name: &str,

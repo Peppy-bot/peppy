@@ -78,6 +78,47 @@ In practice, this is used on **service and action response fields** where a valu
 
 ---
 
+## Enum modifier
+
+A `string` field can declare the closed set of strings that it holds, with `$enum`:
+
+```json5
+mode: {
+  $type: "string",
+  $enum: ["idle", "moving", "holding"]
+}
+```
+
+| Field       | Required | Description |
+|-------------|----------|-------------|
+| `$type`     | Yes      | `string`. The parser refuses `$enum` on a field of another type |
+| `$enum`     | Yes      | The strings of the set: at least one, each a non-empty string, each once, in the order you write them |
+| `$optional` | No       | As on any `string` field |
+
+An enum changes nothing on the wire and in the generated code: the field is a `string`. Peppy carries the set and acts on none of its values. A client that checks the values of a field, such as a checker of documents, reads the set through the [codec API](/advanced_guides/codec_api/).
+
+---
+
+## Marks modifier
+
+A field can carry marks, names that the document gives to the field, with `$marks` in the structured form of the field. A mark tells a client what the field holds, for example the id of an item:
+
+```json5
+target: {
+  $type: "object",
+  item: { $type: "string", $marks: ["item_id"] },
+  pose: { $type: "array", $items: "f64", $length: 7, $marks: ["pose"] }
+}
+```
+
+| Field    | Required | Description |
+|----------|----------|-------------|
+| `$marks` | No       | The marks of the field: at least one, each once. Leave the key out for a field with no mark. A primitive, an array and an object take it in their structured forms |
+
+A mark name is 1 to 64 lowercase ASCII letters, digits and `_`: words that each start with a letter, joined by one `_`, such as `item_id` or `pose2d`. Marks change nothing on the wire and in the generated code. Peppy keeps each mark of a field as written and acts on none: each client defines the marks that it reads, and reads them through the [codec API](/advanced_guides/codec_api/). A member of a contract carries [marks](/advanced_guides/contract_implementation/#marks) too.
+
+---
+
 ## Object
 
 An object groups related fields into a nested structure. It generates a nested struct in Rust and a dataclass in Python.
