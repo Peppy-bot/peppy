@@ -11,7 +11,7 @@
 //! from one set of pinned bytes.
 
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
-use crate::internal::daemon_interface::served_interfaces;
+use crate::internal::daemon_interface::{DaemonInterface, served_interfaces};
 use crate::internal::launcher::{DeploymentTargets, MemberAddressing};
 use crate::internal::mcp_exposure::PeppyMcpExposureParser;
 use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedDocument, PinnedItem};
@@ -44,6 +44,16 @@ pub const RUN_COMMAND: [&str; 3] = ["peppy", "mcp", "serve"];
 /// The environment variable through which the daemon hands `peppy mcp
 /// serve` the path of its [`McpServeSpec`].
 pub const SPEC_ENV_VAR: &str = "PEPPY_MCP_SERVE_SPEC";
+
+/// The link id of the daemon slot of `fleet:v1` that the server adds when no
+/// exposure names `fleet:v1`: the server asks `check_move` and follows
+/// `changes` through it.
+pub const FLEET_SLOT: &str = "fleet";
+
+/// The members of `fleet:v1` that the server calls through its fleet slot,
+/// whatever its exposures give.
+const FLEET_SLOT_SERVICES: [&str; 1] = ["check_move"];
+const FLEET_SLOT_ACTIONS: [&str; 1] = ["changes"];
 
 /// The node name of the server that serves `exposures`, derived from the
 /// sorted list so a relaunch, a peer and a reader of `peppy stack list` all
@@ -160,6 +170,16 @@ pub enum McpDeploymentError {
     MixedSurfaces { per_robot: String, fixed: String },
     #[error("{}", format_violations(.0))]
     Invalid(Vec<ExposureViolations>),
+    #[error(
+        "target `{target}` of exposure `{exposure}` names {source_label}; the server reaches \
+         daemon interface `fleet:v1` under the target name `{target}`, so a target of that name \
+         names `fleet:v1`"
+    )]
+    FleetSlotTaken {
+        target: String,
+        exposure: String,
+        source_label: String,
+    },
     #[error("the synthesized manifest for `{identity}` is not a valid node manifest: {reason}")]
     Manifest { identity: String, reason: String },
 }
@@ -220,6 +240,9 @@ pub struct McpDeploymentPlan {
     /// The targets of the exposures, which the launch checks of daemon
     /// scopes read.
     pub targets: DeploymentTargets,
+    /// The link id of the daemon slot of `fleet:v1`: the fleet target of the
+    /// exposures, or [`FLEET_SLOT`].
+    pub fleet_slot: String,
 }
 
 impl DeploymentTargets {
@@ -301,12 +324,14 @@ struct Slot<'a> {
 /// interfaces it references, all violations reported at once. The manifest
 /// declares one contract slot per contract target name: two exposures naming
 /// the same target with the same contract share the slot, the same target
-/// name with another source is a [`McpDeploymentError::SourceConflict`]. A
-/// daemon target takes no slot, consumes nothing and adds nothing to
-/// `depends_on`, so a deployment of daemon targets alone is valid; each one
-/// must name an interface this peppy serves at the tag it names. An
-/// exposure's own `sha256` pin, when present, must agree with the
-/// deployment's contract pin; absent, the deployment's pin fixes the bytes.
+/// name with another source is a [`McpDeploymentError::SourceConflict`]. Each
+/// daemon target takes a daemon slot, which the daemon binds to itself; each
+/// one must name an interface this peppy serves at the tag it names. The
+/// manifest always has a daemon slot of `fleet:v1`, through which the server
+/// asks `check_move` and follows `changes`: the fleet target of the
+/// exposures, or a slot [`FLEET_SLOT`] that the planner adds. An exposure's
+/// own `sha256` pin, when present, must agree with the deployment's contract
+/// pin; absent, the deployment's pin fixes the bytes.
 pub fn plan_deployment(
     exposures: &[PinnedExposure],
     contracts: &[PinnedContract],
@@ -346,6 +371,7 @@ pub fn plan_deployment(
     }
     let per_robot = per_robot.is_some();
     let targets = DeploymentTargets::of_exposures(exposures)?;
+    let fleet_slot = fleet_slot_of(&ordered, &targets)?;
 
     let mut slots: BTreeMap<String, Slot> = BTreeMap::new();
     let mut topics: BTreeSet<(String, String)> = BTreeSet::new();
@@ -428,21 +454,13 @@ pub fn plan_deployment(
         }
         match build_exposure_bundle(&exposure.document, &resolved, &interfaces) {
             Ok(checked) => {
-                // A daemon target's members reach the daemon, not a slot, so
-                // the manifest consumes the members of contract targets alone.
-                let consumed = |target: &String| targets.linked.contains(target);
-                for resource in checked
-                    .bundle
-                    .resources
-                    .iter()
-                    .filter(|r| consumed(&r.target))
-                {
+                for resource in &checked.bundle.resources {
                     topics.insert((resource.target.clone(), resource.member.clone()));
                 }
-                for tool in checked.bundle.tools.iter().filter(|t| consumed(&t.target)) {
+                for tool in &checked.bundle.tools {
                     services.insert((tool.target.clone(), tool.member.clone()));
                 }
-                for task in checked.bundle.tasks.iter().filter(|t| consumed(&t.target)) {
+                for task in &checked.bundle.tasks {
                     actions.insert((task.target.clone(), task.member.clone()));
                 }
                 validated.push(checked);
@@ -455,6 +473,12 @@ pub fn plan_deployment(
     }
     if !invalid.is_empty() {
         return Err(McpDeploymentError::Invalid(invalid));
+    }
+    for service in FLEET_SLOT_SERVICES {
+        services.insert((fleet_slot.clone(), service.to_owned()));
+    }
+    for action in FLEET_SLOT_ACTIONS {
+        actions.insert((fleet_slot.clone(), action.to_owned()));
     }
 
     let consumed = |members: &BTreeSet<(String, String)>| -> Vec<serde_json::Value> {
@@ -527,12 +551,29 @@ pub fn plan_deployment(
             )
         })
         .collect();
-    // A deployment of daemon targets alone has no slot, so its manifest
-    // declares no `depends_on`.
-    let mut manifest = serde_json::json!({ "name": name.as_str(), "tag": tag });
+    let mut daemon_targets = targets.daemon.clone();
+    daemon_targets
+        .entry(fleet_slot.clone())
+        .or_insert(DaemonInterface::Fleet);
+    let daemon_slots: Vec<serde_json::Value> = daemon_targets
+        .iter()
+        .map(|(target, interface)| {
+            serde_json::json!({
+                "name": interface.name(),
+                "tag": interface.tag(),
+                "link_id": target,
+            })
+        })
+        .collect();
+    let mut depends_on = serde_json::json!({ "daemon": daemon_slots });
     if !contract_slots.is_empty() {
-        manifest["depends_on"] = serde_json::json!({ "contracts": contract_slots });
+        depends_on["contracts"] = serde_json::json!(contract_slots);
     }
+    let manifest = serde_json::json!({
+        "name": name.as_str(),
+        "tag": tag,
+        "depends_on": depends_on,
+    });
     let document = serde_json::json!({
         "peppy_schema": "node/v1",
         "manifest": manifest,
@@ -564,7 +605,42 @@ pub fn plan_deployment(
         exposures: validated,
         addressing,
         targets,
+        fleet_slot,
     })
+}
+
+/// The link id of the daemon slot of `fleet:v1` of a deployment of
+/// `exposures`, whose targets are `targets`: the target that names
+/// `fleet:v1`, or [`FLEET_SLOT`] when no target does. A target named
+/// [`FLEET_SLOT`] that names another source is refused.
+fn fleet_slot_of(
+    exposures: &[&PinnedExposure],
+    targets: &DeploymentTargets,
+) -> Result<String, McpDeploymentError> {
+    if let Some((target, _)) = targets
+        .daemon
+        .iter()
+        .find(|(_, interface)| **interface == DaemonInterface::Fleet)
+    {
+        return Ok(target.clone());
+    }
+    let taken = exposures.iter().find_map(|exposure| {
+        exposure
+            .document
+            .surface
+            .targets()
+            .into_iter()
+            .find(|(target, _, _)| target.as_str() == FLEET_SLOT)
+            .map(|(_, selection, _)| (exposure.reference(), selection.source.to_string()))
+    });
+    match taken {
+        Some((exposure, source_label)) => Err(McpDeploymentError::FleetSlotTaken {
+            target: FLEET_SLOT.to_owned(),
+            exposure: exposure.to_string(),
+            source_label,
+        }),
+        None => Ok(FLEET_SLOT.to_owned()),
+    }
 }
 
 /// What the daemon hands `peppy mcp serve`: the exposure documents to serve
@@ -870,7 +946,10 @@ mod tests {
         );
         assert_eq!(
             manifest["interfaces"]["services"]["consumes"],
-            serde_json::json!([{ "link_id": "front_camera", "name": "video_stream_info" }]),
+            serde_json::json!([
+                { "link_id": "fleet", "name": "check_move" },
+                { "link_id": "front_camera", "name": "video_stream_info" },
+            ]),
             "a member two exposures consume is declared once"
         );
         assert_eq!(
@@ -879,7 +958,10 @@ mod tests {
         );
         assert_eq!(
             manifest["interfaces"]["actions"]["consumes"],
-            serde_json::json!([{ "link_id": "recorder", "name": "record_episode" }])
+            serde_json::json!([
+                { "link_id": "fleet", "name": "changes" },
+                { "link_id": "recorder", "name": "record_episode" },
+            ])
         );
         assert_eq!(
             manifest["execution"]["parameters"]["port"],
@@ -1038,18 +1120,41 @@ mod tests {
     }
 
     #[test]
-    fn a_deployment_of_daemon_targets_alone_plans_with_no_slot() {
+    fn a_deployment_of_daemon_targets_alone_has_a_daemon_slot_per_target() {
         let plan = plan_deployment(&[framework_controls()], &[]).expect("plans with no contract");
         assert_eq!(plan.name.as_str(), "mcp_framework_controls_v1");
+        assert_eq!(
+            plan.fleet_slot, "fleet",
+            "the fleet target is the fleet slot"
+        );
         let manifest = serde_json::to_value(&plan.config).expect("serializes");
-        assert!(
-            manifest["manifest"].get("depends_on").is_none(),
-            "no slot, so no `depends_on`: {manifest}"
+        assert_eq!(
+            manifest["manifest"]["depends_on"],
+            serde_json::json!({
+                "daemon": [
+                    { "name": "fleet", "tag": "v1", "link_id": "fleet" },
+                    { "name": "stack_copies", "tag": "v1", "link_id": "stack" },
+                ],
+            }),
+            "no contract slot"
         );
         assert_eq!(
             manifest["interfaces"],
-            serde_json::json!({}),
-            "a daemon target consumes nothing"
+            serde_json::json!({
+                "services": { "consumes": [
+                    { "link_id": "fleet", "name": "check_move" },
+                    { "link_id": "fleet", "name": "clear_halt" },
+                    { "link_id": "fleet", "name": "halt" },
+                    { "link_id": "fleet", "name": "list" },
+                    { "link_id": "stack", "name": "list" },
+                ] },
+                "actions": { "consumes": [
+                    { "link_id": "fleet", "name": "changes" },
+                    { "link_id": "stack", "name": "join" },
+                    { "link_id": "stack", "name": "remove" },
+                ] },
+            }),
+            "the server consumes the members of its entries, and check_move and changes"
         );
         assert_eq!(
             manifest["execution"]["endpoints"],
@@ -1116,18 +1221,19 @@ mod tests {
             &[contract(CAMERA_CONTRACT)],
         )
         .expect("a fixed deployment serves both kinds of target");
-        let slots = &plan.config.manifest.depends_on.as_ref().unwrap().contracts;
-        let slot_ids: Vec<&str> = slots.iter().map(|slot| slot.link_id.as_str()).collect();
-        assert_eq!(
-            slot_ids,
-            ["front_camera"],
-            "the daemon target takes no slot"
-        );
-        let manifest = serde_json::to_value(&plan.config).expect("serializes");
-        assert_eq!(
-            manifest["interfaces"]["services"]["consumes"],
-            serde_json::json!([{ "link_id": "front_camera", "name": "video_stream_info" }])
-        );
+        let depends_on = plan.config.manifest.depends_on.as_ref().unwrap();
+        let slot_ids: Vec<&str> = depends_on
+            .contracts
+            .iter()
+            .map(|slot| slot.link_id.as_str())
+            .collect();
+        assert_eq!(slot_ids, ["front_camera"]);
+        let daemon_slot_ids: Vec<&str> = depends_on
+            .daemon
+            .iter()
+            .map(|slot| slot.link_id.as_str())
+            .collect();
+        assert_eq!(daemon_slot_ids, ["fleet", "stack"]);
         assert_eq!(
             plan.targets.linked,
             ["front_camera".to_owned()].into_iter().collect()
@@ -1135,6 +1241,44 @@ mod tests {
         assert_eq!(
             plan.targets.daemon.keys().collect::<Vec<_>>(),
             ["fleet", "stack"]
+        );
+    }
+
+    /// A deployment with no fleet target gets the fleet slot `fleet`, and
+    /// refuses a target of that name that names another source.
+    #[test]
+    fn the_planner_adds_the_fleet_slot_and_refuses_a_target_that_takes_its_name() {
+        let camera = |target: &str| {
+            exposure(&exposure_document(
+                "camera_only",
+                "v1",
+                target,
+                "rgb_camera",
+                None,
+                "video_stream_info",
+            ))
+        };
+        let plan = plan_deployment(&[camera("front_camera")], &[contract(CAMERA_CONTRACT)])
+            .expect("the exposure plans");
+        assert_eq!(plan.fleet_slot, FLEET_SLOT);
+        let depends_on = plan.config.manifest.depends_on.as_ref().unwrap();
+        assert_eq!(depends_on.daemon.len(), 1);
+        assert_eq!(depends_on.daemon[0].name.as_str(), "fleet");
+        assert_eq!(depends_on.daemon[0].link_id, FLEET_SLOT);
+        assert!(
+            plan.targets.daemon.is_empty(),
+            "the fleet slot is no target: the launcher gives it no scope"
+        );
+
+        let refusal = plan_deployment(&[camera("fleet")], &[contract(CAMERA_CONTRACT)])
+            .expect_err("a contract target takes the name of the fleet slot");
+        assert!(
+            matches!(&refusal, McpDeploymentError::FleetSlotTaken { target, .. } if target == "fleet"),
+            "{refusal}"
+        );
+        assert!(
+            refusal.to_string().contains("contract `rgb_camera:v1`"),
+            "{refusal}"
         );
     }
 
