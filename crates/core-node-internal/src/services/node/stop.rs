@@ -29,6 +29,7 @@ use super::common::unanswered;
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+#[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
 pub async fn listen_for_node_stop(
     messenger: &MessengerHandle,
     core_node_node: &str,

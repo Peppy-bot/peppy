@@ -11,20 +11,19 @@ use super::{
     unreachable_width,
 };
 use crate::bridges::{PreparedExposure, call_service, drive_goal, prepare};
-use crate::test_support::Events;
+use crate::test_support::{Events, LoopbackEndpoint};
 use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::repository::ManifestFingerprint;
 use message_codec::MessageCodec;
 use peppy_mcp_catalog::{ResolvedContract, build_exposure_bundle};
-use peppy_mcp_runtime::{ActionContext, ExposureServer, ExposureSet, ToolCall};
+use peppy_mcp_runtime::{ActionContext, ExposureServer, ToolCall};
 use peppylib::messaging::Failure;
 use peppylib::testing::{MockActionServerCore, MockPendingGoal, READINESS_TIMEOUT};
 use peppylib::types::Payload;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_util::sync::CancellationToken;
 
 /// The contract behind the endpoint: the gripper action of the bridge
 /// tests, with a result that says where the gripper is, the service that
@@ -133,9 +132,7 @@ fn result_codec() -> MessageCodec {
 /// The endpoint serving [`EXPOSURE`] on a loopback port, each call driven
 /// by the bridge to the mesh's providers.
 struct Endpoint {
-    url: String,
-    shutdown: CancellationToken,
-    served: tokio::task::JoinHandle<std::io::Result<()>>,
+    loopback: LoopbackEndpoint,
 }
 
 impl Endpoint {
@@ -189,6 +186,7 @@ impl Endpoint {
                             &producer,
                             call.input,
                             &context,
+                            None,
                         )
                         .await
                     }
@@ -196,62 +194,18 @@ impl Endpoint {
             );
         }
         let server = builder.build().expect("the catalog and the handlers agree");
-        let path = server.endpoint_path();
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("an OS-assigned loopback port binds");
-        let address = listener
-            .local_addr()
-            .expect("a bound listener has an address");
-        let set = ExposureSet::new(vec![server]).expect("one exposure composes");
-        let shutdown = CancellationToken::new();
-        let served = tokio::spawn(set.serve(listener, shutdown.clone()));
         Self {
-            url: format!("http://{address}{path}"),
-            shutdown,
-            served,
+            loopback: LoopbackEndpoint::serve(server).await,
         }
     }
 
-    /// Calls `tool` with `arguments` as a client without the tasks
-    /// extension, with `progress_token` when one is given. Returns once the
-    /// response headers arrive.
     fn call_tool(
         &self,
         tool: &str,
         arguments: Value,
         progress_token: Option<&str>,
     ) -> impl Future<Output = reqwest::Response> + Send + 'static {
-        let mut meta = json!({
-            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-            "io.modelcontextprotocol/clientInfo": { "name": "raw", "version": "0" },
-            "io.modelcontextprotocol/clientCapabilities": {},
-        });
-        if let Some(token) = progress_token {
-            meta["progressToken"] = json!(token);
-        }
-        let request = reqwest::Client::new()
-            .post(&self.url)
-            .header("content-type", "application/json")
-            .header("accept", "application/json, text/event-stream")
-            .header("mcp-protocol-version", "2026-07-28")
-            .header("mcp-method", "tools/call")
-            .header("mcp-name", tool)
-            .body(
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": { "name": tool, "arguments": arguments, "_meta": meta }
-                })
-                .to_string(),
-            );
-        async move {
-            tokio::time::timeout(READINESS_TIMEOUT, request.send())
-                .await
-                .expect("the response headers arrive")
-                .expect("the call opens")
-        }
+        self.loopback.call_tool(tool, arguments, progress_token)
     }
 
     /// Moves the gripper with a progress token. Returns once the response
@@ -263,10 +217,7 @@ impl Endpoint {
     /// The result of a call that carries no progress token, whose response
     /// is the result alone.
     async fn result_of(&self, tool: &str, arguments: Value) -> Value {
-        let mut events = Events::of(self.call_tool(tool, arguments, None).await);
-        let answer = events.next_message().await;
-        assert_eq!(answer["id"], 1, "{answer}");
-        answer["result"].clone()
+        self.loopback.answer_of(tool, arguments).await["result"].clone()
     }
 
     /// The entries of the record, newest first.
@@ -298,12 +249,7 @@ impl Endpoint {
 
     /// Stops the listener and settles the serve task.
     async fn stop(self) {
-        self.shutdown.cancel();
-        tokio::time::timeout(READINESS_TIMEOUT, self.served)
-            .await
-            .expect("the serve task ends once the token is cancelled")
-            .expect("the serve task does not panic")
-            .expect("serving the endpoint succeeds");
+        self.loopback.stop().await;
     }
 }
 

@@ -166,6 +166,7 @@ fn prepared_task(mesh: &Mesh, feedback: Option<MessageCodec>) -> PreparedTask {
             gripper_failure_kinds(),
         ),
         feedback_bound: DEFAULT_FEEDBACK_BOUND,
+        moves_robot: false,
     }
 }
 
@@ -198,6 +199,7 @@ async fn drive(
         &mesh.producer,
         json!({}),
         surface,
+        None,
     )
     .await
 }
@@ -228,6 +230,7 @@ fn drive_paused(mesh: &Mesh, task: PreparedTask, surface: Arc<ScriptedSurface>) 
                 &producer,
                 json!({}),
                 surface.as_ref(),
+                None,
             )
             .await
         },
@@ -829,6 +832,7 @@ async fn a_slow_client_makes_the_goal_overflow_and_the_call_fail_with_the_loss()
                 &producer,
                 json!({}),
                 surface.as_ref(),
+                None,
             )
             .await
         }
@@ -883,6 +887,7 @@ fn prepared_tool(contract: &SenderTarget) -> PreparedTool {
             gripper_failure_kinds(),
         ),
         deadline: DEADLINE,
+        moves_robot: false,
     }
 }
 

@@ -10,9 +10,6 @@ edition.workspace = true
 
 [dependencies]
 config = { workspace = true }
-# The stack list and the goals of the daemon bridge, and the daemon's busy
-# text.
-core-node-api = { workspace = true }
 daemon-config = { workspace = true }
 # The type-erased topic, service and action clients, and the codec they
 # convert with.
@@ -21,13 +18,12 @@ message-codec = { workspace = true }
 peppy-mcp-catalog = { workspace = true }
 # The endpoint: policies, tasks, sessions, one listener for the set.
 peppy-mcp-runtime = { workspace = true }
+# The lock of the follow of the changes of the fleet.
+parking_lot = { workspace = true }
 # The node lifecycle: the daemon-managed session, health and shutdown
 # services, the sim-time-aware clock.
 peppylib = { workspace = true }
 schemars = "1.2"
-# The goal path the daemon bridge shares with the CLI: one way to send a stack
-# goal, follow it and read its result, and the default budgets of a join.
-stack-goal = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2.0"

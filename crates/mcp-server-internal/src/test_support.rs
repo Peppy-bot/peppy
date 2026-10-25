@@ -1,11 +1,13 @@
-//! What the tests of the node bridges and of the daemon bridge share: the
-//! runtime surface of a task, scripted, a runtime whose clock moves only
-//! when the test advances it, and the reader of a call's event stream.
+//! What the tests of the bridges share: the runtime surface of a task,
+//! scripted, a runtime whose clock moves only when the test advances it, an
+//! exposure served on a loopback port, and the reader of a call's event
+//! stream.
 
 use crate::bridges::TaskSurface;
+use peppy_mcp_runtime::{ExposureServer, ExposureSet};
 use peppylib::messaging::MessengerHandle;
 use peppylib::testing::READINESS_TIMEOUT;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::future::Future;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -279,5 +281,95 @@ impl Events {
             let text = std::str::from_utf8(&chunk).expect("server-sent events are text");
             self.unread.push_str(&text.replace("\r\n", "\n"));
         }
+    }
+}
+
+/// One exposure served on a loopback port, as `serve` serves it, which a
+/// test calls with raw HTTP requests, so it reads the response stream of
+/// the call itself.
+pub(crate) struct LoopbackEndpoint {
+    url: String,
+    shutdown: CancellationToken,
+    served: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+impl LoopbackEndpoint {
+    /// Serves `server` on a port that the operating system gives.
+    pub(crate) async fn serve(server: ExposureServer) -> Self {
+        let path = server.endpoint_path();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("an OS-assigned loopback port binds");
+        let address = listener
+            .local_addr()
+            .expect("a bound listener has an address");
+        let set = ExposureSet::new(vec![server]).expect("one exposure composes");
+        let shutdown = CancellationToken::new();
+        let served = tokio::spawn(set.serve(listener, shutdown.clone()));
+        Self {
+            url: format!("http://{address}{path}"),
+            shutdown,
+            served,
+        }
+    }
+
+    /// Calls `tool` with `arguments` as a client without the tasks
+    /// extension, with `progress_token` when one is given. Returns once the
+    /// response headers arrive.
+    pub(crate) fn call_tool(
+        &self,
+        tool: &str,
+        arguments: Value,
+        progress_token: Option<&str>,
+    ) -> impl Future<Output = reqwest::Response> + Send + 'static {
+        let mut meta = json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": { "name": "raw", "version": "0" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+        });
+        if let Some(token) = progress_token {
+            meta["progressToken"] = json!(token);
+        }
+        let request = reqwest::Client::new()
+            .post(&self.url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-protocol-version", "2026-07-28")
+            .header("mcp-method", "tools/call")
+            .header("mcp-name", tool)
+            .body(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": { "name": tool, "arguments": arguments, "_meta": meta }
+                })
+                .to_string(),
+            );
+        async move {
+            tokio::time::timeout(READINESS_TIMEOUT, request.send())
+                .await
+                .expect("the response headers arrive")
+                .expect("the call opens")
+        }
+    }
+
+    /// The JSON-RPC answer of a call that carries no progress token, whose
+    /// response is the answer alone.
+    pub(crate) async fn answer_of(&self, tool: &str, arguments: Value) -> Value {
+        let mut events = Events::of(self.call_tool(tool, arguments, None).await);
+        let answer = events.next_message().await;
+        assert_eq!(answer["id"], 1, "{answer}");
+        answer
+    }
+
+    /// Stops the listener and settles the serve task.
+    pub(crate) async fn stop(self) {
+        self.shutdown.cancel();
+        tokio::time::timeout(READINESS_TIMEOUT, self.served)
+            .await
+            .expect("the serve task ends once the token is cancelled")
+            .expect("the serve task does not panic")
+            .expect("serving the endpoint succeeds");
     }
 }

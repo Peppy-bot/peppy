@@ -1,20 +1,24 @@
-//! The node bridges, between each catalog entry of a contract target and
-//! the contract member behind it, the one validation bound the entry to: a
-//! codec per message side laid out when the process starts, and the
-//! type-erased clients driven at request time against the producers the
-//! launcher bound to the entry's target. [`prepare`] hands the entries of a
-//! daemon target to the daemon bridge (see [`crate::daemon_bridge`]).
+//! The bridges, between each catalog entry and the member behind it, the
+//! one validation bound the entry to: a codec per message side laid out when
+//! the process starts, and the type-erased clients driven at request time
+//! against the producers bound to the entry's target. The launcher binds the
+//! producers of a contract target, and the daemon binds the daemon that
+//! serves a daemon interface to a daemon target, so an entry of a daemon
+//! target is a call of that interface as any other. Each call of a member
+//! with the mark `moves_robot` keeps the fleet rules (see [`crate::moves`]).
 
-use crate::daemon_bridge::{DaemonTask, DaemonTool};
+use crate::moves::{MarkedGoal, MarkedSurface, MoveRefused, MoveRules, follow_unwaited_goal};
 use crate::serve::ServeError;
 use config::node::MessageFormat;
+use daemon_config::daemon_interface::DaemonInterface;
 use message_codec::MessageCodec;
 use message_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding,
     ServiceClient, TopicConsumer,
 };
 use peppy_mcp_catalog::{
-    BundleContractPin, ExposureBundle, GoalBound, MemberSource, ValidatedExposure,
+    BundleDaemonTarget, DaemonInterfaceRef, ExposureBundle, GoalBound, MemberSource,
+    ValidatedExposure,
 };
 use peppy_mcp_runtime::{
     ActionContext, ActionExit, CancelledGoal, ProviderFailure, Recipient, ResourceIngest, ToolCall,
@@ -39,24 +43,34 @@ use tokio::time::{Instant, Sleep};
 mod tests;
 
 /// One exposure ready to serve: its catalog and the bridge behind every
-/// entry. The entries of contract targets go to the node bridges of this
-/// module, and the entries of daemon targets to the daemon bridge.
+/// entry.
 pub(crate) struct PreparedExposure {
     pub bundle: ExposureBundle,
     pub resources: Vec<PreparedResource>,
     pub tools: Vec<PreparedTool>,
     pub tasks: Vec<PreparedTask>,
-    pub daemon_tools: Vec<DaemonTool>,
-    pub daemon_tasks: Vec<DaemonTask>,
 }
 
-/// Which member of which slot an entry reaches: the target the launcher
-/// bound, the contract the slot pins, the member's name in it.
+impl PreparedExposure {
+    /// Drops the tools and the tasks that the catalog no longer publishes:
+    /// those of a vacant daemon target (see
+    /// [`crate::daemon_scopes::DaemonScopes::narrow`]).
+    pub(crate) fn drop_unpublished_entries(&mut self) {
+        let bundle = &self.bundle;
+        self.tools
+            .retain(|tool| bundle.tools.iter().any(|entry| entry.name == tool.name));
+        self.tasks
+            .retain(|task| bundle.tasks.iter().any(|entry| entry.name == task.name));
+    }
+}
+
+/// Which member of which slot an entry reaches: the target, the contract or
+/// the daemon interface behind it, the member's name in it.
 #[derive(Debug, Clone)]
 pub(crate) struct Binding {
-    /// The contract slot's link id, which the launcher's `links` filled.
+    /// The slot's link id: the name of the target.
     pub target: String,
-    /// The contract as producers serve it.
+    /// The contract or the daemon interface as its producers serve it.
     pub contract: SenderTarget,
     pub member: String,
 }
@@ -84,6 +98,8 @@ pub(crate) struct PreparedTool {
     pub binding: Binding,
     pub client: ServiceClient,
     pub deadline: Duration,
+    /// Whether the member has the mark `moves_robot`.
+    pub moves_robot: bool,
 }
 
 pub(crate) struct PreparedTask {
@@ -95,6 +111,8 @@ pub(crate) struct PreparedTask {
     /// How many feedback messages of a goal may wait unread before the
     /// goal's handle cancels it: peppylib's default.
     pub feedback_bound: FeedbackBound,
+    /// Whether the member has the mark `moves_robot`.
+    pub moves_robot: bool,
 }
 
 /// How the bridge follows a goal to its end: the tool's bound, together
@@ -134,18 +152,54 @@ impl GoalFollow {
     }
 }
 
-impl Binding {
-    /// The binding of `member` through `slot`, the contract slot the
-    /// launcher's `links` fill.
-    fn new(slot: &BundleContractPin, member: &str) -> Result<Self, ServeError> {
-        let contract =
-            SenderTarget::contract(&slot.name, &slot.tag).map_err(peppylib::PeppyError::from)?;
+/// What a target draws from: a contract that its slot pins, or a daemon
+/// interface that this peppy serves.
+struct Source {
+    /// `name:tag`, which keys the codecs of its members.
+    label: String,
+    contract: SenderTarget,
+}
+
+impl Source {
+    fn of(source: &MemberSource) -> Result<Self, ServeError> {
+        let (name, tag) = match source {
+            MemberSource::Slot(slot) => (slot.name.clone(), slot.tag.clone()),
+            MemberSource::Daemon(daemon) => {
+                let interface = interface_of(daemon)?;
+                (interface.name().to_owned(), interface.tag().to_owned())
+            }
+        };
+        let contract = SenderTarget::contract(&name, &tag).map_err(peppylib::PeppyError::from)?;
         Ok(Self {
-            target: slot.link_id.clone(),
+            label: format!("{name}:{tag}"),
             contract,
-            member: member.to_owned(),
         })
     }
+
+    /// The binding of `member` of this source through the slot `target`.
+    fn binding(&self, target: &str, member: &str) -> Binding {
+        Binding {
+            target: target.to_owned(),
+            contract: self.contract.clone(),
+            member: member.to_owned(),
+        }
+    }
+}
+
+/// The interface a daemon target names, which planning already found this
+/// peppy serves.
+fn interface_of(daemon: &BundleDaemonTarget) -> Result<DaemonInterface, ServeError> {
+    let unserved = |reason: String| ServeError::UnservedDaemonInterface {
+        target: daemon.target.clone(),
+        reason,
+    };
+    let name =
+        config::runtime::Name::new(&daemon.name).map_err(|error| unserved(error.to_string()))?;
+    DaemonInterface::served(&DaemonInterfaceRef {
+        name,
+        tag: daemon.tag.clone(),
+    })
+    .map_err(|error| unserved(error.to_string()))
 }
 
 /// The codecs of one deployment, laid out once per member side: the same
@@ -191,24 +245,21 @@ impl Codecs {
     }
 }
 
-/// One message side of a contract member, as a catalog entry reaches it:
-/// both the memo key and the label of its codec derive from it, so the two
-/// always name the same side.
+/// One message side of a member, as a catalog entry reaches it: both the
+/// memo key and the label of its codec derive from it, so the two always
+/// name the same side.
 struct MemberSide<'a> {
-    slot: &'a BundleContractPin,
+    source: &'a Source,
     target: &'a str,
     member: &'a str,
     side: &'static str,
 }
 
 impl MemberSide<'_> {
-    /// The memo key of the side: the contract's pinned identity, the
-    /// member, the side.
+    /// The memo key of the side: the identity of the contract or the
+    /// interface, the member, the side.
     fn memo_key(&self) -> String {
-        format!(
-            "{}:{}/{}/{}",
-            self.slot.name, self.slot.tag, self.member, self.side
-        )
+        format!("{}/{}/{}", self.source.label, self.member, self.side)
     }
 
     /// The label of the side's codec, which a layout error names.
@@ -217,9 +268,8 @@ impl MemberSide<'_> {
     }
 }
 
-/// Prepares every exposure: for each entry of a contract target, the
-/// codecs of the contract member validation bound it to; for each entry of
-/// a daemon target, the daemon function behind it.
+/// Prepares every exposure: for each entry, the codecs of the member that
+/// validation bound it to, of a contract or of a daemon interface.
 pub(crate) fn prepare(
     exposures: Vec<ValidatedExposure>,
 ) -> Result<Vec<PreparedExposure>, ServeError> {
@@ -229,18 +279,16 @@ pub(crate) fn prepare(
     for exposure in exposures {
         let mut resources = Vec::with_capacity(exposure.bundle.resources.len());
         for (entry, bound) in exposure.resources() {
-            let slot = match &bound.source {
-                MemberSource::Slot(slot) => slot,
-                MemberSource::Daemon(daemon) => {
-                    return Err(ServeError::DaemonResource {
-                        resource: entry.name.clone(),
-                        target: daemon.target.clone(),
-                    });
-                }
-            };
+            if let MemberSource::Daemon(daemon) = &bound.source {
+                return Err(ServeError::DaemonResource {
+                    resource: entry.name.clone(),
+                    target: daemon.target.clone(),
+                });
+            }
+            let source = Source::of(&bound.source)?;
             let topic = &bound.member;
             let side = MemberSide {
-                slot,
+                source: &source,
                 target: &entry.target,
                 member: &entry.member,
                 side: "topic",
@@ -249,32 +297,25 @@ pub(crate) fn prepare(
             let codec = codecs.lay_out(&side, format)?;
             resources.push(PreparedResource {
                 name: entry.name.clone(),
-                binding: Binding::new(slot, &entry.member)?,
+                binding: source.binding(&entry.target, &entry.member),
                 qos: topic.qos_profile.clone(),
                 codec,
             });
         }
 
         let mut tools = Vec::with_capacity(exposure.bundle.tools.len());
-        let mut daemon_tools = Vec::new();
         for (entry, bound) in exposure.tools() {
-            let slot = match &bound.source {
-                MemberSource::Slot(slot) => slot,
-                MemberSource::Daemon(daemon) => {
-                    daemon_tools.push(DaemonTool::new(entry, daemon)?);
-                    continue;
-                }
-            };
+            let source = Source::of(&bound.source)?;
             let service = &bound.member;
             let member_side = |side| MemberSide {
-                slot,
+                source: &source,
                 target: &entry.target,
                 member: &entry.member,
                 side,
             };
             tools.push(PreparedTool {
                 name: entry.name.clone(),
-                binding: Binding::new(slot, &entry.member)?,
+                binding: source.binding(&entry.target, &entry.member),
                 client: ServiceClient::new(
                     codecs.optional(
                         &member_side("request"),
@@ -287,22 +328,16 @@ pub(crate) fn prepare(
                     bound.failure_kinds.clone(),
                 ),
                 deadline: Duration::from_millis(entry.deadline_ms.get()),
+                moves_robot: bound.marks.moves_robot(),
             });
         }
 
         let mut tasks = Vec::with_capacity(exposure.bundle.tasks.len());
-        let mut daemon_tasks = Vec::new();
         for (entry, bound) in exposure.tasks() {
-            let slot = match &bound.source {
-                MemberSource::Slot(slot) => slot,
-                MemberSource::Daemon(daemon) => {
-                    daemon_tasks.push(DaemonTask::new(entry, daemon)?);
-                    continue;
-                }
-            };
+            let source = Source::of(&bound.source)?;
             let action = &bound.member;
             let member_side = |side| MemberSide {
-                slot,
+                source: &source,
                 target: &entry.target,
                 member: &entry.member,
                 side,
@@ -321,7 +356,7 @@ pub(crate) fn prepare(
             })?;
             tasks.push(PreparedTask {
                 name: entry.name.clone(),
-                binding: Binding::new(slot, &entry.member)?,
+                binding: source.binding(&entry.target, &entry.member),
                 client: ActionClient::new(
                     codecs.optional(
                         &member_side("goal"),
@@ -342,6 +377,7 @@ pub(crate) fn prepare(
                 ),
                 follow,
                 feedback_bound: DEFAULT_FEEDBACK_BOUND,
+                moves_robot: bound.marks.moves_robot(),
             });
         }
 
@@ -350,8 +386,6 @@ pub(crate) fn prepare(
             resources,
             tools,
             tasks,
-            daemon_tools,
-            daemon_tasks,
         });
     }
     Ok(prepared)
@@ -428,28 +462,70 @@ fn feed<E: std::fmt::Display>(
     true
 }
 
-/// The producer a call goes to: the member the runtime routed it to on a
-/// per-robot surface, the producer the launcher bound on a fixed one.
-fn producer_of(node_runner: &NodeRunner, target: &str, recipient: Recipient) -> ProducerRef {
-    match recipient {
-        Recipient::Member(member) => ProducerRef::new(member.core_node, member.instance_id),
-        Recipient::BoundProducer => node_runner.processor().sole_bound_producer(target).clone(),
+/// How the handlers of a server reach the producers: its session, the
+/// identity it calls as, the producer bound to each target, and its fleet
+/// rules.
+#[derive(Clone)]
+pub(crate) struct Route {
+    pub messenger: MessengerHandle,
+    pub identity: ConsumerIdentity,
+    /// The producer bound to the fixed target that names it.
+    pub bound_producer: Arc<dyn Fn(&str) -> ProducerRef + Send + Sync>,
+    pub rules: MoveRules,
+}
+
+impl Route {
+    /// The route of the server that `node_runner` runs, as `identity`.
+    pub(crate) fn of_node(
+        node_runner: &Arc<NodeRunner>,
+        identity: ConsumerIdentity,
+        rules: MoveRules,
+    ) -> Self {
+        let node_runner = Arc::clone(node_runner);
+        Self {
+            messenger: node_runner.messenger().clone(),
+            identity,
+            bound_producer: Arc::new(move |target| {
+                node_runner.processor().sole_bound_producer(target).clone()
+            }),
+            rules,
+        }
+    }
+
+    /// The producer a call goes to: the member the runtime routed it to on
+    /// a per-robot surface, the producer bound to the target on a fixed one.
+    fn producer_of(&self, target: &str, recipient: Recipient) -> ProducerRef {
+        match recipient {
+            Recipient::Member(member) => ProducerRef::new(member.core_node, member.instance_id),
+            Recipient::BoundProducer => (self.bound_producer)(target),
+        }
     }
 }
 
-/// Calls the service behind a tool on the producer the call goes to.
+/// Calls the service behind a tool on the producer the call goes to. A
+/// member that moves a robot is called only when the daemon allows it (see
+/// [`MoveRules::check`]).
 pub(crate) async fn call_tool(
     tool: &PreparedTool,
-    node_runner: &NodeRunner,
-    identity: &ConsumerIdentity,
+    route: &Route,
     call: ToolCall,
 ) -> Result<Value, ToolCallError> {
     let binding = tool.binding.member_binding();
-    let producer = producer_of(node_runner, &tool.binding.target, call.recipient);
+    let producer = route.producer_of(&tool.binding.target, call.recipient);
+    if tool.moves_robot {
+        route
+            .rules
+            .check(&producer)
+            .await
+            .map_err(|refused| match refused {
+                MoveRefused::Refused(failure) => ToolCallError::Failed(failure),
+                MoveRefused::Unanswered(message) => ToolCallError::Unavailable(message),
+            })?;
+    }
     call_service(
         tool,
-        node_runner.messenger(),
-        identity,
+        &route.messenger,
+        &route.identity,
         &binding,
         &producer,
         &call.input,
@@ -530,24 +606,47 @@ impl TaskSurface for ActionContext {
 }
 
 /// Runs the action behind an action-backed tool on the producer the call
-/// goes to.
+/// goes to. A goal on a member that moves a robot is sent only when the
+/// daemon allows it (see [`MoveRules::check`]); a halt of the stack cancels
+/// it, and the bridge follows it until it ends (see
+/// [`MoveRules::follow_marked_goal`]).
 pub(crate) async fn run_task(
     task: &PreparedTask,
-    node_runner: &NodeRunner,
-    identity: &ConsumerIdentity,
+    route: &Route,
     call: ToolCall,
     context: ActionContext,
 ) -> Result<Value, ActionExit> {
     let binding = task.binding.member_binding();
-    let producer = producer_of(node_runner, &task.binding.target, call.recipient);
+    let producer = route.producer_of(&task.binding.target, call.recipient);
+    let (messenger, identity) = (&route.messenger, &route.identity);
+    if !task.moves_robot {
+        return drive_goal(
+            task, messenger, identity, &binding, &producer, call.input, &context, None,
+        )
+        .await;
+    }
+    route
+        .rules
+        .check(&producer)
+        .await
+        .map_err(|refused| match refused {
+            MoveRefused::Refused(failure) => ActionExit::Refused(failure),
+            MoveRefused::Unanswered(message) => ActionExit::Error(message),
+        })?;
+    let marked = route.rules.follow_marked_goal();
+    let surface = MarkedSurface {
+        client: &context,
+        marked: &marked,
+    };
     drive_goal(
         task,
-        node_runner.messenger(),
+        messenger,
         identity,
         &binding,
         &producer,
         call.input,
-        &context,
+        &surface,
+        Some(marked.clone()),
     )
     .await
 }
@@ -578,6 +677,11 @@ pub(crate) async fn run_task(
 /// the goal, the bridge follows it to its end, and the call fails with the
 /// loss (see [`feedback_overflowed`]).
 ///
+/// A goal on a member that moves a robot, `keep_following`, is not
+/// cancelled when the bridge stops following it before it ended: a task
+/// of its own follows it until it ends, and a halt of the stack cancels it
+/// (see [`follow_unwaited_goal`]).
+///
 /// The tool's bound decides how long the bridge follows the goal:
 ///
 /// - A whole-goal deadline is spent by every await from the moment the goal
@@ -595,6 +699,7 @@ pub(crate) async fn run_task(
 /// on a goal whose admission it did not read: peppylib cancels the goal of
 /// a request that its provider acknowledged and did not answer in time,
 /// and a request that reached no provider started no goal.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn drive_goal(
     task: &PreparedTask,
     messenger: &MessengerHandle,
@@ -603,6 +708,7 @@ pub(crate) async fn drive_goal(
     producer: &ProducerRef,
     input: Value,
     surface: &impl TaskSurface,
+    keep_following: Option<MarkedGoal>,
 ) -> Result<Value, ActionExit> {
     let started = Instant::now();
     // Admission is the first wait under either bound: the whole deadline,
@@ -627,7 +733,7 @@ pub(crate) async fn drive_goal(
     if let Some(refusal) = handle.refusal() {
         return Err(ActionExit::Refused(provider_failure(refusal)));
     }
-    let mut goal = FollowedGoal::new(handle, messenger);
+    let mut goal = FollowedGoal::new(handle, messenger, keep_following);
 
     match task.follow {
         GoalFollow::WholeGoal {
@@ -653,34 +759,62 @@ pub(crate) async fn drive_goal(
 /// of the goal's feedback finds that the bridge fell behind, or when the
 /// follow ends before the bridge read the end of the goal: the guard of the
 /// goal sends it from a task of its own as it is dropped, so no goal runs
-/// on with no one following it.
+/// on with no one following it. A goal on a member that moves a robot gets
+/// no cancel when the follow ends: a task of its own follows it on (see
+/// [`follow_unwaited_goal`]).
 struct FollowedGoal<'m> {
-    handle: GoalHandle,
+    /// The goal, held until the follow drops.
+    handle: Option<GoalHandle>,
     messenger: &'m MessengerHandle,
     stop_cancel: CancelOnDrop,
+    /// Whether the bridge read the end of the goal.
+    end_read: bool,
+    /// Whether the goal got its one cancel.
+    cancel_sent: bool,
+    /// A goal on a member that moves a robot, which stays followed until it
+    /// ends.
+    keep_following: Option<MarkedGoal>,
 }
 
 impl<'m> FollowedGoal<'m> {
-    fn new(handle: GoalHandle, messenger: &'m MessengerHandle) -> Self {
+    fn new(
+        handle: GoalHandle,
+        messenger: &'m MessengerHandle,
+        keep_following: Option<MarkedGoal>,
+    ) -> Self {
         let stop_cancel = handle.cancel_on_drop("the endpoint stopped following the goal");
         Self {
-            handle,
+            handle: Some(handle),
             messenger,
             stop_cancel,
+            end_read: false,
+            cancel_sent: false,
+            keep_following,
         }
     }
 
+    fn handle(&self) -> &GoalHandle {
+        self.handle
+            .as_ref()
+            .expect("the follow holds its goal until it drops")
+    }
+
     fn goal_id(&self) -> &str {
-        self.handle.goal_id()
+        self.handle().goal_id()
     }
 
     /// The next step of the goal's feedback stream (see
     /// [`next_feedback_step`]). The handle cancels a goal whose feedback
     /// overflowed itself.
     async fn next_feedback_step(&mut self) -> FeedbackStep {
-        let step = next_feedback_step(&mut self.handle).await;
+        let handle = self
+            .handle
+            .as_mut()
+            .expect("the follow holds its goal until it drops");
+        let step = next_feedback_step(handle).await;
         if let FeedbackStep::Overflowed { .. } = step {
             self.stop_cancel.disarm();
+            self.cancel_sent = true;
         }
         step
     }
@@ -688,9 +822,10 @@ impl<'m> FollowedGoal<'m> {
     /// Requests the goal's end, waiting at most `deadline`. The end read,
     /// the goal needs no cancel.
     async fn result(&mut self, deadline: Duration) -> Result<GoalOutcome, ConsumerError> {
-        let outcome = self.handle.result(self.messenger, deadline).await;
+        let outcome = self.handle().result(self.messenger, deadline).await;
         if outcome.is_ok() {
             self.stop_cancel.disarm();
+            self.end_read = true;
         }
         outcome
     }
@@ -699,7 +834,31 @@ impl<'m> FollowedGoal<'m> {
     /// most `deadline` for its answer. It is the one cancel of the goal.
     async fn cancel(&mut self, deadline: Duration) -> Result<CancelState, ConsumerError> {
         self.stop_cancel.disarm();
-        self.handle.cancel(self.messenger, deadline).await
+        self.cancel_sent = true;
+        self.handle().cancel(self.messenger, deadline).await
+    }
+}
+
+impl Drop for FollowedGoal<'_> {
+    fn drop(&mut self) {
+        if self.end_read {
+            return;
+        }
+        let Some(marked) = self.keep_following.take() else {
+            return;
+        };
+        let (Some(handle), Ok(runtime)) =
+            (self.handle.take(), tokio::runtime::Handle::try_current())
+        else {
+            return;
+        };
+        self.stop_cancel.disarm();
+        runtime.spawn(follow_unwaited_goal(
+            handle,
+            self.messenger.clone(),
+            marked,
+            self.cancel_sent,
+        ));
     }
 }
 
@@ -852,8 +1011,14 @@ async fn settle_on_result(
         handle,
         messenger,
         stop_cancel,
+        end_read,
+        cancel_sent,
+        ..
     } = goal;
-    let (handle, messenger) = (&*handle, *messenger);
+    let handle = handle
+        .as_ref()
+        .expect("the follow holds its goal until it drops");
+    let messenger = *messenger;
     let result = handle.result(messenger, remaining());
     tokio::pin!(result);
     let mut cancel_forwarded = false;
@@ -862,12 +1027,14 @@ async fn settle_on_result(
             outcome = &mut result => {
                 if outcome.is_ok() {
                     stop_cancel.disarm();
+                    *end_read = true;
                 }
                 return outcome;
             }
             _ = surface.cancel_requested(), if !cancel_forwarded => {
                 cancel_forwarded = true;
                 stop_cancel.disarm();
+                *cancel_sent = true;
                 let _ = handle.cancel(messenger, remaining()).await;
             }
         }
@@ -875,8 +1042,7 @@ async fn settle_on_result(
 }
 
 /// The time since a progress-bound goal last showed a sign of progress,
-/// which may last one window at most. The node bridges and the daemon
-/// bridge both keep it.
+/// which may last one window at most.
 pub(crate) struct Silence {
     window: Duration,
     expiry: Pin<Box<Sleep>>,
@@ -899,11 +1065,6 @@ impl Silence {
     /// Resolves once the silence has lasted a whole window.
     pub(crate) async fn lasted_a_window(&mut self) {
         self.expiry.as_mut().await;
-    }
-
-    /// The most a silence lasts.
-    pub(crate) fn window(&self) -> Duration {
-        self.window
     }
 }
 

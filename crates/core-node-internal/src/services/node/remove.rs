@@ -25,6 +25,7 @@ use super::RelationshipCoordinators;
 use super::common::unanswered;
 use super::stop::{DoomedInstance, StopOutcome, await_exit_then_force_kill};
 
+#[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
 pub async fn listen_for_node_remove(
     messenger: &MessengerHandle,
     core_node_name: &str,
