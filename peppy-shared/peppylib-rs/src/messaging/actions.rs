@@ -1544,10 +1544,21 @@ struct GoalSlot {
     cancel: CancellationToken,
     /// The cause of the first cancel signal; later ones keep it.
     cancel_cause: Arc<OnceLock<CancelCause>>,
+    /// The tokens that the cancel signal cancels with `cancel`, each until
+    /// its link drops (see [`GoalContext::cancel_at_signal`]).
+    linked: Arc<StdMutex<LinkedTokens>>,
     state: Arc<TokioMutex<GoalState>>,
     /// Fast `is-terminal?` probe and the race guard that makes the first of
     /// `complete` / `fail` / `complete_cancelled` / abandon win.
     terminal: Arc<AtomicBool>,
+}
+
+/// The tokens linked to the cancel signal of one goal, each under the id of
+/// its [`CancelLink`].
+#[derive(Default)]
+struct LinkedTokens {
+    next_id: u64,
+    tokens: Vec<(u64, CancellationToken)>,
 }
 
 impl GoalSlot {
@@ -1555,6 +1566,7 @@ impl GoalSlot {
         Self {
             cancel: CancellationToken::new(),
             cancel_cause: Arc::new(OnceLock::new()),
+            linked: Arc::new(StdMutex::new(LinkedTokens::default())),
             state: Arc::new(TokioMutex::new(GoalState::Pending {
                 waiters: Vec::new(),
             })),
@@ -1567,14 +1579,57 @@ impl GoalSlot {
     }
 
     /// Delivers the cancel signal for `cause`, unless the goal already
-    /// received one.
+    /// received one, and cancels each token linked to it.
     fn signal_cancel(&self, cause: CancelCause) {
         let _ = self.cancel_cause.set(cause);
         self.cancel.cancel();
+        // `link` reads `cancel` under this lock: a token linked meanwhile is
+        // taken here, or `link` finds `cancel` cancelled and cancels it.
+        let linked = std::mem::take(&mut self.linked.lock().unwrap().tokens);
+        for (_, token) in linked {
+            token.cancel();
+        }
+    }
+
+    /// Links `token` to the cancel signal until the returned link drops; a
+    /// goal that received its signal already cancels `token` at once.
+    fn link(&self, token: CancellationToken) -> CancelLink {
+        let mut linked = self.linked.lock().unwrap();
+        let id = linked.next_id;
+        linked.next_id += 1;
+        if self.cancel.is_cancelled() {
+            drop(linked);
+            token.cancel();
+        } else {
+            linked.tokens.push((id, token));
+        }
+        CancelLink {
+            linked: Arc::clone(&self.linked),
+            id,
+        }
     }
 
     fn cancel_cause(&self) -> Option<CancelCause> {
         self.cancel_cause.get().copied()
+    }
+}
+
+/// The link of a token to the cancel signal of a goal, from
+/// [`GoalContext::cancel_at_signal`]. The link ends when it drops: a later
+/// signal leaves the token as it is.
+#[must_use = "the link ends when it drops"]
+pub struct CancelLink {
+    linked: Arc<StdMutex<LinkedTokens>>,
+    id: u64,
+}
+
+impl Drop for CancelLink {
+    fn drop(&mut self) {
+        self.linked
+            .lock()
+            .unwrap()
+            .tokens
+            .retain(|(id, _)| *id != self.id);
     }
 }
 
@@ -2619,6 +2674,17 @@ impl GoalContext {
     /// the cancel at its next check.
     pub fn cancellation(&self) -> CancellationToken {
         self.slot.cancel.child_token()
+    }
+
+    /// Links `token` to the cancel signal of this goal until the returned
+    /// link drops: the signal cancels `token` as it cancels
+    /// [`Self::cancellation`], at the signal and before the engine answers
+    /// the cancel request, and a goal that received its signal already
+    /// cancels `token` at once. `token` keeps its own parent, so work whose
+    /// token another source cancels too reads both causes from it, the
+    /// reads of a poll in progress at the answer included.
+    pub fn cancel_at_signal(&self, token: impl Into<CancellationToken>) -> CancelLink {
+        self.slot.link(token.into())
     }
 
     /// Why this goal received its cancel signal; `None` before it did.
@@ -3818,6 +3884,50 @@ mod engine_tests {
             .await
             .unwrap();
         assert!(cancellation.is_cancelled());
+    }
+
+    /// A token linked to a goal is cancelled once the engine answers the
+    /// cancel request, with no poll of the goal's task in between, and the
+    /// signal reaches no parent of the token; a token whose link dropped is
+    /// left as it is.
+    #[tokio::test(start_paused = true)]
+    async fn a_linked_token_is_cancelled_when_the_cancel_is_answered() {
+        let session = mock_session().await;
+        let mut action = expose_on(&process_on(&session)).await;
+        let caller = process_on(&session);
+        let (goal, context) = send_and_accept(&caller, &mut action).await;
+        let parent = CancellationToken::new();
+        let linked = parent.child_token();
+        let unlinked = CancellationToken::new();
+        let _link = context.cancel_at_signal(linked.clone());
+        drop(context.cancel_at_signal(unlinked.clone()));
+
+        ActionMessenger::cancel_goal(&caller, &goal, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(linked.is_cancelled(), "the answer cancels the linked token");
+        assert!(
+            !unlinked.is_cancelled(),
+            "a token whose link dropped is left as it is"
+        );
+        assert!(!parent.is_cancelled(), "the signal reaches no parent");
+    }
+
+    /// A token linked to a goal that received its cancel signal already is
+    /// cancelled at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_token_linked_after_the_signal_is_cancelled_at_once() {
+        let session = mock_session().await;
+        let mut action = expose_on(&process_on(&session)).await;
+        let caller = process_on(&session);
+        let (goal, context) = send_and_accept(&caller, &mut action).await;
+        ActionMessenger::cancel_goal(&caller, &goal, Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        let token = CancellationToken::new();
+        let _link = context.cancel_at_signal(token.clone());
+        assert!(token.is_cancelled());
     }
 
     /// A cancel of the caller reaches the worker with the cause `Caller`; the
