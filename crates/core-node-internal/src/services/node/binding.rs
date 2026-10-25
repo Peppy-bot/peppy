@@ -11,10 +11,6 @@ use peppylib::MessengerHandle;
 use peppylib::encoding::binding_update::BindingUpdateRequest;
 use peppylib::messaging::BINDING_UPDATE_SERVICE;
 use std::sync::Arc;
-use std::time::Duration;
-
-/// How long a single `binding_update` delivery may take before it is abandoned.
-pub(crate) const BINDING_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct BindingCoordinator {
     updates: SlotUpdateClient,
@@ -62,7 +58,7 @@ impl BindingCoordinator {
                 consumer_instance_id.as_str(),
                 BINDING_UPDATE_SERVICE,
                 payload,
-                BINDING_UPDATE_TIMEOUT,
+                self.updates.node_stack().reply_bounds().binding_update,
                 "binding_update rejected",
             )
             .await?;

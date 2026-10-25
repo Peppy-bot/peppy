@@ -71,5 +71,6 @@ node-stack = { path = ".", features = ["test-support"] }
 # For tests, this crate's and downstream crates': `action_log::test_support`,
 # the readers of the log file format; `FirstStart::fixture`;
 # `process_group_exists`, `process_group_size` and `FORKS_A_TERM_IGNORER`;
-# and the slot's `supervision`.
+# the slot's `supervision` and `shutdown_requested`; and
+# `InstanceTasks::ended`.
 test-support = []

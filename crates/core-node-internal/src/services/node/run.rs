@@ -1866,6 +1866,7 @@ async fn process_node_run(
         started_ctx,
         instance_id.clone(),
         endpoints.clone(),
+        ctx.action.node_stack.time().now(),
     )
     .await;
     match commit_result {
@@ -1901,6 +1902,13 @@ async fn process_node_run(
                 &tag,
                 launch_id.as_deref(),
             );
+            // A restart's line comes before the exit watcher exists, so the
+            // lines of an exit always follow it.
+            if let Some(respawn) = &respawn {
+                stack_log.record(&StackLogEvent::Restarted {
+                    attempt: respawn.attempt.get(),
+                });
+            }
 
             spawn_exit_watcher(ExitWatcherParams {
                 child: committed_child,
@@ -1931,12 +1939,6 @@ async fn process_node_run(
                 instance_done,
                 restart_policy: restart.declaration.policy(),
             });
-
-            if let Some(respawn) = &respawn {
-                stack_log.record(&StackLogEvent::Restarted {
-                    attempt: respawn.attempt.get(),
-                });
-            }
 
             // The instance is Running: notify the observation
             // coordinator. If this instance is a source, every slot
@@ -2359,11 +2361,11 @@ struct ExitWatcherParams {
     target: RestartTarget,
 }
 
-/// Spawns a background task that owns a committed node's [`Child`] and waits for
-/// its process to exit on its own. Closes the gap where a node that finishes its
-/// work and shuts itself down (a one-shot node), or that crashes, would
-/// otherwise stay `Running` forever, with only the health monitor flipping it to
-/// a misleading `unhealthy`. On every exit it sees, the host process group is
+/// Spawns a background task of the instance that owns a committed node's
+/// [`Child`] and waits for its process to exit on its own. Closes the gap
+/// where a node that finishes its work and shuts itself down (a one-shot
+/// node), or that crashes, would otherwise stay `Running` forever, with only
+/// the health monitor flipping it to a misleading `unhealthy`. On every exit it sees, the host process group is
 /// killed by the leader's pid, and a container's in-VM group while the slot
 /// still runs this process unclaimed; on a self-exit the exit is recorded on
 /// the slot (see [`NodeEntity::mark_instance_exited`]), logged and announced,
@@ -2384,7 +2386,9 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
         target,
     } = p;
 
-    tokio::spawn(async move {
+    let tasks = target.action.node_stack.instance_tasks().clone();
+    let instance_id = target.instance_id.clone();
+    tasks.spawn(&instance_id, async move {
         let instance_id_str = target.instance_id.as_str().to_owned();
         let action = &target.action;
 
@@ -2438,6 +2442,7 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
             group.pid,
             ExitCause::of(&status),
             &action.restart_backoff,
+            action.node_stack.time().now(),
             || action.relationships.take_registrations(&instance_id_str),
         ) else {
             return;
@@ -2565,6 +2570,7 @@ impl StartAbandon<'_> {
             started_ctx,
             reason,
             self.instance_id,
+            self.ctx.action.node_stack.time(),
         )
         .await;
         self.ctx.announcer.log().error(&msg);
@@ -2605,7 +2611,7 @@ impl StartAbandon<'_> {
             &self.ctx.action.core_node_name,
             &self.ctx.action.caller_instance_id,
             &target,
-            grace,
+            &self.ctx.action.node_stack,
         )
         .await;
         if outcome == StopOutcome::ForceKilled {

@@ -153,6 +153,8 @@ impl CoreNodeRunner {
             clock_publish_interval: Duration::from_millis(100),
             heartbeat_interval: DAEMON_HEARTBEAT_INTERVAL,
             name_claim_settle,
+            time_source: core_node::TimeSource::System,
+            reply_bounds: core_node::ReplyBounds::DEFAULT,
         };
         // Fail fast with a clean operator-facing message (no backtrace) when a
         // runtime prerequisite is missing. The library reports this as an error

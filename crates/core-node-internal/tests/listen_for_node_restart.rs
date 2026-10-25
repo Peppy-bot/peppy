@@ -3,17 +3,24 @@
 //! wait, the admission behind a stack change, the health kill, the pairs,
 //! observations and watchers a restart takes again with the peer daemons it
 //! asks, and the stops and removals of instances beside a restart.
+//!
+//! The supervision of each daemon here runs on a manual time, which only the
+//! test advances: a timer of the daemon (a probe of the health monitor, the
+//! wait of a restart, a force-kill deadline) fires only when the test moves
+//! the time past it, and the guard bounds of the daemon are out of reach. A
+//! test that checks that nothing more happens to an instance waits until the
+//! background tasks of the instance have ended. So no test waits for time to
+//! pass, and none depends on the speed of the host: the only time bound of a
+//! test is its wait for an event it expects.
 
 mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, GOAL_TIMEOUT, GoalEnd, Mock, RESULT_TIMEOUT, StartedCoreNode,
-    TEST_NODE_TAG, TIMEOUTS, WAIT, always, assert_failure, fast_health_monitor,
-    fast_health_monitor_with_kill, mocks, name, never, node_service_mock, on_failure,
-    peer_daemon_service, poll_until, poll_until_explained, run, run_plan, run_plan_with_env,
-    send_node_add_and_wait_with_force, send_node_add_then_build, settle, stack_log,
-    start_core_node_with_supervision, start_core_node_with_supervision_and_grace, state_of,
-    wait_for_state, write_peppy_json5,
+    TEST_NODE_TAG, TIMEOUTS, WAIT, always, assert_failure, mocks, name, never, node_service_mock,
+    on_failure, peer_daemon_service, poll_until, poll_until_explained, run, run_plan,
+    run_plan_with_env, send_node_add_and_wait_with_force, send_node_add_then_build, stack_log,
+    start_core_node_on_manual_time, state_of, wait_for_state, write_peppy_json5,
 };
 use config::failure_kind::PeppyFailureKind;
 use config::node::{Cardinality, RestartDeclaration, RestartOrigin, RestartPolicy, RestartRequest};
@@ -22,18 +29,17 @@ use config::runtime::{
     ProducerRef,
 };
 use core_node::test_support::{
-    EXIT_CLEANLY_ON_TERM, RESET_WINDOW, dump_runtime_config, framework_entry,
-    instant_restart_backoff, parked_restart_backoff, poll_file, resetting_restart_backoff,
-    signal_process,
+    EXIT_CLEANLY_ON_TERM, dump_runtime_config, framework_entry, instant_restart_backoff,
+    parked_restart_backoff, poll_file, signal_process,
 };
-use core_node::{HealthMonitorPolicy, ReserveOutcome, RestartBackoff};
+use core_node::{HealthMonitorPolicy, ManualTime, ReserveOutcome, RestartBackoff, TimeSource};
 use core_node_api::encoding::{
     FederationAck, NodeAddResult, NodeInfoRequest, NodeRemoveRequest, NodeRemoveResponse,
     NodeStopRequest, NodeStopResponse, StackResetRequest,
 };
 use core_node_api::{DaemonFailureKind, ExitCause, InstanceState, SerializedInstance};
 use node_stack::action_log::restart_separator;
-use node_stack::action_log::test_support::{lines_without_time, nth_newest_run_log, time_of};
+use node_stack::action_log::test_support::{lines_without_time, nth_newest_run_log};
 use peppylib::PeppyError;
 use peppylib::core_node::transport::{poll, poll_node_stop};
 use peppylib::messaging::{Failure, MessengerHandle, ServiceAnswer};
@@ -43,53 +49,50 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
+use tokio::sync::Semaphore;
 
-/// How long a test watches for something that must not happen.
-const QUIET: Duration = Duration::from_millis(1500);
 /// The messaging headroom a test waits beyond what the daemon takes for a
 /// request.
 const REQUEST_MARGIN: Duration = Duration::from_secs(5);
+/// The pause between two probes of the test monitor. Every time a test
+/// advances is whole seconds, so the monitors of a daemon probe together, at
+/// the same moments.
+const PROBE_INTERVAL: Duration = Duration::from_secs(1);
+/// The budget of one probe of the test monitor, on the manual time: a probe
+/// that no mock answers fails at once, and the test moves the time by a probe
+/// interval only while no probe is in flight.
+const PROBE_BUDGET: Duration = Duration::from_secs(30);
 /// The misses in a row that turn an instance unhealthy under the test
 /// monitor.
 const UNHEALTHY_AFTER: u32 = 3;
-/// One miss cycle of the test monitor: its 200 ms interval and 100 ms
-/// timeout.
-const MISS_CYCLE: Duration = Duration::from_millis(300);
-/// The seconds without an answered health check the killing test monitor
-/// kills after, as its lines print them.
-const KILL_AFTER_SECS: u64 = 2;
-/// [`KILL_AFTER_SECS`] as the monitor takes it. An instance turns unhealthy
-/// about 900 ms into its silence ([`UNHEALTHY_AFTER`] of [`MISS_CYCLE`])
-/// and is killed at the first miss past two seconds, 2.1 s in and 1.2 s
-/// after the edge; two monitors silenced together reach the kill within two
-/// cycles of each other.
+/// The seconds without an answered health check after which the killing test
+/// monitor kills, as its lines print them: past the unhealthy edge that the
+/// policy of a monitor allows for, its threshold of probe intervals and probe
+/// budgets.
+const KILL_AFTER_SECS: u64 = 100;
+/// [`KILL_AFTER_SECS`] as the monitor takes it. The monitor probes every
+/// [`PROBE_INTERVAL`], so an instance silent from a probe on turns unhealthy
+/// at the [`UNHEALTHY_AFTER`]th probe after it and is killed at the
+/// [`KILL_AFTER_SECS`]th.
 const KILL_AFTER: Duration = Duration::from_secs(KILL_AFTER_SECS);
-/// How long a test watches past the unhealthy edge for a kill that must not
-/// come: [`KILL_AFTER`] and two cycles of the test monitor.
-const PAST_THE_KILL: Duration = Duration::from_millis(2600);
+/// The probes after the last answered one at which a silent instance is
+/// killed.
+const PROBES_TO_THE_KILL: usize = KILL_AFTER_SECS as usize;
+/// The default cooperative-shutdown grace, which the daemons of these tests
+/// run under unless a test chooses the shortest one.
+const DEFAULT_GRACE_SECS: u64 = config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS;
 /// A process that runs until it is killed.
 const SLEEPER: &str = r#"["sleep", "300"]"#;
-/// A node whose output a process outside its group holds open, so a
-/// cancelled start's abort waits out its readers' bound before its slot
-/// leaves.
-const OUTPUT_HELD_OUTSIDE_THE_GROUP: &str = r#"["sh", "-c", "setsid sleep 20 & exec sleep 300"]"#;
 /// A node whose process ignores SIGTERM.
 const IGNORES_TERM: &str = r#"["sh", "-c", "trap '' TERM; while true; do sleep 0.2; done"]"#;
 /// The shortest grace the daemon takes (`lifecycle.shutdown_grace_secs` is
-/// at least 1), which the tests that wait out a force-kill deadline run under
-/// to keep it short.
+/// at least 1), which the tests whose nodes outlast a force-kill deadline run
+/// under.
 const SHORT_GRACE_SECS: u64 = 1;
 const PUBLISHER: &str = "sim_clock";
 const PUBLISHER_ID: &str = "sim_clock_inst";
 const READER: &str = "clocked";
 const READER_ID: &str = "clocked_inst";
-/// How long the slow instance of a removal takes to answer its shutdown
-/// request: inside the removal's 5 s shutdown poll, and past
-/// [`HELD_RESTART_DELAY`], so a restart due falls inside the removal.
-const SLOW_SHUTDOWN_ANSWER: Duration = Duration::from_secs(2);
-/// The wait of a restart a removal holds off: the removal starts well
-/// within it and lasts past it.
-const HELD_RESTART_DELAY: Duration = Duration::from_secs(1);
 /// The launch this daemon takes part in for the watcher tests.
 const LAUNCH: &str = "watched-launch";
 /// The daemon that watches the instances of the watcher tests.
@@ -148,21 +151,196 @@ fn error_reply(error: PeppyError, request: &str) -> Failure {
         .unwrap_or_else(|| panic!("{request} did not complete: {error}"))
 }
 
+/// A node whose output a process outside its group holds open as long as
+/// `holders` exists, so a cancelled start's abort waits out its readers'
+/// bound before its slot leaves. Once in a session of its own, the holder
+/// marks `<holders>/<pid of the node>.held`.
+fn output_held_outside_the_group(holders: &std::path::Path) -> String {
+    let holders = holders.display();
+    shell(&format!(
+        "setsid sh -c 'touch {holders}/$PPID.held; while [ -d {holders} ]; do sleep 0.1; done' \
+         & exec sleep 300"
+    ))
+}
+
+/// Waits until a process outside the group of the node process `pid`
+/// holds its output, as [`output_held_outside_the_group`] marks it.
+async fn wait_for_the_output_holder(holders: &std::path::Path, pid: u32) {
+    let held = holders.join(format!("{pid}.held"));
+    poll_until(WAIT, "a process outside the group holds the output", || {
+        held.exists().then_some(())
+    })
+    .await;
+}
+
 /// A process that exits cleanly on SIGTERM.
 fn clean_on_term() -> String {
     format!(r#"["sh", "-c", "{EXIT_CLEANLY_ON_TERM}"]"#)
 }
 
-/// A daemon with the case's backoff and the test health monitor, which
-/// probes every 200 ms and turns an instance unhealthy at the
-/// [`UNHEALTHY_AFTER`]th miss.
+/// A daemon on manual time with the case's backoff, the test monitor and
+/// the default grace.
 async fn daemon(backoff: RestartBackoff) -> StartedCoreNode {
-    start_core_node_with_supervision(fast_health_monitor(UNHEALTHY_AFTER), backoff).await
+    daemon_with(test_monitor(), backoff, DEFAULT_GRACE_SECS).await
+}
+
+/// A daemon on manual time with `monitor`, `backoff` and a shutdown grace of
+/// `grace_secs`.
+async fn daemon_with(
+    monitor: HealthMonitorPolicy,
+    backoff: RestartBackoff,
+    grace_secs: u64,
+) -> StartedCoreNode {
+    start_core_node_on_manual_time(monitor, backoff, grace_secs).await
+}
+
+/// The test monitor: it probes every [`PROBE_INTERVAL`], within
+/// [`PROBE_BUDGET`], and turns an instance unhealthy at the
+/// [`UNHEALTHY_AFTER`]th miss in a row.
+fn test_monitor() -> HealthMonitorPolicy {
+    HealthMonitorPolicy {
+        interval: PROBE_INTERVAL,
+        timeout: PROBE_BUDGET,
+        failure_threshold: NonZeroU32::new(UNHEALTHY_AFTER).expect("a threshold"),
+        kill_after: None,
+    }
 }
 
 /// The test monitor that kills an instance unanswered for [`KILL_AFTER`].
 fn kill_monitor() -> HealthMonitorPolicy {
-    fast_health_monitor_with_kill(UNHEALTHY_AFTER, KILL_AFTER)
+    HealthMonitorPolicy {
+        kill_after: Some(KILL_AFTER),
+        ..test_monitor()
+    }
+}
+
+/// The reset window of [`resetting_backoff`], shorter than [`KILL_AFTER`]:
+/// a hang loop's runs pass it by the time while their answers, which count,
+/// stay inside it.
+const RESET_WINDOW: Duration = Duration::from_secs(10);
+
+/// A backoff with no wait whose reset window is [`RESET_WINDOW`]: a run
+/// shorter than the window backs off further, a longer one starts it over.
+fn resetting_backoff() -> RestartBackoff {
+    RestartBackoff {
+        first_delay: Duration::ZERO,
+        max_delay: Duration::ZERO,
+        reset_after: RESET_WINDOW,
+    }
+}
+
+/// The time the supervision of the daemon runs on, which only the test
+/// moves.
+fn time(started: &StartedCoreNode) -> &ManualTime {
+    match started.node_stack.time() {
+        TimeSource::Manual(time) => time,
+        TimeSource::System => panic!("the daemons of these tests run on manual time"),
+    }
+}
+
+/// One probe interval: once each of the `monitors` health monitors of the
+/// daemon waits for its next probe, the time moves by [`PROBE_INTERVAL`], and
+/// the test waits until each of them probed and waits again.
+async fn tick(started: &StartedCoreNode, monitors: usize) {
+    wait_for_monitors(started, monitors).await;
+    time(started).advance(PROBE_INTERVAL);
+    wait_for_monitors(started, monitors).await;
+}
+
+/// Waits until each of the `monitors` health monitors of the daemon waits
+/// for its next probe.
+async fn wait_for_monitors(started: &StartedCoreNode, monitors: usize) {
+    let time = time(started);
+    tokio::time::timeout(WAIT, time.sleeping(monitors, PROBE_INTERVAL))
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "{monitors} health monitors wait for their next probe; the time left of each \
+                 sleep: {:?}; stack log:\n{}",
+                time.pending(),
+                stack_log(started)
+            )
+        });
+}
+
+/// `count` probe intervals of `monitors` health monitors.
+async fn ticks(started: &StartedCoreNode, count: usize, monitors: usize) {
+    for _ in 0..count {
+        tick(started, monitors).await;
+    }
+}
+
+/// Moves the time by `left` once a sleep of the daemon has `left` to go: the
+/// test advances to a deadline that it knows the daemon waits for.
+async fn advance_to_deadline(started: &StartedCoreNode, left: Duration) {
+    wait_for_pending(started, left).await;
+    time(started).advance(left);
+}
+
+/// Waits until a sleep of the daemon has `left` to go.
+async fn wait_for_pending(started: &StartedCoreNode, left: Duration) {
+    let time = time(started);
+    tokio::time::timeout(WAIT, time.sleeping_for(left))
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "a sleep of the daemon has {left:?} to go; the time left of each sleep: {:?}",
+                time.pending()
+            )
+        });
+}
+
+/// The force-kill deadline of a daemon with a shutdown grace of
+/// `grace_secs`.
+fn deadline_of(grace_secs: u64) -> Duration {
+    core_node::force_kill_deadline(Duration::from_secs(grace_secs))
+}
+
+/// Waits until no background task of `instance_id` is live: its exit
+/// watcher, the wait of its restart and its health monitor have ended, so
+/// nothing but a request acts on the instance any more.
+async fn wait_for_supervision_end(started: &StartedCoreNode, instance_id: &str) {
+    let tasks = started.node_stack.instance_tasks();
+    tokio::time::timeout(WAIT, tasks.ended(&name(instance_id)))
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "the supervision of `{instance_id}` ends, {} tasks live; stack log:\n{}",
+                tasks.live(&name(instance_id)),
+                stack_log(started)
+            )
+        });
+}
+
+/// What lets the waits of a mock go on: each wait takes one release, which
+/// the test gives.
+#[derive(Clone)]
+struct Releases(Arc<Semaphore>);
+
+impl Releases {
+    /// A release for every wait, at once.
+    fn unlimited() -> Self {
+        Self(Arc::new(Semaphore::new(Semaphore::MAX_PERMITS)))
+    }
+
+    /// No release until the test gives one.
+    fn held() -> Self {
+        Self(Arc::new(Semaphore::new(0)))
+    }
+
+    /// Lets `count` more waits go on.
+    fn give(&self, count: usize) {
+        self.0.add_permits(count);
+    }
+
+    /// Waits for a release and takes it.
+    async fn take(&self) {
+        self.0
+            .acquire()
+            .await
+            .expect("the releases stay open")
+            .forget();
+    }
 }
 
 /// The `failed` line of an instance the test monitor killed.
@@ -217,8 +395,8 @@ async fn add_and_build(started: &StartedCoreNode, dir: &std::path::Path) {
         &started.caller_handle,
         &started.core_node_name,
         dir,
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
     )
     .await
     .expect("node_add and node_build complete");
@@ -329,20 +507,11 @@ async fn wait_for_group_gone(pid: u32, what: &str) {
     .await;
 }
 
-/// Waits until the instance has restarted `count` times and is `running`.
+/// Waits until the instance has restarted `count` times, is `running` and
+/// its stack log names each restart.
 async fn wait_for_restarts(started: &StartedCoreNode, instance_id: &str, count: u32) {
-    wait_for_restarts_within(started, instance_id, count, WAIT).await;
-}
-
-/// [`wait_for_restarts`] for up to `limit`.
-async fn wait_for_restarts_within(
-    started: &StartedCoreNode,
-    instance_id: &str,
-    count: u32,
-    limit: Duration,
-) {
     poll_until_explained(
-        limit,
+        WAIT,
         || {
             format!(
                 "`{instance_id}` runs again with {count} restarts; stack log:\n{}",
@@ -351,8 +520,13 @@ async fn wait_for_restarts_within(
         },
         || {
             let instance = serialized(started, instance_id);
+            let logged_restarts = lines_for(started, instance_id)
+                .iter()
+                .filter(|line| line.contains("restarted (attempt"))
+                .count();
             (instance.state == InstanceState::Running
-                && instance.restart_status.restart_count == count)
+                && instance.restart_status.restart_count == count
+                && logged_restarts >= count as usize)
                 .then_some(())
         },
     )
@@ -373,15 +547,38 @@ async fn wait_for_line(started: &StartedCoreNode, needle: &str) {
     .await;
 }
 
-/// When the last stack log line of `instance_id` holding `text` was
-/// written.
-fn logged_at(started: &StartedCoreNode, instance_id: &str, text: &str) -> chrono::NaiveDateTime {
-    let log = stack_log(started);
-    log.lines()
-        .rev()
-        .find(|line| line.contains(&format!("'{instance_id}'")) && line.contains(text))
-        .and_then(time_of)
-        .unwrap_or_else(|| panic!("a timed line `{text}` of `{instance_id}`; stack log:\n{log}"))
+/// Waits until a stack log line of `instance_id` holds `needle`.
+async fn wait_for_line_of(started: &StartedCoreNode, instance_id: &str, needle: &str) {
+    poll_until_explained(
+        WAIT,
+        || {
+            format!(
+                "a stack log line of `{instance_id}` holds `{needle}`; stack log:\n{}",
+                stack_log(started)
+            )
+        },
+        || logged(started, instance_id, needle).then_some(()),
+    )
+    .await;
+}
+
+/// Ends the wait of `instance_id`'s restart at `attempt`, `wait_secs` long:
+/// once its stack log line names the wait, the time moves past it. The wait
+/// counts from the exit, which the line follows, so the attempt is due once
+/// the time has moved.
+async fn pass_the_restart_wait(
+    started: &StartedCoreNode,
+    instance_id: &str,
+    attempt: u32,
+    wait_secs: u64,
+) {
+    wait_for_line_of(
+        started,
+        instance_id,
+        &format!("restarting in {wait_secs} s (attempt {attempt})"),
+    )
+    .await;
+    time(started).advance(Duration::from_secs(wait_secs));
 }
 
 /// The lines of the stack log that name `instance_id`, without their time.
@@ -466,6 +663,23 @@ async fn stop_ok(started: &StartedCoreNode, instance_id: &str) -> NodeStopRespon
         .unwrap_or_else(|failure| panic!("node_stop failed: {failure}"))
 }
 
+/// [`stop_ok`] of an instance whose stop waits `left` on the time of the
+/// daemon: the force-kill deadline for a process that does not exit on its
+/// shutdown request, the bound on the output readers of a start whose output
+/// a process outside its group holds. The time moves past it once the stop
+/// waits for it.
+async fn stop_ok_through(
+    started: &StartedCoreNode,
+    instance_id: &str,
+    left: Duration,
+) -> NodeStopResponse {
+    let (response, ()) = tokio::join!(
+        stop_ok(started, instance_id),
+        advance_to_deadline(started, left)
+    );
+    response
+}
+
 /// Resets the stack and waits for the reset to succeed.
 async fn reset(started: &StartedCoreNode) {
     poll(
@@ -532,11 +746,14 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
     // The first process dies unhealthy, so only the flip gives the next one
     // a healthy flag until its own monitor's first probe writes one.
     drop(health);
-    wait_for_line(
-        &started,
-        &format!("'{ID}' of node '{NODE}:{TEST_NODE_TAG}' became unhealthy"),
-    )
-    .await;
+    ticks(&started, UNHEALTHY_AFTER as usize, 1).await;
+    assert!(
+        stack_log(&started).contains(&format!(
+            "'{ID}' of node '{NODE}:{TEST_NODE_TAG}' became unhealthy"
+        )),
+        "{}",
+        stack_log(&started)
+    );
     signal_process(first_pid, "-9");
     let second_health = common::answer_health_probes(&started, NODE, ID).await;
     wait_for_restarts(&started, ID, 1).await;
@@ -640,23 +857,12 @@ async fn a_crash_under_on_failure_respawns_under_the_same_id() {
     // The new process is probed: dropping its health mock turns the slot's
     // fresh health flag, which only the new process's monitor holds.
     drop(second_health);
-    poll_until_explained(
-        WAIT,
-        || {
-            format!(
-                "the new process turns unhealthy; stack log:\n{}",
-                stack_log(&started)
-            )
-        },
-        || {
-            let unhealthy_lines = lines_for(&started, ID)
-                .iter()
-                .filter(|line| line.contains("became unhealthy"))
-                .count();
-            (unhealthy_lines == 2).then_some(())
-        },
-    )
-    .await;
+    ticks(&started, UNHEALTHY_AFTER as usize, 1).await;
+    let unhealthy_lines = lines_for(&started, ID)
+        .iter()
+        .filter(|line| line.contains("became unhealthy"))
+        .count();
+    assert_eq!(unhealthy_lines, 2, "{}", stack_log(&started));
     assert!(!second_slot.healthy());
     signal_process(second_pid, "-9");
 }
@@ -671,7 +877,8 @@ async fn a_clean_exit_under_on_failure_stays_finished() {
     let pid = run(&started, NODE, ID, on_failure()).await;
     signal_process(pid, "-TERM");
     wait_for_state(&started, ID, InstanceState::Finished).await;
-    wait_for_line(&started, "finished: process exited cleanly").await;
+    wait_for_supervision_end(&started, ID).await;
+    assert!(logged(&started, ID, "finished: process exited cleanly"));
     let instance = serialized(&started, ID);
     assert_eq!(instance.restart_status.attempt, 0);
     assert_eq!(instance.restart_status.restart_count, 0);
@@ -725,7 +932,7 @@ async fn never_leaves_a_crash_failed_and_node_stop_frees_the_id() {
     let pid = run(&started, NODE, ID, never()).await;
     signal_process(pid, "-9");
     wait_for_state(&started, ID, InstanceState::Failed).await;
-    tokio::time::sleep(QUIET).await;
+    wait_for_supervision_end(&started, ID).await;
     assert_eq!(state_of(&started, ID), Some(InstanceState::Failed));
     let instance = serialized(&started, ID);
     assert_eq!(
@@ -818,7 +1025,6 @@ async fn a_respawn_that_dies_during_startup_schedules_the_next_attempt() {
     let _dir = add_node(&started, NODE, &run_cmd, None).await;
     let ready = common::answer_ready_probe(&started, NODE, ID).await;
     let _health = common::answer_health_probes(&started, NODE, ID).await;
-    settle().await;
     let pid = run(&started, NODE, ID, on_failure()).await;
 
     // With no ready answer, the respawn sits in its ready wait and sees the
@@ -911,7 +1117,7 @@ async fn a_cap_in_the_crash_loop_leaves_the_instance_failed() {
         ))),
         "{lines:?}"
     );
-    tokio::time::sleep(QUIET).await;
+    wait_for_supervision_end(&started, ID).await;
     assert_eq!(state_of(&started, ID), Some(InstanceState::Failed));
 }
 
@@ -946,8 +1152,8 @@ async fn a_first_start_failure_fails_the_run_under_every_policy() {
             end.failure_message()
         );
         assert_eq!(state_of(&started, id), None, "{id} leaves no slot");
+        wait_for_supervision_end(&started, id).await;
     }
-    tokio::time::sleep(QUIET).await;
     assert!(
         !stack_log(&started).contains("restarting"),
         "{}",
@@ -1015,7 +1221,6 @@ async fn a_respawn_cancelled_during_its_start_records_nothing() {
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let ready = common::answer_ready_probe(&started, NODE, ID).await;
     let _health = common::answer_health_probes(&started, NODE, ID).await;
-    settle().await;
     let pid = run(&started, NODE, ID, on_failure()).await;
 
     drop(ready);
@@ -1028,7 +1233,7 @@ async fn a_respawn_cancelled_during_its_start_records_nothing() {
         run_log(&started, ID)
     );
     assert_eq!(state_of(&started, ID), None);
-    tokio::time::sleep(QUIET).await;
+    wait_for_supervision_end(&started, ID).await;
     let lines = lines_for(&started, ID);
     assert!(
         lines
@@ -1074,15 +1279,18 @@ async fn a_run_cancelled_during_its_start_names_why() {
 async fn a_run_past_the_reset_window_starts_the_backoff_over() {
     const NODE: &str = "forgiven";
     const ID: &str = "forgiven_inst";
-    let started = daemon(resetting_restart_backoff()).await;
+    let started = daemon(resetting_backoff()).await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let _mocks = mocks(&started, NODE, ID).await;
     let pid = run(&started, NODE, ID, capped(2)).await;
     // A run shorter than the window backs off further: attempt 2 after a
-    // kill right after `running`.
+    // second run one second short of it.
+    let just_short = RESET_WINDOW - Duration::from_secs(1);
+    time(&started).advance(just_short);
     signal_process(pid, "-9");
     wait_for_restarts(&started, ID, 1).await;
     assert_eq!(serialized(&started, ID).restart_status.attempt, 1);
+    time(&started).advance(just_short);
     signal_process(serialized_pid(&started, ID), "-9");
     wait_for_restarts(&started, ID, 2).await;
     assert_eq!(
@@ -1090,9 +1298,9 @@ async fn a_run_past_the_reset_window_starts_the_backoff_over() {
         2,
         "a run shorter than the reset window backs off further"
     );
-    // A run past the window starts the backoff and the cap's count over:
+    // A run of the window starts the backoff and the cap's count over:
     // attempt 1 again, under a cap of 2 that a third attempt would exceed.
-    tokio::time::sleep(RESET_WINDOW * 2).await;
+    time(&started).advance(RESET_WINDOW);
     signal_process(serialized_pid(&started, ID), "-9");
     wait_for_restarts(&started, ID, 3).await;
     assert_eq!(
@@ -1215,7 +1423,7 @@ async fn a_refused_respawn_leaves_the_instance_failed_and_schedules_nothing() {
     let instance = serialized(&started, READER_ID);
     assert_eq!(instance.restart_status.restart_count, 0);
     assert_eq!(instance.restart_status.next_start_ms, None);
-    tokio::time::sleep(QUIET).await;
+    wait_for_supervision_end(&started, READER_ID).await;
     assert_eq!(state_of(&started, READER_ID), Some(InstanceState::Failed));
 }
 
@@ -1223,20 +1431,17 @@ async fn a_refused_respawn_leaves_the_instance_failed_and_schedules_nothing() {
 /// its domain: its next process starts on the same lifetime of the domain, a
 /// second publisher of the name is refused while it waits, and its reader
 /// runs on. A reader that restarts while the publisher awaits its own
-/// restart fails each start in that wait and starts once the publisher's
-/// start has begun, and a first start of a reader in the wait is refused.
-/// Once the publisher is stopped and its id publishes a new lifetime, the
-/// reader's restart is refused.
+/// restart fails each start in that wait and starts once the publisher runs
+/// again, and a first start of a reader in the wait is refused. Once the
+/// publisher is stopped and its id publishes a new lifetime, the reader's
+/// restart is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_clock_publisher_restarts_on_its_domain_and_a_restarting_reader_waits_for_it() {
-    // Waits of 250 ms doubling to 4 s for attempts 1 to 5: the publisher's
-    // fifth wait outlasts the reader's first three attempts, due at least
-    // 0.25, 0.75 and 1.75 s after the reader's exit (each refused start adds
-    // its own duration), which follows the publisher's; its fourth, due at
-    // 3.75 s at the earliest, finds the publisher waiting or started.
+    // Waits of 1 s doubling for each attempt in a row: 1, 2, 4, 8, then
+    // 16 s from the fifth attempt on.
     let started = daemon(RestartBackoff {
-        first_delay: Duration::from_millis(250),
-        max_delay: Duration::from_secs(4),
+        first_delay: Duration::from_secs(1),
+        max_delay: Duration::from_secs(16),
         reset_after: Duration::MAX,
     })
     .await;
@@ -1260,6 +1465,7 @@ async fn a_clock_publisher_restarts_on_its_domain_and_a_restarting_reader_waits_
 
     let first_pid = serialized_pid(&started, PUBLISHER_ID);
     signal_process(first_pid, "-9");
+    pass_the_restart_wait(&started, PUBLISHER_ID, 1, 1).await;
     wait_for_restarts(&started, PUBLISHER_ID, 1).await;
     assert_eq!(
         clock_of(serialized_pid(&started, PUBLISHER_ID)),
@@ -1273,13 +1479,16 @@ async fn a_clock_publisher_restarts_on_its_domain_and_a_restarting_reader_waits_
         "the reader runs on through its publisher's restart"
     );
 
-    for restarts in 2..=4 {
+    for (restarts, wait_secs) in [(2, 2), (3, 4), (4, 8)] {
         signal_process(serialized_pid(&started, PUBLISHER_ID), "-9");
+        pass_the_restart_wait(&started, PUBLISHER_ID, restarts, wait_secs).await;
         wait_for_restarts(&started, PUBLISHER_ID, restarts).await;
     }
+    // The publisher waits 16 s for its fifth attempt.
     signal_process(serialized_pid(&started, PUBLISHER_ID), "-9");
-    wait_for_line(&started, "restarting in 4 s (attempt 5)").await;
+    wait_for_line_of(&started, PUBLISHER_ID, "restarting in 16 s (attempt 5)").await;
     signal_process(serialized_pid(&started, READER_ID), "-9");
+    wait_for_line_of(&started, READER_ID, "restarting in 1 s (attempt 1)").await;
     // The waiting publisher keeps its domain's name.
     let rival_plan = NodeInstancePlan {
         clock: ClockBinding::publisher(ClockDomainId::new(
@@ -1324,6 +1533,23 @@ async fn a_clock_publisher_restarts_on_its_domain_and_a_restarting_reader_waits_
         )
     );
     assert_eq!(state_of(&started, "late_reader_inst"), None);
+    wait_for_supervision_end(&started, "late_reader_inst").await;
+
+    // Each attempt of the reader within the publisher's wait fails and takes
+    // the next: they end 1, 3, 7 and 15 s into the publisher's 16.
+    for (attempt, wait_secs) in [(1, 1), (2, 2), (3, 4), (4, 8)] {
+        time(&started).advance(Duration::from_secs(wait_secs));
+        wait_for_line_of(
+            &started,
+            READER_ID,
+            &format!(
+                "restarting in {} s (attempt {})",
+                wait_secs * 2,
+                attempt + 1
+            ),
+        )
+        .await;
+    }
     wait_for_line(
         &started,
         &format!(
@@ -1332,10 +1558,19 @@ async fn a_clock_publisher_restarts_on_its_domain_and_a_restarting_reader_waits_
         ),
     )
     .await;
+    assert_eq!(
+        state_of(&started, READER_ID),
+        Some(InstanceState::Restarting)
+    );
+    // The publisher's wait ends, then the reader's fifth attempt finds it
+    // running.
+    time(&started).advance(Duration::from_secs(1));
     wait_for_restarts(&started, PUBLISHER_ID, 5).await;
+    time(&started).advance(Duration::from_secs(16));
     wait_for_restarts(&started, READER_ID, 1).await;
-    assert!(
-        serialized(&started, READER_ID).restart_status.attempt > 3,
+    assert_eq!(
+        serialized(&started, READER_ID).restart_status.attempt,
+        5,
         "each start that found the publisher waiting took an attempt"
     );
     // A start that failed before its spawn has its own run log, which holds
@@ -1359,20 +1594,10 @@ async fn a_clock_publisher_restarts_on_its_domain_and_a_restarting_reader_waits_
         "the restart's run log names the failed attempt's:\n{}",
         run_log(&started, READER_ID)
     );
-    let publisher_attempt = run_log(&started, PUBLISHER_ID)
-        .lines()
-        .rev()
-        .find(|line| line.contains(&restart_separator(5)))
-        .and_then(time_of)
-        .expect("the publisher's run log names its fifth attempt");
-    assert!(
-        logged_at(&started, READER_ID, "restarted (attempt") >= publisher_attempt,
-        "the reader starts once its publisher's fifth attempt has begun"
-    );
 
     // The publisher's id now publishes a new lifetime of the name, which the
     // reader is not bound to.
-    stop_ok(&started, PUBLISHER_ID).await;
+    stop_ok_through(&started, PUBLISHER_ID, deadline_of(DEFAULT_GRACE_SECS)).await;
     let new_lifetime = NodeInstancePlan {
         clock: ClockBinding::publisher(ClockDomainId::new(
             domain.name.clone(),
@@ -1386,6 +1611,7 @@ async fn a_clock_publisher_restarts_on_its_domain_and_a_restarting_reader_waits_
         .expect("node_run completes")
         .completed();
     signal_process(serialized_pid(&started, READER_ID), "-9");
+    pass_the_restart_wait(&started, READER_ID, 6, 16).await;
     wait_for_line(
         &started,
         &format!(
@@ -1416,8 +1642,7 @@ async fn a_respawn_waits_for_a_stack_change_and_a_reservation_to_end() {
         .try_begin_change()
         .expect("the stack is free");
     signal_process(pid, "-9");
-    wait_for_line(&started, "restarting in 0 s (attempt 1)").await;
-    tokio::time::sleep(QUIET).await;
+    wait_for_admission_wait(&started, ID).await;
     assert_eq!(
         state_of(&started, ID),
         Some(InstanceState::Restarting),
@@ -1433,8 +1658,7 @@ async fn a_respawn_waits_for_a_stack_change_and_a_reservation_to_end() {
         panic!("a free daemon takes a reservation");
     };
     signal_process(serialized_pid(&started, ID), "-9");
-    wait_for_line(&started, "restarting in 0 s (attempt 2)").await;
-    tokio::time::sleep(QUIET).await;
+    wait_for_admission_wait(&started, ID).await;
     assert_eq!(
         state_of(&started, ID),
         Some(InstanceState::Restarting),
@@ -1443,6 +1667,24 @@ async fn a_respawn_waits_for_a_stack_change_and_a_reservation_to_end() {
     assert!(started.slice_ownership.release("launch-elsewhere"));
     wait_for_restarts(&started, ID, 2).await;
     signal_process(serialized_pid(&started, ID), "-9");
+}
+
+/// Waits until the restart of `instance_id` waits for its admission onto
+/// the stack.
+async fn wait_for_admission_wait(started: &StartedCoreNode, instance_id: &str) {
+    tokio::time::timeout(
+        WAIT,
+        started
+            .slice_ownership
+            .restart_waits_for_admission(&name(instance_id)),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the restart of `{instance_id}` waits for its admission; stack log:\n{}",
+            stack_log(started)
+        )
+    });
 }
 
 /// A stop that claims a restart's start between its flip and its fork ends
@@ -1534,10 +1776,17 @@ async fn node_stop_ends_a_restarts_start_in_flight() {
     const SIBLING: &str = "slow_start_sibling";
     let started = daemon(instant_restart_backoff()).await;
     take_part_in_the_launch(&started).await;
-    let dir = add_node(&started, NODE, OUTPUT_HELD_OUTSIDE_THE_GROUP, None).await;
+    let holders = TempDir::new().expect("a holders dir");
+    let dir = add_node(
+        &started,
+        NODE,
+        &output_held_outside_the_group(holders.path()),
+        None,
+    )
+    .await;
     let ready = common::answer_ready_probe(&started, NODE, ID).await;
     let _health = common::answer_health_probes(&started, NODE, ID).await;
-    let (_watcher, mut heard) = watcher(&started, Duration::ZERO).await;
+    let (_watcher, mut heard) = watcher(&started, Releases::unlimited()).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
     watch(&started, ID).await;
     let _sibling_mocks = mocks(&started, NODE, SIBLING).await;
@@ -1551,6 +1800,7 @@ async fn node_stop_ends_a_restarts_start_in_flight() {
         RelationshipEvent::Ended(InstanceEnd::Exited)
     );
     let starting_pid = wait_for_process(&started, ID, InstanceState::Starting).await;
+    wait_for_the_output_holder(holders.path(), starting_pid).await;
     // A launch, join or removal answers busy.
     let refusal = try_reserve(&started)
         .await
@@ -1611,7 +1861,7 @@ async fn node_stop_ends_a_restarts_start_in_flight() {
         "{removal}"
     );
 
-    stop_ok(&started, ID).await;
+    stop_ok_through(&started, ID, node_stack::OUTPUT_READER_JOIN_BUDGET).await;
     assert!(
         run_log(&started, ID).contains("cancelled"),
         "the stop cancels the start:\n{}",
@@ -1628,7 +1878,7 @@ async fn node_stop_ends_a_restarts_start_in_flight() {
     );
     wait_for_group_gone(starting_pid, "the started process").await;
     let _ready = common::answer_ready_probe(&started, NODE, ID).await;
-    tokio::time::sleep(QUIET).await;
+    wait_for_supervision_end(&started, ID).await;
     assert_eq!(state_of(&started, ID), None, "nothing restarts it");
     signal_process(run(&started, NODE, ID, never()).await, "-9");
 }
@@ -1653,7 +1903,6 @@ async fn node_stop_of_a_first_start_is_refused() {
     drop(restarting_ready);
     signal_process(restarting_pid, "-9");
     wait_for_process(&started, RESTARTING, InstanceState::Starting).await;
-    settle().await;
     let stop_during_the_start = async {
         let starting_pid = wait_for_process(&started, ID, InstanceState::Starting).await;
         let response = stop(&started, ID).await;
@@ -1840,30 +2089,19 @@ async fn a_removal_whose_shutdown_fails_claims_nothing() {
     const REFUSING: &str = "refuses_shutdown_inst";
     const ANSWERING: &str = "answers_shutdown_inst";
     const LINGERING: &str = "lingers_after_shutdown_inst";
-    /// How long before its window ends the answering node is asked to exit
-    /// (its trap runs after the current 0.2 s sleep), and how far past the
-    /// window the lingering one is killed.
-    const WINDOW_HEADROOM: Duration = Duration::from_secs(4);
-    // The notes stand for the force-kill deadline from the failure, which
-    // comes after every answer, so an exit this long after the answer lands
-    // inside the window.
-    let deadline = core_node::force_kill_deadline(Duration::from_secs(SHORT_GRACE_SECS));
-    let exit_after = deadline - WINDOW_HEADROOM;
-    let started = start_core_node_with_supervision_and_grace(
-        fast_health_monitor(UNHEALTHY_AFTER),
-        instant_restart_backoff(),
-        SHORT_GRACE_SECS,
-    )
-    .await;
+    let started = daemon_with(test_monitor(), instant_restart_backoff(), SHORT_GRACE_SECS).await;
     let _dir = add_node(&started, NODE, &clean_on_term(), None).await;
     let _refusing_mocks = mocks(&started, NODE, REFUSING).await;
     let _refusing = refusing_shutdown(&started, NODE, REFUSING).await;
     let _answering_mocks = mocks(&started, NODE, ANSWERING).await;
+    // A node that answers its shutdown request and exits on it once the
+    // test releases it.
+    let answering_exits = Releases::held();
     let _answering = exiting_on_shutdown(
         &started,
         NODE,
         ANSWERING,
-        ExitOnShutdown::AfterAnswer(exit_after),
+        ExitOnShutdown::AfterAnswer(answering_exits.clone()),
     )
     .await;
     let _lingering_mocks = mocks(&started, NODE, LINGERING).await;
@@ -1877,13 +2115,11 @@ async fn a_removal_whose_shutdown_fails_claims_nothing() {
     .await
     .expect("the shutdown service starts");
     let _lingering = AbortOnDrop(lingering_shutdown);
-    settle().await;
     let refusing = run(&started, NODE, REFUSING, always()).await;
     run(&started, NODE, ANSWERING, always()).await;
     let lingering = run(&started, NODE, LINGERING, always()).await;
 
     let response = remove(&started, NODE, true).await;
-    let failed = std::time::Instant::now();
     assert_failure(
         &response.expect_err("the removal fails"),
         PeppyFailureKind::AttemptFailed,
@@ -1901,15 +2137,34 @@ async fn a_removal_whose_shutdown_fails_claims_nothing() {
     wait_for_restarts(&started, REFUSING, 1).await;
     signal_process(serialized_pid(&started, REFUSING), "-9");
 
+    // The answering instance exits on its request inside the window and
+    // ends there.
+    answering_exits.give(1);
     wait_for_state(&started, ANSWERING, InstanceState::Finished).await;
-    tokio::time::sleep(QUIET).await;
+    wait_for_supervision_end(&started, ANSWERING).await;
     assert_eq!(
         state_of(&started, ANSWERING),
         Some(InstanceState::Finished),
         "an instance that answered the failed removal ends at its exit"
     );
 
-    tokio::time::sleep((deadline + WINDOW_HEADROOM).saturating_sub(failed.elapsed())).await;
+    // The window is the force-kill deadline from the failure; past it, the
+    // lingering instance keeps its policy.
+    assert!(
+        slot_of(&started, LINGERING).is_some_and(|slot| slot.shutdown_requested()),
+        "inside the window the note of the answered request stands"
+    );
+    advance_to_deadline(&started, deadline_of(SHORT_GRACE_SECS)).await;
+    poll_until(
+        WAIT,
+        "the note of the answered request is withdrawn",
+        || {
+            slot_of(&started, LINGERING)
+                .is_some_and(|slot| !slot.shutdown_requested())
+                .then_some(())
+        },
+    )
+    .await;
     signal_process(lingering, "-9");
     wait_for_restarts(&started, LINGERING, 1).await;
     signal_process(serialized_pid(&started, LINGERING), "-9");
@@ -1943,7 +2198,12 @@ async fn a_restart_after_a_stack_reset_is_scheduled() {
     let _mocks = mocks(&started, NODE, ID).await;
     signal_process(run(&started, NODE, ID, on_failure()).await, "-9");
     wait_for_restarts(&started, ID, 1).await;
-    reset(&started).await;
+    // The restarted process does not exit on the reset's shutdown request,
+    // so the reset waits out its force-kill deadline.
+    tokio::join!(
+        reset(&started),
+        advance_to_deadline(&started, deadline_of(DEFAULT_GRACE_SECS))
+    );
 
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     signal_process(run(&started, NODE, ID, on_failure()).await, "-9");
@@ -1989,7 +2249,14 @@ async fn a_stop_of_a_start_a_teardown_claimed_answers_already_being_stopped() {
     const NODE: &str = "torn_down_start";
     const ID: &str = "torn_down_start_inst";
     let started = daemon(instant_restart_backoff()).await;
-    let _dir = add_node(&started, NODE, OUTPUT_HELD_OUTSIDE_THE_GROUP, None).await;
+    let holders = TempDir::new().expect("a holders dir");
+    let _dir = add_node(
+        &started,
+        NODE,
+        &output_held_outside_the_group(holders.path()),
+        None,
+    )
+    .await;
     let ready = common::answer_ready_probe(&started, NODE, ID).await;
     let _health = common::answer_health_probes(&started, NODE, ID).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
@@ -1997,9 +2264,12 @@ async fn a_stop_of_a_start_a_teardown_claimed_answers_already_being_stopped() {
     // Without a ready answer the respawn sits in its ready wait.
     drop(ready);
     signal_process(pid, "-9");
-    wait_for_process(&started, ID, InstanceState::Starting).await;
+    let starting_pid = wait_for_process(&started, ID, InstanceState::Starting).await;
+    wait_for_the_output_holder(holders.path(), starting_pid).await;
     let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let node_stack = Arc::new(started.node_stack.clone());
+    // The abort of the claimed start waits for the output readers that the
+    // process outside the group holds open, up to their bound.
     let stop_after_the_teardowns_claim = async {
         wait_for_claim(&started, ID).await;
         let stopped = stop(&started, ID).await;
@@ -2008,6 +2278,7 @@ async fn a_stop_of_a_start_a_teardown_claimed_answers_already_being_stopped() {
             Some(InstanceState::Starting),
             "the claimed start is still starting when the stop answers"
         );
+        advance_to_deadline(&started, node_stack::OUTPUT_READER_JOIN_BUDGET).await;
         stopped
     };
     let ((), stopped) = tokio::join!(
@@ -2112,7 +2383,12 @@ async fn a_hung_instance_beside_a_healthy_one_is_killed() {
     const NODE: &str = "pair";
     const HUNG: &str = "pair_hung";
     const WELL: &str = "pair_well";
-    let started = start_core_node_with_supervision(kill_monitor(), instant_restart_backoff()).await;
+    let started = daemon_with(
+        kill_monitor(),
+        instant_restart_backoff(),
+        DEFAULT_GRACE_SECS,
+    )
+    .await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let _hung_ready = common::answer_ready_probe(&started, NODE, HUNG).await;
     let hung_health = common::answer_health_probes(&started, NODE, HUNG).await;
@@ -2120,7 +2396,16 @@ async fn a_hung_instance_beside_a_healthy_one_is_killed() {
     let hung_pid = run(&started, NODE, HUNG, on_failure()).await;
     let well_pid = run(&started, NODE, WELL, on_failure()).await;
 
+    // The hung instance never answers; the two monitors probe together up
+    // to the probe that finds it silent for the kill's bound.
     drop(hung_health);
+    ticks(&started, PROBES_TO_THE_KILL - 1, 2).await;
+    assert!(
+        !logged(&started, HUNG, &kill_line()),
+        "no kill before the bound: {:?}",
+        lines_for(&started, HUNG)
+    );
+    time(&started).advance(PROBE_INTERVAL);
     wait_for_line(
         &started,
         &format!("'{HUNG}' of node '{NODE}:v1' {}", kill_line()),
@@ -2142,31 +2427,42 @@ async fn a_hung_instance_beside_a_healthy_one_is_killed() {
 async fn an_unhealthy_instance_is_killed_and_respawned_under_on_failure() {
     const NODE: &str = "hung";
     const ID: &str = "hung_inst";
-    let started = start_core_node_with_supervision(kill_monitor(), instant_restart_backoff()).await;
+    let started = daemon_with(
+        kill_monitor(),
+        instant_restart_backoff(),
+        DEFAULT_GRACE_SECS,
+    )
+    .await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let (_ready, health) = mocks(&started, NODE, ID).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
 
-    // The process answers for longer than the kill's silence before it goes
-    // quiet; the kill line's time then shows the silence is counted from the
-    // last answer.
-    tokio::time::sleep(KILL_AFTER + MISS_CYCLE).await;
-    let silenced_at = chrono::Local::now().naive_local();
+    // The process answers for longer than the kill's bound before it goes
+    // quiet, so a silence counted from the start of the monitor would end at
+    // once.
+    ticks(&started, PROBES_TO_THE_KILL + 1, 1).await;
     drop(health);
-    wait_for_line(&started, &unhealthy_line()).await;
+    ticks(&started, UNHEALTHY_AFTER as usize, 1).await;
+    assert!(logged(&started, ID, &unhealthy_line()));
     assert!(
         !logged(&started, ID, &kill_line()),
         "no kill at the unhealthy edge"
     );
-    wait_for_line(&started, &kill_line()).await;
-    // The silence is counted from the last answered check, which came
-    // within one cycle before the mock was dropped.
-    let silent_for = logged_at(&started, ID, &kill_line()) - silenced_at;
-    let least = chrono::TimeDelta::from_std(KILL_AFTER - MISS_CYCLE).expect("a short bound");
+    // The silence counts from the last answered check: the probe before the
+    // one that finds the process silent for the bound kills nothing.
+    ticks(
+        &started,
+        PROBES_TO_THE_KILL - UNHEALTHY_AFTER as usize - 1,
+        1,
+    )
+    .await;
     assert!(
-        silent_for >= least,
-        "the kill waits out the silence: killed {silent_for} after the mock was dropped"
+        !logged(&started, ID, &kill_line()),
+        "no kill before the silence reaches the bound: {:?}",
+        lines_for(&started, ID)
     );
+    time(&started).advance(PROBE_INTERVAL);
+    wait_for_line(&started, &kill_line()).await;
     wait_for_line(&started, &health_kill_line()).await;
     // The new process answers health again.
     let _health = common::answer_health_probes(&started, NODE, ID).await;
@@ -2193,16 +2489,14 @@ async fn an_unhealthy_instance_is_killed_and_respawned_under_on_failure() {
 /// third instance stays healthy, so the silence is no messaging outage.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_health_kill_during_a_stop_is_skipped() {
-    /// Three miss cycles of the test monitor (300 ms each, its 200 ms
-    /// interval and 100 ms timeout): two monitors silenced together reach
-    /// the kill within two cycles of each other, and one more cycle covers a
-    /// scheduling stall of one of them.
-    const MONITOR_PHASE_MARGIN: Duration = Duration::from_millis(900);
+    /// A grace whose force-kill deadline outlasts [`KILL_AFTER`], so the
+    /// stop still waits on its shutdown request when the kill falls due.
+    const LONG_GRACE_SECS: u64 = 120;
     const NODE: &str = "hung_while_stopped";
     const ID: &str = "hung_while_stopped_inst";
     const SILENT: &str = "hung_unclaimed_inst";
     const WELL: &str = "answering_inst";
-    let started = start_core_node_with_supervision(kill_monitor(), parked_restart_backoff()).await;
+    let started = daemon_with(kill_monitor(), parked_restart_backoff(), LONG_GRACE_SECS).await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let (_ready, health) = mocks(&started, NODE, ID).await;
     let (_silent_ready, silent_health) = mocks(&started, NODE, SILENT).await;
@@ -2215,13 +2509,25 @@ async fn a_health_kill_during_a_stop_is_skipped() {
 
     let silent_while_claimed = async {
         wait_for_claim(&started, ID).await;
+        // The stop waits on its shutdown request within its force-kill
+        // deadline.
+        wait_for_pending(&started, deadline_of(LONG_GRACE_SECS)).await;
         drop(health);
         drop(silent_health);
+        // The three monitors probe together; at the probe that finds the two
+        // silent instances quiet for the bound, the unclaimed one is killed.
+        ticks(&started, PROBES_TO_THE_KILL - 1, 3).await;
+        time(&started).advance(PROBE_INTERVAL);
         poll_until(WAIT, "the unclaimed sibling is killed", || {
             logged(&started, SILENT, &kill_line()).then_some(())
         })
         .await;
-        tokio::time::sleep(MONITOR_PHASE_MARGIN).await;
+        // The claimed instance's monitor ends at that probe, which leaves its
+        // exit watcher alone.
+        poll_until(WAIT, "the monitor of the claimed instance ends", || {
+            (started.node_stack.instance_tasks().live(&name(ID)) == 1).then_some(())
+        })
+        .await;
         let lines = lines_for(&started, ID);
         assert!(
             lines.iter().any(|line| line.contains(&unhealthy_line())),
@@ -2235,7 +2541,10 @@ async fn a_health_kill_during_a_stop_is_skipped() {
             common::is_process_running(pid),
             "the monitor signals nothing"
         );
+        // The answered request leaves the node running, so the stop waits
+        // out the rest of its force-kill deadline.
         shutdowns.release.notify_one();
+        advance_to_deadline(&started, deadline_of(LONG_GRACE_SECS) - KILL_AFTER).await;
     };
     tokio::join!(stop_ok(&started, ID), silent_while_claimed);
     assert_eq!(state_of(&started, ID), None);
@@ -2243,14 +2552,13 @@ async fn a_health_kill_during_a_stop_is_skipped() {
 }
 
 /// A process that stops answering right after it starts and is killed for
-/// it runs past the reset window by the clock but not by its answers, so
-/// its restarts back off further: a hang loop reaches `max_restarts`.
+/// it runs past the reset window by the time but not by its answers, so its
+/// restarts back off further: a hang loop reaches `max_restarts`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hang_loop_backs_off_to_its_cap() {
     const NODE: &str = "hangs_again";
     const ID: &str = "hangs_again_inst";
-    let started =
-        start_core_node_with_supervision(kill_monitor(), resetting_restart_backoff()).await;
+    let started = daemon_with(kill_monitor(), resetting_backoff(), DEFAULT_GRACE_SECS).await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let (_ready, health) = mocks(&started, NODE, ID).await;
     run(&started, NODE, ID, capped(1)).await;
@@ -2258,24 +2566,20 @@ async fn a_hang_loop_backs_off_to_its_cap() {
     // Each process goes silent as it reaches running; the kill comes
     // `KILL_AFTER` into the silence, past the reset window.
     drop(health);
+    ticks(&started, PROBES_TO_THE_KILL - 1, 1).await;
+    time(&started).advance(PROBE_INTERVAL);
     wait_for_line(&started, &health_kill_line()).await;
     let health = common::answer_health_probes(&started, NODE, ID).await;
     wait_for_restarts(&started, ID, 1).await;
     drop(health);
+    ticks(&started, PROBES_TO_THE_KILL - 1, 1).await;
+    time(&started).advance(PROBE_INTERVAL);
     wait_for_state(&started, ID, InstanceState::Failed).await;
     wait_for_line(&started, "`max_restarts` reached: 1 attempt in a row").await;
     let instance = serialized(&started, ID);
     assert_eq!(
         instance.restart_status.attempt, 2,
         "the second kill climbs to attempt 2"
-    );
-    // The premise: by the clock, the second process ran past the reset
-    // window before its kill.
-    let ran = logged_at(&started, ID, &health_kill_line())
-        - logged_at(&started, ID, "restarted (attempt 1)");
-    assert!(
-        ran >= chrono::TimeDelta::from_std(RESET_WINDOW).expect("a short window"),
-        "the second process ran {ran} by the clock"
     );
     assert!(
         lines_for(&started, ID)
@@ -2294,16 +2598,17 @@ async fn a_hang_loop_backs_off_to_its_cap() {
 async fn a_kill_after_a_long_answered_run_starts_the_backoff_over() {
     const NODE: &str = "hangs_late";
     const ID: &str = "hangs_late_inst";
-    let started =
-        start_core_node_with_supervision(kill_monitor(), resetting_restart_backoff()).await;
+    let started = daemon_with(kill_monitor(), resetting_backoff(), DEFAULT_GRACE_SECS).await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let (_ready, mut health) = mocks(&started, NODE, ID).await;
     run(&started, NODE, ID, capped(1)).await;
     for restarts in 1..=2 {
-        // The run counts to its last answer, so it answers for more than a
-        // probe cycle past the window.
-        tokio::time::sleep(RESET_WINDOW * 2).await;
+        // The run counts to its last answer, which comes a whole reset
+        // window after the start.
+        ticks(&started, RESET_WINDOW.as_secs() as usize, 1).await;
         drop(health);
+        ticks(&started, PROBES_TO_THE_KILL - 1, 1).await;
+        time(&started).advance(PROBE_INTERVAL);
         poll_until_explained(
             WAIT,
             || format!("kill {restarts}; stack log:\n{}", stack_log(&started)),
@@ -2332,7 +2637,12 @@ async fn a_kill_after_a_long_answered_run_starts_the_backoff_over() {
 async fn a_health_kill_is_a_failure_even_when_the_node_exits_cleanly() {
     const NODE: &str = "polite_hung";
     const ID: &str = "polite_hung_inst";
-    let started = start_core_node_with_supervision(kill_monitor(), instant_restart_backoff()).await;
+    let started = daemon_with(
+        kill_monitor(),
+        instant_restart_backoff(),
+        DEFAULT_GRACE_SECS,
+    )
+    .await;
     // The process marks the SIGTERM it took before it exits 0, so the kill
     // is seen to begin with SIGTERM.
     let marks = TempDir::new().expect("marks dir");
@@ -2345,6 +2655,8 @@ async fn a_health_kill_is_a_failure_even_when_the_node_exits_cleanly() {
     let (_ready, health) = mocks(&started, NODE, ID).await;
     run(&started, NODE, ID, on_failure()).await;
     drop(health);
+    ticks(&started, PROBES_TO_THE_KILL - 1, 1).await;
+    time(&started).advance(PROBE_INTERVAL);
     wait_for_line(&started, &health_kill_line()).await;
     assert!(marker.exists(), "the kill began with SIGTERM");
     let _health = common::answer_health_probes(&started, NODE, ID).await;
@@ -2363,12 +2675,7 @@ async fn a_health_kill_is_a_failure_even_when_the_node_exits_cleanly() {
 async fn a_hung_instance_that_ignores_sigterm_is_killed_at_the_deadline() {
     const NODE: &str = "stubborn";
     const ID: &str = "stubborn_inst";
-    let started = start_core_node_with_supervision_and_grace(
-        kill_monitor(),
-        instant_restart_backoff(),
-        SHORT_GRACE_SECS,
-    )
-    .await;
+    let started = daemon_with(kill_monitor(), instant_restart_backoff(), SHORT_GRACE_SECS).await;
     let _dir = add_node(
         &started,
         NODE,
@@ -2379,31 +2686,30 @@ async fn a_hung_instance_that_ignores_sigterm_is_killed_at_the_deadline() {
     let (_ready, health) = mocks(&started, NODE, ID).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
     drop(health);
+    ticks(&started, PROBES_TO_THE_KILL - 1, 1).await;
+    time(&started).advance(PROBE_INTERVAL);
     wait_for_line(&started, &kill_line()).await;
-    tokio::time::sleep(QUIET).await;
+    // The monitor sent SIGTERM and waits for the deadline; a second before
+    // it, the process still runs.
+    let deadline = deadline_of(SHORT_GRACE_SECS);
+    wait_for_pending(&started, deadline).await;
+    let time = time(&started);
+    time.advance(deadline - Duration::from_secs(1));
     assert_eq!(
         serialized_pid(&started, ID),
         pid,
         "the process outlives SIGTERM until the deadline"
     );
+    assert!(common::is_process_running(pid));
+    assert!(
+        !logged(&started, ID, &health_kill_line()),
+        "{:?}",
+        lines_for(&started, ID)
+    );
     let _health = common::answer_health_probes(&started, NODE, ID).await;
-    let deadline = core_node::force_kill_deadline(Duration::from_secs(SHORT_GRACE_SECS));
-    wait_for_restarts_within(&started, ID, 1, deadline + WAIT).await;
-    // The kill line is written before SIGTERM and the `failed` line after the
-    // SIGKILLed process is reaped, so the two bound the wait; each time is
-    // written to the millisecond.
-    let waited =
-        logged_at(&started, ID, &health_kill_line()) - logged_at(&started, ID, &kill_line());
-    let tolerance = chrono::TimeDelta::milliseconds(1);
-    let deadline = chrono::TimeDelta::from_std(deadline).expect("a short deadline");
-    assert!(
-        waited + tolerance >= deadline,
-        "SIGKILL waits the deadline: {waited} < {deadline}"
-    );
-    assert!(
-        waited < deadline + chrono::TimeDelta::seconds(2),
-        "SIGKILL follows the deadline: {waited} past {deadline}"
-    );
+    time.advance(Duration::from_secs(1));
+    wait_for_restarts(&started, ID, 1).await;
+    assert!(logged(&started, ID, &health_kill_line()));
     signal_process(serialized_pid(&started, ID), "-9");
 }
 
@@ -2411,13 +2717,20 @@ async fn a_hung_instance_that_ignores_sigterm_is_killed_at_the_deadline() {
 async fn an_unhealthy_instance_under_never_stays_running() {
     const NODE: &str = "unkillable";
     const ID: &str = "unkillable_inst";
-    let started = start_core_node_with_supervision(kill_monitor(), instant_restart_backoff()).await;
+    let started = daemon_with(
+        kill_monitor(),
+        instant_restart_backoff(),
+        DEFAULT_GRACE_SECS,
+    )
+    .await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let (_ready, health) = mocks(&started, NODE, ID).await;
     let pid = run(&started, NODE, ID, never()).await;
     drop(health);
-    wait_for_line(&started, &unhealthy_line()).await;
-    tokio::time::sleep(PAST_THE_KILL).await;
+    ticks(&started, UNHEALTHY_AFTER as usize, 1).await;
+    assert!(logged(&started, ID, &unhealthy_line()));
+    // The monitor goes on probing past the kill's bound and kills nothing.
+    ticks(&started, PROBES_TO_THE_KILL, 1).await;
     assert!(
         !stack_log(&started).contains("killed"),
         "{}",
@@ -2426,7 +2739,8 @@ async fn an_unhealthy_instance_under_never_stays_running() {
     assert_eq!(state_of(&started, ID), Some(InstanceState::Running));
     assert!(!serialized(&started, ID).healthy);
     let _health = common::answer_health_probes(&started, NODE, ID).await;
-    wait_for_line(&started, "recovered after").await;
+    tick(&started, 1).await;
+    assert!(logged(&started, ID, "recovered after"));
     assert!(serialized(&started, ID).healthy);
     signal_process(pid, "-9");
 }
@@ -2440,30 +2754,40 @@ async fn the_kill_is_skipped_in_a_messaging_outage() {
     const NODE: &str = "outage";
     const FIRST: &str = "outage_first";
     const SECOND: &str = "outage_second";
-    let started = start_core_node_with_supervision(kill_monitor(), instant_restart_backoff()).await;
+    let started = daemon_with(
+        kill_monitor(),
+        instant_restart_backoff(),
+        DEFAULT_GRACE_SECS,
+    )
+    .await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let _first_ready = common::answer_ready_probe(&started, NODE, FIRST).await;
     let first_health = common::answer_health_probes(&started, NODE, FIRST).await;
     let _second_ready = common::answer_ready_probe(&started, NODE, SECOND).await;
     let second_health = common::answer_health_probes(&started, NODE, SECOND).await;
-    settle().await;
     let first_pid = run(&started, NODE, FIRST, on_failure()).await;
     let second_pid = run(&started, NODE, SECOND, on_failure()).await;
 
     drop(first_health);
     drop(second_health);
+    ticks(&started, PROBES_TO_THE_KILL, 2).await;
     for id in [FIRST, SECOND] {
-        wait_for_line(
-            &started,
-            &format!(
-                "'{id}' of node 'outage:v1' answered no health check for {KILL_AFTER_SECS} s; not \
-                 killed: all 2 running instances on this daemon other than the core node's own \
-                 are unhealthy, which the daemon reads as a messaging outage"
+        assert!(
+            logged(
+                &started,
+                id,
+                &format!(
+                    "'{id}' of node 'outage:v1' answered no health check for {KILL_AFTER_SECS} \
+                     s; not killed: all 2 running instances on this daemon other than the core \
+                     node's own are unhealthy, which the daemon reads as a messaging outage"
+                )
             ),
-        )
-        .await;
+            "{}",
+            stack_log(&started)
+        );
     }
-    tokio::time::sleep(PAST_THE_KILL).await;
+    // Past the kill's bound the monitors go on probing, and kill nothing.
+    ticks(&started, PROBES_TO_THE_KILL, 2).await;
     let log = stack_log(&started);
     assert!(!log.contains(&kill_line()), "{log}");
     assert_eq!(
@@ -2474,8 +2798,27 @@ async fn the_kill_is_skipped_in_a_messaging_outage() {
     assert_eq!(state_of(&started, FIRST), Some(InstanceState::Running));
     assert_eq!(state_of(&started, SECOND), Some(InstanceState::Running));
 
-    // One answer ends the outage, and the hold with it.
+    // One answer ends the outage, and the hold with it: the first probe
+    // after the answer records it. The second instance's monitor reads the
+    // health of the first at that probe, before or after the first recorded
+    // its answer, so it kills at that probe or at the next one.
     let _first_health = common::answer_health_probes(&started, NODE, FIRST).await;
+    wait_for_monitors(&started, 2).await;
+    time(&started).advance(PROBE_INTERVAL);
+    wait_for_line_of(&started, FIRST, "recovered after").await;
+    let second_killed = || logged(&started, SECOND, &kill_line());
+    poll_until(WAIT, "the second instance is killed or waits", || {
+        let waiting = time(&started)
+            .pending()
+            .iter()
+            .filter(|left| **left == PROBE_INTERVAL)
+            .count();
+        (second_killed() || waiting == 2).then_some(())
+    })
+    .await;
+    if !second_killed() {
+        time(&started).advance(PROBE_INTERVAL);
+    }
     wait_for_line(
         &started,
         &format!("'{SECOND}' of node '{NODE}:v1' {}", kill_line()),
@@ -2494,13 +2837,13 @@ async fn the_kill_is_skipped_in_a_messaging_outage() {
 }
 
 /// When a node the shutdown mock stands for exits, against its answer.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum ExitOnShutdown {
-    /// After this long it begins to exit, then answers at once.
-    BeforeAnswer(Duration),
-    /// It answers, then exits after this long, as the runtime does: its
-    /// hooks run after the answer.
-    AfterAnswer(Duration),
+    /// Once released, it begins to exit, then answers at once.
+    BeforeAnswer(Releases),
+    /// It answers, then exits once released, as the runtime does: its hooks
+    /// run after the answer.
+    AfterAnswer(Releases),
 }
 
 /// The shutdown mock of `instance_id`: a node that answers its shutdown
@@ -2528,15 +2871,16 @@ async fn exiting_on_shutdown(
                     signal_process(pid, "-TERM");
                 }
             };
+            let exit = exit.clone();
             async move {
                 match exit {
-                    ExitOnShutdown::BeforeAnswer(answer_after) => {
-                        tokio::time::sleep(answer_after).await;
+                    ExitOnShutdown::BeforeAnswer(releases) => {
+                        releases.take().await;
                         terminate();
                     }
-                    ExitOnShutdown::AfterAnswer(exit_after) => {
+                    ExitOnShutdown::AfterAnswer(releases) => {
                         tokio::spawn(async move {
-                            tokio::time::sleep(exit_after).await;
+                            releases.take().await;
                             terminate();
                         });
                     }
@@ -2555,13 +2899,15 @@ async fn exiting_on_shutdown(
 /// it, is removed with its node and never started again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_removal_ends_what_it_stops_and_holds_restarts_off() {
+    /// The wait of the crashed instance's restart.
+    const RESTART_WAIT_SECS: u64 = 7;
     const NODE: &str = "held";
     const QUICK: &str = "held_quick_inst";
     const SLOW: &str = "held_slow_inst";
     const CRASHED: &str = "held_crashed_inst";
     let started = daemon(RestartBackoff {
-        first_delay: HELD_RESTART_DELAY,
-        max_delay: HELD_RESTART_DELAY,
+        first_delay: Duration::from_secs(RESTART_WAIT_SECS),
+        max_delay: Duration::from_secs(RESTART_WAIT_SECS),
         reset_after: Duration::MAX,
     })
     .await;
@@ -2573,23 +2919,48 @@ async fn a_removal_ends_what_it_stops_and_holds_restarts_off() {
         &started,
         NODE,
         QUICK,
-        ExitOnShutdown::BeforeAnswer(Duration::ZERO),
+        ExitOnShutdown::BeforeAnswer(Releases::unlimited()),
     )
     .await;
+    let slow_answers = Releases::held();
     let _slow_shutdown = exiting_on_shutdown(
         &started,
         NODE,
         SLOW,
-        ExitOnShutdown::BeforeAnswer(SLOW_SHUTDOWN_ANSWER),
+        ExitOnShutdown::BeforeAnswer(slow_answers.clone()),
     )
     .await;
     run(&started, NODE, QUICK, always()).await;
     run(&started, NODE, SLOW, always()).await;
     let crashed_pid = run(&started, NODE, CRASHED, always()).await;
     signal_process(crashed_pid, "-9");
-    wait_for_line(&started, "restarting in 1 s (attempt 1)").await;
+    let waiting = format!("restarting in {RESTART_WAIT_SECS} s (attempt 1)");
+    wait_for_line_of(&started, CRASHED, &waiting).await;
 
-    remove_ok(&started, NODE, true).await;
+    // The removal holds restarts off from its start, before it asks for
+    // any shutdown: once it asked the slow instance, the quick instance exits
+    // on its own request, and the crashed instance's restart falls due and
+    // waits for its admission; then the slow instance answers.
+    let restart_due_during_the_removal = async {
+        poll_until(
+            WAIT,
+            "the removal asks the slow instance to shut down",
+            || {
+                slot_of(&started, SLOW)
+                    .is_some_and(|slot| slot.shutdown_requested())
+                    .then_some(())
+            },
+        )
+        .await;
+        wait_for_state(&started, QUICK, InstanceState::Finished).await;
+        time(&started).advance(Duration::from_secs(RESTART_WAIT_SECS));
+        wait_for_admission_wait(&started, CRASHED).await;
+        slow_answers.give(1);
+    };
+    tokio::join!(
+        remove_ok(&started, NODE, true),
+        restart_due_during_the_removal
+    );
     assert!(started.node_stack.find(NODE, TEST_NODE_TAG).is_none());
     let quick = lines_for(&started, QUICK);
     assert!(
@@ -2602,12 +2973,10 @@ async fn a_removal_ends_what_it_stops_and_holds_restarts_off() {
         !quick.iter().any(|line| line.contains("restart")),
         "the exit the removal asked for schedules no restart: {quick:?}"
     );
-    tokio::time::sleep(QUIET).await;
+    wait_for_supervision_end(&started, CRASHED).await;
     let crashed = lines_for(&started, CRASHED);
     assert!(
-        crashed
-            .last()
-            .is_some_and(|line| line.contains("restarting in 1 s (attempt 1)")),
+        crashed.last().is_some_and(|line| line.contains(&waiting)),
         "the restart due during the removal never started: {crashed:?}"
     );
 }
@@ -2694,10 +3063,6 @@ async fn begin_slice(started: &StartedCoreNode, change: SliceChange<'_>) {
 async fn a_removed_instance_takes_its_forked_child_with_it() {
     const NODE: &str = "removed_forker";
     const ID: &str = "removed_forker_inst";
-    /// How long after its answer the node exits: past the removal's claim,
-    /// which follows the answer at once, and well inside the force-kill
-    /// deadline.
-    const EXIT_AFTER: Duration = Duration::from_secs(2);
     let started = daemon(instant_restart_backoff()).await;
     let handled = TempDir::new().expect("a marker dir");
     let marker = handled.path().join("handled");
@@ -2707,11 +3072,22 @@ async fn a_removed_instance_takes_its_forked_child_with_it() {
     );
     let _dir = add_node(&started, NODE, &run_cmd, None).await;
     let _mocks = mocks(&started, NODE, ID).await;
-    let _shutdown =
-        exiting_on_shutdown(&started, NODE, ID, ExitOnShutdown::AfterAnswer(EXIT_AFTER)).await;
+    // The node exits after its answer, once the removal claimed it.
+    let exits = Releases::held();
+    let _shutdown = exiting_on_shutdown(
+        &started,
+        NODE,
+        ID,
+        ExitOnShutdown::AfterAnswer(exits.clone()),
+    )
+    .await;
     let pid = run(&started, NODE, ID, on_failure()).await;
 
-    let response = remove_ok(&started, NODE, true).await;
+    let exit_once_claimed = async {
+        wait_for_claim(&started, ID).await;
+        exits.give(1);
+    };
+    let (response, ()) = tokio::join!(remove_ok(&started, NODE, true), exit_once_claimed);
     assert!(
         !common::is_process_running(pid),
         "the removal returned once the process it stopped exited"
@@ -2734,9 +3110,10 @@ async fn a_removed_instance_takes_its_forked_child_with_it() {
     wait_for_group_gone(pid, "the removed instance's process").await;
 }
 
-/// `peppy node remove` tears its instances down together: two instances
-/// whose watchers each take [`ACK`] to hear of the end are removed in under
-/// twice that.
+/// `peppy node remove` tears its instances down together: each watcher
+/// acknowledges the end it hears only once both watchers heard theirs, so a
+/// removal that told them one after the other would wait on the first
+/// acknowledgement and never tell the second.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_removal_tells_its_instances_ends_together() {
     use core_node_api::encoding::{InstanceEnd, RelationshipEvent};
@@ -2744,21 +3121,23 @@ async fn a_removal_tells_its_instances_ends_together() {
     const FIRST: &str = "watched_first_inst";
     const SECOND: &str = "watched_second_inst";
     const OTHER_WATCHER: &str = "cloud_two";
-    /// How long each watcher takes to acknowledge an event: told one after
-    /// the other, the removal would take twice this.
-    const ACK: Duration = Duration::from_secs(8);
-    /// How long after its answer each node exits: past the removal's claim,
-    /// which follows the answers at once.
-    const EXIT_AFTER: Duration = Duration::from_secs(1);
     let started = daemon(instant_restart_backoff()).await;
     take_part_in_the_launch(&started).await;
     let _dir = add_node(&started, NODE, &clean_on_term(), None).await;
+    // Each node exits after its answer, once the removal claimed both.
+    let exits = Releases::held();
     let mut answering = Vec::new();
     let mut exiting = Vec::new();
     for id in [FIRST, SECOND] {
         answering.push(mocks(&started, NODE, id).await);
         exiting.push(
-            exiting_on_shutdown(&started, NODE, id, ExitOnShutdown::AfterAnswer(EXIT_AFTER)).await,
+            exiting_on_shutdown(
+                &started,
+                NODE,
+                id,
+                ExitOnShutdown::AfterAnswer(exits.clone()),
+            )
+            .await,
         );
         run(&started, NODE, id, on_failure()).await;
     }
@@ -2769,22 +3148,26 @@ async fn a_removal_tells_its_instances_ends_together() {
     )
     .await;
     release(&started).await;
-    let (_first_watcher, mut first_heard) = watcher_on(&started, WATCHER, ACK).await;
-    let (_second_watcher, mut second_heard) = watcher_on(&started, OTHER_WATCHER, ACK).await;
+    let acks = Releases::held();
+    let (_first_watcher, mut first_heard) = watcher_on(&started, WATCHER, acks.clone()).await;
+    let (_second_watcher, mut second_heard) =
+        watcher_on(&started, OTHER_WATCHER, acks.clone()).await;
 
-    let removing = std::time::Instant::now();
-    remove_ok(&started, NODE, true).await;
-    let took = removing.elapsed();
-    for (heard, id) in [(&mut first_heard, FIRST), (&mut second_heard, SECOND)] {
-        assert_eq!(
-            next_event(heard, id).await,
-            RelationshipEvent::Ended(InstanceEnd::Stopped)
-        );
-    }
-    assert!(
-        took >= ACK && took < ACK * 2,
-        "both ends are told at once: {took:?}"
-    );
+    let hear_both_then_acknowledge = async {
+        for id in [FIRST, SECOND] {
+            wait_for_claim(&started, id).await;
+        }
+        exits.give(2);
+        for (heard, id) in [(&mut first_heard, FIRST), (&mut second_heard, SECOND)] {
+            assert_eq!(
+                next_event(heard, id).await,
+                RelationshipEvent::Ended(InstanceEnd::Stopped)
+            );
+        }
+        acks.give(2);
+    };
+    tokio::join!(remove_ok(&started, NODE, true), hear_both_then_acknowledge);
+    assert!(started.node_stack.find(NODE, TEST_NODE_TAG).is_none());
 }
 
 /// `peppy node remove` kills what does not exit within the force-kill
@@ -2796,12 +3179,7 @@ async fn a_removal_kills_what_does_not_exit_and_names_it() {
     const NODE: &str = "removed_stuck";
     const ANSWERING: &str = "stuck_answering_inst";
     const UNREACHABLE: &str = "stuck_unreachable_inst";
-    let started = start_core_node_with_supervision_and_grace(
-        fast_health_monitor(UNHEALTHY_AFTER),
-        instant_restart_backoff(),
-        SHORT_GRACE_SECS,
-    )
-    .await;
+    let started = daemon_with(test_monitor(), instant_restart_backoff(), SHORT_GRACE_SECS).await;
     let run_cmd = r#"["sh", "-c", "sh -c 'trap \"\" TERM; while true; do sleep 0.2; done' & trap '' TERM; while true; do sleep 0.2; done"]"#;
     let _dir = add_node(&started, NODE, run_cmd, None).await;
     let _answering = mocks(&started, NODE, ANSWERING).await;
@@ -2810,20 +3188,27 @@ async fn a_removal_kills_what_does_not_exit_and_names_it() {
         &started,
         NODE,
         ANSWERING,
-        ExitOnShutdown::AfterAnswer(Duration::ZERO),
+        ExitOnShutdown::AfterAnswer(Releases::unlimited()),
     )
     .await;
     let answering = run(&started, NODE, ANSWERING, on_failure()).await;
     let unreachable = run(&started, NODE, UNREACHABLE, on_failure()).await;
 
-    let removing = std::time::Instant::now();
-    let response = remove_ok(&started, NODE, true).await;
-    let deadline = core_node::force_kill_deadline(Duration::from_secs(SHORT_GRACE_SECS));
-    assert!(
-        removing.elapsed() >= deadline,
-        "the removal waits the force-kill deadline before it kills: {:?}",
-        removing.elapsed()
-    );
+    // A second before the deadline the removal has killed nothing; at the
+    // deadline it kills both.
+    let deadline = deadline_of(SHORT_GRACE_SECS);
+    let kill_at_the_deadline = async {
+        wait_for_pending(&started, deadline).await;
+        time(&started).advance(deadline - Duration::from_secs(1));
+        for pid in [answering, unreachable] {
+            assert!(
+                common::is_process_running(pid),
+                "{pid} runs until the deadline"
+            );
+        }
+        time(&started).advance(Duration::from_secs(1));
+    };
+    let (response, ()) = tokio::join!(remove_ok(&started, NODE, true), kill_at_the_deadline);
     let mut force_killed = response.force_killed.clone();
     force_killed.sort();
     assert_eq!(force_killed, [ANSWERING, UNREACHABLE]);
@@ -2841,19 +3226,16 @@ async fn a_removal_kills_what_does_not_exit_and_names_it() {
 async fn a_removal_waits_for_the_process_another_stop_ends() {
     const NODE: &str = "stopped_and_removed";
     const ID: &str = "stopped_and_removed_inst";
-    let started = start_core_node_with_supervision_and_grace(
-        fast_health_monitor(UNHEALTHY_AFTER),
-        instant_restart_backoff(),
-        SHORT_GRACE_SECS,
-    )
-    .await;
+    let started = daemon_with(test_monitor(), instant_restart_backoff(), SHORT_GRACE_SECS).await;
     let _dir = add_node(&started, NODE, IGNORES_TERM, None).await;
     let _mocks = mocks(&started, NODE, ID).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
 
     let removal_after_the_stops_claim = async {
         wait_for_claim(&started, ID).await;
-        let removal = remove_ok(&started, NODE, true).await;
+        let removal =
+            a_second_into_the_deadline(&started, SHORT_GRACE_SECS, remove_ok(&started, NODE, true))
+                .await;
         (removal, common::is_process_running(pid))
     };
     let (stopped, (removal, running_at_the_removals_return)) =
@@ -2871,25 +3253,46 @@ async fn a_removal_waits_for_the_process_another_stop_ends() {
     assert!(started.node_stack.find(NODE, TEST_NODE_TAG).is_none());
 }
 
+/// Runs `second`, a stop path that joins the claim of a first one on a
+/// process that outlasts its force-kill deadline, a second into the first
+/// stop path's deadline, then moves the time to the end of that deadline
+/// once `second` waits for its own: the first deadline ends first. The
+/// daemon's shutdown grace is `grace_secs`.
+async fn a_second_into_the_deadline<T>(
+    started: &StartedCoreNode,
+    grace_secs: u64,
+    second: impl std::future::Future<Output = T>,
+) -> T {
+    let deadline = deadline_of(grace_secs);
+    let second_of_it = Duration::from_secs(1);
+    wait_for_pending(started, deadline).await;
+    time(started).advance(second_of_it);
+    let (output, ()) = tokio::join!(second, async {
+        advance_to_deadline_from(started, deadline, deadline - second_of_it).await;
+    });
+    output
+}
+
+/// Moves the time by `by` once a sleep of the daemon has `left` to go.
+async fn advance_to_deadline_from(started: &StartedCoreNode, left: Duration, by: Duration) {
+    wait_for_pending(started, left).await;
+    time(started).advance(by);
+}
+
 /// A stop that finds an instance a removal claimed joins that claim: it
 /// returns once the process is gone, which the removal's force kill ends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stop_joins_the_removal_that_claimed_its_process() {
     const NODE: &str = "removed_and_stopped";
     const ID: &str = "removed_and_stopped_inst";
-    let started = start_core_node_with_supervision_and_grace(
-        fast_health_monitor(UNHEALTHY_AFTER),
-        instant_restart_backoff(),
-        SHORT_GRACE_SECS,
-    )
-    .await;
+    let started = daemon_with(test_monitor(), instant_restart_backoff(), SHORT_GRACE_SECS).await;
     let _dir = add_node(&started, NODE, IGNORES_TERM, None).await;
     let _mocks = mocks(&started, NODE, ID).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
 
     let stop_after_the_removals_claim = async {
         wait_for_claim(&started, ID).await;
-        stop_ok(&started, ID).await;
+        a_second_into_the_deadline(&started, SHORT_GRACE_SECS, stop_ok(&started, ID)).await;
         common::is_process_running(pid)
     };
     let (removal, running_at_the_stops_return) = tokio::join!(
@@ -2907,9 +3310,9 @@ async fn a_stop_joins_the_removal_that_claimed_its_process() {
 /// A stop that joined an overwrite's claim, and still waits on its own
 /// shutdown request when a new run under the id commits in the entity the
 /// overwrite replaced in place, leaves that run alone: it removes no slot
-/// running a process it did not stop, and tears nothing down. The daemon
-/// gives the stop's request its 5 s shutdown timeout, which the overwrite's
-/// end, the node's build and the new run fit inside.
+/// running a process it did not stop, and tears nothing down. The stop's
+/// request is held until the new run committed, and the daemon's bound on its
+/// answer is out of reach.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_joined_stop_leaves_a_new_run_under_the_id_alone() {
     use core_node_api::encoding::RelationshipEvent;
@@ -2948,7 +3351,7 @@ async fn a_joined_stop_leaves_a_new_run_under_the_id_alone() {
             tokio::join!(overwrite(&started, dir.path()), kill_once_the_stop_asks);
         overwritten.completed();
         common::build_staged_node(&started, NODE, TEST_NODE_TAG).await;
-        let watched = watcher(&started, Duration::ZERO).await;
+        let watched = watcher(&started, Releases::unlimited()).await;
         let result = common::send_node_run_goal_and_wait(
             &started.caller_handle,
             &started.core_node_name,
@@ -2967,8 +3370,7 @@ async fn a_joined_stop_leaves_a_new_run_under_the_id_alone() {
         .completed();
         assert!(
             !stop_returned.load(Ordering::SeqCst),
-            "the joined stop still waits on its shutdown request, which the daemon gives up \
-             after its 5 s shutdown timeout, when the run commits"
+            "the joined stop still waits on its held shutdown request when the run commits"
         );
         shutdowns.release.notify_one();
         (result.pid.expect("a started instance has a pid"), watched)
@@ -3061,14 +3463,9 @@ async fn a_restarts_start_that_fails_during_a_removal_is_cleared() {
     const NODE: &str = "failing_restart";
     const STUCK: &str = "failing_restart_stuck_inst";
     const RESTARTING: &str = "failing_restart_inst";
-    let started = start_core_node_with_supervision_and_grace(
-        fast_health_monitor(UNHEALTHY_AFTER),
-        instant_restart_backoff(),
-        SHORT_GRACE_SECS,
-    )
-    .await;
+    let started = daemon_with(test_monitor(), instant_restart_backoff(), SHORT_GRACE_SECS).await;
     take_part_in_the_launch(&started).await;
-    let (_watcher, mut heard) = watcher(&started, Duration::ZERO).await;
+    let (_watcher, mut heard) = watcher(&started, Releases::unlimited()).await;
     let _dir = add_node(&started, NODE, IGNORES_TERM, None).await;
     let _stuck_mocks = mocks(&started, NODE, STUCK).await;
     let stuck = run(&started, NODE, STUCK, on_failure()).await;
@@ -3089,6 +3486,8 @@ async fn a_restarts_start_that_fails_during_a_removal_is_cleared() {
         wait_for_claim(&started, STUCK).await;
         signal_process(starting, "-9");
         wait_for_state(&started, RESTARTING, InstanceState::Restarting).await;
+        // Then the removal's force-kill deadline for the stuck instance ends.
+        advance_to_deadline(&started, deadline_of(SHORT_GRACE_SECS)).await;
     };
     let (removal, ()) = tokio::join!(
         remove_ok(&started, NODE, true),
@@ -3102,7 +3501,7 @@ async fn a_restarts_start_that_fails_during_a_removal_is_cleared() {
         RelationshipEvent::Ended(InstanceEnd::Stopped),
         "the cleared instance's watchers hear it end"
     );
-    tokio::time::sleep(QUIET).await;
+    wait_for_supervision_end(&started, RESTARTING).await;
     assert_eq!(state_of(&started, RESTARTING), None, "nothing restarts it");
 }
 
@@ -3115,12 +3514,7 @@ async fn a_first_start_that_commits_during_a_removal_keeps_the_node() {
     const NODE: &str = "committing_start";
     const STUCK: &str = "committing_start_stuck_inst";
     const LATE: &str = "committing_start_inst";
-    let started = start_core_node_with_supervision_and_grace(
-        fast_health_monitor(UNHEALTHY_AFTER),
-        instant_restart_backoff(),
-        SHORT_GRACE_SECS,
-    )
-    .await;
+    let started = daemon_with(test_monitor(), instant_restart_backoff(), SHORT_GRACE_SECS).await;
     let _dir = add_node(&started, NODE, IGNORES_TERM, None).await;
     let _stuck_mocks = mocks(&started, NODE, STUCK).await;
     let stuck = run(&started, NODE, STUCK, on_failure()).await;
@@ -3132,6 +3526,9 @@ async fn a_first_start_that_commits_during_a_removal_keeps_the_node() {
             wait_for_claim(&started, STUCK).await;
             let ready = common::answer_ready_probe(&started, NODE, LATE).await;
             wait_for_state(&started, LATE, InstanceState::Running).await;
+            // Then the removal's force-kill deadline for the stuck instance
+            // ends.
+            advance_to_deadline(&started, deadline_of(SHORT_GRACE_SECS)).await;
             ready
         };
         let (removal, _ready) = tokio::join!(remove(&started, NODE, true), commit_after_the_claim);
@@ -3344,19 +3741,15 @@ async fn watch(started: &StartedCoreNode, instance_id: &str) {
 type Heard =
     tokio::sync::mpsc::UnboundedReceiver<core_node_api::encoding::RelationshipNotification>;
 
-/// The lifecycle events [`WATCHER`] hears, each acknowledged after
-/// `ack_after`.
-async fn watcher(started: &StartedCoreNode, ack_after: Duration) -> (Mock, Heard) {
-    watcher_on(started, WATCHER, ack_after).await
+/// The lifecycle events [`WATCHER`] hears, each acknowledged once `acks`
+/// gives a release.
+async fn watcher(started: &StartedCoreNode, acks: Releases) -> (Mock, Heard) {
+    watcher_on(started, WATCHER, acks).await
 }
 
-/// The lifecycle events the daemon `core_node` hears, each acknowledged
-/// after `ack_after`.
-async fn watcher_on(
-    started: &StartedCoreNode,
-    core_node: &str,
-    ack_after: Duration,
-) -> (Mock, Heard) {
+/// The lifecycle events the daemon `core_node` hears, each acknowledged once
+/// `acks` gives a release.
+async fn watcher_on(started: &StartedCoreNode, core_node: &str, acks: Releases) -> (Mock, Heard) {
     use core_node_api::encoding::{RelationshipNotification, RelationshipNotificationAck};
     let (events, heard) = tokio::sync::mpsc::unbounded_channel();
     let mock = peer_daemon_service(
@@ -3368,8 +3761,9 @@ async fn watcher_on(
                 RelationshipNotification::decode(context.message().payload_bytes().as_ref())
                     .expect("a notification decodes");
             events.send(event).expect("the test reads the events");
+            let acks = acks.clone();
             async move {
-                tokio::time::sleep(ack_after).await;
+                acks.take().await;
                 Ok(RelationshipNotificationAck::new()
                     .encode()
                     .expect("an acknowledgement encodes"))
@@ -3406,7 +3800,7 @@ async fn the_watchers_of_an_instance_hear_it_exit_and_run_again() {
     take_part_in_the_launch(&started).await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let _mocks = mocks(&started, NODE, ID).await;
-    let (_watcher, mut heard) = watcher(&started, Duration::ZERO).await;
+    let (_watcher, mut heard) = watcher(&started, Releases::unlimited()).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
     watch(&started, ID).await;
 
@@ -3423,7 +3817,7 @@ async fn the_watchers_of_an_instance_hear_it_exit_and_run_again() {
         wait_for_restarts(&started, ID, restarts).await;
     }
     assert_ne!(serialized_pid(&started, ID), pid);
-    stop_ok(&started, ID).await;
+    stop_ok_through(&started, ID, deadline_of(DEFAULT_GRACE_SECS)).await;
     assert_eq!(
         next_event(&mut heard, ID).await,
         RelationshipEvent::Ended(InstanceEnd::Stopped)
@@ -3444,7 +3838,7 @@ async fn watchers_named_during_the_wait_hear_the_restart() {
     take_part_in_the_launch(&started).await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let _mocks = mocks(&started, NODE, ID).await;
-    let (_watcher, mut heard) = watcher(&started, Duration::ZERO).await;
+    let (_watcher, mut heard) = watcher(&started, Releases::unlimited()).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
 
     reserve(&started).await;
@@ -3469,10 +3863,6 @@ async fn announcing_the_exit_counts_toward_the_wait() {
     const ID: &str = "slowly_watched_inst";
     /// The wait before every attempt.
     const DELAY: Duration = Duration::from_secs(8);
-    /// How long the watcher takes to answer: past `DELAY`, so the wait is
-    /// spent by the time the announcement ends; a wait that followed the
-    /// announcement would add `DELAY` to it.
-    const ACK: Duration = Duration::from_secs(9);
     let started = daemon(RestartBackoff {
         first_delay: DELAY,
         max_delay: DELAY,
@@ -3484,7 +3874,8 @@ async fn announcing_the_exit_counts_toward_the_wait() {
     take_part_in_the_launch(&started).await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let _mocks = mocks(&started, NODE, ID).await;
-    let (_watcher, mut heard) = watcher(&started, ACK).await;
+    let acks = Releases::held();
+    let (_watcher, mut heard) = watcher(&started, acks.clone()).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
     watch(&started, ID).await;
 
@@ -3496,16 +3887,23 @@ async fn announcing_the_exit_counts_toward_the_wait() {
         ),
         "the watcher hears the exit it answers slowly"
     );
-    wait_for_restarts_within(&started, ID, 1, DELAY + ACK + WAIT).await;
-    let took =
-        logged_at(&started, ID, "restarted (attempt 1)") - logged_at(&started, ID, "failed:");
-    assert!(
-        took >= chrono::TimeDelta::from_std(ACK).expect("a short answer"),
-        "the restart follows the announcement: {took}"
+    // The watcher answers once the wait has passed: the restart waits for
+    // the answer.
+    wait_for_line_of(&started, ID, "restarting in 8 s (attempt 1)").await;
+    time(&started).advance(DELAY);
+    assert_eq!(
+        serialized(&started, ID).restart_status.restart_count,
+        0,
+        "the restart follows the announcement"
     );
-    assert!(
-        took < chrono::TimeDelta::from_std(ACK + DELAY).expect("a short wait"),
-        "the announcement is inside the wait: {took}"
+    assert_eq!(state_of(&started, ID), Some(InstanceState::Restarting));
+    // The wait counted from the exit, so the restart starts with no more
+    // time passing; the watcher hears it reach running.
+    acks.give(2);
+    wait_for_restarts(&started, ID, 1).await;
+    assert_eq!(
+        next_event(&mut heard, ID).await,
+        core_node_api::encoding::RelationshipEvent::ReachedRunning
     );
     signal_process(serialized_pid(&started, ID), "-9");
 }
@@ -3607,9 +4005,6 @@ async fn add_joint_link_node(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_start_kills_its_group_before_it_dissolves_its_pairs() {
     use std::sync::atomic::Ordering;
-    /// Well inside the 5 s the daemon waits for a node's answer to a set it
-    /// sends, which the dissolve waits out while the leader's mock holds it.
-    const KILLED_WHILE_THE_SET_IS_HELD: Duration = Duration::from_secs(2);
     const LEADER_NODE: &str = "local_leader";
     const LEADER_ID: &str = "local_leader_inst";
     const NODE: &str = "forks_then_fails";
@@ -3634,13 +4029,14 @@ async fn a_failed_start_kills_its_group_before_it_dissolves_its_pairs() {
     )
     .await;
 
-    // The follower forks a child that ignores SIGTERM and exits before it
-    // signals ready, so its start fails with its pair to the leader reserved.
+    // The follower forks a child that ignores SIGTERM and exits once the
+    // child wrote its pid, before it signals ready, so its start fails with
+    // its pair to the leader reserved.
     let markers = TempDir::new().expect("marker dir");
     let child_pidfile = markers.path().join("child.pid");
     let run_cmd = format!(
-        r#"["sh", "-c", "sh -c 'echo $$ > {}; trap \"\" TERM; while true; do sleep 0.1; done' & sleep 1; exit 3"]"#,
-        child_pidfile.display()
+        r#"["sh", "-c", "sh -c 'echo $$ > {pid}; trap \"\" TERM; while true; do sleep 0.1; done' & while [ ! -s {pid} ]; do sleep 0.01; done; exit 3"]"#,
+        pid = child_pidfile.display()
     );
     let _dir = add_joint_link_node(
         &started,
@@ -3669,6 +4065,8 @@ async fn a_failed_start_kills_its_group_before_it_dissolves_its_pairs() {
         )])),
         &TIMEOUTS,
     );
+    // The leader's mock holds the set, and the daemon's bound on its answer
+    // is out of reach, so the dissolve waits until the test releases it.
     let child_gone_while_the_dissolve_waits = async {
         poll_until(WAIT, "the dissolve sends the leader its set", || {
             (held_pins.asked.load(Ordering::SeqCst) >= 1).then_some(())
@@ -3680,7 +4078,7 @@ async fn a_failed_start_kills_its_group_before_it_dissolves_its_pairs() {
             .parse()
             .expect("a pid");
         poll_until(
-            KILLED_WHILE_THE_SET_IS_HELD,
+            WAIT,
             "the forked child is gone while the leader's set is held",
             || (!common::is_process_running(child)).then_some(()),
         )
@@ -3766,7 +4164,6 @@ async fn mock_peer_update_taking(
         .await
         .expect("peer_update mock starts"),
     );
-    settle().await;
     (mock, watch)
 }
 
@@ -3950,7 +4347,7 @@ async fn a_stop_of_a_waiting_instance_reaches_its_watchers() {
     take_part_in_the_launch(&started).await;
     let _dir = add_node(&started, NODE, SLEEPER, None).await;
     let _mocks = mocks(&started, NODE, ID).await;
-    let (_watcher, mut heard) = watcher(&started, Duration::ZERO).await;
+    let (_watcher, mut heard) = watcher(&started, Releases::unlimited()).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
     watch(&started, ID).await;
 
@@ -3979,7 +4376,7 @@ async fn a_stop_of_a_waiting_instance_reaches_its_remote_pair_peer() {
     let _dir = add_follower(&started, NODE).await;
     let _mocks = mocks(&started, NODE, ID).await;
     let _peer_update = mock_peer_update(&started, NODE, ID).await;
-    let (_watcher, mut heard) = watcher(&started, Duration::ZERO).await;
+    let (_watcher, mut heard) = watcher(&started, Releases::unlimited()).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
     assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
 
@@ -4033,7 +4430,7 @@ async fn every_removal_of_a_failed_instance_reaches_its_remote_pair_peer() {
         let dir = add_follower(&started, NODE).await;
         let _mocks = mocks(&started, NODE, ID).await;
         let _peer_update = mock_peer_update(&started, NODE, ID).await;
-        let (_watcher, mut heard) = watcher(&started, Duration::ZERO).await;
+        let (_watcher, mut heard) = watcher(&started, Releases::unlimited()).await;
         let pid = run_follower(&started, NODE, ID, never()).await;
         assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
         signal_process(pid, "-9");
@@ -4187,11 +4584,12 @@ async fn a_pair_already_held_is_made_for_the_peer_daemon() {
     assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
     pins.borrow_and_update();
 
+    // A pin of the pair again would reach the node before the daemon
+    // answers.
     assert_eq!(
         pair_again_from_watcher(&started, ID).await,
         Ok(FederationAck)
     );
-    settle().await;
     assert!(
         !pins.has_changed().expect("the pin watch is open"),
         "the held pair is not pinned again"
@@ -4479,7 +4877,7 @@ async fn a_held_pair_stays_held_unless_the_peer_daemon_refuses_it() {
         let _dir = add_follower(&started, NODE).await;
         let _mocks = mocks(&started, NODE, ID).await;
         let (_peer_update, pins) = mock_peer_update(&started, NODE, ID).await;
-        let (_watcher, _heard) = watcher(&started, Duration::ZERO).await;
+        let (_watcher, _heard) = watcher(&started, Releases::unlimited()).await;
         let pid = run_follower(&started, NODE, ID, on_failure()).await;
         assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
         let peer = peer_daemon(&started, verdict.clone(), None).await;
@@ -4514,16 +4912,13 @@ async fn a_held_pair_stays_held_unless_the_peer_daemon_refuses_it() {
 /// and writes no line under the next restart's attempt line.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_late_failure_leaves_the_next_restarts_pair_alone() {
-    /// Inside the 15 s a restart waits for the peer daemon's answer, so the
-    /// answer the mock releases is one the first restart still waits for.
-    const ANSWERED_IN_TIME: Duration = Duration::from_secs(10);
     const NODE: &str = "late_answer";
     const ID: &str = "late_answer_inst";
     let started = daemon(instant_restart_backoff()).await;
     let _dir = add_follower(&started, NODE).await;
     let _mocks = mocks(&started, NODE, ID).await;
     let _peer_update = mock_peer_update(&started, NODE, ID).await;
-    let (_watcher, _heard) = watcher(&started, Duration::ZERO).await;
+    let (_watcher, _heard) = watcher(&started, Releases::unlimited()).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
     assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
     let peer = peer_daemon(
@@ -4533,26 +4928,21 @@ async fn a_late_failure_leaves_the_next_restarts_pair_alone() {
     )
     .await;
 
-    // The first restart's request waits; its process exits, and the next
-    // restart reserves the pair before that request's failure comes back.
+    // The first restart's request waits, as the daemon's bound on its answer
+    // is out of reach; its process exits, and the next restart reserves the
+    // pair before that request's failure comes back.
     signal_process(pid, "-9");
     wait_for_restarts(&started, ID, 1).await;
     poll_until(WAIT, "the first restart asks for the pair", || {
         (peer.asked.count() >= 1).then_some(())
     })
     .await;
-    let first_asked = std::time::Instant::now();
     signal_process(serialized_pid(&started, ID), "-9");
     wait_for_restarts(&started, ID, 2).await;
     poll_until(WAIT, "the next restart reserves the pair", || {
         (started.node_stack.pairs().len() == 1).then_some(())
     })
     .await;
-    assert!(
-        first_asked.elapsed() < ANSWERED_IN_TIME,
-        "the first request still waits for its answer: {:?}",
-        first_asked.elapsed()
-    );
     peer.release.notify_one();
     poll_until(WAIT, "the next restart makes the pair", || {
         run_log(&started, ID).contains("paired: ").then_some(())
@@ -4594,7 +4984,7 @@ async fn a_refusal_after_the_process_exited_leaves_the_pair_held() {
     let _dir = add_follower(&started, NODE).await;
     let _mocks = mocks(&started, NODE, ID).await;
     let _peer_update = mock_peer_update(&started, NODE, ID).await;
-    let (_watcher, _heard) = watcher(&started, Duration::ZERO).await;
+    let (_watcher, _heard) = watcher(&started, Releases::unlimited()).await;
     let pid = run_follower(&started, NODE, ID, capped(1)).await;
     assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
     let peer = peer_daemon(
@@ -4644,7 +5034,7 @@ async fn a_restart_logs_each_pair_as_its_request_ends() {
     let _dir = add_follower_taking(&started, NODE, Cardinality::ZeroOrMore).await;
     let _mocks = mocks(&started, NODE, ID).await;
     let _peer_update = mock_peer_update_taking(&started, NODE, ID, Cardinality::ZeroOrMore).await;
-    let (_watcher, _heard) = watcher(&started, Duration::ZERO).await;
+    let (_watcher, _heard) = watcher(&started, Releases::unlimited()).await;
     let pid = run(&started, NODE, ID, on_failure()).await;
     for leader in [LEADER, SECOND_LEADER] {
         assert_eq!(
@@ -4680,31 +5070,26 @@ async fn a_restart_logs_each_pair_as_its_request_ends() {
 /// with `Done`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_respawn_answers_the_peer_daemons_request_while_it_asks_its_own() {
-    /// Well inside the 15 s a peer daemon's answer to a pair commit may
-    /// take.
-    const ANSWERED_MEANWHILE: Duration = Duration::from_secs(5);
     const NODE: &str = "both_restart";
     const ID: &str = "both_restart_inst";
     let started = daemon(instant_restart_backoff()).await;
     let _dir = add_follower(&started, NODE).await;
     let _mocks = mocks(&started, NODE, ID).await;
     let _peer_update = mock_peer_update(&started, NODE, ID).await;
-    let (_watcher, _heard) = watcher(&started, Duration::ZERO).await;
+    let (_watcher, _heard) = watcher(&started, Releases::unlimited()).await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
     assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
     let (_peer, answered) = peer_daemon_asking_back(&started, ID).await;
 
     signal_process(pid, "-9");
     wait_for_restarts(&started, ID, 1).await;
-    let (verdict, took) = poll_until(WAIT, "the peer daemon's own request is answered", || {
+    // The daemon's bound on the peer daemon's answer is out of reach, so a
+    // respawn that answered nothing while it waits would never be answered.
+    let verdict = poll_until(WAIT, "the peer daemon's own request is answered", || {
         answered.lock().unwrap().clone()
     })
     .await;
     assert_eq!(verdict, Ok(FederationAck));
-    assert!(
-        took < ANSWERED_MEANWHILE,
-        "answered while the respawn waited on its own request, after {took:?}"
-    );
     poll_until(WAIT, "the respawn's run log names the pair made", || {
         run_log(&started, ID).contains("paired: ").then_some(())
     })
@@ -4714,12 +5099,11 @@ async fn a_respawn_answers_the_peer_daemons_request_while_it_asks_its_own() {
 
 /// [`WATCHER`]'s `pair_commit` as the daemon of a peer restarting at the
 /// same time answers it: on a held request it first asks this daemon for
-/// the same pair again, records that verdict and how long it took, then
-/// answers the request made.
+/// the same pair again, records that verdict, then answers the request made.
 async fn peer_daemon_asking_back(
     started: &StartedCoreNode,
     instance_id: &str,
-) -> (Mock, Arc<std::sync::Mutex<Option<(Verdict, Duration)>>>) {
+) -> (Mock, Arc<std::sync::Mutex<Option<Verdict>>>) {
     let answered = Arc::new(std::sync::Mutex::new(None));
     let ask_back = pair_commit_from_watcher(started, instance_id, true);
     let messenger = started.caller_handle.clone();
@@ -4740,7 +5124,6 @@ async fn peer_daemon_asking_back(
             let recorder = Arc::clone(&recorder);
             async move {
                 if request.held {
-                    let asked = std::time::Instant::now();
                     let verdict: Verdict = poll(
                         &ask_back,
                         &messenger,
@@ -4751,7 +5134,7 @@ async fn peer_daemon_asking_back(
                     )
                     .await
                     .map_err(|error| error_reply(error, "pair_commit"));
-                    *recorder.lock().unwrap() = Some((verdict, asked.elapsed()));
+                    *recorder.lock().unwrap() = Some(verdict);
                 }
                 answer_with(&Ok(FederationAck))
             }
@@ -4767,8 +5150,7 @@ async fn peer_daemon_asking_back(
 /// cap, and nothing restarts it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stop_during_the_exits_announcement_ends_the_instance() {
-    /// How long the watcher takes to answer the exit.
-    const ACK: Duration = Duration::from_secs(3);
+    use core_node_api::encoding::{InstanceEnd, RelationshipEvent};
     for (request, line) in [(on_failure(), "restarting in"), (capped(1), "reached")] {
         const NODE: &str = "stopped_mid_announcement";
         const ID: &str = "stopped_mid_announcement_inst";
@@ -4778,26 +5160,54 @@ async fn a_stop_during_the_exits_announcement_ends_the_instance() {
         take_part_in_the_launch(&started).await;
         let _dir = add_node(&started, NODE, SLEEPER, None).await;
         let _mocks = mocks(&started, NODE, ID).await;
-        let (_watcher, mut heard) = watcher(&started, ACK).await;
+        let acks = Releases::held();
+        let (_watcher, mut heard) = watcher(&started, acks.clone()).await;
         let pid = run(&started, NODE, ID, request).await;
         watch(&started, ID).await;
         let capped = line == "reached";
         if capped {
+            // The first exit is announced and its restart reaches running.
+            acks.give(2);
             signal_process(pid, "-9");
-            wait_for_restarts_within(&started, ID, 1, ACK + WAIT).await;
-            let _ = next_event(&mut heard, ID).await;
-            let _ = next_event(&mut heard, ID).await;
+            assert_eq!(
+                next_event(&mut heard, ID).await,
+                RelationshipEvent::Ended(InstanceEnd::Exited)
+            );
+            assert_eq!(
+                next_event(&mut heard, ID).await,
+                RelationshipEvent::ReachedRunning
+            );
+            wait_for_restarts(&started, ID, 1).await;
         }
 
+        // The watcher holds its answer to this exit while the stop claims
+        // the instance.
         signal_process(serialized_pid(&started, ID), "-9");
-        let _ = next_event(&mut heard, ID).await;
+        assert_eq!(
+            next_event(&mut heard, ID).await,
+            RelationshipEvent::Ended(InstanceEnd::Exited)
+        );
         let lines = lines_for(&started, ID);
         assert!(
             lines.last().is_some_and(|logged| logged.contains(line)),
             "the exit's `{line}` line is written before its announcement ends: {lines:?}"
         );
-        stop_ok(&started, ID).await;
-        tokio::time::sleep(ACK + QUIET).await;
+        // The watcher serves one notification at a time, so the stop's
+        // waits behind the exit's: both are answered once the stop took the
+        // slot.
+        let answer_once_stopped = async {
+            poll_until(WAIT, "the stop takes the slot", || {
+                state_of(&started, ID).is_none().then_some(())
+            })
+            .await;
+            acks.give(2);
+        };
+        tokio::join!(stop_ok(&started, ID), answer_once_stopped);
+        assert_eq!(
+            next_event(&mut heard, ID).await,
+            RelationshipEvent::Ended(InstanceEnd::Stopped)
+        );
+        wait_for_supervision_end(&started, ID).await;
         assert_eq!(state_of(&started, ID), None);
         assert_eq!(lines_for(&started, ID), lines, "nothing follows the stop");
     }
@@ -4853,26 +5263,25 @@ async fn a_remote_peer_stopped_on_purpose_is_forgotten() {
 /// outcome is logged for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reset_cancels_a_respawns_unanswered_pair_request() {
-    /// Well under the 15 s a pair commit waits for its answer.
-    const RESET_BOUND: Duration = Duration::from_secs(7);
     const NODE: &str = "unanswered";
     const ID: &str = "unanswered_inst";
     let started = daemon(instant_restart_backoff()).await;
     let _dir = add_follower(&started, NODE).await;
     let _mocks = mocks(&started, NODE, ID).await;
     let _peer_update = mock_peer_update(&started, NODE, ID).await;
-    let (_watcher, _heard) = watcher(&started, Duration::ZERO).await;
+    let (_watcher, _heard) = watcher(&started, Releases::unlimited()).await;
     // The node answers the reset's shutdown at once, so the teardown is quick.
     let _shutdown = exiting_on_shutdown(
         &started,
         NODE,
         ID,
-        ExitOnShutdown::BeforeAnswer(Duration::ZERO),
+        ExitOnShutdown::BeforeAnswer(Releases::unlimited()),
     )
     .await;
     let pid = run_follower(&started, NODE, ID, on_failure()).await;
     assert_eq!(pair_from_watcher(&started, ID).await, Ok(FederationAck));
-    // The peer daemon takes the request and never answers it.
+    // The peer daemon takes the request and never answers it, and the
+    // daemon's bound on its answer is out of reach.
     let (asked, mut request_arrived) = tokio::sync::mpsc::unbounded_channel::<()>();
     let _silent = peer_daemon_service(
         &started,
@@ -4880,10 +5289,7 @@ async fn a_reset_cancels_a_respawns_unanswered_pair_request() {
         core_node_api::ServiceId::PairCommit,
         move |_context| {
             let _ = asked.send(());
-            async move {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
-                answer_with(&Ok(FederationAck))
-            }
+            std::future::pending::<ServiceAnswer>()
         },
     )
     .await;
@@ -4893,10 +5299,7 @@ async fn a_reset_cancels_a_respawns_unanswered_pair_request() {
         .await
         .expect("the respawn asks the peer daemon for the pair")
         .expect("the peer daemon listens");
-    let resetting = std::time::Instant::now();
     reset(&started).await;
-    let took = resetting.elapsed();
-    assert!(took < RESET_BOUND, "the reset waited {took:?}");
     assert!(
         !run_log(&started, ID).contains("not made again"),
         "a cancelled request logs no outcome:\n{}",

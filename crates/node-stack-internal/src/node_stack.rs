@@ -23,8 +23,11 @@ pub use supervision::{
 };
 
 use crate::error::{Error, Result};
+use crate::instance_tasks::InstanceTasks;
 use crate::process_group::{ProcessGroup, kill_process_group};
+use crate::reply_bounds::ReplyBounds;
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
+use crate::time_source::TimeSource;
 use config::node::{
     MissingDependencyPolicy, NodeConfig, PairingParticipantDependency,
     collect_contract_implementation_edges, collect_dependency_specs, validate_dependency_specs,
@@ -1077,6 +1080,18 @@ pub struct NodeStack {
     /// state made once at startup, like `shutdown_grace`; the handlers that
     /// create a log file read it. The default exports nothing.
     log_exporter: LogExporter,
+    /// The time the supervision of the instances runs on: the health
+    /// monitor, the restart backoff, the force-kill deadline of a stop and
+    /// the bound on the output readers of a start that ends. Daemon-only
+    /// state, like `shutdown_grace`; the host's time by default.
+    time: TimeSource,
+    /// The bounds on the answers to the requests the daemon sends the nodes
+    /// and the peer daemons. Daemon-only state, like `shutdown_grace`;
+    /// [`ReplyBounds::DEFAULT`] by default.
+    reply_bounds: ReplyBounds,
+    /// The live background tasks of each instance: its exit watcher, the
+    /// wait of its restart and its health monitor.
+    instance_tasks: InstanceTasks,
 }
 
 impl NodeStack {
@@ -1113,6 +1128,9 @@ impl NodeStack {
             shutdown_grace: Duration::from_secs(config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS),
             pypi_mirror: None,
             log_exporter: LogExporter::disabled(),
+            time: TimeSource::System,
+            reply_bounds: ReplyBounds::DEFAULT,
+            instance_tasks: InstanceTasks::default(),
         }
     }
 
@@ -1155,6 +1173,38 @@ impl NodeStack {
     /// The exporter a log file of this stack sends its lines to.
     pub fn log_exporter(&self) -> &LogExporter {
         &self.log_exporter
+    }
+
+    /// Sets the time the supervision of the instances runs on. Builder form,
+    /// like [`NodeStack::with_shutdown_grace`]; [`TimeSource::System`] is the
+    /// default.
+    pub fn with_time_source(mut self, time: TimeSource) -> Self {
+        self.time = time;
+        self
+    }
+
+    /// The time the supervision of the instances runs on.
+    pub fn time(&self) -> &TimeSource {
+        &self.time
+    }
+
+    /// Sets the bounds on the answers to the daemon's requests. Builder form,
+    /// like [`NodeStack::with_shutdown_grace`]; [`ReplyBounds::DEFAULT`] is
+    /// the default.
+    pub fn with_reply_bounds(mut self, reply_bounds: ReplyBounds) -> Self {
+        self.reply_bounds = reply_bounds;
+        self
+    }
+
+    /// The bounds on the answers to the requests the daemon sends the nodes
+    /// and the peer daemons.
+    pub fn reply_bounds(&self) -> &ReplyBounds {
+        &self.reply_bounds
+    }
+
+    /// The live background tasks of each instance.
+    pub fn instance_tasks(&self) -> &InstanceTasks {
+        &self.instance_tasks
     }
 
     /// Records the add-log path for a `(name, tag)` key. Called by the

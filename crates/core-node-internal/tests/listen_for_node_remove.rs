@@ -309,6 +309,7 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
         pid,
         core_node_api::ExitCause::Code(0),
         &core_node::test_support::instant_restart_backoff(),
+        node_stack.time().now(),
         node_stack::Registrations::default,
     );
     assert!(exited.is_some(), "a running instance exits");

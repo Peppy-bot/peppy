@@ -240,9 +240,16 @@ pub async fn spawn_running_instance(
             .expect("test fixture: prepare_and_spawn should succeed on Ready entity");
 
     let pid = child.id().expect("fixture: spawned child should have pid");
-    NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone(), Vec::new())
-        .await
-        .expect("test fixture: commit_started should succeed");
+    NodeEntity::commit_started(
+        &handle,
+        child,
+        started_ctx,
+        instance_id.clone(),
+        Vec::new(),
+        std::time::Instant::now(),
+    )
+    .await
+    .expect("test fixture: commit_started should succeed");
 
     RunningInstanceGuard {
         handle,

@@ -41,17 +41,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use core_node_api::ServiceRequest;
 use core_node_api::encoding::{InstanceEnd, RelationshipEvent, RelationshipNotification};
 use parking_lot::Mutex;
 use peppylib::MessengerHandle;
 use peppylib::core_node::transport::poll;
 
 use super::PairingCoordinator;
-
-/// Bound on one notification. Short: the receiver only records what already
-/// happened, and this runs on lifecycle paths that must not stall behind a
-/// slow peer.
-pub(super) const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+use super::common::unanswered;
+use node_stack::TimeSource;
 
 /// Which daemons the planner said are observing each local instance.
 ///
@@ -133,6 +131,10 @@ pub(crate) struct RelationshipNotifier {
     caller_instance_id: String,
     pairing: Arc<PairingCoordinator>,
     watchers: WatcherRegistry,
+    /// The bound on a daemon's acknowledgement of one notification, on
+    /// `time`.
+    reply_bound: Duration,
+    time: TimeSource,
 }
 
 impl RelationshipNotifier {
@@ -141,6 +143,8 @@ impl RelationshipNotifier {
         core_node_name: impl Into<String>,
         caller_instance_id: impl Into<String>,
         pairing: Arc<PairingCoordinator>,
+        reply_bound: Duration,
+        time: TimeSource,
     ) -> Self {
         Self {
             messenger,
@@ -148,6 +152,8 @@ impl RelationshipNotifier {
             caller_instance_id: caller_instance_id.into(),
             pairing,
             watchers: WatcherRegistry::default(),
+            reply_bound,
+            time,
         }
     }
 
@@ -218,15 +224,23 @@ impl RelationshipNotifier {
         futures::future::join_all(recipients.iter().map(|core_node| {
             let notification = &notification;
             async move {
-                let outcome = poll(
-                    notification,
-                    &self.messenger,
-                    &self.core_node_name,
-                    &self.caller_instance_id,
-                    core_node,
-                    NOTIFY_TIMEOUT,
-                )
-                .await;
+                let outcome = self
+                    .time
+                    .bounded(
+                        self.reply_bound,
+                        |bound| {
+                            poll(
+                                notification,
+                                &self.messenger,
+                                &self.core_node_name,
+                                &self.caller_instance_id,
+                                core_node,
+                                bound,
+                            )
+                        },
+                        unanswered(None, RelationshipNotification::ID.name()),
+                    )
+                    .await;
                 if let Err(e) = outcome {
                     tracing::warn!(
                         "could not tell `{core_node}` that `{instance_id}` {} ({e}); that \

@@ -117,13 +117,14 @@ impl Supervision {
         }
     }
 
-    /// Advances the backoff after an exit or a failed start: `attempt` and
-    /// `next_start` follow, and `next_start` is cleared at the attempt
-    /// `max_restarts` refuses.
+    /// Advances the backoff after an exit or a failed start at `now`:
+    /// `attempt` and `next_start` follow, and `next_start` is cleared at the
+    /// attempt `max_restarts` refuses.
     pub(super) fn advance_backoff(
         &mut self,
         backoff: &RestartBackoff,
         ran_for: Option<Duration>,
+        now: Instant,
     ) -> Attempt {
         let NextAttempt { attempt, delay } = backoff.next(self.attempt, ran_for);
         self.attempt = attempt.get();
@@ -140,7 +141,7 @@ impl Supervision {
                 Attempt::Scheduled {
                     attempt,
                     delay,
-                    scheduled_at: Instant::now(),
+                    scheduled_at: now,
                     token: self.restart_token.clone(),
                 }
             }
@@ -366,7 +367,7 @@ mod tests {
     use super::{Attempt, NextAttempt, RestartBackoff, Supervision};
     use config::node::{ResolvedRestart, RestartDeclaration, RestartOrigin, RestartPolicy};
     use std::num::NonZeroU32;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// A slot without a first start, the core node's own instance, has no
     /// goal to restart from: it resolves to `never`, with the `default` origin.
@@ -438,7 +439,7 @@ mod tests {
             reset_after: Duration::MAX,
         };
         let mut supervision = Supervision::default();
-        let attempt = supervision.advance_backoff(&unbounded, None);
+        let attempt = supervision.advance_backoff(&unbounded, None, Instant::now());
         assert!(
             matches!(attempt, Attempt::Scheduled { delay, .. } if delay == Duration::MAX),
             "{attempt:?}"
