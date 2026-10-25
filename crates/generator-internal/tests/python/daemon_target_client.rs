@@ -12,7 +12,8 @@ use std::fs;
 use tempfile::TempDir;
 
 /// Imports the three modules of the client, loads each schema, checks the
-/// failure kinds of `take` and the coroutines a lease holder awaits, and
+/// request and the failure kinds of `take` and the coroutines a lease holder
+/// awaits, and
 /// reads a listing written with the schema of `list`, so the generated
 /// decoder of the nested listing runs.
 const PYTHON_PROBE: &str = r#"
@@ -29,6 +30,10 @@ for module in (fleet_list, fleet_take, fleet_lease):
 
 kinds = {kind.value for kind in fleet_take.FailureKind}
 assert {"halted", "leased"} <= kinds, kinds
+request = fleet_take.Request(robot="alpha", name="a run")
+assert (request.robot, request.name) == ("alpha", "a run"), request
+failure = fleet_take.Failure("leased", "another client holds alpha")
+assert failure.kind is fleet_take.FailureKind.LEASED, failure
 for coroutine in (
     fleet_list.poll,
     fleet_take.poll,

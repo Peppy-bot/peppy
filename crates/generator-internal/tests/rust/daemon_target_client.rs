@@ -13,19 +13,20 @@ use config::node::PeppygenLanguage;
 use std::fs;
 use tempfile::TempDir;
 
-/// A lease holder that lists the fleet, holds a lease goal and takes a robot,
-/// each through the generated client of its daemon target.
+/// A lease holder that lists the fleet, holds a lease goal, takes robots and
+/// cancels its goal, each through the generated client of its daemon target:
+/// the code of the guide of daemon targets (`core_node_functions.mdx`).
 const USER_MAIN: &str = r#"
 use peppygen::consumed_actions::fleet::lease;
 use peppygen::consumed_services::fleet::{list, take};
 use std::time::Duration;
 
-async fn hold_a_lease(node_runner: &peppygen::NodeRunner) -> peppygen::Result<()> {
+async fn hold_leases(node_runner: &peppygen::NodeRunner) -> peppygen::Result<()> {
     let daemon = list::bound_producer(node_runner);
     let fleet = list::poll(node_runner, daemon, Duration::from_secs(5)).await?;
     let mut goal = lease::ActionHandle::fire_goal(
         node_runner,
-        lease::bound_producer(node_runner),
+        daemon,
         Duration::from_secs(5),
         peppygen::DEFAULT_FEEDBACK_BOUND,
     )
@@ -36,12 +37,13 @@ async fn hold_a_lease(node_runner: &peppygen::NodeRunner) -> peppygen::Result<()
     }
     for robot in &fleet.data.robots {
         let request = take::Request::new(robot.name.clone(), "a run".to_owned());
-        match take::poll(node_runner, take::bound_producer(node_runner), Duration::from_secs(5), request).await {
+        match take::poll(node_runner, daemon, Duration::from_secs(5), request).await {
             Ok(()) => println!("leased {}", robot.name),
             Err(error) => match take::Failure::of(&error) {
-                Some(take::Failure { kind: take::FailureKind::Leased | take::FailureKind::Halted, message }) => {
-                    println!("{message}")
-                }
+                Some(take::Failure {
+                    kind: take::FailureKind::Leased | take::FailureKind::Halted,
+                    message,
+                }) => println!("{message}"),
                 _ => return Err(error),
             },
         }
@@ -53,7 +55,7 @@ async fn hold_a_lease(node_runner: &peppygen::NodeRunner) -> peppygen::Result<()
 }
 
 fn main() {
-    let _ = hold_a_lease;
+    let _ = hold_leases;
 }
 "#;
 
