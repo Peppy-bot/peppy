@@ -28,9 +28,9 @@ pub enum FleetCommands {
     /// List the robots of the stack: the kind, the software and the lease of
     /// each, and the halt.
     List {
-        /// Emit the whole fleet listing as JSON: the robots with their
-        /// instances and contracts, the leases, the options of the scopes of
-        /// the launch with their pinned documents, and the nodes.
+        /// Emit the whole fleet listing as one line of JSON: the robots with
+        /// their instances and contracts, the leases, the options of the
+        /// scopes of the launch with their pinned documents, and the nodes.
         #[arg(long)]
         json: bool,
     },
@@ -56,7 +56,7 @@ impl Command for FleetCommand {
                 FleetCommands::List { json } => {
                     let listing = list(&conn, &daemon).await?;
                     let text = if json {
-                        serde_json::to_string_pretty(&listing)
+                        serde_json::to_string(&listing)
                             .map_err(|error| Error::ExecutionFailed(error.to_string()))?
                     } else {
                         render_listing(&listing)

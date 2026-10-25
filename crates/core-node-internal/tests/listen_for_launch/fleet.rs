@@ -517,3 +517,97 @@ async fn a_halt_on_disk_keeps_the_stack_halted_from_the_start() {
         .expect("the command line clears the halt");
     assert!(!halt.exists(), "the end of the halt removes it from disk");
 }
+
+/// A daemon that runs a slice of a launch of another machine refuses the
+/// calls of the daemon interfaces and names the coordinator, whose daemon
+/// serves them.
+#[tokio::test]
+async fn a_participant_refuses_the_fleet_and_names_the_coordinator() {
+    let started = start_core_node_with_mock_messenger().await;
+    started.slice_ownership.record_slice(
+        core_node_api::encoding::LaunchIdentity::new("launch-of-the-desk", "cn-desk"),
+        "desk-boot",
+    );
+
+    let command_line =
+        FleetClient::sending_as(&started, core_node_api::names::COMMAND_LINE_INSTANCE_ID).await;
+    let refusal = command_line.refusal(FleetMember::List, json!({})).await;
+    assert_eq!(refusal.kind().as_str(), "precondition_failed");
+    assert_eq!(
+        refusal.message(),
+        "this machine runs a slice of launch `launch-of-the-desk`, which `cn-desk` coordinates: \
+         call the daemon of `cn-desk`"
+    );
+    let copies = InterfaceClient::of(&started, DaemonInterface::StackCopies, DIRECTOR).await;
+    assert_eq!(
+        copies.refusal("list", json!({})).await.kind().as_str(),
+        "precondition_failed"
+    );
+}
+
+/// A lease ends when the `lease` goal of its holder ends, and a reset of the
+/// stack ends every lease, each change in order.
+#[tokio::test]
+async fn a_lease_ends_with_its_goal_and_a_reset_ends_every_lease() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, _responders) = launched_with_alpha(
+        &started,
+        r#"{ members: ["lease", "changes"] }"#,
+        "fleet-lease-end-test",
+    )
+    .await;
+    let director = FleetClient::sending_as(&started, DIRECTOR).await;
+    let mut changes = director.goal(FleetMember::Changes).await;
+    next_change(&mut changes).await;
+    let take = || {
+        director.call(
+            FleetMember::Take,
+            json!({ "robot": "alpha", "name": "tidy" }),
+        )
+    };
+
+    let lease = director.goal(FleetMember::Lease).await;
+    take().await.expect("the director takes alpha");
+    assert_eq!(
+        serde_json::to_value(next_change(&mut changes).await.change).unwrap(),
+        json!("lease_start")
+    );
+    lease
+        .cancel(&started.caller_handle, GOAL_TIMEOUT)
+        .await
+        .expect("the daemon takes the cancel");
+    let ended = next_change(&mut changes).await;
+    assert_eq!(
+        serde_json::to_value(ended.change).unwrap(),
+        json!("lease_end")
+    );
+    assert!(
+        ended.listing.leases.is_empty(),
+        "{:?}",
+        ended.listing.leases
+    );
+
+    let _lease = director.goal(FleetMember::Lease).await;
+    take().await.expect("the director takes alpha again");
+    next_change(&mut changes).await;
+    poll(
+        &StackResetRequest::new(),
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started.core_node_name,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect("the command line resets the stack");
+    let mut kinds = Vec::new();
+    while kinds.len() < 2 {
+        let change = next_change(&mut changes).await;
+        kinds.push(serde_json::to_value(change.change).unwrap());
+    }
+    assert_eq!(
+        kinds,
+        [json!("lease_end"), json!("removal")],
+        "the reset ends the lease, then the robot leaves the stack"
+    );
+}

@@ -3471,7 +3471,11 @@ async fn listed_items(client: &FrameworkClient) -> Vec<Value> {
                 .as_object_mut()
                 .expect("a copy is an object")
                 .remove("running");
-            assert_eq!(running, Some(json!(true)), "the software of the copy runs: {copy}");
+            assert_eq!(
+                running,
+                Some(json!(true)),
+                "the software of the copy runs: {copy}"
+            );
             item
         })
         .collect()
@@ -3665,7 +3669,10 @@ async fn a_client_adds_and_removes_copies_through_a_daemon_target() {
         .expect("the listing is an object")
         .remove("launcher");
     assert!(
-        launcher.as_ref().and_then(Value::as_str).is_some_and(|launcher| !launcher.is_empty()),
+        launcher
+            .as_ref()
+            .and_then(Value::as_str)
+            .is_some_and(|launcher| !launcher.is_empty()),
         "the listing names the launcher: {launcher:?}"
     );
     assert_eq!(

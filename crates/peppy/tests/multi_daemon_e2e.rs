@@ -7004,3 +7004,79 @@ async fn a_launch_places_a_copy_and_its_part_on_two_stations() {
         .wait_until_holding_none(&["alpha_commander_inst"])
         .await;
 }
+
+/// The fleet of a federated launch as `peppy fleet list --json` on `daemon`
+/// gives it.
+async fn fleet_listing(daemon: &Daemon) -> serde_json::Value {
+    let listed = require_success(
+        daemon.peppy(&["fleet", "list", "--json"]).await,
+        "fleet list",
+    );
+    parsed_fleet_listing(&listed)
+}
+
+/// The fleet listing that the output `listed` of `peppy fleet list --json`
+/// holds.
+fn parsed_fleet_listing(listed: &str) -> serde_json::Value {
+    let document = listed
+        .lines()
+        .find(|line| line.starts_with('{'))
+        .unwrap_or_else(|| panic!("missing fleet JSON: {listed}"));
+    serde_json::from_str(document).unwrap()
+}
+
+/// The daemon of the coordinator serves the fleet of a federated launch: the
+/// command line on the other machine reaches its listing and its halt, and
+/// the listing follows the software of a copy that runs on the other
+/// machine, whose daemon tells the coordinator each end of its processes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_coordinator_serves_the_fleet_of_a_federated_launch_on_every_machine() {
+    let federation = start_federation("peppy-fleet").await;
+    let robot = federation.robot_core_node.as_str();
+    let cloud = federation.cloud_core_node.as_str();
+    launch_parts_fleet(&federation.robot, &[]).await;
+    let reference = format!("station:alpha@{cloud}");
+    require_success(
+        federation.robot.peppy(&["stack", "join", &reference]).await,
+        "join a copy on the cloud machine",
+    );
+
+    let listed = fleet_listing(&federation.cloud).await;
+    assert_eq!(
+        listed["core_node"], robot,
+        "the coordinator answers: {listed}"
+    );
+    let alpha = &listed["robots"][0];
+    assert_eq!(alpha["name"], "alpha", "{listed}");
+    assert_eq!(alpha["core_node"], cloud, "{listed}");
+    assert_eq!(alpha["software"], "running", "{listed}");
+
+    require_success(
+        federation.cloud.peppy(&["fleet", "halt"]).await,
+        "halt the stack from the cloud machine",
+    );
+    let halted = fleet_listing(&federation.robot).await;
+    assert_eq!(halted["halted"], true, "{halted}");
+
+    require_success(
+        federation
+            .cloud
+            .peppy(&["node", "stop", "alpha_arm_inst"])
+            .await,
+        "stop the arm of alpha on the cloud machine",
+    );
+    wait_for_listing_within(
+        &federation.robot,
+        &["fleet", "list", "--json"],
+        "the software of alpha to stop",
+        TIMEOUT,
+        |listed| parsed_fleet_listing(listed)["robots"][0]["software"] == "stopped",
+    )
+    .await;
+
+    require_success(
+        federation.robot.peppy(&["fleet", "clear-halt"]).await,
+        "clear the halt on the coordinator",
+    );
+    assert_eq!(fleet_listing(&federation.cloud).await["halted"], false);
+}
