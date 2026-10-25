@@ -1,10 +1,10 @@
 mod common;
 
 use common::{
-    AbortOnDrop, FeedbackDrainOutcome, GoalEnd, NodeAddSource, StartedCoreNode, TEST_GIT_HASH,
-    add_and_build_forking_node, assert_failure, build_staged_node, commit_path,
-    create_tar_zst_from_dir, entity_artifact_path, is_process_running, send_node_add_and_wait,
-    send_node_add_and_wait_with_force, spawn_real_stuck_instance,
+    AbortOnDrop, FeedbackDrainOutcome, GOAL_TIMEOUT, GoalEnd, NodeAddSource, RESULT_TIMEOUT,
+    StartedCoreNode, TEST_GIT_HASH, add_and_build_forking_node, assert_failure, build_staged_node,
+    commit_path, create_tar_zst_from_dir, entity_artifact_path, is_process_running,
+    send_node_add_and_wait, send_node_add_and_wait_with_force, spawn_real_stuck_instance,
     start_core_node_with_mock_messenger, wait_until_action_completes, wait_until_process_exits,
     wait_until_service_reachable, write_peppy_json5,
 };
@@ -28,9 +28,6 @@ use {
     httptest::Expectation, httptest::Server, httptest::matchers::request,
     httptest::responders::status_code,
 };
-
-const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
-const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The `node_add` goal of the local directory `source_dir`. The directory
 /// records the test git hash, as `peppy node sync` records it, so the add

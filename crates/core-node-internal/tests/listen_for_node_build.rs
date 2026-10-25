@@ -1,11 +1,11 @@
 mod common;
 
 use common::{
-    GoalEnd, NodeAddSource, acquire_container_test_guard, archive_contains_entry, assert_failure,
-    entity_artifact_path, path_env_with_dir_first, read_file_from_archive, send_logged_node_build,
-    send_node_add_and_wait, send_node_build_and_wait, send_node_build_and_wait_forced,
-    start_core_node_with_mock_messenger, start_core_node_with_mock_messenger_outside_home,
-    write_executable_script, write_peppy_json5,
+    GOAL_TIMEOUT, GoalEnd, NodeAddSource, RESULT_TIMEOUT, acquire_container_test_guard,
+    archive_contains_entry, assert_failure, entity_artifact_path, path_env_with_dir_first,
+    read_file_from_archive, send_logged_node_build, send_node_add_and_wait,
+    send_node_build_and_wait, send_node_build_and_wait_forced, start_core_node_with_mock_messenger,
+    start_core_node_with_mock_messenger_outside_home, write_executable_script, write_peppy_json5,
 };
 use config::failure_kind::PeppyFailureKind;
 use core_node_api::encoding::{NodeBuildFeedback, NodeBuildResult};
@@ -15,8 +15,6 @@ use std::path::Path;
 use std::time::Duration;
 
 const BUILD_CMD_MARKER_FILE: &str = "build_cmd_executed.marker";
-const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
-const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Helper: stage a node via `send_node_add_and_wait` and assert success.

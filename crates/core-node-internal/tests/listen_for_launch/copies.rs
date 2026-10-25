@@ -113,7 +113,7 @@ async fn refusal(started: &StartedCoreNode, goal: &impl core_node_api::ActionGoa
 fn robot_goal(name: &str, option: &str) -> StackJoinGoal {
     StackJoinGoal::new(
         format!("{option}:{name}").parse().unwrap(),
-        StackBudgets::new(600, 600, 600, None),
+        unreached_budgets(),
     )
 }
 
@@ -121,14 +121,10 @@ fn remove_goal(name: &str) -> StackRemoveGoal {
     StackRemoveGoal::new(config::runtime::CopyName::new(name).unwrap())
 }
 
-/// A launch of the fleet `launcher` under `launch_id`, with the budgets every
-/// copies test gives its launch.
+/// A launch of the fleet `launcher` under `launch_id`, under budgets no test
+/// reaches.
 fn fleet_launch(launcher: PathBuf, launch_id: &str) -> LaunchGoal {
-    LaunchGoal::new(
-        LauncherOrigin::Fs(launcher),
-        launch_id,
-        StackBudgets::new(30, 30, 30, Some(120)),
-    )
+    LaunchGoal::new(LauncherOrigin::Fs(launcher), launch_id, unreached_budgets())
 }
 
 /// Stops `instance_id` through the daemon's `node_stop` service.
@@ -490,7 +486,7 @@ async fn a_cancelled_join_is_undone_and_ends_cancelled() {
     assert_eq!(end.cancel_reason(), "cancelled by its caller");
     wait_until_process_exits(
         pid,
-        Duration::from_secs(15),
+        RESULT_TIMEOUT,
         &format!("the cancel stops the build process {pid}"),
     )
     .await;

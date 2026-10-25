@@ -1,8 +1,9 @@
 mod common;
 
 use common::{
-    NodeRunTestTimeouts, add_and_build_forking_node, add_and_build_process_node, answer_readiness,
-    build_staged_node, install_kill_on_shutdown_listener, is_process_running, poll_core_node,
+    GOAL_TIMEOUT, NodeRunTestTimeouts, RESULT_TIMEOUT, add_and_build_forking_node,
+    add_and_build_process_node, answer_readiness, build_staged_node,
+    install_kill_on_shutdown_listener, is_process_running, poll_core_node,
     poll_core_node_with_timeout, send_node_add_and_wait, send_node_add_then_build,
     send_node_run_and_wait, send_node_run_and_wait_with_env, spawn_real_running_instance,
     spawn_real_stuck_instance, start_core_node_with_mock_messenger,
@@ -64,8 +65,8 @@ async fn listen_for_node_reset_clears_node_stack() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir_a.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
@@ -92,8 +93,8 @@ async fn listen_for_node_reset_clears_node_stack() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir_b.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await

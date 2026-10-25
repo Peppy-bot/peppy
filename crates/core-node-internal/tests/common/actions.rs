@@ -24,6 +24,15 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// How long a test waits for the daemon to answer a goal. No goal of these
+/// tests comes near it on a host of any speed: a test runs into it only when
+/// the daemon does not answer.
+pub const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a test waits for a goal to end, on the terms of
+/// [`GOAL_TIMEOUT`].
+pub const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Source for a node to be added. Used by `send_node_add_and_wait` to support
 /// filesystem paths, git repositories, and HTTP URLs.
 #[derive(Debug)]
@@ -928,8 +937,8 @@ pub async fn build_staged_node(started: &StartedCoreNode, node_name: &str, node_
         &started.core_node_name,
         node_name,
         node_tag,
-        Duration::from_secs(30),
-        Duration::from_secs(120),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         Vec::new(),
         None,
     )
@@ -1031,8 +1040,8 @@ pub async fn add_and_build_process_node(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await

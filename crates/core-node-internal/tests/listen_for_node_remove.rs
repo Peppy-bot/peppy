@@ -1,9 +1,10 @@
 mod common;
 
 use common::{
-    AbortOnDrop, assert_failure, build_staged_node, install_shutdown_listener_for_instance,
-    send_node_add_and_wait, spawn_real_running_instance, spawn_real_stuck_instance,
-    start_core_node_with_mock_messenger, wait_until_service_reachable, write_peppy_json5,
+    AbortOnDrop, GOAL_TIMEOUT, RESULT_TIMEOUT, assert_failure, build_staged_node,
+    install_shutdown_listener_for_instance, send_node_add_and_wait, spawn_real_running_instance,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger, wait_until_service_reachable,
+    write_peppy_json5,
 };
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
@@ -43,8 +44,8 @@ async fn listen_for_node_remove_success() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
@@ -163,8 +164,8 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
@@ -272,8 +273,8 @@ async fn listen_for_node_remove_clears_a_terminal_instance() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
@@ -377,8 +378,8 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
