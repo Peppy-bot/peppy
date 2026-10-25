@@ -27,10 +27,21 @@ indexmap = { version = "2.2", features = ["serde"] }
 # the zenoh version pmi/zenohd federate against.
 zenoh-keyexpr = "=1.10.1"
 # `atomic_write::publish_atomic` stages through `NamedTempFile` siblings.
+# Optional, so that the lockfile of a node that vendors this crate has no
+# entry for it.
+tempfile = { version = "3.8", optional = true }
+
+[dev-dependencies]
+# Scratch dirs/files for the fingerprint, runtime, and parser tests.
 tempfile = "3.8"
+# The tests of `atomic_write` run in every test build of the crate.
+peppy-config-model = { path = ".", features = ["atomic_write"] }
 
 [features]
 default = []
+# Gives the `atomic_write` module, which needs `tempfile`. The daemon crates
+# and the codec API turn it on; a generated node does not.
+atomic_write = ["dep:tempfile"]
 # Gates the fingerprint test helpers (`create_codegen_fingerprint`,
 # `create_wrong_codegen_fingerprint`), which are co-located with the production
 # fingerprint reader because they share its private file-layout constants. The

@@ -19,7 +19,7 @@ debug-embed = ["rust-embed/debug-embed"]
 
 [dependencies]
 pmi = { workspace = true }
-config = { workspace = true }
+config = { workspace = true, features = ["atomic_write"] }
 daemon-config = { workspace = true }
 encoding = { workspace = true }
 quote = "1.0"

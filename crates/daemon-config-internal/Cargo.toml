@@ -9,7 +9,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { workspace = true }
+config = { workspace = true, features = ["atomic_write"] }
 # `FORBIDDEN_ENV_KEYS`, the protocol policy both sides of the core-node wire
 # enforce on environment variables. `env::check_env_var` applies it where a
 # launcher's `env_vars` are parsed so a rejected key is reported against the

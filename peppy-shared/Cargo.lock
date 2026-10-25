@@ -2626,6 +2626,7 @@ dependencies = [
  "capnp",
  "clap",
  "indexmap 2.14.2",
+ "peppy-config-model",
  "serde",
  "serde_json",
  "serde_json5",

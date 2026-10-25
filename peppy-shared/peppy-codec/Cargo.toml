@@ -20,7 +20,11 @@ default = ["embedded-compiler"]
 embedded-compiler = []
 
 [dependencies]
-config = { package = "peppy-config-model", path = "../peppy-config-model" }
+# `atomic_write`: the codec publishes the compiler it extracts through
+# `publish_atomic`.
+config = { package = "peppy-config-model", path = "../peppy-config-model", features = [
+    "atomic_write",
+] }
 # The messaging session, the raw topic/service/action clients and the
 # `time` conversions generated nodes share.
 peppylib = { package = "peppylib-rs", path = "../peppylib-rs" }

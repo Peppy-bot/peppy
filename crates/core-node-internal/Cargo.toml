@@ -6,7 +6,7 @@ edition.workspace = true
 
 [dependencies]
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
-config = { workspace = true }
+config = { workspace = true, features = ["atomic_write"] }
 daemon-config = { workspace = true }
 log-export = { workspace = true }
 node-stack = { workspace = true }

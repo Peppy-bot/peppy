@@ -5,15 +5,15 @@
 //! This crate owns the wire-facing config tier every peppy surface builds
 //! on: the `peppy.json5` node config model, the runtime configs shipped to
 //! spawned nodes, codegen fingerprints, workspace namespaces, and the schema
-//! tags identifying each document shape, and the [`atomic_write`] staging
-//! helper. (The Cap'n Proto schema of a [`node::MessageFormat`] and the
-//! parser of contract documents live in the `peppy-codec` crate; the
-//! daemon-side documents, launcher files, interface documents,
-//! `peppy_config.json5`, and the `PeppyDirs` filesystem layout, live in the
-//! peppy `daemon-config` crate, which builds on this one.)
+//! tags identifying each document shape, and, with the `atomic_write`
+//! feature, the `atomic_write` staging helper. (The Cap'n Proto schema of a
+//! [`node::MessageFormat`] and the parser of contract documents live in the
+//! `peppy-codec` crate; the daemon-side documents, launcher files, interface
+//! documents, `peppy_config.json5`, and the `PeppyDirs` filesystem layout,
+//! live in the peppy `daemon-config` crate, which builds on this one.)
 //!
 //! Boundaries: it performs no I/O beyond reading/writing config files,
-//! fingerprints and the files that [`atomic_write::publish_atomic`] stages,
+//! fingerprints and the files that `atomic_write::publish_atomic` stages,
 //! holds no process-global state, and requires no global init; every type
 //! is built through an explicit parser/constructor.
 
@@ -27,6 +27,7 @@ mod parsing;
 /// each module keeps its file directly under `src/`.
 #[path = "."]
 mod internal {
+    #[cfg(feature = "atomic_write")]
     pub mod atomic_write;
     pub mod consts;
     pub mod contract_member;
@@ -57,6 +58,7 @@ pub use error::{
 };
 
 // -- atomic_write --
+#[cfg(feature = "atomic_write")]
 pub mod atomic_write {
     pub use crate::internal::atomic_write::publish_atomic;
 }
