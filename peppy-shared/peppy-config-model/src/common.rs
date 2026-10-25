@@ -1050,6 +1050,27 @@ pub fn resolve_argument_path<'a>(
     Some(current)
 }
 
+/// Refuses an empty or white-space name and a name written twice within one
+/// list of named items, with the item `kind` in the message (`topic`,
+/// `service`, `link`, ...): the check of each list of names in a document.
+pub fn validate_named_items<'a>(
+    names: impl Iterator<Item = &'a str>,
+    kind: &'static str,
+) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for (index, name) in names.enumerate() {
+        if name.trim().is_empty() {
+            return Err(format!(
+                "interface {kind} at index {index} has an empty `name`"
+            ));
+        }
+        if !seen.insert(name) {
+            return Err(format!("duplicate interface {kind} name: `{name}`"));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,15 +1,15 @@
 //! Conversion cost of camera-sized frames through the codec, next to the
 //! JPEG transcoding the MCP runtime performs on the same frame.
 //!
-//! Run with `cargo bench -p message-codec`. Each measurement is the median
+//! Run with `cargo bench -p peppy-codec`. Each measurement is the median
 //! of repeated runs on one frame; the report prints the per-frame cost of
 //! encoding and decoding through the codec and of encoding the same pixels
 //! as JPEG, so the ratio between them is visible at a glance.
 
 use image::codecs::jpeg::JpegEncoder;
 use image::{ExtendedColorType, ImageEncoder};
-use message_codec::MessageCodec;
-use peppy_mcp_runtime::bridge::bytes_to_base64;
+use peppy_codec::MessageCodec;
+use peppy_codec::value::bytes_to_base64;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -64,7 +64,7 @@ fn jpeg_bytes(pixels: &[u8], width: u32, height: u32) -> Vec<u8> {
 
 fn main() {
     let format = serde_json5::from_str(FRAME_FORMAT).expect("the frame format parses");
-    let codec = MessageCodec::new("frame_bench", format).expect("the frame format lays out");
+    let codec = MessageCodec::new("frame_bench", &format).expect("the frame format lays out");
 
     println!(
         "{:<12} {:>12} {:>12} {:>12} {:>12}",

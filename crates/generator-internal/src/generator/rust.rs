@@ -75,6 +75,7 @@ pub struct RustGenerator {
     schemas: HashMap<String, CapnpSchema>,
     parameters: config::ParameterSchema,
     testgen: crate::generator::testgen::TestGenRegistry,
+    codec_api: crate::generator::common::CodecApi,
 }
 
 impl RustGenerator {
@@ -91,6 +92,12 @@ impl RustGenerator {
     /// surface (the harness pins the node's own targets with it).
     pub fn set_node_identity(&mut self, name: &str, tag: &str) {
         self.testgen.record_node_identity(name, tag);
+    }
+
+    /// Sets whether the node asks for the codec API, whose crates it then
+    /// gets beside `peppylib`.
+    pub fn set_codec_api(&mut self, codec_api: crate::generator::common::CodecApi) {
+        self.codec_api = codec_api;
     }
 
     fn push_section(&mut self, section: InterfaceArtifact) {
@@ -1780,7 +1787,7 @@ impl LanguageGenerator for RustGenerator {
         let registry = std::mem::take(&mut self.testgen);
         mock::render(&mut self, &registry)?;
         fixtures::render(&mut self, &registry)?;
-        scaffold::add_peppylib_dependencies(&to_path, peppy_dirs, deploy_mode)?;
+        scaffold::add_peppylib_dependencies(&to_path, peppy_dirs, deploy_mode, self.codec_api)?;
         scaffold::add_capnp_schemas(&self.schemas, to_path.as_ref())?;
         scaffold::add_artifacts_to_lib(&to_path, self.sections)?;
         scaffold::add_parameters_to_lib(&to_path, &self.parameters)?;

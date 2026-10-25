@@ -107,7 +107,7 @@ impl SeededHome {
             .iter()
             .enumerate()
             .map(|(index, content)| {
-                let document = daemon_config::contract::PeppyContractParser::from_content(content)
+                let document = peppy_codec::contract::PeppyContractParser::from_content(content)
                     .expect("contract parses");
                 let path = docs.join(format!("contract_{index}.json5"));
                 std::fs::write(&path, content).expect("write contract");

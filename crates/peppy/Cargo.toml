@@ -20,14 +20,15 @@ latency-report = { workspace = true }
 # `peppy mcp serve`, the built-in MCP server.
 mcp-server = { workspace = true }
 # The codec and the type-erased clients `peppy node call` and `echo` reach a
-# member with, the ones the MCP server uses.
-message-codec = { workspace = true }
-# The canonical JSON value rules of the codec (base64 for bytes) that
-# `peppy node call --file` writes a file's bytes with. It also pulls the MCP
-# server-side dependency tree (rmcp server, axum, image, jsonschema) into the
-# cargo cache, which the full-stack MCP e2e's offline pre-launch build of the
-# generated node resolves from; its rmcp `server` feature is what makes the
-# client capability builder available to that test.
+# member with, the ones the MCP server uses, the canonical JSON value rules
+# (base64 for bytes) that `peppy node call --file` writes a file's bytes
+# with, and the parser of contract documents.
+peppy-codec = { workspace = true }
+# Pulls the MCP server-side dependency tree (rmcp server, axum, image,
+# jsonschema) into the cargo cache, which the full-stack MCP e2e's offline
+# pre-launch build of the generated node resolves from; its rmcp `server`
+# feature is what makes the client capability builder available to that
+# test.
 peppy-mcp-runtime = { workspace = true }
 # The fields of a message format that `peppy node call --set` walks.
 indexmap = "2.2"

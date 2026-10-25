@@ -477,7 +477,7 @@ fn write_redirected_locks(
 /// keeps the permissions of the file.
 fn replace_file(path: &Path, text: &str) -> std::io::Result<()> {
     let permissions = std::fs::metadata(path)?.permissions();
-    daemon_config::atomic_write::publish_atomic(path, |tmp| {
+    config::atomic_write::publish_atomic(path, |tmp| {
         std::fs::write(tmp, text)?;
         std::fs::set_permissions(tmp, permissions)
     })?;

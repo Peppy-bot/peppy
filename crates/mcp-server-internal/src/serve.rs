@@ -10,7 +10,7 @@ use daemon_config::mcp_deployment::{
     McpDeploymentError, McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, SPEC_ENV_VAR,
     endpoint_label, plan_deployment,
 };
-use message_codec::consumer::ConsumerIdentity;
+use peppy_codec::consumer::ConsumerIdentity;
 use peppy_mcp_catalog::BundleSurface;
 use peppy_mcp_runtime::{Clock, ExposureServer, ExposureServerBuilder, ExposureSet, FleetHandle};
 use peppylib::runtime::{EndpointBinding, NodeBuilder, NodeRunner, bind_preferred};
@@ -34,7 +34,7 @@ pub enum ServeError {
     #[error("cannot lay out the wire format of {member}: {source}")]
     Codec {
         member: String,
-        source: message_codec::CodecError,
+        source: peppy_codec::CodecError,
     },
     #[error(
         "tool `{tool}` is bounded by its progress, and its action declares no feedback message to \
@@ -48,6 +48,8 @@ pub enum ServeError {
     DaemonResource { resource: String, target: String },
     #[error("target `{target}` names a daemon interface this server does not serve: {reason}")]
     UnservedDaemonInterface { target: String, reason: String },
+    #[error("the server cannot call fleet:v1: {0}")]
+    FleetClient(#[from] peppy_codec::consumer::MemberError),
     #[error(
         "the daemon targets cannot be served:{problems}\nA launch and a join check every scope \
          before they start the server; a server started another way, for example with `peppy \

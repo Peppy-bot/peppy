@@ -98,6 +98,9 @@ fn main() {
         AppEnv::Prod
     };
     daemon_config::consts::set_app_env(env);
+    // The codec writes the Cap'n Proto compiler that peppy carries into the
+    // `bin` directory of the data root of this build.
+    peppy_codec::compiler::extract_into(daemon_config::consts::PeppyDirs::default().bin_dir());
 
     let cli = Cli::parse();
     let log_style = if cfg!(debug_assertions)

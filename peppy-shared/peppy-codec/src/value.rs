@@ -1,15 +1,17 @@
-//! Conversions between canonical exposure JSON and Rust values, shared by
-//! every bridge.
+//! The canonical JSON values of a message format, and their conversions
+//! to and from Rust values.
 //!
-//! The canonical mapping is fixed by the exposure format: `time` is an RFC
-//! 3339 string with nanosecond precision, `bytes` and `u8` arrays are
+//! The canonical mapping is the one of the exposure format: `time` is an
+//! RFC 3339 string with nanosecond precision, `bytes` and `u8` arrays are
 //! base64, `u64` and `i64` are decimal strings, and everything else is the
-//! matching JSON scalar. Bridges call these helpers instead of re-deriving
-//! the rules, so the mapping lives in exactly one place per direction: the
-//! catalog derives the schemas, this module moves the values.
+//! matching JSON scalar. The codec, the MCP runtime and the generic commands
+//! call these helpers instead of re-deriving the rules, so the mapping lives
+//! in exactly one place per direction: the catalog derives the schemas,
+//! this module moves the values.
 //!
-//! Errors are plain strings naming the offending field; bridges surface
-//! them as tool errors or drop the snapshot they belong to.
+//! Errors are plain strings naming the offending field; callers surface
+//! them as conversion errors, tool errors, or drop the message they belong
+//! to.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;

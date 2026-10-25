@@ -8,5 +8,7 @@ dependencies = []
 [tool.setuptools.packages.find]
 include = ["peppylib*"]
 
+# `capnp_compiler`: the Cap'n Proto compiler of the codec API, which only a
+# node that asks for the codec API gets.
 [tool.setuptools.package-data]
-peppylib = ["*.so"]
+peppylib = ["*.so", "capnp_compiler"]

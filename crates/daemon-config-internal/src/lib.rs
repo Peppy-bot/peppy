@@ -4,10 +4,9 @@
 //!
 //! This crate owns the config formats only the peppy daemon and CLI read or
 //! write: launcher documents (`peppy_schema: "launcher/v1"`) and their
-//! deployment sources, contract documents (`contract/v1`), MCP exposure
-//! documents (`mcp_exposure/v1`) and the daemon interfaces they can name, the
-//! global daemon config `peppy_config.json5` with its comment-preserving
-//! completion, the [`atomic_write::publish_atomic`] staging helper, the
+//! deployment sources, MCP exposure documents (`mcp_exposure/v1`) and the
+//! daemon interfaces they can name, the global daemon config
+//! `peppy_config.json5` with its comment-preserving completion, the
 //! owner-only file modes of [`fs_perms`], the [`local_host::is_local`] test,
 //! and the [`consts::PeppyDirs`] filesystem-layout helper with the
 //! process-global [`consts::set_app_env`] dev/prod root switch (a set-once
@@ -15,10 +14,13 @@
 //!
 //! It builds on the shared `config` crate (`peppy-config-model`), which keeps
 //! the wire-facing tier consumed by nodes and `peppylib`: the `peppy.json5`
-//! node config model, runtime configs, fingerprints, workspace namespaces, and
-//! schema tags. Types crossing that boundary (`config::runtime::Name`,
-//! `config::node` manifest types, `config::peppy_config::SubscriberBufferConfig`) are
-//! used directly from `config` so each has exactly one definition.
+//! node config model, runtime configs, fingerprints, workspace namespaces,
+//! schema tags and the `atomic_write` staging helper; and on the shared
+//! `peppy-codec` crate, which parses contract documents (`contract/v1`).
+//! Types crossing that boundary (`config::runtime::Name`, `config::node`
+//! manifest types, `config::peppy_config::SubscriberBufferConfig`,
+//! `peppy_codec::contract::PeppyContract`) are used directly from their
+//! crate so each has exactly one definition.
 
 mod error;
 mod parsing;
@@ -29,9 +31,7 @@ mod parsing;
 /// preserved.
 #[path = "."]
 mod internal {
-    pub mod atomic_write;
     pub mod consts;
-    pub mod contract;
     pub mod daemon_interface;
     pub mod env;
     pub mod fs_perms;
@@ -51,11 +51,6 @@ pub use error::{
     BindingTargetMismatch, DuplicateInstanceIdAcrossStack, Error as DaemonConfigError,
     LinkUnknownSlot, ParsingError, SlotKind, format_bulleted, format_quoted_list,
 };
-
-// -- atomic_write --
-pub mod atomic_write {
-    pub use crate::internal::atomic_write::publish_atomic;
-}
 
 // -- env --
 pub mod env {
@@ -78,10 +73,10 @@ pub mod local_host {
 pub mod consts {
     pub use crate::internal::consts::{
         AppEnv, CREDENTIALS_FILE, DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_PYTHON_BASE_IMAGE,
-        DEFAULT_RUST_BASE_IMAGE, PEPPY_GIT_TAG, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
-        PEPPY_VERSION, PEPPYLIB_OUTPUT_PATH, PLATFORM_SELECTION_FILE, PeppyDirs, PeppyRoot,
-        REPOSITORY_INDEX_FILE, RootLifetime, non_empty_env_path, peppy_build, peppy_root,
-        peppy_root_dir, set_app_env,
+        DEFAULT_RUST_BASE_IMAGE, PEPPY_CODEC_OUTPUT_PATH, PEPPY_GIT_TAG,
+        PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR, PEPPY_VERSION, PEPPYLIB_OUTPUT_PATH,
+        PLATFORM_SELECTION_FILE, PeppyDirs, PeppyRoot, REPOSITORY_INDEX_FILE, RootLifetime,
+        non_empty_env_path, peppy_build, peppy_root, peppy_root_dir, set_app_env,
     };
 }
 
@@ -121,14 +116,6 @@ pub mod launcher {
     };
 }
 
-// -- contract --
-pub mod contract {
-    pub use crate::internal::contract::{
-        ContractComments, Interfaces, Manifest, MessageSide, PeppyContract, PeppyContractParser,
-        RefinedMember,
-    };
-}
-
 // -- daemon_interface --
 //
 // The daemon interfaces this peppy serves: each one's compiled-in document,
@@ -153,7 +140,7 @@ pub mod mcp_exposure {
         FreshnessPolicy, GoalBound, ImageCodec, ImageFieldMap, ImageRepresentation, JpegQuality,
         MaxHz, McpExposure, OversizePolicy, PeppyMcpExposureParser, PinnedContractRef, PublicName,
         RestrictBounds, ServerIdentity, ServiceExposure, ServiceOperation, TargetSource,
-        TopicExposure, UpdatePolicy,
+        TopicExposure, UpdatePolicy, declared_members,
     };
 }
 

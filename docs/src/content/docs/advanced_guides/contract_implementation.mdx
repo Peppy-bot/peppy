@@ -92,6 +92,37 @@ A kind name is 1 to 64 lowercase ASCII letters, digits and `_`, and starts with 
 
 The generated code of each action and service declares the kinds of its member, the kinds of peppy first and then the kinds it lists, as a `FailureKind` enum with a `Failure` type: the generated provider can give no other kind, and the generated client and the [MCP server](/advanced_guides/mcp/) refuse any other kind from the wire. So a new kind of a node changes that node and its contract, never peppy. See [How a goal ends](/advanced_guides/actions/#how-a-goal-ends) and [Error replies](/advanced_guides/services/#error-replies).
 
+#### Marks
+
+A contract can give marks, names, to its members: a `marks` list on a topic, a service or an action. Peppy defines one mark, `moves_robot`: the mark of a member that can move a part of a robot, the gripper included, or change the state of a device. A member that only stops a motion, such as `stop`, has no mark:
+
+```json5
+{
+  peppy_schema: "contract/v1",
+  manifest: { name: "limb_motion", tag: "v1" },
+  interfaces: {
+    actions: [
+      { name: "move_arm", marks: ["moves_robot"], /* ... */ },
+    ],
+    services: [
+      { name: "stop", /* ... */ },
+    ],
+  },
+}
+```
+
+A mark name follows the rule of a failure kind name: words of lowercase ASCII letters and digits that each start with a letter, joined by one `_`, 64 bytes at most. A `marks` list holds at least one mark, each once; a member with no mark leaves the key out. Peppy keeps each other mark as written and gives it to the clients of the contract, such as the [codec API](/advanced_guides/codec_api/): each client defines the marks that it reads. The fields of a message format carry marks with `$marks`, and a `string` field declares a closed set of strings with `$enum` (see [Message format](/reference/message_format/#enum-modifier)).
+
+#### Comments
+
+The parser keeps the comments of a contract document:
+
+- The comment before the document.
+- The comment of each member: the comment before its item in its list, then the comment before its `name`.
+- The comment of each field of its message formats: the comment before its key, or a comment that starts on the line where the value of the field ends.
+
+The [codec API](/advanced_guides/codec_api/) gives these comments with the document, so a contract can describe its members and its fields for the programs that call it.
+
 After `peppy repo refresh`, the contract is cached and addressable by `(name, tag)`. Files use whatever filename you like as long as it ends in `.json5`; Peppy identifies a `contract/v1` document by its `peppy_schema` field. `peppy repo show <name>:<tag>` lists the indexed nodes that implement or consume it (see [Show what a query matches](/advanced_guides/repositories/#show-what-a-query-matches)).
 
 ### 2. A producer that implements the contract

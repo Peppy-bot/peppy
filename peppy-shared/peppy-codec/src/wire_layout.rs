@@ -1,6 +1,6 @@
 //! The wire layout of a message format, as decided by the Cap'n Proto compiler.
 //!
-//! The schema renderer in the crate root fixes field names and ordinals. The
+//! The schema renderer of [`crate::schema`] fixes field names and ordinals. The
 //! compiler then places every field inside its struct, as a data-section
 //! offset or a pointer index, and sizes every struct. A [`StructLayout`]
 //! records those decisions for one message format, field by field, so a codec
@@ -12,11 +12,12 @@
 //! renderer maps that field to. A mismatch is reported rather than laid out:
 //! the layout is only ever a faithful view of the compiler's output.
 
-use crate::{Error, Result, capnp_type_name, sanitize_field_name};
-use capnp::schema_capnp::{code_generator_request, field, node, type_};
-use config::node::{ArraySchema, PrimitiveSchema, SchemaType, TypeToken};
+use crate::schema::{
+    MessageSchema, Result, SchemaError, SchemaNodes, capnp_field_name, capnp_type_name, join_path,
+};
+use capnp::schema_capnp::{field, node, type_};
+use config::node::{ArraySchema, MessageFormat, PrimitiveSchema, SchemaType, TypeToken};
 use indexmap::IndexMap;
-use std::collections::HashMap;
 
 /// A struct's section sizes: the number of 64-bit words in its data section
 /// and the number of pointers that follow them.
@@ -130,77 +131,16 @@ pub struct StructLayout {
     pub fields: Vec<FieldLayout>,
 }
 
-/// The nodes of one compiled schema, by id, plus the id of the schema file.
-pub(crate) struct SchemaNodes<'a> {
-    by_id: HashMap<u64, node::Reader<'a>>,
-    file_id: u64,
-}
-
-impl<'a> SchemaNodes<'a> {
-    pub(crate) fn from_request(request: code_generator_request::Reader<'a>) -> Result<Self> {
-        let requested_files = request.get_requested_files()?;
-        if requested_files.is_empty() {
-            return Err(Error::Encoding(
-                "capnp request did not include any files".to_string(),
-            ));
-        }
-        let file_id = requested_files.get(0).get_id();
-        let by_id = request
-            .get_nodes()?
-            .iter()
-            .map(|node| (node.get_id(), node))
-            .collect();
-        Ok(Self { by_id, file_id })
+impl StructLayout {
+    /// Lays `format` out on the wire: renders its schema as code generation
+    /// does, compiles it and reads back where the compiler placed each
+    /// field. `schema_name` seeds the file id of the schema.
+    pub fn of(schema_name: &str, format: &MessageFormat) -> Result<Self> {
+        let compiled = MessageSchema::render(schema_name, format).compile()?;
+        let nodes = SchemaNodes::from_request(compiled.request()?)?;
+        let root = nodes.struct_node(nodes.root_message_id()?)?;
+        layout_struct(&nodes, root, &format.0, "")
     }
-
-    /// The id of the file-level `Message` struct every rendered schema roots at.
-    pub(crate) fn root_message_id(&self) -> Result<u64> {
-        for (id, node) in &self.by_id {
-            if node.get_scope_id() != self.file_id {
-                continue;
-            }
-            if !matches!(node.which(), Ok(node::Struct(_))) {
-                continue;
-            }
-            let display_name = node
-                .get_display_name()?
-                .to_str()
-                .map_err(|err| Error::Encoding(err.to_string()))?;
-            let simple_name = display_name
-                .rsplit(|ch| [':', '.'].contains(&ch))
-                .next()
-                .unwrap_or(display_name);
-            if simple_name == "Message" {
-                return Ok(*id);
-            }
-        }
-        Err(Error::Encoding(
-            "capnp request missing root Message struct".to_string(),
-        ))
-    }
-
-    fn struct_node(&self, id: u64) -> Result<node::struct_::Reader<'a>> {
-        let node = self.by_id.get(&id).ok_or_else(|| {
-            Error::Encoding(format!(
-                "capnp request missing node definition for struct id {id:#x}"
-            ))
-        })?;
-        match node.which() {
-            Ok(node::Struct(struct_reader)) => Ok(struct_reader),
-            _ => Err(Error::Encoding(format!("node {id:#x} is not a struct"))),
-        }
-    }
-}
-
-/// Lays out the root `Message` struct of a compiled schema against the
-/// message format it was rendered from.
-pub(crate) fn extract(
-    request: code_generator_request::Reader<'_>,
-    fields: &IndexMap<String, SchemaType>,
-) -> Result<StructLayout> {
-    let nodes = SchemaNodes::from_request(request)?;
-    let root = nodes.struct_node(nodes.root_message_id()?)?;
-    layout_struct(&nodes, root, fields, "")
 }
 
 fn layout_struct(
@@ -215,7 +155,7 @@ fn layout_struct(
     };
     let compiled_fields = compiled.get_fields()?;
     if compiled_fields.len() as usize != fields.len() {
-        return Err(Error::Encoding(format!(
+        return Err(SchemaError::Layout(format!(
             "compiled struct `{path}` has {} fields, the message format declares {}",
             compiled_fields.len(),
             fields.len()
@@ -229,17 +169,17 @@ fn layout_struct(
         let compiled_name = compiled_field
             .get_name()?
             .to_str()
-            .map_err(|err| Error::Encoding(err.to_string()))?;
-        let expected_name = sanitize_field_name(name);
+            .map_err(|err| SchemaError::Layout(err.to_string()))?;
+        let expected_name = capnp_field_name(name);
         if compiled_name != expected_name {
-            return Err(Error::Encoding(format!(
+            return Err(SchemaError::Layout(format!(
                 "compiled field {index} of `{path}` is named `{compiled_name}`, expected `{expected_name}` for `{field_path}`"
             )));
         }
         let slot = match compiled_field.which().map_err(not_in_schema)? {
             field::Slot(slot) => slot,
             field::Group(_) => {
-                return Err(Error::Encoding(format!(
+                return Err(SchemaError::Layout(format!(
                     "group fields are not supported for field `{field_path}`"
                 )));
             }
@@ -302,7 +242,7 @@ fn layout_token(
         TypeToken::Bytes => pointer_field(path, offset, PointerTarget::Bytes { length: None }),
         scalar => {
             let scalar = Scalar::from_token(scalar).ok_or_else(|| {
-                Error::Encoding(format!("field `{path}` is not a fixed-width scalar"))
+                SchemaError::Layout(format!("field `{path}` is not a fixed-width scalar"))
             })?;
             Ok(FieldKind::Data { offset, scalar })
         }
@@ -330,7 +270,7 @@ fn layout_array(
     let element = match compiled.which().map_err(not_in_schema)? {
         type_::List(list) => list.get_element_type()?,
         other => {
-            return Err(Error::Encoding(format!(
+            return Err(SchemaError::Layout(format!(
                 "field `{path}` compiled as {} but the message format declares an array",
                 type_name(other)
             )));
@@ -343,7 +283,7 @@ fn layout_array(
             ListItems::Struct(layout_struct(nodes, nested, &object.fields, &item_path)?)
         }
         SchemaType::Array(_) => {
-            return Err(Error::Encoding(format!(
+            return Err(SchemaError::Layout(format!(
                 "nested arrays are not supported for field `{path}`"
             )));
         }
@@ -357,7 +297,7 @@ fn layout_array(
                 TypeToken::String => ListItems::Text,
                 TypeToken::Bytes => ListItems::Bytes,
                 TypeToken::Time => {
-                    return Err(Error::Encoding(format!(
+                    return Err(SchemaError::Layout(format!(
                         "time arrays are not supported for field `{path}`"
                     )));
                 }
@@ -393,9 +333,9 @@ fn layout_timestamp(
         let name = field
             .get_name()?
             .to_str()
-            .map_err(|err| Error::Encoding(err.to_string()))?;
+            .map_err(|err| SchemaError::Layout(err.to_string()))?;
         let field::Slot(slot) = field.which().map_err(not_in_schema)? else {
-            return Err(Error::Encoding(format!(
+            return Err(SchemaError::Layout(format!(
                 "Timestamp field `{name}` behind `{path}` is a group"
             )));
         };
@@ -410,7 +350,7 @@ fn layout_timestamp(
                 nsec = Some(slot.get_offset());
             }
             other => {
-                return Err(Error::Encoding(format!(
+                return Err(SchemaError::Layout(format!(
                     "Timestamp behind `{path}` carries an unexpected field `{other}`"
                 )));
             }
@@ -418,7 +358,7 @@ fn layout_timestamp(
     }
     match (sec, nsec) {
         (Some(sec), Some(nsec)) => Ok(TimestampLayout { shape, sec, nsec }),
-        _ => Err(Error::Encoding(format!(
+        _ => Err(SchemaError::Layout(format!(
             "Timestamp behind `{path}` is missing its sec or nsec field"
         ))),
     }
@@ -432,7 +372,7 @@ fn expect_struct<'a>(
 ) -> Result<node::struct_::Reader<'a>> {
     match compiled.which().map_err(not_in_schema)? {
         type_::Struct(struct_type) => nodes.struct_node(struct_type.get_type_id()),
-        other => Err(Error::Encoding(format!(
+        other => Err(SchemaError::Layout(format!(
             "field `{path}` compiled as {} but the message format declares {what}",
             type_name(other)
         ))),
@@ -444,7 +384,7 @@ fn expect_type(path: &str, expected: &str, compiled: type_::Reader<'_>) -> Resul
     if actual == expected {
         return Ok(());
     }
-    Err(Error::Encoding(format!(
+    Err(SchemaError::Layout(format!(
         "field `{path}` compiled as {actual} but the message format maps it to {expected}"
     )))
 }
@@ -452,8 +392,9 @@ fn expect_type(path: &str, expected: &str, compiled: type_::Reader<'_>) -> Resul
 /// A pointer field at the compiled `offset`, which for a pointer is its
 /// index into the pointer section.
 fn pointer_field(path: &str, offset: u32, target: PointerTarget) -> Result<FieldKind> {
-    let index = u16::try_from(offset)
-        .map_err(|_| Error::Encoding(format!("pointer index {offset} of `{path}` exceeds u16")))?;
+    let index = u16::try_from(offset).map_err(|_| {
+        SchemaError::Layout(format!("pointer index {offset} of `{path}` exceeds u16"))
+    })?;
     Ok(FieldKind::Pointer { index, target })
 }
 
@@ -484,31 +425,19 @@ fn type_name(compiled: type_::WhichReader<'_>) -> &'static str {
     }
 }
 
-fn not_in_schema(err: capnp::NotInSchema) -> Error {
-    Error::Encoding(format!(
+fn not_in_schema(err: capnp::NotInSchema) -> SchemaError {
+    SchemaError::Layout(format!(
         "capnp request carries a value outside its schema: {err}"
     ))
-}
-
-pub(crate) fn join_path(path: &str, name: &str) -> String {
-    if path.is_empty() {
-        name.to_string()
-    } else {
-        format!("{path}.{name}")
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MessageFormatMapper;
-    use config::node::MessageFormat;
 
     fn layout_of(format: &str) -> StructLayout {
         let format: MessageFormat = serde_json5::from_str(format).expect("valid format");
-        MessageFormatMapper::new("layout_test", format)
-            .wire_layout()
-            .expect("the compiler lays the format out")
+        StructLayout::of("layout_test", &format).expect("the compiler lays the format out")
     }
 
     fn data(offset: u32, scalar: Scalar) -> FieldKind {

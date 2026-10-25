@@ -1,4 +1,5 @@
-//! Atomic file publication helper used across the workspace.
+//! Atomic file publication helper shared by the crates of peppy and of
+//! `peppy-shared`.
 //!
 //! Every caller (for example repository caches, build artifacts,
 //! extracted embedded binaries, and config, credential and lock

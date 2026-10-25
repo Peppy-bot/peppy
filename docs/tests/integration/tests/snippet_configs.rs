@@ -11,13 +11,13 @@
 
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
-use daemon_config::contract::PeppyContractParser;
 use daemon_config::daemon_interface::StackCopiesScope;
 use daemon_config::launcher::{LauncherFragmentParser, PeppyLauncherParser};
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::pairing::PeppyPairingParser;
 use daemon_config::repository::PeppyRepositoryIndexParser;
 use docs_integration_tests::workspace_root;
+use peppy_codec::contract::PeppyContractParser;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 

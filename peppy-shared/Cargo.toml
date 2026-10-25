@@ -22,6 +22,7 @@ members = [
     "config-test-support",
     "peppy-mcp-catalog",
     "peppy-mcp-runtime",
+    "peppy-codec",
 ]
 resolver = "3"
 

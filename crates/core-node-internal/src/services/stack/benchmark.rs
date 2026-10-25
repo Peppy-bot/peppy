@@ -403,7 +403,7 @@ fn enumerate_edges(configs: &[NodeConfig]) -> Vec<Edge> {
 /// Contract documents resolved once per `(contract_name, contract_tag)` and
 /// shared across the QoS and probe-size passes of one benchmark run. A `None`
 /// entry records a resolution failure so it is not retried.
-type ContractDocCache = HashMap<(String, String), Option<daemon_config::contract::PeppyContract>>;
+type ContractDocCache = HashMap<(String, String), Option<peppy_codec::contract::PeppyContract>>;
 
 /// Fill in topic QoS for contract-implementation edges from the contract
 /// document. A contract-backed entry carries no inline QoS, so it lives in
@@ -556,7 +556,7 @@ fn formats_from_node(
 /// Request/response size estimates for an interface declared in a contract.
 /// Same response-side convention for topics as [`formats_from_node`].
 fn formats_from_contract(
-    doc: Option<&daemon_config::contract::PeppyContract>,
+    doc: Option<&peppy_codec::contract::PeppyContract>,
     kind: InterfaceKind,
     name: &str,
 ) -> (Option<MessageSizeEstimate>, Option<MessageSizeEstimate>) {
@@ -1367,7 +1367,7 @@ mod tests {
 
     #[test]
     fn formats_from_contract_sizes_topic_message_on_response_side() {
-        let doc = daemon_config::contract::PeppyContractParser::from_content(
+        let doc = peppy_codec::contract::PeppyContractParser::from_content(
             r#"{
                 peppy_schema: "contract/v1",
                 manifest: { name: "uvc_camera", tag: "v1" },

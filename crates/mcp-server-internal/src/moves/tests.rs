@@ -4,14 +4,14 @@
 //! `moves_robot`. Every step waits on a peer's action, never on the clock: a
 //! deadline only bounds the failure path.
 
-use super::{MarkedSurface, MoveRefused, MoveRules, codec};
+use super::{MarkedSurface, MoveRefused, MoveRules};
 use crate::bridges::{Binding, GoalFollow, PreparedTask, drive_goal};
 use crate::test_support::ScriptedSurface;
 use config::failure_kind::{FailureKindName, MemberFailureKinds, PeppyFailureKind};
 use daemon_config::daemon_interface::DaemonInterface;
 use daemon_config::daemon_interface::fleet::{ChangeKind, FleetChange, FleetListing};
-use message_codec::MessageCodec;
-use message_codec::consumer::{ActionClient, ConsumerIdentity, MemberBinding};
+use peppy_codec::MessageCodec;
+use peppy_codec::consumer::{ActionClient, ConsumerIdentity, MemberBinding};
 use peppy_mcp_runtime::{ActionExit, CancelledGoal, ProviderFailure};
 use peppylib::messaging::{
     DEFAULT_FEEDBACK_BOUND, Failure, GoalContext, MessengerHandle, NonEmptyPayload, ProducerRef,
@@ -154,26 +154,17 @@ fn fleet_codec(member: &str, side: &str) -> MessageCodec {
     let document = DaemonInterface::Fleet.document();
     let format = match side {
         "response" => document
-            .interfaces
-            .services
-            .iter()
-            .find(|service| service.name == member)
+            .service(member)
             .and_then(|service| service.response_message_format.as_ref()),
         "request" => document
-            .interfaces
-            .services
-            .iter()
-            .find(|service| service.name == member)
+            .service(member)
             .and_then(|service| service.request_message_format.as_ref()),
         _ => document
-            .interfaces
-            .actions
-            .iter()
-            .find(|action| action.name == member)
+            .action(member)
             .and_then(|action| action.feedback_topic.as_ref())
             .map(|feedback| &feedback.message_format),
     };
-    codec(&format!("test_{member}_{side}"), format)
+    MessageCodec::of_payload(&format!("test_{member}_{side}"), format)
         .expect("the format lays out")
         .expect("the side has a format")
 }

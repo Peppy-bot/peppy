@@ -1,0 +1,233 @@
+---
+title: The codec API
+description: Call the members of contracts that your node was not built with, parse contract documents with their enums, marks and comments, and convert messages of any format
+sidebar:
+  order: 21
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+A node calls the members of the contracts that its manifest names through its generated code. The codec API serves the calls to any other contract, such as a contract that a document names, from the contract document alone. Example: a workflow director runs a workflow that names a new skill contract, and calls the members of that contract with no new build of the director.
+
+The codec API has three parts:
+
+- **The parser of contracts.** It reads a contract document and gives the message formats of its members, the [enums](/reference/message_format/#enum-modifier) and the [marks](/reference/message_format/#marks-modifier) of their fields, the [marks](/advanced_guides/contract_implementation/#marks) and the [failure kinds](/advanced_guides/contract_implementation/#failure-kinds) of its members, and the [comments](/advanced_guides/contract_implementation/#comments) of its text.
+- **The codec.** It converts a message of any format between its canonical JSON values and the bytes on the wire. The bytes are the bytes that a generated node writes for the same values.
+- **The clients.** They call a service, send the goal of an action and follow it, and read a topic of a contract, on one producer.
+
+The [MCP server](/advanced_guides/mcp/) of peppy and the commands that [call a running instance](/advanced_guides/calling_instances/) use the same codec.
+
+## Ask for the codec API
+
+A node asks for the codec API in the `execution` block of its manifest:
+
+```json5
+{
+  peppy_schema: "node/v1",
+  manifest: { name: "workflow_director", tag: "v1" },
+  execution: {
+    language: "rust",
+    run_cmd: ["./target/release/workflow_director"],
+    codec_api: true,
+  },
+}
+```
+
+`codec_api` is `false` when you leave it out. It is a choice of the build of the node, so a launcher cannot change it. `peppy node sync` and `peppy node add` give the codec API to a node that asks, and only to it:
+
+| Language | What the node gets |
+| --- | --- |
+| Rust | A path dependency on the crate `peppy-codec` in the `Cargo.toml` of the node, and the crates `peppy-codec` and `peppy-mcp-catalog` in `.peppy/libs`, beside `peppylib` |
+| Python | The module `peppylib.codec` in the `peppylib` of the node |
+
+A node that stops asking loses the dependency and the crates, or the module, at its next generation.
+
+### The Cap'n Proto compiler
+
+The codec lays out each message format with the Cap'n Proto compiler, at run time. So a node that asks for the codec API carries the compiler:
+
+- The crate `peppy-codec` embeds the compiler of the build target of the node.
+- The `peppylib` of a Python node gets the compiler of the platform of the node as the file `peppylib/capnp_compiler`. A node that runs in a container gets the Linux compiler of the architecture of the host.
+
+At its first layout, the codec writes the compiler into the `bin` directory of the peppy data root: `$PEPPY_HOME/bin`, else `~/.peppy/bin`. The name of the file holds the digest of its bytes, so nodes built by different releases of peppy share the directory with no conflict. When `CAPNP_BINARY_PATH` is set, the codec runs the compiler that it names instead. Peppy never runs a `capnp` from `PATH`.
+
+A layout runs the compiler once for each format. Build the codecs and the clients of a node at its start, not at each call.
+
+## Parse a contract
+
+<Tabs>
+<TabItem label="Rust">
+
+```rust
+use peppy_codec::contract::{InterfaceKind, MessageSide, PeppyContractParser};
+
+let contract = PeppyContractParser::from_content(&document)?;
+
+// The format of the goal of `move_gripper`.
+let goal = contract.message_format(InterfaceKind::Action, "move_gripper", MessageSide::Goal);
+
+// The field `target.item` of that goal, with its enum and its marks.
+let item = contract
+    .field(InterfaceKind::Action, "move_gripper", MessageSide::Goal, &["target", "item"])
+    .expect("the goal has the field");
+let holds_an_item_id = item.marks().contains("item_id");
+let values = item.enum_values().map(|values| values.values());
+
+// The marks of the member, and the comments of the text.
+let moves_robot = contract.marks.moves_robot(InterfaceKind::Action, "move_gripper");
+let about = contract.comments.member(InterfaceKind::Action, "move_gripper");
+```
+
+`peppy_codec::contract` also gives the types of a format that the API names, such as `MessageFormat`, `SchemaType` and `Marks`. `PeppyContractParser::from_path` reads a file.
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from peppylib import codec
+
+contract = codec.Contract.parse(document)
+
+goal = contract.message_format("action", "move_gripper", "goal")
+marks = contract.field_marks("action", "move_gripper", "goal", ["target", "item"])
+values = contract.field_enum("action", "move_gripper", "goal", ["target", "item"])
+member_marks = contract.member_marks("action", "move_gripper")
+about = contract.member_comment("action", "move_gripper")
+```
+
+`Contract.from_path` reads a file. A text that is not a contract raises `codec.ContractError`, which names the key that the parser refused.
+
+</TabItem>
+</Tabs>
+
+A member is named by its kind and its name. A message side is named by its member: `message` of a topic, `request` and `response` of a service, `goal`, `feedback` and `result` of an action. A field is named by its path in its format: the key of each object that it sits in, from the root of the format, with the items of an array passed through. So the field `angle` of each item of `joints` is `["joints", "angle"]`.
+
+The parser gives each mark as written, `moves_robot` and the marks of your own alike. Your node defines the marks that it reads, and checks them.
+
+## Convert a message
+
+The codec converts the canonical JSON values of a format, the values of the [MCP server](/advanced_guides/mcp/#the-published-schemas) and of [`peppy node call`](/advanced_guides/calling_instances/#the-message):
+
+| Type | Canonical value |
+| --- | --- |
+| `bool`, `string`, `f32`, `f64`, and the integers up to 32 bits | The matching JSON value |
+| `u64`, `i64` | A decimal string, such as `"18446744073709551615"` |
+| `time` | An RFC 3339 UTC string with nanoseconds, such as `"2026-10-25T10:00:00.000000000Z"` |
+| `bytes`, an array of `u8` | A base64 string |
+| An `$optional` field that is absent | No key in the object |
+
+<Tabs>
+<TabItem label="Rust">
+
+The values are `serde_json::Value`s: add `serde_json` to the dependencies of the node.
+
+```rust
+use peppy_codec::MessageCodec;
+
+let codec = MessageCodec::new("move_gripper_goal", goal.expect("a goal format"))?;
+let bytes = codec.encode(&serde_json::json!({ "target": { "item": "cup_3" } }))?;
+let value = codec.decode(&bytes)?;
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+goal_codec = codec.MessageCodec("move_gripper_goal", goal)
+data = goal_codec.encode({"target": {"item": "cup_3"}})
+value = goal_codec.decode(data)
+```
+
+A value that does not convert raises `codec.ConversionError`, which names the field.
+
+</TabItem>
+</Tabs>
+
+The first argument names the schema of the format. It seeds the id of the schema, and does not appear in messages.
+
+## Call a member
+
+Each client calls one member of a contract on one producer, a `(core node, instance id)` pair, as the instance of your node. The producer serves the member under the name and the tag of the contract, as each node that implements the contract does.
+
+<Tabs>
+<TabItem label="Rust">
+
+```rust
+use peppy_codec::consumer::{ActionClient, ConsumerIdentity, MemberBinding, ServiceClient};
+use peppylib::messaging::{DEFAULT_FEEDBACK_BOUND, ProducerRef};
+use std::time::Duration;
+
+let processor = node_runner.processor();
+let caller = ConsumerIdentity {
+    core_node: processor.bound_core_node().to_owned(),
+    instance_id: processor.bound_instance_id().to_owned(),
+};
+let robot = ProducerRef::new("robot-7", "arm_backbone");
+
+// A service.
+let home = ServiceClient::of_contract(&contract, "move_to_home")?;
+let binding = MemberBinding::of_contract(&contract, "move_to_home")?;
+let response = home
+    .call(node_runner.messenger(), &caller, &binding, &robot, &request, Duration::from_secs(30))
+    .await?;
+
+// An action.
+let grip = ActionClient::of_contract(&contract, "move_gripper")?;
+let binding = MemberBinding::of_contract(&contract, "move_gripper")?;
+let mut goal = grip
+    .fire_goal(node_runner.messenger(), &caller, &binding, &robot, &goal_value,
+               DEFAULT_FEEDBACK_BOUND, Duration::from_secs(5))
+    .await?;
+while let Some(feedback) = goal.next_feedback().await? {
+    // ...
+}
+let outcome = goal.result(node_runner.messenger(), Duration::from_secs(5)).await?;
+```
+
+`TopicConsumer::of_producer` subscribes to a topic of the producer, with the codec that `peppy_codec::consumer::contract_topic_codec` lays out.
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from peppylib import ProducerRef
+
+messenger = node_runner.messenger()
+core_node = node_runner.bound_core_node()
+instance_id = node_runner.bound_instance_id()
+robot = ProducerRef("robot-7", "arm_backbone")
+
+# A service.
+home = codec.ServiceClient(contract, "move_to_home")
+response = await home.call(messenger, core_node, instance_id, robot, request, 30.0)
+
+# An action.
+grip = codec.ActionClient(contract, "move_gripper")
+goal = await grip.send_goal(messenger, core_node, instance_id, robot, goal_value)
+while (feedback := await goal.next_feedback()) is not None:
+    ...
+outcome = await goal.result(messenger, 5.0)
+
+# A topic.
+states = await codec.TopicConsumer.subscribe(
+    messenger, core_node, instance_id, contract, "limb_states", robot
+)
+producer, state = await states.next_message()
+```
+
+</TabItem>
+</Tabs>
+
+The clients keep the rules of the generated clients:
+
+- A request, a goal and each message are canonical values, and a response, each feedback message and a result too. A message side with no format carries no payload, and reads as an empty object.
+- An error reply of a service, and a refusal or a failure of a goal, give a [failure kind](/advanced_guides/actions/#how-a-goal-ends) and a message. A kind that is neither a kind of peppy nor a kind of the contract that the member lists is an error of the provider: the Rust clients give `ConsumerError::UndeclaredFailureKind`, and the Python clients raise `codec.UndeclaredFailureKindError`.
+- A goal ends as `completed`, `cancelled`, `failed`, `abandoned` (the producer dropped the goal) or `expired` (the producer no longer keeps its result). A cancel gives what the producer acknowledges: the goal received the cancel signal, the goal had ended, or the producer knows no such goal.
+- The handle of a goal keeps a bounded number of unread feedback messages. A caller that reads the feedback and falls behind by more loses the stream: the handle cancels the goal, and the next read gives the loss as an error. A caller that never reads the feedback keeps its goal.
+- A topic subscription keeps the newest unread messages: a reader slower than the producer loses the oldest unread ones, and never holds up the producer. A topic that keeps messages for late subscribers (`retention`) gives them first.
+
+## Find the instances to call
+
+A generated client calls only the instances that the launcher binds to the slots of its node. The clients of the codec API take any producer. A node that asks for the codec API and has `list` in its `fleet` scope reads the fleet listing (`fleet.list`) and calls a member on any instance of the listing, with no link from the launcher. With `changes` in its scope, it follows the listing, and calls a robot that joins later.
+
+The fleet listing does not give the right to move a robot: only a lease does.

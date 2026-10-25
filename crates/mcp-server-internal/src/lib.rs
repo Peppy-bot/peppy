@@ -12,7 +12,7 @@
 //! scope the launch gave the target, and each call of a member that moves a
 //! robot keeps the fleet rules of the stack.
 //!
-//! Message conversion is the runtime codec of `message-codec`: the layout
+//! Message conversion is the runtime codec of `peppy-codec`: the layout
 //! generated nodes use, laid out from each contract's `message_format`
 //! when the process starts.
 

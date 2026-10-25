@@ -15,19 +15,17 @@ mod tests;
 
 use crate::bridges::TaskSurface;
 use crate::serve::ServeError;
-use config::failure_kind::{FailureKindName, MemberFailureKinds};
-use config::node::MessageFormat;
+use config::failure_kind::FailureKindName;
 use daemon_config::daemon_interface::DaemonInterface;
 use daemon_config::daemon_interface::fleet::{
     CheckMoveRequest, CheckMoveResponse, FleetChange, FleetMember,
 };
-use message_codec::MessageCodec;
-use message_codec::consumer::{
+use peppy_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, GoalHandle, MemberBinding, ServiceClient,
 };
 use peppy_mcp_runtime::ProviderFailure;
 use peppylib::PeppyError;
-use peppylib::messaging::{DEFAULT_FEEDBACK_BOUND, MessengerHandle, ProducerRef, SenderTarget};
+use peppylib::messaging::{DEFAULT_FEEDBACK_BOUND, MessengerHandle, ProducerRef};
 use serde_json::json;
 use std::future::Future;
 use std::sync::Arc;
@@ -64,9 +62,10 @@ struct Inner {
     /// The daemon that serves the fleet: the producer of the fleet slot of
     /// the server.
     fleet: ProducerRef,
-    contract: SenderTarget,
     check_move: ServiceClient,
+    check_move_binding: MemberBinding,
     changes: ActionClient,
+    changes_binding: MemberBinding,
     /// The client that halted the stack, while the follow of the changes
     /// sees a halt.
     halt: watch::Sender<Option<String>>,
@@ -92,65 +91,18 @@ impl MoveRules {
         identity: ConsumerIdentity,
         fleet: ProducerRef,
     ) -> Result<Self, ServeError> {
-        let interface = DaemonInterface::Fleet;
-        let document = interface.document();
-        let service = document
-            .interfaces
-            .services
-            .iter()
-            .find(|service| service.name == FleetMember::CheckMove.name())
-            .expect("fleet:v1 declares check_move");
-        let action = document
-            .interfaces
-            .actions
-            .iter()
-            .find(|action| action.name == FleetMember::Changes.name())
-            .expect("fleet:v1 declares changes");
-        let check_move = ServiceClient::new(
-            codec(
-                "fleet_check_move_request",
-                service.request_message_format.as_ref(),
-            )?,
-            codec(
-                "fleet_check_move_response",
-                service.response_message_format.as_ref(),
-            )?,
-            MemberFailureKinds::peppy_only(),
-        );
-        let changes = ActionClient::new(
-            codec(
-                "fleet_changes_goal",
-                action
-                    .goal_service
-                    .as_ref()
-                    .and_then(|goal| goal.request_message_format.as_ref()),
-            )?,
-            codec(
-                "fleet_changes_feedback",
-                action
-                    .feedback_topic
-                    .as_ref()
-                    .map(|feedback| &feedback.message_format),
-            )?,
-            codec(
-                "fleet_changes_result",
-                action
-                    .result_service
-                    .as_ref()
-                    .and_then(|result| result.response_message_format.as_ref()),
-            )?,
-            MemberFailureKinds::peppy_only(),
-        );
-        let contract = SenderTarget::contract(interface.name(), interface.tag())
-            .map_err(peppylib::PeppyError::from)?;
+        let document = DaemonInterface::Fleet.document();
+        let check_move = FleetMember::CheckMove.name();
+        let changes = FleetMember::Changes.name();
         Ok(Self {
             inner: Arc::new(Inner {
                 messenger,
                 identity,
                 fleet,
-                contract,
-                check_move,
-                changes,
+                check_move: ServiceClient::of_contract(document, check_move)?,
+                check_move_binding: MemberBinding::of_contract(document, check_move)?,
+                changes: ActionClient::of_contract(document, changes)?,
+                changes_binding: MemberBinding::of_contract(document, changes)?,
                 halt: watch::Sender::new(None),
                 follow: parking_lot::Mutex::default(),
             }),
@@ -177,7 +129,7 @@ impl MoveRules {
             .call(
                 &inner.messenger,
                 &inner.identity,
-                &inner.binding(FleetMember::CheckMove),
+                &inner.check_move_binding,
                 &inner.fleet,
                 &request,
                 DAEMON_ANSWER_BOUND,
@@ -222,13 +174,6 @@ impl MoveRules {
 }
 
 impl Inner {
-    fn binding(&self, member: FleetMember) -> MemberBinding {
-        MemberBinding {
-            target: self.contract.clone(),
-            member: member.name().to_owned(),
-        }
-    }
-
     /// Sets the halt that the follow of `generation` reads, while that
     /// follow is the current one.
     fn note_halt(&self, generation: u64, halted_by: Option<String>) {
@@ -239,31 +184,17 @@ impl Inner {
     }
 }
 
-/// The codec of one side of a member of `fleet:v1`; an absent or empty
-/// format is no payload.
-fn codec(label: &str, format: Option<&MessageFormat>) -> Result<Option<MessageCodec>, ServeError> {
-    message_codec::payload_format(format)
-        .map(|format| {
-            MessageCodec::new(label, format.clone()).map_err(|source| ServeError::Codec {
-                member: label.to_owned(),
-                source,
-            })
-        })
-        .transpose()
-}
-
 /// Follows the changes of the fleet until `stop`, and notes each halt that
 /// a listing gives. Each feedback of `changes` gives the listing after its
 /// change, the first one the listing at the start of the follow.
 async fn follow_changes(inner: Arc<Inner>, generation: u64, stop: CancellationToken) {
-    let binding = inner.binding(FleetMember::Changes);
     let goal = json!({});
     let fired = tokio::select! {
         () = stop.cancelled() => return,
         fired = inner.changes.fire_goal(
             &inner.messenger,
             &inner.identity,
-            &binding,
+            &inner.changes_binding,
             &inner.fleet,
             &goal,
             DEFAULT_FEEDBACK_BOUND,

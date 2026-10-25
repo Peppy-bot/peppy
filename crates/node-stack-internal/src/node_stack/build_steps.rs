@@ -60,7 +60,7 @@ pub(super) fn archive_dir_to_storage(
     source_dir: &Path,
     destination: &Path,
 ) -> std::io::Result<PathBuf> {
-    daemon_config::atomic_write::publish_atomic(destination, |tmp_path| {
+    config::atomic_write::publish_atomic(destination, |tmp_path| {
         let file = File::create(tmp_path)?;
         let encoder = ZstdEncoder::new(file, 1)?;
         let mut tar_builder = tar::Builder::new(encoder);
@@ -83,7 +83,7 @@ pub(super) fn move_sif_to_storage(
 ) -> std::io::Result<PathBuf> {
     // Copy + rename (not rename alone) because the working dir may be on a
     // different filesystem than storage.
-    daemon_config::atomic_write::publish_atomic(destination, |tmp_path| {
+    config::atomic_write::publish_atomic(destination, |tmp_path| {
         std::fs::copy(sif_source, tmp_path)
             .map(|_| ())
             .map_err(|e| {

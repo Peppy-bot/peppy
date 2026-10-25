@@ -6,15 +6,13 @@ edition.workspace = true
 
 [dependencies]
 config = { workspace = true }
-daemon-config = { workspace = true }
+# The schema renderer and the Cap'n Proto compiler that the code generator
+# shares with the run-time codec.
+peppy-codec = { workspace = true }
 capnp = "0.27"
 capnpc = "0.27"
 proc-macro2 = "1.0"
-tempfile = "3.8"
-indexmap = "2.2"
-
-[build-dependencies]
-build-helpers = { workspace = true }
 
 [dev-dependencies]
 serde_json5 = "0.2"
+tempfile = "3.8"

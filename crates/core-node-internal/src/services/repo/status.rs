@@ -114,7 +114,7 @@ pub(crate) fn write(peppy_dirs: &PeppyDirs, statuses: &[RepoStatus]) -> Result<(
     let content = json5_pretty::to_string_pretty(statuses).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize {FILE_NAME}: {e}"))
     })?;
-    daemon_config::atomic_write::publish_atomic(&repo_status_path(peppy_dirs), |tmp| {
+    config::atomic_write::publish_atomic(&repo_status_path(peppy_dirs), |tmp| {
         std::fs::write(tmp, &content)
     })?;
     Ok(())

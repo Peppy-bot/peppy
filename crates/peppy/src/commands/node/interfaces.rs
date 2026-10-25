@@ -11,15 +11,15 @@ use crate::error::Error;
 use config::RefinementMismatch;
 use config::failure_kind::{MemberFailureKinds, MemberSection};
 use config::node::{
-    InterfaceKind, LinkedMember, MessageFormat, NativeEmittedTopic, NativeExposedAction,
-    NativeExposedService, NodeConfig, NodeConfigParser, refined,
+    InterfaceKind, LinkedMember, NativeEmittedTopic, NativeExposedAction, NativeExposedService,
+    NodeConfig, NodeConfigParser, refined,
 };
 use core_node_api::encoding::InstanceDocumentsRequest;
 use core_node_api::encoding::{InstanceDocuments, PinnedDocument};
-use daemon_config::contract::{PeppyContract, PeppyContractParser, RefinedMember};
 use daemon_config::pairing::{PeppyPairing, PeppyPairingParser};
-use message_codec::MessageCodec;
-use message_codec::consumer::ConsumerIdentity;
+use peppy_codec::CodecError;
+use peppy_codec::consumer::ConsumerIdentity;
+use peppy_codec::contract::{PeppyContract, PeppyContractParser, RefinedMember};
 use peppylib::messaging::{ProducerRef, SenderTarget};
 use serde::Serialize;
 use serde::ser::{SerializeSeq, Serializer};
@@ -202,15 +202,20 @@ pub(crate) struct SelectedMember<'a> {
 }
 
 impl SelectedMember<'_> {
-    /// The codec of the message side `side` of the member, laid out from
-    /// `format`, the format of the pinned manifest.
-    pub fn codec(&self, side: &str, format: &MessageFormat) -> crate::error::Result<MessageCodec> {
-        let label: String = format!("{}_{side}", self.full_name)
+    /// The label of the codecs of the member, which seeds the file id of
+    /// the schema of each side: its full name, with `_` in place of each
+    /// character that is not ASCII alphanumeric.
+    pub fn codec_label(&self) -> String {
+        self.full_name
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect();
-        MessageCodec::new(&label, format.clone())
-            .map_err(|error| Error::ExecutionFailed(format!("`{}`: {error}", self.full_name)))
+            .collect()
+    }
+
+    /// The error of a codec of the member that does not lay out from the
+    /// format of the pinned manifest.
+    pub fn codec_error(&self, error: CodecError) -> Error {
+        Error::ExecutionFailed(format!("`{}`: {error}", self.full_name))
     }
 }
 

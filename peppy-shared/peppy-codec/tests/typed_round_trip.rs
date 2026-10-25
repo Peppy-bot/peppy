@@ -8,8 +8,8 @@
 //! from the fixture's JSON, decode the typed bytes back to that JSON, and
 //! the typed readers must read the codec's bytes back to the same values.
 
-use message_codec::MessageCodec;
-use peppy_mcp_runtime::bridge::{bytes_to_base64, value_bytes, value_time};
+use peppy_codec::MessageCodec;
+use peppy_codec::value::{bytes_to_base64, value_bytes, value_time};
 use peppylib::encoding::convert_time;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -34,7 +34,7 @@ fn fixture(name: &str) -> String {
 
 fn codec(name: &str) -> MessageCodec {
     let format = serde_json5::from_str(&fixture(&format!("{name}.json5"))).expect("format parses");
-    MessageCodec::new(name, format).expect("the fixture format lays out")
+    MessageCodec::new(name, &format).expect("the fixture format lays out")
 }
 
 fn frame_bytes(message: &capnp::message::Builder<capnp::message::HeapAllocator>) -> Vec<u8> {

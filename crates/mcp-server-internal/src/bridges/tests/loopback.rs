@@ -12,10 +12,10 @@ use super::{
 };
 use crate::bridges::{PreparedExposure, call_service, drive_goal, prepare};
 use crate::test_support::{Events, LoopbackEndpoint};
-use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::repository::ManifestFingerprint;
-use message_codec::MessageCodec;
+use peppy_codec::MessageCodec;
+use peppy_codec::contract::PeppyContractParser;
 use peppy_mcp_catalog::{ResolvedContract, build_exposure_bundle};
 use peppy_mcp_runtime::{ActionContext, ExposureServer, ToolCall};
 use peppylib::messaging::Failure;
@@ -114,7 +114,7 @@ fn prepared_exposure() -> PreparedExposure {
         name: "limb_motion",
         tag: "v1",
         sha256: &fingerprint,
-        members: contract.declared_members(),
+        members: daemon_config::mcp_exposure::declared_members(&contract),
     };
     let exposure = PeppyMcpExposureParser::from_content(EXPOSURE).expect("the exposure parses");
     let validated =

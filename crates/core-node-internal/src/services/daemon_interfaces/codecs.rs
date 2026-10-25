@@ -6,7 +6,7 @@ use crate::services::response::failure;
 use config::failure_kind::PeppyFailureKind;
 use config::node::MessageFormat;
 use daemon_config::daemon_interface::DaemonInterface;
-use message_codec::MessageCodec;
+use peppy_codec::MessageCodec;
 use peppylib::messaging::Failure;
 use std::collections::HashMap;
 use std::fmt;
@@ -61,7 +61,7 @@ impl Codecs {
             )
         })?;
         let schema = format!("{}_{}_{member}_{side}", interface.name(), interface.tag());
-        let codec = MessageCodec::new(&schema, format.clone()).map_err(|error| {
+        let codec = MessageCodec::new(&schema, format).map_err(|error| {
             failure(
                 PeppyFailureKind::AttemptFailed,
                 format!("the codec of the {side} of `{member}` is not laid out: {error}"),

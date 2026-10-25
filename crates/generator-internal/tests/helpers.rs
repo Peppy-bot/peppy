@@ -432,7 +432,7 @@ pub fn test_wrapper_crate_name(crate_dir: &Path) -> String {
 /// shared test target dir link one test's cached `peppygen` rlib into another
 /// test's `user_node`. A unique name per crate dir keeps each test's peppygen a
 /// distinct cargo unit. See [`rename_peppygen_package`] and [`compile_project`].
-fn peppygen_crate_name(crate_dir: &Path) -> String {
+pub fn peppygen_crate_name(crate_dir: &Path) -> String {
     format!("peppygen_{:016x}", crate_identity_hash(crate_dir))
 }
 
@@ -488,6 +488,12 @@ pub fn peppygen_dev_dependency_line(crate_dir: &Path) -> String {
 /// node's vendored pmi is built without `build_zenoh`, so inside the test
 /// environment (no `peppy` on PATH) it has nothing else to resolve.
 pub fn run_cargo_test(dir: impl AsRef<Path>) {
+    run_cargo_test_with(dir, |_| {});
+}
+
+/// [`run_cargo_test`], with `adjust` applied to the command last, such as to
+/// set or remove a variable of the environment of the tests.
+pub fn run_cargo_test_with(dir: impl AsRef<Path>, adjust: impl FnOnce(&mut Command)) {
     let dir = dir.as_ref();
     let target_dir = stable_test_target_dir();
     fs::create_dir_all(&target_dir).expect("failed to create stable test target directory");
@@ -503,6 +509,7 @@ pub fn run_cargo_test(dir: impl AsRef<Path>) {
     if let Some(zenohd) = pmi::ZenohdFacade::resolved_zenohd_binary() {
         command.env(pmi::ZENOHD_PATH_VAR, zenohd);
     }
+    adjust(&mut command);
     let output = command
         .output()
         .expect("failed to invoke cargo test on generated node crate");

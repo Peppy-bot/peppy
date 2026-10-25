@@ -33,7 +33,6 @@ use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::runtime::CopyName;
 use core_node_api::encoding::CopyReference;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_deployment::SPEC_ENV_VAR;
 use daemon_config::repository::ManifestFingerprint;
 use generator::{ContractOrigin, LanguageGenerator};
@@ -43,6 +42,7 @@ use mcp_test_support::{
 };
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 use peppy::test_support::CACHED_BUILD_REUSE_PREFIX;
+use peppy_codec::contract::PeppyContractParser;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientConfig, ErrorCode,
     GetTaskParams, ProgressNotificationParam, ProtocolVersion, ReadResourceRequestParams,

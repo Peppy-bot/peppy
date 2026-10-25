@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 mod clock;
+mod codec;
 mod config;
 mod core_node;
 mod datastore;
@@ -19,6 +20,7 @@ fn _peppylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         option_env!("PEPPY_GIT_TAG").unwrap_or("0.0.1"),
     )?;
     py_future::register_interpreter_exit_gate(m.py())?;
+    codec::register(m)?;
     config::register(m)?;
     core_node::register(m)?;
     messaging::register(m)?;

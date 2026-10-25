@@ -152,7 +152,7 @@ fn write_members(out: &mut String, slot: Option<&str>, members: &[Member]) {
 /// One message side, `label: <format as JSON5>`, the format indented under
 /// the label; `label: none` for a side that carries no payload.
 fn write_format(out: &mut String, label: &str, format: Option<&MessageFormat>) {
-    let Some(format) = message_codec::payload_format(format) else {
+    let Some(format) = peppy_codec::payload_format(format) else {
         let _ = writeln!(out, "    {label}: none");
         return;
     };

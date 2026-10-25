@@ -15,18 +15,18 @@
 //! omitted from the JSON object when absent and never written as `null`.
 
 use crate::dynamic::{RootBuilder, RootReader, init_struct_list, read_struct_list, struct_size};
+use crate::schema::SchemaError;
+use crate::value;
+use crate::wire_layout::{
+    FieldKind, FieldLayout, ListItems, PointerTarget, Scalar, StructLayout, TimestampLayout,
+};
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::private::layout::{
     ElementSize, PointerBuilder, PointerReader, PrimitiveElement, StructBuilder, StructReader,
 };
 use capnp::traits::{FromPointerBuilder, FromPointerReader};
 use capnp::{data_list, primitive_list, serialize, text, text_list};
-use config::node::MessageFormat;
-use encoding::MessageFormatMapper;
-use encoding::wire_layout::{
-    FieldKind, FieldLayout, ListItems, PointerTarget, Scalar, StructLayout, TimestampLayout,
-};
-use peppy_mcp_runtime::bridge;
+use config::node::{MessageFormat, NativeEmittedTopic};
 use peppylib::encoding::{CapnpTimestamp, convert_time, convert_time_from_capnp};
 use serde_json::{Map, Value};
 
@@ -38,7 +38,7 @@ const NANOS_PER_SECOND: u32 = 1_000_000_000;
 pub struct CodecError {
     schema_name: String,
     #[source]
-    source: Box<config::ConfigError>,
+    source: SchemaError,
 }
 
 /// A value did not convert. The message names the offending field the way
@@ -67,17 +67,35 @@ pub struct MessageCodec {
 }
 
 impl MessageCodec {
-    /// Lays `format` out through the bundled Cap'n Proto compiler.
-    /// `schema_name` seeds the schema's file id, as it does for code
-    /// generation; the id does not appear in messages.
-    pub fn new(schema_name: &str, format: MessageFormat) -> Result<Self, CodecError> {
-        let layout = MessageFormatMapper::new(schema_name, format)
-            .wire_layout()
-            .map_err(|source| CodecError {
-                schema_name: schema_name.to_string(),
-                source: Box::new(source),
-            })?;
+    /// Lays `format` out through the Cap'n Proto compiler of the process
+    /// (see [`crate::compiler`]). `schema_name` seeds the schema's file id,
+    /// as it does for code generation; the id does not appear in messages.
+    pub fn new(schema_name: &str, format: &MessageFormat) -> Result<Self, CodecError> {
+        let layout = StructLayout::of(schema_name, format).map_err(|source| CodecError {
+            schema_name: schema_name.to_string(),
+            source,
+        })?;
         Ok(Self { layout })
+    }
+
+    /// The codec of `topic`, laid out under `label` and `_topic`: the
+    /// format of the topic, or no field for a topic that declares none,
+    /// whose messages decode as an empty object.
+    pub fn of_topic(label: &str, topic: &NativeEmittedTopic) -> Result<Self, CodecError> {
+        let no_fields = MessageFormat::default();
+        let format = topic.message_format.as_ref().unwrap_or(&no_fields);
+        Self::new(&format!("{label}_topic"), format)
+    }
+
+    /// The codec of a message side with `format`, laid out under `label`:
+    /// `None` for a side with no payload (see [`crate::payload_format`]).
+    pub fn of_payload(
+        label: &str,
+        format: Option<&MessageFormat>,
+    ) -> Result<Option<Self>, CodecError> {
+        crate::payload_format(format)
+            .map(|format| Self::new(label, format))
+            .transpose()
     }
 
     /// Encodes a JSON object into a framed message.
@@ -115,12 +133,12 @@ fn encode_struct(
 ) -> Result<(), ConversionError> {
     for field in &layout.fields {
         let field_value = if field.optional {
-            match bridge::optional(value, &field.name) {
+            match value::optional(value, &field.name) {
                 Some(field_value) => field_value,
                 None => continue,
             }
         } else {
-            bridge::require(value, &field.name)?
+            value::require(value, &field.name)?
         };
         encode_field(builder.reborrow(), field, field_value)?;
     }
@@ -135,7 +153,7 @@ fn encode_field(
     let name = field.name.as_str();
     match &field.kind {
         FieldKind::Bit(bit) => {
-            builder.set_bool_field(*bit as usize, bridge::value_bool(value, name)?);
+            builder.set_bool_field(*bit as usize, value::value_bool(value, name)?);
             Ok(())
         }
         FieldKind::Data { offset, scalar } => {
@@ -156,20 +174,20 @@ fn encode_scalar(
     value: &Value,
 ) -> Result<(), ConversionError> {
     match scalar {
-        Scalar::U8 => builder.set_data_field::<u8>(offset, bridge::value_u8(value, name)?),
-        Scalar::U16 => builder.set_data_field::<u16>(offset, bridge::value_u16(value, name)?),
-        Scalar::U32 => builder.set_data_field::<u32>(offset, bridge::value_u32(value, name)?),
+        Scalar::U8 => builder.set_data_field::<u8>(offset, value::value_u8(value, name)?),
+        Scalar::U16 => builder.set_data_field::<u16>(offset, value::value_u16(value, name)?),
+        Scalar::U32 => builder.set_data_field::<u32>(offset, value::value_u32(value, name)?),
         Scalar::U64 => {
-            builder.set_data_field::<u64>(offset, bridge::value_u64_decimal(value, name)?)
+            builder.set_data_field::<u64>(offset, value::value_u64_decimal(value, name)?)
         }
-        Scalar::I8 => builder.set_data_field::<i8>(offset, bridge::value_i8(value, name)?),
-        Scalar::I16 => builder.set_data_field::<i16>(offset, bridge::value_i16(value, name)?),
-        Scalar::I32 => builder.set_data_field::<i32>(offset, bridge::value_i32(value, name)?),
+        Scalar::I8 => builder.set_data_field::<i8>(offset, value::value_i8(value, name)?),
+        Scalar::I16 => builder.set_data_field::<i16>(offset, value::value_i16(value, name)?),
+        Scalar::I32 => builder.set_data_field::<i32>(offset, value::value_i32(value, name)?),
         Scalar::I64 => {
-            builder.set_data_field::<i64>(offset, bridge::value_i64_decimal(value, name)?)
+            builder.set_data_field::<i64>(offset, value::value_i64_decimal(value, name)?)
         }
         Scalar::F32 => builder.set_data_field::<f32>(offset, value_f32(value, name)?),
-        Scalar::F64 => builder.set_data_field::<f64>(offset, bridge::value_f64(value, name)?),
+        Scalar::F64 => builder.set_data_field::<f64>(offset, value::value_f64(value, name)?),
     }
     Ok(())
 }
@@ -179,7 +197,7 @@ fn encode_scalar(
 /// `{"type": "number"}` cannot exclude, so the range is checked instead of
 /// letting an out-of-range value become `inf` on the wire.
 fn value_f32(value: &Value, name: &str) -> Result<f32, ConversionError> {
-    let wide = bridge::value_f64(value, name)?;
+    let wide = value::value_f64(value, name)?;
     if !wide.is_finite() || wide < f32::MIN as f64 || wide > f32::MAX as f64 {
         return Err(ConversionError(format!(
             "`{name}` is outside the range of a 32-bit float"
@@ -196,10 +214,10 @@ fn encode_pointer(
 ) -> Result<(), ConversionError> {
     match target {
         PointerTarget::Text => {
-            pointer.set_text(text::Reader::from(bridge::value_str(value, name)?));
+            pointer.set_text(text::Reader::from(value::value_str(value, name)?));
         }
         PointerTarget::Bytes { length } => {
-            let bytes = bridge::value_bytes(value, name)?;
+            let bytes = value::value_bytes(value, name)?;
             if let Some(length) = length
                 && bytes.len() != *length
             {
@@ -210,7 +228,7 @@ fn encode_pointer(
             pointer.set_data(&bytes);
         }
         PointerTarget::Time(timestamp) => {
-            let time = convert_time(bridge::value_time(value, name)?);
+            let time = convert_time(value::value_time(value, name)?);
             let builder = pointer.init_struct(struct_size(timestamp.shape));
             builder.set_data_field::<i64>(timestamp.sec as usize, time.sec);
             builder.set_data_field::<u32>(timestamp.nsec as usize, time.nsec);
@@ -220,7 +238,7 @@ fn encode_pointer(
             encode_struct(builder, layout, value)?;
         }
         PointerTarget::List { items, length } => {
-            let elements = bridge::value_array(value, name)?;
+            let elements = value::value_array(value, name)?;
             if let Some(length) = length
                 && elements.len() != *length
             {
@@ -246,49 +264,49 @@ fn encode_list(
 ) -> Result<(), ConversionError> {
     match items {
         ListItems::Bool => encode_scalar_list(pointer, count, elements, |item| {
-            bridge::value_bool(item, name)
+            value::value_bool(item, name)
         }),
-        ListItems::Scalar(Scalar::U8) => encode_scalar_list(pointer, count, elements, |item| {
-            bridge::value_u8(item, name)
-        }),
+        ListItems::Scalar(Scalar::U8) => {
+            encode_scalar_list(pointer, count, elements, |item| value::value_u8(item, name))
+        }
         ListItems::Scalar(Scalar::U16) => encode_scalar_list(pointer, count, elements, |item| {
-            bridge::value_u16(item, name)
+            value::value_u16(item, name)
         }),
         ListItems::Scalar(Scalar::U32) => encode_scalar_list(pointer, count, elements, |item| {
-            bridge::value_u32(item, name)
+            value::value_u32(item, name)
         }),
         ListItems::Scalar(Scalar::U64) => encode_scalar_list(pointer, count, elements, |item| {
-            bridge::value_u64_decimal(item, name)
+            value::value_u64_decimal(item, name)
         }),
-        ListItems::Scalar(Scalar::I8) => encode_scalar_list(pointer, count, elements, |item| {
-            bridge::value_i8(item, name)
-        }),
+        ListItems::Scalar(Scalar::I8) => {
+            encode_scalar_list(pointer, count, elements, |item| value::value_i8(item, name))
+        }
         ListItems::Scalar(Scalar::I16) => encode_scalar_list(pointer, count, elements, |item| {
-            bridge::value_i16(item, name)
+            value::value_i16(item, name)
         }),
         ListItems::Scalar(Scalar::I32) => encode_scalar_list(pointer, count, elements, |item| {
-            bridge::value_i32(item, name)
+            value::value_i32(item, name)
         }),
         ListItems::Scalar(Scalar::I64) => encode_scalar_list(pointer, count, elements, |item| {
-            bridge::value_i64_decimal(item, name)
+            value::value_i64_decimal(item, name)
         }),
         ListItems::Scalar(Scalar::F32) => {
             encode_scalar_list(pointer, count, elements, |item| value_f32(item, name))
         }
         ListItems::Scalar(Scalar::F64) => encode_scalar_list(pointer, count, elements, |item| {
-            bridge::value_f64(item, name)
+            value::value_f64(item, name)
         }),
         ListItems::Text => {
             let mut list = text_list::Builder::init_pointer(pointer, count);
             for (index, item) in elements.iter().enumerate() {
-                list.set(index as u32, bridge::value_str(item, name)?);
+                list.set(index as u32, value::value_str(item, name)?);
             }
             Ok(())
         }
         ListItems::Bytes => {
             let mut list = data_list::Builder::init_pointer(pointer, count);
             for (index, item) in elements.iter().enumerate() {
-                list.set(index as u32, &bridge::value_bytes(item, name)?);
+                list.set(index as u32, &value::value_bytes(item, name)?);
             }
             Ok(())
         }
@@ -366,8 +384,8 @@ fn decode_scalar(
         Scalar::I16 => Value::from(reader.get_data_field::<i16>(offset)),
         Scalar::I32 => Value::from(reader.get_data_field::<i32>(offset)),
         Scalar::I64 => Value::String(reader.get_data_field::<i64>(offset).to_string()),
-        Scalar::F32 => bridge::float_to_json(f64::from(reader.get_data_field::<f32>(offset)))?,
-        Scalar::F64 => bridge::float_to_json(reader.get_data_field::<f64>(offset))?,
+        Scalar::F32 => value::float_to_json(f64::from(reader.get_data_field::<f32>(offset)))?,
+        Scalar::F64 => value::float_to_json(reader.get_data_field::<f64>(offset))?,
     };
     Ok(value)
 }
@@ -389,11 +407,11 @@ fn decode_pointer(
                     bytes.len()
                 )));
             }
-            Ok(Value::String(bridge::bytes_to_base64(bytes)))
+            Ok(Value::String(value::bytes_to_base64(bytes)))
         }
         PointerTarget::Time(timestamp) => {
             let time = decode_time(pointer, timestamp, name)?;
-            Ok(Value::String(bridge::time_to_rfc3339(time)))
+            Ok(Value::String(value::time_to_rfc3339(time)))
         }
         PointerTarget::Struct(layout) => decode_struct(pointer.get_struct(None)?, layout),
         PointerTarget::List { items, length } => {
@@ -457,13 +475,13 @@ fn decode_list(
         ListItems::Scalar(Scalar::F32) => {
             let list = primitive_list::Reader::<f32>::get_from_pointer(&pointer, None)?;
             list.iter()
-                .map(|item| bridge::float_to_json(f64::from(item)).map_err(ConversionError))
+                .map(|item| value::float_to_json(f64::from(item)).map_err(ConversionError))
                 .collect()
         }
         ListItems::Scalar(Scalar::F64) => {
             let list = primitive_list::Reader::<f64>::get_from_pointer(&pointer, None)?;
             list.iter()
-                .map(|item| bridge::float_to_json(item).map_err(ConversionError))
+                .map(|item| value::float_to_json(item).map_err(ConversionError))
                 .collect()
         }
         ListItems::Text => {
@@ -475,7 +493,7 @@ fn decode_list(
         ListItems::Bytes => {
             let list = data_list::Reader::new(pointer.get_list(ElementSize::Pointer, None)?);
             list.iter()
-                .map(|item| Ok(Value::String(bridge::bytes_to_base64(item?))))
+                .map(|item| Ok(Value::String(value::bytes_to_base64(item?))))
                 .collect()
         }
         ListItems::Struct(layout) => {
@@ -505,7 +523,7 @@ mod tests {
 
     fn codec(format: &str) -> MessageCodec {
         let format: MessageFormat = serde_json5::from_str(format).expect("valid format");
-        MessageCodec::new("codec_test", format).expect("the format lays out")
+        MessageCodec::new("codec_test", &format).expect("the format lays out")
     }
 
     fn round_trip(codec: &MessageCodec, value: Value) -> Vec<u8> {

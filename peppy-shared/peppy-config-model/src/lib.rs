@@ -5,15 +5,17 @@
 //! This crate owns the wire-facing config tier every peppy surface builds
 //! on: the `peppy.json5` node config model, the runtime configs shipped to
 //! spawned nodes, codegen fingerprints, workspace namespaces, and the schema
-//! tags identifying each document shape. (Cap'n Proto schema generation for a
-//! [`node::MessageFormat`] lives in the separate `encoding` crate; the
+//! tags identifying each document shape, and the [`atomic_write`] staging
+//! helper. (The Cap'n Proto schema of a [`node::MessageFormat`] and the
+//! parser of contract documents live in the `peppy-codec` crate; the
 //! daemon-side documents, launcher files, interface documents,
 //! `peppy_config.json5`, and the `PeppyDirs` filesystem layout, live in the
 //! peppy `daemon-config` crate, which builds on this one.)
 //!
-//! Boundaries: it performs no I/O beyond reading/writing config files and
-//! fingerprints, holds no process-global state, and requires no global
-//! init; every type is built through an explicit parser/constructor.
+//! Boundaries: it performs no I/O beyond reading/writing config files,
+//! fingerprints and the files that [`atomic_write::publish_atomic`] stages,
+//! holds no process-global state, and requires no global init; every type
+//! is built through an explicit parser/constructor.
 
 mod common;
 mod error;
@@ -25,6 +27,7 @@ mod parsing;
 /// each module keeps its file directly under `src/`.
 #[path = "."]
 mod internal {
+    pub mod atomic_write;
     pub mod consts;
     pub mod contract_member;
     pub mod failure_kind;
@@ -43,7 +46,7 @@ mod internal {
 pub use common::{
     AnyType, DefaultValue, NodeArguments, NodeArgumentsError, ParameterSchema, ParameterSpec,
     TypeMismatch, apply_parameter_defaults, resolve_argument_path, type_token_name,
-    validate_node_arguments,
+    validate_named_items, validate_node_arguments,
 };
 
 // -- error --
@@ -52,6 +55,11 @@ pub use error::{
     MissingInterface, PairingCoverageMismatch, ParsingError, RefinementMismatch,
     deserialize_json5_with_structured_errors, write_joined,
 };
+
+// -- atomic_write --
+pub mod atomic_write {
+    pub use crate::internal::atomic_write::publish_atomic;
+}
 
 // -- consts --
 pub mod consts {

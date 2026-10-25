@@ -15,8 +15,8 @@ use config::failure_kind::{
     ContractFailureKinds, FailureKindName, MemberFailureKinds, PeppyFailureKind,
 };
 use config::node::MessageFormat;
-use message_codec::MessageCodec;
-use message_codec::consumer::{
+use peppy_codec::MessageCodec;
+use peppy_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, MemberBinding, ServiceClient,
 };
 use peppy_mcp_catalog::GoalBound;
@@ -107,7 +107,7 @@ async fn mesh(has_feedback: bool) -> (Mesh, MockActionServerCore) {
 
 fn codec(label: &str, format: Value) -> MessageCodec {
     let format: MessageFormat = serde_json::from_value(format).expect("the format parses");
-    MessageCodec::new(label, format).expect("the format lays out")
+    MessageCodec::new(label, &format).expect("the format lays out")
 }
 
 /// The result of the gripper action: the width the gripper reached.

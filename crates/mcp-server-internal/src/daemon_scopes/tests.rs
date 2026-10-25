@@ -9,7 +9,7 @@ use crate::test_support::LoopbackEndpoint;
 use config::failure_kind::PeppyFailureKind;
 use daemon_config::daemon_interface::DaemonInterface;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
-use message_codec::consumer::ConsumerIdentity;
+use peppy_codec::consumer::ConsumerIdentity;
 use peppy_mcp_catalog::build_exposure_bundle;
 use peppy_mcp_runtime::ExposureServer;
 use peppylib::messaging::{Failure, MessengerHandle, ProducerRef, SenderTarget};

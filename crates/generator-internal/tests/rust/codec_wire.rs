@@ -2,7 +2,7 @@
 //!
 //! A stub node generated from a fixture contract runs on an ephemeral
 //! router. The runtime side reaches it with no generated code at all: the
-//! type-erased topic, service and action clients of `message-codec`, each
+//! type-erased topic, service and action clients of `peppy-codec`, each
 //! converting with a codec laid out from the contract's message formats.
 //!
 //! Every shape a message format can take crosses the wire in both
@@ -28,15 +28,15 @@ use config::consts::RUNTIME_CONFIG_VAR_NAME;
 use config::failure_kind::MemberSection;
 use config::node::{MessageFormat, TopicRetention};
 use config::runtime::BoundProducers;
-use daemon_config::contract::PeppyContractParser;
 use generator::ContractOrigin;
 use mcp_test_support::register_contract_members;
-use message_codec::MessageCodec;
-use message_codec::consumer::{
+use peppy_codec::MessageCodec;
+use peppy_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, GoalOutcome, MemberBinding, ServiceClient,
     TopicConsumer,
 };
-use peppy_mcp_runtime::bridge::bytes_to_base64;
+use peppy_codec::contract::PeppyContractParser;
+use peppy_codec::value::bytes_to_base64;
 use peppylib::config::QoSProfile;
 use peppylib::messaging::{
     BoundSetState, CancelState, DEFAULT_FEEDBACK_BOUND, ProducerRef, SenderTarget,
@@ -62,13 +62,13 @@ const FRAME_WIDTH: u16 = 640;
 const FRAME_HEIGHT: u16 = 480;
 
 const EVERYTHING_FORMAT: &str =
-    include_str!("../../../message-codec-internal/tests/fixtures/everything.json5");
+    include_str!("../../../../peppy-shared/peppy-codec/tests/fixtures/everything.json5");
 const FRAME_FORMAT: &str =
-    include_str!("../../../message-codec-internal/tests/fixtures/frame.json5");
+    include_str!("../../../../peppy-shared/peppy-codec/tests/fixtures/frame.json5");
 const EVERYTHING_FULL: &str =
-    include_str!("../../../message-codec-internal/tests/fixtures/everything.full.json");
+    include_str!("../../../../peppy-shared/peppy-codec/tests/fixtures/everything.full.json");
 const EVERYTHING_MINIMAL: &str =
-    include_str!("../../../message-codec-internal/tests/fixtures/everything.minimal.json");
+    include_str!("../../../../peppy-shared/peppy-codec/tests/fixtures/everything.minimal.json");
 
 const GOAL_FORMAT: &str =
     r#"{ steps: "u32", label: "string", options: { $type: "object", uppercase: "bool" } }"#;
@@ -296,7 +296,7 @@ fn format(text: &str) -> MessageFormat {
 }
 
 fn codec(name: &str, text: &str) -> MessageCodec {
-    MessageCodec::new(name, format(text)).expect("the fixture format lays out")
+    MessageCodec::new(name, &format(text)).expect("the fixture format lays out")
 }
 
 fn binding(member: &str) -> MemberBinding {
