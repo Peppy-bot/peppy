@@ -284,12 +284,13 @@ fn a_cli_process_that_is_gone_gets_its_stack_goal_cancelled_and_another_one_goes
 
 /// A Ctrl-C of `peppy stack launch` sends the daemon a cancel. The command
 /// says so, follows the launch to the end the daemon gives it, says that
-/// the launch was cancelled by its caller, and exits with code 130. The
+/// the launch was cancelled by its caller, and exits with the code of a
+/// cancel. The
 /// cancel clears the stack. The test sends SIGINT once the command follows
 /// the goal, which it shows by a line of the goal's feedback, and once the
 /// launch starts its instance, which never signals ready.
 #[test]
-fn a_ctrl_c_cancels_the_launch_and_the_command_exits_with_130() {
+fn a_ctrl_c_cancels_the_launch_and_the_command_exits_as_cancelled() {
     let scratch = tempfile::tempdir().expect("temp scratch dir");
     // The test opens no pipe, so the index of this repository stays a file.
     let (repository, _index) = piped_repository(scratch.path());
@@ -320,8 +321,8 @@ fn a_ctrl_c_cancels_the_launch_and_the_command_exits_with_130() {
 
     assert_eq!(
         status.code(),
-        Some(130),
-        "the command exits with 130: {printed}"
+        Some(peppy::error::CallEnd::Cancelled.exit_code()),
+        "the command exits with the code of a cancel: {printed}"
     );
     assert!(
         printed.contains("Launch was cancelled by its caller."),

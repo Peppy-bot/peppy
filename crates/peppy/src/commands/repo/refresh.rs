@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use core_node_api::encoding::{RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshResult};
-use peppylib::messaging::GoalAnswer;
 use tracing::{info, warn};
 
 use super::identity_label;
@@ -34,12 +33,7 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>, strict: bool) -> Result<()> {
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to send repo refresh goal: {}", e)))?;
 
-    if let GoalAnswer::Refused(refusal) = &action_handle.goal_reply().answer {
-        return Err(Error::ExecutionFailed(crate::commands::reply_failure_text(
-            "Repository refresh refused",
-            refusal,
-        )));
-    }
+    crate::commands::action_poll::accepted_goal(&action_handle, "Repository refresh")?;
 
     info!("Refreshing repositories...");
 
