@@ -155,7 +155,10 @@ fn docs_stack_copies_scope_parses() {
         )
     });
 
-    let features: Vec<(&str, Vec<(&str, &str, &str)>)> = scope
+    /// A feature of a scoped option: its name, the axis it fills and the
+    /// option of that axis that it holds.
+    type Feature<'a> = (&'a str, &'a str, &'a str);
+    let features: Vec<(&str, Vec<Feature>)> = scope
         .options()
         .iter()
         .map(|entry| {
