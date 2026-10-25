@@ -13,12 +13,16 @@ use std::path::Path;
 /// Validates the manifest's link namespace and implements claims:
 ///
 /// - Rejects duplicate `link_id`s across the combined
-///   nodes/contracts/pairings/implements set. `link_id` is the shared
-///   identity for all four: consumed topics/services/actions resolve their
+///   nodes/contracts/daemon/pairings/implements set. `link_id` is the shared
+///   identity for all of them: consumed topics/services/actions resolve their
 ///   producer by `link_id` alone, produced entries resolve their implements
-///   slot the same way, and pairing slots are addressed by `link_id` in
-///   `--link`/`pairings:`, so a collision either silently overwrites a
-///   resolution or binds the wrong slot.
+///   slot the same way, pairing slots are addressed by `link_id` in
+///   `--link`/`pairings:`, and a daemon target is scoped by `link_id` in
+///   `daemon_scopes`, so a collision either silently overwrites a resolution
+///   or binds the wrong slot.
+/// - Rejects two daemon targets of one daemon interface: a call names no
+///   daemon target, so the daemon reads each call of an interface against
+///   the one scope of that interface that the instance has.
 /// - Rejects pairing link_ids that are not wire-safe segments. A participant
 ///   slot link_id is stamped verbatim into the producer-side link_id segment
 ///   of every publish keyexpr, so it must be wire-safe. An observer link_id is
@@ -31,13 +35,7 @@ use std::path::Path;
 fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
     let mut seen_link_ids: HashSet<&str> = HashSet::new();
     let implements = manifest.implements.iter().map(|e| e.link_id.as_str());
-    let depends = manifest.depends_on.iter().flat_map(|d| {
-        d.nodes
-            .iter()
-            .map(|n| n.link_id.as_str())
-            .chain(d.contracts.iter().map(|c| c.link_id.as_str()))
-            .chain(d.pairing_link_ids())
-    });
+    let depends = manifest.depends_on.iter().flat_map(DependsOn::link_ids);
     for link_id in depends.chain(implements) {
         if !seen_link_ids.insert(link_id) {
             return Err(ParsingError::DuplicateLinkId(link_id.to_owned()).into());
@@ -50,6 +48,7 @@ fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
                 return Err(ParsingError::PairingSentinelLinkId(link_id.to_owned()).into());
             }
         }
+        validate_daemon_targets(depends_on)?;
     }
 
     let mut seen_contracts: HashMap<(&str, String), &str> = HashMap::new();
@@ -67,6 +66,23 @@ fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
                 name: entry.name.as_str().to_owned(),
                 tag_a: prev_tag.to_owned(),
                 tag_b: entry.tag.clone(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Rejects a second daemon target of a daemon interface that an earlier
+/// entry of `depends_on.daemon` names, whatever the tag of either.
+fn validate_daemon_targets(depends_on: &DependsOn) -> Result<()> {
+    let mut seen: HashMap<&str, &str> = HashMap::new();
+    for target in &depends_on.daemon {
+        if let Some(first) = seen.insert(target.name.as_str(), target.link_id.as_str()) {
+            return Err(ParsingError::DuplicateDaemonInterface {
+                name: target.name.as_str().to_owned(),
+                first: first.to_owned(),
+                second: target.link_id.clone(),
             }
             .into());
         }
@@ -232,6 +248,7 @@ fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<(
 enum DependsOnList {
     Nodes,
     Contracts,
+    Daemon,
     Pairings,
     PairingObservers,
 }
@@ -242,6 +259,7 @@ impl DependsOnList {
         match self {
             DependsOnList::Nodes => "nodes",
             DependsOnList::Contracts => "contracts",
+            DependsOnList::Daemon => "daemon",
             DependsOnList::Pairings => "pairings",
             DependsOnList::PairingObservers => "pairing_observers",
         }
@@ -258,6 +276,9 @@ fn depends_list_containing(depends_on: Option<&DependsOn>, link_id: &str) -> Opt
     }
     if depends_on.contracts.iter().any(|c| c.link_id == link_id) {
         return Some(DependsOnList::Contracts);
+    }
+    if depends_on.daemon.iter().any(|d| d.link_id == link_id) {
+        return Some(DependsOnList::Daemon);
     }
     if depends_on.pairings.iter().any(|p| p.link_id == link_id) {
         return Some(DependsOnList::Pairings);
@@ -2538,5 +2559,207 @@ mod tests {
             .to_string();
             assert!(err.contains(needle), "expected `{needle}` in: {err}");
         }
+    }
+
+    /// A node whose `depends_on` holds `depends_on` and whose `interfaces`
+    /// hold `interfaces`.
+    fn daemon_target_node(depends_on: &str, interfaces: &str) -> String {
+        format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{ name: "director", tag: "v1", depends_on: {depends_on} }},
+                interfaces: {interfaces},
+                execution: {{ language: "rust", run_cmd: ["./bin"] }},
+            }}"#
+        )
+    }
+
+    /// The members of `fleet:v1` that a lease holder calls, consumed through
+    /// the daemon target `fleet`.
+    const FLEET_LEASE_HOLDER: &str = r#"{
+        services: { consumes: [
+            { link_id: "fleet", name: "list" },
+            { link_id: "fleet", name: "take" },
+        ] },
+        actions: { consumes: [{ link_id: "fleet", name: "lease" }] },
+    }"#;
+
+    /// A daemon target parses beside the other slot lists, and the node
+    /// consumes members of its interface through its link_id, as it does
+    /// through a contract slot.
+    #[test]
+    fn a_daemon_target_parses_and_its_members_are_consumed_through_its_link_id() {
+        let config = NodeConfigParser::from_content(&daemon_target_node(
+            r#"{ daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }] }"#,
+            FLEET_LEASE_HOLDER,
+        ))
+        .expect("a node with a daemon target parses");
+        let depends_on = config.manifest.depends_on.as_ref().expect("depends_on");
+        assert_eq!(
+            depends_on.daemon,
+            [crate::node::DaemonTargetDependency {
+                name: crate::runtime::Name::new("fleet").unwrap(),
+                tag: "v1".to_owned(),
+                link_id: "fleet".to_owned(),
+            }]
+        );
+        assert_eq!(
+            depends_on.producer_slots().collect::<Vec<_>>(),
+            [("fleet", crate::node::Cardinality::One)],
+            "the daemon is the one producer of a daemon target"
+        );
+        assert!(
+            config.manifest.document_references().next().is_none(),
+            "the document of a daemon interface ships with peppy, so no pin names it"
+        );
+        let errors = crate::node::validate_dependency_specs(
+            &config.manifest,
+            &config.interfaces,
+            "director",
+            "v1",
+            crate::node::MissingDependencyPolicy::RequireResolvable,
+            |_, _| None,
+        );
+        assert!(
+            errors.is_empty(),
+            "the consumed members of a daemon target are declared: {errors:?}"
+        );
+    }
+
+    /// A daemon target takes no `sha256`, no `cardinality` and no other key:
+    /// each is refused, the first two with their reason.
+    #[test]
+    fn a_daemon_target_refuses_a_pin_a_cardinality_and_an_unknown_key() {
+        for (entry, expected) in [
+            (
+                format!(
+                    r#"{{ name: "fleet", tag: "v1", link_id: "fleet", sha256: "{}" }}"#,
+                    "0".repeat(64)
+                ),
+                "Daemon target `fleet` in depends_on.daemon carries `sha256`; the document of a \
+                 daemon interface is compiled into peppy and is never pinned, so remove `sha256`",
+            ),
+            (
+                r#"{ name: "fleet", tag: "v1", link_id: "fleet", cardinality: "one" }"#.to_owned(),
+                "Daemon target `fleet` in depends_on.daemon carries `cardinality`; the daemon \
+                 that runs the instance is the one producer of a daemon target, so remove \
+                 `cardinality`",
+            ),
+            (
+                r#"{ name: "fleet", tag: "v1", link_id: "fleet", role: "holder" }"#.to_owned(),
+                "unknown field `role`",
+            ),
+            (
+                r#"{ name: "fleet", link_id: "fleet" }"#.to_owned(),
+                "missing field `tag`",
+            ),
+        ] {
+            let error = NodeConfigParser::from_content(&daemon_target_node(
+                &format!("{{ daemon: [{entry}] }}"),
+                FLEET_LEASE_HOLDER,
+            ))
+            .expect_err("the entry is refused")
+            .to_string();
+            assert!(error.contains(expected), "`{expected}` is not in: {error}");
+        }
+    }
+
+    /// The link_id of a daemon target shares the one link_id namespace of
+    /// `depends_on` and `implements`.
+    #[test]
+    fn the_link_id_of_a_daemon_target_clashes_with_every_other_slot() {
+        for other in [
+            r#"nodes: [{ name: "arm", tag: "v1", link_id: "fleet" }]"#,
+            r#"contracts: [{ name: "fleet_view", tag: "v1", link_id: "fleet" }]"#,
+            r#"pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "fleet" }]"#,
+        ] {
+            let error = parse_error(&daemon_target_node(
+                &format!(
+                    r#"{{ daemon: [{{ name: "fleet", tag: "v1", link_id: "fleet" }}], {other} }}"#
+                ),
+                FLEET_LEASE_HOLDER,
+            ));
+            assert!(
+                matches!(&error, ParsingError::DuplicateLinkId(id) if id == "fleet"),
+                "{other}: expected DuplicateLinkId(\"fleet\"), got: {error:?}"
+            );
+        }
+        let error = parse_error(&format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{
+                    name: "director", tag: "v1",
+                    implements: [{{ name: "fleet_view", tag: "v1", link_id: "fleet" }}],
+                    depends_on: {{ daemon: [{{ name: "fleet", tag: "v1", link_id: "fleet" }}] }},
+                }},
+                interfaces: {FLEET_LEASE_HOLDER},
+                execution: {{ language: "rust", run_cmd: ["./bin"] }},
+            }}"#
+        ));
+        assert!(
+            matches!(&error, ParsingError::DuplicateLinkId(id) if id == "fleet"),
+            "expected DuplicateLinkId(\"fleet\") across implements and daemon, got: {error:?}"
+        );
+    }
+
+    /// A node declares at most one daemon target of each interface, whatever
+    /// the tag of each.
+    #[test]
+    fn two_daemon_targets_of_one_interface_are_refused() {
+        let error = parse_error(&daemon_target_node(
+            r#"{ daemon: [
+                { name: "fleet", tag: "v1", link_id: "fleet" },
+                { name: "fleet", tag: "v2", link_id: "other_fleet" },
+            ] }"#,
+            FLEET_LEASE_HOLDER,
+        ));
+        assert!(
+            matches!(
+                &error,
+                ParsingError::DuplicateDaemonInterface { name, first, second }
+                    if name == "fleet" && first == "fleet" && second == "other_fleet"
+            ),
+            "expected DuplicateDaemonInterface, got: {error:?}"
+        );
+    }
+
+    /// A daemon target is a slot whose members a node consumes: a produced
+    /// entry naming it is refused with the list it is declared in, and an
+    /// undeclared link_id in a consumed entry stays an undeclared link_id.
+    #[test]
+    fn a_daemon_target_is_consumed_and_never_produced() {
+        let error = parse_error(&daemon_target_node(
+            r#"{ daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }] }"#,
+            r#"{ services: { exposes: [{ link_id: "fleet", name: "list" }] } }"#,
+        ));
+        assert!(
+            matches!(
+                &error,
+                ParsingError::EmitsLinkIdNotImplements { link_id, found_in, .. }
+                    if link_id == "fleet" && found_in == "daemon"
+            ),
+            "expected EmitsLinkIdNotImplements from depends_on.daemon, got: {error:?}"
+        );
+
+        let config = NodeConfigParser::from_content(&daemon_target_node(
+            r#"{ daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }] }"#,
+            r#"{ services: { consumes: [{ link_id: "fleets", name: "list" }] } }"#,
+        ))
+        .expect("an undeclared consumed link_id is a dependency error, not a parse error");
+        let errors = crate::node::validate_dependency_specs(
+            &config.manifest,
+            &config.interfaces,
+            "director",
+            "v1",
+            crate::node::MissingDependencyPolicy::RequireResolvable,
+            |_, _| None,
+        );
+        assert!(
+            matches!(
+                errors.as_slice(),
+                [ParsingError::UndeclaredLinkId { link_id, .. }] if link_id == "fleets"
+            ),
+            "expected UndeclaredLinkId(\"fleets\"), got: {errors:?}"
+        );
     }
 }

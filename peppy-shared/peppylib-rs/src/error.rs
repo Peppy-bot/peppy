@@ -376,7 +376,7 @@ pub enum Error {
     SubscriptionClosed { topic_name: String },
 
     #[error(
-        "unknown producer slot '{link_id}': the manifest declares no depends_on.nodes or depends_on.contracts entry with that link_id"
+        "unknown producer slot '{link_id}': the manifest declares no depends_on.nodes, depends_on.contracts or depends_on.daemon entry with that link_id"
     )]
     UnknownProducerSlot { link_id: String },
 

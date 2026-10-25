@@ -795,21 +795,16 @@ fn build_pairing_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Car
 }
 
 /// The consumer slots `node_config` declares, with their cardinalities: its
-/// `depends_on.nodes` entries, then its `depends_on.contracts` entries. Both
+/// `depends_on.nodes` entries, then its `depends_on.contracts` entries, then
+/// its daemon targets, each bound to the daemon that runs the instance. Both
 /// the slot caches and the standalone seed filter read the slots through it,
 /// so they agree on which slots exist.
 fn consumer_slots(node_config: &NodeConfig) -> impl Iterator<Item = (&str, Cardinality)> {
-    node_config.manifest.depends_on.iter().flat_map(|deps| {
-        let node_slots = deps
-            .nodes
-            .iter()
-            .map(|dep| (dep.link_id.as_str(), dep.cardinality));
-        let contract_slots = deps
-            .contracts
-            .iter()
-            .map(|dep| (dep.link_id.as_str(), dep.cardinality));
-        node_slots.chain(contract_slots)
-    })
+    node_config
+        .manifest
+        .depends_on
+        .iter()
+        .flat_map(config::node::DependsOn::producer_slots)
 }
 
 /// Seed every `link_id` declared in the consumer manifest's `depends_on` from
@@ -2178,6 +2173,46 @@ mod tests {
                     if link_id == "main" && *cardinality == Cardinality::One
             ),
             "expected SlotUnbound for `main`, got: {err}"
+        );
+    }
+
+    /// A node with a daemon target, `fleet`, of the `fleet:v1` interface.
+    const DAEMON_TARGET_PEPPY_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: {
+            name: "consumer_node",
+            tag: "v1",
+            depends_on: { daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }] },
+        },
+        interfaces: { services: { consumes: [{ link_id: "fleet", name: "list" }] } },
+        execution: { language: "rust", run_cmd: ["./target/release/consumer_node"] },
+    }"#;
+
+    /// A daemon target is a `one` slot: the producer that the daemon binds to
+    /// it is the sole producer of the slot, and a boot config without that
+    /// binding fails startup as any unbound `one` slot does.
+    #[test]
+    fn a_daemon_target_is_a_scalar_slot_bound_to_its_daemon() {
+        let processor = daemon_processor_with_bindings(
+            DAEMON_TARGET_PEPPY_CONFIG,
+            Some(r#"{ fleet: [{ producer: { core_node: "core-1234", instance_id: "brave-otter-1234" } }] }"#),
+        )
+        .expect("a daemon target bound to its daemon constructs");
+        assert_eq!(
+            processor.sole_bound_producer("fleet"),
+            &config::runtime::ProducerRef::new("core-1234", "brave-otter-1234")
+        );
+
+        let Err(err) = daemon_processor_with_bindings(DAEMON_TARGET_PEPPY_CONFIG, None) else {
+            panic!("expected unbound-slot startup error");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::SlotUnbound { link_id, cardinality }
+                    if link_id == "fleet" && *cardinality == Cardinality::One
+            ),
+            "expected SlotUnbound for `fleet`, got: {err}"
         );
     }
 

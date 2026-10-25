@@ -338,9 +338,25 @@ pub enum ParsingError {
     #[error("Empty name")]
     EmptyName,
     #[error(
-        "Duplicate link_id `{0}` in manifest (link_ids share one flat namespace across depends_on.nodes, depends_on.contracts, depends_on.pairings, depends_on.pairing_observers, and manifest.implements)"
+        "Duplicate link_id `{0}` in manifest (link_ids share one flat namespace across depends_on.nodes, depends_on.contracts, depends_on.daemon, depends_on.pairings, depends_on.pairing_observers, and manifest.implements)"
     )]
     DuplicateLinkId(String),
+    #[error(
+        "Daemon target `{link_id}` in depends_on.daemon carries `sha256`; the document of a daemon interface is compiled into peppy and is never pinned, so remove `sha256`"
+    )]
+    PinnedDaemonTarget { link_id: String },
+    #[error(
+        "Daemon target `{link_id}` in depends_on.daemon carries `cardinality`; the daemon that runs the instance is the one producer of a daemon target, so remove `cardinality`"
+    )]
+    DaemonTargetCardinality { link_id: String },
+    #[error(
+        "depends_on.daemon names daemon interface `{name}` twice, with link_ids `{first}` and `{second}`; a call names no daemon target, so the daemon reads each call of an interface against the one scope of that interface that the instance has, and a node declares at most one daemon target of each interface"
+    )]
+    DuplicateDaemonInterface {
+        name: String,
+        first: String,
+        second: String,
+    },
     #[error(
         "Pairing link_id `{0}` in manifest.depends_on.pairings or manifest.depends_on.pairing_observers is not a valid wire segment (must not contain '/' or '@', and must not collide with a reserved sentinel): pairing slot link_ids appear on the wire as the producer-side link_id segment"
     )]
@@ -580,6 +596,12 @@ pub enum StructuredError {
     SetupTimeoutOutOfRange {
         written: String,
     },
+    PinnedDaemonTarget {
+        link_id: String,
+    },
+    DaemonTargetCardinality {
+        link_id: String,
+    },
 }
 
 impl StructuredError {
@@ -626,6 +648,12 @@ impl From<StructuredError> for ParsingError {
             }
             StructuredError::SetupTimeoutOutOfRange { written } => {
                 ParsingError::SetupTimeoutOutOfRange { written }
+            }
+            StructuredError::PinnedDaemonTarget { link_id } => {
+                ParsingError::PinnedDaemonTarget { link_id }
+            }
+            StructuredError::DaemonTargetCardinality { link_id } => {
+                ParsingError::DaemonTargetCardinality { link_id }
             }
         }
     }
