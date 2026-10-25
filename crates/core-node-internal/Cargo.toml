@@ -94,7 +94,8 @@ container_e2e = []
 # see the feature's own comment in generator-internal.
 debug-embed = ["rust-embed/debug-embed", "generator/debug-embed"]
 # For tests, this crate's and downstream crates': the `test_support` module,
-# `CoreNode::slice_ownership`, `SliceOwnership::stack` and the
+# `CoreNode::slice_ownership`, `SliceOwnership::stack`,
+# `SliceOwnership::restart_waits_for_admission` and the
 # `ReserveOutcome` and `SliceOwnership` re-exports; this crate's own unit
 # tests see them via `cfg(test)`.
 test-support = ["dep:tracing-subscriber"]

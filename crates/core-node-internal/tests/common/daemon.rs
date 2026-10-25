@@ -6,8 +6,8 @@ use config::consts::DEFAULT_MESSAGING_HOST;
 use config::node::SetupTimeout;
 use core_node::test_support::parked_restart_backoff;
 use core_node::{
-    CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, RestartBackoff,
-    SliceOwnership,
+    CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, ManualTime, ReplyBounds,
+    RestartBackoff, SliceOwnership, TimeSource,
 };
 use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
@@ -82,6 +82,8 @@ fn default_node_arguments() -> CoreNodeArguments {
         // These daemons run standalone routers (no federation links), where
         // production also settles for zero.
         name_claim_settle: Duration::ZERO,
+        time_source: core_node::TimeSource::System,
+        reply_bounds: core_node::ReplyBounds::DEFAULT,
     }
 }
 
@@ -324,14 +326,51 @@ pub async fn start_core_node_with_supervision_and_grace(
     let mut args = default_node_arguments();
     args.health_monitor = health_monitor;
     args.restart_backoff = restart_backoff;
-    let peppy_config = daemon_config::peppy_config::PeppyConfig {
+    start_mock_core_node(args, config_with_grace(shutdown_grace_secs)).await
+}
+
+/// How long each guard bound of a daemon on manual time lasts: no wait of a
+/// test comes near it on a host of any speed, so a wait of the daemon ends by
+/// its own outcome or once the test moves the time past it.
+pub const OUT_OF_REACH: Duration = Duration::from_secs(3600);
+
+/// A core node whose supervision runs on a [`ManualTime`], which only the
+/// test advances, with `health_monitor`, `restart_backoff` and a
+/// cooperative-shutdown grace of `shutdown_grace_secs`. Its guard bounds,
+/// the ready wait, the setup budget and the bounds on the answers to its
+/// requests, are out of reach.
+pub async fn start_core_node_on_manual_time(
+    health_monitor: HealthMonitorPolicy,
+    restart_backoff: RestartBackoff,
+    shutdown_grace_secs: u64,
+) -> StartedCoreNode {
+    let mut args = default_node_arguments();
+    args.health_monitor = health_monitor;
+    args.restart_backoff = restart_backoff;
+    args.time_source = TimeSource::Manual(ManualTime::new());
+    args.node_startup_timeout = OUT_OF_REACH;
+    args.default_setup_timeout = SetupTimeout::MAX;
+    args.reply_bounds = ReplyBounds {
+        shutdown: OUT_OF_REACH,
+        notify: OUT_OF_REACH,
+        // A pair commit contains the peer update of its receiver.
+        pair_commit: OUT_OF_REACH * 2,
+        peer_update: OUT_OF_REACH,
+        binding_update: OUT_OF_REACH,
+        observation_update: OUT_OF_REACH,
+    };
+    start_mock_core_node(args, config_with_grace(shutdown_grace_secs)).await
+}
+
+/// A daemon config whose cooperative-shutdown grace is `shutdown_grace_secs`.
+fn config_with_grace(shutdown_grace_secs: u64) -> daemon_config::peppy_config::PeppyConfig {
+    daemon_config::peppy_config::PeppyConfig {
         lifecycle: daemon_config::peppy_config::LifecycleConfig {
             shutdown_grace_secs,
             ..Default::default()
         },
         ..Default::default()
-    };
-    start_mock_core_node(args, peppy_config).await
+    }
 }
 
 /// Variant of [`start_core_node_with_mock_messenger`] whose log files export
@@ -612,6 +651,7 @@ pub async fn spawn_real_stuck_instance(
         started_ctx,
         instance_id.clone(),
         Vec::new(),
+        started.node_stack.time().now(),
     )
     .await
     .expect("commit_started should succeed");

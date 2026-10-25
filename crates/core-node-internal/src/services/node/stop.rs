@@ -7,7 +7,7 @@ use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use core_node_api::names;
 use node_stack::{
     EntityHandle, GUEST_FORCE_KILL_BUDGET, InstanceState, KeptRelations, NodeEntity, NodeStack,
-    ProcessClaim, SlotRemoval, StartingClaim, TrackedNodeInstance, kill_guest_groups,
+    ProcessClaim, ReplyBounds, SlotRemoval, StartingClaim, TrackedNodeInstance, kill_guest_groups,
     kill_process_group, terminate_process_group,
 };
 use peppylib::MessengerHandle;
@@ -24,9 +24,8 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use super::RelationshipCoordinators;
+use super::common::unanswered;
 
-/// How long a shutdown request waits for a node's answer.
-pub(super) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub async fn listen_for_node_stop(
@@ -202,7 +201,7 @@ async fn stop_process(
         core_node_node,
         core_instance_id,
         &target,
-        node_stack.shutdown_grace(),
+        node_stack,
     )
     .await;
 
@@ -384,9 +383,10 @@ impl Refusal {
 }
 
 /// Sends a `SHUTDOWN_SERVICE` request and returns once the receiver
-/// acknowledges. Does NOT touch the entity's instances list; that is done
-/// only after [`force_stop_instances`] has confirmed the OS processes are
-/// gone, so retries can still find the live instance during an in-flight
+/// acknowledges, or fails once the stack's shutdown reply bound passes on its
+/// time without an answer. Does NOT touch the entity's instances list; that
+/// is done only after [`force_stop_instances`] has confirmed the OS processes
+/// are gone, so retries can still find the live instance during an in-flight
 /// shutdown.
 async fn send_shutdown_signal(
     messenger: &MessengerHandle,
@@ -395,33 +395,41 @@ async fn send_shutdown_signal(
     node_name: &str,
     node_tag: &str,
     instance_id: &Name,
+    node_stack: &NodeStack,
 ) -> std::result::Result<(), String> {
     let instance_id_str = instance_id.as_str();
     debug!(
         "Sending shutdown request to node instance '{}'",
         instance_id_str
     );
-    ServiceMessenger::poll(
-        messenger,
-        core_node_node,
-        core_instance_id,
-        SenderTarget::node(node_name, node_tag).map_err(|e| e.to_string())?,
-        SHUTDOWN_SERVICE,
-        ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
-            core_node_node,
-            instance_id_str,
-        )),
-        Payload::from_static(b"shutdown"),
-        SHUTDOWN_TIMEOUT,
-    )
-    .await
-    .map_err(|e| {
-        crate::error::Error::ShutdownInstanceFailed {
-            instance_id: instance_id_str.to_owned(),
-            reason: e.to_string(),
-        }
-        .to_string()
-    })?;
+    let sender = SenderTarget::node(node_name, node_tag).map_err(|e| e.to_string())?;
+    let producer = peppylib::messaging::ProducerRef::new(core_node_node, instance_id_str);
+    node_stack
+        .time()
+        .bounded(
+            node_stack.reply_bounds().shutdown,
+            |bound| {
+                ServiceMessenger::poll(
+                    messenger,
+                    core_node_node,
+                    core_instance_id,
+                    sender,
+                    SHUTDOWN_SERVICE,
+                    ServiceTarget::Producer(&producer),
+                    Payload::from_static(b"shutdown"),
+                    bound,
+                )
+            },
+            unanswered(Some(instance_id_str), SHUTDOWN_SERVICE),
+        )
+        .await
+        .map_err(|e| {
+            crate::error::Error::ShutdownInstanceFailed {
+                instance_id: instance_id_str.to_owned(),
+                reason: e.to_string(),
+            }
+            .to_string()
+        })?;
     debug!("Node instance '{}' shutdown acknowledged", instance_id_str);
     Ok(())
 }
@@ -445,8 +453,8 @@ pub(super) enum StopOutcome {
 ///
 /// Returns a [`StopOutcome`] so the caller can tell the user whether the node
 /// exited gracefully or had to be force-killed. Takes NO lock: the caller
-/// resolves the [`DoomedInstance`] fields and `graceful_budget` up front, so
-/// nothing is held across an await.
+/// resolves the [`DoomedInstance`] fields up front, so nothing is held across
+/// an await.
 ///
 /// `node_run` stops a starting instance the same way when it gives up its
 /// start after the ready signal: the node answers the shutdown request from
@@ -456,14 +464,14 @@ pub(super) async fn force_stop_instance(
     core_node_node: &str,
     core_instance_id: &str,
     target: &DoomedInstance,
-    graceful_budget: Duration,
+    node_stack: &NodeStack,
 ) -> StopOutcome {
     force_stop_instances(
         messenger,
         core_node_node,
         core_instance_id,
         std::slice::from_ref(target),
-        graceful_budget,
+        node_stack,
     )
     .await
     .pop()
@@ -474,17 +482,19 @@ pub(super) async fn force_stop_instance(
 /// implementation behind `peppy node stop`, the `node add` overwrite path, and
 /// the SIGINT/ctrl+C teardown:
 ///
-/// 1. Best-effort `SHUTDOWN_SERVICE` sends, concurrently; a failed/timed-out
-///    send is logged and ignored. A non-responsive node must still be
-///    force-killed, never surfaced as an error (this is what makes a stuck node
-///    a success, not a failure-with-the-process-left-alive).
+/// 1. Best-effort `SHUTDOWN_SERVICE` sends, concurrently, each within the
+///    stack's shutdown reply bound; a failed/timed-out send is logged and
+///    ignored. A non-responsive node must still be force-killed, never
+///    surfaced as an error (this is what makes a stuck node a success, not a
+///    failure-with-the-process-left-alive).
 /// 2. If a container node's shutdown request failed, best-effort SIGTERM before
 ///    the force window: in-VM SIGTERM on macOS/Lima, or host process-group
 ///    SIGTERM on native Linux Apptainer. This gives both backends the same
 ///    signal-driven cleanup chance before SIGKILL.
-/// 3. Bounded graceful wait (`graceful_budget`, from
-///    `peppy_config.lifecycle.shutdown_grace_secs`, shared across the whole
-///    batch) for the OS processes to exit on their own.
+/// 3. Bounded graceful wait (the force-kill deadline of the stack's shutdown
+///    grace, from `peppy_config.lifecycle.shutdown_grace_secs`, on the
+///    stack's time and shared across the whole batch) for the OS processes
+///    to exit on their own.
 /// 4. `kill_process_group(pid)` for each instance (SIGKILL the whole group;
 ///    nodes are spawned as group leaders) plus, on macOS for container nodes,
 ///    the in-VM guest group kill.
@@ -500,8 +510,9 @@ async fn force_stop_instances(
     core_node_node: &str,
     core_instance_id: &str,
     doomed: &[DoomedInstance],
-    graceful_budget: Duration,
+    node_stack: &NodeStack,
 ) -> Vec<StopOutcome> {
+    let graceful_budget = node_stack.shutdown_grace();
     // Phase 1 (graceful, bounded): ask every node to shut down cooperatively,
     // concurrently, then poll until they're all gone or the deadline elapses.
     // The deadline is the node's full cooperative exit cost (hook grace +
@@ -509,44 +520,47 @@ async fn force_stop_instances(
     // node that cleans up correctly is never force-killed; see
     // `force_kill_deadline`.
     let deadline = force_kill_deadline(graceful_budget);
-    let _ = tokio::time::timeout(deadline, async {
-        let sends = doomed
-            .iter()
-            .filter(|d| d.pid.is_some())
-            .map(|d| async move {
-                let result = send_shutdown_signal(
-                    messenger,
-                    core_node_node,
-                    core_instance_id,
-                    &d.node_name,
-                    &d.node_tag,
-                    &d.instance_id,
-                )
-                .await;
-                if let Err(e) = &result {
-                    debug!(
-                        "Cooperative shutdown of node instance '{}' failed; \
+    let _ = node_stack
+        .time()
+        .timeout(deadline, async {
+            let sends = doomed
+                .iter()
+                .filter(|d| d.pid.is_some())
+                .map(|d| async move {
+                    let result = send_shutdown_signal(
+                        messenger,
+                        core_node_node,
+                        core_instance_id,
+                        &d.node_name,
+                        &d.node_tag,
+                        &d.instance_id,
+                        node_stack,
+                    )
+                    .await;
+                    if let Err(e) = &result {
+                        debug!(
+                            "Cooperative shutdown of node instance '{}' failed; \
                          trying container signal fallback before force-kill: {}",
-                        d.instance_id.as_str(),
-                        e
-                    );
-                }
-                (d, result)
-            });
-        let no_shutdown: Vec<&DoomedInstance> = futures::future::join_all(sends)
-            .await
-            .into_iter()
-            .filter_map(|(d, result)| result.err().map(|_| d))
-            .collect();
-        terminate_failed_container_instances_best_effort(&no_shutdown).await;
-        wait_until_all_gone(doomed).await;
-    })
-    .await;
+                            d.instance_id.as_str(),
+                            e
+                        );
+                    }
+                    (d, result)
+                });
+            let no_shutdown: Vec<&DoomedInstance> = futures::future::join_all(sends)
+                .await
+                .into_iter()
+                .filter_map(|(d, result)| result.err().map(|_| d))
+                .collect();
+            terminate_failed_container_instances_best_effort(&no_shutdown).await;
+            wait_until_all_gone(doomed).await;
+        })
+        .await;
     force_kill_leftovers(doomed, deadline, graceful_budget).await
 }
 
-/// Within the force-kill deadline of `graceful_budget`: SIGTERMs each
-/// container of `no_shutdown`, the instances no shutdown request reached, as
+/// Within the force-kill deadline of the stack's shutdown grace, on the
+/// stack's time: SIGTERMs each container of `no_shutdown`, the instances no shutdown request reached, as
 /// a stop does, then waits for the processes of `doomed` and of
 /// `claimed_elsewhere`, whose kill is another stop path's, to exit. Then
 /// kills what is left of the groups of `doomed`, a container's in-VM group
@@ -557,15 +571,18 @@ pub(super) async fn await_exit_then_force_kill(
     doomed: &[DoomedInstance],
     no_shutdown: &[&DoomedInstance],
     claimed_elsewhere: &[DoomedInstance],
-    graceful_budget: Duration,
+    node_stack: &NodeStack,
 ) -> Vec<StopOutcome> {
+    let graceful_budget = node_stack.shutdown_grace();
     let deadline = force_kill_deadline(graceful_budget);
-    let _ = tokio::time::timeout(deadline, async {
-        terminate_failed_container_instances_best_effort(no_shutdown).await;
-        wait_until_all_gone(doomed).await;
-        wait_until_all_gone(claimed_elsewhere).await;
-    })
-    .await;
+    let _ = node_stack
+        .time()
+        .timeout(deadline, async {
+            terminate_failed_container_instances_best_effort(no_shutdown).await;
+            wait_until_all_gone(doomed).await;
+            wait_until_all_gone(claimed_elsewhere).await;
+        })
+        .await;
     force_kill_leftovers(doomed, deadline, graceful_budget).await
 }
 
@@ -899,9 +916,10 @@ async fn force_stop_and_forget(
         core_node_node,
         core_instance_id,
         doomed,
-        // Configurable cooperative-shutdown grace (peppy_config.lifecycle
-        // .shutdown_grace_secs), pinned on the stack at daemon startup.
-        node_stack.shutdown_grace(),
+        // The configurable cooperative-shutdown grace (peppy_config.lifecycle
+        // .shutdown_grace_secs), the time and the reply bounds, pinned on the
+        // stack at daemon startup.
+        node_stack,
     )
     .await;
 
@@ -941,9 +959,11 @@ fn force_stop_bound(shutdown_grace: Duration) -> Duration {
 /// observation coordinators, which a delivery in progress on this daemon
 /// holds across its peers' answers; a local peer that does not answer its
 /// pair's dissolve, or a local observer its source-down update, adds its own
-/// wait; and a stop that meets a start committing polls once more.
+/// wait; and a stop that meets a start committing polls once more. The
+/// bound is a daemon's on the reply bounds it runs with,
+/// [`ReplyBounds::DEFAULT`].
 pub fn node_stop_bound(shutdown_grace: Duration) -> Duration {
-    force_stop_bound(shutdown_grace) + super::relationship_notify::NOTIFY_TIMEOUT
+    force_stop_bound(shutdown_grace) + ReplyBounds::DEFAULT.notify
 }
 
 const _: () = assert!(
@@ -954,9 +974,10 @@ const _: () = assert!(
 /// How long a `node_remove` takes at most once its reachability probes
 /// answered: its shutdown requests, then a [`node_stop_bound`] for the
 /// instances it stops, whose ends are noticed at once; what lies outside
-/// [`node_stop_bound`] lies outside it too.
+/// [`node_stop_bound`] lies outside it too. The bound is a daemon's on
+/// [`ReplyBounds::DEFAULT`].
 pub fn node_remove_bound(shutdown_grace: Duration) -> Duration {
-    SHUTDOWN_TIMEOUT + node_stop_bound(shutdown_grace)
+    ReplyBounds::DEFAULT.shutdown + node_stop_bound(shutdown_grace)
 }
 
 /// How long the daemon waits for a cooperatively-stopping node's process to
@@ -976,9 +997,10 @@ pub fn force_kill_deadline(shutdown_grace: Duration) -> Duration {
         )
 }
 
-/// Upper bound for one batch of cooperative shutdown, force-kill, and reap.
+/// Upper bound for one batch of cooperative shutdown, force-kill, and reap,
+/// on [`ReplyBounds::DEFAULT`].
 pub(crate) fn teardown_timeout(shutdown_grace: Duration) -> Duration {
-    SHUTDOWN_TIMEOUT + force_stop_bound(shutdown_grace)
+    ReplyBounds::DEFAULT.shutdown + force_stop_bound(shutdown_grace)
 }
 
 /// A non-root node instance to terminate: the routing identity + process info
@@ -1162,13 +1184,12 @@ mod tests {
         let grace = Duration::from_secs(config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS);
         let force_phase =
             force_kill_deadline(grace) + GUEST_FORCE_KILL_BUDGET + TEARDOWN_REAP_BUDGET;
-        let notice = crate::services::node::relationship_notify::NOTIFY_TIMEOUT;
-        assert_eq!(node_stop_bound(grace), force_phase + notice);
-        assert_eq!(
-            node_remove_bound(grace),
-            SHUTDOWN_TIMEOUT + force_phase + notice
-        );
-        assert_eq!(teardown_timeout(grace), SHUTDOWN_TIMEOUT + force_phase);
+        let ReplyBounds {
+            shutdown, notify, ..
+        } = ReplyBounds::DEFAULT;
+        assert_eq!(node_stop_bound(grace), force_phase + notify);
+        assert_eq!(node_remove_bound(grace), shutdown + force_phase + notify);
+        assert_eq!(teardown_timeout(grace), shutdown + force_phase);
     }
 
     /// A first start is refused until it completes, a start another stop

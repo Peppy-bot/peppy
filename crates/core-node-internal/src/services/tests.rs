@@ -115,6 +115,8 @@ fn test_node_arguments() -> CoreNodeArguments {
         // there is no propagation lag for a settle window to cover; the
         // settling behavior has its own dedicated presence tests.
         name_claim_settle: Duration::ZERO,
+        time_source: crate::TimeSource::System,
+        reply_bounds: crate::ReplyBounds::DEFAULT,
     }
 }
 

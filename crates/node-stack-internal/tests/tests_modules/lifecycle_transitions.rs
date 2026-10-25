@@ -163,9 +163,16 @@ async fn live_incarnation_follows_the_process_under_an_id() {
     let first = stack
         .live_incarnation("reused-inst")
         .expect("a forked start is live");
-    NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone(), Vec::new())
-        .await
-        .expect("the start commits");
+    NodeEntity::commit_started(
+        &handle,
+        child,
+        started_ctx,
+        instance_id.clone(),
+        Vec::new(),
+        std::time::Instant::now(),
+    )
+    .await
+    .expect("the start commits");
     assert_eq!(
         stack.live_incarnation("reused-inst"),
         Some(first),
@@ -1374,10 +1381,16 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     let pid = child.id().expect("child has pid");
     assert!(pid > 0, "spawned child should have a valid pid");
 
-    let mut returned_child =
-        NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone(), Vec::new())
-            .await
-            .expect("commit_started should succeed");
+    let mut returned_child = NodeEntity::commit_started(
+        &handle,
+        child,
+        started_ctx,
+        instance_id.clone(),
+        Vec::new(),
+        std::time::Instant::now(),
+    )
+    .await
+    .expect("commit_started should succeed");
     assert_eq!(
         returned_child.id(),
         Some(pid),
@@ -1482,6 +1495,7 @@ async fn abort_started_kills_the_process_group() {
             started_ctx,
             "synthetic failure".to_string(),
             &instance_id,
+            &node_stack::TimeSource::System,
         ),
     )
     .await
@@ -1525,6 +1539,7 @@ async fn abort_started_kills_the_group_of_a_leader_a_probe_reaped() {
             started_ctx,
             "node process exited during startup".to_string(),
             &instance_id,
+            &node_stack::TimeSource::System,
         ),
     )
     .await
@@ -1570,6 +1585,7 @@ async fn abort_started_gives_up_a_reader_held_outside_the_group() {
             started_ctx,
             "synthetic failure".to_string(),
             &instance_id,
+            &node_stack::TimeSource::System,
         ),
     )
     .await;
@@ -1607,6 +1623,7 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
         started_ctx,
         "synthetic failure".to_string(),
         &instance_id,
+        &node_stack::TimeSource::System,
     )
     .await;
     assert!(
@@ -1676,6 +1693,7 @@ async fn abort_started_quotes_the_stderr_of_the_child_and_not_its_stdout() {
         started_ctx,
         "synthetic failure".to_string(),
         &instance_id,
+        &node_stack::TimeSource::System,
     )
     .await;
     assert_eq!(
@@ -1730,10 +1748,16 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     }
 
     let new_pid = child.id().expect("child has pid");
-    let mut returned_child =
-        NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone(), Vec::new())
-            .await
-            .expect("commit_started should succeed");
+    let mut returned_child = NodeEntity::commit_started(
+        &handle,
+        child,
+        started_ctx,
+        instance_id.clone(),
+        Vec::new(),
+        std::time::Instant::now(),
+    )
+    .await
+    .expect("commit_started should succeed");
     assert_eq!(
         returned_child.id(),
         Some(new_pid),

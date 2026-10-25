@@ -20,6 +20,7 @@ use crate::action_log::{ActionLog, Announcer, STDERR_TAIL_HEADER};
 use crate::archive::extract_tar_zst;
 use crate::build_io::StderrTail;
 use crate::process_group::ProcessGroup;
+use crate::time_source::TimeSource;
 
 /// Per-process counter used to name temporary runtime config files uniquely.
 ///
@@ -606,10 +607,10 @@ impl Drop for TempFileGuard {
 }
 
 /// How long the end of a start waits for the output readers of an instance
-/// it killed, once the process group is dead. A reader ends when every
-/// process that holds its pipe has exited; a process that left the group (a
-/// `setsid` daemon, say) can hold it open past the kill, and the readers it
-/// keeps are aborted at the end of this budget.
+/// it killed, once the process group is dead, on the time of its stack. A
+/// reader ends when every process that holds its pipe has exited; a process
+/// that left the group (a `setsid` daemon, say) can hold it open past the
+/// kill, and the readers it keeps are aborted at the end of this budget.
 pub const OUTPUT_READER_JOIN_BUDGET: Duration = Duration::from_secs(2);
 
 /// Kills the process group of a child, reaps it, drains its output readers
@@ -619,8 +620,8 @@ pub const OUTPUT_READER_JOIN_BUDGET: Duration = Duration::from_secs(2);
 /// Used by [`super::entity::NodeEntity::abort_started`]. The child is the
 /// leader of its process group, so the group kill reaches every process it
 /// forked that stayed in the group. The reader handles are joined within
-/// [`OUTPUT_READER_JOIN_BUDGET`], so the stderr buffer holds every line the
-/// group wrote before it was killed.
+/// [`OUTPUT_READER_JOIN_BUDGET`] on `time`, so the stderr buffer holds every
+/// line the group wrote before it was killed.
 pub(super) async fn kill_and_collect_error(
     mut child: Child,
     group: ProcessGroup,
@@ -628,6 +629,7 @@ pub(super) async fn kill_and_collect_error(
     error: &str,
     stderr_buffer: StderrTail,
     mut output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
+    time: &TimeSource,
 ) -> String {
     // By the pid recorded at spawn: a probe that saw the process exit has
     // reaped the leader, and the group lives on while it forked anything. A
@@ -644,7 +646,7 @@ pub(super) async fn kill_and_collect_error(
 
     // Drain any remaining output that was already in-flight so error reporting is stable.
     // We intentionally ignore join errors so we don't mask the actual node start failure.
-    join_output_readers(instance_id_str, &mut output_reader_handles).await;
+    join_output_readers(instance_id_str, &mut output_reader_handles, time).await;
 
     let stderr_output = stderr_buffer.lines().join("\n");
     if stderr_output.is_empty() {
@@ -659,18 +661,20 @@ pub(super) async fn kill_and_collect_error(
 }
 
 /// Joins the output readers of a killed instance within
-/// [`OUTPUT_READER_JOIN_BUDGET`], then aborts the ones a surviving process
-/// still keeps open.
+/// [`OUTPUT_READER_JOIN_BUDGET`] on `time`, then aborts the ones a surviving
+/// process still keeps open.
 async fn join_output_readers(
     instance_id_str: &str,
     handles: &mut [JoinHandle<std::io::Result<()>>],
+    time: &TimeSource,
 ) {
-    let joined = tokio::time::timeout(
-        OUTPUT_READER_JOIN_BUDGET,
-        futures::future::join_all(handles.iter_mut()),
-    )
-    .await;
-    if joined.is_ok() {
+    let joined = time
+        .timeout(
+            OUTPUT_READER_JOIN_BUDGET,
+            futures::future::join_all(handles.iter_mut()),
+        )
+        .await;
+    if joined.is_some() {
         return;
     }
     debug!(
@@ -857,6 +861,7 @@ mod tests {
             "failed",
             stderr_buffer,
             vec![reader],
+            &TimeSource::System,
         )
         .await
     }
@@ -960,6 +965,7 @@ mod tests {
             "the start gave up",
             stderr,
             vec![held_open],
+            &TimeSource::System,
         )
         .await;
 

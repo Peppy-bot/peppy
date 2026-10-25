@@ -1,7 +1,8 @@
 //! Small glue helpers shared by the node command handlers that don't fit
 //! in one of the more specific submodules: panic payload decoding,
 //! random id generation, hex encoding, node config file parsing,
-//! response encoding, and daemon-to-instance slot update delivery.
+//! response encoding, daemon-to-instance slot update delivery, and the
+//! failure of a request left unanswered on a manual time.
 
 use config::node::{NodeConfig, NodeConfigParser};
 use config::runtime::Name;
@@ -13,6 +14,21 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+/// The failure of a request that `service_name` of `instance_id` (`None`
+/// for a daemon's own service) did not answer before a manual time moved past
+/// its bound, as the request's own deadline reports it on the host's time.
+pub(crate) fn unanswered<'a, T>(
+    instance_id: Option<&'a str>,
+    service_name: &'a str,
+) -> impl FnOnce() -> peppylib::PeppyResult<T> + 'a {
+    move || {
+        Err(peppylib::PeppyError::ServiceTimeout {
+            instance_id: instance_id.map(str::to_owned),
+            service_name: service_name.to_owned(),
+        })
+    }
+}
 
 /// A resolved daemon-to-instance service target. Observation fan-out resolves
 /// this once per observer and reuses it for all of that observer's slots.
@@ -108,23 +124,32 @@ impl SlotUpdateClient {
         timeout: Duration,
         rejection_message: &str,
     ) -> std::result::Result<SlotDelivery, String> {
-        let reply = ServiceMessenger::poll(
-            &self.messenger,
-            &self.core_node_name,
-            &self.caller_instance_id,
-            target.sender.clone(),
-            service_name,
-            ServiceTarget::Producer(&target.producer),
-            payload,
-            timeout,
-        )
-        .await
-        .map_err(|error| match error.failure() {
-            // The instance refused the delivery: its error reply says why.
-            Some(failure) if failure.message().is_empty() => rejection_message.to_string(),
-            Some(failure) => failure.message().to_owned(),
-            None => error.to_string(),
-        })?;
+        let reply = self
+            .node_stack
+            .time()
+            .bounded(
+                timeout,
+                |bound| {
+                    ServiceMessenger::poll(
+                        &self.messenger,
+                        &self.core_node_name,
+                        &self.caller_instance_id,
+                        target.sender.clone(),
+                        service_name,
+                        ServiceTarget::Producer(&target.producer),
+                        payload,
+                        bound,
+                    )
+                },
+                unanswered(Some(&target.producer.instance_id), service_name),
+            )
+            .await
+            .map_err(|error| match error.failure() {
+                // The instance refused the delivery: its error reply says why.
+                Some(failure) if failure.message().is_empty() => rejection_message.to_string(),
+                Some(failure) => failure.message().to_owned(),
+                None => error.to_string(),
+            })?;
 
         let response = SlotUpdateResponse::decode(&reply.payload_bytes())
             .map_err(|error| error.to_string())?;

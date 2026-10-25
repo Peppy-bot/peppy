@@ -6,8 +6,6 @@
 use super::super::STACK_QUERY_TIMEOUT;
 use super::super::action::StackChangeContext;
 use super::super::launch::PlannedDeployment;
-use crate::services::node::binding::BINDING_UPDATE_TIMEOUT;
-use crate::services::node::observation::OBSERVATION_UPDATE_TIMEOUT;
 use config::node::Cardinality;
 use config::runtime::{BoundProducers, Name, SlotBindings};
 use core_node_api::encoding::{
@@ -16,6 +14,7 @@ use core_node_api::encoding::{
 };
 use daemon_config::launcher::{CopyRecord, PeppyLauncher, Placements, PlannedObservation};
 use futures::future::join_all;
+use node_stack::ReplyBounds;
 use peppylib::core_node::transport::poll;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -419,9 +418,10 @@ pub(super) async fn deliver_sets(
 }
 
 /// How long a participant may take to replace `sets`: it tells its observer
-/// instances in turn, each within `OBSERVATION_UPDATE_TIMEOUT`, and its
-/// producer sets at once within `BINDING_UPDATE_TIMEOUT`, and the request
-/// itself travels within `STACK_QUERY_TIMEOUT`.
+/// instances in turn, each within the `observation_update` reply bound, and
+/// its producer sets at once within the `binding_update` one, both of
+/// [`ReplyBounds::DEFAULT`], and the request itself travels within
+/// `STACK_QUERY_TIMEOUT`.
 fn sets_update_budget(sets: &[SlotSet]) -> Duration {
     let observers = sets
         .iter()
@@ -429,9 +429,10 @@ fn sets_update_budget(sets: &[SlotSet]) -> Duration {
         .map(|set| &set.instance_id)
         .collect::<BTreeSet<_>>()
         .len();
-    OBSERVATION_UPDATE_TIMEOUT
+    ReplyBounds::DEFAULT
+        .observation_update
         .saturating_mul(observers.try_into().unwrap_or(u32::MAX))
-        .saturating_add(BINDING_UPDATE_TIMEOUT)
+        .saturating_add(ReplyBounds::DEFAULT.binding_update)
         .saturating_add(STACK_QUERY_TIMEOUT)
 }
 
