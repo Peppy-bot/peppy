@@ -122,7 +122,7 @@ pub enum MissingDependencyPolicy {
 /// 1. **Node existence**: Each entry in `manifest.depends_on.nodes` must resolve to an existing
 ///    node, except where `missing_dependency_policy` admits its absence.
 /// 2. **Interface exposure**: Each consumed/expected interface must reference a valid `link_id`
-///    declared in `depends_on.nodes`, `depends_on.contracts`, or (for
+///    declared in `depends_on.nodes`, `depends_on.contracts`, `depends_on.daemon`, or (for
 ///    `topics.consumes` only) `depends_on.pairings` /
 ///    `depends_on.pairing_observers`. For node-backed link_ids
 ///    the producer must expose the required interface. An unresolved
@@ -130,9 +130,10 @@ pub enum MissingDependencyPolicy {
 ///    reported or admitted; exposure is checked wherever the dependency
 ///    does resolve (node add/sync).
 ///
-/// Contract- and pairing-backed link_ids only get the declaration check here.
-/// Neither document is reachable from this crate, so whether the entry names a
-/// real member is checked at node add/sync, where they resolve.
+/// Contract-, daemon- and pairing-backed link_ids only get the declaration
+/// check here. None of their documents is reachable from this crate, so
+/// whether the entry names a real member is checked at node add/sync, where
+/// they resolve.
 pub fn validate_dependency_specs(
     manifest: &Manifest,
     interfaces: &Interfaces,
@@ -180,13 +181,7 @@ pub fn validate_dependency_specs(
         dependency_link_ids: manifest
             .depends_on
             .as_ref()
-            .map(|d| {
-                d.nodes
-                    .iter()
-                    .map(|n| n.link_id.as_str())
-                    .chain(d.contracts.iter().map(|i| i.link_id.as_str()))
-                    .collect()
-            })
+            .map(|d| d.producer_slots().map(|(link_id, _)| link_id).collect())
             .unwrap_or_default(),
         pairing_link_ids: manifest
             .depends_on
@@ -238,10 +233,11 @@ struct ResolvedDependency<'a> {
 struct DeclaredLinks<'a> {
     /// The `depends_on.nodes` entries that resolve, by link_id.
     resolved_dependencies: HashMap<&'a str, ResolvedDependency<'a>>,
-    /// Every `depends_on.nodes` and `depends_on.contracts` link_id, so the
-    /// check can tell "declared but unresolved" (a reported
-    /// MissingDependency, an admitted absence, or a contract-backed dep whose
-    /// members resolve at node add/sync) from "never declared" (typo).
+    /// Every `depends_on.nodes`, `depends_on.contracts` and
+    /// `depends_on.daemon` link_id, so the check can tell "declared but
+    /// unresolved" (a reported MissingDependency, an admitted absence, or a
+    /// contract or daemon target whose members resolve at node add/sync)
+    /// from "never declared" (typo).
     dependency_link_ids: HashSet<&'a str>,
     /// The pairing slots (participant or observer), a legal target for
     /// `topics.consumes`: a participant names the counterpart role's topics

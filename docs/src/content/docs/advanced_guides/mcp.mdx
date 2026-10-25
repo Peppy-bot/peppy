@@ -130,6 +130,8 @@ A **daemon target** names `daemon: { name, tag }` instead of a contract. Its mem
 - **No slot.** The derived node does not consume or link anything for a daemon target. The launcher gives the target a **scope** instead of a link: what a client of the target may do. A deployment whose exposures hold only daemon targets is valid.
 - **The coordinator.** An instance that serves a daemon target runs on the coordinator, the daemon that the launch was sent to: it reads and changes the stack of that daemon.
 
+A node calls a daemon interface through a daemon target of its own manifest, a `depends_on.daemon` entry, which the launcher scopes the same way: see [Daemon targets](/advanced_guides/core_node_functions/#daemon-targets).
+
 #### The interfaces peppy serves
 
 | Interface | Members | What a client does |

@@ -194,9 +194,10 @@ pub(super) struct PlannedDeployment {
     /// How this deployment's node reads the sets its slots hold, which the
     /// binding validator holds the launcher to.
     pub(super) addressing: daemon_config::launcher::MemberAddressing,
-    /// The targets the exposures of a built-in MCP deployment serve, which
-    /// the launch checks of daemon scopes read; empty for a node.
-    pub(super) targets: daemon_config::mcp_deployment::DeploymentTargets,
+    /// The targets of the deployment, which the launch checks of daemon
+    /// scopes read: those of the exposures of a built-in MCP deployment, or
+    /// the slots and daemon targets of a node's manifest.
+    pub(super) targets: daemon_config::launcher::DeploymentTargets,
 }
 
 /// The id of each instance of `planned`.

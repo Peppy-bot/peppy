@@ -11,8 +11,8 @@
 //! from one set of pinned bytes.
 
 use crate::internal::contract::{PeppyContract, PeppyContractParser};
-use crate::internal::daemon_interface::{DaemonInterface, served_interfaces};
-use crate::internal::launcher::MemberAddressing;
+use crate::internal::daemon_interface::served_interfaces;
+use crate::internal::launcher::{DeploymentTargets, MemberAddressing};
 use crate::internal::mcp_exposure::PeppyMcpExposureParser;
 use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedDocument, PinnedItem};
 use crate::internal::source::ExposureRef;
@@ -222,23 +222,16 @@ pub struct McpDeploymentPlan {
     pub targets: DeploymentTargets,
 }
 
-/// The targets the exposures of one deployment serve, by name: each
-/// contract target, which a slot of the derived node holds and the
-/// launcher's `links` fill, and each daemon target with the interface this
-/// peppy serves for it, which takes no slot and which the launcher scopes
-/// with `daemon_scopes`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DeploymentTargets {
-    pub contract: BTreeSet<String>,
-    pub daemon: BTreeMap<String, DaemonInterface>,
-}
-
 impl DeploymentTargets {
-    /// The targets of `exposures`, read from the documents alone. Two
-    /// exposures sharing a target name must name the same source, and every
-    /// daemon target must name an interface this peppy serves at the tag it
-    /// names; every target that does not is reported at once.
-    pub fn of(exposures: &[PinnedExposure]) -> Result<Self, McpDeploymentError> {
+    /// The targets of `exposures`, read from the documents alone: each
+    /// contract target, which a slot of the derived node holds and the
+    /// launcher's `links` fill, and each daemon target with the interface
+    /// this peppy serves for it, which takes no slot and which the launcher
+    /// scopes with `daemon_scopes`. Two exposures sharing a target name must
+    /// name the same source, and every daemon target must name an interface
+    /// this peppy serves at the tag it names; every target that does not is
+    /// reported at once.
+    pub fn of_exposures(exposures: &[PinnedExposure]) -> Result<Self, McpDeploymentError> {
         let mut ordered: Vec<&PinnedExposure> = exposures.iter().collect();
         ordered.sort_by_cached_key(|exposure| exposure.reference());
         let mut named: BTreeMap<&str, (&TargetSource, String)> = BTreeMap::new();
@@ -263,7 +256,7 @@ impl DeploymentTargets {
                     }
                 }
                 if selection.source.contract().is_some() {
-                    targets.contract.insert(target.clone());
+                    targets.linked.insert(target.clone());
                 }
             }
             match served_interfaces(&exposure.document) {
@@ -352,7 +345,7 @@ pub fn plan_deployment(
         });
     }
     let per_robot = per_robot.is_some();
-    let targets = DeploymentTargets::of(exposures)?;
+    let targets = DeploymentTargets::of_exposures(exposures)?;
 
     let mut slots: BTreeMap<String, Slot> = BTreeMap::new();
     let mut topics: BTreeSet<(String, String)> = BTreeSet::new();
@@ -437,7 +430,7 @@ pub fn plan_deployment(
             Ok(checked) => {
                 // A daemon target's members reach the daemon, not a slot, so
                 // the manifest consumes the members of contract targets alone.
-                let consumed = |target: &String| targets.contract.contains(target);
+                let consumed = |target: &String| targets.linked.contains(target);
                 for resource in checked
                     .bundle
                     .resources
@@ -1071,7 +1064,7 @@ mod tests {
         assert_eq!(
             plan.targets,
             DeploymentTargets {
-                contract: BTreeSet::new(),
+                linked: BTreeSet::new(),
                 daemon: [
                     (
                         "stack".to_owned(),
@@ -1136,7 +1129,7 @@ mod tests {
             serde_json::json!([{ "link_id": "front_camera", "name": "video_stream_info" }])
         );
         assert_eq!(
-            plan.targets.contract,
+            plan.targets.linked,
             ["front_camera".to_owned()].into_iter().collect()
         );
         assert_eq!(

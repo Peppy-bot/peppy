@@ -22,6 +22,65 @@ fn reference(name: &str, tag: &str) -> DaemonInterfaceRef {
     }
 }
 
+/// Every message format of every compiled-in document holds the rules that
+/// each consumer of a format applies, the code generators and the public MCP
+/// schema mapping included: a generated client of a daemon target is built
+/// from these documents.
+#[test]
+fn every_message_format_of_a_compiled_in_document_holds_the_format_rules() {
+    for interface in DaemonInterface::ALL {
+        let interfaces = &interface.document().interfaces;
+        let services = interfaces.services.iter().flat_map(|service| {
+            [
+                (&service.name, service.request_message_format.as_ref()),
+                (&service.name, service.response_message_format.as_ref()),
+            ]
+        });
+        let actions = interfaces.actions.iter().flat_map(|action| {
+            let goal = action.goal_service.as_ref();
+            [
+                (
+                    &action.name,
+                    goal.and_then(|goal| goal.request_message_format.as_ref()),
+                ),
+                (
+                    &action.name,
+                    goal.and_then(|goal| goal.response_message_format.as_ref()),
+                ),
+                (
+                    &action.name,
+                    action
+                        .feedback_topic
+                        .as_ref()
+                        .map(|feedback| &feedback.message_format),
+                ),
+                (
+                    &action.name,
+                    action
+                        .result_service
+                        .as_ref()
+                        .and_then(|result| result.response_message_format.as_ref()),
+                ),
+            ]
+        });
+        let topics = interfaces
+            .topics
+            .iter()
+            .map(|topic| (&topic.name, topic.message_format.as_ref()));
+        for (member, format) in services.chain(actions).chain(topics) {
+            let Some(format) = format else {
+                continue;
+            };
+            format
+                .check_reserved_field_names()
+                .and_then(|()| format.check_fixed_length_array_items())
+                .unwrap_or_else(|violation| {
+                    panic!("{} `{member}`: {violation}", interface.label())
+                });
+        }
+    }
+}
+
 #[test]
 fn the_compiled_in_document_parses_as_a_contract_of_the_registered_identity() {
     for interface in DaemonInterface::ALL {

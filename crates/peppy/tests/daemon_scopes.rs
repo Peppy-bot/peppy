@@ -268,7 +268,7 @@ fn scopes_and_links_of_the_wrong_instance_or_target_are_refused() {
         ),
     );
     for expected in [
-        "instance `framework_controls_inst` serves daemon target `stack` and declares \
+        "instance `framework_controls_inst` has daemon target `stack` and declares \
          `core_node: \"robot_pc\"`",
         "`links.stack` of instance `framework_controls_inst` names daemon target `stack`, which \
          takes no link",
@@ -290,8 +290,8 @@ fn scopes_and_links_of_the_wrong_instance_or_target_are_refused() {
     let error = refusal(&dirs, stray);
     assert!(
         error.contains(
-            "`daemon_scopes.recorder` of instance `framework_controls_inst` names no daemon \
-             target of its exposures; its daemon targets: `stack`"
+            "`daemon_scopes.recorder` of instance `framework_controls_inst` names none of its \
+             daemon targets; its daemon targets: `stack`"
         ) && !error.contains("does not parse"),
         "{error}"
     );
@@ -390,7 +390,7 @@ fn an_exposure_not_in_the_caches_skips_its_own_checks_and_no_other() {
     );
     assert!(
         error.contains(
-            "instance `framework_controls_inst` serves daemon target `stack` and declares \
+            "instance `framework_controls_inst` has daemon target `stack` and declares \
              `core_node: \"robot_pc\"`"
         ),
         "{error}"
@@ -512,5 +512,86 @@ fn resolve_holds_the_features_of_a_scope_to_the_launch_checks() {
         error.contains("option `featured_sim` with the features `ai_brain`: ")
             && error.contains("the brain needs the web panel"),
         "{error}"
+    );
+}
+
+/// The deployment of `director:v1`, a node whose manifest names the daemon
+/// target `fleet` of `fleet:v1`.
+const DIRECTOR_DEPLOYMENT: &str =
+    r#"{ source: { name: "director", tag: "v1" }, instances: [{ instance_id: "director_inst" }] }"#;
+
+/// Writes the manifest of `director:v1` under `root` and records it in the
+/// nodes cache of the peppy home at `root`.
+fn cache_director(root: &Path) {
+    let dir = root.join("director");
+    fs::create_dir_all(&dir).expect("node dir");
+    fs::write(
+        dir.join("peppy.json5"),
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "director", tag: "v1", depends_on: {
+                daemon: [{ name: "fleet", tag: "v1", link_id: "fleet" }],
+            } },
+            interfaces: { actions: { consumes: [{ link_id: "fleet", name: "lease" }] } },
+            execution: { language: "rust", run_cmd: ["./director"] },
+        }"#,
+    )
+    .expect("manifest");
+    crate::common::register_repo_caches(root, &[("director", "v1", dir.as_path())]);
+}
+
+/// The daemon target of a node is held to the launch checks once its
+/// manifest is in the nodes cache; while it is not, the report names the
+/// deployment whose checks did not run.
+#[test]
+fn the_daemon_target_of_a_cached_node_is_checked_and_an_uncached_one_is_reported() {
+    let (dirs, root) = cold_home();
+    let (_document, report) = resolve_rendered(
+        &dirs,
+        launcher_with(root.path(), ENDPOINT, &scoped(SCOPE), DIRECTOR_DEPLOYMENT),
+        &[],
+        &[],
+    )
+    .expect("the checks of the cached deployments hold");
+    let report = report.join("\n");
+    assert!(
+        report.contains(
+            "daemon scopes not checked for 1 node deployment(s) whose manifest this machine's \
+             caches do not hold: director:v1 (not in the nodes cache)"
+        ),
+        "{report}"
+    );
+
+    cache_director(root.path());
+    let error = refusal(
+        &dirs,
+        launcher_with(root.path(), ENDPOINT, &scoped(SCOPE), DIRECTOR_DEPLOYMENT),
+    );
+    assert!(
+        error.contains("daemon target `fleet` (fleet:v1) of instance `director_inst` has no scope"),
+        "{error}"
+    );
+
+    let (_document, report) = resolve_rendered(
+        &dirs,
+        launcher_with(
+            root.path(),
+            ENDPOINT,
+            &format!(
+                r#"{}, {{ target: "director_inst", set_daemon_scopes: {{ fleet: {{ members: ["lease"] }} }} }}"#,
+                scoped(SCOPE)
+            ),
+            DIRECTOR_DEPLOYMENT,
+        ),
+        &[],
+        &[],
+    )
+    .expect("both scopes hold");
+    let report = report.join("\n");
+    assert!(
+        report.contains(
+            "daemon scopes hold: 2 daemon target(s) scoped and placed on the coordinator"
+        ) && !report.contains("node deployment(s) whose manifest"),
+        "{report}"
     );
 }

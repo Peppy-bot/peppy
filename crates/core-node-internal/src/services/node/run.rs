@@ -952,6 +952,25 @@ async fn publish_node_run_feedback(publisher: &ActionFeedbackPublisher, line: Fe
     }
 }
 
+/// Binds each daemon target of `manifest`, a `depends_on.daemon` entry, to
+/// `daemon`, the daemon that runs the instance under its per-boot instance
+/// id: the one producer of a daemon target. The daemon binds them itself on
+/// every path that starts an instance, a launch, a join, `peppy node run`
+/// and a restart, so a plan never names this producer, and a binding that a
+/// plan writes for a daemon target is replaced.
+fn bind_daemon_targets(
+    slot_bindings: &mut config::runtime::SlotBindings,
+    manifest: &config::node::Manifest,
+    daemon: config::runtime::ProducerRef,
+) {
+    for target in manifest.depends_on.iter().flat_map(|deps| &deps.daemon) {
+        slot_bindings.insert(
+            target.link_id.clone(),
+            config::runtime::BoundProducers::from(daemon.clone()),
+        );
+    }
+}
+
 /// Closes the add-to-start window.
 ///
 /// A federated coordinator validated this instance's whole plan (slots,
@@ -1357,6 +1376,15 @@ async fn process_node_run(
     {
         return refuse(&ctx, PeppyFailureKind::PreconditionFailed, msg);
     }
+
+    bind_daemon_targets(
+        &mut runtime_config.node_instance.slot_bindings,
+        &node_config.manifest,
+        config::runtime::ProducerRef::new(
+            &ctx.action.core_node_name,
+            &ctx.action.caller_instance_id,
+        ),
+    );
 
     // The policy of a new instance, resolved here for every path that starts
     // one: the goal's say against the node's own manifest. A respawn keeps
@@ -2957,6 +2985,48 @@ mod tests {
             }"#,
         )
         .expect("valid test node config")
+    }
+
+    /// The daemon binds each daemon target of the node to itself, in place
+    /// of whatever the plan names for it, and leaves every other slot as the
+    /// plan binds it.
+    #[test]
+    fn each_daemon_target_is_bound_to_the_daemon_that_runs_the_instance() {
+        let manifest: config::node::Manifest = serde_json5::from_str(
+            r#"{ name: "director", tag: "v1", depends_on: {
+                contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }],
+                daemon: [
+                    { name: "fleet", tag: "v1", link_id: "fleet" },
+                    { name: "stack_copies", tag: "v1", link_id: "copies" },
+                ],
+            } }"#,
+        )
+        .expect("valid manifest");
+        let arm = config::runtime::BoundProducers::from(config::runtime::ProducerRef::new(
+            "robot_pc", "arm_inst",
+        ));
+        let mut slot_bindings = config::runtime::SlotBindings::from([
+            ("arm".to_owned(), arm.clone()),
+            (
+                "fleet".to_owned(),
+                config::runtime::BoundProducers::from(config::runtime::ProducerRef::new(
+                    "robot_pc", "arm_inst",
+                )),
+            ),
+        ]);
+        let daemon = config::runtime::ProducerRef::new("core_node", "core-node-boot");
+
+        bind_daemon_targets(&mut slot_bindings, &manifest, daemon.clone());
+
+        let bound_to_the_daemon = config::runtime::BoundProducers::from(daemon);
+        assert_eq!(
+            slot_bindings,
+            config::runtime::SlotBindings::from([
+                ("arm".to_owned(), arm),
+                ("copies".to_owned(), bound_to_the_daemon.clone()),
+                ("fleet".to_owned(), bound_to_the_daemon),
+            ])
+        );
     }
 
     /// The in-process launch path plans and spawns from the same entity, so

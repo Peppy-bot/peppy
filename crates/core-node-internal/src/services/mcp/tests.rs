@@ -288,7 +288,7 @@ fn a_daemon_target_resolves_no_contract() {
         ["fleet", "stack"]
     );
     assert_eq!(
-        mixed.plan.targets.contract.iter().collect::<Vec<_>>(),
+        mixed.plan.targets.linked.iter().collect::<Vec<_>>(),
         ["front_camera"]
     );
 
@@ -309,7 +309,7 @@ fn a_daemon_target_resolves_no_contract() {
         resolve_exposure_documents(&home.dirs, &references(&["framework_controls"]), &quiet)
             .expect("the document resolves");
     assert_eq!(
-        daemon_config::mcp_deployment::DeploymentTargets::of(&documents).expect("served"),
+        daemon_config::launcher::DeploymentTargets::of_exposures(&documents).expect("served"),
         alone.plan.targets
     );
 }

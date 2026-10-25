@@ -1072,6 +1072,13 @@ where
     deserialize_non_empty_identifier(deserializer, "PairingSlot.link_id")
 }
 
+fn deserialize_daemon_target_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_empty_identifier(deserializer, "DaemonTargetDependency.link_id")
+}
+
 fn deserialize_implements_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -1491,6 +1498,73 @@ impl<'de> Deserialize<'de> for PairingObserverDependency {
     }
 }
 
+/// A daemon target, declared under `depends_on.daemon`: this node calls a
+/// daemon interface, such as `fleet:v1`, that the peppy daemon serves and no
+/// node implements. The node lists the members it calls in the `consumes`
+/// lists of its `interfaces` with the slot's `link_id`, as it does for a
+/// contract slot, and the launcher gives the daemon target named `link_id` a
+/// scope in `daemon_scopes`.
+///
+/// The daemon that runs an instance of the node is the one producer of the
+/// slot, so the entry takes no `cardinality`. The document of the interface
+/// is compiled into peppy, so the entry takes no `sha256`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DaemonTargetDependency {
+    pub name: Name,
+    pub tag: String,
+    pub link_id: String,
+}
+
+impl DaemonTargetDependency {
+    /// The size of the producer set of every daemon target: the daemon that
+    /// runs the instance, and nothing else.
+    pub const CARDINALITY: Cardinality = Cardinality::One;
+}
+
+/// The wire shape of [`DaemonTargetDependency`]. `sha256` and `cardinality`
+/// are read only to refuse them by name, with the reason, rather than as
+/// unknown fields.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDaemonTargetDependency {
+    name: Name,
+    tag: String,
+    #[serde(deserialize_with = "deserialize_daemon_target_link_id")]
+    link_id: String,
+    #[serde(default)]
+    sha256: Option<de::IgnoredAny>,
+    #[serde(default)]
+    cardinality: Option<de::IgnoredAny>,
+}
+
+impl<'de> Deserialize<'de> for DaemonTargetDependency {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawDaemonTargetDependency::deserialize(deserializer)?;
+        let refusal = if raw.sha256.is_some() {
+            Some(crate::error::StructuredError::PinnedDaemonTarget {
+                link_id: raw.link_id.clone(),
+            })
+        } else if raw.cardinality.is_some() {
+            Some(crate::error::StructuredError::DaemonTargetCardinality {
+                link_id: raw.link_id.clone(),
+            })
+        } else {
+            None
+        };
+        if let Some(refusal) = refusal {
+            return Err(de::Error::custom(refusal.json5_message()));
+        }
+        Ok(Self {
+            name: raw.name,
+            tag: raw.tag,
+            link_id: raw.link_id,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DependsOn {
@@ -1499,12 +1573,43 @@ pub struct DependsOn {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contracts: Vec<ContractDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub daemon: Vec<DaemonTargetDependency>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pairings: Vec<PairingParticipantDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pairing_observers: Vec<PairingObserverDependency>,
 }
 
 impl DependsOn {
+    /// Every slot link_id of every list, in list order: nodes, contracts,
+    /// daemon targets, pairings, pairing observers. The lists share one
+    /// link_id namespace with `manifest.implements`.
+    pub fn link_ids(&self) -> impl Iterator<Item = &str> {
+        self.producer_slots()
+            .map(|(link_id, _)| link_id)
+            .chain(self.pairing_link_ids())
+    }
+
+    /// The slots whose producers the daemon binds, each with the size of its
+    /// producer set: the `nodes` and `contracts` slots, which the launcher
+    /// binds, then the daemon targets, which the daemon that runs the
+    /// instance binds to itself.
+    pub fn producer_slots(&self) -> impl Iterator<Item = (&str, Cardinality)> {
+        let nodes = self
+            .nodes
+            .iter()
+            .map(|dep| (dep.link_id.as_str(), dep.cardinality));
+        let contracts = self
+            .contracts
+            .iter()
+            .map(|dep| (dep.link_id.as_str(), dep.cardinality));
+        let daemon = self
+            .daemon
+            .iter()
+            .map(|dep| (dep.link_id.as_str(), DaemonTargetDependency::CARDINALITY));
+        nodes.chain(contracts).chain(daemon)
+    }
+
     /// Every pairing slot link_id, participants first then observers. The two
     /// lists share one link_id namespace with the rest of `depends_on`, so
     /// namespace-wide rules read them together.
@@ -1797,7 +1902,9 @@ impl Manifest {
     /// Every reference of the manifest to a contract or a pairing document,
     /// in manifest order: `implements`, `depends_on.contracts`,
     /// `depends_on.pairings`, `depends_on.pairing_observers`. A document that
-    /// two slots name comes once for each slot.
+    /// two slots name comes once for each slot. A `depends_on.daemon` entry
+    /// is not a reference: the document of a daemon interface is compiled
+    /// into peppy, and nothing pins or fetches it.
     pub fn document_references(&self) -> impl Iterator<Item = DocumentReference<'_>> {
         use DocumentKind::{Contract, Pairing};
         let depends_on = self.depends_on.as_ref();

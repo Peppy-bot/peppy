@@ -1,6 +1,8 @@
 mod common;
 #[path = "listen_for_launch/copies.rs"]
 mod copies;
+#[path = "listen_for_launch/daemon_targets.rs"]
+mod daemon_targets;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, FeedbackDrainOutcome, GOAL_TIMEOUT, GoalEnd, RESULT_TIMEOUT,

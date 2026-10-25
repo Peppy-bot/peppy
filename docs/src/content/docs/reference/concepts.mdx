@@ -25,7 +25,7 @@ The manifest defines a node's identity:
 | `tag` | A short contract identifier (e.g., `v1`, `donut`). Must start with an ASCII letter; allowed chars are letters, digits, `_`, `-`. Dots are forbidden. |
 | `labels` | Optional metadata labels |
 | `implements` | Optional list of contracts this node implements, making it eligible to fill contract slots; see [Contract implementation](/advanced_guides/contract_implementation/) |
-| `depends_on` | Optional dependency declarations, in four lists: `nodes`, `contracts`, `pairings`, and `pairing_observers`; see [Contract implementation](/advanced_guides/contract_implementation/) and [Pairing](/advanced_guides/pairing/) |
+| `depends_on` | Optional dependency declarations, in five lists: `nodes`, `contracts`, `daemon`, `pairings`, and `pairing_observers`; see [Contract implementation](/advanced_guides/contract_implementation/), [Daemon targets](/advanced_guides/core_node_functions/#daemon-targets) and [Pairing](/advanced_guides/pairing/) |
 
 A node is uniquely identified by its `name:tag` combination.
 

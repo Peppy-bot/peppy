@@ -107,16 +107,17 @@ pub mod launcher {
         AlreadyPairedSlots, AppliedChange, AxisRole, BindingValidationItem, ClockIncarnations,
         ComponentAxis, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport,
         CopyInstance, CopyMembership, CopyRecord, DaemonScopeError, DaemonScopeRefusals,
-        Deployment, DeploymentInstance, DeploymentSource, ExternallyCoveredSlots,
-        FrameworkOverrides, JoinRequest, JoinableNode, JoinableNodes, LauncherFragmentParser,
-        LinkTargets, LinkValue, MemberAddressing, OptionSpec, PairingValidationItem, PartMachines,
-        PartRefusal, PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation,
-        PlannedPairEndpoint, PlannedPairing, PreparedLauncher, ResolvedClocks, RunningStack,
-        SETS_READ_WHOLE, ScopeCheck, Selection, SkipReason, SkippedAdjustment, TrialCopy,
-        TrialStack, UnitSelection, VacantReason, WALL_CLOCK, WrittenWord, check_composition,
-        check_daemon_scopes, instance_restart, mint_incarnation, participant_vacancies,
-        resolve_clocks, resolve_restart, restart_request_of, split_link_target, validate_bindings,
-        validate_clock_connections, validate_link_plan, validate_pairings,
+        Deployment, DeploymentInstance, DeploymentSource, DeploymentTargets,
+        ExternallyCoveredSlots, FrameworkOverrides, JoinRequest, JoinableNode, JoinableNodes,
+        LauncherFragmentParser, LinkTargets, LinkValue, MemberAddressing, OptionSpec,
+        PairingValidationItem, PartMachines, PartRefusal, PeppyLauncher, PeppyLauncherParser,
+        Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing, PreparedLauncher,
+        ResolvedClocks, RunningStack, SETS_READ_WHOLE, ScopeCheck, Selection, SkipReason,
+        SkippedAdjustment, TrialCopy, TrialStack, UnitSelection, VacantReason, WALL_CLOCK,
+        WrittenWord, check_composition, check_daemon_scopes, instance_restart, mint_incarnation,
+        participant_vacancies, resolve_clocks, resolve_restart, restart_request_of,
+        split_link_target, validate_bindings, validate_clock_connections, validate_link_plan,
+        validate_pairings,
     };
 }
 
@@ -136,7 +137,7 @@ pub mod daemon_interface {
     pub use crate::internal::daemon_interface::{
         DaemonInterface, DaemonScope, Description, MAX_DESCRIPTION_CHARS, MAX_FEATURES,
         PlacedFeature, ScopedFeature, ScopedOption, StackCopiesMember, StackCopiesScope,
-        TargetScope, UnservedInterface, served_interfaces,
+        TargetScope, UnservedInterface, served_interfaces, served_targets,
     };
 
     /// `fleet:v1`: its members, its scope and its messages.
@@ -159,15 +160,13 @@ pub mod mcp_exposure {
 // -- mcp_deployment --
 //
 // The built-in MCP server as a deployment: the identity and manifest the
-// daemon synthesizes from a set of exposures, the slot-merging rules, the
-// targets the launcher fills or scopes, and the spec file the daemon hands
-// `peppy mcp serve`.
+// daemon synthesizes from a set of exposures, the slot-merging rules and the
+// spec file the daemon hands `peppy mcp serve`.
 pub mod mcp_deployment {
     pub use crate::internal::mcp_deployment::{
-        BUILT_IN_TAG, DEFAULT_PORT, DeploymentTargets, ExposureViolations, McpDeploymentError,
-        McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, Pinned, PinnedContract, PinnedExposure,
-        RUN_COMMAND, SPEC_ENV_VAR, SourceConflict, built_in_identity, endpoint_label,
-        plan_deployment,
+        BUILT_IN_TAG, DEFAULT_PORT, ExposureViolations, McpDeploymentError, McpDeploymentPlan,
+        McpServeSpec, PORT_PARAMETER, Pinned, PinnedContract, PinnedExposure, RUN_COMMAND,
+        SPEC_ENV_VAR, SourceConflict, built_in_identity, endpoint_label, plan_deployment,
     };
 }
 
