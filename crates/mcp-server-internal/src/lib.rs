@@ -11,7 +11,7 @@
 //! daemon target call the daemon that started the process, within the scope
 //! the launch gave the target.
 //!
-//! Message conversion is the runtime codec of `message-codec`: the layout
+//! Message conversion is the runtime codec of `peppy-codec`: the layout
 //! generated nodes use, laid out from each contract's `message_format`
 //! when the process starts.
 

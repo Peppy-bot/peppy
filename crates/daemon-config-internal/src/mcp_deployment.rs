@@ -10,7 +10,6 @@
 //! daemon that registers the server and the server itself compute one answer
 //! from one set of pinned bytes.
 
-use crate::internal::contract::{PeppyContract, PeppyContractParser};
 use crate::internal::daemon_interface::{DaemonInterface, served_interfaces};
 use crate::internal::launcher::MemberAddressing;
 use crate::internal::mcp_exposure::PeppyMcpExposureParser;
@@ -18,6 +17,7 @@ use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedDocument, 
 use crate::internal::source::ExposureRef;
 use config::node::{NodeConfig, NodeConfigParser};
 use config::runtime::Name;
+use peppy_codec::contract::{PeppyContract, PeppyContractParser};
 use peppy_mcp_catalog::{
     ExposureSurface, McpExposure, ResolvedContract, ResolvedInterface, TargetSource,
     ValidatedExposure, build_exposure_bundle,
@@ -98,7 +98,7 @@ impl PinnedContract {
             name: self.pin.name.as_str(),
             tag: self.pin.tag.as_str(),
             sha256: &self.pin.sha256,
-            members: self.document.declared_members(),
+            members: crate::internal::mcp_exposure::declared_members(&self.document),
         }
     }
 }
@@ -596,7 +596,7 @@ impl McpServeSpec {
     pub fn write(&self, path: &Path) -> Result<(), String> {
         let content = serde_json5::to_string(self)
             .map_err(|error| format!("cannot serialize the serve spec: {error}"))?;
-        crate::internal::atomic_write::publish_atomic(path, |tmp| std::fs::write(tmp, &content))
+        config::atomic_write::publish_atomic(path, |tmp| std::fs::write(tmp, &content))
             .map(|_| ())
             .map_err(|error| format!("cannot write {}: {error}", path.display()))
     }

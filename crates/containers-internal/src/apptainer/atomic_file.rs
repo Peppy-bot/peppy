@@ -9,7 +9,7 @@ use std::path::Path;
 /// the umask.
 ///
 /// The contents are staged in a sibling file through
-/// [`publish_atomic`](daemon_config::atomic_write::publish_atomic), which
+/// [`publish_atomic`](config::atomic_write::publish_atomic), which
 /// creates the sibling readable by its owner alone, syncs it to disk after it
 /// gets `mode`, and renames it over `path`. A reader therefore gets the old
 /// file or the new one, and a power loss right after the rename never leaves
@@ -17,7 +17,7 @@ use std::path::Path;
 /// its own, so writers of the same path in several threads never share one;
 /// the last rename wins. When a step fails, the sibling is removed.
 pub(crate) fn replace_file(path: &Path, contents: &[u8], mode: u32) -> std::io::Result<()> {
-    daemon_config::atomic_write::publish_atomic(path, |staged| {
+    config::atomic_write::publish_atomic(path, |staged| {
         fs::write(staged, contents)?;
         fs::set_permissions(staged, fs::Permissions::from_mode(mode))
     })?;

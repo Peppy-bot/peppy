@@ -200,7 +200,7 @@ impl ContractMembers {
             .map(|topic| ContractTopic {
                 name: topic.name.clone(),
                 qos_profile: topic.qos_profile.clone(),
-                retention: topic.retention.clone(),
+                retention: topic.retention,
                 message_format: topic.message_format.clone(),
                 marks: self.marks.of(InterfaceKind::Topic, &topic.name),
             })

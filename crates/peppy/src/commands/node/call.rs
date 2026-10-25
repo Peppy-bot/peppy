@@ -30,12 +30,12 @@ use super::request::MessageArguments;
 use crate::commands::action_poll::{CtrlC, Interrupts};
 use crate::context::AppContext;
 use crate::error::{CallEnd, Error, Result};
-use config::node::{InterfaceKind, MessageFormat};
-use message_codec::consumer::{
+use config::node::InterfaceKind;
+use peppy_codec::ConversionError;
+use peppy_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding,
     ServiceClient,
 };
-use message_codec::{ConversionError, payload_format};
 use peppylib::PeppyError;
 use peppylib::messaging::{
     CancelState, DEFAULT_FEEDBACK_BOUND, Failure, MessengerHandle, ProducerRef,
@@ -118,12 +118,7 @@ pub(crate) struct MemberCall {
 
 enum CallClient {
     Service(ServiceClient),
-    /// `reports_feedback`: the action declares a feedback message, whose
-    /// stream the provider closes at the end of a goal.
-    Action {
-        client: ActionClient,
-        reports_feedback: bool,
-    },
+    Action(ActionClient),
 }
 
 impl MemberCall {
@@ -134,52 +129,28 @@ impl MemberCall {
         let MemberAddress::Interface { target } = &selected.address else {
             return Err(topic_is_not_called(&name));
         };
-        let codec = |side: &str, format: Option<&MessageFormat>| {
-            payload_format(format)
-                .map(|format| selected.codec(side, format))
-                .transpose()
-        };
+        let label = selected.codec_label();
         let (client, message_format) = match selected.member {
             Member::Service(service) => {
-                let request = service.service.request_message_format.as_ref();
-                let client = ServiceClient::new(
-                    codec("request", request)?,
-                    codec("response", service.service.response_message_format.as_ref())?,
+                let client = ServiceClient::of_service(
+                    &label,
+                    &service.service,
                     service.failure_kinds.clone(),
-                );
+                )
+                .map_err(|error| selected.codec_error(error))?;
+                let request = service.service.request_message_format.as_ref();
                 (CallClient::Service(client), request)
             }
             Member::Action(action) => {
-                let action_shape = &action.action;
-                let goal = action_shape
+                let client =
+                    ActionClient::of_action(&label, &action.action, action.failure_kinds.clone())
+                        .map_err(|error| selected.codec_error(error))?;
+                let goal = action
+                    .action
                     .goal_service
                     .as_ref()
                     .and_then(|goal| goal.request_message_format.as_ref());
-                let feedback = codec(
-                    "feedback",
-                    action_shape
-                        .feedback_topic
-                        .as_ref()
-                        .map(|feedback| &feedback.message_format),
-                )?;
-                let reports_feedback = feedback.is_some();
-                let client = ActionClient::new(
-                    codec("goal", goal)?,
-                    feedback,
-                    codec(
-                        "result",
-                        action_shape
-                            .result_service
-                            .as_ref()
-                            .and_then(|result| result.response_message_format.as_ref()),
-                    )?,
-                    action.failure_kinds.clone(),
-                );
-                let client = CallClient::Action {
-                    client,
-                    reports_feedback,
-                };
-                (client, goal)
+                (CallClient::Action(client), goal)
             }
             Member::Topic(_) => return Err(topic_is_not_called(&name)),
         };
@@ -212,13 +183,16 @@ impl MemberCall {
                 self.call_service(client, messenger, caller, interrupts, out)
                     .await
             }
-            CallClient::Action {
-                client,
-                reports_feedback,
-            } => {
+            CallClient::Action(client) => {
                 let mut goal = self.send_goal(client, messenger, caller, out).await?;
                 let outcome = self
-                    .follow(&mut goal, *reports_feedback, messenger, interrupts, out)
+                    .follow(
+                        &mut goal,
+                        client.reports_feedback(),
+                        messenger,
+                        interrupts,
+                        out,
+                    )
                     .await?;
                 self.report_outcome(outcome, out)
             }

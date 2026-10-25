@@ -12,8 +12,8 @@
 pub mod fleet;
 mod stack_copies;
 
-use crate::internal::contract::{PeppyContract, PeppyContractParser};
 use crate::internal::launcher::{JoinableNodes, PreparedLauncher, UnitSelection, VacantReason};
+use peppy_codec::contract::{PeppyContract, PeppyContractParser};
 use peppy_mcp_catalog::{DaemonInterfaceRef, ExposureBundle, McpExposure, ResolvedInterface};
 use std::sync::LazyLock;
 
@@ -90,7 +90,7 @@ impl DaemonInterface {
         ResolvedInterface {
             name: self.name(),
             tag: self.tag(),
-            members: self.document().declared_members(),
+            members: crate::internal::mcp_exposure::declared_members(self.document()),
         }
     }
 

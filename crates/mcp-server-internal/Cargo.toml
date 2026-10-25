@@ -14,9 +14,9 @@ config = { workspace = true }
 # text.
 core-node-api = { workspace = true }
 daemon-config = { workspace = true }
-# The type-erased topic, service and action clients, and the codec they
-# convert with.
-message-codec = { workspace = true }
+# The type-erased topic, service and action clients, the codec they
+# convert with, and the parser of contract documents.
+peppy-codec = { workspace = true }
 # The catalog model the server serves from.
 peppy-mcp-catalog = { workspace = true }
 # The endpoint: policies, tasks, sessions, one listener for the set.

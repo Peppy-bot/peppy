@@ -8,8 +8,8 @@
 use crate::daemon_bridge::{DaemonTask, DaemonTool};
 use crate::serve::ServeError;
 use config::node::MessageFormat;
-use message_codec::MessageCodec;
-use message_codec::consumer::{
+use peppy_codec::MessageCodec;
+use peppy_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding,
     ServiceClient, TopicConsumer,
 };
@@ -168,11 +168,10 @@ impl Codecs {
             return Ok(codec.clone());
         }
         let label = side.label();
-        let codec =
-            MessageCodec::new(&label, format.clone()).map_err(|source| ServeError::Codec {
-                member: label,
-                source,
-            })?;
+        let codec = MessageCodec::new(&label, format).map_err(|source| ServeError::Codec {
+            member: label,
+            source,
+        })?;
         self.laid_out.insert(key, codec.clone());
         Ok(codec)
     }
@@ -184,7 +183,7 @@ impl Codecs {
         side: &MemberSide<'_>,
         format: Option<&MessageFormat>,
     ) -> Result<Option<MessageCodec>, ServeError> {
-        match message_codec::payload_format(format) {
+        match peppy_codec::payload_format(format) {
             Some(format) => self.lay_out(side, format).map(Some),
             None => Ok(None),
         }

@@ -57,11 +57,10 @@ peppylib = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # The codec wire e2e holds the runtime codec against a generated provider
 # node through a real router; `mcp-test-support` registers the provider's
-# contract members, the runtime crate's `bridge` states the canonical JSON
-# value rules the assertions are written against.
-message-codec = { workspace = true }
+# contract members, and the `value` module of the codec states the canonical
+# JSON value rules the assertions are written against.
+peppy-codec = { workspace = true }
 mcp-test-support = { workspace = true }
-peppy-mcp-runtime = { workspace = true }
 base64 = "0.23"
 # The Python wire-compat e2e renders node documents with unquoted keys,
 # matching the style of hand-written ones.

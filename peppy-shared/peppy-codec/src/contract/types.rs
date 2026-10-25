@@ -1,21 +1,21 @@
-use super::comments::ContractComments;
+use super::comments::{ContractComments, MessageSide};
 use config::{
     contract_member::{
         ContractAction, ContractMarks, ContractMembers, ContractService, ContractTopic,
     },
     failure_kind::{ContractFailureKinds, ContractKinds},
     node::{
-        LinkedMember, NativeEmittedTopic, NativeExposedAction, NativeExposedService,
-        RefinementProblem, refined_ref,
+        InterfaceKind, LinkedMember, MessageFormat, NativeEmittedTopic, NativeExposedAction,
+        NativeExposedService, RefinementProblem, SchemaType, refined_ref,
     },
     runtime::Name,
     schema::PeppySchema,
+    validate_named_items,
 };
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
 };
-use std::collections::HashSet;
 
 /// Reject any `peppy_schema` value other than `contract/v1` so a node or
 /// launcher document can't slip through `PeppyContractParser`.
@@ -52,16 +52,87 @@ pub struct PeppyContract {
 }
 
 impl PeppyContract {
-    /// The members of the contract as the MCP catalog validates an exposure
-    /// against them: their shapes, failure kinds and marks.
-    pub fn declared_members(&self) -> peppy_mcp_catalog::DeclaredMembers<'_> {
-        peppy_mcp_catalog::DeclaredMembers {
-            topics: &self.interfaces.topics,
-            services: &self.interfaces.services,
-            actions: &self.interfaces.actions,
-            failure_kinds: &self.failure_kinds,
-            marks: &self.marks,
+    /// The topic `name`, when the contract declares one.
+    pub fn topic(&self, name: &str) -> Option<&NativeEmittedTopic> {
+        self.interfaces
+            .topics
+            .iter()
+            .find(|topic| topic.name == name)
+    }
+
+    /// The service `name`, when the contract declares one.
+    pub fn service(&self, name: &str) -> Option<&NativeExposedService> {
+        self.interfaces
+            .services
+            .iter()
+            .find(|service| service.name == name)
+    }
+
+    /// The action `name`, when the contract declares one.
+    pub fn action(&self, name: &str) -> Option<&NativeExposedAction> {
+        self.interfaces
+            .actions
+            .iter()
+            .find(|action| action.name == name)
+    }
+
+    /// The format of the message `side` of the member `name` of `kind`:
+    /// `None` when the contract declares no such member, when `side` is not
+    /// a side of `kind`, or when the member declares no format for it.
+    pub fn message_format(
+        &self,
+        kind: InterfaceKind,
+        name: &str,
+        side: MessageSide,
+    ) -> Option<&MessageFormat> {
+        match (kind, side) {
+            (InterfaceKind::Topic, MessageSide::Message) => {
+                self.topic(name)?.message_format.as_ref()
+            }
+            (InterfaceKind::Service, MessageSide::Request) => {
+                self.service(name)?.request_message_format.as_ref()
+            }
+            (InterfaceKind::Service, MessageSide::Response) => {
+                self.service(name)?.response_message_format.as_ref()
+            }
+            (InterfaceKind::Action, MessageSide::Goal) => self
+                .action(name)?
+                .goal_service
+                .as_ref()?
+                .request_message_format
+                .as_ref(),
+            (InterfaceKind::Action, MessageSide::Feedback) => self
+                .action(name)?
+                .feedback_topic
+                .as_ref()
+                .map(|feedback| &feedback.message_format),
+            (InterfaceKind::Action, MessageSide::Result) => self
+                .action(name)?
+                .result_service
+                .as_ref()?
+                .response_message_format
+                .as_ref(),
+            _ => None,
         }
+    }
+
+    /// The field at `path` of the message `side` of the member `name` of
+    /// `kind`, with its enum (`$enum`) and its marks (`$marks`). A path
+    /// names a field the way [`ContractComments::field`] does: the key of
+    /// each object it sits in, with the items of an array passed through.
+    pub fn field(
+        &self,
+        kind: InterfaceKind,
+        name: &str,
+        side: MessageSide,
+        path: &[&str],
+    ) -> Option<&SchemaType> {
+        let (first, rest) = path.split_first()?;
+        let mut field = self.message_format(kind, name, side)?.0.get(*first)?;
+        for key in rest {
+            field = object_field(field, key)?;
+        }
+        Some(field)
     }
 
     /// The member that a document-backed produced entry of a node manifest
@@ -74,33 +145,18 @@ impl PeppyContract {
         entry: LinkedMember<'_>,
     ) -> Option<Result<RefinedMember, Vec<RefinementProblem>>> {
         match entry {
-            LinkedMember::Topic(entry) => self
-                .interfaces
-                .topics
-                .iter()
-                .find(|member| member.name == entry.name)
-                .map(|member| {
-                    refined_ref(entry.refine.as_deref(), member)
-                        .map(|member| RefinedMember::Topic(member.into_owned()))
-                }),
-            LinkedMember::Service(entry) => self
-                .interfaces
-                .services
-                .iter()
-                .find(|member| member.name == entry.name)
-                .map(|member| {
-                    refined_ref(entry.refine.as_deref(), member)
-                        .map(|member| RefinedMember::Service(member.into_owned()))
-                }),
-            LinkedMember::Action(entry) => self
-                .interfaces
-                .actions
-                .iter()
-                .find(|member| member.name == entry.name)
-                .map(|member| {
-                    refined_ref(entry.refine.as_deref(), member)
-                        .map(|member| RefinedMember::Action(Box::new(member.into_owned())))
-                }),
+            LinkedMember::Topic(entry) => self.topic(&entry.name).map(|member| {
+                refined_ref(entry.refine.as_deref(), member)
+                    .map(|member| RefinedMember::Topic(member.into_owned()))
+            }),
+            LinkedMember::Service(entry) => self.service(&entry.name).map(|member| {
+                refined_ref(entry.refine.as_deref(), member)
+                    .map(|member| RefinedMember::Service(member.into_owned()))
+            }),
+            LinkedMember::Action(entry) => self.action(&entry.name).map(|member| {
+                refined_ref(entry.refine.as_deref(), member)
+                    .map(|member| RefinedMember::Action(Box::new(member.into_owned())))
+            }),
         }
     }
 }
@@ -285,25 +341,14 @@ where
     Ok(items)
 }
 
-/// Rejects empty/whitespace names and duplicates within a single list, with
-/// contract-flavored messages (the shared item types report generic serde
-/// errors for a missing `name`; this catches the explicit-empty case).
-pub(crate) fn validate_named_items<'a>(
-    names: impl Iterator<Item = &'a str>,
-    kind: &'static str,
-) -> Result<(), String> {
-    let mut seen = HashSet::new();
-    for (index, name) in names.enumerate() {
-        if name.trim().is_empty() {
-            return Err(format!(
-                "interface {kind} at index {index} has an empty `name`"
-            ));
-        }
-        if !seen.insert(name) {
-            return Err(format!("duplicate interface {kind} name: `{name}`"));
-        }
+/// The field `key` of the object that `field` is, or of the object that
+/// each item of the array `field` is.
+fn object_field<'a>(field: &'a SchemaType, key: &str) -> Option<&'a SchemaType> {
+    match field {
+        SchemaType::Object(object) => object.fields.get(key),
+        SchemaType::Array(array) => object_field(&array.items, key),
+        SchemaType::Type(_) | SchemaType::Primitive(_) => None,
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -857,6 +902,172 @@ mod tests {
                 .to_string();
             assert!(error.contains(expected), "{members}: {error}");
         }
+    }
+
+    /// A contract of an arm, with an enum, marks of fields and members,
+    /// and comments on the document, a member and a field.
+    const MARKED_ARM: &str = r#"// An arm with a gripper.
+    {
+        peppy_schema: "contract/v1",
+        manifest: { name: "arm", tag: "v1" },
+        interfaces: {
+            topics: [
+                {
+                    name: "state",
+                    message_format: {
+                        // The mode of the arm.
+                        mode: { $type: "string", $enum: ["idle", "moving"] },
+                        joints: { $type: "array", $items: { $type: "object", angle: { $type: "f64", $marks: ["joint_angle"] } } },
+                    },
+                },
+            ],
+            actions: [
+                // Moves the gripper to a pose.
+                {
+                    name: "move_gripper",
+                    marks: ["moves_robot", "long_motion"],
+                    goal_service: {
+                        request_message_format: {
+                            target: {
+                                $type: "object",
+                                // The item to grip.
+                                item: { $type: "string", $marks: ["item_id"] },
+                            },
+                        },
+                    },
+                    feedback_topic: { message_format: { progress: "f32" } },
+                },
+            ],
+        },
+    }"#;
+
+    /// The parser API gives the enum of a field, the marks of a field and
+    /// of a member, and the comments of the document, a member and a field.
+    #[test]
+    fn the_parser_gives_enums_marks_and_comments() {
+        let contract = super::super::PeppyContractParser::from_content(MARKED_ARM)
+            .expect("the contract parses");
+
+        let mode = contract
+            .field(
+                InterfaceKind::Topic,
+                "state",
+                MessageSide::Message,
+                &["mode"],
+            )
+            .expect("the field `mode`");
+        assert_eq!(
+            mode.enum_values().map(|values| values.values()),
+            Some(["idle".to_owned(), "moving".to_owned()].as_slice())
+        );
+        assert!(mode.marks().is_empty());
+
+        let angle = contract
+            .field(
+                InterfaceKind::Topic,
+                "state",
+                MessageSide::Message,
+                &["joints", "angle"],
+            )
+            .expect("an item of an array is passed through");
+        assert!(angle.marks().contains("joint_angle"));
+        assert!(angle.enum_values().is_none());
+
+        let item = contract
+            .field(
+                InterfaceKind::Action,
+                "move_gripper",
+                MessageSide::Goal,
+                &["target", "item"],
+            )
+            .expect("the field `target.item`");
+        assert!(item.marks().contains("item_id"));
+
+        let marks = contract.marks.of(InterfaceKind::Action, "move_gripper");
+        let names: Vec<&str> = marks.iter().map(|mark| mark.as_str()).collect();
+        assert_eq!(names, ["moves_robot", "long_motion"]);
+        assert!(
+            contract
+                .marks
+                .moves_robot(InterfaceKind::Action, "move_gripper")
+        );
+        assert!(contract.marks.of(InterfaceKind::Topic, "state").is_empty());
+
+        assert_eq!(contract.comments.document(), Some("An arm with a gripper."));
+        assert_eq!(
+            contract
+                .comments
+                .member(InterfaceKind::Action, "move_gripper"),
+            Some("Moves the gripper to a pose.")
+        );
+        assert_eq!(
+            contract.comments.field(
+                InterfaceKind::Topic,
+                "state",
+                MessageSide::Message,
+                &["mode"]
+            ),
+            Some("The mode of the arm.")
+        );
+        assert_eq!(
+            contract.comments.field(
+                InterfaceKind::Action,
+                "move_gripper",
+                MessageSide::Goal,
+                &["target", "item"]
+            ),
+            Some("The item to grip.")
+        );
+    }
+
+    /// A message format is found by the kind, the name and the side of its
+    /// member; a side of another kind, a member the contract does not
+    /// declare and a path into a scalar give none.
+    #[test]
+    fn a_message_format_and_a_field_are_found_by_their_member_and_side() {
+        let contract = super::super::PeppyContractParser::from_content(MARKED_ARM)
+            .expect("the contract parses");
+        let feedback = contract
+            .message_format(InterfaceKind::Action, "move_gripper", MessageSide::Feedback)
+            .expect("the feedback format");
+        assert!(feedback.0.contains_key("progress"));
+        assert!(
+            contract
+                .message_format(InterfaceKind::Action, "move_gripper", MessageSide::Result)
+                .is_none(),
+            "the action declares no result"
+        );
+        assert!(
+            contract
+                .message_format(InterfaceKind::Action, "move_gripper", MessageSide::Request)
+                .is_none(),
+            "an action has no request side"
+        );
+        assert!(
+            contract
+                .message_format(InterfaceKind::Service, "move_gripper", MessageSide::Request)
+                .is_none(),
+            "the contract declares no service of that name"
+        );
+        assert!(
+            contract
+                .field(
+                    InterfaceKind::Topic,
+                    "state",
+                    MessageSide::Message,
+                    &["mode", "x"]
+                )
+                .is_none(),
+            "a string has no field"
+        );
+        assert!(
+            contract
+                .field(InterfaceKind::Topic, "state", MessageSide::Message, &[])
+                .is_none()
+        );
+        assert!(contract.topic("state").is_some());
+        assert!(contract.action("move_gripper").is_some());
+        assert!(contract.service("state").is_none());
     }
 
     /// The parser reads the comments of the text beside the document.

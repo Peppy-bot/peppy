@@ -119,7 +119,7 @@ impl MessageArguments {
             Some(path) => read_args_file(path)?,
             None => Value::Object(Map::new()),
         };
-        let Some(format) = message_codec::payload_format(format) else {
+        let Some(format) = peppy_codec::payload_format(format) else {
             return no_payload_message(&message, self);
         };
         for setting in &self.settings {
@@ -279,9 +279,7 @@ fn file_content(path: &FieldPath, schema: &SchemaType, source: &Path) -> Result<
                 source.display()
             )
         }),
-        Some(TypeToken::Bytes) => Ok(Value::String(peppy_mcp_runtime::bridge::bytes_to_base64(
-            &bytes,
-        ))),
+        Some(TypeToken::Bytes) => Ok(Value::String(peppy_codec::value::bytes_to_base64(&bytes))),
         _ => Err(format!(
             "`--file {path}`: `{path}` is neither a string nor bytes, so no file gives it"
         )),

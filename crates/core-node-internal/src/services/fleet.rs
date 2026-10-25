@@ -110,7 +110,7 @@ fn write_halt(path: &Path, by: &str) -> std::io::Result<()> {
         halted_by: by.to_owned(),
     })
     .map_err(std::io::Error::other)?;
-    daemon_config::atomic_write::publish_atomic(path, |tmp| std::fs::write(tmp, text.as_bytes()))
+    config::atomic_write::publish_atomic(path, |tmp| std::fs::write(tmp, text.as_bytes()))
         .map(|_| ())
 }
 

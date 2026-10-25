@@ -7,8 +7,8 @@
 //! pairing slot `controller`, where it plays `arm`.
 
 use core_node_api::encoding::{InstanceDocuments, PinnedDocument};
-use message_codec::MessageCodec;
-use message_codec::consumer::ConsumerIdentity;
+use peppy_codec::MessageCodec;
+use peppy_codec::consumer::ConsumerIdentity;
 use peppylib::{MessengerHandle, Payload};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use serde_json::Value;
@@ -133,7 +133,7 @@ pub(crate) fn caller() -> ConsumerIdentity {
 
 /// The codec of the message format `format`, written as JSON5.
 pub(crate) fn codec(format: &str) -> MessageCodec {
-    MessageCodec::new("test", serde_json5::from_str(format).expect("a format"))
+    MessageCodec::new("test", &serde_json5::from_str(format).expect("a format"))
         .expect("the format lays out")
 }
 

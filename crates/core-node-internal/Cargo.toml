@@ -20,6 +20,9 @@ json5-pretty = { workspace = true }
 # check validates with; the daemon derives it when it registers the server
 # and when `peppy mcp catalog` asks.
 peppy-mcp-catalog = { workspace = true }
+# The parser of contract documents, which the node sync, the repository
+# index and the MCP checks read pinned contracts with.
+peppy-codec = { workspace = true }
 bytes = "1.10"
 chrono = "0.4"
 hostname = "0.4"

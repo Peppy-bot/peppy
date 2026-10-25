@@ -83,6 +83,12 @@ pub enum InvalidMarks {
 }
 
 impl Marks {
+    /// No mark: the marks of a field or a member that the document gives
+    /// none.
+    pub const fn none() -> Self {
+        Self(Vec::new())
+    }
+
     /// The marks `names`, as a document writes them: at least one, each
     /// once.
     pub fn new(names: Vec<MarkName>) -> Result<Self, InvalidMarks> {

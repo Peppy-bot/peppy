@@ -6,6 +6,7 @@
 //! time only, so the codec reaches the same accessors generated code uses
 //! without any generated type.
 
+use crate::wire_layout::StructShape;
 use capnp::introspect::{Introspect, Type};
 use capnp::private::layout::{
     PointerBuilder, PointerReader, StructBuilder, StructReader, StructSize,
@@ -16,7 +17,6 @@ use capnp::traits::{
     SetterInput,
 };
 use capnp::{Result, Word};
-use encoding::wire_layout::StructShape;
 
 /// The root pointer of a message, for reading.
 pub(crate) struct RootReader<'a>(pub(crate) PointerReader<'a>);

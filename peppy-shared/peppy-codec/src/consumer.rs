@@ -6,8 +6,10 @@
 //! conversions: the same identities on the wire, the same producer pins,
 //! the same envelopes. A provider cannot tell the two apart.
 
-use crate::{ConversionError, MessageCodec};
-use config::failure_kind::MemberFailureKinds;
+use crate::contract::PeppyContract;
+use crate::{CodecError, ConversionError, MessageCodec};
+use config::failure_kind::{MemberFailureKinds, MemberSection};
+use config::node::{InterfaceKind, NativeExposedAction, NativeExposedService};
 use peppylib::config::{QoSProfile, TopicRetention};
 use peppylib::messaging::{
     ActionGoalHandle, ActionMessenger, CancelOnDrop, CancelState, Failure, FeedbackBound,
@@ -87,6 +89,77 @@ pub struct ConsumerIdentity {
 pub struct MemberBinding {
     pub target: SenderTarget,
     pub member: String,
+}
+
+impl MemberBinding {
+    /// The binding of the member `member` of `contract`: a provider of the
+    /// contract serves each of its members under the name and the tag of
+    /// the contract.
+    pub fn of_contract(contract: &PeppyContract, member: &str) -> Result<Self, MemberError> {
+        let name = contract.manifest.name.as_str();
+        let tag = contract.manifest.tag.as_str();
+        let target = SenderTarget::contract(name, tag).map_err(|error| MemberError::Target {
+            contract: format!("{name}:{tag}"),
+            reason: error.to_string(),
+        })?;
+        Ok(Self {
+            target,
+            member: member.to_owned(),
+        })
+    }
+}
+
+/// A client of a member of a contract cannot be built.
+#[derive(Debug, thiserror::Error)]
+pub enum MemberError {
+    /// The contract declares no member of that kind and name.
+    #[error("contract `{contract}` declares no {kind} `{member}`")]
+    Undeclared {
+        contract: String,
+        kind: InterfaceKind,
+        member: String,
+    },
+    /// A message format of the member does not lay out.
+    #[error(transparent)]
+    Codec(#[from] CodecError),
+    /// The name or the tag of the contract is not a segment of the wire.
+    #[error("contract `{contract}` has no address on the wire: {reason}")]
+    Target { contract: String, reason: String },
+}
+
+/// The label of the codecs of the member `member` of `contract`.
+fn contract_member_label(contract: &PeppyContract, member: &str) -> String {
+    format!(
+        "{}_{}_{member}",
+        contract.manifest.name.as_str(),
+        contract.manifest.tag
+    )
+}
+
+fn undeclared(contract: &PeppyContract, kind: InterfaceKind, member: &str) -> MemberError {
+    MemberError::Undeclared {
+        contract: format!(
+            "{}:{}",
+            contract.manifest.name.as_str(),
+            contract.manifest.tag
+        ),
+        kind,
+        member: member.to_owned(),
+    }
+}
+
+/// The codec of the topic `name` of `contract`.
+pub fn contract_topic_codec(
+    contract: &PeppyContract,
+    name: &str,
+) -> Result<MessageCodec, MemberError> {
+    let topic = contract
+        .topic(name)
+        .ok_or_else(|| undeclared(contract, InterfaceKind::Topic, name))?;
+    Ok(MessageCodec::of_topic(
+        &contract_member_label(contract, name),
+        topic,
+    )?)
 }
 
 /// A subscription to a topic member, decoding messages on request: across
@@ -230,6 +303,40 @@ pub struct ServiceClient {
 }
 
 impl ServiceClient {
+    /// A client of `service`, its codecs laid out under `label` and the
+    /// name of each side. `failure_kinds` is the closed set of kinds the
+    /// member can give in an error reply.
+    pub fn of_service(
+        label: &str,
+        service: &NativeExposedService,
+        failure_kinds: MemberFailureKinds,
+    ) -> Result<Self, CodecError> {
+        Ok(Self::new(
+            MessageCodec::of_payload(
+                &format!("{label}_request"),
+                service.request_message_format.as_ref(),
+            )?,
+            MessageCodec::of_payload(
+                &format!("{label}_response"),
+                service.response_message_format.as_ref(),
+            )?,
+            failure_kinds,
+        ))
+    }
+
+    /// A client of the service `name` of `contract`, with the failure kinds
+    /// that the contract lists for it.
+    pub fn of_contract(contract: &PeppyContract, name: &str) -> Result<Self, MemberError> {
+        let service = contract
+            .service(name)
+            .ok_or_else(|| undeclared(contract, InterfaceKind::Service, name))?;
+        Ok(Self::of_service(
+            &contract_member_label(contract, name),
+            service,
+            contract.failure_kinds.of(MemberSection::Service, name),
+        )?)
+    }
+
     /// `failure_kinds` is the closed set of kinds the member can give in an
     /// error reply.
     pub fn new(
@@ -287,6 +394,53 @@ pub struct ActionClient {
 }
 
 impl ActionClient {
+    /// A client of `action`, its codecs laid out under `label` and the name
+    /// of each side. `failure_kinds` is the closed set of kinds the member
+    /// can give when it refuses or fails a goal.
+    pub fn of_action(
+        label: &str,
+        action: &NativeExposedAction,
+        failure_kinds: MemberFailureKinds,
+    ) -> Result<Self, CodecError> {
+        let goal = action
+            .goal_service
+            .as_ref()
+            .and_then(|goal| goal.request_message_format.as_ref());
+        let feedback = action
+            .feedback_topic
+            .as_ref()
+            .map(|feedback| &feedback.message_format);
+        let result = action
+            .result_service
+            .as_ref()
+            .and_then(|result| result.response_message_format.as_ref());
+        Ok(Self::new(
+            MessageCodec::of_payload(&format!("{label}_goal"), goal)?,
+            MessageCodec::of_payload(&format!("{label}_feedback"), feedback)?,
+            MessageCodec::of_payload(&format!("{label}_result"), result)?,
+            failure_kinds,
+        ))
+    }
+
+    /// A client of the action `name` of `contract`, with the failure kinds
+    /// that the contract lists for it.
+    pub fn of_contract(contract: &PeppyContract, name: &str) -> Result<Self, MemberError> {
+        let action = contract
+            .action(name)
+            .ok_or_else(|| undeclared(contract, InterfaceKind::Action, name))?;
+        Ok(Self::of_action(
+            &contract_member_label(contract, name),
+            action,
+            contract.failure_kinds.of(MemberSection::Action, name),
+        )?)
+    }
+
+    /// Whether the action declares a feedback message, whose stream the
+    /// provider closes at the end of a goal.
+    pub fn reports_feedback(&self) -> bool {
+        self.feedback.is_some()
+    }
+
     /// `goal` converts the goal request, `feedback` each feedback message
     /// and `result` the result's body; each is `None` for a side the
     /// contract declares without a message format. `failure_kinds` is the
@@ -484,5 +638,102 @@ fn decode_optional(codec: Option<&MessageCodec>, bytes: &[u8]) -> Result<Value, 
     match codec {
         Some(codec) => codec.decode(bytes),
         None => Ok(Value::Object(Map::new())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::PeppyContractParser;
+
+    const ARM: &str = r#"{
+        peppy_schema: "contract/v1",
+        manifest: { name: "arm", tag: "v1" },
+        failure_kinds: { unreachable: "No plan to the target" },
+        interfaces: {
+            topics: [{ name: "state", message_format: { angle: "f64" } }, { name: "tick" }],
+            services: [
+                { name: "home", request_message_format: { speed: "f32" }, failure_kinds: ["unreachable"] },
+            ],
+            actions: [
+                {
+                    name: "move",
+                    goal_service: { request_message_format: { x: "f64" } },
+                    feedback_topic: { message_format: { progress: "f32" } },
+                    failure_kinds: ["unreachable"],
+                },
+                { name: "wave" },
+            ],
+        },
+    }"#;
+
+    fn arm() -> PeppyContract {
+        PeppyContractParser::from_content(ARM).expect("the contract parses")
+    }
+
+    #[test]
+    fn a_service_client_lays_out_each_side_that_carries_a_payload() {
+        let client = ServiceClient::of_contract(&arm(), "home").expect("the service lays out");
+        assert!(client.request.is_some());
+        assert!(
+            client.response.is_none(),
+            "the service declares no response"
+        );
+        assert!(client.failure_kinds.allows("unreachable"));
+    }
+
+    #[test]
+    fn an_action_client_reports_feedback_when_the_action_declares_it() {
+        let contract = arm();
+        let moving = ActionClient::of_contract(&contract, "move").expect("the action lays out");
+        assert!(moving.reports_feedback());
+        assert!(moving.goal.is_some() && moving.result.is_none());
+        assert!(moving.failure_kinds.allows("unreachable"));
+
+        let waving = ActionClient::of_contract(&contract, "wave").expect("the action lays out");
+        assert!(!waving.reports_feedback());
+        assert!(!waving.failure_kinds.allows("unreachable"));
+    }
+
+    #[test]
+    fn a_topic_with_no_format_decodes_as_an_empty_object() {
+        let contract = arm();
+        let tick = contract_topic_codec(&contract, "tick").expect("the topic lays out");
+        let bytes = tick.encode(&Value::Object(Map::new())).expect("encodes");
+        assert_eq!(
+            tick.decode(&bytes).expect("decodes"),
+            Value::Object(Map::new())
+        );
+        contract_topic_codec(&contract, "state").expect("the topic lays out");
+    }
+
+    #[test]
+    fn a_member_that_the_contract_does_not_declare_is_refused_with_its_kind() {
+        let contract = arm();
+        let error = ServiceClient::of_contract(&contract, "move").expect_err("`move` is an action");
+        assert_eq!(
+            error.to_string(),
+            "contract `arm:v1` declares no service `move`"
+        );
+        let error = ActionClient::of_contract(&contract, "home").expect_err("`home` is a service");
+        assert_eq!(
+            error.to_string(),
+            "contract `arm:v1` declares no action `home`"
+        );
+        let error = contract_topic_codec(&contract, "home").expect_err("`home` is no topic");
+        assert_eq!(
+            error.to_string(),
+            "contract `arm:v1` declares no topic `home`"
+        );
+    }
+
+    #[test]
+    fn a_member_of_a_contract_is_served_under_the_contract() {
+        let binding = MemberBinding::of_contract(&arm(), "home").expect("a binding");
+        assert_eq!(
+            binding.target,
+            SenderTarget::contract("arm", "v1").expect("a target")
+        );
+        assert_eq!(binding.member, "home");
     }
 }

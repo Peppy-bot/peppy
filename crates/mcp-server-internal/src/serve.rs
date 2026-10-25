@@ -9,7 +9,7 @@ use daemon_config::mcp_deployment::{
     McpDeploymentError, McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, SPEC_ENV_VAR,
     endpoint_label, plan_deployment,
 };
-use message_codec::consumer::ConsumerIdentity;
+use peppy_codec::consumer::ConsumerIdentity;
 use peppy_mcp_catalog::BundleSurface;
 use peppy_mcp_runtime::{Clock, ExposureServer, ExposureServerBuilder, ExposureSet, FleetHandle};
 use peppylib::runtime::{EndpointBinding, NodeBuilder, NodeRunner, bind_preferred};
@@ -33,7 +33,7 @@ pub enum ServeError {
     #[error("cannot lay out the wire format of {member}: {source}")]
     Codec {
         member: String,
-        source: message_codec::CodecError,
+        source: peppy_codec::CodecError,
     },
     #[error(
         "tool `{tool}` is bounded by its progress, and its action declares no feedback message to \

@@ -7,11 +7,11 @@ use crate::services::repo::index::{
     IndexError, read_repository_index, resolve_declared_item, walk_directory,
 };
 use daemon_config::consts::PeppyDirs;
-use daemon_config::contract::PeppyContractParser;
 use daemon_config::daemon_interface::served_interfaces;
 use daemon_config::mcp_deployment::PinnedContract;
 use daemon_config::mcp_exposure::{McpExposure, PeppyMcpExposureParser, PinnedContractRef};
 use daemon_config::repository::{ManifestFingerprint, RepoItemKind};
+use peppy_codec::contract::PeppyContractParser;
 use peppy_mcp_catalog::build_exposure_bundle;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

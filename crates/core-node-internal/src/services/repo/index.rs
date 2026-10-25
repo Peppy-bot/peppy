@@ -23,7 +23,6 @@ use crate::services::repo::refresh::RepoReadFailure;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
 use core_node_api::encoding::{ReadRef, RepoItemKind};
-use daemon_config::contract::PeppyContractParser;
 use daemon_config::launcher::PeppyLauncherParser;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::pairing::PeppyPairingParser;
@@ -31,6 +30,7 @@ use daemon_config::repository::{
     DeclaredItem, GitCommit, ItemName, ItemTag, ManifestFingerprint, PeppyRepositoryIndexParser,
     RepoRelativePath, RepositoryIndex,
 };
+use peppy_codec::contract::PeppyContractParser;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -525,13 +525,11 @@ pub fn write_repository_index(root: &Path, index: &RepositoryIndex) -> Result<()
     let path = root.join(daemon_config::consts::REPOSITORY_INDEX_FILE);
     let content = json5_pretty::to_string_pretty(index)
         .map_err(|e| IndexError::Unreadable(format!("failed to serialize the index: {e}")))?;
-    daemon_config::atomic_write::publish_atomic(&path, |tmp| {
-        std::fs::write(tmp, format!("{content}\n"))
-    })
-    .map_err(|source| IndexError::Io {
-        path: path.display().to_string(),
-        source,
-    })?;
+    config::atomic_write::publish_atomic(&path, |tmp| std::fs::write(tmp, format!("{content}\n")))
+        .map_err(|source| IndexError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
     Ok(())
 }
 

@@ -46,7 +46,6 @@
 
 #![forbid(unsafe_code)]
 
-pub mod bridge;
 mod call_record;
 pub mod clock;
 pub mod error;

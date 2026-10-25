@@ -524,6 +524,26 @@ impl SchemaType {
             SchemaType::Array(_) | SchemaType::Object(_) => None,
         }
     }
+
+    /// The closed set of strings that the field holds (`$enum`), for a
+    /// `string` field that declares one.
+    pub fn enum_values(&self) -> Option<&EnumValues> {
+        match self {
+            SchemaType::Primitive(schema) => schema.enum_values.as_ref(),
+            SchemaType::Type(_) | SchemaType::Array(_) | SchemaType::Object(_) => None,
+        }
+    }
+
+    /// The marks of the field (`$marks`): empty for a field with no mark.
+    pub fn marks(&self) -> &Marks {
+        static NO_MARKS: Marks = Marks::none();
+        match self {
+            SchemaType::Type(_) => &NO_MARKS,
+            SchemaType::Primitive(schema) => &schema.marks,
+            SchemaType::Array(schema) => &schema.marks,
+            SchemaType::Object(schema) => &schema.marks,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

@@ -7,9 +7,9 @@ use crate::services::repo::cache as repo_cache;
 use config::node::{InterfaceKind, RefinementProblem, refined_ref};
 use config::{ContractCoverageMismatch, RefinementMismatch};
 use daemon_config::consts::PeppyDirs;
-use daemon_config::contract::RefinedMember;
 use generator::{ConsumedActionMessage, ContractOrigin, DeploymentInterface};
 use node_stack::NodeStack;
+use peppy_codec::contract::RefinedMember;
 use std::collections::{HashMap, HashSet};
 
 /// The full peppygen interface set for one node, in one call: consumed
@@ -82,7 +82,7 @@ struct ResolvedDependencies {
     /// local rules, so an entry with a sha256 pin and one without can resolve
     /// to two contents of one `(name, tag)`. `resolve_contract_doc` handles
     /// SHA-pin matching and on-disk drift detection per load.
-    contract_docs: HashMap<String, daemon_config::contract::PeppyContract>,
+    contract_docs: HashMap<String, peppy_codec::contract::PeppyContract>,
 }
 
 /// Collects consumed interfaces from a node config and resolves their message
@@ -286,7 +286,7 @@ impl ResolvedDependencies {
         lookup_name: &str,
         extract_from_node: impl FnOnce(&DependencyOfferings, &str) -> Option<T>,
         extract_from_contract: impl FnOnce(
-            &daemon_config::contract::PeppyContract,
+            &peppy_codec::contract::PeppyContract,
             &str,
         ) -> Option<Result<T, Vec<RefinementProblem>>>,
     ) -> std::result::Result<Option<(T, generator::DependencyContext)>, String> {
@@ -406,10 +406,9 @@ pub(crate) fn resolve_contract_doc(
     sha256_pin: Option<&str>,
     documents: Option<&crate::services::node::pins::ManifestDocuments>,
     on_feedback: &dyn Fn(Report<'_>),
-) -> std::result::Result<daemon_config::contract::PeppyContract, String> {
+) -> std::result::Result<peppy_codec::contract::PeppyContract, String> {
     let parse = |content: &str| {
-        daemon_config::contract::PeppyContractParser::from_content(content)
-            .map_err(|e| e.to_string())
+        peppy_codec::contract::PeppyContractParser::from_content(content).map_err(|e| e.to_string())
     };
 
     // The documents an add read by their pins fix the bytes: this machine's
@@ -520,7 +519,7 @@ fn resolve_implements(
         &str,
         (
             &config::node::ImplementsEntry,
-            daemon_config::contract::PeppyContract,
+            peppy_codec::contract::PeppyContract,
         ),
     > = HashMap::new();
     for slot in &manifest.implements {
@@ -683,7 +682,7 @@ fn resolve_implements(
 }
 
 /// The first kind under which a contract declares a member named `name`.
-fn member_kind(doc: &daemon_config::contract::PeppyContract, name: &str) -> Option<InterfaceKind> {
+fn member_kind(doc: &peppy_codec::contract::PeppyContract, name: &str) -> Option<InterfaceKind> {
     if doc.interfaces.topics.iter().any(|t| t.name == name) {
         Some(InterfaceKind::Topic)
     } else if doc.interfaces.services.iter().any(|s| s.name == name) {

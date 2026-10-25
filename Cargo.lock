@@ -921,6 +921,7 @@ dependencies = [
  "nix 0.31.3",
  "node-stack",
  "parking_lot",
+ "peppy-codec",
  "peppy-config-model",
  "peppy-mcp-catalog",
  "peppylib-rs",
@@ -1140,6 +1141,7 @@ dependencies = [
  "core-node-api",
  "dirs 7.0.0",
  "jsonschema",
+ "peppy-codec",
  "peppy-config-model",
  "peppy-mcp-catalog",
  "serde",
@@ -1390,6 +1392,7 @@ version = "0.1.0"
 dependencies = [
  "daemon-config",
  "peppy",
+ "peppy-codec",
  "peppy-config-model",
  "pmi",
  "serde",
@@ -1454,11 +1457,9 @@ checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 name = "encoding"
 version = "0.0.1"
 dependencies = [
- "build-helpers",
  "capnp",
  "capnpc",
- "daemon-config",
- "indexmap 2.14.2",
+ "peppy-codec",
  "peppy-config-model",
  "proc-macro2",
  "serde_json5",
@@ -1807,9 +1808,8 @@ dependencies = [
  "indexmap 2.14.2",
  "json5-pretty",
  "mcp-test-support",
- "message-codec",
+ "peppy-codec",
  "peppy-config-model",
- "peppy-mcp-runtime",
  "peppylib-build-policy",
  "peppylib-rs",
  "pmi",
@@ -3072,7 +3072,7 @@ version = "0.0.1"
 dependencies = [
  "core-node-api",
  "daemon-config",
- "message-codec",
+ "peppy-codec",
  "peppy-config-model",
  "peppy-mcp-catalog",
  "peppy-mcp-runtime",
@@ -3095,6 +3095,7 @@ dependencies = [
  "config-test-support",
  "daemon-config",
  "generator",
+ "peppy-codec",
  "peppy-config-model",
  "rmcp",
  "serde_json",
@@ -3114,23 +3115,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "message-codec"
-version = "0.0.1"
-dependencies = [
- "build-helpers",
- "capnp",
- "capnpc",
- "encoding",
- "image",
- "peppy-config-model",
- "peppy-mcp-runtime",
- "peppylib-rs",
- "serde_json",
- "serde_json5",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3731,11 +3715,11 @@ dependencies = [
  "log-export",
  "mcp-server",
  "mcp-test-support",
- "message-codec",
  "names-generator2",
  "node-stack",
  "open",
  "peppy",
+ "peppy-codec",
  "peppy-config-model",
  "peppy-mcp-runtime",
  "peppylib-rs",
@@ -3761,6 +3745,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "peppy-codec"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "build-helpers",
+ "capnp",
+ "capnpc",
+ "dirs 7.0.0",
+ "indexmap 2.14.2",
+ "peppy-config-model",
+ "peppy-mcp-catalog",
+ "peppylib-rs",
+ "serde",
+ "serde_json",
+ "serde_json5",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "peppy-config-model"
 version = "0.1.0"
 dependencies = [
@@ -3772,6 +3777,7 @@ dependencies = [
  "serde_json5",
  "serde_path_to_error",
  "sha2",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "walkdir",
@@ -3799,6 +3805,7 @@ dependencies = [
  "image",
  "indexmap 2.14.2",
  "jsonschema",
+ "peppy-codec",
  "peppy-config-model",
  "peppy-mcp-catalog",
  "rmcp",

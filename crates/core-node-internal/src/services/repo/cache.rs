@@ -425,7 +425,7 @@ pub(crate) fn repo_cache_path<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Path
 }
 
 /// Serializes `entries` to `E`'s cache file. Atomic via
-/// [`daemon_config::atomic_write::publish_atomic`] so concurrent readers
+/// [`config::atomic_write::publish_atomic`] so concurrent readers
 /// never observe a partial file.
 pub(crate) fn write_repo_cache<E: RepoCacheEntry>(
     peppy_dirs: &PeppyDirs,
@@ -434,7 +434,7 @@ pub(crate) fn write_repo_cache<E: RepoCacheEntry>(
     let content = json5_pretty::to_string_pretty(entries).map_err(|e| {
         core_node_api::Error::Encoding(format!("failed to serialize {} cache: {e}", E::KIND))
     })?;
-    daemon_config::atomic_write::publish_atomic(&repo_cache_path::<E>(peppy_dirs), |tmp| {
+    config::atomic_write::publish_atomic(&repo_cache_path::<E>(peppy_dirs), |tmp| {
         std::fs::write(tmp, &content)
     })?;
     Ok(())

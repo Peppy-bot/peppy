@@ -40,9 +40,9 @@ pub use otlp_endpoint::OtlpEndpoint;
 pub use packages_base_url::PackagesBaseUrl;
 pub use severity::{OtlpMinSeverity, Severity};
 
-use crate::atomic_write::publish_atomic;
 use crate::consts::PeppyDirs;
 use crate::error::{Error, ParsingError, Result};
+use config::atomic_write::publish_atomic;
 use config::consts::{ALLOWED_CONFIG_CHARS, PEPPY_CONFIG_ENV};
 use config::peppy_config::{
     DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE, DEFAULT_SHUTDOWN_GRACE_SECS,

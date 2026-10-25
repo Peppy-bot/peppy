@@ -253,9 +253,9 @@ pub(crate) async fn run_built_in_add(
             ));
         }
     };
-    if let Err(e) = daemon_config::atomic_write::publish_atomic(&manifest_path, |tmp| {
-        std::fs::write(tmp, &manifest)
-    }) {
+    if let Err(e) =
+        config::atomic_write::publish_atomic(&manifest_path, |tmp| std::fs::write(tmp, &manifest))
+    {
         return Err(record_add_failure(
             &announcer,
             Failure::new(
