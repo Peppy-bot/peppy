@@ -1,7 +1,8 @@
 mod common;
 
 use common::{
-    StartedCoreNode, TestPackagesCache, poll_core_node, start_core_node_with_mock_messenger,
+    GOAL_TIMEOUT, RESULT_TIMEOUT, StartedCoreNode, TestPackagesCache, poll_core_node,
+    start_core_node_with_mock_messenger,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::failure_kind::PeppyFailureKind;
@@ -1056,8 +1057,8 @@ async fn sync_and_add_node(started: &StartedCoreNode, node_dir: &Path) {
         &started.caller_handle,
         &started.core_node_name,
         node_dir,
-        Duration::from_secs(5),
-        Duration::from_secs(10),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
@@ -1355,8 +1356,8 @@ async fn include_repositories_true_stack_takes_priority_over_repository() {
         &started.caller_handle,
         &started.core_node_name,
         stack_camera_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(10),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await

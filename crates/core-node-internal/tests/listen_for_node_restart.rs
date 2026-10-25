@@ -7,12 +7,13 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, GoalEnd, Mock, StartedCoreNode, TEST_NODE_TAG, TIMEOUTS, WAIT,
-    always, assert_failure, fast_health_monitor, fast_health_monitor_with_kill, mocks, name, never,
-    node_service_mock, on_failure, peer_daemon_service, poll_until, poll_until_explained, run,
-    run_plan, run_plan_with_env, send_node_add_and_wait_with_force, send_node_add_then_build,
-    settle, stack_log, start_core_node_with_supervision,
-    start_core_node_with_supervision_and_grace, state_of, wait_for_state, write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, GOAL_TIMEOUT, GoalEnd, Mock, RESULT_TIMEOUT, StartedCoreNode,
+    TEST_NODE_TAG, TIMEOUTS, WAIT, always, assert_failure, fast_health_monitor,
+    fast_health_monitor_with_kill, mocks, name, never, node_service_mock, on_failure,
+    peer_daemon_service, poll_until, poll_until_explained, run, run_plan, run_plan_with_env,
+    send_node_add_and_wait_with_force, send_node_add_then_build, settle, stack_log,
+    start_core_node_with_supervision, start_core_node_with_supervision_and_grace, state_of,
+    wait_for_state, write_peppy_json5,
 };
 use config::failure_kind::PeppyFailureKind;
 use config::node::{Cardinality, RestartDeclaration, RestartOrigin, RestartPolicy, RestartRequest};
@@ -434,8 +435,8 @@ async fn overwrite(started: &StartedCoreNode, dir: &std::path::Path) -> GoalEnd<
         &started.caller_handle,
         &started.core_node_name,
         dir,
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await

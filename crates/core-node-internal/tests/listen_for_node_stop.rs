@@ -1,13 +1,13 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, add_and_build_forking_node,
-    answer_readiness, assert_failure, build_staged_node, create_test_node_with_name, error_reply,
-    install_kill_on_shutdown_listener, is_process_running, poll_until, send_node_add_and_wait,
-    send_node_add_then_build, send_node_run_and_wait, spawn_real_stuck_instance,
-    start_core_node_with_mock_messenger, start_core_node_with_real_messenger,
-    wait_for_forked_grandchildren, wait_until_grandchildren_exit, wait_until_process_exits,
-    write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, GOAL_TIMEOUT, NodeRunTestTimeouts, RESULT_TIMEOUT,
+    add_and_build_forking_node, answer_readiness, assert_failure, build_staged_node,
+    create_test_node_with_name, error_reply, install_kill_on_shutdown_listener, is_process_running,
+    poll_until, send_node_add_and_wait, send_node_add_then_build, send_node_run_and_wait,
+    spawn_real_stuck_instance, start_core_node_with_mock_messenger,
+    start_core_node_with_real_messenger, wait_for_forked_grandchildren,
+    wait_until_grandchildren_exit, wait_until_process_exits, write_peppy_json5,
 };
 use config::failure_kind::PeppyFailureKind;
 use config::runtime::Name;
@@ -52,8 +52,8 @@ async fn listen_for_node_stop_success() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await
@@ -214,8 +214,8 @@ async fn node_stop_reports_graceful_for_node_that_exits_after_grace_but_within_d
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await

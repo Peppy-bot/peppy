@@ -1,8 +1,10 @@
 mod common;
 
-use common::{send_node_add_and_wait, start_core_node_with_mock_messenger, write_peppy_json5};
+use common::{
+    GOAL_TIMEOUT, RESULT_TIMEOUT, send_node_add_and_wait, start_core_node_with_mock_messenger,
+    write_peppy_json5,
+};
 use core_node_api::encoding::StackListRequest;
-use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_list_returns_succeeds() {
@@ -33,8 +35,8 @@ async fn listen_for_node_list_returns_succeeds() {
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
         None,
     )
     .await

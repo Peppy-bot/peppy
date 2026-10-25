@@ -3,8 +3,9 @@ mod common;
 mod copies;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, FeedbackDrainOutcome, GoalEnd, assert_failure, drain_feedback,
-    fetch_end, goal_answer, send_daemon_goal, start_core_node_with_default_setup_timeout,
+    AbortOnDrop, CALLER_INSTANCE_ID, FeedbackDrainOutcome, GOAL_TIMEOUT, GoalEnd, RESULT_TIMEOUT,
+    assert_failure, drain_feedback, fetch_end, goal_answer, send_daemon_goal,
+    start_core_node_with_default_setup_timeout,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::failure_kind::PeppyFailureKind;
@@ -27,9 +28,9 @@ use tempfile::tempdir;
 
 use crate::common::{
     StartedCoreNode, TestPackagesCache, TestRunningInstance, answer_readiness, answer_ready_probe,
-    build_staged_node, commit_path, is_process_running, path_env_with_dir_first, poll_until,
-    send_node_add_and_wait, spawn_real_running_instance, start_core_node_with_mock_messenger,
-    wait_until_process_exits, write_executable_script, write_peppy_json5,
+    commit_path, is_process_running, path_env_with_dir_first, poll_until,
+    spawn_real_running_instance, start_core_node_with_mock_messenger, wait_until_process_exits,
+    write_executable_script,
 };
 
 struct NodeConfigOptions<'a> {
@@ -65,30 +66,7 @@ async fn seed_running_node(
     tag: &str,
     instance_id: &str,
 ) -> (tempfile::TempDir, TestRunningInstance, u32) {
-    let source_dir = tempfile::tempdir().expect("temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
-            peppy_schema: "node/v1",
-            manifest: {{ name: "{name}", tag: "{tag}" }},
-            execution: {{ language: "rust", run_cmd: ["sleep", "60"] }}
-        }}"#
-    );
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let add = send_node_add_and_wait(
-        &started.caller_handle,
-        &started.core_node_name,
-        source_dir.path(),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-        None,
-    )
-    .await
-    .expect("seed node_add should complete");
-    add.completed();
-
-    build_staged_node(started, name, tag).await;
-
+    let source_dir = common::add_and_build_process_node(started, name, tag, &["sleep", "60"]).await;
     let id = Name::new(instance_id).expect("valid instance id");
     let guard = spawn_real_running_instance(started, name, tag, &id).await;
     let pid = guard.pid;
@@ -162,8 +140,14 @@ const LAUNCHER_EXAMPLE1: &str = r#"
 }
 "#;
 
-const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
-const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+/// The budgets of a stack goal of these tests: no add, build or run of a
+/// test node stays idle for that long and the goal has no deadline, so a
+/// goal ends by its own outcome on a host of any speed, and the wait of the
+/// test is its only bound.
+fn unreached_budgets() -> StackBudgets {
+    StackBudgets::new(600, 600, 600, None)
+}
+
 /// The launch id `send_node_launch_and_wait` launches under.
 const TEST_LAUNCH_ID: &str = "launch-test-fixture";
 
@@ -551,7 +535,7 @@ async fn send_launch_origin_and_wait_observing(
     let goal = LaunchGoal::new(
         launcher_origin,
         TEST_LAUNCH_ID,
-        StackBudgets::new(300, 300, 300, Some(3600)).with_env_vars(env_vars),
+        unreached_budgets().with_env_vars(env_vars),
     );
     run_stack_goal(
         messenger,
@@ -1307,7 +1291,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     // `stack list`.
     wait_until_process_exits(
         pid_a,
-        Duration::from_secs(10),
+        RESULT_TIMEOUT,
         &format!("node_a process {pid_a} should be terminated by the relaunch, not orphaned"),
     )
     .await;
@@ -1338,8 +1322,6 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     // Node to be launched: starts a real process but never reports healthy.
     let node_b_path = write_node_config(nodes_dir.path(), "node_b", NODE_TAG, &["sleep", "60"]);
 
-    // Set up ONLY the ready responder. Do not set up health responder so it times out.
-    let _ready_b = answer_ready_probe(&started_core_node, "node_b", "b1").await;
     // An instance that answered ready is stopped through its shutdown
     // request; this one ends at once instead of at its force-kill deadline.
     let (_shutdown_b, _) = common::install_shutdown_listener_for_instance(
@@ -1360,8 +1342,10 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         .write(&started_core_node.peppy_dirs);
 
     // Drive the launch concurrently so we can capture node_b's started pid
-    // before the health-timeout failure tears the stack down, and check that
-    // the failure path terminates that partially-started instance.
+    // before the setup failure tears the stack down, and check that the
+    // failure path terminates that partially-started instance. The start
+    // waits for the ready signal of node_b, which the test answers only
+    // once it holds the pid: the setup budget runs from the ready signal on.
     let caller = started_core_node.caller_handle.clone();
     let core_name = started_core_node.core_node_name.clone();
     let launch_task = tokio::spawn(async move {
@@ -1370,25 +1354,24 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
             &core_name,
             &launch_file_path,
             GOAL_TIMEOUT,
-            Duration::from_secs(30),
+            RESULT_TIMEOUT,
         )
         .await
     });
 
-    let node_b_pid = poll_until(
-        Duration::from_secs(10),
-        "node_b should start a real process before the health timeout fails the launch",
-        || {
-            node_stack
-                .find("node_b", NODE_TAG)
-                .and_then(|h| h.read().instances().first().and_then(|i| i.pid()))
-        },
-    )
+    let node_b_pid = poll_until(RESULT_TIMEOUT, "node_b should start a real process", || {
+        node_stack
+            .find("node_b", NODE_TAG)
+            .and_then(|h| h.read().instances().first().and_then(|i| i.pid()))
+    })
     .await;
     assert!(
         is_process_running(node_b_pid),
-        "node_b process {node_b_pid} should be running while the launch waits on health"
+        "node_b process {node_b_pid} should be running while its start waits for the ready signal"
     );
+    // Only the ready probe is answered: with no health responder, the setup
+    // runs out its budget.
+    let _ready_b = answer_ready_probe(&started_core_node, "node_b", "b1").await;
 
     let result = launch_task
         .await
@@ -1425,13 +1408,13 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     // instance may be orphaned by the failure path.
     wait_until_process_exits(
         existing_pid,
-        Duration::from_secs(15),
+        RESULT_TIMEOUT,
         &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
     )
     .await;
     wait_until_process_exits(
         node_b_pid,
-        Duration::from_secs(15),
+        RESULT_TIMEOUT,
         &format!("partial new instance {node_b_pid} should be terminated, not orphaned"),
     )
     .await;
@@ -1477,7 +1460,7 @@ async fn a_cancelled_launch_clears_the_stack_and_ends_cancelled() {
     let goal = LaunchGoal::new(
         LauncherOrigin::Fs(launcher),
         TEST_LAUNCH_ID,
-        StackBudgets::new(300, 300, 300, Some(3600)),
+        unreached_budgets(),
     );
 
     let handle = send_accepted_stack_goal(&started, &goal).await;
@@ -1501,7 +1484,7 @@ async fn a_cancelled_launch_clears_the_stack_and_ends_cancelled() {
     );
     wait_until_process_exits(
         pid,
-        Duration::from_secs(15),
+        RESULT_TIMEOUT,
         &format!("the cancel stops the start of process {pid}"),
     )
     .await;
@@ -1579,7 +1562,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
     // The previous stack's process must be terminated, not orphaned.
     wait_until_process_exits(
         existing_pid,
-        Duration::from_secs(10),
+        RESULT_TIMEOUT,
         &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
     )
     .await;
@@ -1664,7 +1647,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     // The previous stack's process must be terminated, not orphaned.
     wait_until_process_exits(
         existing_pid,
-        Duration::from_secs(10),
+        RESULT_TIMEOUT,
         &format!("previous stack process {existing_pid} should be terminated, not orphaned"),
     )
     .await;
@@ -1860,7 +1843,7 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
     result.assert_completed();
 
     let received = poll_until(
-        Duration::from_secs(10),
+        RESULT_TIMEOUT,
         "the launched node should have recorded the env var it was started with",
         || fs::read_to_string(&probe_path).ok(),
     )
@@ -2238,7 +2221,7 @@ async fn launch_scripted_node_above(
         .map(|record| record.body.as_str())
         .collect();
     common::poll_until(
-        Duration::from_secs(10),
+        RESULT_TIMEOUT,
         "the launch log should hold the output it relays",
         || {
             let launch_log = fs::read_to_string(&result.log_path).ok()?;

@@ -122,27 +122,22 @@ pub(crate) async fn accept_goal(
     }
 }
 
-/// Runs `work` under its goal's cancellation: a cancel request from the
-/// goal's caller, or the engine's cancel of a goal whose sender is gone,
-/// signals `token`, and the work finishes through its own cancel path.
+/// Runs `work` under its goal's cancellation: while the work runs, a cancel
+/// request from the goal's caller, or the engine's cancel of a goal whose
+/// sender is gone, cancels `token`, and the work finishes through its own
+/// cancel path.
 ///
-/// The cancel signal is read before each step of the work: once the engine
-/// answers a cancel request, the next step of the work sees `token`
-/// cancelled.
+/// The engine cancels `token` at the cancel signal, before it answers the
+/// cancel request: once a cancel is answered, every later step of the work
+/// sees `token` cancelled, the steps of a poll of the work in progress at
+/// the answer included.
 pub(crate) async fn under_goal_cancel<T>(
     goal_ctx: &GoalContext,
     token: &CancellationToken,
     work: impl Future<Output = T>,
 ) -> T {
-    tokio::pin!(work);
-    tokio::select! {
-        biased;
-        _ = goal_ctx.cancel_signal() => {
-            token.cancel();
-            work.await
-        }
-        result = work.as_mut() => result,
-    }
+    let _link = goal_ctx.cancel_at_signal(token.clone());
+    work.await
 }
 
 /// Refuses a pending goal with `failure`, in its goal envelope.
@@ -467,6 +462,46 @@ mod tests {
             "the cause of the goal comes before the reset"
         );
         assert_eq!(own_cancel_reason(&context), CancelCause::Caller.reason());
+    }
+
+    /// A cancel that the engine answers while a poll of the work is in
+    /// progress reaches the token of the work before that poll reads it
+    /// again: the step after the answer sees the cancel, with no yield of
+    /// the work in between.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_answered_during_a_poll_of_the_work_reaches_its_next_step() {
+        let (context, handle, messenger, _engine) = accepted_goal().await;
+        let (polled_tx, polled_rx) = tokio::sync::oneshot::channel();
+        let (answered_tx, answered_rx) = std::sync::mpsc::channel();
+        let work = tokio::spawn(async move {
+            let token = CancellationToken::new();
+            let read_by_the_work = token.clone();
+            under_goal_cancel(&context, &token, async move {
+                polled_tx.send(()).expect("the test waits for the poll");
+                // This poll of the work goes on only once the cancel is
+                // answered.
+                tokio::task::block_in_place(|| {
+                    answered_rx.recv().expect("the test tells the answer")
+                });
+                read_by_the_work.is_cancelled()
+            })
+            .await
+        });
+
+        polled_rx.await.expect("the work is polled");
+        peppylib::ActionMessenger::cancel_goal(
+            &messenger,
+            &handle,
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("the daemon answers the cancel");
+        answered_tx.send(()).expect("the work waits for the answer");
+
+        assert!(
+            work.await.expect("the work runs to its end"),
+            "the step after the answer sees the cancel"
+        );
     }
 
     /// A rephrased stop keeps its cause and its kind.
