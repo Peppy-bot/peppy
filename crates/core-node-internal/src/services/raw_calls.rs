@@ -8,7 +8,9 @@
 //! this daemon coordinates. A node keeps the raw services that read or that
 //! it needs to run: the clock, the datastore, health, info, the stack
 //! listing, the node information, the documents of an instance and the
-//! repository listing.
+//! repository listing. The sender is the instance id that the call gives,
+//! which the messaging layer does not authenticate: the gate binds the nodes
+//! that call as themselves.
 
 use crate::services::federation::SliceOwnership;
 use crate::services::response::failure;

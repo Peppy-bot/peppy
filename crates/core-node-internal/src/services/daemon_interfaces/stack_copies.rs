@@ -33,7 +33,9 @@
 //! reaches the client as `{ step, line }`, a cancel of the client reaches the
 //! stack change, and the goal ends as the change ends: completed, failed
 //! with the failure kind of the change and the log files that say more, or
-//! cancelled with the reason of the cancel.
+//! cancelled with the reason of the cancel. A goal that its client does not
+//! take once the daemon admitted its change (its accept fails) cancels the
+//! change and follows it to its end all the same.
 
 use super::codecs::Side;
 use super::{InterfaceContext, end_goal, refuse};
@@ -405,9 +407,7 @@ async fn run_change(
         Ok(goal) => goal,
         Err(error) => {
             tracing::debug!(%error, "the goal of {} was not accepted", change.subject());
-            if let Err(error) = running.cancel().await {
-                tracing::warn!(%error, "{} was not cancelled", change.subject());
-            }
+            undo_unaccepted(&mut running, change).await;
             return;
         }
     };
@@ -439,6 +439,28 @@ async fn run_change(
         Err(error) => {
             let message = change.failed(&error.to_string(), &[log_path.as_path()]);
             end_goal(goal.fail(failure(PeppyFailureKind::AttemptFailed, message))).await;
+        }
+    }
+}
+
+/// Cancels the stack change of a goal that its client did not take, and
+/// follows the change to the end that the daemon gives it, as the daemon
+/// undoes it: a `join` holds its lock until then.
+async fn undo_unaccepted(running: &mut RunningStackGoal, change: &Change) {
+    if let Err(error) = running.cancel().await {
+        tracing::warn!(%error, "{} was not cancelled", change.subject());
+    }
+    loop {
+        match running.next().await {
+            Ok(StackGoalEvent::Output(_)) => {}
+            Ok(StackGoalEvent::Ended(end)) => {
+                tracing::debug!(outcome = ?end.outcome, "{} of a goal that was not accepted ended", change.subject());
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the end of {} of a goal that was not accepted is unknown", change.subject());
+                return;
+            }
         }
     }
 }

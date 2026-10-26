@@ -260,7 +260,7 @@ impl SliceOwnership {
             state: Mutex::default(),
             stack: Default::default(),
             active: Mutex::default(),
-            fleet: Default::default(),
+            fleet: crate::services::fleet::Fleet::of_machine(core_node_name),
             restart_holds: tokio::sync::watch::Sender::new(0),
             admitted_restarts: Arc::default(),
             admission_waits: Arc::new(tokio::sync::watch::Sender::new(BTreeMap::new())),

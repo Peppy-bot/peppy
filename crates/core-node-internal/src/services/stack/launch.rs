@@ -331,7 +331,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // A launch that starts nothing records the launcher and stops: its
     // copies arrive by stack join. A build of it has nothing to build.
     if planned.is_empty() {
-        teardown_and_reset_stack(&ctx).await;
+        teardown_and_reset_stack(&ctx, "a launch replaced the stack").await;
         if builds_only {
             publish_stdout(
                 &ctx,
@@ -347,6 +347,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         );
         super::state::commit_active_launch(
             &ctx.slice_ownership,
+            &ctx.node_stack,
             ActiveLaunch::new(
                 &goal.launch_id,
                 prepared,
@@ -502,7 +503,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         federated::clear_participant_slices(&ctx, &refusal.holders_among(&participants)).await;
         return ChangeEnd::stopped(release_and_fail(change.reserved, refusal.failure).await);
     }
-    teardown_and_reset_stack(&ctx).await;
+    teardown_and_reset_stack(&ctx, "a launch replaced the stack").await;
 
     // Record which launch this daemon's slice belongs to, so the slice is
     // self-describing from here on and `stack reset` / a relaunch can
@@ -526,6 +527,17 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     .with_joinable_resolutions(&joinable_builds)
     .with_launcher(goal.launcher_origin.label());
     active.record_copies(copies, &ordered, &copy_core_nodes);
+    let watchers = active.watchers.clone();
+    let restart = active.flat.framework.restart;
+    // The launcher record is what `stack join` and `stack remove` act on, and
+    // what the daemon interfaces read: the scope of each daemon target, the
+    // robots and their leases. It holds the launch from the commit point on,
+    // so an instance that calls the daemon while the launch starts the next
+    // ones is in it. A failure of the launch drops it as it tears the stack
+    // down. After a build nothing runs for a copy to join.
+    if !builds_only {
+        super::state::commit_active_launch(&ctx.slice_ownership, &ctx.node_stack, active);
+    }
     let phase = PhaseGoal {
         launch_id: goal.launch_id.clone(),
         rebuild: goal.rebuild,
@@ -607,10 +619,10 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             &resolved_slot_bindings,
             &planned_pairings,
             &planned_observations,
-            &active.watchers,
+            &watchers,
             &placements,
             &clocks,
-            active.flat.framework.restart,
+            restart,
         )
         .await
     }
@@ -629,12 +641,12 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         };
     }
 
-    // The launcher record is what `stack join` and `stack remove` act on;
-    // after a build nothing runs for a copy to join.
+    // The nodes of the launch now hold the documents that the fleet listing
+    // gives.
     let summary = if builds_only {
         "Build complete; no instance started"
     } else {
-        super::state::commit_active_launch(&ctx.slice_ownership, active);
+        super::state::refresh_launch_listing(&ctx.slice_ownership, &ctx.node_stack);
         "Launch complete"
     };
     publish_stdout(&ctx, summary, LaunchFeedbackStep::LauncherStep).await;

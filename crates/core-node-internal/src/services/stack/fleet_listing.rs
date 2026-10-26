@@ -1,16 +1,18 @@
-//! The fleet listing of `fleet:v1`: each robot of the launch this daemon
-//! coordinates with its kind, its clock, its software, its robot commander,
-//! its instances and its contracts; the leases and the halt; the contracts of
-//! each option and feature that a `stack_copies` scope of the launch names,
-//! with their pinned documents; and each node with the manifest and the
+//! The part of the fleet listing of `fleet:v1` that the record of the launch
+//! gives ([`launch_listing`]): each robot of the launch this daemon
+//! coordinates with its kind, its clock, its robot commander, its instances
+//! and its contracts; the contracts of each option and feature that a
+//! `stack_copies` scope of the launch names, with their pinned documents as
+//! the nodes of the stack hold them; and each node with the manifest and the
 //! commit that each machine runs.
 //!
-//! The listing reads the record of the launch and the book of the fleet in
-//! one step ([`fleet_listing`]), so it gives the state that the last change
-//! of the fleet left.
+//! The daemon reads it each time it writes the record of the launch, and
+//! gives it to the book of the fleet, which adds the halt, the leases and
+//! the software of each robot ([`crate::services::fleet::FleetBook::listing`]).
+//! So a listing costs no trial join and no read of the stack, and each change
+//! of the fleet carries the listing after it.
 
 use super::state::ActiveLaunch;
-use crate::services::federation::SliceOwnership;
 use config::runtime::ClockBinding;
 use daemon_config::consts::peppy_build;
 use daemon_config::daemon_interface::fleet::{
@@ -32,44 +34,26 @@ pub(crate) fn release_version() -> String {
     }
 }
 
-/// The fleet listing of the launch this daemon, `core_node`, coordinates.
-pub(crate) fn fleet_listing(
-    ownership: &SliceOwnership,
-    node_stack: &NodeStack,
-    core_node: &str,
-) -> FleetListing {
-    let active = ownership.active.lock();
-    let book = ownership.fleet.with(|book| book.view());
-    let mut listing = FleetListing {
-        version: release_version(),
-        core_node: core_node.to_owned(),
-        halted: book.halted_by.is_some(),
-        halted_by: book.halted_by.unwrap_or_default(),
-        leases: book.leases,
+/// The part of the fleet listing that `active`, the record of the launch,
+/// gives, with the documents that the nodes of `node_stack` hold: the
+/// launcher, the robots, the options, the documents and the nodes.
+pub(crate) fn launch_listing(active: &ActiveLaunch, node_stack: &NodeStack) -> FleetListing {
+    let options = scoped_options(active);
+    FleetListing {
+        launcher: active.launcher.clone(),
+        robots: active
+            .copies
+            .values()
+            .map(|copy| robot_entry(active, copy))
+            .collect(),
+        documents: documents_of(&options, node_stack),
+        options,
+        nodes: nodes_of(active),
         ..FleetListing::default()
-    };
-    let Some(active) = active.as_ref() else {
-        return listing;
-    };
-    listing.launcher = active.launcher.clone();
-    listing.robots = active
-        .copies
-        .values()
-        .map(|copy| {
-            let mut robot = robot_entry(active, copy);
-            if let Some(software) = book.software.get(&robot.name) {
-                robot.software = *software;
-            }
-            robot
-        })
-        .collect();
-    listing.options = scoped_options(active);
-    listing.documents = documents_of(&listing.options, node_stack);
-    listing.nodes = nodes_of(active);
-    listing
+    }
 }
 
-/// One robot of the listing, its software state still to read.
+/// One robot of the listing, its software state for the book to read.
 fn robot_entry(active: &ActiveLaunch, copy: &super::state::StackCopy) -> FleetRobot {
     let record = &copy.record;
     let mut listed = Vec::new();

@@ -193,3 +193,28 @@ pub(in crate::services) fn active_launch_running(instances: &[(&str, &str)]) -> 
         planned,
     )
 }
+
+/// The launch of [`active_launch_running`] with one instance, `instance_id`
+/// on `cn-desk`, whose node has the daemon targets `targets`: each with the
+/// interface that it names and the scope that the launch gives it.
+pub(in crate::services) fn active_launch_with_daemon_targets(
+    instance_id: &str,
+    targets: &[(
+        &str,
+        daemon_config::daemon_interface::DaemonInterface,
+        serde_json::Value,
+    )],
+) -> ActiveLaunch {
+    let mut active = active_launch_running(&[(instance_id, "cn-desk")]);
+    let planned = &mut active.planned[0];
+    for (target, interface, scope) in targets {
+        planned
+            .targets
+            .daemon
+            .insert((*target).to_owned(), *interface);
+        planned.deployment.instances[0]
+            .daemon_scopes
+            .insert((*target).to_owned(), scope.clone());
+    }
+    active
+}

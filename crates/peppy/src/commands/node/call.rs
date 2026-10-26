@@ -39,7 +39,7 @@ use crate::commands::fleet::fleet_daemon;
 use crate::context::AppContext;
 use crate::error::{CallEnd, Error, Result};
 use config::node::InterfaceKind;
-use mcp_server::{MarkedGoal, MoveRefused, MoveRules};
+use mcp_server::{MarkedGoal, MoveClearance, MoveRefused, MoveRules};
 use peppy_codec::ConversionError;
 use peppy_codec::consumer::{
     ActionClient, ConsumerError, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding,
@@ -209,9 +209,10 @@ impl MemberCall {
         interrupts: &mut impl Interrupts,
         out: &mut impl Write,
     ) -> Result<()> {
-        if let Some(rules) = rules {
-            self.check_move(rules, out).await?;
-        }
+        let clearance = match rules {
+            Some(rules) => Some((rules, self.check_move(rules, out).await?)),
+            None => None,
+        };
         match &self.client {
             CallClient::Service(client) => {
                 self.call_service(client, messenger, caller, interrupts, out)
@@ -219,7 +220,8 @@ impl MemberCall {
             }
             CallClient::Action(client) => {
                 let mut goal = self.send_goal(client, messenger, caller, out).await?;
-                let marked = rules.map(MoveRules::follow_marked_goal);
+                let marked =
+                    clearance.map(|(rules, clearance)| rules.follow_marked_goal(clearance));
                 let outcome = self
                     .follow(
                         &mut goal,
@@ -238,9 +240,9 @@ impl MemberCall {
     /// Asks the daemon of the fleet whether the command may call the member
     /// on its instance: a refusal ends the call with the kind and the message
     /// of the daemon.
-    async fn check_move(&self, rules: &MoveRules, out: &mut impl Write) -> Result<()> {
+    async fn check_move(&self, rules: &MoveRules, out: &mut impl Write) -> Result<MoveClearance> {
         match rules.check(&self.producer).await {
-            Ok(()) => Ok(()),
+            Ok(clearance) => Ok(clearance),
             Err(MoveRefused::Refused(refusal)) => Err(self.refusal(
                 &Failure::new(refusal.kind().clone(), refusal.message()),
                 out,
@@ -336,8 +338,9 @@ impl MemberCall {
     }
 
     /// Follows the goal to its end: writes each feedback message, sends the
-    /// provider a cancel at the first Ctrl-C or at a halt of the stack that
-    /// `marked` sees, and stops at the second Ctrl-C.
+    /// provider a cancel at the first Ctrl-C or when the fleet rules stop the
+    /// goal (`marked`: a halt, or the end of the follow of the changes), and
+    /// stops at the second Ctrl-C.
     async fn follow(
         &self,
         goal: &mut GoalHandle,
@@ -350,19 +353,19 @@ impl MemberCall {
         let mut feedback_open = reports_feedback;
         let mut cancel: Option<JoinHandle<std::result::Result<CancelState, ConsumerError>>> = None;
         let mut cancel_sent = false;
-        let halted = async {
+        let fleet_stop = async {
             match marked {
-                Some(marked) => marked.halted().await,
+                Some(marked) => marked.must_stop().await,
                 None => std::future::pending().await,
             }
         };
-        tokio::pin!(halted);
+        tokio::pin!(fleet_stop);
         loop {
             let step = tokio::select! {
                 biased;
-                () = &mut halted, if !cancel_sent => {
+                stop = &mut fleet_stop, if !cancel_sent => {
                     cancel_sent = true;
-                    warn!("The stack is halted: cancelling the goal of `{}`", self.name);
+                    warn!("Cancelling the goal of `{}`: {stop}", self.name);
                     cancel = Some(tokio::spawn(goal.cancel_request(messenger, CANCEL_TIMEOUT)));
                     continue;
                 }
@@ -818,7 +821,8 @@ mod tests {
         });
     }
 
-    /// One feedback of `changes`: a listing that gives a halt.
+    /// One feedback of `changes`: a listing that gives a halt, at a later
+    /// revision than the move check of the call.
     fn halted_listing() -> NonEmptyPayload {
         let document = DaemonInterface::Fleet.document();
         let feedback = fleet_codec(
@@ -830,6 +834,7 @@ mod tests {
         let change = serde_json::to_value(FleetChange {
             change: ChangeKind::HaltStart,
             robot: String::new(),
+            revision: 2,
             listing: FleetListing {
                 halted: true,
                 halted_by: "`peppy-cli` on `robot-7`".to_owned(),
@@ -851,10 +856,13 @@ mod tests {
         let messenger = mock_messenger().await;
         serve_fleet_check_move(
             &messenger,
-            json!({ "refusal": {
-                "failure_kind": "leased",
-                "message": "`director_inst` leases `alpha` for the run `tidy`",
-            } }),
+            json!({
+                "refusal": {
+                    "failure_kind": "leased",
+                    "message": "`director_inst` leases `alpha` for the run `tidy`",
+                },
+                "revision": "1",
+            }),
         )
         .await;
         let call = member_call("move_to", &[JOINTS]);
@@ -888,7 +896,7 @@ mod tests {
     #[tokio::test]
     async fn a_halt_cancels_the_goal_of_a_marked_member() {
         let messenger = mock_messenger().await;
-        serve_fleet_check_move(&messenger, json!({})).await;
+        serve_fleet_check_move(&messenger, json!({ "revision": "1" })).await;
         let mut changes = ConcurrentAction::expose(
             &messenger,
             CORE_NODE,

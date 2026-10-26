@@ -592,6 +592,40 @@ fn narrowed_bundle(value: serde_json::Value) -> ExposureBundle {
     bundle
 }
 
+/// A fleet scope leaves out the tools of the members that it does not give,
+/// and keeps every entry of another target.
+#[test]
+fn a_fleet_scope_serves_the_tools_of_the_members_that_it_gives() {
+    let mut bundle = framework_controls_bundle();
+    let tools = |bundle: &ExposureBundle| -> Vec<String> {
+        bundle.tools.iter().map(|tool| tool.name.clone()).collect()
+    };
+    let derived = tools(&bundle);
+    assert!(derived.contains(&"fleet.clear_halt".to_owned()));
+    DaemonInterface::Fleet
+        .parse_scope(&json!({ "members": ["list", "halt"] }))
+        .expect("parses")
+        .narrow(&mut bundle, "fleet");
+    let narrowed = tools(&bundle);
+    assert!(
+        !narrowed.contains(&"fleet.clear_halt".to_owned()),
+        "{narrowed:?}"
+    );
+    assert_eq!(
+        narrowed,
+        derived
+            .into_iter()
+            .filter(|tool| tool != "fleet.clear_halt")
+            .collect::<Vec<_>>(),
+        "every other tool stays"
+    );
+    assert_eq!(
+        bundle.tasks.len(),
+        framework_controls_bundle().tasks.len(),
+        "the tasks of the stack target stay"
+    );
+}
+
 #[test]
 fn a_scope_narrows_the_published_schemas_of_its_target() {
     let derived = framework_controls_bundle();

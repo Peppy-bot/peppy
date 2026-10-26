@@ -6,19 +6,26 @@
 //! A lease gives one client the right to move one robot. Only a client
 //! whose `lease` goal runs holds leases. A lease ends at its release, at a
 //! halt, and when its holder is gone; a lease that its holder received goes
-//! back to its giver instead, or ends when the giver is gone. Each change
-//! reaches the followers of the fleet in the order the book makes it.
+//! back to its giver instead, or ends when the giver is gone. No client
+//! takes the lease of a robot while a removal of it runs.
+//!
+//! The book also holds the part of the fleet listing that the record of the
+//! launch gives ([`FleetBook::set_launch`]), so it gives the whole listing
+//! ([`FleetBook::listing`]). Each change counts one revision of the fleet,
+//! and reaches the followers of the fleet in the order the book makes it,
+//! with its revision and the listing after it.
 //!
 //! The book also keeps the processes of the stack that run, as the daemon
 //! of each machine tells, and the software state of each robot: the
 //! software of a robot runs when the process of each of its instances runs.
 
 use daemon_config::daemon_interface::fleet::{
-    ChangeKind, FleetFailureKind, FleetLease, LeaseEvent, LeaseEventKind, MoveRefusal,
-    SoftwareState,
+    ChangeKind, CheckMoveResponse, FleetFailureKind, FleetLease, FleetListing, LeaseEvent,
+    LeaseEventKind, MoveRefusal, SoftwareState,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
@@ -125,20 +132,23 @@ pub(crate) struct HoldingGoal {
     pub(crate) ended: CancellationToken,
 }
 
-/// One change of the fleet, as its followers read it.
+/// One change of the fleet, as its followers read it: its kind, its robot
+/// (empty for a change of the whole stack), the revision that it made, and
+/// the listing after it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Change {
     pub(crate) kind: ChangeKind,
     pub(crate) robot: String,
+    pub(crate) revision: u64,
+    pub(crate) listing: Arc<FleetListing>,
 }
 
-/// The state of the leases, the halt and the software of each robot that
-/// the fleet listing gives.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BookView {
-    pub(crate) halted_by: Option<String>,
-    pub(crate) leases: Vec<FleetLease>,
-    pub(crate) software: BTreeMap<String, SoftwareState>,
+/// What a follower of the fleet reads first: the revision and the listing
+/// when it started to follow, then each change after them.
+pub(crate) struct Following {
+    pub(crate) revision: u64,
+    pub(crate) listing: Arc<FleetListing>,
+    pub(crate) changes: UnboundedReceiver<Change>,
 }
 
 /// One process of the stack: an instance, and the machine that runs it.
@@ -153,9 +163,20 @@ pub(crate) struct RobotProcesses {
 
 #[derive(Default)]
 pub(crate) struct FleetBook {
+    /// The release tag of this peppy and the machine of this daemon, as the
+    /// listing gives them.
+    version: String,
+    core_node: String,
+    /// The part of the listing that the record of the launch gives: the
+    /// launcher, the robots, the options, the documents and the nodes.
+    launch: FleetListing,
+    /// How many changes the book made: the revision of the fleet.
+    revision: u64,
     /// The client that halted the stack, while it is halted.
     halt: Option<String>,
     leases: BTreeMap<String, Lease>,
+    /// The robots that a removal takes off the stack, while it runs.
+    leaving: BTreeSet<String>,
     holders: BTreeMap<ClientRef, Holder>,
     /// How the last lease of each client on each robot ended, which a
     /// refusal of `not_leased` gives.
@@ -170,13 +191,20 @@ pub(crate) struct FleetBook {
 }
 
 impl FleetBook {
-    /// A book whose stack the halt `halted_by` holds, as the daemon read it
-    /// from disk.
-    pub(crate) fn with_halt(halted_by: Option<String>) -> Self {
+    /// The book of the daemon of the machine `core_node`, which runs the
+    /// peppy of the release tag `version`.
+    pub(crate) fn new(version: &str, core_node: &str) -> Self {
         Self {
-            halt: halted_by,
+            version: version.to_owned(),
+            core_node: core_node.to_owned(),
             ..Self::default()
         }
+    }
+
+    /// Restores the halt `halted_by` that the daemon read from disk at its
+    /// start.
+    pub(crate) fn restore_halt(&mut self, halted_by: Option<String>) {
+        self.halt = halted_by;
     }
 
     /// The client that halted the stack, while it is halted.
@@ -184,41 +212,62 @@ impl FleetBook {
         self.halt.as_deref()
     }
 
-    /// The halt and the leases, as the fleet listing gives them.
-    pub(crate) fn view(&self) -> BookView {
-        BookView {
-            halted_by: self.halt.clone(),
-            leases: self
-                .leases
-                .iter()
-                .map(|(robot, lease)| {
-                    let giver = lease
-                        .received_from
-                        .as_ref()
-                        .and_then(|giver| giver.client.as_ref());
-                    FleetLease {
-                        robot: robot.clone(),
-                        holder: lease.holder.instance_id.clone(),
-                        holder_core_node: lease.holder.core_node.clone(),
-                        name: lease.name.clone(),
-                        open: lease.open,
-                        giver: giver.map(|g| g.instance_id.clone()).unwrap_or_default(),
-                        giver_core_node: giver.map(|g| g.core_node.clone()).unwrap_or_default(),
-                        receiver: lease
-                            .offer
-                            .as_ref()
-                            .map(|r| r.instance_id.clone())
-                            .unwrap_or_default(),
-                        receiver_core_node: lease
-                            .offer
-                            .as_ref()
-                            .map(|r| r.core_node.clone())
-                            .unwrap_or_default(),
-                    }
-                })
-                .collect(),
-            software: self.software.clone(),
+    /// Sets the part of the listing that the record of the launch gives:
+    /// the launcher, the robots, the options, the documents and the nodes.
+    /// The book gives the version, the machine, the halt, the leases and the
+    /// software of each robot.
+    pub(crate) fn set_launch(&mut self, launch: FleetListing) {
+        self.launch = launch;
+    }
+
+    /// The fleet listing now.
+    pub(crate) fn listing(&self) -> FleetListing {
+        let mut listing = self.launch.clone();
+        listing.version = self.version.clone();
+        listing.core_node = self.core_node.clone();
+        listing.halted = self.halt.is_some();
+        listing.halted_by = self.halt.clone().unwrap_or_default();
+        listing.leases = self.lease_listing();
+        for robot in &mut listing.robots {
+            robot.software = self
+                .software
+                .get(&robot.name)
+                .copied()
+                .unwrap_or(SoftwareState::Stopped);
         }
+        listing
+    }
+
+    /// Each lease, in robot order, as the listing gives it.
+    fn lease_listing(&self) -> Vec<FleetLease> {
+        self.leases
+            .iter()
+            .map(|(robot, lease)| {
+                let giver = lease
+                    .received_from
+                    .as_ref()
+                    .and_then(|giver| giver.client.as_ref());
+                FleetLease {
+                    robot: robot.clone(),
+                    holder: lease.holder.instance_id.clone(),
+                    holder_core_node: lease.holder.core_node.clone(),
+                    name: lease.name.clone(),
+                    open: lease.open,
+                    giver: giver.map(|g| g.instance_id.clone()).unwrap_or_default(),
+                    giver_core_node: giver.map(|g| g.core_node.clone()).unwrap_or_default(),
+                    receiver: lease
+                        .offer
+                        .as_ref()
+                        .map(|r| r.instance_id.clone())
+                        .unwrap_or_default(),
+                    receiver_core_node: lease
+                        .offer
+                        .as_ref()
+                        .map(|r| r.core_node.clone())
+                        .unwrap_or_default(),
+                }
+            })
+            .collect()
     }
 
     /// Notes that `process` runs or that it ended, then the software of
@@ -239,6 +288,7 @@ impl FleetBook {
     /// of its join gives it.
     pub(crate) fn sync_software(&mut self, robots: &[RobotProcesses]) {
         let mut next = BTreeMap::new();
+        let mut changed = Vec::new();
         for robot in robots {
             let runs = !robot.processes.is_empty()
                 && robot
@@ -256,11 +306,16 @@ impl FleetBook {
                     SoftwareState::Running => ChangeKind::SoftwareStart,
                     SoftwareState::Stopped => ChangeKind::SoftwareStop,
                 };
-                self.note(kind, &robot.robot);
+                changed.push((kind, robot.robot.as_str()));
             }
             next.insert(robot.robot.clone(), state);
         }
+        // The state is in the book before the followers read a change of it,
+        // so the listing of each change gives the state after it.
         self.software = next;
+        for (kind, robot) in changed {
+            self.note(kind, robot);
+        }
     }
 
     /// The holder of the lease of `robot` and the name of the lease.
@@ -270,19 +325,32 @@ impl FleetBook {
             .map(|lease| (&lease.holder, lease.name.as_str()))
     }
 
-    /// Follows the changes of the fleet from now on, in order.
-    pub(crate) fn follow(&mut self) -> UnboundedReceiver<Change> {
-        let (sender, receiver) = unbounded_channel();
+    /// Follows the changes of the fleet from now on, in order: the revision
+    /// and the listing now, then each change after them.
+    pub(crate) fn follow(&mut self) -> Following {
+        let (sender, changes) = unbounded_channel();
         self.followers.push(sender);
-        receiver
+        Following {
+            revision: self.revision,
+            listing: Arc::new(self.listing()),
+            changes,
+        }
     }
 
-    /// Tells every follower of `kind` on `robot`; a follower that went away
-    /// is dropped.
+    /// Counts the change `kind` on `robot` as the next revision of the fleet,
+    /// and tells every follower of it with the listing after it; a follower
+    /// that went away is dropped.
     pub(crate) fn note(&mut self, kind: ChangeKind, robot: &str) {
+        self.revision += 1;
+        self.followers.retain(|follower| !follower.is_closed());
+        if self.followers.is_empty() {
+            return;
+        }
         let change = Change {
             kind,
             robot: robot.to_owned(),
+            revision: self.revision,
+            listing: Arc::new(self.listing()),
         };
         self.followers
             .retain(|follower| follower.send(change.clone()).is_ok());
@@ -406,9 +474,7 @@ impl FleetBook {
             (lease.holder.clone(), robot.to_owned()),
             format!("its lease ended: {cause}"),
         );
-        if lease.offer.is_some() {
-            self.note(ChangeKind::OfferEnd, robot);
-        }
+        self.end_offer_of(robot, &lease, cause);
         let back_to = lease.received_from.as_ref().and_then(|giver| {
             giver
                 .client
@@ -440,6 +506,22 @@ impl FleetBook {
             cause,
         );
         self.note(ChangeKind::HolderChange, robot);
+    }
+
+    /// Ends the offer of `lease`, the lease of `robot`, for `cause`, when one
+    /// runs: its receiver and the followers read the end.
+    fn end_offer_of(&mut self, robot: &str, lease: &Lease, cause: &str) {
+        let Some(receiver) = &lease.offer else {
+            return;
+        };
+        self.tell_holder_from(
+            receiver,
+            LeaseEventKind::OfferEnd,
+            robot,
+            Some(&lease.holder),
+            cause,
+        );
+        self.note(ChangeKind::OfferEnd, robot);
     }
 
     fn holder_required(&self, client: &ClientRef) -> Result<(), Refusal> {
@@ -509,6 +591,17 @@ impl FleetBook {
     ) -> Result<(), Refusal> {
         self.holder_required(client)?;
         self.not_halted(&format!("a lease of robot `{robot}`"))?;
+        if self
+            .lease_of(robot)
+            .is_some_and(|(holder, _)| holder == client)
+        {
+            return Ok(());
+        }
+        if self.leaving.contains(robot) {
+            return Err(Refusal::precondition(format!(
+                "robot `{robot}` leaves the stack: a removal of it runs"
+            )));
+        }
         let Some(lease) = self.leases.get(robot) else {
             self.leases.insert(
                 robot.to_owned(),
@@ -524,9 +617,6 @@ impl FleetBook {
             self.note(ChangeKind::LeaseStart, robot);
             return Ok(());
         };
-        if lease.holder == *client {
-            return Ok(());
-        }
         if lease.offer.as_ref() != Some(client) {
             return Err(Self::leased_by_another(robot, lease).into());
         }
@@ -567,6 +657,8 @@ impl FleetBook {
 
     /// `client` offers its leases of `robots` to `receiver`. Each lease
     /// stays its own; a lease that the client received is not offered again.
+    /// An offer of a lease to another receiver ends first, and an offer to
+    /// the same receiver runs on unchanged.
     pub(crate) fn offer(
         &mut self,
         client: &ClientRef,
@@ -593,8 +685,19 @@ impl FleetBook {
             }
         }
         for robot in robots {
-            let lease = self.leases.get_mut(robot).expect("each robot is held");
-            lease.offer = Some(receiver.clone());
+            let lease = self.leases.get(robot).expect("each robot is held").clone();
+            if lease.offer.as_ref() == Some(receiver) {
+                continue;
+            }
+            self.end_offer_of(
+                robot,
+                &lease,
+                &format!("{client} offered the lease to {receiver}"),
+            );
+            self.leases
+                .get_mut(robot)
+                .expect("each robot is held")
+                .offer = Some(receiver.clone());
             self.tell_holder_from(receiver, LeaseEventKind::Offer, robot, Some(client), "");
             self.note(ChangeKind::OfferStart, robot);
         }
@@ -624,12 +727,17 @@ impl FleetBook {
     }
 
     /// Whether `client` may move `robot`, the robot of the instance that it
-    /// calls or that it names; `None` for an instance outside any copy.
-    pub(crate) fn check_move(
-        &self,
-        client: &ClientRef,
-        robot: Option<&str>,
-    ) -> Option<MoveRefusal> {
+    /// calls or that it names (`None` for an instance outside any copy),
+    /// with the revision of the fleet that the answer reads.
+    pub(crate) fn check_move(&self, client: &ClientRef, robot: Option<&str>) -> CheckMoveResponse {
+        CheckMoveResponse {
+            refusal: self.move_refusal(client, robot),
+            revision: self.revision,
+        }
+    }
+
+    /// The refusal of a move of `client` on `robot`, if any.
+    fn move_refusal(&self, client: &ClientRef, robot: Option<&str>) -> Option<MoveRefusal> {
         if let Some(by) = &self.halt {
             return Some(MoveRefusal {
                 failure_kind: FleetFailureKind::Halted,
@@ -677,9 +785,7 @@ impl FleetBook {
                 (lease.holder.clone(), robot.clone()),
                 format!("its lease ended: {cause}"),
             );
-            if lease.offer.is_some() {
-                self.note(ChangeKind::OfferEnd, &robot);
-            }
+            self.end_offer_of(&robot, &lease, cause);
             self.tell_holder(&lease.holder, LeaseEventKind::LeaseEnd, &robot, cause);
             self.note(ChangeKind::LeaseEnd, &robot);
         }
@@ -732,6 +838,24 @@ impl FleetBook {
         self.note(ChangeKind::LeaseStart, robot);
     }
 
+    /// Starts the removal of `robot` by `client` when the leases allow it
+    /// ([`Self::check_removal`]): until [`Self::end_removal`], no client
+    /// takes the lease of the robot.
+    pub(crate) fn begin_removal(
+        &mut self,
+        client: Option<&ClientRef>,
+        robot: &str,
+    ) -> Result<(), Refusal> {
+        self.check_removal(client, robot)?;
+        self.leaving.insert(robot.to_owned());
+        Ok(())
+    }
+
+    /// Ends the removal of `robot`, whatever its end.
+    pub(crate) fn end_removal(&mut self, robot: &str) {
+        self.leaving.remove(robot);
+    }
+
     /// Whether `client` may remove `robot`: only the holder of its lease, or
     /// the giver of that lease, removes a leased robot.
     pub(crate) fn check_removal(
@@ -750,6 +874,14 @@ impl FleetBook {
             return Ok(());
         }
         Err(Self::leased_by_another(robot, lease).into())
+    }
+}
+
+#[cfg(test)]
+impl FleetBook {
+    /// The software state of `robot`, as the book reads it.
+    fn software_of(&self, robot: &str) -> Option<SoftwareState> {
+        self.software.get(robot).copied()
     }
 }
 

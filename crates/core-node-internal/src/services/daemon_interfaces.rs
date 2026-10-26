@@ -10,7 +10,9 @@
 //! ([`caller::Caller`]): the command line has no scope and calls every
 //! member; an instance of the launch calls what the scope of its daemon
 //! target of the interface gives; `check_move` answers every sender, and
-//! `changes` answers each MCP server of peppy.
+//! `changes` answers each MCP server of peppy. The sender is the instance id
+//! and the machine that the call gives, which the messaging layer does not
+//! authenticate: the scopes bind the nodes that call as themselves.
 //!
 //! The daemon of the coordinator of a launch serves the interfaces of that
 //! launch: a daemon that holds the slice of a launch of another machine

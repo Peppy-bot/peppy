@@ -25,5 +25,5 @@ mod serve;
 #[cfg(test)]
 mod test_support;
 
-pub use moves::{MarkedGoal, MoveRefused, MoveRules};
+pub use moves::{FleetStop, MarkedGoal, MoveClearance, MoveRefused, MoveRules};
 pub use serve::{ServeError, serve};

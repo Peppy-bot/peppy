@@ -4,7 +4,9 @@
 //! `moves_robot`. Every step waits on a peer's action, never on the clock: a
 //! deadline only bounds the failure path.
 
-use super::{MarkedSurface, MoveRefused, MoveRules};
+use super::{
+    FleetStop, MarkedSurface, MoveClearance, MoveRefused, MoveRules, ResultMiss, result_miss,
+};
 use crate::bridges::{
     Binding, GoalFollow, PreparedTask, PreparedTool, Route, call_tool, drive_goal,
 };
@@ -173,12 +175,16 @@ fn fleet_codec(member: &str, side: &str) -> MessageCodec {
         .expect("the side has a format")
 }
 
-/// The answer of `check_move`.
-fn check_move_answer(refusal: Option<(&str, &str)>) -> Payload {
+/// The answer of `check_move` at the revision `revision` of the fleet.
+fn check_move_answer(refusal: Option<(&str, &str)>, revision: u64) -> Payload {
+    let revision = revision.to_string();
     let value = match refusal {
-        None => json!({}),
+        None => json!({ "revision": revision }),
         Some((kind, message)) => {
-            json!({ "refusal": { "failure_kind": kind, "message": message } })
+            json!({
+                "refusal": { "failure_kind": kind, "message": message },
+                "revision": revision,
+            })
         }
     };
     Payload::from(
@@ -188,11 +194,13 @@ fn check_move_answer(refusal: Option<(&str, &str)>) -> Payload {
     )
 }
 
-/// One feedback of `changes`: a listing that gives the halt of `halted_by`.
-fn change(kind: ChangeKind, halted_by: Option<&str>) -> NonEmptyPayload {
+/// One feedback of `changes` at the revision `revision`: a listing that
+/// gives the halt of `halted_by`.
+fn change(kind: ChangeKind, halted_by: Option<&str>, revision: u64) -> NonEmptyPayload {
     let value = serde_json::to_value(FleetChange {
         change: kind,
         robot: String::new(),
+        revision,
         listing: FleetListing {
             halted: halted_by.is_some(),
             halted_by: halted_by.unwrap_or_default().to_owned(),
@@ -228,6 +236,31 @@ async fn arm_goal(mesh: &mut Mesh) -> Arc<GoalContext> {
         .accept(Payload::new())
         .await
         .expect("the arm accepts the goal")
+}
+
+/// A move check that read the revision `revision`.
+fn cleared_at(revision: u64) -> MoveClearance {
+    MoveClearance { revision }
+}
+
+/// The halt of the operator, as the listing names its client.
+const OPERATOR: &str = "`peppy-cli` on `cn-desk`";
+
+/// Polls `future` once, in the calling task, and tells whether it is still
+/// pending.
+async fn pending_after_one_poll<F: std::future::Future>(future: F) -> bool {
+    let mut future = std::pin::pin!(future);
+    std::future::poll_fn(|context| {
+        std::task::Poll::Ready(future.as_mut().poll(context).is_pending())
+    })
+    .await
+}
+
+/// Waits until `marked` must stop, and gives why.
+async fn stop_of(marked: &super::MarkedGoal) -> FleetStop {
+    tokio::time::timeout(READINESS_TIMEOUT, marked.must_stop())
+        .await
+        .expect("the server stops the goal")
 }
 
 async fn cancel_seen(context: &GoalContext) {
@@ -271,8 +304,8 @@ async fn a_marked_call_goes_on_only_when_the_daemon_allows_it() {
     let mesh = mesh().await;
     let rules = rules(&mesh);
 
-    mesh.check_move.enqueue_response(check_move_answer(None));
-    assert_eq!(rules.check(&arm_producer()).await, Ok(()));
+    mesh.check_move.enqueue_response(check_move_answer(None, 7));
+    assert_eq!(rules.check(&arm_producer()).await, Ok(cleared_at(7)));
     let asked = &mesh.check_move.captured()[0];
     assert_eq!(
         fleet_codec("check_move", "request")
@@ -282,10 +315,13 @@ async fn a_marked_call_goes_on_only_when_the_daemon_allows_it() {
         "the server names the instance that it calls"
     );
 
-    mesh.check_move.enqueue_response(check_move_answer(Some((
-        "leased",
-        "`director_inst` leases `alpha` for the run `tidy`",
-    ))));
+    mesh.check_move.enqueue_response(check_move_answer(
+        Some((
+            "leased",
+            "`director_inst` leases `alpha` for the run `tidy`",
+        )),
+        8,
+    ));
     assert_eq!(
         rules.check(&arm_producer()).await,
         Err(MoveRefused::Refused(ProviderFailure::new(
@@ -323,23 +359,21 @@ async fn the_changes_are_followed_while_a_marked_goal_runs() {
     let mut mesh = mesh().await;
     let rules = rules(&mesh);
 
-    let first = rules.follow_marked_goal();
+    let first = rules.follow_marked_goal(cleared_at(4));
     let second = first.clone();
     let follow = followed_changes(&mut mesh).await;
     follow
-        .publish_feedback(change(ChangeKind::Listing, None))
+        .publish_feedback(change(ChangeKind::Listing, None, 4))
         .await
         .expect("the daemon gives the listing");
     follow
-        .publish_feedback(change(
-            ChangeKind::HaltStart,
-            Some("`peppy-cli` on `cn-desk`"),
-        ))
+        .publish_feedback(change(ChangeKind::HaltStart, Some(OPERATOR), 5))
         .await
         .expect("the daemon gives the halt");
-    tokio::time::timeout(READINESS_TIMEOUT, first.halted())
-        .await
-        .expect("the server sees the halt");
+    assert_eq!(
+        stop_of(&first).await,
+        FleetStop::Halted(OPERATOR.to_owned())
+    );
 
     drop(first);
     assert!(
@@ -358,7 +392,7 @@ async fn a_halt_cancels_a_running_marked_goal() {
     let rules = rules(&mesh);
     let task = move_arm();
     let client = ScriptedSurface::new();
-    let marked = rules.follow_marked_goal();
+    let marked = rules.follow_marked_goal(cleared_at(0));
     let surface = MarkedSurface {
         client: &client,
         marked: &marked,
@@ -384,10 +418,7 @@ async fn a_halt_cancels_a_running_marked_goal() {
         let goal = arm_goal(&mut mesh).await;
         client.followed().await;
         follow
-            .publish_feedback(change(
-                ChangeKind::HaltStart,
-                Some("`peppy-cli` on `cn-desk`"),
-            ))
+            .publish_feedback(change(ChangeKind::HaltStart, Some(OPERATOR), 1))
             .await
             .expect("the daemon gives the halt");
         cancel_seen(&goal).await;
@@ -415,7 +446,7 @@ async fn a_halt_cancels_a_running_marked_goal() {
 async fn a_marked_goal_that_its_client_stops_waiting_for_is_followed_until_it_ends() {
     let mut mesh = mesh().await;
     let rules = rules(&mesh);
-    let marked = rules.follow_marked_goal();
+    let marked = rules.follow_marked_goal(cleared_at(0));
     let server = mesh.server.clone();
     let client = Arc::new(ScriptedSurface::new());
     let drive = {
@@ -482,10 +513,13 @@ async fn a_marked_tool_that_the_daemon_refuses_never_reaches_its_provider() {
         deadline: DEADLINE,
         moves_robot: true,
     };
-    mesh.check_move.enqueue_response(check_move_answer(Some((
-        "halted",
-        "the stack is halted (by `peppy-cli` on `cn-desk`): no move until the halt is cleared",
-    ))));
+    mesh.check_move.enqueue_response(check_move_answer(
+        Some((
+            "halted",
+            "the stack is halted (by `peppy-cli` on `cn-desk`): no move until the halt is cleared",
+        )),
+        3,
+    ));
 
     let refused = call_tool(
         &tool,
@@ -510,4 +544,123 @@ async fn a_marked_tool_that_the_daemon_refuses_never_reaches_its_provider() {
          no move until the halt is cleared"
     );
     assert_eq!(mesh.check_move.captured().len(), 1, "one move check");
+}
+
+/// A goal whose move check read a revision after the end of a halt is not
+/// cancelled by that halt, which the follow of the changes still shows: only
+/// a halt of a later revision than its check cancels it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_halt_older_than_the_move_check_of_a_goal_does_not_cancel_it() {
+    let mut mesh = mesh().await;
+    let rules = rules(&mesh);
+    let during_the_halt = rules.follow_marked_goal(cleared_at(4));
+    let follow = followed_changes(&mut mesh).await;
+    follow
+        .publish_feedback(change(ChangeKind::Listing, None, 4))
+        .await
+        .expect("the daemon gives the listing");
+    follow
+        .publish_feedback(change(ChangeKind::HaltStart, Some(OPERATOR), 5))
+        .await
+        .expect("the daemon gives the halt");
+    assert_eq!(
+        stop_of(&during_the_halt).await,
+        FleetStop::Halted(OPERATOR.to_owned()),
+        "the server sees the halt"
+    );
+
+    // The daemon cleared the halt at revision 6 and allowed a new move, but
+    // the follow still shows the halt of revision 5.
+    let after_the_clear = rules.follow_marked_goal(cleared_at(6));
+    assert!(
+        pending_after_one_poll(after_the_clear.must_stop()).await,
+        "the halt of revision 5 does not stop a goal checked at revision 6"
+    );
+    follow
+        .publish_feedback(change(ChangeKind::HaltEnd, None, 6))
+        .await
+        .expect("the daemon gives the end of the halt");
+    follow
+        .publish_feedback(change(ChangeKind::HaltStart, Some("another client"), 7))
+        .await
+        .expect("the daemon gives a new halt");
+    assert_eq!(
+        stop_of(&after_the_clear).await,
+        FleetStop::Halted("another client".to_owned()),
+        "a halt after the check stops the goal"
+    );
+}
+
+/// A follow of the changes that the daemon ends, or refuses, stops every
+/// goal that relies on it, as the server sees no halt any more; the next
+/// goal follows the changes again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_follow_stops_its_goals_and_the_next_goal_follows_again() {
+    let mut mesh = mesh().await;
+    let rules = rules(&mesh);
+    let first = rules.follow_marked_goal(cleared_at(0));
+    let follow = followed_changes(&mut mesh).await;
+    follow
+        .publish_feedback(change(ChangeKind::Listing, None, 0))
+        .await
+        .expect("the daemon gives the listing");
+    follow
+        .complete_cancelled("the daemon stops", Payload::new())
+        .await
+        .expect("the daemon ends the follow");
+    let FleetStop::FollowLost(reason) = stop_of(&first).await else {
+        panic!("the follow is lost");
+    };
+    assert!(reason.contains("the daemon ended the follow"), "{reason}");
+
+    let second = rules.follow_marked_goal(cleared_at(0));
+    assert!(
+        matches!(stop_of(&first).await, FleetStop::FollowLost(_)),
+        "a new follow does not save the goals of the lost one"
+    );
+    mesh.changes
+        .next_goal(READINESS_TIMEOUT)
+        .await
+        .expect("the next goal follows the changes again")
+        .refuse(Failure::new(
+            PeppyFailureKind::Rejected,
+            "framework_controls_inst has no `fleet` target",
+        ))
+        .await
+        .expect("the daemon refuses the follow");
+    let FleetStop::FollowLost(reason) = stop_of(&second).await else {
+        panic!("the refused follow is lost");
+    };
+    assert!(reason.contains("the daemon refuses the follow"), "{reason}");
+}
+
+/// A result request of a goal that the server follows to its end, which
+/// times out or reaches no live provider, is asked again; any other error
+/// leaves the end unknown.
+#[test]
+fn a_result_request_that_misses_is_asked_again() {
+    let messaging = |error| peppy_codec::consumer::ConsumerError::Messaging(error);
+    assert_eq!(
+        result_miss(&messaging(peppylib::PeppyError::ActionResultTimeout {
+            instance_id: None,
+            action_name: "move_arm".to_owned(),
+        })),
+        Some(ResultMiss::NotEnded)
+    );
+    assert_eq!(
+        result_miss(&messaging(peppylib::PeppyError::ActionResultUnreachable {
+            instance_id: Some(ARM.to_owned()),
+            action_name: "move_arm".to_owned(),
+        })),
+        Some(ResultMiss::Unreached)
+    );
+    assert_eq!(
+        result_miss(
+            &peppy_codec::consumer::ConsumerError::UndeclaredFailureKind {
+                member: "move_arm".to_owned(),
+                failure: Failure::new(FailureKindName::parse("jammed").unwrap(), "the arm jammed"),
+            }
+        ),
+        None
+    );
 }

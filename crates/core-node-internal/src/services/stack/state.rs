@@ -5,17 +5,19 @@
 
 use super::ChangeResult;
 use super::action::StackChangeContext;
+use super::fleet_listing::launch_listing;
 use super::launch::joinable::JoinableBuild;
 use super::launch::watchers::LifecycleWatchers;
 use super::launch::{NodeKey, PlannedDeployment};
 use crate::services::federation::SliceOwnership;
 use crate::services::fleet::{Process, RobotProcesses};
 use config::runtime::{CopyName, CoreNodeName};
-use daemon_config::daemon_interface::fleet::ChangeKind;
+use daemon_config::daemon_interface::fleet::{ChangeKind, FleetListing};
 use daemon_config::launcher::{
     ClockIncarnations, CopyRecord, DeploymentInstance, PeppyLauncher, Placements, PreparedLauncher,
     ResolvedClocks, UnitSelection,
 };
+use node_stack::NodeStack;
 use std::collections::BTreeMap;
 
 /// The launch this daemon coordinates: what it composed, where it runs,
@@ -307,9 +309,9 @@ impl ActiveLaunch {
     }
 }
 
-/// Drops the launch this daemon coordinates, for `cause`: a new launch or a
-/// stack reset. Every lease and offer ends with it, and the followers of the
-/// fleet read the removal of each of its copies.
+/// Drops the launch this daemon coordinates, for `cause`: a new launch, a
+/// launch that failed or a stack reset. Every lease and offer ends with it,
+/// and the followers of the fleet read the removal of each of its copies.
 pub(crate) fn drop_active_launch(ownership: &SliceOwnership, cause: &str) {
     let mut record = ownership.active.lock();
     let removed: Vec<String> = record
@@ -324,6 +326,7 @@ pub(crate) fn drop_active_launch(ownership: &SliceOwnership, cause: &str) {
         .unwrap_or_default();
     ownership.fleet.with(|book| {
         book.end_every_lease(cause);
+        book.set_launch(FleetListing::default());
         for robot in &removed {
             book.note(ChangeKind::Removal, robot);
         }
@@ -331,23 +334,49 @@ pub(crate) fn drop_active_launch(ownership: &SliceOwnership, cause: &str) {
     });
 }
 
-/// Makes `active` the launch this daemon coordinates: the followers of the
-/// fleet read the join of each of its copies.
-pub(super) fn commit_active_launch(ownership: &SliceOwnership, active: ActiveLaunch) {
+/// Makes `active` the launch this daemon coordinates, from the commit point
+/// of the launch on, while its instances still start: its instances call the
+/// daemon within the scopes of the launch, and the followers of the fleet
+/// read the join of each of its copies. `node_stack` gives the documents of
+/// the listing.
+pub(super) fn commit_active_launch(
+    ownership: &SliceOwnership,
+    node_stack: &NodeStack,
+    active: ActiveLaunch,
+) {
     let joined: Vec<String> = active
         .copies
         .keys()
         .map(|name| name.as_str().to_owned())
         .collect();
     let robots = active.robot_processes();
+    let listing = launch_listing(&active, node_stack);
     let mut record = ownership.active.lock();
     *record = Some(active);
     ownership.fleet.with(|book| {
+        book.set_launch(listing);
         for robot in &joined {
             book.note(ChangeKind::Join, robot);
         }
         book.sync_software(&robots);
     });
+}
+
+/// Reads the part of the fleet listing that the record of the launch gives
+/// again, once the nodes of the launch hold their documents, with no change
+/// of the fleet: the record did not change.
+pub(super) fn refresh_launch_listing(ownership: &SliceOwnership, node_stack: &NodeStack) {
+    let Some(active) = ownership.active.lock().clone() else {
+        return;
+    };
+    let listing = launch_listing(&active, node_stack);
+    let record = ownership.active.lock();
+    if record
+        .as_ref()
+        .is_some_and(|current| current.launch_id == active.launch_id)
+    {
+        ownership.fleet.with(|book| book.set_launch(listing));
+    }
 }
 
 pub(super) fn active_launch(ctx: &StackChangeContext) -> ChangeResult<ActiveLaunch> {

@@ -88,6 +88,10 @@ config = { workspace = true, features = ["fingerprint_test_helpers"] }
 config-test-support = { workspace = true, features = ["git_fixtures"] }
 tempfile = "3.10"
 tokio = { version = "1", features = ["full", "test-util"] }
+# `peppylib::testing`: the ephemeral router and the mock cores of the unit
+# tests of the daemon interfaces, which stand in for the daemon's own stack
+# goals.
+peppylib = { workspace = true, features = ["testing"] }
 rstest = { workspace = true }
 httptest = "0.16.3"
 tracing-subscriber = "0.3"

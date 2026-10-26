@@ -5,7 +5,9 @@
 
 mod book;
 
-pub(crate) use book::{ClientRef, FleetBook, Process, Refusal, RefusalKind, RobotProcesses};
+pub(crate) use book::{
+    ClientRef, FleetBook, Following, Process, Refusal, RefusalKind, RobotProcesses,
+};
 
 use crate::services::federation::SliceOwnership;
 use crate::services::stack::ActiveLaunch;
@@ -38,6 +40,17 @@ impl std::fmt::Debug for Fleet {
 }
 
 impl Fleet {
+    /// The fleet of the daemon of the machine `core_node`.
+    pub(crate) fn of_machine(core_node: &str) -> Self {
+        Self {
+            book: parking_lot::Mutex::new(FleetBook::new(
+                &crate::services::stack::fleet_listing::release_version(),
+                core_node,
+            )),
+            halt_file: OnceLock::new(),
+        }
+    }
+
     /// Keeps the halt in `path` from now on, and reads the halt that a
     /// daemon before this one wrote there. A file that does not read is
     /// read as a halt: a halt that the daemon cannot read stays a halt.
@@ -46,7 +59,7 @@ impl Fleet {
         if let Some(by) = &halted_by {
             tracing::warn!(%by, "the stack is halted: a client halted it before this daemon started");
         }
-        *self.book.lock() = FleetBook::with_halt(halted_by);
+        self.book.lock().restore_halt(halted_by);
         if self.halt_file.set(path).is_err() {
             tracing::warn!("the fleet keeps its halt in one file, set once");
         }
@@ -57,20 +70,26 @@ impl Fleet {
         work(&mut self.book.lock())
     }
 
-    /// Halts the stack for `by` and writes the halt to disk. Answers whether
-    /// the halt started now.
+    /// Halts the stack for `by`, then writes the halt to disk. Answers
+    /// whether the halt started now. The stack is halted whatever the write
+    /// gives: a halt that is not on disk ends at a restart of the daemon, and
+    /// each next halt writes it again.
     pub(crate) fn halt(&self, by: &str) -> std::io::Result<bool> {
         let mut book = self.book.lock();
-        if book.halted_by().is_some() {
-            return Ok(false);
-        }
+        let started = book.halt(by);
+        let halted_by = book
+            .halted_by()
+            .expect("the stack is halted after a halt")
+            .to_owned();
         if let Some(path) = self.halt_file.get() {
-            write_halt(path, by)?;
+            write_halt(path, &halted_by)?;
         }
-        Ok(book.halt(by))
+        Ok(started)
     }
 
     /// Ends the halt and removes it from disk. Answers whether a halt ended.
+    /// A halt that the daemon cannot remove from disk stays: the stack stays
+    /// halted.
     pub(crate) fn clear_halt(&self) -> std::io::Result<bool> {
         let mut book = self.book.lock();
         if book.halted_by().is_none() {
@@ -204,6 +223,44 @@ mod tests {
         assert_eq!(
             cleared.with(|book| book.halted_by().map(str::to_owned)),
             None
+        );
+    }
+
+    /// A halt that the daemon cannot write holds all the same, and the next
+    /// halt writes it once the data root takes it.
+    #[test]
+    fn a_halt_that_is_not_written_to_disk_holds_and_the_next_halt_writes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("data_root");
+        let path = root.join("fleet_halt.json5");
+        let fleet = Fleet::default();
+        fleet.keep_halt_in(path.clone());
+        // A file where the data root should be: the halt file cannot be
+        // written.
+        std::fs::write(&root, "not a directory").unwrap();
+
+        fleet
+            .halt("peppy-cli on cn-one")
+            .expect_err("the data root is a file, so the write fails");
+        assert_eq!(
+            fleet.with(|book| book.halted_by().map(str::to_owned)),
+            Some("peppy-cli on cn-one".to_owned()),
+            "the stack is halted though the halt is not on disk"
+        );
+        assert!(!path.exists());
+
+        std::fs::remove_file(&root).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        assert!(
+            !fleet.halt("another").unwrap(),
+            "the second halt starts no halt"
+        );
+        let restarted = Fleet::default();
+        restarted.keep_halt_in(path);
+        assert_eq!(
+            restarted.with(|book| book.halted_by().map(str::to_owned)),
+            Some("peppy-cli on cn-one".to_owned()),
+            "the second halt wrote the first one to disk"
         );
     }
 

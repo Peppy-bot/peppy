@@ -12,7 +12,8 @@ use crate::services::action_loop::{
     GoalEnding, GoalHandler, WorkStop, accept_goal, cancel_reason, expose_daemon_action,
     invalid_payload, refuse_goal, run_action_loop, under_goal_cancel,
 };
-use crate::services::fleet::{ClientRef, FleetBook};
+use crate::services::federation::SliceOwnership;
+use crate::services::fleet::ClientRef;
 use crate::services::node::common::{encode_response_or_err, panic_message};
 use crate::services::node::gate::{
     Admission, ConcurrencyGate, finish_on_reset, reset_drain_budget,
@@ -161,30 +162,70 @@ impl StackRequest {
         }
     }
 
-    /// The client the request acts for: the client a daemon sent it for,
-    /// else `sender`.
-    fn client(&self, sender: ClientRef) -> ClientRef {
+    /// The client the request acts for: the client that the goal names when
+    /// `daemon`, this daemon, sent it (its provider of `stack_copies:v1`
+    /// sends each join and removal for the client of its own goal), else
+    /// `sender`. A goal of any other sender that names a client is refused:
+    /// a sender acts for itself.
+    fn client(
+        &self,
+        sender: ClientRef,
+        daemon: &ClientRef,
+    ) -> std::result::Result<ClientRef, Failure> {
         let sent_for = match self {
             Self::Join(goal) => goal.client.as_ref(),
             Self::Remove(goal) => goal.client.as_ref(),
             Self::Launch(_) | Self::Build(_) => None,
         };
-        sent_for.map_or(sender, |client| {
-            ClientRef::new(client.core_node.clone(), client.instance_id.clone())
-        })
+        let Some(client) = sent_for else {
+            return Ok(sender);
+        };
+        if sender != *daemon {
+            return Err(Failure::new(
+                PeppyFailureKind::Rejected,
+                format!(
+                    "{sender} names the client `{}` on `{}` of its stack goal; only the daemon \
+                     names the client of a stack goal, and a goal of any other sender acts for \
+                     its sender",
+                    client.instance_id, client.core_node
+                ),
+            ));
+        }
+        Ok(ClientRef::new(
+            client.core_node.clone(),
+            client.instance_id.clone(),
+        ))
     }
 
-    /// The refusal of the request by the leases of the robots: a join under
-    /// the name of a robot that another client leases, a join by a lease
-    /// holder during a halt, and the removal of a robot that another client
-    /// leases.
-    fn lease_refusal(&self, book: &FleetBook, client: &ClientRef) -> Option<Failure> {
-        let checked = match self {
-            Self::Join(goal) => book.check_join(Some(client), goal.copy.name.as_str()),
-            Self::Remove(goal) => book.check_removal(Some(client), goal.name.as_str()),
-            Self::Launch(_) | Self::Build(_) => Ok(()),
-        };
-        checked.err().map(|refusal| refusal.into_daemon_failure())
+    /// Admits the request by the leases of the robots, for `client`: refused
+    /// for a join under the name of a robot that another client leases, a
+    /// join by a lease holder during a halt, and the removal of a robot that
+    /// another client leases. An admitted removal holds its robot until the
+    /// returned hold drops: no client takes the lease of the robot while the
+    /// removal runs.
+    fn admit_by_leases(
+        &self,
+        ownership: &Arc<SliceOwnership>,
+        client: &ClientRef,
+    ) -> std::result::Result<Option<RemovalHold>, Failure> {
+        ownership
+            .fleet
+            .with(|book| match self {
+                Self::Join(goal) => book
+                    .check_join(Some(client), goal.copy.name.as_str())
+                    .map(|()| None),
+                Self::Remove(goal) => {
+                    book.begin_removal(Some(client), goal.name.as_str())
+                        .map(|()| {
+                            Some(RemovalHold {
+                                ownership: Arc::clone(ownership),
+                                robot: goal.name.as_str().to_owned(),
+                            })
+                        })
+                }
+                Self::Launch(_) | Self::Build(_) => Ok(None),
+            })
+            .map_err(|refusal| refusal.into_daemon_failure())
     }
 
     fn process(self, ctx: StackChangeContext) -> futures::future::BoxFuture<'static, ChangeEnd> {
@@ -194,6 +235,21 @@ impl StackRequest {
             Self::Join(goal) => join(goal, ctx).boxed(),
             Self::Remove(goal) => remove(goal, ctx).boxed(),
         }
+    }
+}
+
+/// The removal of a robot in the book of the fleet, until it drops: no
+/// client takes the lease of the robot meanwhile.
+struct RemovalHold {
+    ownership: Arc<SliceOwnership>,
+    robot: String,
+}
+
+impl Drop for RemovalHold {
+    fn drop(&mut self) {
+        self.ownership
+            .fleet
+            .with(|book| book.end_removal(&self.robot));
     }
 }
 
@@ -428,7 +484,20 @@ async fn handle_stack_request(
             return;
         }
     };
-    let client = goal.client(ClientRef::new(pending.core_node(), pending.instance_id()));
+    let daemon = ClientRef::new(
+        action_context.bound_core_node.as_str(),
+        action_context.core_instance_id.as_str(),
+    );
+    let client = match goal.client(
+        ClientRef::new(pending.core_node(), pending.instance_id()),
+        &daemon,
+    ) {
+        Ok(client) => client,
+        Err(refusal) => {
+            refuse_goal(pending, refusal).await;
+            return;
+        }
+    };
 
     let mutation = match action_context.slice_ownership.try_begin_change() {
         Ok(mutation) => mutation,
@@ -454,14 +523,13 @@ async fn handle_stack_request(
         return;
     }
 
-    if let Some(refusal) = action_context
-        .slice_ownership
-        .fleet
-        .with(|book| goal.lease_refusal(book, &client))
-    {
-        refuse_goal(pending, refusal).await;
-        return;
-    }
+    let removal = match goal.admit_by_leases(&action_context.slice_ownership, &client) {
+        Ok(removal) => removal,
+        Err(refusal) => {
+            refuse_goal(pending, refusal).await;
+            return;
+        }
+    };
 
     let budgets = goal.budgets();
 
@@ -542,6 +610,7 @@ async fn handle_stack_request(
     let cancellation = reset.child_token();
     tokio::spawn(async move {
         let _mutation = mutation;
+        let _removal = removal;
         // Frees the gate slot on every exit: explicitly before the end on the
         // normal path (via `release_then_end` below), or on unwind for a
         // panic. A no-op if a later goal already took over.
@@ -617,6 +686,7 @@ async fn handle_stack_request(
             }
         };
         drop(_mutation);
+        drop(_removal);
         let ending =
             stack_goal_ending(end, &log, &publisher, cancel_reason(&goal_ctx, &reset)).await;
         slot.release_then_end(&goal_ctx, ending).await;

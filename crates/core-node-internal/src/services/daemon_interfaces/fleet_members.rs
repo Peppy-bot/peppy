@@ -6,19 +6,20 @@
 
 use super::codecs::Side;
 use super::{Caller, InterfaceContext, end_goal, refuse};
-use crate::services::fleet::{ClientRef, Refusal};
+use crate::services::fleet::{ClientRef, FleetBook, Following, Refusal};
 use crate::services::response::failure;
 use crate::services::stack::fleet_listing::pinned_document;
 use config::failure_kind::PeppyFailureKind;
 use daemon_config::daemon_interface::fleet::{
     ChangeKind, CheckMoveRequest, CheckMoveResponse, ContractRequest, ContractResponse,
-    FleetChange, FleetListing, FleetMember, MoveTarget, OfferRequest, RobotRequest, TakeRequest,
+    FleetListing, FleetMember, MoveTarget, OfferRequest, RobotRequest, TakeRequest,
 };
 use daemon_config::daemon_interface::{DaemonInterface, DaemonScope};
 use peppylib::messaging::{
     Failure, GoalContext, NonEmptyPayload, PendingGoal, ServiceAnswer, ServiceRequestContext,
 };
 use peppylib::types::Payload;
+use serde::Serialize;
 
 const FLEET: DaemonInterface = DaemonInterface::Fleet;
 
@@ -131,9 +132,7 @@ pub(super) async fn answer(
             let request: CheckMoveRequest = ctx.decode(FLEET, name, Side::Request, &bytes)?;
             let target = MoveTarget::try_from(request)
                 .map_err(|reason| failure(PeppyFailureKind::Rejected, reason))?;
-            let response = CheckMoveResponse {
-                refusal: check_move(ctx, &sender, &target),
-            };
+            let response = check_move(ctx, &sender, &target);
             ctx.encode(FLEET, name, Side::Response, &response)
         }
         FleetMember::Halt => {
@@ -143,7 +142,11 @@ pub(super) async fn answer(
                 .map_err(|error| {
                     failure(
                         PeppyFailureKind::AttemptFailed,
-                        format!("the halt was not written to disk: {error}"),
+                        format!(
+                            "the stack is halted, but the daemon did not write the halt to \
+                             disk, so the halt ends at a restart of the daemon; a next halt \
+                             writes it again: {error}"
+                        ),
                     )
                 })?;
             Ok(Payload::new())
@@ -166,11 +169,7 @@ pub(super) async fn answer(
 
 /// The fleet listing now.
 pub(super) fn fleet_listing(ctx: &InterfaceContext) -> FleetListing {
-    crate::services::stack::fleet_listing::fleet_listing(
-        &ctx.slice_ownership,
-        &ctx.node_stack,
-        &ctx.core_node,
-    )
+    ctx.slice_ownership.fleet.with(|book| book.listing())
 }
 
 /// `take`: a robot on the stack, or one whose lease the book holds (a lease
@@ -220,7 +219,7 @@ fn check_move(
     ctx: &InterfaceContext,
     sender: &ClientRef,
     target: &MoveTarget,
-) -> Option<daemon_config::daemon_interface::fleet::MoveRefusal> {
+) -> CheckMoveResponse {
     let active = ctx.slice_ownership.active.lock();
     let robot = match target {
         MoveTarget::Robot(robot) => Some(robot.clone()),
@@ -274,12 +273,28 @@ async fn publish<T: serde::Serialize>(
         .map_err(|error| error.to_string())
 }
 
-/// `changes`: the listing, then one feedback per change with the listing
-/// after it, until the client cancels the goal or is gone.
+/// One feedback of `changes`, as the daemon publishes it: the listing that
+/// the book gave with the change.
+#[derive(Serialize)]
+struct ChangeFeedback<'a> {
+    change: ChangeKind,
+    robot: &'a str,
+    #[serde(with = "daemon_config::daemon_interface::fleet::decimal_u64")]
+    revision: u64,
+    listing: &'a FleetListing,
+}
+
+/// `changes`: the listing, then one feedback per change with the revision
+/// and the listing that the book gave with it, until the client cancels the
+/// goal or is gone.
 async fn follow_changes(ctx: &InterfaceContext, pending: PendingGoal) {
-    // The follower is in the book before the first listing is read, so no
-    // change between the two is lost.
-    let mut changes = ctx.slice_ownership.fleet.with(|book| book.follow());
+    // The book gives the first listing and the changes after it in one step,
+    // so no change between the two is lost.
+    let Following {
+        revision,
+        listing,
+        mut changes,
+    } = ctx.slice_ownership.fleet.with(FleetBook::follow);
     let goal = match pending.accept(Payload::new()).await {
         Ok(goal) => goal,
         Err(error) => {
@@ -288,26 +303,34 @@ async fn follow_changes(ctx: &InterfaceContext, pending: PendingGoal) {
         }
     };
     let name = FleetMember::Changes.name();
-    let mut next = Some((ChangeKind::Listing, String::new()));
+    let first = ChangeFeedback {
+        change: ChangeKind::Listing,
+        robot: "",
+        revision,
+        listing: &listing,
+    };
+    if let Err(error) = publish(ctx, &goal, name, &first).await {
+        tracing::debug!(%error, "the listing of the fleet was not published");
+        return;
+    }
     loop {
-        if let Some((change, robot)) = next.take() {
-            let feedback = FleetChange {
-                change,
-                robot,
-                listing: fleet_listing(ctx),
-            };
-            if let Err(error) = publish(ctx, &goal, name, &feedback).await {
-                tracing::debug!(%error, "a change of the fleet was not published");
-                return;
-            }
-        }
-        tokio::select! {
+        let change = tokio::select! {
             biased;
             () = goal.cancel_signal() => break,
             change = changes.recv() => match change {
-                Some(change) => next = Some((change.kind, change.robot)),
+                Some(change) => change,
                 None => break,
             },
+        };
+        let feedback = ChangeFeedback {
+            change: change.kind,
+            robot: &change.robot,
+            revision: change.revision,
+            listing: &change.listing,
+        };
+        if let Err(error) = publish(ctx, &goal, name, &feedback).await {
+            tracing::debug!(%error, "a change of the fleet was not published");
+            return;
         }
     }
     end_goal(goal.complete_cancelled(

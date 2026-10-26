@@ -179,6 +179,20 @@ impl ScopedFleetMember {
 }
 
 impl FleetScope {
+    /// Leaves out of `bundle` each tool and task of the daemon target
+    /// `target` whose member the scope does not give: the server serves no
+    /// tool that the daemon refuses.
+    pub(super) fn narrow(&self, bundle: &mut peppy_mcp_catalog::ExposureBundle, target: &str) {
+        let given =
+            |member: &str| FleetMember::named(member).is_some_and(|member| self.allows(member));
+        bundle
+            .tools
+            .retain(|tool| tool.target != target || given(&tool.member));
+        bundle
+            .tasks
+            .retain(|task| task.target != target || given(&task.member));
+    }
+
     /// Whether the scope lets its client call `member`.
     pub fn allows(&self, member: FleetMember) -> bool {
         if member == FleetMember::CheckMove {
@@ -425,12 +439,31 @@ impl From<FleetFailureKind> for config::failure_kind::FailureKindName {
     }
 }
 
+/// A `u64` in the canonical JSON form of the run-time codec: a decimal
+/// string, as JSON numbers lose precision past 2^53.
+pub mod decimal_u64 {
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse()
+            .map_err(|_| D::Error::custom(format!("`{text}` is not a decimal string of a u64")))
+    }
+}
+
 /// The response of `check_move`: absent `refusal` when the client may move
-/// the robot.
+/// the robot, and the revision of the fleet that the answer reads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckMoveResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<MoveRefusal>,
+    #[serde(with = "decimal_u64")]
+    pub revision: u64,
 }
 
 /// Why a client may not move a robot: the failure kind and the message that
@@ -462,11 +495,14 @@ pub enum ChangeKind {
 }
 
 /// One feedback of `changes`: the change, its robot (empty for a change of
-/// the whole stack), and the listing after it.
+/// the whole stack), the revision of the fleet that it made, and the listing
+/// after it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FleetChange {
     pub change: ChangeKind,
     pub robot: String,
+    #[serde(with = "decimal_u64")]
+    pub revision: u64,
     pub listing: FleetListing,
 }
 

@@ -1,13 +1,15 @@
 // The copies of the running launch: list them, add one, remove one. The
 // peppy daemon that coordinates the stack serves this interface, and no
-// node implements it; every other daemon of the stack passes each call to
-// it. The scope that the launcher gives the target of a client limits every
-// member to the options it names and the features it gives them. A machine
-// is the core node name of a peppy daemon. A join or a removal follows the
-// leases of fleet:v1: a join by a lease holder leases the new robot to it,
-// and a join is refused during a halt; a join under the name of a robot that
-// another client leases, and the removal of a robot that another client
-// leases, are refused with the failure kind leased.
+// node implements it. The daemon target of each instance of the stack
+// reaches that daemon; a daemon that runs the slice of a launch that another
+// machine coordinates refuses each call with precondition_failed and names
+// the coordinator. The scope that the launcher gives the target of a client
+// limits every member to the options it names and the features it gives
+// them. A machine is the core node name of a peppy daemon. A join or a
+// removal follows the leases of fleet:v1: a join by a lease holder leases
+// the new robot to it, and a join is refused during a halt; a join under the
+// name of a robot that another client leases, and the removal of a robot
+// that another client leases, are refused with the failure kind leased.
 {
   peppy_schema: "contract/v1",
   manifest: { name: "stack_copies", tag: "v1" },

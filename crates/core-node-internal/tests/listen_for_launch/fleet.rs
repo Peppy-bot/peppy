@@ -184,6 +184,16 @@ async fn next_change(follow: &mut GoalHandle) -> FleetChange {
 /// any copy, and the axis `robot`, whose option `real` deploys `named_robot`
 /// as the instance `arm_inst` of each copy.
 fn fleet_with_a_director(started: &StartedCoreNode, scope: &str) -> (tempfile::TempDir, PathBuf) {
+    fleet_with_a_director_and_copies(started, scope, "")
+}
+
+/// The fleet of [`fleet_with_a_director`], whose launch starts `copies`, the
+/// `deployments` entries of the copies beside the director.
+fn fleet_with_a_director_and_copies(
+    started: &StartedCoreNode,
+    scope: &str,
+    copies: &str,
+) -> (tempfile::TempDir, PathBuf) {
     let directory = tempdir().unwrap();
     let director = write_node_config_with_options(
         directory.path(),
@@ -210,9 +220,12 @@ fn fleet_with_a_director(started: &StartedCoreNode, scope: &str) -> (tempfile::T
         format!(
             r#"{{
         peppy_schema: "launcher/v1",
-        deployments: [{{ source: {{ name: "director", tag: "v1" }}, instances: [
-            {{ instance_id: "{DIRECTOR}", daemon_scopes: {{ fleet: {scope} }} }}
-        ] }}],
+        deployments: [
+            {{ source: {{ name: "director", tag: "v1" }}, instances: [
+                {{ instance_id: "{DIRECTOR}", daemon_scopes: {{ fleet: {scope} }} }}
+            ] }},
+            {copies}
+        ],
         components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
             real: {{ deployments: [{{ source: {{ name: "named_robot", tag: "v1" }},
                 instances: [{{ instance_id: "arm_inst" }}] }}] }}
@@ -244,6 +257,75 @@ async fn launched_with_alpha(
         .await
         .assert_completed();
     (directory, responders)
+}
+
+/// The daemon holds the record of a launch from its commit point on: while
+/// the launch waits for the start of the copy `alpha`, the director, an
+/// instance of the launch, calls the fleet within its scope and takes the
+/// lease of alpha, and the followers read the join of alpha.
+#[tokio::test]
+async fn an_instance_calls_the_fleet_within_its_scope_while_its_launch_starts() {
+    let started = common::start_core_node_with_mock_messenger_and_no_ready_bound().await;
+    let (_directory, launcher) = fleet_with_a_director_and_copies(
+        &started,
+        r#"{ members: ["list", "lease"] }"#,
+        r#"{ robot: "real", instances: [{ instance_id: "alpha" }] }"#,
+    );
+    let command_line =
+        FleetClient::sending_as(&started, core_node_api::names::COMMAND_LINE_INSTANCE_ID).await;
+    let mut changes = command_line.goal(FleetMember::Changes).await;
+    let first = next_change(&mut changes).await;
+    assert!(first.listing.robots.is_empty(), "no launch runs yet");
+    let mut responders = answer_readiness(&started, "director", DIRECTOR).await;
+
+    let launch = fleet_launch(launcher, "fleet-commit-test");
+    let during_the_launch = async {
+        let joined = next_change(&mut changes).await;
+        assert_eq!(serde_json::to_value(joined.change).unwrap(), json!("join"));
+        assert_eq!(joined.robot, "alpha");
+        assert_eq!(
+            serde_json::to_value(joined.listing.robots[0].software).unwrap(),
+            json!("stopped"),
+            "alpha has not started yet"
+        );
+
+        let director = FleetClient::sending_as(&started, DIRECTOR).await;
+        let robots: Vec<String> = director
+            .listing()
+            .await
+            .robots
+            .into_iter()
+            .map(|robot| robot.name)
+            .collect();
+        assert_eq!(robots, ["alpha"], "the scope of the director holds");
+        let lease = director.goal(FleetMember::Lease).await;
+        director
+            .call(
+                FleetMember::Take,
+                json!({ "robot": "alpha", "name": "first run" }),
+            )
+            .await
+            .expect("the director takes alpha while the launch starts it");
+        assert_eq!(
+            command_line
+                .check_move(ALPHA_ARM)
+                .await
+                .map(|(kind, _)| kind),
+            Some("leased".to_owned()),
+            "the move check knows the robot of the instance"
+        );
+        responders.extend(answer_readiness(&started, "named_robot", ALPHA_ARM).await);
+        lease
+    };
+    let (end, _lease) = tokio::join!(execute(&started, &launch), during_the_launch);
+    end.assert_completed();
+    let listing = command_line.listing().await;
+    assert_eq!(listing.leases.len(), 1);
+    assert_eq!(listing.leases[0].holder, DIRECTOR);
+    assert_eq!(
+        serde_json::to_value(listing.robots[0].software).unwrap(),
+        json!("running")
+    );
 }
 
 /// The listing gives each robot with its software and the halt; the halt
@@ -418,13 +500,92 @@ async fn a_lease_holder_takes_a_robot_and_the_moves_follow_its_lease() {
     assert_eq!(command_line.check_move(ALPHA_ARM).await, None);
 }
 
+/// No client takes the lease of a robot while a removal of it runs: the
+/// removal checks the leases once, at its admission, and the robot leaves
+/// the stack with no lease. The copy hears the shutdown request of the
+/// removal and exits only when the test kills it, under a grace that
+/// outlasts the test.
+#[tokio::test]
+async fn no_client_takes_the_lease_of_a_robot_that_a_removal_takes_off_the_stack() {
+    let started = common::start_core_node_with_shutdown_grace(3600).await;
+    let (_directory, launcher) = fleet_with_a_director_and_copies(
+        &started,
+        r#"{ members: ["list", "lease"] }"#,
+        r#"{ robot: "real", instances: [{ instance_id: "alpha" }] }"#,
+    );
+    let mut responders = answer_readiness(&started, "director", DIRECTOR).await;
+    responders.extend(answer_readiness(&started, "named_robot", ALPHA_ARM).await);
+    execute(&started, &fleet_launch(launcher, "fleet-removal-test"))
+        .await
+        .assert_completed();
+    let director = FleetClient::sending_as(&started, DIRECTOR).await;
+    let _lease = director.goal(FleetMember::Lease).await;
+
+    let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let (_listener, shutdown) = peppylib::services::shutdown::listen_for_shutdown(
+        &messenger,
+        &started.core_node_name,
+        ALPHA_ARM,
+        common::test_node_target("named_robot"),
+    )
+    .await
+    .unwrap();
+    let alpha_pid = started
+        .node_stack
+        .find("named_robot", "v1")
+        .expect("the robot node is in the stack")
+        .read()
+        .instances()
+        .iter()
+        .find(|instance| instance.instance_id().as_str() == ALPHA_ARM)
+        .expect("the instance of alpha is in the stack")
+        .pid()
+        .expect("alpha runs");
+    let removal = StackRemoveGoal::new(config::runtime::CopyName::new("alpha").unwrap());
+    let (removed, ()) = tokio::join!(execute(&started, &removal), async {
+        shutdown
+            .await
+            .expect("the removal asks the copy to shut down");
+        let refusal = director
+            .refusal(
+                FleetMember::Take,
+                json!({ "robot": "alpha", "name": "late run" }),
+            )
+            .await;
+        assert_eq!(refusal.kind().as_str(), "precondition_failed");
+        assert!(
+            refusal.message().contains("a removal of it runs"),
+            "{}",
+            refusal.message()
+        );
+        std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(alpha_pid.to_string())
+            .status()
+            .expect("kill runs");
+    });
+    removed.assert_completed();
+    let listing = director.listing().await;
+    assert!(listing.robots.is_empty(), "alpha left the stack");
+    assert!(listing.leases.is_empty(), "with no lease");
+}
+
 /// The failure of the removal of the copy `name` that the command line
 /// sends.
 async fn refused_removal(started: &StartedCoreNode, name: &str) -> Failure {
+    refused_removal_goal(
+        started,
+        &StackRemoveGoal::new(config::runtime::CopyName::new(name).unwrap()),
+    )
+    .await
+}
+
+/// The failure of the removal `goal` that the command line sends.
+async fn refused_removal_goal(started: &StartedCoreNode, goal: &StackRemoveGoal) -> Failure {
     let handle = send_daemon_goal(
         &started.caller_handle,
         &started.core_node_name,
-        &StackRemoveGoal::new(config::runtime::CopyName::new(name).unwrap()),
+        goal,
         GOAL_TIMEOUT,
     )
     .await
@@ -432,6 +593,57 @@ async fn refused_removal(started: &StartedCoreNode, name: &str) -> Failure {
     goal_answer(&handle, LaunchGoalResponse::decode, "goal response")
         .expect("decode the goal answer")
         .expect_err("the daemon refuses the removal")
+}
+
+/// Only the daemon names the client of a stack goal: a removal of another
+/// sender that names the lease holder as its client is refused, and the
+/// leased robot stays on the stack.
+#[tokio::test]
+async fn a_stack_goal_of_another_sender_does_not_act_for_a_lease_holder() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, _responders) = launched_with_alpha(
+        &started,
+        r#"{ members: ["list", "lease"] }"#,
+        "fleet-goal-client-test",
+    )
+    .await;
+    let director = FleetClient::sending_as(&started, DIRECTOR).await;
+    let _lease = director.goal(FleetMember::Lease).await;
+    director
+        .call(
+            FleetMember::Take,
+            json!({ "robot": "alpha", "name": "tidy" }),
+        )
+        .await
+        .expect("the director takes alpha");
+
+    let refusal = refused_removal_goal(
+        &started,
+        &StackRemoveGoal {
+            client: Some(core_node_api::encoding::GoalClient {
+                core_node: started.core_node_name.clone(),
+                instance_id: DIRECTOR.to_owned(),
+            }),
+            ..StackRemoveGoal::new(config::runtime::CopyName::new("alpha").unwrap())
+        },
+    )
+    .await;
+    assert_eq!(refusal.kind().as_str(), "rejected");
+    assert!(
+        refusal
+            .message()
+            .contains("only the daemon names the client"),
+        "{}",
+        refusal.message()
+    );
+    let robots: Vec<String> = director
+        .listing()
+        .await
+        .robots
+        .into_iter()
+        .map(|robot| robot.name)
+        .collect();
+    assert_eq!(robots, ["alpha"], "the leased robot stays");
 }
 
 /// The daemon refuses its raw goals, and its raw services that change the

@@ -306,15 +306,16 @@ impl DaemonScope {
         }
     }
 
-    /// Narrows the published input schemas of the tool and task entries of
-    /// `bundle` that daemon target `target` serves to what this scope
-    /// allows, so the runtime refuses input outside the scope before a call
-    /// reaches the daemon. Entries of other targets keep their schemas.
+    /// Narrows the tool and task entries of `bundle` that daemon target
+    /// `target` serves to what this scope allows, so the runtime refuses
+    /// input outside the scope before a call reaches the daemon: a
+    /// `stack_copies` scope narrows their input schemas, and a fleet scope
+    /// leaves out each entry of a member that it does not give. Entries of
+    /// other targets stay as they are.
     pub fn narrow(&self, bundle: &mut ExposureBundle, target: &str) {
         match self {
             Self::StackCopies(scope) => scope.narrow(bundle, target),
-            // No input of `fleet:v1` takes a value that a scope limits.
-            Self::Fleet(_) => {}
+            Self::Fleet(scope) => scope.narrow(bundle, target),
         }
     }
 }

@@ -624,7 +624,7 @@ pub(crate) async fn run_task(
         )
         .await;
     }
-    route
+    let clearance = route
         .rules
         .check(&producer)
         .await
@@ -632,7 +632,7 @@ pub(crate) async fn run_task(
             MoveRefused::Refused(failure) => ActionExit::MoveRefused(failure),
             MoveRefused::Unanswered(message) => ActionExit::Error(message),
         })?;
-    let marked = route.rules.follow_marked_goal();
+    let marked = route.rules.follow_marked_goal(clearance);
     let surface = MarkedSurface {
         client: &context,
         marked: &marked,

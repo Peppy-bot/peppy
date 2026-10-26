@@ -1,10 +1,12 @@
 // The fleet of the stack: its robots, the leases that give one client the
 // right to move one robot, and the halt of the whole stack. The peppy daemon
 // that coordinates the stack serves this interface, and no node implements
-// it; every other daemon of the stack passes each call to it. The scope that
-// a launcher gives a target of this interface names the members that its
-// client may call; `lease` brings `take`, `release`, `offer`, `open` and
-// `close`. `check_move` answers every client.
+// it. The daemon target of each instance of the stack reaches that daemon; a
+// daemon that runs the slice of a launch that another machine coordinates
+// refuses each call with precondition_failed and names the coordinator. The
+// scope that a launcher gives a target of this interface names the members
+// that its client may call; `lease` brings `take`, `release`, `offer`, `open`
+// and `close`. `check_move` answers every client.
 //
 // A robot is a copy of the stack, a device included: the fleet listing gives
 // it under the name of its copy. A client is named by its instance and the
@@ -12,7 +14,12 @@
 // A lease ends at its release, at a halt, and when its holder is gone: the
 // process of the holder ends, or its `lease` goal ends. A lease that its
 // holder received goes back to its giver instead, or ends when the giver is
-// gone. A new launch and a stack reset end every lease and offer.
+// gone. No client takes the lease of a robot while a removal of it runs. A
+// new launch and a stack reset end every lease and offer.
+//
+// Each change of the fleet counts one revision of it: `changes` gives the
+// revision of each change, and `check_move` the revision that its answer
+// reads, so a client orders an answer and a change.
 //
 // The leases and the halt bind only the clients that ask the daemon before
 // they move a robot. They prevent conflicts between clients. They are not a
@@ -209,9 +216,9 @@
         // refusal gives to other clients. Refused with halted during a halt,
         // with leased when another client holds the lease and did not offer
         // it to the sender, and with precondition_failed when no `lease` goal
-        // of the sender runs. A lease that its holder offered to the sender
-        // changes holder in one step. The call returns once the daemon
-        // records the lease.
+        // of the sender runs and while a removal of the robot runs. A lease
+        // that its holder offered to the sender changes holder in one step.
+        // The call returns once the daemon records the lease.
         name: "take",
         request_message_format: { robot: "string", name: "string" },
         failure_kinds: ["halted", "leased"],
@@ -232,8 +239,10 @@
         // halted during a halt, with not_leased when the sender holds no
         // lease of a robot, and with precondition_failed for a lease that
         // the sender received: a receiver does not offer a lease again. An
-        // offer ends at the take, at a release by the giver, and when the
-        // giver or the receiver is gone.
+        // offer ends at the take, at a release by the giver, at the end of
+        // the lease, at an offer of the same lease to another receiver, and
+        // when the giver or the receiver is gone. An offer of a lease to the
+        // receiver that it is offered to already changes nothing.
         name: "offer",
         request_message_format: {
           robots: { $type: "array", $items: "string" },
@@ -267,7 +276,9 @@
         // robot whose lease is open, a lease holder on the robots that it
         // leases, and a client that is not a lease holder on a robot with no
         // lease. A refusal gives the failure kind and the message that the
-        // client refuses its call with.
+        // client refuses its call with. While a goal on such a member runs,
+        // the client cancels it at a halt that `changes` gives under a later
+        // revision than the answer.
         name: "check_move",
         request_message_format: {
           instance: { $type: "string", $optional: true },
@@ -281,19 +292,27 @@
             failure_kind: { $type: "string", $enum: ["halted", "leased", "not_leased"] },
             message: "string",
           },
+          // The revision of the fleet that the answer reads.
+          revision: "u64",
         },
       },
       {
-        // Halts the stack, with no wait for the clients: the daemon writes
-        // the halt to disk, ends every lease with no give-back, and refuses
-        // every lease and every move until clear_halt. Each lease holder,
-        // MCP server and `peppy node call` cancels its goals on members with
-        // the mark moves_robot. A second halt changes nothing.
+        // Halts the stack, with no wait for the clients: the daemon ends
+        // every lease with no give-back, refuses every lease and every move
+        // until clear_halt, and then writes the halt to disk, so it stays
+        // after a restart of the daemon. Each lease holder, MCP server and
+        // `peppy node call` cancels its goals on members with the mark
+        // moves_robot. A halt that the daemon does not write to disk holds
+        // all the same, and the call fails with attempt_failed: that halt
+        // ends at a restart of the daemon, and a next halt writes it again.
+        // A second halt changes nothing else.
         name: "halt",
       },
       {
         // Ends the halt. It starts nothing again: each client takes its
-        // leases again. Without a halt it changes nothing.
+        // leases again. Without a halt it changes nothing. Refused with
+        // attempt_failed when the daemon cannot remove the halt from disk:
+        // the stack then stays halted.
         name: "clear_halt",
       },
     ],
@@ -329,6 +348,9 @@
             // The robot of the change; empty for listing, halt_start and
             // halt_end.
             robot: "string",
+            // The revision of the fleet that the change made; for listing,
+            // the revision of the listing.
+            revision: "u64",
             // The fleet listing after the change, as `list` gives it.
             listing: {
               $type: "object",
