@@ -12,7 +12,7 @@
         {
           instance_id: "sim_inst",
           arguments: {
-            world: "openarm_v2",
+            scene: "default",
             state_rate_hz: 100,
             cameras_enabled: false,
             plugins: "hand_teleop,sim_inspector",

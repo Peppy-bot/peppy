@@ -85,7 +85,7 @@
     build_cmd: ["sh", "-c", "for f in src/lib.rs src/parameters.rs peppy.json5.sha256 src/exposed_services/scene/get_assets_list.rs src/exposed_actions/scene/spawn_object.rs src/emitted_topics/objects/object_states.rs src/emitted_topics/contacts/contacts.rs src/emitted_topics/sensors/sensor_readings.rs src/paired_topics/left_arm/joint_setpoints.rs src/paired_topics/right_gripper/gripper_states.rs src/paired_topics/chest/depth_stream.rs src/paired_topics/wrist_right/stream_info.rs src/mock.rs src/mock/pairings/left_arm.rs src/mock/pairings/chest.rs src/fixtures.rs src/fixtures/harness.rs src/fixtures/exposed_actions/scene/move_robot.rs src/fixtures/exposed_services/scene/get_objects_list.rs src/fixtures/emitted_topics/objects/object_states.rs src/capnp.rs src/capnp/scene_control_v1_spawn_object_goal_message.capnp src/capnp/scene_control_v1_spawn_object_goal_message_capnp.rs src/capnp/peer_chest_stream_info_message_capnp.rs src/capnp/object_state_v1_object_states_message_capnp.rs; do test -f \".peppy/libs/peppygen/$f\" || { echo \"missing generated file $f\" >&2; exit 2; }; done; test -f .peppy/libs/peppylib/Cargo.toml || { echo \"peppylib is not deployed beside peppygen\" >&2; exit 2; }; test ! -e .peppy/git.hash || { echo \"a staged tree carries no git.hash\" >&2; exit 2; }; echo WALDO_CODEGEN_CHECKPOINT; exit 3"],
     run_cmd: ["true"],
     parameters: {
-      world: "string",
+      scene: "string",
       state_rate_hz: "u32",
       physics_threads: { $type: "u32", $default: 0 },
       viewer_host: { $type: "string", $default: "0.0.0.0" },

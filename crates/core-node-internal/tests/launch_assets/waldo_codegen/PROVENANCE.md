@@ -40,3 +40,7 @@ structure and drops the engine's own commentary.
   The generated sources are the same either way.
 - The launcher leaves every pairing slot vacant. The engine declares all of
   them `zero_or_one`, and generation does not depend on what a slot holds.
+- `execution.parameters` declares the scene the engine opens on as `scene`,
+  and the `sim_inst` arguments give it `default`. The revisions above name
+  that parameter `world`, and `launchers-hub` `3500c1e` gives it
+  `openarm_v2` in `openarm/openarm_v2.json5`.
