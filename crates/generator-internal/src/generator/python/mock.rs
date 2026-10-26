@@ -17,6 +17,7 @@ use super::super::testgen::{
     DepActionSpec, DepLinkSpec, DepServiceSpec, DepTopicSpec, MOCK_CORE_NODE, MOCK_PEER_LINK_ID,
     MOCK_SOURCE_LINK_ID, ObservedLinkSpec, PairTopicSpec, PairingLinkSpec, TargetSpec,
     TestGenRegistry, dep_member_name, mock_instance_id, reserved_member_owners,
+    unreserved_member_name,
 };
 use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass};
 use super::deserialization;
@@ -103,7 +104,7 @@ fn claim_member_name(
     raw: &str,
     owners: &mut HashMap<String, String>,
 ) -> Result<String> {
-    let sanitized = sanitize_python_module_name(raw);
+    let sanitized = unreserved_member_name(link_id, raw, sanitize_python_module_name);
     claim_sanitized_name(owners, &sanitized, "mock", &format!("{link_id}/{raw}"))?;
     Ok(sanitized)
 }

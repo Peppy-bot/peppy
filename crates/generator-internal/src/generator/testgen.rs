@@ -39,10 +39,10 @@ pub(crate) fn mock_instance_id(link_id: &str) -> String {
 
 /// Names a generated mock aggregate binds for itself: its constructor and
 /// `start` parameters, the locals `start` binds before the member constructs
-/// run, and the aggregate's own methods. A member sanitizing onto one of
-/// these would emit a duplicate parameter or shadow a value the later
-/// constructs read, so both backends claim them before any member. Shared so
-/// the member names the two languages accept cannot drift apart.
+/// run, and the aggregate's own methods. Both backends claim them before any
+/// member, and a member whose name sanitizes onto one of them takes its
+/// link-qualified name ([`unreserved_member_name`]). Shared so the member
+/// names the two languages give cannot drift apart.
 const RESERVED_MEMBER_NAMES: &[&str] = &[
     "cls",
     "instance_id",
@@ -66,6 +66,24 @@ pub(crate) fn reserved_member_owners() -> HashMap<String, String> {
             )
         })
         .collect()
+}
+
+/// The sanitized name of the member `raw` inside the mock of `link_id`: its
+/// own name, or `<link_id>_<raw>` when the mock aggregate binds that name for
+/// itself, so a contract member named `stop` is `<link_id>_stop` beside the
+/// mock's own `stop`. The qualified name is claimed like any other, so a
+/// member that already carries it still collides.
+pub(crate) fn unreserved_member_name(
+    link_id: &str,
+    raw: &str,
+    sanitize: fn(&str) -> String,
+) -> String {
+    let sanitized = sanitize(raw);
+    if RESERVED_MEMBER_NAMES.contains(&sanitized.as_str()) {
+        sanitize(&format!("{link_id}_{raw}"))
+    } else {
+        sanitized
+    }
 }
 
 /// The member name for a dep-link interface: plain when the interface's own
