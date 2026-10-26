@@ -1,38 +1,31 @@
-//! The goal path driven the way the daemon bridge of the MCP server drives
-//! it, against a mock of the daemon's `stack_join` action on peppylib's
-//! production goal engine: the acceptance at once, each line of output in
-//! order, then the end with the node logs; a refusal with the daemon's
-//! failure kind and reason; a refusal or a failure with a kind that the
-//! daemon does not give; a caller that drops `next()` while it waits and
-//! loses nothing; a goal handed to a task that follows it to its end; a
-//! cancel that reaches the daemon; a caller that falls behind the output; a
-//! caller that goes away; and a daemon that goes away. Every step waits on
-//! the mock's action, never on the clock: a deadline only bounds the failure
-//! path.
+//! The goal path driven by a caller on the coordinator, against a mock of
+//! the daemon's `stack_join` action on peppylib's production goal engine:
+//! the acceptance at once, each line of output in order, then the end with
+//! the node logs; a refusal with the daemon's failure kind and reason; a
+//! refusal or a failure with a kind that the daemon does not give; a caller
+//! that drops `next()` while it waits and loses nothing; a goal handed to a
+//! task that follows it to its end; a cancel that reaches the daemon; a
+//! caller that falls behind the output; a caller that goes away; and a
+//! daemon that goes away. Every step waits on the mock's action, never on
+//! the clock: a deadline only bounds the failure path.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use config::failure_kind::PeppyFailureKind;
-use config::runtime::CoreNodeName;
-use config::runtime::Name;
 use core_node_api::encoding::{
-    CopyAction, CopyChange, CopyInfo, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse,
-    LaunchOutput, LaunchResult, NodeLogs, NodeRunLogEntry, StackJoinGoal, StackListRequest,
-    StackListResponse,
+    LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse, LaunchOutput, LaunchResult, NodeLogs,
+    NodeRunLogEntry, StackJoinGoal,
 };
-use core_node_api::names::CORE_NODE_TAG;
-use core_node_api::{
-    ActionGoal, DaemonFailure, DaemonFailureKind, ServiceRequest, UnknownDaemonFailureKind,
-};
+use core_node_api::names::{COMMAND_LINE_INSTANCE_ID, CORE_NODE_TAG};
+use core_node_api::{ActionGoal, DaemonFailure, DaemonFailureKind, UnknownDaemonFailureKind};
 use futures::FutureExt;
 use peppylib::messaging::{
     CancelCause, Failure, GoalContext, MessengerHandle, ProducerRef, SenderTarget,
 };
 use peppylib::testing::{
-    EphemeralRouter, MockActionServerCore, MockServiceCore, READINESS_TIMEOUT,
-    wait_action_reachable, wait_service_reachable,
+    EphemeralRouter, MockActionServerCore, READINESS_TIMEOUT, wait_action_reachable,
 };
 use peppylib::types::Payload;
 use stack_goal::{
@@ -43,42 +36,43 @@ use stack_goal::{
 /// The reason the scripted daemon refuses a goal with.
 const REFUSAL_REASON: &str = "a stack change is in progress on this daemon";
 
-/// The coordinator: the daemon's core node, which the bridge is bound to.
+/// The coordinator: the daemon's core node, which the caller is bound to.
 const COORDINATOR: &str = "cn-coordinator";
 const DAEMON_INSTANCE: &str = "core_root";
-const BRIDGE_INSTANCE: &str = "framework_controls_inst";
+/// The instance id the caller sends its goals as: the command line's.
+const CALLER_INSTANCE: &str = COMMAND_LINE_INSTANCE_ID;
 const LOG_PATH: &str = "/home/peppy/.peppy/logs/stack/join.log";
 /// Bounds a wait that the mock or the client ends at once.
 const STEP: Duration = Duration::from_secs(10);
 
 /// One mesh per test: the router, a session for the daemon and one for the
-/// bridge.
+/// caller.
 struct Mesh {
-    bridge: MessengerHandle,
+    caller: MessengerHandle,
     daemon: Option<MessengerHandle>,
     _router: EphemeralRouter,
 }
 
 impl Mesh {
-    /// The route of the bridge to its own daemon.
+    /// The route of the caller to its own daemon.
     fn route(&self) -> DaemonRoute<'_> {
         DaemonRoute {
-            messenger: &self.bridge,
+            messenger: &self.caller,
             caller_core_node: COORDINATOR,
-            caller_instance_id: BRIDGE_INSTANCE,
+            caller_instance_id: CALLER_INSTANCE,
             daemon_core_node: COORDINATOR,
         }
     }
 }
 
 /// Starts the mesh and the daemon's `stack_join`, and returns once the
-/// bridge's session reaches it.
+/// caller's session reaches it.
 async fn mesh() -> (Mesh, MockActionServerCore) {
     let router = EphemeralRouter::start()
         .await
         .expect("the ephemeral router starts");
     let daemon = router.connect().await.expect("the daemon connects");
-    let bridge = router.connect().await.expect("the bridge connects");
+    let caller = router.connect().await.expect("the caller connects");
     let identity = SenderTarget::node(COORDINATOR, CORE_NODE_TAG).expect("a core node identity");
     let action = StackJoinGoal::ID.name();
     let provider = MockActionServerCore::expose(
@@ -92,9 +86,9 @@ async fn mesh() -> (Mesh, MockActionServerCore) {
     .await
     .expect("the daemon exposes stack_join");
     wait_action_reachable(
-        &bridge,
+        &caller,
         COORDINATOR,
-        BRIDGE_INSTANCE,
+        CALLER_INSTANCE,
         identity,
         action,
         &ProducerRef::new(COORDINATOR, DAEMON_INSTANCE),
@@ -104,7 +98,7 @@ async fn mesh() -> (Mesh, MockActionServerCore) {
     .expect("stack_join becomes reachable");
     (
         Mesh {
-            bridge,
+            caller,
             daemon: Some(daemon),
             _router: router,
         },
@@ -112,7 +106,7 @@ async fn mesh() -> (Mesh, MockActionServerCore) {
     )
 }
 
-/// The join the bridge sends: the copy on the coordinator, no word, no
+/// The join the caller sends: the copy on the coordinator, no word, no
 /// argument, no environment, under the default budgets.
 fn join_goal() -> StackJoinGoal {
     StackJoinGoal::new("so101_sim:bravo".parse().unwrap(), DEFAULT_BUDGETS)
@@ -135,7 +129,7 @@ async fn admit(provider: &mut MockActionServerCore, sent: &StackJoinGoal) -> Arc
         .expect("the daemon admits the goal")
 }
 
-/// Sends the join and admits it, returning the bridge's running goal and the
+/// Sends the join and admits it, returning the caller's running goal and the
 /// daemon's context of it.
 async fn running_join(
     mesh: &Mesh,
@@ -467,13 +461,13 @@ async fn a_caller_that_goes_away_gets_its_goal_cancelled() {
     let (running, context) = running_join(&mesh, &mut provider).await;
 
     drop(running);
-    // The bridge's session is the only one of its process: dropping it ends
+    // The caller's session is the only one of its process: dropping it ends
     // its presence on the router.
-    let bridge = std::mem::replace(
-        &mut mesh.bridge,
+    let caller = std::mem::replace(
+        &mut mesh.caller,
         mesh._router.connect().await.expect("another session"),
     );
-    drop(bridge);
+    drop(caller);
 
     tokio::time::timeout(READINESS_TIMEOUT, context.cancel_signal())
         .await
@@ -581,65 +575,4 @@ async fn a_result_that_expired_before_its_request_ends_the_goal_saying_so() {
         matches!(error, FollowError::Expired { operation: "Join" }),
         "{error}"
     );
-}
-
-/// The copies come from the daemon's `stack list`, asked along the route the
-/// goals take, with every field the daemon answers.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_copies_are_read_from_the_daemon_along_the_route() {
-    let (mesh, _provider) = mesh().await;
-    let daemon = mesh.daemon.as_ref().expect("the daemon is connected");
-    let identity = SenderTarget::node(COORDINATOR, CORE_NODE_TAG).expect("a core node identity");
-    let service = StackListRequest::ID.name();
-    let list = MockServiceCore::listen(
-        daemon,
-        COORDINATOR,
-        DAEMON_INSTANCE,
-        identity.clone(),
-        service,
-    )
-    .await
-    .expect("the daemon serves stack_list");
-    wait_service_reachable(
-        &mesh.bridge,
-        COORDINATOR,
-        BRIDGE_INSTANCE,
-        identity,
-        service,
-        &ProducerRef::new(COORDINATOR, DAEMON_INSTANCE),
-        READINESS_TIMEOUT,
-    )
-    .await
-    .expect("stack_list becomes reachable");
-    let bravo = CopyInfo {
-        name: config::runtime::CopyName::new("bravo").unwrap(),
-        core_node: CoreNodeName::new(COORDINATOR).unwrap(),
-        instance_ids: vec![Name::new("bravo_arm_inst").unwrap()],
-        selections: vec!["commander=pad@cn-gpu-box".parse().unwrap()],
-        option: "so101_sim".to_owned(),
-        set_members: Vec::new(),
-    };
-    let charlie = CopyChange {
-        action: CopyAction::Join,
-        name: config::runtime::CopyName::new("charlie").unwrap(),
-        option: "so101_sim".to_owned(),
-    };
-    let mut answer = StackListResponse::new("{}", COORDINATOR, DAEMON_INSTANCE, "host")
-        .with_copy_change(charlie.clone());
-    answer.copies = vec![bravo.clone()];
-    list.enqueue_response(answer.encode().unwrap());
-
-    let listed = stack_goal::list_copies(mesh.route(), STEP)
-        .await
-        .expect("the daemon answers");
-    assert_eq!(
-        listed,
-        stack_goal::StackCopies {
-            copies: vec![bravo],
-            copy_change: Some(charlie),
-        }
-    );
-    let asked = list.captured();
-    assert_eq!(asked.len(), 1, "one request");
-    assert_eq!(asked[0].message.instance_id(), BRIDGE_INSTANCE);
 }

@@ -1,7 +1,7 @@
 # The one way to send a stack goal to a daemon, follow it and read its
-# result, with the default budgets of a goal that adds nodes. The CLI's
-# `stack` commands and the daemon bridge of the built-in MCP server both use
-# it, so it depends on neither.
+# result, with the default budgets of a goal that adds nodes. The CLI and the
+# daemon's provider of `stack_copies:v1` both use it, so it depends on
+# neither.
 [package]
 name = "stack-goal"
 version.workspace = true
@@ -9,8 +9,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-# The goals, their admission, feedback and result codecs, the budgets, and
-# the stack list the copies are read from.
+# The goals, their admission, feedback and result codecs, and the budgets.
 core-node-api = { workspace = true }
 # The messenger the goal travels on, and the node a caller can be.
 peppylib = { workspace = true }
@@ -18,8 +17,7 @@ thiserror = "2.0"
 tracing = "0.1"
 
 [dev-dependencies]
-# The copy name of the join the crate's documentation sends, and the names
-# of a listed copy.
+# The failure kinds the tests' daemon refuses and fails goals with.
 config = { workspace = true }
 # One poll of a pending `next()`, so a test drops it at its await point.
 futures = "0.3"
